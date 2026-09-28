@@ -15,6 +15,7 @@ export type ChartsQuotesLayoutSettings = {
   reservedColumnPercent: number;
   tapeColumnPercent: number;
 };
+export type SavedChartsQuote = { bid: number; ask: number; bid_size: number; ask_size: number; quote_timestamp_us: number; age_ms: number; fresh: boolean };
 
 type CompactEvent = {
   arrival_sequence: number;
@@ -213,6 +214,7 @@ export function ChartsQuotesMarketLayout({
   layout,
   mainChart,
   mainChartMaximized = false,
+  savedQuote,
   monthChart,
   onLayoutChange,
   onSymbolChange,
@@ -225,6 +227,7 @@ export function ChartsQuotesMarketLayout({
   layout: ChartsQuotesLayoutSettings;
   mainChart: ReactNode;
   mainChartMaximized?: boolean;
+  savedQuote?: SavedChartsQuote | null;
   monthChart: ReactNode;
   onLayoutChange: (layout: ChartsQuotesLayoutSettings) => void;
   onSymbolChange?: (symbol: string) => void;
@@ -232,13 +235,14 @@ export function ChartsQuotesMarketLayout({
   start?: string;
   symbol: string;
 }) {
-  const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
+  const savedMode = savedQuote !== undefined;
+  const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end, !savedMode);
   const decoded = useMemo(() => decodeMarketEvents(events), [events]);
   const quotes = decoded.quotes.slice(-MARKET_EVENT_HISTORY_LIMIT);
   const trades = decoded.trades.slice(-MARKET_EVENT_HISTORY_LIMIT);
   const prints = [...trades].reverse();
   const visiblePrints = prints.slice(0, MARKET_EVENT_RENDER_LIMIT);
-  const current = quotes.at(-1);
+  const current = savedQuote ? { bid: savedQuote.bid, ask: savedQuote.ask, bidSize: savedQuote.bid_size, askSize: savedQuote.ask_size, bidExchange: 0, askExchange: 0 } : quotes.at(-1);
   const last = prints[0];
   const buyVolume = trades.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
   const sellVolume = trades.reduce((sum, item) => sum + (item.direction === "sell" ? item.size : 0), 0);
@@ -325,34 +329,34 @@ export function ChartsQuotesMarketLayout({
     window.addEventListener("pointercancel", finish);
   };
 
-  return <section aria-label={`${symbol} charts and quotes`} className="charts-quotes-layout" data-market-state={connected}>
+  return <section aria-label={`${symbol} charts and quotes`} className="charts-quotes-layout" data-market-state={savedMode ? "saved" : connected}>
     <header className="charts-quotes-header">
       <div className="charts-quotes-identity">
         <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
       </div>
-      <MicrostructureHeaderMarketState marketState={marketState} />
+      {savedMode ? <span className="backtest-v4-saved-market-state">Saved ARTE quote · {savedQuote ? `${savedQuote.age_ms.toLocaleString()} ms old${savedQuote.fresh ? "" : " · stale"}` : "unavailable"}</span> : <MicrostructureHeaderMarketState marketState={marketState} />}
       <section aria-label="Current quote and tape decision metrics" className="charts-quotes-market-strip">
-        <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting"} help="Most recent eligible trade at or before the displayed time." label="Last" marketRole="last" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} />
+        {!savedMode ? <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting"} help="Most recent eligible trade at or before the displayed time." label="Last" marketRole="last" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} /> : null}
         <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} sh · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" marketRole="bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
         <HeaderMarketMetric detail={current ? `${spreadState} · mid ${formatPrice(midpoint)}` : "No quote"} help="Current best ask minus current best bid. Tighter spreads generally reduce execution cost." label="Spread" marketRole="spread" primary tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
         <HeaderMarketMetric detail={current ? `${formatSize(current.askSize)} sh · ${askVenue.code}` : "No quote"} help={`Current consolidated national best ask; ${askVenue.name} is posting it.`} label="Ask" marketRole="ask" primary tone="sell" value={current ? formatPrice(current.ask) : "—"} />
         <HeaderMarketMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
-        <HeaderMarketMetric help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={signedPercent(imbalance)} />
-        <HeaderMarketMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${quoteRate.toFixed(1)}/s`} />
-        <HeaderMarketMetric help="At-ask volume divided by all directionally classified volume in the visible tape window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
-        <HeaderMarketMetric help="At-ask share volume minus at-bid share volume in the visible tape window." label="Net flow" tone={netFlow >= 0 ? "buy" : "sell"} value={signedCompact(netFlow)} />
-        <HeaderMarketMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
-        <HeaderMarketMetric help="One-sided aggressive flow with little price response can indicate passive liquidity absorbing it." label="Absorption" tone={absorption ? (buyShare >= 0.5 ? "sell" : "buy") : "mid"} value={absorption ? "Possible" : "None"} />
+        <HeaderMarketMetric help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={current ? signedPercent(imbalance) : "—"} />
+        {!savedMode ? <HeaderMarketMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${quoteRate.toFixed(1)}/s`} /> : null}
+        {!savedMode ? <HeaderMarketMetric help="At-ask volume divided by all directionally classified volume in the visible tape window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} /> : null}
+        {!savedMode ? <HeaderMarketMetric help="At-ask share volume minus at-bid share volume in the visible tape window." label="Net flow" tone={netFlow >= 0 ? "buy" : "sell"} value={signedCompact(netFlow)} /> : null}
+        {!savedMode ? <HeaderMarketMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} /> : null}
+        {!savedMode ? <HeaderMarketMetric help="One-sided aggressive flow with little price response can indicate passive liquidity absorbing it." label="Absorption" tone={absorption ? (buyShare >= 0.5 ? "sell" : "buy") : "mid"} value={absorption ? "Possible" : "None"} /> : null}
       </section>
-      <MicrostructureHeaderActions connected={connected} references={references} />
+      {!savedMode ? <MicrostructureHeaderActions connected={connected} references={references} /> : null}
     </header>
     <div className="charts-quotes-body" data-main-chart-maximized={mainChartMaximized} ref={bodyRef} style={layoutStyle}>
       <div className="charts-quotes-main-chart">{mainChart}</div>
       <aside aria-label="Tape and liquidity" className="charts-quotes-tape">
-        <CompactTapeQuoteCharts quotes={quotes} trades={trades} />
+        {savedMode ? <div className="trading-disclosure">Event tape unavailable in this persisted-bar Backtest view.</div> : <CompactTapeQuoteCharts quotes={quotes} trades={trades} />}
         <section className="charts-quotes-trades">
           <header><span><strong>Trade prints</strong><small>Latest {formatCount(visiblePrints.length)} of {formatCount(prints.length)} executions</small></span><em>{formatCount(prints.length)}</em></header>
-          {error && !prints.length ? <MicrostructureEmpty message={error} /> : visiblePrints.length ? <TapePrintTable prints={visiblePrints} references={references} /> : <MicrostructureEmpty message="Waiting for trade prints." />}
+          {savedMode ? <MicrostructureEmpty message="Trade prints are not part of this saved bar projection." /> : error && !prints.length ? <MicrostructureEmpty message={error} /> : visiblePrints.length ? <TapePrintTable prints={visiblePrints} references={references} /> : <MicrostructureEmpty message="Waiting for trade prints." />}
         </section>
       </aside>
       <div className="charts-quotes-context-row">
@@ -490,7 +494,7 @@ function TapePrintTable({ prints, references }: { prints: TapePrint[]; reference
   </table></div>;
 }
 
-function useMarketEvents(symbol: string, start?: string, end?: string) {
+function useMarketEvents(symbol: string, start?: string, end?: string, enabled = true) {
   const [events, setEvents] = useState<CompactEvent[]>([]);
   const [references, setReferences] = useState<MarketReferences>(EMPTY_REFERENCES);
   const [marketState, setMarketState] = useState<MarketState | null>(null);
@@ -564,6 +568,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     if (!start || !end) {
       historicalTargetRef.current = { end: "", key: "", start: "", ticker: "" };
       historicalLoadedKeyRef.current = "";
@@ -580,11 +585,11 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       setMarketState(null);
     }
     pumpHistorical();
-  }, [end, pumpHistorical, start, symbol]);
+  }, [enabled, end, pumpHistorical, start, symbol]);
 
   const liveTicker = symbol.trim().toUpperCase();
   usePollingTask({
-    enabled: !start && !end,
+    enabled: enabled && !start && !end,
     initialDelayMs: 0,
     intervalMs: 2_000,
     restartKey: liveTicker,
@@ -599,6 +604,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
   });
 
   useEffect(() => {
+    if (!enabled) return;
     if (start && end) return;
     let active = true;
     let socket: WebSocket | null = null;
@@ -662,7 +668,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
     };
     connect();
     return () => { active = false; snapshotController.abort(); if (retryTimer) window.clearTimeout(retryTimer); socket?.close(); };
-  }, [end, liveTicker, start]);
+  }, [enabled, end, liveTicker, start]);
 
   return { connected, error, events, marketState, references };
 }

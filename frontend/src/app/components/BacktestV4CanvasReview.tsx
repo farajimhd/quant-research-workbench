@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Clock3, Globe2, MapPin, PanelRightOpen } from "lucide-react";
+import { Clock3, Globe2, MapPin, PanelRightOpen, Maximize2, Minimize2 } from "lucide-react";
 import { api } from "../../api/client";
 import { TradingWorkspace } from "./TradingWorkspace";
 import { BacktestV4SavedChart } from "./BacktestV4SavedChart";
+import { ChartsQuotesMarketLayout, type SavedChartsQuote, type ChartsQuotesLayoutSettings } from "./MarketMicrostructureContainers";
 import { MarketStatusBadge, historicalMarketStatus } from "./MarketStatusBadge";
 import { StrategyActivityContainer } from "./MarketScreenerContainers";
 import { dateInTimeZone } from "../timeZones";
@@ -340,6 +341,13 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
 export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
   runId: string; ticker: string; initialPage: V4Page; onClose: () => void;
 }) {
+  const [maximized, setMaximized] = useState(true);
+  const [layout, setLayout] = useState<ChartsQuotesLayoutSettings>({ lowerRowPercent: 33, monthColumnPercent: 40, reservedColumnPercent: 20, tapeColumnPercent: 20 });
+  const [quote, setQuote] = useState<SavedChartsQuote | null>(null);
+  const sessionDate = initialPage.market_cursor?.session_date || initialPage.run.session_date;
+  const savedAsOf = sessionDate && /^\d{4}-\d\d-\d\d$/.test(sessionDate)
+    ? new Date(dateInTimeZone(sessionDate, "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()
+    : undefined;
   const definition = TRADING_WORKSPACE_CONTAINERS.filter(item => item.id === "charts_quotes");
   return <div className="canvas-config-page canvas-focus-page backtest-v4-canvas-review backtest-v4-chart-focus">
     <SavedV4CanvasHeader initialPage={initialPage} onClose={onClose} backLabel="Return to journal" title={`${ticker} · Charts & Quotes`} />
@@ -349,6 +357,12 @@ export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
       historicalSourceReady layoutPreset="focus" mode="backtest" persistState={false}
       runLabel={`${ticker} · Charts & Quotes`} runStatus="completed" sourceLabel="ARTE saved market"
       showHealth={false} metaForContainer={() => ({ sourceLabel: "ARTE verified V4", status: "ready", freshness: "Saved run" })}
-      renderContainer={() => <BacktestV4SavedChart embedded runId={runId} ticker={ticker} />} />
+      renderContainer={() => <ChartsQuotesMarketLayout symbol={ticker} end={savedAsOf} savedQuote={quote} layout={layout} onLayoutChange={setLayout}
+        mainChartMaximized={maximized}
+        mainChart={<BacktestV4SavedChart embedded runId={runId} ticker={ticker} onQuoteChange={value => setQuote(value ?? null)}
+          toolbarAction={<button aria-label={maximized ? "Restore chart panels" : "Maximize main chart"} className="toolbar-button" onClick={() => setMaximized(value => !value)} title={maximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} />}
+        monthChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="5s" panelLabel="5s context · certified ARTE" runId={runId} ticker={ticker} />}
+        dailyChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="30s" panelLabel="30s context · certified ARTE" runId={runId} ticker={ticker} />}
+        reservedPanel={<div className="trading-disclosure">Saved Backtest review · order entry disabled</div>} />} />
   </div>;
 }

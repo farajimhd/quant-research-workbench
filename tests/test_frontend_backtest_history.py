@@ -53,11 +53,26 @@ class BacktestHistoryTests(unittest.TestCase):
                 with page.expect_popup() as opened:
                     review.get_by_role("button", name="Open WFF Charts & Quotes in a new tab").first.click()
                 focus = opened.value
+                focus_requests = []
+                focus.on("request", lambda request: focus_requests.append(request.url))
                 focus.locator(".backtest-v4-chart-focus").wait_for(timeout=60_000)
                 self.assertIn("backtest_ticker=WFF", focus.url)
                 self.assertIn("Charts & Quotes", focus.locator(".backtest-v4-chart-focus").inner_text())
-                focus.get_by_label("WFF saved bid and ask").wait_for(timeout=60_000)
+                charts_quotes = focus.locator('.workspace-window[data-window-kind="charts_quotes"]')
+                self.assertEqual(charts_quotes.count(), 1)
+                self.assertFalse(charts_quotes.locator(".charts-quotes-tape").is_visible())
+                self.assertFalse(charts_quotes.locator(".charts-quotes-context-row").is_visible())
+                focus.locator(".backtest-v4-saved-market-state").get_by_text("ms old", exact=False).wait_for(timeout=60_000)
                 focus.locator(".chart-shell canvas").first.wait_for(timeout=60_000)
+                if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
+                    focus.screenshot(path=str(evidence / "real-strategy-one-chart-focus-maximized.png"))
+                charts_quotes.get_by_role("button", name="Restore chart panels").click()
+                self.assertTrue(charts_quotes.locator(".charts-quotes-tape").is_visible())
+                self.assertTrue(charts_quotes.locator(".charts-quotes-context-row").is_visible())
+                charts_quotes.get_by_text("5s context · certified ARTE").wait_for(timeout=60_000)
+                charts_quotes.get_by_text("30s context · certified ARTE").wait_for(timeout=60_000)
+                self.assertGreaterEqual(charts_quotes.locator('.charts-quotes-resizer').count(), 2)
+                self.assertFalse(any("/canvas-market-events/" in url for url in focus_requests))
                 self.assertNotIn("Chart unavailable", focus.locator(".backtest-v4-chart-focus").inner_text())
                 if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
                     focus.screenshot(path=str(evidence / "real-strategy-one-chart-focus.png"))

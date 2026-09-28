@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { api } from "../../api/client";
 import { dateInTimeZone } from "../timeZones";
 import { ChartPanel, type ChartPayload } from "./ChartPanel";
@@ -12,7 +12,8 @@ type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolean;
   verified_boundary_ms: number; indicator_provenance: { unavailable_columns: string[] };
   quote?: { bid: number; ask: number; bid_size: number; ask_size: number;
     quote_timestamp_us: number; age_ms: number; fresh: boolean } | null };
-const FRAMES = ["100ms", "1s", "5s", "10s", "30s"] as const;
+export const SAVED_CHART_FRAMES = ["100ms", "1s", "5s", "10s", "30s"] as const;
+const FRAMES = SAVED_CHART_FRAMES;
 const MACD = ["macd_line", "macd_signal", "macd_histogram"] as const;
 const pageCache = new Map<string, Promise<ChartPage>>();
 
@@ -35,12 +36,13 @@ function pageBoundary(page: ChartPage): number | null {
   return Number.isFinite(boundary) && boundary > 0 ? boundary : null;
 }
 
-export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false }: {
+export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false, initialFrame = "1s", onQuoteChange, toolbarAction, panelLabel, enabled = true }: {
   runId: string; ticker: string; onClose?: () => void; embedded?: boolean;
+  initialFrame?: (typeof FRAMES)[number]; onQuoteChange?: (quote: ChartPage["quote"]) => void; toolbarAction?: ReactNode; panelLabel?: string; enabled?: boolean;
 }) {
   const [symbol, setSymbol] = useState(ticker);
   const [draftSymbol, setDraftSymbol] = useState(ticker);
-  const [frame, setFrame] = useState<(typeof FRAMES)[number]>("1s");
+  const [frame, setFrame] = useState<(typeof FRAMES)[number]>(initialFrame);
   const [showMacd, setShowMacd] = useState(true);
   const [page, setPage] = useState<ChartPage | null>(null);
   const [bars, setBars] = useState<Bar[]>([]);
@@ -57,6 +59,8 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false 
     setBars([]);
     setIndicators([]);
   }, [runId, ticker]);
+
+  useEffect(() => { onQuoteChange?.(page?.quote); }, [onQuoteChange, page?.quote]);
 
   function changeScope(next: { symbol?: string; frame?: (typeof FRAMES)[number]; macd?: boolean }) {
     if (next.symbol !== undefined) setSymbol(next.symbol);
@@ -79,6 +83,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false 
   }
 
   useEffect(() => {
+    if (!enabled) return;
     const normalized = symbol.trim().toUpperCase();
     if (!normalized || !/^[A-Z0-9.-]{1,24}$/.test(normalized)) {
       setError("Enter a valid ticker.");
@@ -104,7 +109,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false 
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [runId, ticker, symbol, frame, showMacd, before]);
+  }, [enabled, runId, ticker, symbol, frame, showMacd, before]);
 
   const payload = useMemo<ChartPayload>(() => {
     const series = (column: (typeof MACD)[number], label: string, color: string) => ({
@@ -128,9 +133,11 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false 
 
   const older = page && pageBoundary(page);
   return <section className="backtest-v4-saved-chart" aria-label={`Saved ${symbol} chart`}>
+    {panelLabel ? <span className="backtest-v4-panel-label">{panelLabel}</span> : null}
+    {toolbarAction ? <div className="backtest-v4-focus-chart-toolbar">{toolbarAction}</div> : null}
     {!embedded ? <header><h4>Persisted market chart</h4>{onClose ? <button className="button secondary compact" type="button" onClick={onClose}>Close chart</button> : null}</header> : null}
-    {!embedded ? <div className="backtest-v4-chart-controls">
-      <form onSubmit={submitTicker}><label>Ticker <input aria-label="Chart ticker" value={draftSymbol} onChange={event => setDraftSymbol(event.target.value.toUpperCase())} maxLength={24} /></label><button className="button secondary compact" type="submit">Show</button></form>
+    {(!embedded || toolbarAction) ? <div className="backtest-v4-chart-controls">
+      {!embedded ? <form onSubmit={submitTicker}><label>Ticker <input aria-label="Chart ticker" value={draftSymbol} onChange={event => setDraftSymbol(event.target.value.toUpperCase())} maxLength={24} /></label><button className="button secondary compact" type="submit">Show</button></form> : null}
       <label>Resolution <select aria-label="Chart resolution" value={frame} onChange={event => changeScope({ frame: event.target.value as (typeof FRAMES)[number] })}>{FRAMES.map(value => <option key={value}>{value}</option>)}</select></label>
       <label><input type="checkbox" checked={showMacd} onChange={event => changeScope({ macd: event.target.checked })} /> Closed MACD</label>
     </div> : null}
