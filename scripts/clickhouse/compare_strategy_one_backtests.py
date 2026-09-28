@@ -25,6 +25,30 @@ from src.trading_runtime.arte_journal_writer import (
 
 
 FIELDS = {
+    "trading_intent_decision_v1": (
+        "account_id", "ticker", "decision_kind", "action", "reason_code",
+        "reason_detail", "reference_price", "strategy_id",
+        "strategy_revision", "assignment_status", "reason_count",
+        "source_event_time",
+    ),
+    "trading_intent_decision_reason_v1": (
+        "account_id", "ordinal", "reason",
+    ),
+    "trading_portfolio_decision_v1": (
+        "account_id", "account_key", "ticker", "action", "policy_id",
+        "policy_revision", "status", "requested_quantity",
+        "approved_quantity", "approved_notional", "planned_loss",
+        "reason_count", "decided_at",
+    ),
+    "trading_portfolio_decision_reason_v1": (
+        "account_id", "ordinal", "reason",
+    ),
+    "trading_strategy_intent_v1": (
+        "account_id", "ticker", "action", "quantity", "reference_price",
+        "invalidation_price", "profit_target_price", "reason",
+        "execution_policy_id", "execution_policy_revision",
+        "protection_profile_id", "protection_profile_revision",
+    ),
     "trading_execution_v1": (
         "account_id", "ticker", "side", "quantity", "price", "exchange",
         "currency", "net_amount", "cumulative_quantity", "average_price",
