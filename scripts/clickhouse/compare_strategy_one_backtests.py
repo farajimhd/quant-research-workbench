@@ -25,6 +25,13 @@ from src.trading_runtime.arte_journal_writer import (
 
 
 FIELDS = {
+    "trading_strategy_signal_v2": (
+        "account_id", "strategy_id", "strategy_revision", "signal_type",
+        "ticker", "action", "direction", "score", "confidence", "reason",
+        "working_timeframe", "invalidation_price", "source_signal_count",
+        "evidence_node_count", "decision_reference_price", "decision_status",
+        "decision_reason_detail", "source_event_time",
+    ),
     "trading_intent_decision_v1": (
         "account_id", "ticker", "decision_kind", "action", "reason_code",
         "reason_detail", "reference_price", "strategy_id",
