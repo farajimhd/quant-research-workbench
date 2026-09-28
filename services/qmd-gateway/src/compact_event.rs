@@ -5,6 +5,7 @@ use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::intraday_bars::{DurableCompactEvents, IntradayBarRouter};
 use crate::market_products::MarketProductEventRouter;
 use crate::metrics::{QueueFailureKind, SharedMetrics};
+use crate::strategy_one_liquidity::{CompletedLiquidityBucket, LiquidityReducer};
 use crate::strategy_one_trade_reporting::{reporting_flags, reporting_reason, DELAYED, EVALUATED};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
@@ -761,6 +762,32 @@ pub struct CanonicalLiquidityReplayPage {
     pub has_more: bool,
 }
 
+pub struct CanonicalLiquidityReducedPage {
+    pub rows: Vec<CompletedLiquidityBucket>,
+    pub next_cursor: Option<(u64, u64, u8, u64)>,
+    pub has_more: bool,
+}
+
+fn reduce_canonical_liquidity_replay_page(
+    page: CanonicalLiquidityReplayPage,
+    reducer: &mut LiquidityReducer,
+    decoder: &CompactEventDecoder,
+    rules: &TradeAggregationRules,
+) -> Result<CanonicalLiquidityReducedPage, String> {
+    let mut rows = Vec::new();
+    for event in &page.events {
+        if let Some(mut row) = reducer.push(event, decoder, rules)? {
+            // These are already durable canonical source rows. The transient
+            // live holdback receipts are not a cold recovery authority.
+            row.source_arrival_sequences.clear();
+            rows.push(row);
+        }
+    }
+    Ok(CanonicalLiquidityReducedPage {
+        rows, next_cursor: page.next_cursor, has_more: page.has_more,
+    })
+}
+
 fn canonical_liquidity_replay_sql(
     table: &str,
     ticker: &str,
@@ -1299,6 +1326,26 @@ impl CompactPersistPending {
 }
 
 impl CompactEventClickHouseWriter {
+    /// Diagnostic cold replay through the identical live bucket reducer.
+    /// Page exhaustion is not an upstream completeness or order permit.
+    pub async fn reduce_canonical_liquidity_replay_page(
+        &self,
+        reducer: &mut LiquidityReducer,
+        ticker: &str,
+        start_us: u64,
+        end_us: u64,
+        after: Option<(u64, u64, u8, u64)>,
+        page_size: usize,
+    ) -> Result<CanonicalLiquidityReducedPage, String> {
+        let page = self.read_canonical_liquidity_replay_page(
+            ticker, start_us, end_us, after, page_size,
+        ).await?;
+        let rules = self.references.trade_aggregation_rules()?;
+        reduce_canonical_liquidity_replay_page(
+            page, reducer, &self.decoder, &rules,
+        )
+    }
+
     /// Cold/control-plane read only. A page proves neither upstream delivery
     /// completeness nor that a later INSERT cannot arrive; callers must not
     /// use it to enable Strategy 1 live orders.
@@ -2847,6 +2894,47 @@ mod tests {
         assert!(parse_canonical_liquidity_replay_page(
             &replay_wire_row(&event), "TEST", start, start + 100_000, None, 1,
         ).is_err());
+    }
+
+    #[test]
+    fn canonical_liquidity_cold_pages_match_streaming_reducer() {
+        let base = Utc.with_ymd_and_hms(2026, 8, 24, 14, 30, 0).unwrap();
+        let start = base.timestamp_micros() as u64;
+        let events = [0, 100, 200].into_iter().enumerate().map(|(index, millis)| {
+            let mut event = compact_quote_at(base + chrono::Duration::milliseconds(millis),
+                index as u64 + 1);
+            event.arrival_sequence = index as u64 + 10;
+            event
+        }).collect::<Vec<_>>();
+        let references = references();
+        let decoder = references.decoder();
+        let rules = references.trade_aggregation_rules().unwrap();
+        let mut live = LiquidityReducer::default();
+        let mut expected = Vec::new();
+        for event in &events {
+            if let Some(mut row) = live.push(event, &decoder, &rules).unwrap() {
+                row.source_arrival_sequences.clear();
+                expected.push(row);
+            }
+        }
+        let mut cold = LiquidityReducer::default();
+        let first = parse_canonical_liquidity_replay_page(
+            &format!("{}\n{}", replay_wire_row(&events[0]), replay_wire_row(&events[1])),
+            "TEST", start, start + 500_000, None, 2,
+        ).unwrap();
+        let first = reduce_canonical_liquidity_replay_page(
+            first, &mut cold, &decoder, &rules,
+        ).unwrap();
+        assert_eq!(first.rows.len(), 1);
+        let second = parse_canonical_liquidity_replay_page(
+            &replay_wire_row(&events[2]), "TEST", start, start + 500_000,
+            first.next_cursor, 2,
+        ).unwrap();
+        let second = reduce_canonical_liquidity_replay_page(
+            second, &mut cold, &decoder, &rules,
+        ).unwrap();
+        assert!(second.rows.iter().all(|row| row.source_arrival_sequences.is_empty()));
+        assert_eq!([first.rows, second.rows].concat(), expected);
     }
 
     fn market_quote(sequence: u64) -> MarketEvent {

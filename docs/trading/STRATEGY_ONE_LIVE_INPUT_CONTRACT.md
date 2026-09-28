@@ -69,6 +69,9 @@ SELECT-only on its separate certified `arte` products.
 QMD now has a bounded, keyset-paged read-only `q_live.events FINAL` cold reader
 for v6 ticker/range diagnostics. It preserves the reducer's canonical sort
 key and rejects wrong-version, out-of-range, duplicate, or disordered rows.
+Each page can be reduced through the same typed `LiquidityReducer` used by the
+live stream; a split-page test checks the completed rows against uninterrupted
+streaming reduction. The reader and reducer keep only a bounded page at once.
 This reader is deliberately not wired to order admission: no source-complete
 per-ticker certificate or late-write fence exists yet. Page exhaustion means
 only that the current query returned no more rows, not that the source is
