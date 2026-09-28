@@ -172,10 +172,13 @@ class SessionShard:
         needed = sum(value.nbytes//2 if key == 'features' else value.nbytes
                      for key,value in self.arrays.items() if key not in
                      ('volume_60s','execution','closeable'))
-        # The preceding session's tensors may have been freed into PyTorch's
-        # cache. Driver free memory alone then understates usable capacity.
-        torch.cuda.empty_cache()
         available,_ = torch.cuda.mem_get_info(device)
+        # Reuse the allocator cache when driver memory already meets the
+        # reserve. Clear it only when cached blocks make free memory appear
+        # insufficient for the next session.
+        if needed > available*(1-reserve_fraction):
+            torch.cuda.empty_cache()
+            available,_ = torch.cuda.mem_get_info(device)
         if needed > available*(1-reserve_fraction):
             raise MemoryError(f'Session shard needs {needed/2**30:.1f} GiB before training activations; split the shard')
         return GpuSession(self,device,ticker_vocab)
