@@ -98,6 +98,25 @@ def test_strategy_one_approval_install_is_opt_in_and_no_row_writes(monkeypatch):
     assert install.install_missing(client, apply=True,
                                    profile="live-strategy-one-approval") == (0, 1)
     assert verified == [(contracts[0].name,), (contracts[0].name,)]
+
+
+def test_live_v5_ack_install_is_opt_in_and_no_row_writes(monkeypatch):
+    client = Client()
+    contract = install.profile_contracts("live-strategy-one-v5-ack")[0]
+    monkeypatch.setattr(install, "plan_missing",
+                        lambda _, *, profile: ((contract.name,), (contract.ddl(),))
+                        if profile == "live-strategy-one-v5-ack"
+                        else pytest.fail("wrong profile"))
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    assert install.install_missing(
+        client, apply=False, profile="live-strategy-one-v5-ack") == (0, 0)
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.install_missing(
+        client, apply=True, profile="live-strategy-one-v5-ack") == (0, 1)
+    assert any(sql.startswith("CREATE TABLE IF NOT EXISTS arte.trading_broker_acknowledgement_v5")
+               for sql in client.statements)
+    assert not any("INSERT INTO" in sql for sql in client.statements)
     assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == 1
     assert not any(sql.startswith("INSERT ") for sql in client.statements)
 

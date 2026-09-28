@@ -31,10 +31,10 @@ from scripts.clickhouse.provision_trading_journal import (
 )
 from src.backend.live_strategy_one_v4_principal import (
     PRINCIPAL, _CONFIG_READ, desired_plan, live_v4_preflight,
+    live_v4_storage_contracts,
 )
 from src.backend.live_strategy_one_approval import TABLE as APPROVAL
 from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES, storage_preflight
-from src.trading_runtime.arte_journal_writer import v4_storage_contracts
 from src.trading_runtime.strategy_one_configuration_tree import verify_tables
 
 
@@ -79,7 +79,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
         f"WHERE name='{PRINCIPAL}' FORMAT TabSeparated").strip()
     if present not in {"0", "1"}:
         raise RuntimeError("Live V4 principal inventory is inconsistent")
-    contracts = {table.name: table for table in v4_storage_contracts()}
+    contracts = {table.name: table for table in live_v4_storage_contracts()}
     names = plan.select_arte & contracts.keys()
     if plan.select_arte - names != MARKET_READ_TABLES | _CONFIG_READ:
         raise RuntimeError("Live V4 principal has an unmodeled storage grant")

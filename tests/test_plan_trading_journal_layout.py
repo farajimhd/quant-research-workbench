@@ -6,6 +6,7 @@ from src.trading_runtime.arte_journal_schema import (
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_strategy_one_approval import TABLE as STRATEGY_ONE_APPROVAL
+from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES,
@@ -15,6 +16,12 @@ from src.backend.backtest_squeeze_episode_schema import (
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     TABLES as PROTECTION_RECONCILIATION_TABLES,
 )
+
+
+def test_live_v5_ack_layout_is_one_normalized_live_only_table():
+    assert plan.profile_contracts("live-strategy-one-v5-ack") == (
+        ACKNOWLEDGEMENT_V5,)
+    assert "JSON" not in ACKNOWLEDGEMENT_V5.ddl()
 
 
 def test_missing_plan_checks_installed_contracts_and_emits_only_missing_ddl(

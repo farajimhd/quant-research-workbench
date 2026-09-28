@@ -21,6 +21,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.trading_runtime.arte_journal_writer import (
     _FAMILIES, _v4_family_table, v4_storage_contracts,
 )
+from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.strategy_one_configuration_tree import (
     NODE_TABLE, RELEASE_TABLE,
 )
@@ -39,6 +40,7 @@ _EXCLUDED_FAMILY = frozenset({
     "trading_backtest_progress_v1", "trading_prepared_v7_lease_v1",
 })
 _V4_LIVE_DETAIL = frozenset({
+    ACKNOWLEDGEMENT_V5.name,
     "trading_strategy_one_entry_evidence_v1",
     "trading_portfolio_allocation_fill_v4",
     "trading_portfolio_reservation_reason_v1",
@@ -51,6 +53,11 @@ _V4_LIVE_DETAIL = frozenset({
     "trading_protection_reconciliation_action_v4",
     "trading_protection_reconciliation_reply_v4",
 })
+
+
+def live_v4_storage_contracts() -> tuple[Any, ...]:
+    """Keep live-only normalized extensions out of Backtest's storage gate."""
+    return (*v4_storage_contracts(), ACKNOWLEDGEMENT_V5)
 _PORTFOLIO_WRITE = frozenset({
     "trading_portfolio_snapshot_v1", "trading_portfolio_disabled_strategy_v1",
     "trading_portfolio_command_v1", "trading_portfolio_request_v1",
@@ -100,7 +107,7 @@ def desired_plan() -> LiveV4PrincipalPlan:
                        if name not in _EXCLUDED_FAMILY)
     writable = (family | frozenset(table.name for table in V4_COMMIT_TABLES)
                 | _V4_LIVE_DETAIL | _PORTFOLIO_WRITE | _CONTEXT_WRITE)
-    contracts = {table.name for table in v4_storage_contracts()}
+    contracts = {table.name for table in live_v4_storage_contracts()}
     if not writable | _POLICY_READ <= contracts:
         raise RuntimeError("Live V4 principal references an unmodeled table")
     if any("backtest" in name for name in writable):
@@ -118,7 +125,7 @@ def desired_plan() -> LiveV4PrincipalPlan:
 def live_v4_preflight(client: Any) -> None:
     """Verify exact live grants and SSD layout without a row mutation."""
     plan = desired_plan()
-    contracts = {table.name: table for table in v4_storage_contracts()}
+    contracts = {table.name: table for table in live_v4_storage_contracts()}
     names = plan.insert_arte | _POLICY_READ
     storage_preflight(client, tables=tuple(contracts[name] for name in sorted(names)))
     # The configuration tree has its own exact schema verifier; the approval

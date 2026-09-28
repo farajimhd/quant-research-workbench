@@ -39,7 +39,11 @@ def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
     plan = live.desired_plan()
     assert plan.principal != backtest_plan().principal
     assert {"trading_commit_v4", "trading_commit_family_v4",
-            "trading_broker_acknowledgement_v4"} <= plan.insert_arte
+            "trading_broker_acknowledgement_v4",
+            "trading_broker_acknowledgement_v5"} <= plan.insert_arte
+    assert {table.name for table in live.live_v4_storage_contracts()} - {
+        table.name for table in live.v4_storage_contracts()
+    } == {"trading_broker_acknowledgement_v5"}
     assert not any("backtest" in name for name in plan.insert_arte)
     assert plan.insert_arte != backtest_plan().insert_arte
     assert "trading_backtest_cursor_v1" not in plan.insert_arte

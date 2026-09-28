@@ -25,6 +25,7 @@ from src.trading_runtime.arte_journal_schema import (
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
@@ -49,6 +50,8 @@ from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_AL
 
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
+    if profile == "live-strategy-one-v5-ack":
+        return (ACKNOWLEDGEMENT_V5,)
     if profile == "oms-execution-tactic":
         return OMS_TACTIC_TABLES
     if profile == "live-strategy-one-approval":
@@ -112,6 +115,7 @@ def main() -> int:
                         help="print operator-reviewed CREATE TABLE statements")
     parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3", "commit-v4",
                                               "live-strategy-one-approval",
+                                              "live-strategy-one-v5-ack",
                                               "oms-execution-tactic"),
                         default="fixed-v2", help="exact journal table layout")
     args = parser.parse_args()
