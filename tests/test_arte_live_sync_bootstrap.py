@@ -219,6 +219,13 @@ def test_cold_preparation_composes_approval_recovery_and_broker_audit(monkeypatc
         return audit
     monkeypatch.setattr(bootstrap, "audit_recovered_strategy_one_live_oms",
                         broker_audit)
+    command_audit = bootstrap.CommandRecoveryAudit(
+        RUN, "running", 1, 1, 0, 0, 0, ())
+    async def command_check(_client, _broker, run_id):
+        assert run_id == RUN
+        calls.append("commands")
+        return command_audit
+    monkeypatch.setattr(bootstrap, "audit_committed_commands", command_check)
     prepared = asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
         run_id=RUN, read_client=object(), core_dispatch=core,
         sync_dispatch=object(), keeper=object(), allocator=object(),
@@ -228,9 +235,22 @@ def test_cold_preparation_composes_approval_recovery_and_broker_audit(monkeypatc
         profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
         expected_code_hash="b" * 64))
     assert prepared == bootstrap.StrategyOneLiveColdPreparation(
-        cold, portfolio, (), audit, 2)
+        cold, portfolio, (), audit, command_audit, 2)
     assert calls == ["cold", "release", "approval", "admission", "portfolio", "oms",
-                     "broker", "fenced", "release", "approval", "fenced"]
+                     "broker", "commands", "fenced", "release", "approval", "fenced"]
+    async def unresolved_commands(_client, _broker, _run_id):
+        return bootstrap.CommandRecoveryAudit(
+            RUN, "running", 1, 0, 0, 0, 1, (("account-1", "order-1"),))
+    monkeypatch.setattr(bootstrap, "audit_committed_commands", unresolved_commands)
+    with pytest.raises(RuntimeError, match="commands remain unresolved"):
+        asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
+            run_id=RUN, read_client=object(), core_dispatch=core,
+            sync_dispatch=object(), keeper=object(), allocator=object(),
+            allocation=object(), release=release,
+            admission_authority=admission,
+            approval_reader=SimpleNamespace(read_head=lambda _mode: None),
+            profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
+            expected_code_hash="b" * 64))
 
 
 def test_cold_preparation_rejects_replayed_activation_before_recovery(monkeypatch):
@@ -280,6 +300,10 @@ def test_cold_preparation_rejects_changed_approval_after_broker_audit(monkeypatc
         return bootstrap.StrategyOneColdBrokerAudit(object(), object())
     monkeypatch.setattr(bootstrap, "audit_recovered_strategy_one_live_oms",
                         broker_audit)
+    async def command_check(_client, _broker, _run_id):
+        return bootstrap.CommandRecoveryAudit(
+            RUN, "running", 0, 0, 0, 0, 0, ())
+    monkeypatch.setattr(bootstrap, "audit_committed_commands", command_check)
     with pytest.raises(RuntimeError, match="approval changed"):
         asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
             run_id=RUN, read_client=object(), core_dispatch=core,

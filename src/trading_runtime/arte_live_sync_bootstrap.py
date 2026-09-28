@@ -26,6 +26,9 @@ from src.trading_runtime.arte_admission_epoch_proof import (
     KeeperAdmissionEpochAuthority, audit_attested_admission_revisions,
 )
 from src.trading_runtime.arte_live_run_allocation import LiveRunAllocation, LiveRunAllocator
+from src.trading_runtime.arte_command_recovery import (
+    CommandRecoveryAudit, audit_committed_commands,
+)
 from src.trading_runtime.arte_portfolio_sync import (
     audit_attested_portfolio_sync_transitions,
     load_attested_portfolio_sync_transition,
@@ -509,6 +512,7 @@ class StrategyOneLiveColdPreparation:
     portfolio: Any
     oms_heads: tuple[VerifiedStrategyOneOmsHead, ...]
     broker_audit: StrategyOneColdBrokerAudit
+    command_audit: CommandRecoveryAudit
     admission_revisions: int
 
 
@@ -562,6 +566,10 @@ async def prepare_strategy_one_live_cold_start(
     heads = recover_strategy_one_live_oms(cold=cold, read_client=read_client)
     audit = await audit_recovered_strategy_one_live_oms(
         cold=cold, heads=heads, read_client=read_client, broker=broker)
+    command_audit = await audit_committed_commands(read_client, broker, run_id)
+    if (command_audit.run_id != run_id or command_audit.committed_run_status != "running"
+            or command_audit.unresolved_commands != 0):
+        raise RuntimeError("Strategy 1 live commands remain unresolved after broker audit")
     cold.barrier.assert_fenced(run_id)
     if (certify_strategy_one_configuration(read_client) != release
             or verify_selected_approval(
@@ -570,4 +578,4 @@ async def prepare_strategy_one_live_cold_start(
         raise RuntimeError("Strategy 1 live approval changed during cold recovery")
     cold.barrier.assert_fenced(run_id)
     return StrategyOneLiveColdPreparation(
-        cold, portfolio, heads, audit, admission_revisions)
+        cold, portfolio, heads, audit, command_audit, admission_revisions)
