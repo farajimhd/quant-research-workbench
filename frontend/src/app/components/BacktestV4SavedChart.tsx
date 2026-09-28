@@ -142,8 +142,11 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   }, [bars, indicators, frame, showMacd]);
 
   const older = page && pageBoundary(page);
+  const compactContext = embedded && (frame === "1d" || frame === "1mo");
   return <section className="backtest-v4-saved-chart" aria-label={`Saved ${symbol} chart`}>
-    {panelLabel ? <span className="backtest-v4-panel-label">{panelLabel}</span> : null}
+    {panelLabel ? <span className="backtest-v4-panel-label" title={compactContext && page
+      ? `Certified ARTE history from ${page.history_first_session}; daily/monthly indicators are not persisted.`
+      : undefined}>{panelLabel}{compactContext ? " · indicators stale" : ""}</span> : null}
     {toolbarAction ? <div className="backtest-v4-focus-chart-toolbar">{toolbarAction}</div> : null}
     {!embedded ? <header><h4>Persisted market chart</h4>{onClose ? <button className="button secondary compact" type="button" onClick={onClose}>Close chart</button> : null}</header> : null}
     {(!embedded || toolbarAction) ? <div className="backtest-v4-chart-controls">
@@ -156,8 +159,8 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       {page.quote ? <><span><small>Bid</small><strong>{page.quote.bid.toFixed(4)}</strong><em>{page.quote.bid_size.toLocaleString()} shares</em></span><span><small>Ask</small><strong>{page.quote.ask.toFixed(4)}</strong><em>{page.quote.ask_size.toLocaleString()} shares</em></span><span><small>Quote at saved boundary</small><strong>{page.quote.fresh ? "Fresh" : "Stale"}</strong><em>{page.quote.age_ms.toLocaleString()} ms old · pinned liquidity</em></span></>
         : <span><small>Quote at saved boundary</small><strong>Unavailable</strong><em>No certified quote in this window</em></span>}
     </div> : null}
-    {page?.indicator_provenance.unavailable_columns.length ? <p role="note">Stale indicators: {page.indicator_provenance.unavailable_columns.join(", ")}</p> : null}
-    {page?.history_limited ? <p role="note">ARTE history available from {page.history_first_session}; earlier {frame === "1mo" ? "months" : "sessions"} are unavailable.</p> : null}
+    {!compactContext && page?.indicator_provenance.unavailable_columns.length ? <p role="note">Stale indicators: {page.indicator_provenance.unavailable_columns.join(", ")}</p> : null}
+    {!compactContext && page?.history_limited ? <p role="note">ARTE history available from {page.history_first_session}; earlier {frame === "1mo" ? "months" : "sessions"} are unavailable.</p> : null}
     {error ? <p role="alert">Chart unavailable: {error}</p> : null}
     <ChartPanel persistedOnly payload={payload} ticker={symbol} timeframe={frame} timeframes={[...allowedFrames]}
       featureOptions={[]} indicatorOptions={[]} visibleColumns={showMacd ? [...MACD] : []} onVisibleColumnsChange={() => {}}
