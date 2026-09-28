@@ -173,6 +173,46 @@ class CommandRecoveryAudit:
 
 
 @dataclass(frozen=True, slots=True)
+class V4FreshAdmissionAudit:
+    run_id: str
+    prefix_status: str
+    observed_command_rows: int
+
+    @property
+    def admission_safe(self) -> bool:
+        return self.prefix_status == "running" and self.observed_command_rows == 0
+
+
+async def audit_v4_fresh_command_admission(
+    client: Any, run_id: str,
+) -> V4FreshAdmissionAudit:
+    """Admit only a V4 run with no command history of any certainty.
+
+    Full broker/OMS restoration is still required for a run that has issued
+    even one command. Unfenced command rows also block admission: their broker
+    outcome cannot be inferred from ClickHouse alone.
+    """
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_writer import _literal, _rows
+
+    prefix = await asyncio.to_thread(load_verified_v4_prefix, client, run_id)
+    if prefix is None:
+        raise RuntimeError("No verified V4 journal prefix for command admission")
+    rows = await asyncio.to_thread(
+        _rows, client,
+        "SELECT count() AS command_count FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(run_id)} AND category='command' "
+        "FORMAT JSONEachRow",
+    )
+    if len(rows) != 1:
+        raise RuntimeError("V4 command inventory is ambiguous")
+    count = int(rows[0]["command_count"])
+    if count < 0:
+        raise RuntimeError("V4 command inventory is invalid")
+    return V4FreshAdmissionAudit(run_id, prefix.status, count)
+
+
+@dataclass(frozen=True, slots=True)
 class RecoveredStrategyOneCommand:
     sequence: int
     command_id: str

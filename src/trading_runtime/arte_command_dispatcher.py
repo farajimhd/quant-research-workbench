@@ -13,7 +13,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from uuid import UUID
 
-from src.trading_runtime.arte_command_recovery import audit_committed_commands
+from src.trading_runtime.arte_command_recovery import (
+    audit_committed_commands, audit_v4_fresh_command_admission,
+)
 from src.trading_runtime.arte_journal_writer import (
     TypedJournalBatch, V4OrderCancelBatch, V4OrderModifyCommandBatch,
 )
@@ -163,7 +165,9 @@ class ArteCommandDispatcher:
                 if self._live_lease.run_id != run_id:
                     raise ValueError("Live V4 command lease differs from run")
                 await asyncio.to_thread(self._live_lease.assert_current)
-            audit = await audit_committed_commands(client, self._broker, run_id)
+            audit = (await audit_v4_fresh_command_admission(client, run_id)
+                     if self._live_v4 else
+                     await audit_committed_commands(client, self._broker, run_id))
             if self._closed:
                 raise RuntimeError("Command dispatcher closed during recovery audit")
             if audit.run_id != run_id or not audit.admission_safe:

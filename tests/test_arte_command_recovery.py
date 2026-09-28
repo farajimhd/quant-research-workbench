@@ -8,6 +8,46 @@ import pytest
 from src.trading_runtime import arte_command_recovery as recovery
 
 
+def test_v4_fresh_admission_uses_v4_prefix_not_legacy_journal(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4, arte_journal_writer
+
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
+                        lambda _client, run_id: SimpleNamespace(
+                            run_id=run_id, status="running"))
+    seen = []
+    def inventory(_client, sql):
+        seen.append(sql)
+        return [{"command_count": 0}]
+    monkeypatch.setattr(arte_journal_writer, "_rows", inventory)
+    result = asyncio.run(recovery.audit_v4_fresh_command_admission(None, "live:DU1"))
+    assert result.admission_safe
+    assert "arte.trading_event_v1" in seen[0]
+    assert "category='command'" in seen[0]
+
+
+@pytest.mark.parametrize("command_count", [1, 2])
+def test_v4_admission_blocks_prior_or_unfenced_commands(monkeypatch, command_count):
+    from src.trading_runtime import arte_journal_commit_v4, arte_journal_writer
+
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
+                        lambda _client, run_id: SimpleNamespace(
+                            run_id=run_id, status="running"))
+    monkeypatch.setattr(arte_journal_writer, "_rows",
+                        lambda _client, _sql: [{"command_count": command_count}])
+    result = asyncio.run(recovery.audit_v4_fresh_command_admission(None, "live:DU1"))
+    assert result.observed_command_rows == command_count
+    assert not result.admission_safe
+
+
+def test_v4_admission_rejects_missing_verified_prefix(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4
+
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
+                        lambda _client, _run_id: None)
+    with pytest.raises(RuntimeError, match="verified V4 journal prefix"):
+        asyncio.run(recovery.audit_v4_fresh_command_admission(None, "live:DU1"))
+
+
 class Broker:
     def __init__(self, orders=(), trades=(), error=None):
         self.orders = list(orders)

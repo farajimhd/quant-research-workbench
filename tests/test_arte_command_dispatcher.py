@@ -170,7 +170,11 @@ def _install_audit(monkeypatch, audit=None):
     async def audited(_client, _broker, _run_id):
         return audit or _fresh_audit()
 
+    async def audited_v4(_client, _run_id):
+        return audit or _fresh_audit()
+
     monkeypatch.setattr(dispatcher_module, "audit_committed_commands", audited)
+    monkeypatch.setattr(dispatcher_module, "audit_v4_fresh_command_admission", audited_v4)
 
 
 def test_broker_send_waits_for_durable_receipt_without_blocking_submit(monkeypatch) -> None:
