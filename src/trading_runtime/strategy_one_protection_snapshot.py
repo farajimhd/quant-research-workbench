@@ -262,10 +262,10 @@ def restore_protection_snapshot(rows: ProtectionSnapshotRows,
     return restored
 
 
-def load_protection_snapshot(client: object, *, run_id: str,
-                             checkpoint_sequence: int,
-                             ) -> dict[tuple[str, str, str], ProtectionState]:
-    """SELECT a sealed snapshot from the read-only principal and cold-verify it.
+def load_protection_snapshot_rows(client: object, *, run_id: str,
+                                  checkpoint_sequence: int,
+                                  ) -> ProtectionSnapshotRows:
+    """SELECT exact scalar rows; callers also need the original seal hash.
 
     Publication may leave unsealed child rows after an interrupted INSERT;
     they never become recovery authority without exactly one snapshot seal.
@@ -278,19 +278,19 @@ def load_protection_snapshot(client: object, *, run_id: str,
         raise ValueError("Strategy 1 recovery needs a read-only run cursor")
     literal = "'" + run_id.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
-    def read(table: str, predicate: str) -> tuple[dict, ...]:
+    def read(table: str, predicate: str, limit: int) -> tuple[dict, ...]:
         columns = ",".join(
             f"toString({name}) AS {name}" if "Decimal(" in kind else name
             for name, kind in next(
                 contract for contract in TABLES if contract.name == table).columns)
         query = assert_select_only(
             f"SELECT {columns} FROM arte.{table} WHERE {predicate} "
-            "FORMAT JSONEachRow")
+            f"LIMIT {limit} FORMAT JSONEachRow")
         return tuple(json.loads(line) for line in client.execute(query).splitlines()
                      if line.strip())
 
     seal_rows = read(TABLES[0].name,
-                     f"run_id={literal} AND checkpoint_sequence={checkpoint_sequence}")
+                     f"run_id={literal} AND checkpoint_sequence={checkpoint_sequence}", 2)
     if len(seal_rows) != 1:
         raise RuntimeError("Strategy 1 recovery lacks exactly one sealed snapshot")
     seal = seal_rows[0]
@@ -303,7 +303,22 @@ def load_protection_snapshot(client: object, *, run_id: str,
     except ValueError as exc:
         raise RuntimeError("Strategy 1 recovery snapshot ID is malformed") from exc
     predicate = f"snapshot_id=toUUID('{canonical_id}')"
-    states = read(TABLES[1].name, predicate)
-    resistances = read(TABLES[2].name, predicate)
-    return restore_protection_snapshot(ProtectionSnapshotRows(
-        seal, states, resistances))
+    position_count = seal.get("position_count")
+    resistance_count = seal.get("resistance_count")
+    if (type(position_count) is not int or not 0 <= position_count <= 100_000
+            or type(resistance_count) is not int
+            or not 0 <= resistance_count <= 100_000):
+        raise RuntimeError("Strategy 1 recovery child bound is invalid")
+    states = read(TABLES[1].name, predicate, position_count + 1)
+    resistances = read(TABLES[2].name, predicate, resistance_count + 1)
+    rows = ProtectionSnapshotRows(seal, states, resistances)
+    restore_protection_snapshot(rows)
+    return rows
+
+
+def load_protection_snapshot(client: object, *, run_id: str,
+                             checkpoint_sequence: int,
+                             ) -> dict[tuple[str, str, str], ProtectionState]:
+    """Cold-verify a typed protection snapshot without disk or SQLite."""
+    return restore_protection_snapshot(load_protection_snapshot_rows(
+        client, run_id=run_id, checkpoint_sequence=checkpoint_sequence))

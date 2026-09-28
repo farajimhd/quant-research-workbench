@@ -9,17 +9,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from hashlib import sha256
+import json
 from math import isfinite
-from typing import Any
+from typing import Any, Protocol
+from uuid import UUID
 
 from src.backend.backtest_strategy_one_management import (
     StrategyOneManagementRunner, StrategyOneManagementState,
 )
 from src.trading_runtime.arte_journal_schema import TableContract
+from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.strategy_one_position import ResistanceBreak
 from src.trading_runtime.strategy_one_protection_snapshot import (
     ProtectionSnapshotRows, _digest, _price, project_protection_snapshot,
-    restore_protection_snapshot,
+    restore_protection_snapshot, load_protection_snapshot_rows,
 )
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 
@@ -77,6 +81,60 @@ class ManagerSnapshotRows:
     sources: tuple[dict[str, Any], ...]
     pending_breaks: tuple[dict[str, Any], ...]
     protection: ProtectionSnapshotRows
+
+
+@dataclass(frozen=True, slots=True)
+class ManagerSnapshotHead:
+    run_id: str
+    checkpoint_sequence: int
+    journal_batch_id: str
+    snapshot_hash: str
+    keeper_version: int
+
+
+class ManagerSnapshotHeadReader(Protocol):
+    def read_head(self, *, run_id: str) -> ManagerSnapshotHead: ...
+
+
+class ManagedManagerSnapshotHeadReader:
+    """Read a durable Keeper selection, never create or advance it."""
+
+    def __init__(self, session: ManagedKeeperSession) -> None:
+        if not isinstance(session, ManagedKeeperSession):
+            raise TypeError("Strategy 1 manager head needs managed Keeper")
+        self._session = session
+
+    @staticmethod
+    def path(run_id: str) -> str:
+        if (type(run_id) is not str or not run_id
+                or any(char in run_id for char in "\r\n\x00")):
+            raise ValueError("Strategy 1 manager head run is invalid")
+        return ("/trading/strategy-one-manager-snapshot/v1/"
+                + sha256(run_id.encode()).hexdigest() + "/head")
+
+    def read_head(self, *, run_id: str) -> ManagerSnapshotHead:
+        session, client = self._session, self._session.client
+        if not session.writable or client.client_id is None:
+            raise RuntimeError("Strategy 1 manager Keeper session is unavailable")
+        generation, client_id = session._generation, client.client_id
+        try:
+            raw, stat = client.get(self.path(run_id))
+            fields = raw.decode("utf-8").split("\n")
+            if (len(fields) != 5 or fields[:2] != ["1", run_id]
+                    or str(int(fields[2])) != fields[2] or int(fields[2]) < 1
+                    or str(UUID(fields[3])) != fields[3]
+                    or len(fields[4]) != 64
+                    or any(char not in "0123456789abcdef" for char in fields[4])
+                    or type(stat.version) is not int or stat.version < 0):
+                raise ValueError
+            head = ManagerSnapshotHead(
+                run_id, int(fields[2]), fields[3], fields[4], stat.version)
+        except Exception as exc:
+            raise ValueError("Strategy 1 manager Keeper head missing or corrupt") from exc
+        if (not session.writable or session._generation != generation
+                or client.client_id != client_id):
+            raise RuntimeError("Strategy 1 manager Keeper session changed during read")
+        return head
 
 
 def project_manager_snapshot(*, run_id: str, session_date: date,
@@ -214,4 +272,85 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
             checkpoint_sequence=seal["checkpoint_sequence"],
             state=state, max_pending_breaks=max_pending_breaks) != rows:
         raise ValueError("Strategy 1 manager snapshot does not round-trip exactly")
+    return state
+
+
+def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReader,
+                                   *, run_id: str,
+                                   checkpoint_sequence: int,
+                                   ) -> StrategyOneManagementState:
+    """Read only a Keeper-selected snapshot at the exact cold V4 cursor."""
+    from src.backend.backtest_market_data import assert_select_only
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+    from src.trading_runtime.arte_journal_writer import _literal
+
+    if (type(run_id) is not str or not run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or not callable(getattr(client, "execute", None))
+            or not callable(getattr(keeper, "read_head", None))):
+        raise ValueError("Strategy 1 manager cold read lacks exact authorities")
+    prefix = load_verified_v4_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != checkpoint_sequence
+            or not prefix.batch_ids
+            or prefix.last_batch_id != prefix.batch_ids[-1]):
+        raise RuntimeError("Strategy 1 manager lacks a running verified V4 cursor")
+    first = keeper.read_head(run_id=run_id)
+    if (not isinstance(first, ManagerSnapshotHead)
+            or first.run_id != run_id
+            or first.checkpoint_sequence != checkpoint_sequence
+            or first.journal_batch_id != prefix.last_batch_id
+            or type(first.keeper_version) is not int or first.keeper_version < 0
+            or type(first.snapshot_hash) is not str
+            or len(first.snapshot_hash) != 64
+            or any(char not in "0123456789abcdef"
+                   for char in first.snapshot_hash)):
+        raise RuntimeError("Strategy 1 manager Keeper head differs from V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict)
+            or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != checkpoint_sequence
+            or cursor.get("batch_id") != prefix.last_batch_id):
+        raise RuntimeError("Strategy 1 manager lacks a committed market cursor")
+
+    def read(contract: TableContract, predicate: str, limit: int) -> tuple[dict, ...]:
+        columns = ",".join(
+            f"toString({name}) AS {name}" if "Decimal(" in kind else name
+            for name, kind in contract.columns)
+        sql = assert_select_only(
+            f"SELECT {columns} FROM arte.{contract.name} WHERE {predicate} "
+            f"LIMIT {limit} FORMAT JSONEachRow")
+        return tuple(json.loads(line) for line in client.execute(sql).splitlines()
+                     if line.strip())
+
+    scope = (f"run_id={_literal(run_id)} "
+             f"AND checkpoint_sequence={checkpoint_sequence}")
+    seals = read(PARENT, scope, 2)
+    if len(seals) != 1:
+        raise RuntimeError("Strategy 1 manager lacks exactly one selected seal")
+    seal = seals[0]
+    if (seal.get("content_hash") != first.snapshot_hash
+            or seal.get("boundary_ms") != cursor.get("boundary_ms")
+            or seal.get("session_date") != cursor.get("session_date")
+            or seal.get("snapshot_id") is None):
+        raise RuntimeError("Strategy 1 manager seal differs from selected cursor")
+    try:
+        snapshot_id = str(UUID(str(seal["snapshot_id"])))
+    except ValueError as exc:
+        raise RuntimeError("Strategy 1 manager snapshot ID is malformed") from exc
+    predicate = f"snapshot_id=toUUID('{snapshot_id}')"
+    source_count = seal.get("source_count")
+    break_count = seal.get("pending_break_count")
+    if (type(source_count) is not int or not 0 <= source_count <= 100_000
+            or type(break_count) is not int or not 0 <= break_count <= 100_000):
+        raise RuntimeError("Strategy 1 manager child bound is invalid")
+    protection = load_protection_snapshot_rows(
+        client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+    rows = ManagerSnapshotRows(
+        seal, read(SOURCE, predicate, source_count + 1),
+        read(BREAK, predicate, break_count + 1), protection)
+    state = restore_manager_snapshot(rows)
+    if keeper.read_head(run_id=run_id) != first:
+        raise RuntimeError("Strategy 1 manager Keeper head changed during cold read")
     return state

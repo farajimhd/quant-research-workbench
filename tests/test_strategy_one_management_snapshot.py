@@ -1,13 +1,20 @@
 """Manager recovery is scalar, sealed, and lossless across all owned families."""
 from dataclasses import replace
 from datetime import date
+import json
 
 import pytest
 
 from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+from src.trading_runtime import strategy_one_management_snapshot as subject
 from src.trading_runtime.strategy_one_management_snapshot import (
-    TABLES, project_manager_snapshot, restore_manager_snapshot,
+    TABLES, ManagerSnapshotHead, ManagedManagerSnapshotHeadReader,
+    project_manager_snapshot,
+    restore_manager_snapshot, load_attested_manager_snapshot,
 )
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+from src.trading_runtime.keeper_session import ManagedKeeperSession
+from tests.test_live_signal_completion_keeper import FakeKazoo
 from src.trading_runtime.strategy_one_position import ProtectionState, ResistanceBreak
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 
@@ -64,3 +71,74 @@ def test_empty_manager_snapshot_seals_no_source_or_position():
         state=StrategyOneManagementState(31_000, (), (), ()))
     assert restore_manager_snapshot(rows) == StrategyOneManagementState(
         31_000, (), (), ())
+
+
+def test_cold_loader_requires_same_keeper_head_and_verified_journal_cursor(monkeypatch):
+    rows = _rows()
+    run = rows.snapshot["run_id"]
+    batch = "00000000-0000-0000-0000-000000000042"
+    prefix = V4CommittedPrefix(run, 42, batch, "2026-08-18:31000",
+                               "running", (batch,))
+    from src.trading_runtime import arte_journal_commit_v4, arte_journal_projection
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
+                        lambda _client, _run: prefix)
+    monkeypatch.setattr(arte_journal_projection, "load_latest_backtest_cursor",
+                        lambda _client, _prefix: {
+                            "run_id": run, "event_sequence": 42,
+                            "batch_id": batch, "boundary_ms": 31_000,
+                            "session_date": "2026-08-18"})
+    monkeypatch.setattr(subject, "load_protection_snapshot_rows",
+                        lambda _client, **_kwargs: rows.protection)
+
+    class Client:
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, sql):
+            self.queries.append(sql)
+            selected = (rows.snapshot,) if "manager_snapshot_v1" in sql else (
+                rows.sources if "manager_source_v1" in sql else rows.pending_breaks)
+            return "\n".join(json.dumps(row) for row in selected)
+
+    class Keeper:
+        def __init__(self):
+            self.head = ManagerSnapshotHead(
+                run, 42, batch, rows.snapshot["content_hash"], 0)
+
+        def read_head(self, *, run_id):
+            assert run_id == run
+            return self.head
+
+    client, keeper = Client(), Keeper()
+    assert load_attested_manager_snapshot(
+        client, keeper, run_id=run, checkpoint_sequence=42
+    ) == restore_manager_snapshot(rows)
+    assert len(client.queries) == 3
+    assert all(query.startswith("SELECT ") and "INSERT" not in query
+               for query in client.queries)
+    keeper.head = replace(keeper.head, snapshot_hash="0" * 64)
+    with pytest.raises(RuntimeError, match="selected cursor"):
+        load_attested_manager_snapshot(
+            client, keeper, run_id=run, checkpoint_sequence=42)
+
+
+def test_managed_keeper_head_is_exact_and_loses_authority_on_disconnect():
+    rows = _rows()
+    client = FakeKazoo()
+    client.add_listener = lambda _listener: None
+    session = ManagedKeeperSession(client)
+    session._on_state("CONNECTED")
+    reader = ManagedManagerSnapshotHeadReader(session)
+    path = reader.path(rows.snapshot["run_id"])
+    with pytest.raises(ValueError, match="missing or corrupt"):
+        reader.read_head(run_id=rows.snapshot["run_id"])
+    client.ensure_path(path.rsplit("/", 1)[0])
+    batch = "00000000-0000-0000-0000-000000000042"
+    client.create(path, (f"1\n{rows.snapshot['run_id']}\n42\n{batch}\n"
+                         f"{rows.snapshot['content_hash']}").encode())
+    assert reader.read_head(run_id=rows.snapshot["run_id"]) == ManagerSnapshotHead(
+        rows.snapshot["run_id"], 42, batch,
+        rows.snapshot["content_hash"], 0)
+    session._on_state("SUSPENDED")
+    with pytest.raises(RuntimeError, match="unavailable"):
+        reader.read_head(run_id=rows.snapshot["run_id"])
