@@ -6,7 +6,7 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 
 | Contract | Version Field | Current Version | Rule |
 |---|---|---:|---|
-| Live compact unified events | `schema_version` | `4` | Increment when the live unified event table semantics change. |
+| Live compact unified events | `schema_version` | `6` | Increment when the live unified event table semantics change. |
 | Raw Massive trades | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Raw Massive quotes | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Bars | `schema_version` | `2` | Increment when bar fields or formulas change. |
@@ -65,7 +65,7 @@ primary model-serving contract.
 | `ingest_ts` | Gateway receive/parse timestamp. |
 | `arrival_sequence` | Gateway-local monotonically increasing sequence. Used only as a deterministic tie-breaker for equal timestamp/sequence rows. |
 | `ticker` | Uppercase ticker. |
-| `event_meta` | Compact row metadata: bit 0 event type (`0 = quote`, `1 = trade`), bit 1 primary price scale, bit 2 secondary price scale, bits 3-5 tape, bits 6-7 reserved. |
+| `event_meta` | Compact row metadata: bit 0 event type (`0 = quote`, `1 = trade`), bit 1 primary price scale, bit 2 secondary price scale, bits 3-5 tape. On v6+ trade rows, bit 6 means reporting status evaluated and bit 7 means delayed report under `trade_reporting_v1`; both bits are zero for quotes. V5 and earlier trade rows have no reporting classification and must not be interpreted as timely. |
 | `sip_timestamp_us` | SIP timestamp in UTC microseconds. Massive websocket timestamps are millisecond precision, so live rows currently land on millisecond boundaries. |
 | `price_primary_int` | Quote: ask price integer. Trade: trade price integer. |
 | `price_secondary_int` | Quote: bid price integer. Trade: `0`. |

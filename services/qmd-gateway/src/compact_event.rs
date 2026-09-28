@@ -5,6 +5,7 @@ use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::intraday_bars::{DurableCompactEvents, IntradayBarRouter};
 use crate::market_products::MarketProductEventRouter;
 use crate::metrics::{QueueFailureKind, SharedMetrics};
+use crate::strategy_one_trade_reporting::{reporting_flags, reporting_reason, DELAYED, EVALUATED};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio::time::{interval, sleep, Duration, Instant};
 
-pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 5;
+pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 6;
 pub const QUOTE_EVENT_TYPE: u8 = 0;
 pub const TRADE_EVENT_TYPE: u8 = 1;
 const CONDITION_TOKEN_SLOTS: usize = 5;
@@ -110,6 +111,13 @@ impl LiveCompactEvent {
 
     pub fn event_type(&self) -> u8 {
         self.event_meta & 0x01
+    }
+
+    /// Only v6+ trades carry the canonical reporting classification. V5 rows
+    /// must not be treated as timely merely because their high bits are zero.
+    pub fn trade_reporting_flags(&self) -> Option<u8> {
+        (self.schema_version >= 6 && self.event_type() == TRADE_EVENT_TYPE)
+            .then_some(self.event_meta & (EVALUATED | DELAYED))
     }
 
     pub fn correlation_id(&self) -> String {
@@ -789,7 +797,9 @@ impl From<&LiveCompactEvent> for CompactEventIdentity {
     fn from(event: &LiveCompactEvent) -> Self {
         Self {
             ticker: event.ticker.clone(),
-            event_meta: event.event_meta,
+            // Reporting classification is a v6 annotation, not a distinct
+            // source event. Keep repair identity stable across v5/v6 rows.
+            event_meta: event.event_meta & 0x3f,
             sip_timestamp_us: event.sip_timestamp_us,
             price_primary_int: event.price_primary_int,
             price_secondary_int: event.price_secondary_int,
@@ -2217,7 +2227,11 @@ fn compact_trade_event(
             price_scale,
             0,
             references.tape_id(trade.tape),
-        ),
+        ) | reporting_flags(reporting_reason(
+            &trade.conditions,
+            trade.participant_ts,
+            trade.ts,
+        )),
         execution_timestamp_us: timestamp_us(trade.participant_ts.unwrap_or(trade.ts)),
         exchange_primary: encode_u8(trade.exchange),
         exchange_secondary: 0,
@@ -2777,6 +2791,7 @@ mod tests {
             ts: sip,
         };
         let converted = compact_trade_event(&trade, &references()).unwrap().event;
+        assert_eq!(converted.trade_reporting_flags(), Some(EVALUATED));
         assert_eq!(
             converted.execution_timestamp_us,
             execution.timestamp_micros() as u64
@@ -2789,6 +2804,37 @@ mod tests {
             }
             MarketEvent::Quote(_) => panic!("expected trade"),
         }
+    }
+
+    #[test]
+    fn compact_trade_reporting_flags_preserve_unknown_and_delayed_evidence() {
+        let sip = Utc.timestamp_millis_opt(1_700_000_005_250).unwrap();
+        let mut trade = TradeEvent {
+            conditions: vec![],
+            exchange: 4,
+            ingest_ts: sip,
+            participant_ts: None,
+            price: 10.0,
+            raw: serde_json::Value::Null,
+            sequence: 9,
+            size: 100.0,
+            tape: 1,
+            ticker: "TEST".to_string(),
+            trade_id: "1".to_string(),
+            trf_id: 0,
+            trf_ts: None,
+            ts: sip,
+        };
+        let unknown = compact_trade_event(&trade, &references()).unwrap().event;
+        assert_eq!(unknown.trade_reporting_flags(), Some(0));
+        trade.conditions = vec![5];
+        let delayed = compact_trade_event(&trade, &references()).unwrap().event;
+        assert_eq!(delayed.trade_reporting_flags(), Some(EVALUATED | DELAYED));
+        let mut legacy = delayed.clone();
+        legacy.schema_version = 5;
+        legacy.event_meta &= 0x3f;
+        assert_eq!(legacy.trade_reporting_flags(), None);
+        assert_eq!(CompactEventIdentity::from(&legacy), CompactEventIdentity::from(&delayed));
     }
 
     #[test]

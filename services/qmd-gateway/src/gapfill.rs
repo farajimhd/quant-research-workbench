@@ -722,7 +722,7 @@ impl GapFillService {
                     .and_then(Value::as_str)
                     .ok_or_else(|| "q_live canonical identity row is missing ticker".to_string())?
                     .to_string(),
-                event_meta: u64_value("event_meta")? as u8,
+                event_meta: (u64_value("event_meta")? as u8) & 0x3f,
                 sip_timestamp_us: u64_value("sip_timestamp_us")?,
                 price_primary_int: u64_value("price_primary_int")? as u32,
                 price_secondary_int: u64_value("price_secondary_int")? as u32,
