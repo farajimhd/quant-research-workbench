@@ -122,7 +122,9 @@ class BacktestTypedJournalPublisher:
         self._task: asyncio.Task[TypedBacktestReceipt] | None = None
         self._terminal_task: asyncio.Task[TypedBacktestReceipt] | None = None
         self._error: BaseException | None = None
-        self._checkpoint_waiters: list[tuple[int, str, asyncio.Future[TypedBacktestReceipt]]] = []
+        self._checkpoint_waiters: list[tuple[
+            int, str, date, object | None, asyncio.Future[TypedBacktestReceipt],
+        ]] = []
         # This is a performance index of already fenced source revisions, not
         # recovery authority. Cold resume must reload and verify ClickHouse.
         self._committed_strategy_intents: dict[str, tuple[TypedJournalBatch, object]] = {}
@@ -339,7 +341,7 @@ class BacktestTypedJournalPublisher:
                     current = TypedBacktestReceipt(self._sequence, self._batch_id,
                                                    self._source_cursor)
                     remaining = []
-                    for sequence, cursor, waiter in self._checkpoint_waiters:
+                    for sequence, cursor, session_date, manager_state, waiter in self._checkpoint_waiters:
                         if sequence <= self._sequence:
                             if not waiter.done():
                                 if (sequence != self._sequence
@@ -347,15 +349,25 @@ class BacktestTypedJournalPublisher:
                                     waiter.set_exception(RuntimeError(
                                         "Typed Backtest checkpoint cursor differs from committed prefix"))
                                 else:
+                                    if manager_state is not None:
+                                        manager_receipt = self.writer.submit_manager_snapshot(
+                                            session_date=session_date,
+                                            checkpoint_sequence=sequence,
+                                            journal_batch_id=self._batch_id,
+                                            state=manager_state)
+                                        if await asyncio.wrap_future(manager_receipt) != self._batch_id:
+                                            raise RuntimeError(
+                                                "Manager snapshot differs from committed checkpoint")
                                     waiter.set_result(current)
                         else:
-                            remaining.append((sequence, cursor, waiter))
+                            remaining.append((sequence, cursor, session_date,
+                                              manager_state, waiter))
                     self._checkpoint_waiters = remaining
             return TypedBacktestReceipt(self._sequence, self._batch_id,
                                         self._source_cursor)
         except BaseException as exc:
             self._error = exc
-            for _, _, waiter in self._checkpoint_waiters:
+            for _, _, _, _, waiter in self._checkpoint_waiters:
                 if not waiter.done():
                     waiter.set_exception(exc)
             self._checkpoint_waiters.clear()
@@ -380,7 +392,9 @@ class BacktestTypedJournalPublisher:
             task.exception()
 
     def enqueue_checkpoint(self, *, boundary_id: str,
-                           status: str = "running") -> asyncio.Future[TypedBacktestReceipt]:
+                           status: str = "running",
+                           manager_state: object | None = None,
+                           ) -> asyncio.Future[TypedBacktestReceipt]:
         """Return immediately; resolve only after this exact cursor is durable."""
         if status != "running":
             raise ValueError("Terminal Backtest needs lifecycle-last typed account captures")
@@ -395,8 +409,19 @@ class BacktestTypedJournalPublisher:
                     pending[-1].entity_id) !=
                    ("checkpoint", "market_boundary", boundary_id)):
             raise ValueError("Typed Backtest checkpoint needs the last normalized cursor")
+        if manager_state is not None:
+            from src.backend.backtest_strategy_one_management import (
+                StrategyOneManagementState,
+            )
+            if (self.writer.journal_profile != "backtest_v4"
+                    or not isinstance(manager_state, StrategyOneManagementState)
+                    or manager_state.boundary_ms != pending[-1].payload.get(
+                        "boundary_ms")):
+                raise ValueError("Manager capture differs from checkpoint boundary")
+        session_date = date.fromisoformat(pending[-1].payload["session_date"])
         waiter: asyncio.Future[TypedBacktestReceipt] = asyncio.get_running_loop().create_future()
-        self._checkpoint_waiters.append((pending[-1].sequence, boundary_id, waiter))
+        self._checkpoint_waiters.append((pending[-1].sequence, boundary_id,
+                                         session_date, manager_state, waiter))
         try:
             if active is None:
                 self.enqueue_pending()
@@ -419,6 +444,7 @@ class BacktestTypedJournalPublisher:
 
     async def fence_checkpoint(
         self, *, boundary_id: str, status: str = "running",
+        manager_state: object | None = None,
     ) -> TypedBacktestReceipt:
         """Fence one normalized completed cursor, never an opaque state map.
 
@@ -427,7 +453,8 @@ class BacktestTypedJournalPublisher:
         current controller ordering does not yet meet that contract.
         """
         return await asyncio.shield(self.enqueue_checkpoint(
-            boundary_id=boundary_id, status=status))
+            boundary_id=boundary_id, status=status,
+            manager_state=manager_state))
 
     def enqueue_terminal(
         self, captures: tuple[CapturedPortfolioSnapshot, ...],

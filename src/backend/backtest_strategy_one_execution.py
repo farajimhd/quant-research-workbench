@@ -83,6 +83,7 @@ async def run_certified_strategy_one_session(
     client_factory: Callable[[], Any],
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
+    manager_ready: Callable[[StrategyOneManagementRunner], None] | None = None,
     max_workers: int = 4,
     stage_time: Callable[[str, float], None] | None = None,
     interval_plan: CertifiedV7IntervalPlan | None = None,
@@ -110,7 +111,8 @@ async def run_certified_strategy_one_session(
             or through_boundary_ms % 100
             or type(max_workers) is not int or not 1 <= max_workers <= 16
             or any(not callable(callback) for callback in (
-                client_factory, before_boundary, finish_boundary))):
+                client_factory, before_boundary, finish_boundary))
+            or manager_ready is not None and not callable(manager_ready)):
         raise ValueError("Strategy 1 session lacks pinned 100ms inputs")
     ticks = pinned_strategy_one_ticks(assignments)
     visible = project_candidate_plan(
@@ -190,6 +192,8 @@ async def run_certified_strategy_one_session(
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)
+            if manager_ready is not None:
+                manager_ready(manager)
             return await run_strategy_one_fixed_session(
                 scheduler, entry, evidence, manager, runtime=runtime,
                 static_gate=surviving_gate, assignments=assignments,

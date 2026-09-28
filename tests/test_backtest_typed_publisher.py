@@ -601,6 +601,46 @@ def test_checkpoint_enqueue_does_not_wait_for_clickhouse_receipt():
     asyncio.run(exercise())
 
 
+def test_v4_checkpoint_waits_for_matching_manager_head_off_execution_path():
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def __init__(self):
+            super().__init__()
+            self.manager_receipt = Future()
+            self.manager_args = None
+
+        def submit_base_v4(self, batch):
+            return FakeWriter.submit(self, batch)
+
+        def submit_manager_snapshot(self, **kwargs):
+            self.manager_args = kwargs
+            return self.manager_receipt
+
+    async def exercise():
+        writer = V4Writer()
+        publisher = _publisher(_journal(), writer)
+        state = StrategyOneManagementState(300_000, (), (), ())
+        receipt = publisher.enqueue_checkpoint(
+            boundary_id=f"{DAY.isoformat()}:300000", manager_state=state)
+        for _ in range(100):
+            if writer.manager_args is not None:
+                break
+            await asyncio.sleep(0.001)
+        assert writer.manager_args is not None
+        assert writer.manager_args["state"] is state
+        assert writer.manager_args["checkpoint_sequence"] == 2
+        assert writer.manager_args["journal_batch_id"] == writer.submitted[0].batch_id
+        assert not receipt.done()
+        writer.manager_receipt.set_result(writer.submitted[0].batch_id)
+        assert (await receipt).last_sequence == 2
+        assert not publisher.checkpoint_pending
+
+    asyncio.run(exercise())
+
+
 def test_checkpoint_queues_behind_inflight_prefix_without_blocking_engine():
     async def exercise():
         journal = BacktestMemoryJournal(run_id=RUN)

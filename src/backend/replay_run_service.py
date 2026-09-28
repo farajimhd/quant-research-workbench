@@ -2334,6 +2334,13 @@ class ReplayRunController:
             if status != 'running':
                 raise RuntimeError(
                     'Terminal fixed Backtest requires lifecycle-last typed account captures')
+            manager = getattr(self, '_strategy_one_manager', None)
+            manager_state = None
+            if manager is not None:
+                boundary = dict(self._source_cursor).get('boundary_ms')
+                if type(boundary) is not int:
+                    raise RuntimeError('Strategy 1 checkpoint has no completed boundary')
+                manager_state = manager.capture_state(boundary_ms=boundary)
             snapshot = {} if nonblocking_fixed else self.stream_snapshot()
             self._checkpoint_phase = 'checkpoint_capture'
             self._checkpoint_started_at = datetime.now(UTC)
@@ -2374,7 +2381,8 @@ class ReplayRunController:
                     processed_at_enqueue = int(self.processed_events)
                     interval_at_enqueue = self._restart_checkpoint_interval_events()
                     receipt = publisher.enqueue_checkpoint(
-                        boundary_id=boundary_id, status='running')
+                        boundary_id=boundary_id, status='running',
+                        manager_state=manager_state)
                     self._checkpoint_io_task = receipt
                     def completed(done):
                         try:
@@ -2397,6 +2405,7 @@ class ReplayRunController:
                     return
                 self._checkpoint_io_task = asyncio.create_task(publisher.fence_checkpoint(
                     boundary_id=boundary_id, status='running',
+                    manager_state=manager_state,
                 ))
                 try:
                     await asyncio.shield(self._checkpoint_io_task)
@@ -3396,6 +3405,11 @@ class ReplayRunController:
             if boundary_count % 256 == 0:
                 await self._publish()
 
+        def manager_ready(manager):
+            if getattr(self, '_strategy_one_manager', None) is not None:
+                raise RuntimeError('Strategy 1 manager is already bound')
+            self._strategy_one_manager = manager
+
         try:
             session_started = time.perf_counter()
             await run_certified_strategy_one_session(
@@ -3409,11 +3423,13 @@ class ReplayRunController:
                 client_factory=lambda: readonly_clickhouse_client(
                     market_stream=True, v3_read_principal=True),
                 before_boundary=before, finish_boundary=finish,
+                manager_ready=manager_ready,
                 stage_time=self._record_stage_time)
         except StopRequested:
             await self._finish("stopped")
             return
         finally:
+            self._strategy_one_manager = None
             self._record_stage_time("strategy_one_session", session_started)
         await self._finish("completed")
 
