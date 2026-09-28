@@ -10,21 +10,28 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future as ThreadFuture
-from typing import Awaitable, Callable, Generic, TypeVar
+from typing import Awaitable, Callable, Generic, Protocol, TypeVar
 
 
 Command = TypeVar("Command")
 Result = TypeVar("Result")
 
 
+class _KeeperLease(Protocol):
+    def assert_current(self) -> None: ...
+
+
 class LiveOrderDurabilityBridge(Generic[Command, Result]):
     """One ordered broker lane; never wait for persistence on the caller path."""
 
     def __init__(self, submit_broker: Callable[[Command], Awaitable[Result]], *,
-                 capacity: int = 256) -> None:
+                 keeper_lease: _KeeperLease, capacity: int = 256) -> None:
         if not callable(submit_broker) or type(capacity) is not int or capacity < 1:
             raise ValueError("Live order bridge needs a broker and positive bound")
+        if not callable(getattr(keeper_lease, "assert_current", None)):
+            raise ValueError("Live order bridge Keeper lease is invalid")
         self._submit_broker = submit_broker
+        self._keeper_lease = keeper_lease
         self._queue: asyncio.Queue[
             tuple[Command, str, ThreadFuture[str], asyncio.Future[Result]] | None
         ] = asyncio.Queue(maxsize=capacity)
@@ -61,12 +68,16 @@ class LiveOrderDurabilityBridge(Generic[Command, Result]):
                         result.set_exception(self._failure)
                     continue
                 try:
+                    await asyncio.to_thread(self._keeper_lease.assert_current)
                     commit_id = await asyncio.wrap_future(receipt)
                     if commit_id != expected_commit_id:
                         raise RuntimeError(
                             "Live order receipt differs from its normalized commit")
                     if self._failure is not None:
                         raise self._failure
+                    # A prior owner must not dispatch a committed command
+                    # after a Keeper takeover while its receipt was pending.
+                    await asyncio.to_thread(self._keeper_lease.assert_current)
                     broker_result = await self._submit_broker(command)
                 except asyncio.CancelledError:
                     if self._failure is None:
