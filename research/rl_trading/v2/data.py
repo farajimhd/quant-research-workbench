@@ -13,7 +13,7 @@ ARRAYS = ('features', 'prices', 'execution_open', 'volume', 'volume_60s', 'trade
 
 
 class MarketSession:
-    def __init__(self, plan, arrays, root=None):
+    def __init__(self, plan, arrays, root=None, *, verify_values=True):
         self.plan, self.arrays, self.root = plan, arrays, root
         self.ids = tuple(str(x['listing_id']) for x in plan['listings'])
         self.tickers = tuple(x['ticker'] for x in plan['listings'])
@@ -29,15 +29,16 @@ class MarketSession:
             expected = (self.n,) if name == 'prior_close' else (self.n, self.seconds)
             if name != 'features' and a.shape != expected:
                 raise ValueError('Invalid market array shape: ' + name)
-            for start in range(0, self.n, 16):
-                chunk = a[start:start+16]
-                if not np.isfinite(chunk).all() or (name != 'features' and np.any(chunk < 0)):
-                    raise ValueError('Invalid market values: ' + name)
-                if name == 'fresh' and np.any(chunk & (arrays['prices'][start:start+16] <= 0)):
-                    raise ValueError('Fresh observations require a positive price')
-                if name == 'execution_open' and np.any(
-                        arrays['fresh'][start:start+16] & (chunk <= 0)):
-                    raise ValueError('Fresh observations require a positive execution open')
+            if verify_values:
+                for start in range(0, self.n, 16):
+                    chunk = a[start:start+16]
+                    if not np.isfinite(chunk).all() or (name != 'features' and np.any(chunk < 0)):
+                        raise ValueError('Invalid market values: ' + name)
+                    if name == 'fresh' and np.any(chunk & (arrays['prices'][start:start+16] <= 0)):
+                        raise ValueError('Fresh observations require a positive price')
+                    if name == 'execution_open' and np.any(
+                            arrays['fresh'][start:start+16] & (chunk <= 0)):
+                        raise ValueError('Fresh observations require a positive execution open')
         if arrays['fresh'].dtype != np.bool_:
             raise ValueError('Fresh price contract is invalid')
         if arrays['estimated_reference'].dtype != np.float32 or arrays['prior_close'].dtype != np.float32:
@@ -71,7 +72,11 @@ class MarketSession:
             arrays[name] = np.load(path, mmap_mode='r', allow_pickle=False)
         if arrays['prices'].shape[1] != plan['rows']:
             raise ValueError('Market row certificate mismatch')
-        return cls(plan, arrays, root)
+        # The builder performed the exhaustive finite/nonnegative scan before
+        # publishing complete.json. Exact SHA-256 verification above binds the
+        # loaded arrays to those scanned bytes; repeating the scan here maps
+        # the entire full-universe feature bank into laptop working memory.
+        return cls(plan, arrays, root, verify_values=False)
 
     def ranking(self, second, config):
         a = self.arrays
