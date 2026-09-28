@@ -25,7 +25,7 @@ from src.trading_runtime.journal_contract import canonical_json
 
 def _v4_command_lineage(client: Any, prefix: VerifiedPrefix,
                         commands: tuple[dict[str, Any], ...],
-                        contexts: dict[str, dict[str, Any]]) -> dict[str, tuple[str, Any, Any, Any]]:
+                        contexts: dict[str, dict[str, Any]]) -> dict[str, tuple[str, Any, Any, Any, Any, Any]]:
     """Verify one compact lineage marker and any exact protection proof."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_commit_v4
     from src.trading_runtime.arte_journal_reader import (
@@ -75,8 +75,11 @@ def _v4_command_lineage(client: Any, prefix: VerifiedPrefix,
     if history is not None and len(proofs) != len(history.records):
         raise RuntimeError("Strategy 1 protection history repeats a proof identity")
     states = {}
+    admissions = {}
+    decisions = {}
     if wanted_oms:
         from src.trading_runtime.arte_oms_projection import (
+            load_committed_oms_admission_page, load_committed_oms_decision_page,
             load_committed_oms_group_state_page,
         )
         cursor = 0
@@ -101,6 +104,11 @@ def _v4_command_lineage(client: Any, prefix: VerifiedPrefix,
             cursor = page[-1].sequence
         if set(states) != wanted_oms:
             raise RuntimeError("Strategy 1 command lacks an exact OMS group revision")
+        selected = tuple(states.values())
+        admissions = load_committed_oms_admission_page(
+            client, prefix, selected, max_rows=4096)
+        decisions = load_committed_oms_decision_page(
+            client, prefix, selected, admissions, max_rows=4096)
     result = {}
     for parent_id, marker in markers.items():
         command = commands_by_id[parent_id]
@@ -108,7 +116,7 @@ def _v4_command_lineage(client: Any, prefix: VerifiedPrefix,
         kind, proof_id = marker["lineage_kind"], marker["proof_record_id"]
         oms_id = marker["oms_group_record_id"]
         if kind == "initial_intent" and proof_id is None and oms_id is None:
-            result[parent_id] = (kind, None, None, history)
+            result[parent_id] = (kind, None, None, history, None, None)
             continue
         if ((kind == "oms_group" and proof_id is None and oms_id is not None)
                 or (kind == "oms_target_amendment" and proof_id is not None
@@ -122,7 +130,8 @@ def _v4_command_lineage(client: Any, prefix: VerifiedPrefix,
         else:
             raise RuntimeError("Strategy 1 command lineage kind is invalid")
         if kind == "oms_group":
-            result[parent_id] = (kind, None, state, history)
+            result[parent_id] = (kind, None, state, history,
+                                 admissions[state.sequence], decisions[state.sequence])
             continue
         proof = proofs.get(str(proof_id))
         if (proof is None or proof.sequence >= int(command["sequence"])
@@ -136,7 +145,8 @@ def _v4_command_lineage(client: Any, prefix: VerifiedPrefix,
                 or proof.payload.get("price") != float(command["limit_price"])
                 or not proof.payload.get("intent_id")):
             raise RuntimeError("Strategy 1 amended command lacks its exact proof")
-        result[parent_id] = (kind, proof, state, history)
+        result[parent_id] = (kind, proof, state, history,
+                             admissions[state.sequence], decisions[state.sequence])
     return result
 
 
@@ -234,15 +244,18 @@ def load_committed_strategy_one_command_page(
             flat, source.intent, run_id=prefix.run_id,
             strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
         )
-        kind, proof, state, history = lineages.get(
-            str(command["record_id"]), ("initial_intent", None, None, None))
+        kind, proof, state, history, admission, decision = lineages.get(
+            str(command["record_id"]),
+            ("initial_intent", None, None, None, None, None))
         if kind != "initial_intent":
             from src.trading_runtime.arte_oms_projection import (
                 reconstruct_strategy_one_oms_lineage,
             )
             if state.intent_record_id != source.record_id:
                 raise RuntimeError("Strategy 1 command OMS source revision differs")
-            orders = reconstruct_strategy_one_oms_lineage(state, source, history)
+            orders = reconstruct_strategy_one_oms_lineage(
+                state, source, history,
+                admission_reservation=admission, admission_decision=decision)
             matching = [order for order in orders if order.cOID == flat.cOID]
             if len(matching) != 1:
                 raise RuntimeError("Strategy 1 command lacks one exact OMS client order")

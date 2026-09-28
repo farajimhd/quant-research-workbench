@@ -518,12 +518,20 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
         arte_oms_projection, "load_committed_oms_group_state_page",
         lambda *_args, **_kwargs: (oms_state,),
     )
+    monkeypatch.setattr(
+        arte_oms_projection, "load_committed_oms_admission_page",
+        lambda *_args, **_kwargs: {1: {}},
+    )
+    monkeypatch.setattr(
+        arte_oms_projection, "load_committed_oms_decision_page",
+        lambda *_args, **_kwargs: {1: {}},
+    )
     amended_raw = {**raw, "canonical_metadata": {
         **raw["canonical_metadata"], "reason": "structural_profit_target_advanced",
         "replacement_intent_id": "replacement-intent", "target_price": 12.5}}
     monkeypatch.setattr(
         arte_oms_projection, "reconstruct_strategy_one_oms_lineage",
-        lambda *_args: (replace(flat, raw=amended_raw),),
+        lambda *_args, **_kwargs: (replace(flat, raw=amended_raw),),
     )
     amended = load_committed_strategy_one_command_page(client, v4_prefix)[0].request.raw
     assert amended["canonical_metadata"]["replacement_intent_id"] == "replacement-intent"

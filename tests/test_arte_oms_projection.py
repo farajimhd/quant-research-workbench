@@ -117,6 +117,18 @@ def test_strategy_one_cold_join_uses_exact_intent_and_complete_history(
                         lambda *_a, **_k: history)
     monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
                         lambda *_a, **_k: (group,))
+    reservation = {"account_id": "DU1", "intent_id": source.intent_id,
+                   "decision_id": "decision-1", "reservation_id": "reservation-1",
+                   "account_key": "account-1", "assignment_id": "assignment-1",
+                   "quantity": "5"}
+    decision = {"decision_id": "decision-1", "reservation_id": "reservation-1",
+                "account_key": "account-1", "status": "approved",
+                "policy_id": "default", "policy_revision": 1,
+                "requested_quantity": "5"}
+    monkeypatch.setattr(oms, "load_committed_oms_admission_page",
+                        lambda *_a, **_k: {2: reservation})
+    monkeypatch.setattr(oms, "load_committed_oms_decision_page",
+                        lambda *_a, **_k: {2: decision})
     requested = []
     def exact_intent(_client, _prefix, *, limit, record_ids):
         requested.append((limit, record_ids))
