@@ -31,6 +31,16 @@ rollout; such a checkpoint cannot be selected, even if its marked equity is high
 Training still stops if its own account cannot finish flat, since resetting that
 account would falsely assume an executable liquidation.
 
+The early-exit version starts mandatory IOC liquidation 15 minutes before the
+20:00 ET session end and blocks new entries from that point. A missing market
+can still leave a position unsold, in which case training fails closed.
+For the version-3 to version-4 migration only, `--initialize-from-best <run>`
+verifies a valid parent best checkpoint, copies its policy and optimizer into a
+new run, and starts a fresh account on the first training date. It never copies
+the old account or session cursor, whose late holdings could already be
+unexecutable under the new rule. The new manifest records the source checkpoint
+hash and this reset explicitly.
+
 To extend a completed one-account campaign to more full passes, start a new
 versioned run with a larger `--min-completed-episodes`, a sufficient
 `--iterations` budget, and `--continue-from-run <completed-run-root>`. This

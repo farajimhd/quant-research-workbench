@@ -1,6 +1,7 @@
 """V2 account, causal universe, execution, stochastic learning and restart contracts."""
 from datetime import date
 from dataclasses import replace
+import json
 import numpy as np
 import pytest
 import torch
@@ -409,6 +410,52 @@ def test_completed_session_run_continues_exact_state_in_new_versioned_run(tmp_pa
         train.main(common+['--run-name','bad-contract','--min-completed-episodes','6',
                           '--iterations','10','--continue-from-run',str(pilot),
                           '--extra-venue-fee-per-share','.02'])
+
+
+def test_early_exit_window_blocks_late_entries_and_forces_existing_holds():
+    session = market(n=1,seconds=1000)
+    env = TradingEnv(session,replace(config(),liquidation_buffer_seconds=900))
+    assert env.config.liquidation_buffer_seconds == 900
+    act(env,0,1,.5)
+    assert env.quantity[0] > 0
+    while env.t < 99:
+        act(env)
+    obs = env.observe()
+    assert not obs['action_mask'][0,1]
+    assert env.forced[0]
+    act(env)
+    assert env.quantity[0] == 0
+    assert env.metrics['forced_fills'] > 0
+
+
+def test_best_policy_migration_verifies_lineage_and_resets_account(tmp_path):
+    current = dict(version='rl-trading-v2-ppo-single-account-sessions-4',job='train',
+        config=dict(version='rl-trading-v2-ppo-single-account-sessions-4',liquidation_buffer_seconds=900),
+        arguments=dict(liquidation_buffer_seconds=900,min_completed_episodes=15),
+        model=dict(features=3,width=16,heads=2),feature_names=['a','b','c'],
+        train=[dict(date='2026-08-19')],validation=[dict(date='2026-08-24')],
+        teacher_supervision=False,torch_version=torch.__version__,numpy_version=np.__version__,
+        wandb=dict(mode='disabled'),code=dict(files={**train.PRE_EARLY_EXIT_HASHES,'other.py':'same'}))
+    parent = json.loads(json.dumps(current))
+    parent['version'] = parent['config']['version'] = 'rl-trading-v2-ppo-single-account-sessions-3'
+    parent['config']['liquidation_buffer_seconds'] = parent['arguments']['liquidation_buffer_seconds'] = 120
+    parent['code']['files'].update(train.PRE_EARLY_EXIT_HASHES)
+    parent['contract_hash'] = digest(parent)
+    root = tmp_path/'parent'
+    (root/'metrics').mkdir(parents=True)
+    write(root/'run_manifest.json',parent)
+    write(root/'metrics/000001.json',dict(validation_all_flat=True,validation_mean_return=-.02))
+    torch.save(dict(contract_hash=parent['contract_hash'],best=-.02,iteration=1,
+                    completed_episodes=1,policy=dict(weight=torch.ones(1)),optimizer=dict()),
+               root/'checkpoint_best.pt')
+    lineage,best = train._best_initialization(root,current,run_root=tmp_path/'child',device='cpu')
+    assert lineage['parent_best_iteration'] == 1
+    assert lineage['account_state'] == 'fresh'
+    assert lineage['transferred'] == ['policy','optimizer']
+    assert best['policy']['weight'].item() == 1
+    current['config']['initial_cash'] = 20000
+    with pytest.raises(ValueError,match='other execution assumptions'):
+        train._best_initialization(root,current,run_root=tmp_path/'bad',device='cpu')
 
 
 def test_arrival_band_cap_and_fees_are_applied_on_both_sides():
