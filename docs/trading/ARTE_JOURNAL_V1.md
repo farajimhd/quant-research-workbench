@@ -245,13 +245,14 @@ verify all live state families without JSON or SQLite, exact SSD placement and
 grants, idempotent and interrupted publication recovery, broker reconciliation,
 command safety, and cold restart after loss of run-local files. The existing
 legacy live runtime must not be switched to an incomplete typed journal.
-QMD's Strategy 1 100 ms liquidity stream now holds completed rows in a bounded
-queue until every source compact event in the row has both a ClickHouse insert
-and live-coverage acknowledgement. Out-of-order persistence-worker receipts
-cannot release a partial bucket; exhaustion invalidates the stream instead of
-publishing uncertified liquidity. The final sparse bucket still needs an
-ordered later source event or an explicit durable source watermark. The stream
-is not a persisted live liquidity product and does not by itself satisfy OMS
-recovery, broker reconciliation, or live order-admission requirements.
+QMD's Strategy 1 100 ms liquidity stream now holds completed rows in bounded
+per-ticker queues until every source compact event in the row has both a
+ClickHouse insert and live-coverage acknowledgement. Out-of-order
+persistence-worker receipts cannot release a partial bucket; exhaustion
+invalidates the stream instead of publishing uncertified liquidity. The final
+sparse bucket still needs an ordered later source event or an explicit durable
+source watermark. The stream is not a persisted live liquidity product and
+does not by itself satisfy OMS recovery, broker reconciliation, or live
+order-admission requirements.
 Backtest Debug remains a separate legacy fixture path and is not evidence for
 either numbered Backtest or live cutover.

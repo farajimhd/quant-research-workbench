@@ -207,17 +207,55 @@ impl DurableCompactEvents {
     }
 }
 
-fn release_durable_liquidity(
-    pending: &mut VecDeque<CompletedLiquidityBucket>,
-    pending_events: &mut usize,
-    durability: &DurableCompactEvents,
-    sender: &broadcast::Sender<LiquidityUpdate>,
-) {
-    while pending.front().is_some_and(|row| durability.contains_all(&row.source_arrival_sequences)) {
-        let mut row = pending.pop_front().expect("checked liquidity holdback front");
-        *pending_events = pending_events.saturating_sub(row.source_arrival_sequences.len());
-        row.source_arrival_sequences.clear();
-        let _ = sender.send(LiquidityUpdate::Completed { row });
+#[derive(Default)]
+struct LiquidityHoldback {
+    by_ticker: BTreeMap<String, VecDeque<CompletedLiquidityBucket>>,
+    rows: usize,
+    events: usize,
+}
+
+impl LiquidityHoldback {
+    fn push(&mut self, row: CompletedLiquidityBucket) -> bool {
+        self.events = self.events.saturating_add(row.source_arrival_sequences.len());
+        self.rows = self.rows.saturating_add(1);
+        self.by_ticker.entry(row.ticker.clone()).or_default().push_back(row);
+        self.rows <= LIQUIDITY_HOLDBACK_MAX_ROWS
+            && self.events <= LIQUIDITY_HOLDBACK_MAX_EVENTS
+    }
+
+    fn release_ticker(
+        &mut self,
+        ticker: &str,
+        durability: &DurableCompactEvents,
+        sender: &broadcast::Sender<LiquidityUpdate>,
+    ) {
+        let Some(queue) = self.by_ticker.get_mut(ticker) else { return; };
+        while queue.front().is_some_and(|row| durability.contains_all(&row.source_arrival_sequences)) {
+            let mut row = queue.pop_front().expect("checked liquidity holdback front");
+            self.rows -= 1;
+            self.events -= row.source_arrival_sequences.len();
+            row.source_arrival_sequences.clear();
+            let _ = sender.send(LiquidityUpdate::Completed { row });
+        }
+        if queue.is_empty() {
+            self.by_ticker.remove(ticker);
+        }
+    }
+
+    fn release_all(
+        &mut self,
+        durability: &DurableCompactEvents,
+        sender: &broadcast::Sender<LiquidityUpdate>,
+    ) {
+        for ticker in self.by_ticker.keys().cloned().collect::<Vec<_>>() {
+            self.release_ticker(&ticker, durability, sender);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.by_ticker.clear();
+        self.rows = 0;
+        self.events = 0;
     }
 }
 
@@ -713,8 +751,7 @@ pub async fn spawn_intraday_bar_service(
             let mut pending_repairs: HashMap<RepairRequest, PendingRepair> = HashMap::new();
             let mut liquidity: HashMap<String, LiquidityReducer> = HashMap::new();
             let mut liquidity_failed: HashSet<String> = HashSet::new();
-            let mut liquidity_holdback: VecDeque<CompletedLiquidityBucket> = VecDeque::new();
-            let mut liquidity_holdback_events = 0usize;
+            let mut liquidity_holdback = LiquidityHoldback::default();
             let mut cleanup_tick = interval(Duration::from_millis(100));
             loop {
                 let event = tokio::select! {
@@ -724,10 +761,7 @@ pub async fn spawn_intraday_bar_service(
                     },
                     _ = cleanup_tick.tick() => {
                         if !shard_liquidity_invalidated.load(Ordering::Acquire) {
-                            release_durable_liquidity(
-                                &mut liquidity_holdback, &mut liquidity_holdback_events,
-                                &shard_durability, &live_liquidity,
-                            );
+                            liquidity_holdback.release_all(&shard_durability, &live_liquidity);
                         }
                         if !flush_durable_repairs(
                             &mut pending_repairs,
@@ -762,14 +796,10 @@ pub async fn spawn_intraday_bar_service(
                         &event, &shard_decoder, &shard_trade_rules,
                     ) {
                         Ok(Some(row)) => {
-                            liquidity_holdback_events = liquidity_holdback_events
-                                .saturating_add(row.source_arrival_sequences.len());
-                            liquidity_holdback.push_back(row);
-                            if liquidity_holdback.len() > LIQUIDITY_HOLDBACK_MAX_ROWS
-                                || liquidity_holdback_events > LIQUIDITY_HOLDBACK_MAX_EVENTS {
+                            let ticker = row.ticker.clone();
+                            if !liquidity_holdback.push(row) {
                                 shard_liquidity_invalidated.store(true, Ordering::Release);
                                 liquidity_holdback.clear();
-                                liquidity_holdback_events = 0;
                                 let _ = live_liquidity.send(LiquidityUpdate::Invalidated {
                                     ticker: "*".to_string(),
                                     reason: "liquidity_source_receipt_holdback_exhausted".to_string(),
@@ -779,9 +809,8 @@ pub async fn spawn_intraday_bar_service(
                                     "Source persistence lag exhausted the bounded liquidity holdback.",
                                 );
                             } else {
-                                release_durable_liquidity(
-                                    &mut liquidity_holdback, &mut liquidity_holdback_events,
-                                    &shard_durability, &live_liquidity,
+                                liquidity_holdback.release_ticker(
+                                    &ticker, &shard_durability, &live_liquidity,
                                 );
                             }
                         }
@@ -791,7 +820,6 @@ pub async fn spawn_intraday_bar_service(
                             liquidity.remove(&event.ticker);
                             shard_liquidity_invalidated.store(true, Ordering::Release);
                             liquidity_holdback.clear();
-                            liquidity_holdback_events = 0;
                             let _ = live_liquidity.send(LiquidityUpdate::Invalidated {
                                 ticker: "*".to_string(),
                                 reason: format!("{}: {error}", event.ticker),
@@ -2495,21 +2523,32 @@ mod tests {
     fn liquidity_holdback_requires_every_source_receipt_even_when_acks_reorder() {
         let durability = DurableCompactEvents::default();
         let (sender, mut receiver) = broadcast::channel(2);
-        let mut pending = VecDeque::from([CompletedLiquidityBucket {
+        let mut pending = LiquidityHoldback::default();
+        assert!(pending.push(CompletedLiquidityBucket {
             ticker: "TEST".into(),
             source_arrival_sequences: vec![1, 2],
             ..CompletedLiquidityBucket::default()
-        }]);
-        let mut pending_events = 2;
-        release_durable_liquidity(&mut pending, &mut pending_events, &durability, &sender);
+        }));
+        assert!(pending.push(CompletedLiquidityBucket {
+            ticker: "OTHER".into(),
+            source_arrival_sequences: vec![3],
+            ..CompletedLiquidityBucket::default()
+        }));
+        pending.release_all(&durability, &sender);
         assert!(receiver.try_recv().is_err());
+        durability.mark_persisted(&[quote_event(1, 3, 999, 1_001)]);
+        pending.release_all(&durability, &sender);
+        match receiver.try_recv().unwrap() {
+            LiquidityUpdate::Completed { row } => assert_eq!(row.ticker, "OTHER"),
+            LiquidityUpdate::Invalidated { .. } => panic!("expected independent ticker"),
+        }
         durability.mark_persisted(&[quote_event(1, 2, 999, 1_001)]);
-        release_durable_liquidity(&mut pending, &mut pending_events, &durability, &sender);
+        pending.release_all(&durability, &sender);
         assert!(receiver.try_recv().is_err());
         durability.mark_persisted(&[quote_event(1, 1, 999, 1_001)]);
-        release_durable_liquidity(&mut pending, &mut pending_events, &durability, &sender);
-        assert_eq!(pending_events, 0);
-        assert!(pending.is_empty());
+        pending.release_all(&durability, &sender);
+        assert_eq!(pending.events, 0);
+        assert_eq!(pending.rows, 0);
         match receiver.try_recv().unwrap() {
             LiquidityUpdate::Completed { row } => {
                 assert_eq!(row.ticker, "TEST");
