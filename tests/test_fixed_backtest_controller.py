@@ -171,6 +171,8 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
         assert kwargs["assignments"] == controller._strategy.assignments()
         controller._stop_requested = stop_requested
         await kwargs["before_boundary"](work)
+        assert controller.current_time == datetime(
+            2026, 8, 18, 8, 0, 0, 100_000, tzinfo=timezone.utc)
         await kwargs["finish_boundary"](work)
 
     monkeypatch.setattr(backtest_strategy_one_execution,

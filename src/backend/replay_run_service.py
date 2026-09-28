@@ -3413,6 +3413,13 @@ class ReplayRunController:
             await self._wait_until_active()
             if self._stop_requested:
                 raise StopRequested()
+            at = market_day_boundary(day, work.boundary_ms)
+            if self.current_time is not None and at < self.current_time:
+                raise RuntimeError("Strategy 1 completed boundary moved the portfolio clock backward")
+            # Portfolio/OMS journal timestamps are taken during this boundary,
+            # before finish() runs. They must see the same completed market
+            # clock as the proposal and broker match, not the prior boundary.
+            self.current_time = at
 
         async def finish(work):
             nonlocal boundary_count
