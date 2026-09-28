@@ -392,9 +392,24 @@ def _train_locked(args, config, root):
             improved = False
             if (completed_episodes >= args.selection_min_episodes and
                     (iteration == 1 or iteration % args.eval_every == 0 or iteration == args.iterations)):
-                result['validation'] = evaluate(policy,validation,config,args.device,
-                    rollouts=args.validation_rollouts,seed=args.validation_seed,
-                    allow_segment=args.allow_segment)
+                active_state = None
+                if args.stream_sessions:
+                    active_state = envs[0].state_dict()
+                    envs[0] = None
+                    env = None
+                    rows = trajectories = observations = batch_rows = batch = None
+                    gc.collect()
+                try:
+                    result['validation'] = evaluate(policy,validation,config,args.device,
+                        rollouts=args.validation_rollouts,seed=args.validation_seed,
+                        allow_segment=args.allow_segment)
+                finally:
+                    if active_state is not None:
+                        session = MarketSession.load(sessions[session_indices[0]].root,
+                            allow_segment=args.allow_segment)
+                        restored = TradingEnv(session,config)
+                        restored.load_state_dict(active_state)
+                        envs[0] = restored
                 score = float(np.mean([x['net_return'] for x in result['validation']]))
                 valid = all(x['valid_terminal'] for x in result['validation'])
                 improved = valid and score > best
@@ -414,7 +429,7 @@ def _train_locked(args, config, root):
             write(root/'status.json',dict(status='running',iteration=iteration,active=len(envs),
                 queued_iterations=args.iterations-iteration,completed_episodes=completed_episodes,
                 failed=0,retried=0,skipped=0))
-            print(f"Iteration {iteration}/{args.iterations} steps={len(rows)} updates={len(measures)} episodes={completed_episodes} validation={result.get('validation_mean_return','not scheduled')} seconds={result['elapsed_seconds']:.1f}",flush=True)
+            print(f"Iteration {iteration}/{args.iterations} steps={result['rollout_steps']} updates={len(measures)} episodes={completed_episodes} validation={result.get('validation_mean_return','not scheduled')} seconds={result['elapsed_seconds']:.1f}",flush=True)
             if args.min_completed_episodes and completed_episodes >= args.min_completed_episodes:
                 status = 'complete' if best > -float('inf') else 'no_valid_checkpoint'
                 write(root/'status.json',dict(status=status,iteration=iteration,active=0,
