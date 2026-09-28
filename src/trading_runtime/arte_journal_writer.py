@@ -64,6 +64,12 @@ from src.backend.backtest_squeeze_episode_schema import (
 )
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.strategy_one_management_snapshot import (
+    TABLES as MANAGER_SNAPSHOT_TABLES,
+)
+from src.trading_runtime.strategy_one_protection_snapshot import (
+    TABLES as PROTECTION_SNAPSHOT_TABLES,
+)
 
 if TYPE_CHECKING:
     from src.trading_runtime.arte_portfolio_snapshot import (
@@ -72,6 +78,9 @@ if TYPE_CHECKING:
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
+_CONTRACTS.update({table.name: table for table in (
+    *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
+)})
 _CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
