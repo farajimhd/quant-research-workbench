@@ -33,6 +33,7 @@ PRINCIPAL = "strategy_one_live_v4_runner"
 MANAGED_URL = "http://DESKTOP-SAAI85T:18123"
 _CONFIG_READ = frozenset({NODE_TABLE.split(".", 1)[1],
                           RELEASE_TABLE.split(".", 1)[1], APPROVAL.name})
+_LEGACY_COMMIT_READ = frozenset({"trading_commit_v1", "trading_commit_v2"})
 _EXCLUDED_FAMILY = frozenset({
     "trading_backtest_cursor_v1", "trading_backtest_market_authority_v1",
     "trading_backtest_progress_v1", "trading_prepared_v7_lease_v1",
@@ -105,7 +106,8 @@ def desired_plan() -> LiveV4PrincipalPlan:
     if any("backtest" in name for name in writable):
         raise RuntimeError("Live V4 principal would write a Backtest table")
     return LiveV4PrincipalPlan(
-        PRINCIPAL, writable | _POLICY_READ | _CONFIG_READ | MARKET_READ_TABLES,
+        PRINCIPAL, writable | _POLICY_READ | _CONFIG_READ | _LEGACY_COMMIT_READ
+        | MARKET_READ_TABLES,
         writable,
         frozenset({"storage_policies", "tables", "columns", "parts",
                    "data_skipping_indices"}),

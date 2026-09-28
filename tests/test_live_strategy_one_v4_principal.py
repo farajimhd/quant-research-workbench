@@ -46,7 +46,9 @@ def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
     assert "trading_backtest_definition_v1" not in plan.insert_arte
     assert {"strategy_one_configuration_node_v1",
             "strategy_one_configuration_release_v1",
-            "live_strategy_one_approval_v1"} <= plan.select_arte
+            "live_strategy_one_approval_v1",
+            "trading_commit_v1", "trading_commit_v2"} <= plan.select_arte
+    assert not {"trading_commit_v1", "trading_commit_v2"} & plan.insert_arte
     assert not plan.insert_arte.intersection({
         "bars_v1", "indicators_v1", "liquidity_100ms_v1"})
     assert plan.select_reference == frozenset({("q_live", "market_stock_split_v1")})

@@ -370,15 +370,19 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
         # exist at this point. Reject an interrupted uncommitted journal insert
         # instead of silently recovering an empty OMS over orphan detail rows.
         from src.trading_runtime.arte_journal_writer import v4_storage_contracts
+        from src.backend.live_strategy_one_v4_principal import desired_plan
 
         independent_fences = {
             "trading_admission_fence_v1",
             "trading_portfolio_sync_fence_v1",
             "trading_portfolio_sync_snapshot_marker_v1",
         }
+        live_journal_tables = desired_plan().insert_arte
         for contract in v4_storage_contracts():
             names = {name for name, _ in contract.columns}
-            if {"run_id", "batch_id"} <= names and contract.name not in independent_fences:
+            if ({"run_id", "batch_id"} <= names
+                    and contract.name in live_journal_tables
+                    and contract.name not in independent_fences):
                 if _rows(read_client,
                          f"SELECT batch_id FROM arte.{contract.name} "
                          f"WHERE run_id={_literal(cold.run_id)} LIMIT 1 FORMAT JSONEachRow"):

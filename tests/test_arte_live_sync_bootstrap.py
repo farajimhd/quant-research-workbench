@@ -725,6 +725,9 @@ def test_fresh_strategy_one_live_oms_requires_no_orphan_journal_facts(monkeypatc
     assert calls == ["fence", "fence"]
     assert any("arte.trading_oms_group_state_v1" in sql for sql in reads)
     assert not any("arte.trading_portfolio_sync_fence_v1" in sql for sql in reads)
+    assert not any("arte.trading_backtest_" in sql for sql in reads)
+    assert not any("arte.trading_commit_v1" in sql or
+                   "arte.trading_commit_v2" in sql for sql in reads)
 
     def orphan(_client, sql):
         if "arte.trading_oms_group_state_v1" in sql:
