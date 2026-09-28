@@ -10,6 +10,11 @@ from src.backend.trading_runtime_service import (
     _can_use_recent_live_chart_session,
     _historical_gateway_get,
     _recent_live_bar_history,
+    command_strategy_assignment,
+    create_strategy_assignment,
+    ensure_builtin_strategy_definition,
+    evaluate_strategy_assignment,
+    get_strategy_definition,
     historical_bar_chunk,
     historical_compact_events,
     historical_day_coverage,
@@ -18,6 +23,8 @@ from src.backend.trading_runtime_service import (
     historical_ticker_change,
     historical_preflight,
     historical_window_preview,
+    list_strategy_assignments,
+    list_strategy_definitions,
     market_event_references,
     save_strategy_definition,
     trading_taxonomy_catalog,
@@ -27,9 +34,51 @@ from src.trading_runtime.strategy_registry import (
     register_strategy_executor,
     unregister_strategy_executor,
 )
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID as NUMBERED_STRATEGY_ONE_ID
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    def test_numbered_strategy_one_never_writes_legacy_sqlite(self) -> None:
+        legacy = MagicMock()
+        legacy.strategy_assignment.return_value = {
+            "strategy_id": NUMBERED_STRATEGY_ONE_ID,
+        }
+        with patch("src.backend.trading_runtime_service.trading_journal", return_value=legacy), \
+                patch("src.backend.trading_runtime_service.ensure_builtin_strategy_definition") as seed:
+            with self.assertRaisesRegex(RuntimeError, "legacy SQLite"):
+                create_strategy_assignment({"strategy_id": NUMBERED_STRATEGY_ONE_ID})
+            seed.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, "legacy SQLite"):
+                save_strategy_definition({"strategy_id": NUMBERED_STRATEGY_ONE_ID})
+            with self.assertRaisesRegex(RuntimeError, "legacy SQLite"):
+                command_strategy_assignment("old-assignment", "pause")
+            with self.assertRaisesRegex(RuntimeError, "legacy SQLite"):
+                evaluate_strategy_assignment("old-assignment", {})
+        legacy.save_strategy.assert_not_called()
+        legacy.save_strategy_assignment.assert_not_called()
+        legacy.append.assert_not_called()
+
+        with patch("src.backend.trading_runtime_service.trading_journal", return_value=legacy), \
+                patch("src.backend.trading_runtime_service.ensure_builtin_strategy_definition"):
+            legacy.strategies.return_value = [{"strategy_id": NUMBERED_STRATEGY_ONE_ID}]
+            legacy.strategy_assignments.return_value = [
+                {"strategy_id": NUMBERED_STRATEGY_ONE_ID},
+                {"strategy_id": "long-momentum-campaign"},
+            ]
+            self.assertEqual(list_strategy_definitions(), [])
+            self.assertEqual(list_strategy_assignments(), [
+                {"strategy_id": "long-momentum-campaign"}])
+            with self.assertRaisesRegex(RuntimeError, "legacy SQLite"):
+                get_strategy_definition(NUMBERED_STRATEGY_ONE_ID)
+            legacy.strategy.assert_not_called()
+
+        with patch("src.backend.trading_runtime_service.installed_strategy_definitions",
+                   return_value=[{"strategy_id": NUMBERED_STRATEGY_ONE_ID,
+                                  "revision": 1}]), \
+                patch("src.backend.trading_runtime_service.trading_journal") as open_legacy:
+            ensure_builtin_strategy_definition()
+            open_legacy.assert_not_called()
+
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     @patch("src.backend.trading_runtime_service.qmd_intraday_bar_history")
     def test_recent_live_chart_defers_history_handoff_until_load_earlier(

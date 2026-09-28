@@ -49,6 +49,7 @@ from src.trading_runtime.strategy_campaign import (
     campaign_state,
 )
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID as NUMBERED_STRATEGY_ONE_ID
 from src.trading_runtime.domain import InstrumentContract
 
 
@@ -117,10 +118,19 @@ def close_trading_journal() -> None:
         trading_journal.cache_clear()
 
 
+def _reject_numbered_strategy_sqlite(strategy_id: str) -> None:
+    # Strategy 1 is a complete numbered release with typed ARTE authority.
+    # Never create or mutate its definition/assignments in the legacy SQLite
+    # service, even if somebody later registers the same executor ID there.
+    if strategy_id == NUMBERED_STRATEGY_ONE_ID:
+        raise RuntimeError("Strategy 1 cannot use the legacy SQLite strategy runtime")
+
+
 def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
     if _definition_read_authority() != "sqlite":
         raise RuntimeError("Typed Strategy definition route is read-only; refusing SQLite write")
     strategy_id = str(payload.get("strategy_id") or "").strip()
+    _reject_numbered_strategy_sqlite(strategy_id)
     name = str(payload.get("name") or "").strip()
     implementation = str(payload.get("implementation") or "").strip()
     if not strategy_id or not name or not implementation:
@@ -160,6 +170,7 @@ def list_strategy_definitions(latest_only: bool = True) -> list[dict[str, Any]]:
     rows = [
         _strategy_definition_payload(row)
         for row in trading_journal().strategies(latest_only=latest_only)
+        if str(row.get("strategy_id") or "") != NUMBERED_STRATEGY_ONE_ID
     ]
     for row in rows:
         registration = strategy_executor_optional(
@@ -178,6 +189,7 @@ def list_strategy_definitions(latest_only: bool = True) -> list[dict[str, Any]]:
 def get_strategy_definition(strategy_id: str, revision: int | None = None) -> dict[str, Any]:
     if _definition_read_authority() == "typed_staged":
         return _typed_definition_route().get_definition(strategy_id, revision)
+    _reject_numbered_strategy_sqlite(strategy_id)
     ensure_builtin_strategy_definition()
     result = trading_journal().strategy(strategy_id, revision)
     if result is None:
@@ -206,12 +218,17 @@ def ensure_builtin_strategy_definition() -> None:
     with BUILTIN_STRATEGY_LOCK:
         for definition in installed_strategy_definitions():
             strategy_id = str(definition["strategy_id"])
+            if strategy_id == NUMBERED_STRATEGY_ONE_ID:
+                # A future typed executor registration must not seed SQLite
+                # or disable unrelated legacy strategy catalogue reads.
+                continue
             revision = int(definition["revision"])
             if trading_journal().strategy(strategy_id, revision) is None:
                 save_strategy_definition(definition)
 
 
 def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
+    _reject_numbered_strategy_sqlite(str(payload.get("strategy_id") or "").strip())
     ensure_builtin_strategy_definition()
     permissions_payload = dict(payload.get("permissions") or {})
     permissions = StrategyPermissions(
@@ -301,7 +318,9 @@ def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
 def list_strategy_assignments(*, account_id: str = "", ticker: str = "", active_only: bool = False) -> list[dict[str, Any]]:
     if _definition_read_authority() == "typed_staged":
         raise RuntimeError("Typed Strategy definition staging cannot read SQLite assignments")
-    return trading_journal().strategy_assignments(account_id=account_id, ticker=ticker, active_only=active_only)
+    return [row for row in trading_journal().strategy_assignments(
+        account_id=account_id, ticker=ticker, active_only=active_only)
+        if str(row.get("strategy_id") or "") != NUMBERED_STRATEGY_ONE_ID]
 
 
 def command_strategy_assignment(assignment_id: str, command: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -310,6 +329,7 @@ def command_strategy_assignment(assignment_id: str, command: str, payload: dict[
     row = trading_journal().strategy_assignment(assignment_id)
     if row is None:
         raise KeyError(assignment_id)
+    _reject_numbered_strategy_sqlite(str(row.get("strategy_id") or ""))
     command = command.strip().lower()
     status_map = {
         "arm": AssignmentStatus.WATCHING,
@@ -372,6 +392,7 @@ def evaluate_strategy_assignment(assignment_id: str, payload: dict[str, Any]) ->
     row = trading_journal().strategy_assignment(assignment_id)
     if row is None:
         raise KeyError(assignment_id)
+    _reject_numbered_strategy_sqlite(str(row.get("strategy_id") or ""))
     assignment = _assignment_from_row(row)
     state = dict(assignment.state)
     observation_payload = dict(payload)
