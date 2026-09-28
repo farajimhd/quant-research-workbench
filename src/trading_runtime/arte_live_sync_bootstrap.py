@@ -45,10 +45,10 @@ from src.trading_runtime.keeper_ownership import KeeperUnavailable, _ROOT, _comm
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
-_EXISTING_TABLES = (
-    "trading_run_v1", "trading_run_context_commit_v1", "trading_commit_v1",
+_REQUIRED_RUN_FACTS = frozenset({
+    "trading_run_v1", "trading_run_context_commit_v1", "trading_commit_v4",
     "trading_portfolio_sync_snapshot_marker_v1", "trading_portfolio_sync_fence_v1",
-)
+})
 
 
 def _require_new_occurrence_activation(release: CertifiedStrategyOneConfiguration) -> None:
@@ -63,25 +63,27 @@ def _require_new_occurrence_activation(release: CertifiedStrategyOneConfiguratio
             "Strategy 1 live requires new-occurrence activation")
 
 
-def _run_fact_tables(client: Any) -> tuple[str, ...]:
-    """Inventory every installed ARTE family with run identity.
+def _run_fact_tables() -> tuple[str, ...]:
+    """Scan every run-scoped family this principal can INSERT, not all ARTE.
 
-    A stale child fact can exist without a run/context row after an interrupted
-    insert. Checking only the core tables would let a fresh allocation collide
-    with that orphan; new run-scoped families must be covered automatically,
-    even when their names do not start with ``trading_``.
+    The Keeper allocator provides a never-reused run ID. A second launch of
+    the same allocation is fenced by its status and atomic gate binding. This
+    check additionally catches an orphan left in any registered live-writable
+    family, without granting the live principal reads of unrelated Backtest or
+    historical tables. New live-writable families enter this set automatically.
     """
-    rows = _rows(client,
-        "SELECT table FROM system.columns WHERE database='arte' "
-        "AND name='run_id' "
-        "ORDER BY table FORMAT JSONEachRow")
-    names = tuple(str(row.get("table") or "") for row in rows)
-    if (len(names) != len(set(names)) or tuple(sorted(names)) != names
-            or not set(_EXISTING_TABLES) <= set(names)
-            or any(set(row) != {"table"} or
-                   re.fullmatch(r"[a-z][a-z0-9_]*", name) is None
-                   for row, name in zip(rows, names))):
-        raise KeeperUnavailable("Live run fact-table inventory is incomplete or ambiguous")
+    from src.backend.live_strategy_one_v4_principal import (
+        desired_plan, live_v4_storage_contracts,
+    )
+
+    contracts = {table.name: table for table in live_v4_storage_contracts()}
+    writable = desired_plan().insert_arte
+    if not writable <= contracts.keys():
+        raise KeeperUnavailable("Live run writable contract inventory is incomplete")
+    names = tuple(sorted(name for name in writable
+                         if "run_id" in {column for column, _ in contracts[name].columns}))
+    if not _REQUIRED_RUN_FACTS <= set(names):
+        raise KeeperUnavailable("Live run required fact inventory is incomplete")
     return names
 
 
@@ -174,7 +176,7 @@ def initialize_new_live_sync_run(*, run_id: str, writer_client: Any,
             or getattr(writer_client, "typed_sync_insert_dispatch", None) is not None):
         raise ValueError("Fresh live sync requires distinct strict typed authorities")
     allocator.assert_status(allocation, "allocated")
-    for table in _run_fact_tables(read_client):
+    for table in _run_fact_tables():
         rows = _rows(read_client,
             f"SELECT run_id FROM arte.{table} WHERE run_id={_literal(run_id)} "
             "LIMIT 1 FORMAT JSONEachRow")

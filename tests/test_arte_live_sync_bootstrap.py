@@ -394,8 +394,6 @@ def test_cold_preparation_rejects_code_drift_before_state_recovery(monkeypatch):
 
 
 def _empty_facts(_client, sql):
-    if "FROM system.columns" in sql:
-        return [{"table": name} for name in sorted(bootstrap._EXISTING_TABLES)]
     return []
 
 
@@ -434,7 +432,8 @@ def test_fresh_live_bootstrap_creates_both_gates_once(monkeypatch):
         owner_id="live-run-controller",
         core_dispatch=core, sync_dispatch=sync_dispatch,
         allocator=allocator, allocation=allocation)
-    assert len(reads) == len(bootstrap._EXISTING_TABLES) + 1
+    assert len(reads) == len(bootstrap._run_fact_tables())
+    assert all("FROM system.columns" not in sql for sql in reads)
     assert writer.typed_sync_insert_dispatch is sync_dispatch
     assert core._read_gate(RUN)[0].mode == "open"
     assert sync_dispatch._read(RUN)[0].mode == "open"
@@ -448,8 +447,7 @@ def test_fresh_live_bootstrap_creates_both_gates_once(monkeypatch):
 
 def test_existing_ch_run_and_partial_keeper_gate_fail_closed(monkeypatch):
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
-    monkeypatch.setattr(bootstrap, "_rows", lambda client, sql: (
-        _empty_facts(client, sql) if "FROM system.columns" in sql else [{"run_id": RUN}]))
+    monkeypatch.setattr(bootstrap, "_rows", lambda client, sql: [{"run_id": RUN}])
     with pytest.raises(KeeperUnavailable, match="already has ClickHouse facts"):
         bootstrap.initialize_new_live_sync_run(
             run_id=RUN, writer_client=writer, read_client=object(),
@@ -472,10 +470,7 @@ def test_existing_ch_run_and_partial_keeper_gate_fail_closed(monkeypatch):
 def test_fresh_live_run_rejects_orphans_in_new_typed_families(monkeypatch):
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
     def rows(client, sql):
-        if "FROM system.columns" in sql:
-            return [*(_empty_facts(client, sql)),
-                    {"table": "trading_strategy_signal_v1"}]
-        return ([{"run_id": RUN}] if "arte.trading_strategy_signal_v1" in sql
+        return ([{"run_id": RUN}] if "arte.trading_strategy_signal_v2" in sql
                 else [])
     monkeypatch.setattr(bootstrap, "_rows", rows)
     with pytest.raises(KeeperUnavailable, match="already has ClickHouse facts"):
@@ -489,43 +484,30 @@ def test_fresh_live_run_rejects_orphans_in_new_typed_families(monkeypatch):
         core._read_gate(RUN)
 
 
-def test_fresh_live_run_rejects_orphan_outside_trading_prefix(monkeypatch):
+def test_fresh_live_run_does_not_read_ungranted_historical_tables(monkeypatch):
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
 
     def rows(client, sql):
-        if "FROM system.columns" in sql:
-            assert "startsWith(table,'trading_')" not in sql
-            return [{"table": name} for name in sorted({
-                *(row["table"] for row in _empty_facts(client, sql)),
-                "strategy_one_live_order_fact_v1",
-            })]
-        return ([{"run_id": RUN}]
-                if "arte.strategy_one_live_order_fact_v1" in sql else [])
+        assert "FROM system.columns" not in sql
+        assert "arte.trading_backtest_" not in sql
+        assert "arte.trading_strategy_signal_v1" not in sql
+        return []
 
     monkeypatch.setattr(bootstrap, "_rows", rows)
-    with pytest.raises(KeeperUnavailable, match="already has ClickHouse facts"):
-        bootstrap.initialize_new_live_sync_run(
-            run_id=RUN, writer_client=writer, read_client=object(),
-            owner_id="live-run-controller", core_dispatch=core,
-            sync_dispatch=sync_dispatch, allocator=allocator,
-            allocation=allocation)
-    assert writer.__dict__.get("typed_sync_insert_dispatch") is None
-    with pytest.raises(KeeperUnavailable, match="absent"):
-        core._read_gate(RUN)
+    bootstrap.initialize_new_live_sync_run(
+        run_id=RUN, writer_client=writer, read_client=object(),
+        owner_id="live-run-controller", core_dispatch=core,
+        sync_dispatch=sync_dispatch, allocator=allocator,
+        allocation=allocation)
+    assert core._read_gate(RUN)[0].mode == "open"
 
 
-@pytest.mark.parametrize("inventory", [
-    [],
-    [{"table": "trading_run_v1"}],
-    [{"table": name} for name in sorted(bootstrap._EXISTING_TABLES)]
-    + [{"table": "trading_run_v1"}],
-    [{"table": name} for name in sorted(bootstrap._EXISTING_TABLES)]
-    + [{"table": "trading_bad;DROP"}],
-])
-def test_fresh_live_run_requires_unambiguous_fact_inventory(monkeypatch, inventory):
+def test_fresh_live_run_requires_complete_writable_fact_contract(monkeypatch):
+    from src.backend import live_strategy_one_v4_principal as principal
+
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
-    monkeypatch.setattr(bootstrap, "_rows", lambda _client, _sql: inventory)
-    with pytest.raises(KeeperUnavailable, match="inventory is incomplete or ambiguous"):
+    monkeypatch.setattr(principal, "live_v4_storage_contracts", lambda: ())
+    with pytest.raises(KeeperUnavailable, match="writable contract inventory is incomplete"):
         bootstrap.initialize_new_live_sync_run(
             run_id=RUN, writer_client=writer, read_client=object(),
             owner_id="live-run-controller", core_dispatch=core,
