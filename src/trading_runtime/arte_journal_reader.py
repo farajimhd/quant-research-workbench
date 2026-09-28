@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 import os
+import re
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +17,7 @@ from src.trading_runtime.arte_journal_writer import (
     _literal, _rows,
 )
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.journal_contract import JournalRecord
 
 
 def readonly_typed_journal_client():
@@ -39,6 +42,87 @@ class TypedJournalEvent:
     event: dict[str, Any]
     detail_family: str | None
     detail: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class TypedProtectionPage:
+    next_sequence: int
+    records: tuple[JournalRecord, ...]
+
+
+def _journal_instant(value: Any) -> datetime:
+    source = str(value)
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)\.(\d{6})(\d{3})?", source)
+    if match is None or match.group(4) not in (None, "000"):
+        raise RuntimeError("Typed protection clock cannot fit a causal Python instant")
+    return datetime.fromisoformat(
+        f"{match.group(1)}T{match.group(2)}.{match.group(3)}+00:00"
+    ).astimezone(timezone.utc)
+
+
+def load_typed_protection_page(
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
+    limit: int = 500, max_children: int = 50_000,
+) -> TypedProtectionPage:
+    """Cold-read one V4 event page and all normalized protection children.
+
+    The cursor advances across non-protection events too. The caller must page
+    through the entire committed prefix before treating absence of a target
+    amendment as proven. This reader never grants live order admission.
+    """
+    from src.backend.backtest_protection_change_v3 import (
+        recover_protection_change_payload,
+    )
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+
+    if (not isinstance(prefix, V4CommittedPrefix)
+            or type(max_children) is not int or max_children < 0):
+        raise ValueError("Typed protection page needs V4 authority and a child bound")
+    page = load_typed_event_page(
+        client, prefix, after_sequence=after_sequence, limit=limit)
+    selected = [item for item in page
+                if (item.event["category"], item.event["entity_type"])
+                == ("protection", "protection_change")]
+    expected = sum(int(item.detail["entry_order_count"]) for item in selected)
+    if expected > max_children:
+        raise RuntimeError("Typed protection page exceeds its child bound")
+    children: dict[str, list[dict[str, Any]]] = {}
+    if selected:
+        name = PROTECTION_CHANGE_TABLES[1].name
+        columns = ",".join(column for column, _ in _CONTRACTS[name].columns)
+        identities = {str(UUID(str(item.event["record_id"]))) for item in selected}
+        ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(identities))
+        rows = _rows(client,
+            f"SELECT {columns} FROM arte.{name} "
+            f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({ids}) "
+            f"{_committed_batch_filter(prefix)}"
+            f"LIMIT {expected + 1} FORMAT JSONEachRow")
+        if len(rows) != expected:
+            raise RuntimeError("Typed protection page has missing or excess children")
+        for row in rows:
+            identity = str(UUID(str(row["record_id"])))
+            if identity not in identities:
+                raise RuntimeError("Typed protection child has a foreign parent")
+            children.setdefault(identity, []).append(row)
+    result = []
+    for item in selected:
+        event, detail = item.event, item.detail
+        if detail is None:
+            raise RuntimeError("Typed protection detail is missing")
+        identity = str(UUID(str(event["record_id"])))
+        ordered = sorted(children.get(identity, ()), key=lambda row: int(row["ordinal"]))
+        payload = recover_protection_change_payload(event, detail, ordered)
+        result.append(JournalRecord(
+            identity, prefix.run_id, int(event["sequence"]),
+            _journal_instant(event["event_time"]),
+            _journal_instant(event["recorded_at"]),
+            "protection", "protection_change", str(event["entity_id"]),
+            str(event["account_id"]), payload,
+        ))
+    return TypedProtectionPage(
+        int(page[-1].event["sequence"]) if page else after_sequence,
+        tuple(result),
+    )
 
 
 # V4 supplements use the same event parent but replace or extend the V1

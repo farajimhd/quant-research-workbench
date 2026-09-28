@@ -4,7 +4,8 @@ import pytest
 
 from src.trading_runtime.arte_journal_projection import runtime_lifecycle_batch
 from src.trading_runtime.arte_journal_reader import (
-    _V4_EVENT_DETAILS, _detail_family, load_typed_event_page,
+    TypedJournalEvent, _V4_EVENT_DETAILS, _detail_family,
+    load_typed_event_page, load_typed_protection_page,
     readonly_typed_journal_client,
 )
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
@@ -17,6 +18,85 @@ from tests.test_arte_journal_writer import MemoryClient
 
 RUN = "live:DU1"
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+
+
+def test_v4_protection_page_recovers_exact_order_children(monkeypatch) -> None:
+    from src.backend.backtest_protection_change_v3 import project_protection_change_v3
+    from src.trading_runtime import arte_journal_reader as reader
+
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000083", RUN, 1, AT, AT,
+        "protection", "protection_change", "broker-1", "DU1",
+        {"schema_version": 1, "order_group_id": "group-1",
+         "entry_order_ids": ["entry-1"], "order_id": "broker-1",
+         "client_order_id": "target-1", "kind": "target",
+         "phase": "effective", "price": 12.5, "active": True,
+         "ticker": "AAA", "source_intent_id": "source-1",
+         "strategy_id": "strategy-1", "strategy_revision": 1,
+         "correlation_id": "corr-1", "causation_id": "cause-1",
+         "action": "replace_profit_target", "intent_id": "amend-1"},
+    )
+    batch_id = "00000000-0000-0000-0000-000000000082"
+    projected = project_protection_change_v3(
+        record, attempt_id="00000000-0000-0000-0000-000000000081",
+        batch_id=batch_id)
+    event = {**projected.event,
+             "event_time": "2026-08-18 08:05:00.000000000",
+             "recorded_at": "2026-08-18 08:05:00.000000"}
+    prefix = V4CommittedPrefix(RUN, 1, batch_id, "bar:1", "running", (batch_id,))
+    monkeypatch.setattr(reader, "load_typed_event_page",
+                        lambda *_a, **_k: (TypedJournalEvent(
+                            event, "trading_protection_change_v3", projected.detail),))
+    def rows(_client, sql):
+        assert "trading_protection_entry_order_v3" in sql
+        assert "LIMIT 2" in sql
+        return [dict(projected.entry_orders[0])]
+    monkeypatch.setattr(reader, "_rows", rows)
+    page = load_typed_protection_page(object(), prefix)
+    assert page.next_sequence == 1
+    assert page.records == (record,)
+    with pytest.raises(RuntimeError, match="child bound"):
+        load_typed_protection_page(object(), prefix, max_children=0)
+    monkeypatch.setattr(reader, "_rows", lambda *_a: [
+        {**projected.entry_orders[0], "entry_order_id": "tampered"}])
+    with pytest.raises(ValueError, match="content differs"):
+        load_typed_protection_page(object(), prefix)
+
+
+def test_v4_protection_page_checks_zero_child_inventory_and_advances_cursor(
+        monkeypatch) -> None:
+    from src.backend.backtest_protection_change_v3 import project_protection_change_v3
+    from src.trading_runtime import arte_journal_reader as reader
+
+    batch_id = "00000000-0000-0000-0000-000000000082"
+    prefix = V4CommittedPrefix(RUN, 2, batch_id, "bar:2", "running", (batch_id,))
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000083", RUN, 2, AT, AT,
+        "protection", "protection_change", "broker-1", "DU1",
+        {"schema_version": 1, "order_group_id": "group-1",
+         "entry_order_ids": [], "order_id": "broker-1",
+         "client_order_id": "target-1", "kind": "target",
+         "phase": "effective", "price": 12.5, "active": True,
+         "ticker": "AAA", "source_intent_id": "source-1",
+         "strategy_id": "strategy-1", "strategy_revision": 1,
+         "correlation_id": "corr-1", "causation_id": "cause-1"},
+    )
+    projected = project_protection_change_v3(
+        record, attempt_id="00000000-0000-0000-0000-000000000081",
+        batch_id=batch_id)
+    event = {**projected.event, "event_time": "2026-08-18 08:05:00.000000000",
+             "recorded_at": "2026-08-18 08:05:00.000000"}
+    other = TypedJournalEvent({"sequence": 1, "category": "lifecycle",
+                               "entity_type": "run"}, None, None)
+    monkeypatch.setattr(reader, "load_typed_event_page",
+                        lambda *_a, **_k: (other, TypedJournalEvent(
+                            event, "trading_protection_change_v3", projected.detail)))
+    monkeypatch.setattr(reader, "_rows", lambda *_a: [])
+    page = load_typed_protection_page(object(), prefix)
+    assert page.next_sequence == 2 and page.records == (record,)
+    monkeypatch.setattr(reader, "_rows", lambda *_a: [{"record_id": record.record_id}])
+    with pytest.raises(RuntimeError, match="excess children"):
+        load_typed_protection_page(object(), prefix)
 
 
 def test_v4_review_resolves_every_supplement_without_changing_legacy_map() -> None:
