@@ -244,10 +244,16 @@ def load_committed_strategy_one_command_page(
                 raise RuntimeError("Strategy 1 command OMS source revision differs")
             orders = reconstruct_strategy_one_oms_lineage(state, source, history)
             matching = [order for order in orders if order.cOID == flat.cOID]
-            if (len(matching) != 1
-                    or matching[0].to_cpapi() != flat.to_cpapi()
-                    or matching[0].raw == raw):
-                raise RuntimeError("Strategy 1 command differs from exact OMS lineage")
+            if len(matching) != 1:
+                raise RuntimeError("Strategy 1 command lacks one exact OMS client order")
+            oms_fields, command_fields = matching[0].to_cpapi(), flat.to_cpapi()
+            if oms_fields != command_fields:
+                changed = tuple(sorted(key for key in set(oms_fields) | set(command_fields)
+                                       if oms_fields.get(key) != command_fields.get(key)))
+                raise RuntimeError("Strategy 1 command differs from OMS broker fields: "
+                                   + ",".join(changed[:8]))
+            if matching[0].raw == raw:
+                raise RuntimeError("Strategy 1 command OMS marker is redundant")
             raw = matching[0].raw
             metadata = raw["canonical_metadata"]
             if (kind == "oms_target_amendment") != (
