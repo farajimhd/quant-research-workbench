@@ -121,3 +121,9 @@ Its actual post-gate sparse load was only 0.189s, so the worker increase did
 not measurably accelerate this session relative to the preceding 31.818s run.
 Both runs cold-verified 2,217 committed journal events with identical category
 counts and final account balances, no open positions, and no review limitations.
+The adaptive-pool full-market rerun `ed91a04a-0954-4d96-80cb-b95e7bccd704`
+completed in 31.964s after a 24.040s cold preflight, with 7,381 processed
+liquidity rows and a 0.198s sparse load. Its cold terminal page independently
+verified sequence 2,217, the market cursor, the same $10,297.95 flat account,
+and no limitations. The three unprofiled runs cluster near 32s; the sparse
+worker ceiling is not the dominant bottleneck for this session.
