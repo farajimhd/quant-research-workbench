@@ -5,7 +5,7 @@ use crate::event::MarketEvent;
 use crate::maintenance::SharedMaintenanceState;
 use crate::market_calendar::MarketCalendarClient;
 use crate::metrics::{QueueFailureKind, SharedMetrics};
-use crate::strategy_one_liquidity::{LiquidityReducer, LiquidityUpdate};
+use crate::strategy_one_liquidity::{CompletedLiquidityBucket, LiquidityReducer, LiquidityUpdate};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -29,6 +29,8 @@ pub const BASE_RESOLUTION_US: i64 = 100_000;
 const SESSION_START_US: i64 = 4 * 60 * 60 * 1_000_000;
 const SESSION_END_US: i64 = 20 * 60 * 60 * 1_000_000;
 const DURABLE_EVENT_ACK_CAPACITY: usize = 2_000_000;
+const LIQUIDITY_HOLDBACK_MAX_ROWS: usize = 10_000;
+const LIQUIDITY_HOLDBACK_MAX_EVENTS: usize = 500_000;
 const REPAIR_IDLE_INTERVAL: Duration = Duration::from_secs(2);
 const REPAIR_EXECUTION_CHANNEL_CAPACITY: usize = 512;
 const REPAIR_EXECUTION_MAX_BACKLOG: usize = 2_048;
@@ -196,6 +198,26 @@ impl DurableCompactEvents {
             .expect("durable compact-event lock poisoned")
             .arrivals
             .contains(&arrival_sequence)
+    }
+
+    fn contains_all(&self, arrival_sequences: &[u64]) -> bool {
+        let state = self.inner.lock().expect("durable compact-event lock poisoned");
+        !arrival_sequences.is_empty()
+            && arrival_sequences.iter().all(|sequence| state.arrivals.contains(sequence))
+    }
+}
+
+fn release_durable_liquidity(
+    pending: &mut VecDeque<CompletedLiquidityBucket>,
+    pending_events: &mut usize,
+    durability: &DurableCompactEvents,
+    sender: &broadcast::Sender<LiquidityUpdate>,
+) {
+    while pending.front().is_some_and(|row| durability.contains_all(&row.source_arrival_sequences)) {
+        let mut row = pending.pop_front().expect("checked liquidity holdback front");
+        *pending_events = pending_events.saturating_sub(row.source_arrival_sequences.len());
+        row.source_arrival_sequences.clear();
+        let _ = sender.send(LiquidityUpdate::Completed { row });
     }
 }
 
@@ -625,7 +647,13 @@ pub async fn spawn_intraday_bar_service(
 
     let (broadcast_sender, _) = broadcast::channel(10_000);
     let (liquidity_sender, _) = broadcast::channel(10_000);
-    let liquidity_invalidated = Arc::new(AtomicBool::new(false));
+    let liquidity_invalidated = Arc::new(AtomicBool::new(!config.persist_compact_events));
+    if !config.persist_compact_events {
+        metrics.set_lane_state(
+            "strategy_one_liquidity", "degraded",
+            "Canonical compact persistence is disabled; live liquidity cannot be source-certified.",
+        );
+    }
     let durability = DurableCompactEvents::default();
     let writer = IntradayBarWriter::new(config.clone(), metrics.clone(), resolutions.clone());
     writer.initialize().await?;
@@ -685,6 +713,8 @@ pub async fn spawn_intraday_bar_service(
             let mut pending_repairs: HashMap<RepairRequest, PendingRepair> = HashMap::new();
             let mut liquidity: HashMap<String, LiquidityReducer> = HashMap::new();
             let mut liquidity_failed: HashSet<String> = HashSet::new();
+            let mut liquidity_holdback: VecDeque<CompletedLiquidityBucket> = VecDeque::new();
+            let mut liquidity_holdback_events = 0usize;
             let mut cleanup_tick = interval(Duration::from_millis(100));
             loop {
                 let event = tokio::select! {
@@ -693,6 +723,12 @@ pub async fn spawn_intraday_bar_service(
                         None => break,
                     },
                     _ = cleanup_tick.tick() => {
+                        if !shard_liquidity_invalidated.load(Ordering::Acquire) {
+                            release_durable_liquidity(
+                                &mut liquidity_holdback, &mut liquidity_holdback_events,
+                                &shard_durability, &live_liquidity,
+                            );
+                        }
                         if !flush_durable_repairs(
                             &mut pending_repairs,
                             &shard_durability,
@@ -725,13 +761,40 @@ pub async fn spawn_intraday_bar_service(
                     match liquidity.entry(event.ticker.clone()).or_default().push(
                         &event, &shard_decoder, &shard_trade_rules,
                     ) {
-                        Ok(Some(row)) => { let _ = live_liquidity.send(LiquidityUpdate::Completed { row }); }
+                        Ok(Some(row)) => {
+                            liquidity_holdback_events = liquidity_holdback_events
+                                .saturating_add(row.source_arrival_sequences.len());
+                            liquidity_holdback.push_back(row);
+                            if liquidity_holdback.len() > LIQUIDITY_HOLDBACK_MAX_ROWS
+                                || liquidity_holdback_events > LIQUIDITY_HOLDBACK_MAX_EVENTS {
+                                shard_liquidity_invalidated.store(true, Ordering::Release);
+                                liquidity_holdback.clear();
+                                liquidity_holdback_events = 0;
+                                let _ = live_liquidity.send(LiquidityUpdate::Invalidated {
+                                    ticker: "*".to_string(),
+                                    reason: "liquidity_source_receipt_holdback_exhausted".to_string(),
+                                });
+                                shard_metrics.set_lane_state(
+                                    "strategy_one_liquidity", "degraded",
+                                    "Source persistence lag exhausted the bounded liquidity holdback.",
+                                );
+                            } else {
+                                release_durable_liquidity(
+                                    &mut liquidity_holdback, &mut liquidity_holdback_events,
+                                    &shard_durability, &live_liquidity,
+                                );
+                            }
+                        }
                         Ok(None) => {}
                         Err(error) => {
                             liquidity_failed.insert(event.ticker.clone());
                             liquidity.remove(&event.ticker);
+                            shard_liquidity_invalidated.store(true, Ordering::Release);
+                            liquidity_holdback.clear();
+                            liquidity_holdback_events = 0;
                             let _ = live_liquidity.send(LiquidityUpdate::Invalidated {
-                                ticker: event.ticker.clone(), reason: error.clone(),
+                                ticker: "*".to_string(),
+                                reason: format!("{}: {error}", event.ticker),
                             });
                             shard_metrics.set_lane_state(
                                 "strategy_one_liquidity", "degraded",
@@ -2425,6 +2488,34 @@ mod tests {
                 assert!(reason.contains("TEST"));
             }
             LiquidityUpdate::Completed { .. } => panic!("expected global invalidation"),
+        }
+    }
+
+    #[test]
+    fn liquidity_holdback_requires_every_source_receipt_even_when_acks_reorder() {
+        let durability = DurableCompactEvents::default();
+        let (sender, mut receiver) = broadcast::channel(2);
+        let mut pending = VecDeque::from([CompletedLiquidityBucket {
+            ticker: "TEST".into(),
+            source_arrival_sequences: vec![1, 2],
+            ..CompletedLiquidityBucket::default()
+        }]);
+        let mut pending_events = 2;
+        release_durable_liquidity(&mut pending, &mut pending_events, &durability, &sender);
+        assert!(receiver.try_recv().is_err());
+        durability.mark_persisted(&[quote_event(1, 2, 999, 1_001)]);
+        release_durable_liquidity(&mut pending, &mut pending_events, &durability, &sender);
+        assert!(receiver.try_recv().is_err());
+        durability.mark_persisted(&[quote_event(1, 1, 999, 1_001)]);
+        release_durable_liquidity(&mut pending, &mut pending_events, &durability, &sender);
+        assert_eq!(pending_events, 0);
+        assert!(pending.is_empty());
+        match receiver.try_recv().unwrap() {
+            LiquidityUpdate::Completed { row } => {
+                assert_eq!(row.ticker, "TEST");
+                assert!(row.source_arrival_sequences.is_empty());
+            }
+            LiquidityUpdate::Invalidated { .. } => panic!("expected certified liquidity"),
         }
     }
 

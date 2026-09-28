@@ -17,6 +17,7 @@ const START_US: u64 = 4 * 3_600_000_000;
 const END_US: u64 = 20 * 3_600_000_000;
 const PRE_0405_US: u64 = 4 * 3_600_000_000 + 5 * 60_000_000;
 const MAX_QUOTE_AGE_US: u64 = 1_000_000;
+const MAX_BUCKET_SOURCE_EVENTS: usize = 100_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct CompletedLiquidityBucket {
@@ -62,6 +63,9 @@ pub struct CompletedLiquidityBucket {
     pub execution_vwap: f64,
     pub spread: f64,
     pub quote_valid: u8,
+    // Transient source receipts, never part of the public or persisted row.
+    #[serde(skip)]
+    pub(crate) source_arrival_sequences: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -154,6 +158,10 @@ impl LiquidityReducer {
         row.last_event_us = event.sip_timestamp_us;
         row.source_sequence = event.source_sequence;
         row.event_count = row.event_count.saturating_add(1);
+        if row.source_arrival_sequences.len() >= MAX_BUCKET_SOURCE_EVENTS {
+            return Err("Strategy 1 liquidity bucket exceeded its source-receipt budget".into());
+        }
+        row.source_arrival_sequences.push(event.arrival_sequence);
         if event.event_type() == TRADE_EVENT_TYPE {
             self.apply_trade(event, decoder, rules, local_us)?;
         } else {
@@ -337,6 +345,9 @@ mod tests {
         assert_eq!(trade_bucket.ask_int, 100_100);
         assert_eq!(trade_bucket.quote_timestamp_us, event(100, 1, false).sip_timestamp_us);
         assert_eq!(trade_bucket.execution_vwap, 10.0);
+        assert_eq!(trade_bucket.source_arrival_sequences, vec![1, 2]);
+        assert!(serde_json::to_value(&trade_bucket).unwrap()
+            .get("source_arrival_sequences").is_none());
         let quote_only = reducer.take_completed_through(event(300, 4, false).sip_timestamp_us)
             .unwrap();
         assert_eq!(quote_only.volume, 0.0);

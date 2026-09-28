@@ -1638,11 +1638,15 @@ impl CompactEventClickHouseWriter {
         match self.insert_events(batch).await {
             Ok(()) => {
                 let count = batch.len() as u64;
-                self.durability.mark_persisted(batch);
                 self.metrics.inc_compact_events_persisted(count);
                 let coverage_result = self
                     .record_live_event_coverage("compact_persisted", batch, "", 0)
                     .await;
+                // A live consumer may act on a source receipt only after both
+                // canonical rows and their coverage evidence are acknowledged.
+                if coverage_result.is_ok() {
+                    self.durability.mark_persisted(batch);
+                }
                 batch.clear();
                 self.metrics.record_lane_success(
                     "compact_events",
