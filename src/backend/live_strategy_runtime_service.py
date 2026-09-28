@@ -48,6 +48,18 @@ def _activation_key(delivery: dict[str, Any]) -> str:
     )
 
 
+def _reject_strategy_one_legacy_runtime(snapshot: dict[str, Any]) -> None:
+    """Refuse the numbered release before constructing a broker or SQLite runtime."""
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+    strategy = dict(dict(snapshot.get("payload") or {}).get("strategy") or {})
+    if (str(strategy.get("strategy_id") or ""),
+            str(strategy.get("revision") or "")) == (
+            STRATEGY_ID, str(STRATEGY_NUMBER)):
+        raise RuntimeError(
+            "Strategy 1 live journal cutover is incomplete; SQLite is forbidden")
+
+
 class RetryableSignalWorkError(RuntimeError):
     """Only the preflight phase may classify a failure as retryable."""
 
@@ -525,6 +537,7 @@ class LiveStrategyRuntimeSupervisor:
             mode,
             run_plan_id=str(delivery.get("run_plan_id") or ""),
         )
+        _reject_strategy_one_legacy_runtime(snapshot)
         runtime_configuration = dict(snapshot["payload"])
         run_plan_id = str(runtime_configuration["run_plan"]["run_plan_id"])
         state = runtimes.get(run_plan_id)
@@ -664,6 +677,8 @@ class LiveStrategyRuntimeSupervisor:
             if manual
             else approved_runtime_configuration_snapshot(mode, run_plan_id=requested_principal)
         )
+        if not manual:
+            _reject_strategy_one_legacy_runtime(snapshot)
         configuration = dict(snapshot["payload"])
         run_plan_id = (
             f"session:{configuration['session_profile']['session_profile_id']}"
@@ -727,12 +742,7 @@ async def _build_runtime(
 ) -> dict[str, Any]:
     configuration = dict(snapshot["payload"])
     strategy_config = dict(configuration["strategy"])
-    from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
-    if (str(strategy_config["strategy_id"]), int(strategy_config["revision"])) == (
-            STRATEGY_ID, STRATEGY_NUMBER):
-        # Strategy 1's journal authority is typed ClickHouse/ Keeper. This
-        # legacy runtime constructs a SQLite journal; never admit Strategy 1.
-        raise RuntimeError("Strategy 1 live journal cutover is incomplete; SQLite is forbidden")
+    _reject_strategy_one_legacy_runtime(snapshot)
     registration = strategy_executor(
         str(strategy_config["strategy_id"]), int(strategy_config["revision"])
     )

@@ -29,6 +29,26 @@ class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "SQLite is forbidden"):
                 await _build_runtime(snapshot, object())
 
+    async def test_strategy_one_delivery_rejects_before_broker_or_sqlite(self) -> None:
+        from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+        supervisor = LiveStrategyRuntimeSupervisor()
+        with patch.dict(os.environ, {"TRADING_STRATEGY_RUNTIME_MODE": "paper"}), patch(
+                "src.backend.live_strategy_runtime_service.IbkrClientPortalAdapter",
+                side_effect=AssertionError("broker opened")), patch(
+                "src.backend.live_strategy_runtime_service.trading_journal",
+                side_effect=AssertionError("SQLite opened")):
+            for revision in (STRATEGY_NUMBER, str(STRATEGY_NUMBER)):
+                snapshot = {"payload": {"strategy": {
+                    "strategy_id": STRATEGY_ID, "revision": revision}}}
+                with patch(
+                        "src.backend.trading_configuration_service.approved_runtime_configuration_snapshot",
+                        return_value=snapshot):
+                    with self.assertRaisesRegex(RuntimeError, "SQLite is forbidden"):
+                        await supervisor._process({"run_plan_id": "plan"}, None, {})
+                    with self.assertRaisesRegex(RuntimeError, "SQLite is forbidden"):
+                        await supervisor._runtime_state({"run_plan_id": "plan"}, None, {})
+
     async def test_live_mode_cannot_start_sqlite_fallback_without_typed_authority(self) -> None:
         with patch.dict(os.environ, {"TRADING_STRATEGY_RUNTIME_MODE": "live",
                                   "TRADING_SIGNAL_DELIVERY_AUTHORITY": "sqlite"}), patch(
