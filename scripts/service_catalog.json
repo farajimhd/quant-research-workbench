@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "profiles": {
-    "app": ["workstation-backend", "workstation-frontend"],
+    "app": ["backend", "frontend"],
     "historical-core": ["qmd-history", "backend", "frontend"],
     "historical": ["qmd-history", "bar-gpt", "backend", "frontend"],
     "live-core": ["qmd-live", "qmd-history", "news-gateway", "sec-gateway", "ibkr-supervisor", "reference-gateway", "model-gateway", "news-hypothesis", "text-intelligence", "backend", "frontend"],
@@ -14,35 +14,6 @@
     "all": ["qmd-live", "qmd-history", "news-gateway", "sec-gateway", "ibkr-supervisor", "reference-gateway", "model-gateway", "news-hypothesis", "text-intelligence", "bar-gpt", "backend", "frontend"]
   },
   "services": {
-    "workstation-backend": {
-      "title": "Workstation Backtest API tunnel",
-      "role": "workstation_backend_tunnel",
-      "port": 8000,
-      "health_url": "http://127.0.0.1:8000/api/health",
-      "launch_kind": "python",
-      "launcher": "scripts/connect_workstation_backtest.py",
-      "readiness": {"kind": "transport"},
-      "arguments": [],
-      "start_priority": 80,
-      "dependencies": [],
-      "graceful_timeout_seconds": 15,
-      "watch": ["scripts/connect_workstation_backtest.py"]
-    },
-    "workstation-frontend": {
-      "title": "Frontend (workstation Backtest)",
-      "role": "workstation_frontend",
-      "port": 5173,
-      "health_url": "http://127.0.0.1:5173/",
-      "launch_kind": "python",
-      "launcher": "scripts/run_frontend.py",
-      "readiness": {"kind": "transport"},
-      "arguments": ["dev", "--", "--host", "127.0.0.1", "--port", "5173"],
-      "environment": {"VITE_API_PROXY_TARGET": "http://127.0.0.1:8000"},
-      "start_priority": 90,
-      "dependencies": ["workstation-backend"],
-      "graceful_timeout_seconds": 10,
-      "watch": ["frontend/src/**", "frontend/index.html", "frontend/package.json", "frontend/package-lock.json", "frontend/tsconfig.json", "frontend/vite.config.ts", "scripts/run_frontend.py"]
-    },
     "qmd-live": {
       "title": "QMD Live",
       "role": "qmd_live",
