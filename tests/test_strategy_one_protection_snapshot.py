@@ -49,6 +49,24 @@ def test_normalized_snapshot_roundtrips_position_owned_groups():
     assert all("live_market_ssd" in table.ddl() for table in TABLES)
 
 
+def test_cold_recovery_canonicalizes_clickhouse_resistance_decimal_text():
+    rows = _rows()
+    stored = replace(
+        rows,
+        states=({**rows.states[0], "stop": "9.78", "target": "10.3"},),
+        resistances=tuple(
+            {**row, "lower": str(float(row["lower"])),
+             "upper": str(float(row["upper"]))}
+            for row in rows.resistances
+        ),
+    )
+    assert restore_protection_snapshot(stored) == restore_protection_snapshot(rows)
+    with pytest.raises(ValueError, match="state or children"):
+        restore_protection_snapshot(replace(
+            stored, resistances=({**stored.resistances[0], "lower": "9.80"},
+                                 *stored.resistances[1:])))
+
+
 def test_empty_snapshot_explicitly_seals_no_active_positions():
     rows = project_protection_snapshot(
         run_id="run-1", session_date=date(2026, 8, 18),
