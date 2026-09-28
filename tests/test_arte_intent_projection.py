@@ -452,6 +452,17 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
     assert committed_v4 is not None
     assert load_committed_strategy_one_command_page(
         v4_client, committed_v4)[0].request.raw == raw
+    from src.trading_runtime.arte_journal_compound_v4 import (
+        coalesce_v4_units, publish_compound_v4,
+    )
+    compound_client = attached_v4_client()
+    compound = coalesce_v4_units((first, v4_second))
+    assert len(compound.children["command_lineages"]) == 1
+    publish_compound_v4(compound_client, compound)
+    compound_prefix = load_verified_v4_prefix(compound_client, run_id)
+    assert compound_prefix is not None
+    assert load_committed_strategy_one_command_page(
+        compound_client, compound_prefix)[0].request.raw == raw
     from types import SimpleNamespace
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
     from src.trading_runtime import (

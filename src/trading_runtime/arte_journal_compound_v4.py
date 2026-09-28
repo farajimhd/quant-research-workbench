@@ -28,6 +28,7 @@ from .arte_oms_tactic_projection import (
 
 
 _CHILD_KEYS = (
+    "command_lineages",
     "entry_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
@@ -35,6 +36,7 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
+    "command_lineages",
     "entry_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
@@ -68,7 +70,8 @@ class V4CompoundBatch:
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
     if type(unit) is TypedJournalBatch:
-        return ()
+        return tuple(("command_lineages", row)
+                     for row in unit.v4_command_lineages)
     if type(unit) is V4OmsTacticBatch:
         return (("oms_tactics", unit.tactic_state),) + tuple(
             ("oms_tactic_steps", row) for row in unit.tactic_steps)
@@ -219,10 +222,12 @@ def prepare_compound_v4_families(
     from .arte_journal_writer import (
         _FAMILIES, _sealed_families, _v4_family_table, typed_row,
     )
+    from .arte_journal_schema import V4_ORDER_COMMAND_LINEAGE
 
     if type(compound) is not V4CompoundBatch:
         raise TypeError("V4 mixed preparation requires a compound batch")
     table_for_key = {
+        "command_lineages": V4_ORDER_COMMAND_LINEAGE.name,
         "entry_evidence": ENTRY_EVIDENCE.name,
         "allocations": V4_ALLOCATION.name,
         "reservation_reasons": RESERVATION_REASON.name,
