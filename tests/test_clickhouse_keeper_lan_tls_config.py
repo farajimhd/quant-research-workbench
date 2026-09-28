@@ -19,3 +19,11 @@ def test_secure_keeper_overlay_is_strict_and_does_not_replace_private_port():
     bootstrap = (CLICKHOUSE / "clickhouse_bootstrap.sh").read_text(encoding="utf-8")
     assert 'CLICKHOUSE_KEEPER_LAN_TLS_ENABLED:-false' in bootstrap
     assert 'rm -f "$config_target/51-trading-keeper-lan-tls.xml"' in bootstrap
+
+
+def test_certificate_provisioner_keeps_private_keys_on_origin_hosts():
+    source = (CLICKHOUSE / "provision_keeper_lan_tls.py").read_text(encoding="utf-8")
+    assert 'LAPTOP_SECRET / "client.key"' in source
+    assert 'f"{WSL_SECRET}/{name}" for name in ("ca.key", "ca.crt")' in source
+    assert 'for name in ("ca.crt", "client.crt")' in source
+    assert '"server.key"' in source
