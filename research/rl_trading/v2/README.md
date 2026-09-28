@@ -15,6 +15,10 @@ during validation, then restores the account against its certified bank. The
 stored plan/certificate is checked first,
 and each full array is hash-verified before its session is read. This avoids
 mapping all four large market banks throughout the run.
+The builder performs the exhaustive finite/nonnegative array scan before it
+publishes `complete.json`; loading an exact SHA-256-matched certified bank does
+not repeat that memory-intensive scan. Shapes, types, identities, clock, and
+certificate hashes remain checked on every load.
 PPO still updates from bounded consecutive one-second segments; the same account
 continues across those updates until the session ends. The iteration budget must
 cover the required complete sessions. Validation cannot select a checkpoint
