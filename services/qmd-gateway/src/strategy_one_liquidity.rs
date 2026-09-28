@@ -191,9 +191,10 @@ impl LiquidityReducer {
         Ok(completed)
     }
 
-    /// Caller may publish only after its source watermark proves this boundary
-    /// complete. A wall-clock tick by itself is not source completeness proof.
-    pub fn take_completed_through(&mut self, watermark_us: u64) -> Option<CompletedLiquidityBucket> {
+    /// Only the reducer's ordered next source event may close a bucket here.
+    /// Do not expose this as a public wall-clock or guessed-watermark flush:
+    /// sparse completion needs a separate source-certified watermark contract.
+    fn take_completed_through(&mut self, watermark_us: u64) -> Option<CompletedLiquidityBucket> {
         if self.pending.as_ref().is_some_and(|row| row.bucket_end_us <= watermark_us) {
             self.pending_seen.clear();
             self.pending.take()
@@ -370,12 +371,13 @@ mod tests {
         assert_eq!(trade_bucket.source_arrival_sequences, vec![1, 2, 3]);
         assert!(serde_json::to_value(&trade_bucket).unwrap()
             .get("source_arrival_sequences").is_none());
-        let quote_only = reducer.take_completed_through(event(300, 4, false).sip_timestamp_us)
-            .unwrap();
+        let quote_only = reducer.push(&event(300, 4, false), &decoder, &rules)
+            .unwrap().unwrap();
         assert_eq!(quote_only.volume, 0.0);
         assert_eq!(quote_only.price_valid, 0);
         assert_eq!(quote_only.cumulative_volume, 100.0);
         assert_eq!(quote_only.execution_vwap, 10.0);
+        assert_eq!(quote_only.source_arrival_sequences, vec![3, 4]);
     }
 
     #[test]
