@@ -302,7 +302,8 @@ def sealed_certified_market_day_plan(client: Any, keeper: Any, build_id: str, *,
     for day in parsed_days:
         seal = load_session_seal(client, keeper, proof, day)
         families = read_sealed_session_families(
-            client, proof, seal, session_seal_receipt(seal))
+            client, proof, seal, session_seal_receipt(seal),
+            read_client_factory=read_client_factory)
         selected_scopes = families["market_day_planned_scope_v1"]
         scope_count += len(selected_scopes)
         scopes.update((row["session_date"], row["ticker"])

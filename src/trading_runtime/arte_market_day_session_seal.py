@@ -7,11 +7,13 @@ use it only with a stable active-part inventory and full selected-day readback.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import date
 from hashlib import sha256
 import json
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from research.mlops.clickhouse import insert_json_each_row
 
@@ -290,19 +292,20 @@ def load_session_seal(
 
 def read_sealed_session_families(
     client: Any, proof: BuildAttestation, seal: Mapping[str, Any],
-    receipt: bytes,
+    receipt: bytes, *, read_client_factory: Callable[[], Any] | None = None,
 ) -> dict[str, tuple[dict[str, Any], ...]]:
     """Read only one sealed session's normalized source/certificate facts."""
     verify_session_seal_row(seal, proof, receipt)
     storage_preflight(client, tables=tuple(_TABLE_BY_NAME[name] for name in _FAMILIES))
     day = str(seal["session_date"])
-    result: dict[str, tuple[dict[str, Any], ...]] = {}
-    for name, label in zip(_FAMILIES,
-                           ("scope", "stage", "seed", "source_unit")):
+    families = tuple(zip(_FAMILIES, ("scope", "stage", "seed", "source_unit")))
+
+    def read_family(reader: Any, name: str, label: str
+                    ) -> tuple[str, tuple[dict[str, Any], ...]]:
         date_key = "source_date" if label == "source_unit" else "session_date"
         columns = ",".join(_COLUMNS[name])
         rows = tuple(_typed_readback_row(name, json.loads(line)) for line in
-                     client.execute(
+                     reader.execute(
                          f"SELECT {columns} FROM arte.{name} "
                          f"WHERE build_id='{proof.build_id}' "
                          f"AND {date_key}=toDate('{day}') FORMAT JSONEachRow"
@@ -312,5 +315,19 @@ def read_sealed_session_families(
         if (len(rows) != int(seal[f"{label}_count"])
                 or family_hash(rows) != seal[f"{label}_hash"]):
             raise RuntimeError(f"Sealed session {label} rows differ from producer proof")
-        result[name] = rows
-    return result
+        return name, rows
+
+    if read_client_factory is None:
+        verified = tuple(read_family(client, name, label)
+                         for name, label in families)
+    else:
+        # Independent certified families can overlap HTTP latency. Never
+        # share a ClickHouse connection across the bounded reader lanes.
+        def read_lane(item: tuple[str, str]
+                      ) -> tuple[str, tuple[dict[str, Any], ...]]:
+            with closing(read_client_factory()) as reader:
+                return read_family(reader, *item)
+
+        with ThreadPoolExecutor(max_workers=len(families)) as pool:
+            verified = tuple(pool.map(read_lane, families))
+    return dict(verified)

@@ -73,10 +73,14 @@ def test_selected_seal_plan_matches_full_plan_without_global_family_read(monkeyp
     seal = prepare_session_seal(certificate, proof, session_date=date.fromisoformat(DAY))
     from src.trading_runtime import arte_market_day_session_seal as seals
     monkeypatch.setattr(seals, "load_session_seal", lambda *_args: seal)
+
+    def sealed_families(*_args, **_kwargs):
+        return {name: tuple(client.rows[name]) for name in (
+            "market_day_planned_scope_v1", "market_day_stage_certificate_v1",
+            "market_day_seed_v1", "market_day_source_unit_v1")}
+
     monkeypatch.setattr(seals, "read_sealed_session_families",
-                        lambda *_args: {name: tuple(client.rows[name]) for name in (
-                            "market_day_planned_scope_v1", "market_day_stage_certificate_v1",
-                            "market_day_seed_v1", "market_day_source_unit_v1")})
+                        sealed_families)
     touched = []
     original = client.execute
 

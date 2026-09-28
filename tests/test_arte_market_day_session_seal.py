@@ -143,6 +143,30 @@ def test_session_seal_publishes_once_and_cold_reads_exact_receipt(monkeypatch):
     selected = read_sealed_session_families(
         publisher, proof, row, session_seal_receipt(row))
     assert len(selected["market_day_stage_certificate_v1"]) == 3
+    readers = []
+
+    class ReadLane:
+        def __init__(self):
+            self.closed = False
+            self.queries = []
+
+        def execute(self, sql):
+            self.queries.append(sql)
+            return publisher.execute(sql)
+
+        def close(self):
+            self.closed = True
+
+    def reader_factory():
+        reader = ReadLane()
+        readers.append(reader)
+        return reader
+
+    assert read_sealed_session_families(
+        publisher, proof, row, session_seal_receipt(row),
+        read_client_factory=reader_factory) == selected
+    assert len(readers) == 4
+    assert all(reader.closed and len(reader.queries) == 1 for reader in readers)
     http.rows["market_day_stage_certificate_v1"][0]["output_hash"] = "changed"
     with pytest.raises(RuntimeError, match="stage rows differ"):
         read_sealed_session_families(publisher, proof, row, session_seal_receipt(row))
