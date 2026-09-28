@@ -164,3 +164,25 @@ def test_lost_keeper_owner_never_dispatches_committed_or_queued_commands():
         with pytest.raises(RuntimeError, match="reconcile durable commands"):
             await bridge.close()
     asyncio.run(scenario())
+
+
+def test_cancelled_persistence_receipt_fails_and_drains_all_queued_orders():
+    async def scenario():
+        sent = []
+        async def broker(command):
+            sent.append(command)
+        bridge = LiveOrderDurabilityBridge(
+            broker, keeper_lease=_CurrentLease(), capacity=2)
+        cancelled, later = Future(), Future()
+        first = bridge.offer("one", cancelled, expected_commit_id="commit-one")
+        second = bridge.offer("two", later, expected_commit_id="commit-two")
+        assert cancelled.cancel()
+        later.set_result("commit-two")
+        with pytest.raises(RuntimeError, match="interrupted"):
+            await asyncio.wait_for(first, timeout=1)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            await asyncio.wait_for(second, timeout=1)
+        assert sent == []
+        with pytest.raises(RuntimeError, match="reconcile durable commands"):
+            await bridge.close()
+    asyncio.run(scenario())

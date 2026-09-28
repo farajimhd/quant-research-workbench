@@ -85,7 +85,13 @@ class LiveOrderDurabilityBridge(Generic[Command, Result]):
                             "Live order handoff was interrupted; broker reconciliation is required")
                     if not result.done():
                         result.set_exception(self._failure)
-                    raise
+                    # A cancelled persistence receipt raises CancelledError
+                    # without cancelling this worker task. Keep draining so
+                    # every queued command receives the same fail-closed result.
+                    # An actual worker cancellation (for example, timed close)
+                    # must still propagate to the control-plane caller.
+                    if asyncio.current_task().cancelling():
+                        raise
                 except Exception as exc:
                     self._failure = exc
                     if not result.done():
