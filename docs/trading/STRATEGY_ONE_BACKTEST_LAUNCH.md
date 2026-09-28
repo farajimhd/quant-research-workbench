@@ -89,3 +89,10 @@ load, not a controlled claim of seconds saved. Kazoo still logs the connection
 drop while closing at process exit; the Backtest request no longer waits for
 that per-preflight close. The existing app backend must restart to load this
 new source.
+
+After syncing that source and restarting the workstation backend, the actual
+`POST /api/trading/historical-preflight` route returned `ready=true` with no
+blocked checks for the full Aug 18 04:00–09:30 ET market. The first request
+took 23.202s and the identical warm request took 2.640s. These are route
+latencies, not Backtest execution times. The backend remained healthy on
+port 8000 after both requests; no Backtest run was created.
