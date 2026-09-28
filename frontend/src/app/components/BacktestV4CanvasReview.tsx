@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Clock3, Globe2, MapPin, PanelRightOpen, Maximize2, Minimize2 } from "lucide-react";
 import { api } from "../../api/client";
 import { TradingWorkspace } from "./TradingWorkspace";
-import { BacktestV4SavedChart, SAVED_CHART_FRAMES } from "./BacktestV4SavedChart";
+import { BacktestV4SavedChart, SAVED_CHART_FRAMES, type ChartPage } from "./BacktestV4SavedChart";
 import { ChartsQuotesMarketLayout, type SavedChartsQuote, type ChartsQuotesLayoutSettings } from "./MarketMicrostructureContainers";
 import { MarketStatusBadge, historicalMarketStatus } from "./MarketStatusBadge";
 import { StrategyActivityContainer } from "./MarketScreenerContainers";
@@ -40,6 +40,8 @@ type OrderPage = {
   next_transition_sequence: number;
   complete: boolean;
 };
+type ContextPair = { schema_version: "strategy-one-v4-chart-context-pair-v1";
+  run_id: string; ticker: string; daily: ChartPage; monthly: ChartPage };
 
 const REVIEW_CONTAINERS: WorkspaceContainerId[] = [
   "performance_journal", "strategy_activity", "positions", "orders", "fills",
@@ -349,6 +351,26 @@ export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
   const [layout, setLayout] = useState<ChartsQuotesLayoutSettings>(settings.layout);
   const mainFrame = SAVED_CHART_FRAMES.find(frame => frame === settings.main.timeframe) ?? "10s";
   const [quote, setQuote] = useState<SavedChartsQuote | null>(null);
+  const [contextPair, setContextPair] = useState<ContextPair | null>(null);
+  const [contextError, setContextError] = useState("");
+  useEffect(() => {
+    if (maximized || contextPair) return;
+    const controller = new AbortController();
+    setContextError("");
+    void api<ContextPair>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart-context?ticker=${encodeURIComponent(ticker)}`, {
+      signal: controller.signal, timeoutMs: 60_000,
+    }).then(value => {
+      if (controller.signal.aborted) return;
+      if (value.schema_version !== "strategy-one-v4-chart-context-pair-v1"
+          || value.run_id !== runId || value.ticker !== ticker) {
+        throw new Error("Saved chart context identity differs from the selected run.");
+      }
+      setContextPair(value);
+    }).catch(reason => {
+      if (!controller.signal.aborted) setContextError(reason instanceof Error ? reason.message : String(reason));
+    });
+    return () => controller.abort();
+  }, [contextPair, maximized, runId, ticker]);
   const sessionDate = initialPage.market_cursor?.session_date || initialPage.run.session_date;
   const savedAsOf = sessionDate && /^\d{4}-\d\d-\d\d$/.test(sessionDate)
     ? new Date(dateInTimeZone(sessionDate, "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()
@@ -366,8 +388,8 @@ export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
         mainChartMaximized={maximized}
         mainChart={<BacktestV4SavedChart embedded initialFrame={mainFrame} runId={runId} ticker={ticker} onQuoteChange={value => setQuote(value ?? null)}
           toolbarAction={<button aria-label={maximized ? "Restore chart panels" : "Maximize main chart"} className="toolbar-button" onClick={() => setMaximized(value => !value)} title={maximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} />}
-        monthChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1mo" allowedFrames={["1mo"]} initialShowMacd={false} panelLabel="Monthly context · limited ARTE history" runId={runId} ticker={ticker} />}
-        dailyChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1d" allowedFrames={["1d"]} initialShowMacd={false} panelLabel="Daily context · limited ARTE history" runId={runId} ticker={ticker} />}
+        monthChart={contextPair ? <BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1mo" allowedFrames={["1mo"]} initialShowMacd={false} panelLabel="Monthly context · limited ARTE history" prefetchedPage={contextPair.monthly} runId={runId} ticker={ticker} /> : <div className="trading-disclosure" role={contextError ? "alert" : "status"}>{contextError || "Loading certified monthly context…"}</div>}
+        dailyChart={contextPair ? <BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1d" allowedFrames={["1d"]} initialShowMacd={false} panelLabel="Daily context · limited ARTE history" prefetchedPage={contextPair.daily} runId={runId} ticker={ticker} /> : <div className="trading-disclosure" role={contextError ? "alert" : "status"}>{contextError || "Loading certified daily context…"}</div>}
         reservedPanel={<div className="trading-disclosure">Saved Backtest review · order entry disabled</div>} />} />
   </div>;
 }

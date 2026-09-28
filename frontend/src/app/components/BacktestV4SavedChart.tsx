@@ -7,7 +7,7 @@ type Bar = { bar_start: string; bar_end: string; open: number; high: number;
   low: number; close: number; volume: number; is_closed?: boolean };
 type Indicator = { bar_start: string; macd_line?: number; macd_signal?: number;
   macd_histogram?: number };
-type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolean;
+export type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolean;
   next_before: string; session_date: string; ticker: string; timeframe: string;
   verified_boundary_ms: number; indicator_provenance: { unavailable_columns: string[] };
   history_limited?: boolean; history_first_session?: string;
@@ -37,10 +37,11 @@ function pageBoundary(page: ChartPage): number | null {
   return Number.isFinite(boundary) && boundary > 0 ? boundary : null;
 }
 
-export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false, initialFrame = "1s", onQuoteChange, toolbarAction, panelLabel, enabled = true, allowedFrames = SAVED_CHART_FRAMES, initialShowMacd = true }: {
+export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false, initialFrame = "1s", onQuoteChange, toolbarAction, panelLabel, enabled = true, allowedFrames = SAVED_CHART_FRAMES, initialShowMacd = true, prefetchedPage }: {
   runId: string; ticker: string; onClose?: () => void; embedded?: boolean;
   initialFrame?: (typeof FRAMES)[number]; onQuoteChange?: (quote: ChartPage["quote"]) => void; toolbarAction?: ReactNode; panelLabel?: string; enabled?: boolean;
   allowedFrames?: readonly (typeof FRAMES)[number][]; initialShowMacd?: boolean;
+  prefetchedPage?: ChartPage;
 }) {
   const [symbol, setSymbol] = useState(ticker);
   const [draftSymbol, setDraftSymbol] = useState(ticker);
@@ -61,6 +62,13 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     setBars([]);
     setIndicators([]);
   }, [runId, ticker]);
+
+  useEffect(() => {
+    if (!prefetchedPage) return;
+    setPage(prefetchedPage);
+    setBars(prefetchedPage.bars);
+    setIndicators(prefetchedPage.indicators);
+  }, [prefetchedPage]);
 
   useEffect(() => { onQuoteChange?.(page?.quote); }, [onQuoteChange, page?.quote]);
 
@@ -85,7 +93,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   }
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || prefetchedPage) return;
     const normalized = symbol.trim().toUpperCase();
     if (!normalized || !/^[A-Z0-9.-]{1,24}$/.test(normalized)) {
       setError("Enter a valid ticker.");
@@ -111,7 +119,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [enabled, runId, ticker, symbol, frame, showMacd, before]);
+  }, [enabled, prefetchedPage, runId, ticker, symbol, frame, showMacd, before]);
 
   const payload = useMemo<ChartPayload>(() => {
     const series = (column: (typeof MACD)[number], label: string, color: string) => ({

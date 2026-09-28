@@ -23,13 +23,13 @@ def _literal(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def context_chart_page(
+def context_chart_pages(
     client: Any, *, session: date, ticker: str, boundary_ms: int,
-    timeframe: str, run_plan: CertifiedMarketDayPlan,
+    run_plan: CertifiedMarketDayPlan,
     configuration: Mapping[str, Any],
     plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,
-) -> dict[str, Any]:
-    if timeframe not in {"1d", "1mo"} or not 0 < boundary_ms <= 57_600_000:
+) -> dict[str, dict[str, Any]]:
+    if not 0 < boundary_ms <= 57_600_000:
         raise ValueError("Saved context chart timeframe or cursor is invalid")
     if ticker not in run_plan.tickers or session.isoformat() not in run_plan.sessions:
         raise ValueError("Saved context ticker is outside its run")
@@ -94,29 +94,24 @@ def context_chart_page(
             "volume": int(row["volume"]),
             "is_closed": not current or boundary_ms == 57_600_000,
         })
-    if timeframe == "1d":
-        bars = daily
-    else:
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for bar in daily:
-            grouped.setdefault(bar["session_date"][:7], []).append(bar)
-        bars = []
-        for month, items in grouped.items():
-            first, last = items[0], items[-1]
-            bars.append({
-                "bar_start": first["bar_start"], "bar_end": last["bar_end"],
-                "session_date": last["session_date"],
-                "open": first["open"], "high": max(item["high"] for item in items),
-                "low": min(item["low"] for item in items),
-                "close": last["close"],
-                "volume": sum(item["volume"] for item in items),
-                # Session certificates do not prove that this ticker has every
-                # exchange day in a calendar month. Do not label a composed
-                # monthly candle fully closed until period coverage exists.
-                "is_closed": False,
-            })
-    return {
-        "bars": bars, "indicators": [], "has_more": False, "next_before": "",
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for bar in daily:
+        grouped.setdefault(bar["session_date"][:7], []).append(bar)
+    monthly = []
+    for items in grouped.values():
+        first, last = items[0], items[-1]
+        monthly.append({
+            "bar_start": first["bar_start"], "bar_end": last["bar_end"],
+            "session_date": last["session_date"],
+            "open": first["open"], "high": max(item["high"] for item in items),
+            "low": min(item["low"] for item in items),
+            "close": last["close"],
+            "volume": sum(item["volume"] for item in items),
+            # Session certificates do not prove every exchange day in a month.
+            "is_closed": False,
+        })
+    common = {
+        "indicators": [], "has_more": False, "next_before": "",
         "source": "arte.bars_v1@30s-certified-context",
         "history_first_session": days[0], "history_session_count": len(days),
         "history_limited": True,
@@ -126,3 +121,19 @@ def context_chart_page(
             "unavailable_columns": ["daily/monthly indicators not persisted"],
         },
     }
+    return {"1d": {**common, "bars": daily},
+            "1mo": {**common, "bars": monthly}}
+
+
+def context_chart_page(
+    client: Any, *, session: date, ticker: str, boundary_ms: int,
+    timeframe: str, run_plan: CertifiedMarketDayPlan,
+    configuration: Mapping[str, Any],
+    plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,
+) -> dict[str, Any]:
+    if timeframe not in {"1d", "1mo"}:
+        raise ValueError("Saved context chart timeframe is invalid")
+    return context_chart_pages(
+        client, session=session, ticker=ticker, boundary_ms=boundary_ms,
+        run_plan=run_plan, configuration=configuration,
+        plan_loader=plan_loader)[timeframe]

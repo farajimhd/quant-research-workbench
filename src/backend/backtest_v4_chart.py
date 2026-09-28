@@ -13,7 +13,9 @@ from typing import Any, Callable
 from uuid import UUID
 
 from src.backend.arte_chart_reader import _RESOLUTIONS, chart_page
-from src.backend.backtest_v4_chart_context import context_chart_page
+from src.backend.backtest_v4_chart_context import (
+    context_chart_page, context_chart_pages,
+)
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS, assert_select_only,
     certified_market_plan_from_arte, market_day_boundary,
@@ -166,3 +168,38 @@ def cold_v4_chart_page(
         "quote": quote,
         **page,
     }
+
+
+def cold_v4_chart_context_pair(
+    journal_client: Any, market_client: Any, *, run_id: str, ticker: str,
+    plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,
+) -> dict[str, Any]:
+    """One certificate/read for both original Charts & Quotes context slots."""
+    normalized = str(UUID(run_id))
+    symbol = ticker.strip().upper()
+    if not symbol or len(symbol) > 24:
+        raise ValueError("Saved context ticker is invalid")
+    session, context, cursor, plan = certified_saved_run_plan(
+        journal_client, market_client, run_id=normalized,
+        plan_loader=plan_loader)
+    if symbol not in plan.tickers:
+        raise ValueError("Saved context ticker is outside the run")
+    release = certify_strategy_one_configuration(market_client)
+    if release.payload_hash != context["configuration_hash"]:
+        raise RuntimeError("Saved context release differs from run")
+    pages = context_chart_pages(
+        market_client, session=session, ticker=symbol,
+        boundary_ms=int(cursor["boundary_ms"]), run_plan=plan,
+        configuration=release.payload, plan_loader=plan_loader)
+    return {"schema_version": "strategy-one-v4-chart-context-pair-v1",
+            "run_id": normalized, "ticker": symbol,
+            "session_date": session.isoformat(),
+            "verified_boundary_ms": int(cursor["boundary_ms"]),
+            "daily": {"ticker": symbol, "session_date": session.isoformat(),
+                      "timeframe": "1d",
+                      "verified_boundary_ms": int(cursor["boundary_ms"]),
+                      **pages["1d"]},
+            "monthly": {"ticker": symbol, "session_date": session.isoformat(),
+                        "timeframe": "1mo",
+                        "verified_boundary_ms": int(cursor["boundary_ms"]),
+                        **pages["1mo"]}}

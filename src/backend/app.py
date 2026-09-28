@@ -5930,6 +5930,34 @@ async def trading_backtest_v4_chart(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/backtest/runs/{run_id}/v4-chart-context")
+async def trading_backtest_v4_chart_context(
+    run_id: str, ticker: str,
+) -> dict[str, Any]:
+    """One SELECT-only certified context read for both focus-canvas horizons."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+
+    def read_pair() -> dict[str, Any]:
+        from contextlib import closing
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        from src.backend.backtest_v4_chart import cold_v4_chart_context_pair
+        from src.trading_runtime.arte_journal_writer import (
+            backtest_v4_operator_client_from_env,
+        )
+        with closing(backtest_v4_operator_client_from_env()) as journal_client, \
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
+            return cold_v4_chart_context_pair(
+                journal_client, market_client, run_id=normalized, ticker=ticker)
+
+    try:
+        return await asyncio.to_thread(read_pair)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/backtest/runs/{run_id}/v4-trade-history")
 async def trading_backtest_v4_trade_history(
     run_id: str,
