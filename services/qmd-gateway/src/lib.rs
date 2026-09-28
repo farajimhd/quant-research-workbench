@@ -48,5 +48,6 @@ pub mod structure_focus;
 pub mod structure_prominence;
 pub mod strategy_one_liquidity;
 pub mod strategy_one_source_prefix;
+pub mod strategy_one_source_receipt;
 pub mod strategy_one_trade_reporting;
 pub mod timefmt;

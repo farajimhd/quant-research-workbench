@@ -109,6 +109,15 @@ sequences (or an equivalent normalized membership relation), not merely its
 minimum, maximum, and count. The bounded in-memory acknowledgement tracker
 accepts sparse sets and advances only through individually acknowledged
 sequences; it is not connected to publication or live admission yet.
+QMD also defines inactive typed `q_live.strategy_one_source_batch_v1` and
+`q_live.strategy_one_source_member_v1` contracts. A batch row carries its
+producer epoch, date, identity, exact member count, extrema, and acknowledgement
+clock; each member row carries one arrival sequence, ticker, and canonical
+scalar-row digest. Both schemas explicitly use `live_market_ssd` and contain
+no JSON, arrays, or blobs. Defining the schema and deterministic membership
+hashes does not yet create or publish these tables: producer writes, readback,
+part-placement checks, Keeper selection, and delayed-write fencing must be
+implemented before they can be used for recovery or admission.
 
 Each process incarnation needs a fresh producer epoch in the canonical row and
 receipt identity. A delayed INSERT from an older incarnation must never be
