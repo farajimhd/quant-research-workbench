@@ -7,6 +7,8 @@ Reconnect never rearms a claim without an explicit Keeper verification.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import importlib
+import ssl
 from threading import Lock
 from time import monotonic
 from typing import Any, Callable, Mapping
@@ -19,6 +21,52 @@ def _writable(client: Any) -> bool:
     state = getattr(client, "client_state", None)
     return bool(getattr(client, "connected", False)) and (
         getattr(state, "name", str(state)) != "CONNECTED_RO")
+
+
+def _native_ssl_for_kazoo() -> None:
+    """Keep Kazoo's pre-connect TLS wrap on native SSL without global patches.
+
+    Windows' pip truststore wrapper calls get_unverified_chain while Kazoo's
+    socket is still unconnected. That raises AttributeError and prevents a
+    secure LAN session. Only Kazoo's SSL module reference is adapted; CA and
+    hostname verification remain required by open_workstation_keeper_session.
+    """
+    context_type = ssl.SSLContext
+    if "truststore" not in context_type.__module__:
+        return
+    wrapper = importlib.import_module(context_type.__module__)
+    native = getattr(wrapper, "_original_SSLContext", None)
+    if native is None or not issubclass(native, ssl._SSLContext):
+        raise RuntimeError("Native TLS context is unavailable for Keeper")
+    from kazoo.handlers import utils as kazoo_utils
+
+    class KeeperSSLContext(native):
+        # stdlib SSLContext's property setters refer to the module-global
+        # SSLContext. That name was replaced by truststore, so inherited
+        # setters recurse; call the native C descriptors directly instead.
+        @property
+        def options(self) -> Any:
+            return ssl.Options(ssl._SSLContext.options.__get__(self))
+
+        @options.setter
+        def options(self, value: Any) -> None:
+            ssl._SSLContext.options.__set__(self, value)
+
+        @property
+        def verify_mode(self) -> Any:
+            return ssl.VerifyMode(ssl._SSLContext.verify_mode.__get__(self))
+
+        @verify_mode.setter
+        def verify_mode(self, value: Any) -> None:
+            ssl._SSLContext.verify_mode.__set__(self, value)
+
+    class KeeperSSL:
+        SSLContext = KeeperSSLContext
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(ssl, name)
+
+    kazoo_utils.ssl = KeeperSSL()
 
 
 class ManagedKeeperSession:
@@ -129,6 +177,8 @@ def open_workstation_keeper_session(
             raise RuntimeError("Kazoo 2.11.0 is required for Keeper ownership") from exc
         client_factory = KazooClient
     endpoint = discover()
+    if getattr(endpoint, "secure", False):
+        _native_ssl_for_kazoo()
     kwargs = {"hosts": f"{endpoint.host}:{endpoint.port}",
               "timeout": timeout_seconds}
     if getattr(endpoint, "secure", False):

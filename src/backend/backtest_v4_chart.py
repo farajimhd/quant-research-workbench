@@ -64,27 +64,12 @@ def _pinned_quote(client: Any, plan: CertifiedMarketDayPlan, *, session: date,
             "fresh": age_us <= 1_000_000}
 
 
-def cold_v4_chart_page(
+def certified_saved_run_plan(
     journal_client: Any, market_client: Any, *, run_id: str,
-    ticker: str, timeframe: str, before_boundary_ms: int | None = None,
-    row_limit: int = 1000, indicator_columns: tuple[str, ...] = (),
     plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,
-) -> dict[str, Any]:
-    """Read a page only after terminal, definition, release, and plan parity."""
+) -> tuple[date, dict[str, Any], dict[str, Any], CertifiedMarketDayPlan]:
+    """Shared immutable run authority for chart and producer-owned context."""
     normalized = str(UUID(run_id))
-    symbol = ticker.strip().upper()
-    if (not symbol or timeframe not in _RESOLUTIONS
-            or type(row_limit) is not int or not 1 <= row_limit <= 5000
-            or before_boundary_ms is not None and (
-                type(before_boundary_ms) is not int
-                or not 0 < before_boundary_ms <= 57_600_000
-                or before_boundary_ms % _RESOLUTIONS[timeframe]
-            )
-            or not isinstance(indicator_columns, tuple)
-            or len(indicator_columns) > 32
-            or any(not isinstance(column, str) or not column.isidentifier()
-                   or len(column) > 64 for column in indicator_columns)):
-        raise ValueError("Saved Strategy 1 chart request is invalid")
     review = load_v4_terminal_review_page(
         journal_client, normalized, after_sequence=0, limit=1)
     context = review["run"]
@@ -109,8 +94,35 @@ def cold_v4_chart_page(
         sessions=(session,), tickers=requested, configuration=release.payload)
     if (not isinstance(plan, CertifiedMarketDayPlan)
             or plan.token != context["market_plan_token"]
-            or plan.sessions != (session.isoformat(),)
-            or symbol not in plan.tickers
+            or plan.sessions != (session.isoformat(),)):
+        raise RuntimeError("Saved chart cannot reproduce its certified market plan")
+    return session, context, cursor, plan
+
+
+def cold_v4_chart_page(
+    journal_client: Any, market_client: Any, *, run_id: str,
+    ticker: str, timeframe: str, before_boundary_ms: int | None = None,
+    row_limit: int = 1000, indicator_columns: tuple[str, ...] = (),
+    plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,
+) -> dict[str, Any]:
+    """Read a page only after terminal, definition, release, and plan parity."""
+    normalized = str(UUID(run_id))
+    symbol = ticker.strip().upper()
+    if (not symbol or timeframe not in _RESOLUTIONS
+            or type(row_limit) is not int or not 1 <= row_limit <= 5000
+            or before_boundary_ms is not None and (
+                type(before_boundary_ms) is not int
+                or not 0 < before_boundary_ms <= 57_600_000
+                or before_boundary_ms % _RESOLUTIONS[timeframe]
+            )
+            or not isinstance(indicator_columns, tuple)
+            or len(indicator_columns) > 32
+            or any(not isinstance(column, str) or not column.isidentifier()
+                   or len(column) > 64 for column in indicator_columns)):
+        raise ValueError("Saved Strategy 1 chart request is invalid")
+    session, _, cursor, plan = certified_saved_run_plan(
+        journal_client, market_client, run_id=normalized, plan_loader=plan_loader)
+    if (symbol not in plan.tickers
             or _RESOLUTIONS[timeframe] not in plan.required_resolutions_ms):
         raise RuntimeError("Saved chart cannot reproduce its certified market plan")
     cursor_ms = int(cursor["boundary_ms"])

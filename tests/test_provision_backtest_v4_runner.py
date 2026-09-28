@@ -59,7 +59,8 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                                  *provision.PROTECTION_SNAPSHOT_TABLES,
                                  *provision.MANAGER_SNAPSHOT_TABLES,
                                  *provision.BROKER_MATCH_SNAPSHOT_TABLES,
-                                 *DEFINITION_TABLES)) | MARKET_READ_TABLES
+                                 *DEFINITION_TABLES)) | MARKET_READ_TABLES | {
+                                     provision.ENTRY_CONTEXT_TABLE.split(".", 1)[1]}
     assert all(" ON arte." in grant or " ON system." in grant
                for grant in plan.grants())
 
@@ -68,11 +69,15 @@ def test_runtime_preflight_uses_the_same_write_grants_as_provisioning(monkeypatc
     observed = []
     monkeypatch.setattr(writer_module, "storage_preflight",
                         lambda _client, *, tables: None)
+    monkeypatch.setattr(writer_module, "_rows", lambda _client, sql: [
+        {"name": provision.ENTRY_CONTEXT_TABLE.split(".", 1)[1]}])
     monkeypatch.setattr(writer_module, "journal_permission_preflight",
                         lambda _client, *, journal_tables, read_only_tables:
-                        observed.append(journal_tables))
+                        observed.append((journal_tables, read_only_tables)))
     writer_module._v4_preflight(object())
-    assert observed == [provision.desired_plan().insert_arte]
+    assert observed[0][0] == provision.desired_plan().insert_arte
+    assert provision.ENTRY_CONTEXT_TABLE.split(".", 1)[1] in observed[0][1]
+    assert provision.ENTRY_CONTEXT_TABLE.split(".", 1)[1] not in observed[0][0]
 
 
 def test_v4_cli_dry_run_does_not_open_a_connection(capsys, monkeypatch):

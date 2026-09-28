@@ -63,6 +63,7 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import (
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES as PROTECTION_SNAPSHOT_TABLES,
 )
+from src.backend.strategy_one_entry_context import TABLE as ENTRY_CONTEXT_TABLE
 
 
 PRINCIPAL = "backtest_v4_runner"
@@ -117,7 +118,8 @@ def desired_plan() -> PrincipalPlan:
                                           *MANAGER_SNAPSHOT_TABLES,
                                           *BROKER_MATCH_SNAPSHOT_TABLES,
                                           *BACKTEST_DEFINITION_TABLES))
-        | MARKET_READ_TABLES,
+        | MARKET_READ_TABLES
+        | frozenset({ENTRY_CONTEXT_TABLE.split(".", 1)[1]}),
         writable, frozenset(SYSTEM_READ_TABLES),
     )
 

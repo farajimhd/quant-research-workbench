@@ -5972,11 +5972,15 @@ async def trading_backtest_v4_performance(run_id: str) -> dict[str, Any]:
     def read_report() -> dict[str, Any]:
         from contextlib import closing
         from src.backend.backtest_v4_saved_review import load_v4_performance_report
+        from src.backend.strategy_one_entry_context import attach_saved_entry_context
         from src.trading_runtime.arte_journal_writer import (
-            backtest_v4_operator_client_from_env,
+            backtest_v4_operator_client_from_env, load_typed_run_context,
         )
         with closing(backtest_v4_operator_client_from_env()) as client:
-            return load_v4_performance_report(client, normalized)
+            page = load_v4_performance_report(client, normalized)
+            context = load_typed_run_context(client, normalized)
+            return attach_saved_entry_context(
+                client, page, market_plan_token=context["market_plan_token"])
 
     try:
         return await asyncio.to_thread(read_report)

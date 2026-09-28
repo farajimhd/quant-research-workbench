@@ -2038,6 +2038,18 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
     storage_preflight(client, tables=v4_storage_contracts())
     writable = v4_journal_write_tables()
     readonly = frozenset(table.name for table in installed) - writable
+    # Producer-owned episode context is an optional SELECT-only extension.
+    # Its absence must not prevent Strategy 1 from executing; once installed,
+    # the runner must have no INSERT authority on it.
+    from src.backend.strategy_one_entry_context import TABLE as entry_context_table
+    entry_context_name = entry_context_table.split(".", 1)[1]
+    entry_context_rows = _rows(client,
+        "SELECT name FROM system.tables WHERE database='arte' "
+        f"AND name='{entry_context_name}' FORMAT JSONEachRow")
+    if entry_context_rows == [{"name": entry_context_name}]:
+        readonly |= frozenset({entry_context_name})
+    elif entry_context_rows:
+        raise RuntimeError("Strategy 1 entry context table inventory is ambiguous")
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
     return _V4PreflightSeal(client, _V4_PREFLIGHT_SECRET)
