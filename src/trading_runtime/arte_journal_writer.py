@@ -1415,12 +1415,18 @@ def _insert(
     # ClickHouse's default fast JSON float parser can select an adjacent
     # Float64 value (e.g. 2.7495 -> 2.7495000000000003). Broker checkpoint
     # hashes and cold recovery require the exact source binary float.
-    float_setting = (",precise_float_parsing=1"
-                     if contract_name in {table.name for table in
-                                          BROKER_MATCH_SNAPSHOT_TABLES} else "")
+    broker_match = contract_name in {table.name for table in
+                                     BROKER_MATCH_SNAPSHOT_TABLES}
+    # Async INSERT flushes under its buffer's parsing context, not reliably
+    # under this statement's precise_float_parsing. This remains off the
+    # execution thread in the bounded journal worker.
+    insert_settings = ("async_insert=0,insert_deduplicate=1"
+                       if broker_match else
+                       "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1")
+    float_setting = ",precise_float_parsing=1" if broker_match else ""
     sql = (
         f"INSERT INTO arte.{_profile_table(name, journal_profile)} ({','.join(columns)}) "
-        f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+        f"SETTINGS {insert_settings},"
         f"insert_deduplication_token={_literal(token)}{float_setting} "
         f"FORMAT JSONEachRow\n{body}"
     )

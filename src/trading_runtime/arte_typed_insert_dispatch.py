@@ -497,7 +497,12 @@ class TypedInsertDispatch:
                              broker_snapshot_hash: str | None = None) -> None:
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")
-                or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
+                or (table in _BROKER_MATCH_TABLES and not (
+                        "async_insert=0,insert_deduplicate=1" in sql
+                        and ",precise_float_parsing=1" in sql))
+                or (table not in _BROKER_MATCH_TABLES and
+                    "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1"
+                    not in sql)
                 or "insert_deduplication_token=" not in sql):
             raise ValueError("Typed dispatch requires the acknowledged arte INSERT contract")
         if (type(batch_last_sequence) is not int or batch_last_sequence < 0

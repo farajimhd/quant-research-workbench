@@ -949,8 +949,9 @@ def test_broker_match_rows_require_exact_compacted_cursor_and_seal():
     table = "trading_strategy_one_broker_match_snapshot_v1"
     token = f"broker-match:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
-           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
-           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+           "async_insert=0,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}',precise_float_parsing=1 "
+           "FORMAT JSONEachRow\n{}")
     authority.execute_typed_insert(
         Client(authority), run_id="run-1", table=table, token=token,
         sql=sql, batch_id=BATCH_ID, batch_last_sequence=1,
@@ -984,8 +985,9 @@ def test_broker_match_lost_insert_response_remains_pending():
     table = "trading_strategy_one_broker_match_snapshot_v1"
     token = f"broker-match:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
-           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
-           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+           "async_insert=0,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}',precise_float_parsing=1 "
+           "FORMAT JSONEachRow\n{}")
     client = Client(authority, lose_response=True)
     with pytest.raises(TimeoutError, match="response lost"):
         authority.execute_typed_insert(
