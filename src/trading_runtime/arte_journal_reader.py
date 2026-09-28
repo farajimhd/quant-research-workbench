@@ -50,6 +50,14 @@ class TypedProtectionPage:
     records: tuple[JournalRecord, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CompleteProtectionHistory:
+    run_id: str
+    through_sequence: int
+    committed_batch_ids: tuple[str, ...]
+    records: tuple[JournalRecord, ...]
+
+
 def _journal_instant(value: Any) -> datetime:
     source = str(value)
     match = re.fullmatch(r"(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)\.(\d{6})(\d{3})?", source)
@@ -130,7 +138,7 @@ def load_typed_protection_page(
 def load_complete_typed_protection_history(
     client: Any, prefix: VerifiedPrefix, *, page_size: int = 500,
     max_events: int = 100_000, max_children_per_page: int = 50_000,
-) -> tuple[JournalRecord, ...]:
+) -> CompleteProtectionHistory:
     """Prove the complete V4 protection history through one committed head.
 
     No absence claim is valid after only one page. An over-budget live run must
@@ -162,7 +170,9 @@ def load_complete_typed_protection_history(
             raise RuntimeError("Committed protection record is outside its page")
         records.extend(page.records)
         cursor = page.next_sequence
-    return tuple(records)
+    return CompleteProtectionHistory(
+        prefix.run_id, prefix.last_sequence, tuple(prefix.batch_ids),
+        tuple(records))
 
 
 # V4 supplements use the same event parent but replace or extend the V1

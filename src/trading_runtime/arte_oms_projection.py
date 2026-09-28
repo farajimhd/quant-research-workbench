@@ -3,8 +3,9 @@
 Exact canonical Strategy 1 order lineage is checked against the typed intent
 and protection proof instead of being stored as raw metadata. Arbitrary raw
 metadata and broker algo parameters fail closed. Cold OMS rows still contain
-flat orders only; reconstructing executable lineage, broker-state fingerprints,
-and external broker reconciliation remain outside this stage.
+flat orders only. A separate complete-prefix helper can reconstruct supported
+entry-group lineage, but broker-state fingerprints, external reconciliation,
+and executable runtime restoration remain outside this stage.
 """
 from __future__ import annotations
 
@@ -75,7 +76,9 @@ _APPROVED_ADMISSION_KEYS = frozenset({
 })
 
 
-def approved_oms_lineage_intent(group: FrozenOmsGroup) -> StrategyIntent:
+def approved_oms_lineage_intent(
+    group: FrozenOmsGroup | _ColdLineageView,
+) -> StrategyIntent:
     """Use original admission metadata to verify orders after protection trails."""
     meta = group.intent.metadata
     if (_APPROVED_ADMISSION_KEYS <= set(meta)
@@ -86,7 +89,7 @@ def approved_oms_lineage_intent(group: FrozenOmsGroup) -> StrategyIntent:
 
 
 def _target_proof_failures(
-    group: FrozenOmsGroup, order: OrderRequest,
+    group: FrozenOmsGroup | _ColdLineageView, order: OrderRequest,
     proof: JournalRecord | None,
 ) -> tuple[str, ...]:
     if proof is None:
@@ -123,7 +126,7 @@ def _target_proof_failures(
 
 
 def canonical_oms_order_metadata(
-    group: FrozenOmsGroup, order: OrderRequest,
+    group: FrozenOmsGroup | _ColdLineageView, order: OrderRequest,
     authorized_protection: Mapping[str, JournalRecord] | None = None,
 ) -> dict[str, Any]:
     """Rebuild initial lineage plus only the target amendment's typed delta."""
@@ -473,6 +476,105 @@ class RecoveredOmsGroupState:
     cancel_oca_groups: tuple[str, ...]
     tactic: ExecutionTactic | None = None
     tactic_recorded: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ColdLineageView:
+    group_id: str
+    account_id: str
+    intent: StrategyIntent
+    orders: tuple[OrderRequest, ...]
+    broker_order_request_indexes: dict[str, int]
+    terminal_broker_order_ids: frozenset[str]
+
+
+def reconstruct_strategy_one_oms_lineage(
+    state: RecoveredOmsGroupState, source_intent: Any,
+    protection_history: Any,
+) -> tuple[OrderRequest, ...]:
+    """Rebuild exact entry-group raw lineage from completed typed evidence.
+
+    The supplied history must be a complete cold scan through this OMS state.
+    This returns recovery evidence only; it does not reconcile broker orders,
+    restore OMS tasks, or grant live order admission.
+    """
+    from src.trading_runtime.arte_intent_projection import RecoveredIntent
+    from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+    if (not isinstance(state, RecoveredOmsGroupState)
+            or not isinstance(source_intent, RecoveredIntent)
+            or not isinstance(protection_history, CompleteProtectionHistory)):
+        raise ValueError("Strategy 1 OMS lineage needs typed cold evidence")
+    group = state.group
+    if (
+            not isinstance(group, dict)
+            or group.get("strategy_id") != STRATEGY_ID
+            or group.get("strategy_revision") != STRATEGY_NUMBER
+            or group.get("run_id") != protection_history.run_id
+            or group.get("batch_id") not in protection_history.committed_batch_ids
+            or source_intent.batch_id not in protection_history.committed_batch_ids
+            or not 0 < source_intent.sequence < state.sequence
+            <= protection_history.through_sequence
+            or state.intent_record_id != source_intent.record_id
+            or group.get("account_id") != source_intent.account_id
+            or group.get("strategy_intent_id") != source_intent.intent.intent_id
+            or source_intent.intent.action != "enter_long"
+            or not state.orders or len(state.orders) > 65_535
+            or len({order.cOID for order in state.orders}) != len(state.orders)):
+        raise ValueError("Strategy 1 OMS lineage lacks one complete typed authority")
+    account = group["account_id"]
+    identity = group["group_id"]
+    if any(order.acctId != account
+           or order.ticker.upper() != source_intent.intent.ticker.upper()
+           or not order.cOID or order.raw or order.strategyParameters
+           for order in state.orders):
+        raise ValueError("Strategy 1 OMS order differs from its flat typed state")
+    bindings = {str(row["broker_order_id"]): int(row["request_index"])
+                for row in state.broker_bindings
+                if row["request_index"] is not None}
+    terminal = frozenset(str(row["broker_order_id"])
+                         for row in state.broker_bindings if row["terminal"])
+    view = _ColdLineageView(
+        identity, account, source_intent.intent, state.orders, bindings, terminal)
+    history = tuple(row for row in protection_history.records
+                    if row.account_id == account
+                    and row.payload.get("order_group_id") == identity
+                    and row.sequence <= state.sequence)
+    if any(row.run_id != protection_history.run_id
+           or not 0 < row.sequence <= protection_history.through_sequence
+           or (row.category, row.entity_type) !=
+           ("protection", "protection_change") for row in history):
+        raise ValueError("Strategy 1 OMS protection history differs from its prefix")
+    rebuilt = []
+    for order in state.orders:
+        amendments = [row for row in history
+                      if row.payload.get("client_order_id") == order.cOID
+                      and row.payload.get("kind") == "target"
+                      and row.payload.get("phase") == "effective"
+                      and row.payload.get("action") == "replace_profit_target"]
+        matching = [row for row in amendments
+                    if row.payload.get("price") == order.price]
+        if len(matching) > 1:
+            raise ValueError("Strategy 1 target amendment lineage is ambiguous")
+        proofs = {}
+        if matching:
+            proof = matching[0]
+            if (proof.sequence <= source_intent.sequence
+                    or proof.payload.get("ticker") != source_intent.intent.ticker.upper()
+                    or proof.payload.get("strategy_id") != STRATEGY_ID
+                    or proof.payload.get("strategy_revision") != STRATEGY_NUMBER
+                    or _target_proof_failures(view, order, proof)):
+                raise ValueError("Strategy 1 target amendment proof differs")
+            proofs[f"target:{order.cOID}"] = proof
+        metadata = canonical_oms_order_metadata(view, order, proofs)
+        rebuilt.append(replace(order, raw={
+            "canonical_run_id": protection_history.run_id,
+            "canonical_strategy_id": STRATEGY_ID,
+            "canonical_strategy_revision": STRATEGY_NUMBER,
+            "canonical_metadata": metadata,
+        }))
+    return tuple(rebuilt)
 
 
 def load_latest_committed_oms_groups(

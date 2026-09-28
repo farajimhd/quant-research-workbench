@@ -18,20 +18,71 @@ from src.trading_runtime.arte_oms_projection import (
     load_committed_oms_admission_page, load_committed_oms_decision_page,
     load_committed_oms_group_state_page,
     load_latest_committed_oms_groups,
-    oms_group_state_batch,
+    oms_group_state_batch, reconstruct_strategy_one_oms_lineage,
 )
+from src.trading_runtime.arte_intent_projection import RecoveredIntent
+from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
 from src.trading_runtime.arte_oms_tactic_projection import tactic_rows
 from src.trading_runtime.arte_journal_commit_v4 import _publish_typed_batch_v4
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.order_management import (
     _ManagedOrderGroup, OrderManagementState, ExecutionQuote,
     ExecutionTactic, ExecutionUrgency, PriceStep,
 )
 from src.trading_runtime.signals import CapitalRequest
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+from src.trading_runtime.strategy_orders import canonical_runtime_order_raw
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from tests.test_arte_intent_projection import intent
 from tests.test_arte_journal_writer import MemoryClient
 from tests.test_arte_journal_commit_v4 import MemoryV4Dispatch
+
+
+def test_strategy_one_cold_order_lineage_uses_complete_typed_target_proof() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    run_id = "live:DU1"
+    intent_id = str(uuid4())
+    source_batch = str(uuid4())
+    group_batch = str(uuid4())
+    source = intent(ticker="AAA", intent_id="entry-1",
+                    reference_price=12.5, invalidation_price=11.5,
+                    profit_target_price=12.6)
+    recovered_intent = RecoveredIntent(1, "DU1", intent_id, source_batch, source)
+    order = OrderRequest(acctId="DU1", conid=123, cOID="target-1",
+                         ticker="AAA", orderType="LMT", side="SELL",
+                         quantity=5, price=12.6)
+    state = RecoveredOmsGroupState(
+        3, intent_id,
+        {"run_id": run_id, "batch_id": group_batch,
+         "account_id": "DU1", "group_id": "group-1",
+         "strategy_id": STRATEGY_ID, "strategy_revision": 1,
+         "strategy_intent_id": source.intent_id},
+        (order,), (0,), ("target",), (), (), (),
+    )
+    base = CompleteProtectionHistory(run_id, 3, (source_batch, group_batch), ())
+    restored = reconstruct_strategy_one_oms_lineage(state, recovered_intent, base)
+    assert restored[0].raw == canonical_runtime_order_raw(
+        order, source, run_id=run_id, strategy_id=STRATEGY_ID,
+        strategy_revision=1)
+    proof = JournalRecord(
+        str(uuid4()), run_id, 2, at, at,
+        "protection", "protection_change", "broker-1", "DU1",
+        {"order_group_id": "group-1", "source_intent_id": source.intent_id,
+         "kind": "target", "phase": "effective",
+         "action": "replace_profit_target", "client_order_id": "target-1",
+         "price": 12.6, "intent_id": "amend-1", "ticker": "AAA",
+         "strategy_id": STRATEGY_ID, "strategy_revision": 1})
+    amended = reconstruct_strategy_one_oms_lineage(
+        state, recovered_intent,
+        replace(base, records=(proof,)))
+    assert amended[0].raw["canonical_metadata"]["replacement_intent_id"] == "amend-1"
+    with pytest.raises(ValueError, match="ambiguous"):
+        reconstruct_strategy_one_oms_lineage(
+            state, recovered_intent, replace(base, records=(proof, proof)))
+    with pytest.raises(ValueError, match="complete typed authority"):
+        reconstruct_strategy_one_oms_lineage(
+            state, recovered_intent, replace(base, through_sequence=2))
 
 
 def test_oms_duration_precision_is_bounded_without_rounding_financial_fields() -> None:

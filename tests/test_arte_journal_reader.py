@@ -116,8 +116,12 @@ def test_complete_protection_history_requires_every_committed_page(monkeypatch) 
                 1: TypedProtectionPage(2, (record,)),
                 2: TypedProtectionPage(3, ())}[after_sequence]
     monkeypatch.setattr(reader, "load_typed_protection_page", page)
-    assert load_complete_typed_protection_history(
-        object(), prefix, page_size=1, max_events=3) == (record,)
+    complete = load_complete_typed_protection_history(
+        object(), prefix, page_size=1, max_events=3)
+    assert complete.run_id == RUN
+    assert complete.through_sequence == 3
+    assert complete.committed_batch_ids == (batch_id,)
+    assert complete.records == (record,)
     assert calls == [(0, 1, 50_000), (1, 1, 50_000), (2, 1, 50_000)]
     with pytest.raises(RuntimeError, match="event bound"):
         load_complete_typed_protection_history(object(), prefix, max_events=2)

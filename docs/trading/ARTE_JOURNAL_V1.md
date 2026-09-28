@@ -203,7 +203,11 @@ is not a live OMS cutover: the group projector accepts exact canonical
 Strategy 1 `raw` lineage only when it can reconstruct it from the typed intent
 and authorized protection proof; arbitrary raw metadata and broker algo
 parameters fail closed. The cold reader returns flat orders and does not yet
-restore executable lineage. Remaining intent metadata, tactic/runtime state,
+restore executable lineage by itself. A separate cold helper can now rebuild
+supported Strategy 1 entry-group lineage from one exact typed intent and a
+complete, bounded protection history; it rejects ambiguous target amendments
+and does not rehydrate the OMS actor or reconcile broker state. Remaining
+intent metadata, tactic/runtime state,
 and broker reconciliation must be normalized and restored before SQLite can
 be removed. Live OMS also replaces `group.intent` content under the same
 logical `intent_id` during target/stop amendments. The staged group projector
