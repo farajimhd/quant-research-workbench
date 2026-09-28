@@ -172,3 +172,16 @@ The same run's read-only commit-header profile found six V4 commits for all
 2,217 events, with no singleton commit. The two manager and two broker-match
 snapshot units are separately attested recovery state; removing them merely
 to lower the measured wall time would weaken the current journal contract.
+
+On 2026-09-28, a current-code full-market Aug 18 rerun took 21.400s for
+read-only preflight and 32.673s for execution (`96c23b93-1de5-4ad2-8f3b-abb4860f8c80`).
+It processed 7,381 persisted liquidity rows, committed 2,217 normalized
+journal events in 10 units with no failed units, and its causal journal audit
+found 58 intents, 966 linked actions, and no backdated actions. Execution
+stage timing attributed 17.684s to the causal session and 7.890s to the
+terminal durability fence. A separate cProfile-instrumented rerun
+(`9b161ea5-746d-4b82-a74f-81af8d1b253e`) took 53.834s; that instrumented
+wall time is not comparable to the unprofiled runtime. Neither run generated
+a run-local journal directory. The preflight profile separately measured
+34.340s with instrumentation, including exact `bars_v1` and
+`liquidity_100ms_v1` integrity reads; its plan-only mode created no run.
