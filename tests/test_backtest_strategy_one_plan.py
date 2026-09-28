@@ -51,6 +51,7 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
     pivot = CertifiedPivotPlan("build", "2026-08-18", (), (), "i" * 64)
     activation = CertifiedActivationPlan((), "a" * 64)
     seeds = CertifiedSeedPlan("build", "v" * 64, (), "z" * 64, True)
+    intervals = SimpleNamespace(token="q" * 64)
     hod = CertifiedHodPlan("build", "2026-08-18", (), "h" * 64)
     entry = CertifiedEntryEvidencePlan(
         "build", "2026-08-18", (), (), (), "e" * 64)
@@ -67,6 +68,7 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
         "strategy_one_activation_token": activation.token,
         "strategy_one_hod_token": hod.token,
         "strategy_one_entry_token": entry.token,
+        "strategy_one_v7_interval_token": intervals.token,
     }
     v7 = {"token": seeds.token, "catalog_hash": seeds.catalog_hash,
           "provisional": seeds.provisional}
@@ -96,6 +98,8 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
     monkeypatch.setattr(subject, "certify_pivot_plan", second(pivot))
     monkeypatch.setattr(subject, "load_strategy_one_activations", second(activation))
     monkeypatch.setattr(subject, "certified_seed_plan", second(seeds))
+    monkeypatch.setattr(subject, "certify_v7_interval_plan",
+                        lambda *_args, **_kwargs: intervals)
     monkeypatch.setattr(subject, "certify_hod_plan",
                         lambda *_args, **_kwargs: hod)
     monkeypatch.setattr(subject, "certify_entry_evidence_plan",
@@ -104,8 +108,9 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
     plan = subject.certify_strategy_one_fixed_plans(
         market, prices, market_pins=pins, v7_pins=v7,
         client_factory=reader_factory)
-    assert plan.entry is entry and plan.prices is prices and plan.identities is identity
-    assert calls == ["closed"] * 7
+    assert (plan.entry is entry and plan.prices is prices
+            and plan.identities is identity and plan.v7_intervals is intervals)
+    assert calls == ["closed"] * 8
 
     calls.clear()
     with pytest.raises(ValueError, match="entry evidence seal changed"):
@@ -113,4 +118,4 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
             market, prices,
             market_pins={**pins, "strategy_one_entry_token": "wrong"},
             v7_pins=v7, client_factory=reader_factory)
-    assert calls == ["closed"] * 7
+    assert calls == ["closed"] * 8

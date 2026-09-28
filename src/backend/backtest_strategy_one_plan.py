@@ -35,6 +35,9 @@ from src.backend.backtest_strategy_one_pivot_store import (
     CertifiedPivotPlan, certify_pivot_plan,
 )
 from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
+from src.backend.backtest_strategy_one_v7_interval_store import (
+    CertifiedV7IntervalPlan, certify_v7_interval_plan,
+)
 from src.backend.structural_v7_seed import CertifiedSeedPlan, certified_seed_plan
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
@@ -49,6 +52,7 @@ class StrategyOneFixedPlans:
     activations: CertifiedActivationPlan
     pivots: CertifiedPivotPlan
     seeds: CertifiedSeedPlan
+    v7_intervals: CertifiedV7IntervalPlan
     hod: CertifiedHodPlan
     entry: CertifiedEntryEvidencePlan
 
@@ -180,15 +184,24 @@ def certify_strategy_one_fixed_plans(
                 or seeds.catalog_hash != v7_pins.get("catalog_hash")
                 or seeds.provisional != v7_pins.get("provisional")):
             raise ValueError("Strategy 1 V7 seed seal changed")
-    hod = read(lambda plan, reader: certify_hod_plan(
-        plan, candidates, seeds, client=reader), market)
-    if hod.token != market_pins.get("strategy_one_hod_token"):
-        raise ValueError("Strategy 1 HOD seal changed")
-    entry = read(lambda plan, reader: certify_entry_evidence_plan(
-        plan, candidates, activations, pivots, hod, seeds,
-        client=reader), market)
-    if entry.token != market_pins.get("strategy_one_entry_token"):
-        raise ValueError("Strategy 1 entry evidence seal changed")
+    with ThreadPoolExecutor(max_workers=1,
+                            thread_name_prefix="strategy-one-v7-intervals") as pool:
+        interval_future = pool.submit(
+            read, lambda plan, reader: certify_v7_interval_plan(
+                plan, seeds, session_date=market.sessions[0],
+                candidate_tickers=selected, client=reader), execution)
+        hod = read(lambda plan, reader: certify_hod_plan(
+            plan, candidates, seeds, client=reader), market)
+        if hod.token != market_pins.get("strategy_one_hod_token"):
+            raise ValueError("Strategy 1 HOD seal changed")
+        entry = read(lambda plan, reader: certify_entry_evidence_plan(
+            plan, candidates, activations, pivots, hod, seeds,
+            client=reader), market)
+        if entry.token != market_pins.get("strategy_one_entry_token"):
+            raise ValueError("Strategy 1 entry evidence seal changed")
+        intervals = interval_future.result()
+    if intervals.token != market_pins.get("strategy_one_v7_interval_token"):
+        raise ValueError("Strategy 1 V7 interval seal changed")
     return StrategyOneFixedPlans(
         market, identities, execution, projected_prices, candidates, activations,
-        pivots, seeds, hod, entry)
+        pivots, seeds, intervals, hod, entry)

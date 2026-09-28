@@ -469,6 +469,9 @@ class ReplayRunDefinition:
                 from src.trading_runtime.strategy_one_entry_evidence_schema import (
                     PRODUCT_DIGEST as ENTRY_DIGEST,
                 )
+                from src.trading_runtime.strategy_one_v7_interval_schema import (
+                    PRODUCT_DIGEST as V7_INTERVAL_DIGEST,
+                )
                 if (resolved_interval.milliseconds != 100
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_candidate_token") or "")) is None
@@ -485,10 +488,13 @@ class ReplayRunDefinition:
                             self.market_data_plan.get("strategy_one_hod_token") or "")) is None
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_entry_token") or "")) is None
+                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                            self.market_data_plan.get("strategy_one_v7_interval_token") or "")) is None
                         or self.market_data_plan.get("strategy_one_entry_digest") != ENTRY_DIGEST
+                        or self.market_data_plan.get("strategy_one_v7_interval_digest") != V7_INTERVAL_DIGEST
                         or self.market_data_plan.get("strategy_one_hod_digest") != HOD_DIGEST
                         or self.market_data_plan.get("strategy_one_pivot_digest") != PRODUCT_DIGEST):
-                    raise ValueError("Strategy 1 requires pinned candidates, activations, pivots, HOD, and entry evidence")
+                    raise ValueError("Strategy 1 requires pinned candidates, activations, pivots, V7 intervals, HOD, and entry evidence")
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -3316,6 +3322,7 @@ class ReplayRunController:
 
     async def _run_strategy_one_fixed_days(
         self, *, market, candidates, activations, pivots, hod, seeds,
+        v7_intervals,
         entry, prices, execution_market,
     ) -> None:
         """Run numbered Strategy 1 on the certified sparse tape, never frames."""
@@ -3380,7 +3387,8 @@ class ReplayRunController:
             await run_certified_strategy_one_session(
                 market=market, candidates=candidates,
                 activations=activations, pivots=pivots, hod=hod,
-                seeds=seeds, entry=entry, prices=prices,
+                seeds=seeds, interval_plan=v7_intervals,
+                entry=entry, prices=prices,
                 through_boundary_ms=self._fixed_through_boundary_ms(),
                 runtime=self._runtime,
                 assignments=self._strategy.assignments(),
@@ -3836,7 +3844,8 @@ class ReplayRunController:
             await self._run_strategy_one_fixed_days(
                 market=plans.market, candidates=plans.candidates,
                 activations=plans.activations, pivots=plans.pivots,
-                hod=plans.hod, seeds=plans.seeds, entry=plans.entry,
+                hod=plans.hod, seeds=plans.seeds,
+                v7_intervals=plans.v7_intervals, entry=plans.entry,
                 prices=plans.prices, execution_market=plans.execution_market)
             return
         evidence_gaps = _fixed_market_evidence_gaps(configuration)
@@ -11542,6 +11551,19 @@ def backtest_preflight(
                         seed_plan = certified_seed_plan(projected, reader)
                 causal_v7_plan = seed_plan.payload()
                 if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+                    from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
+                    from src.trading_runtime.strategy_one_v7_interval_schema import (
+                        PRODUCT_DIGEST as V7_INTERVAL_DIGEST,
+                    )
+                    with closing(readonly_clickhouse_client(
+                            market_stream=True, v3_read_principal=True)) as interval_reader:
+                        interval_plan = certify_v7_interval_plan(
+                            projected, seed_plan,
+                            session_date=certified.sessions[0],
+                            candidate_tickers=projection_tickers,
+                            client=interval_reader)
+                    market_data_plan["strategy_one_v7_interval_token"] = interval_plan.token
+                    market_data_plan["strategy_one_v7_interval_digest"] = V7_INTERVAL_DIGEST
                     from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
                     from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
                     with closing(readonly_clickhouse_client(
@@ -11576,12 +11598,12 @@ def backtest_preflight(
                 causal_v7_plan = {}
             v7_check["status"] = "ready" if seed_ready else "blocked"
             v7_check["summary"] = (
-                f"Pinned provisional V1 seeds cover {len(projected.tickers)} selected tickers; "
+                f"Pinned provisional V1 seeds and persisted V7 intervals cover {len(projected.tickers)} selected tickers; "
                 "the complete tradable universe was scanned before this computation prune."
                 if causal_v7_plan and causal_v7_plan.get("provisional") else
-                f"Pinned V7 seeds cover {len(projected.tickers)} selected tickers."
+                f"Pinned V7 seeds and persisted intervals cover {len(projected.tickers)} selected tickers."
                 if causal_v7_plan else
-                f"V7 prior coverage is incomplete: {causal_v7_error}"
+                f"V7 seed or interval coverage is incomplete: {causal_v7_error}"
             )
             v7_check["evidence"] = (
                 causal_v7_plan.get("token", "") if causal_v7_plan else causal_v7_error)

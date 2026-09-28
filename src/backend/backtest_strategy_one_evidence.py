@@ -26,6 +26,8 @@ from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidat
 from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.fixed_v7_stream import FixedV7Cache
+from src.backend.fixed_v7_interval_cache import FixedV7IntervalCache
+from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
 from src.backend.structural_v7_seed import CertifiedSeedPlan
 from src.trading_runtime.strategy_one_activation_state import (
     ActivationCatalog, FrozenActivation, freeze_strategy_one_activation,
@@ -60,6 +62,7 @@ class StrategyOneCausalEvidence:
                  seed_plan: CertifiedSeedPlan, pivot_plan: CertifiedPivotPlan,
                  hod_plan: CertifiedHodPlan,
                  session: date, client: Any,
+                 interval_plan: CertifiedV7IntervalPlan | None = None,
                  stage_time: Callable[[str, float], None] | None = None) -> None:
         if (not isinstance(market_plan, CertifiedMarketDayPlan)
                 or not isinstance(seed_plan, CertifiedSeedPlan)
@@ -78,11 +81,15 @@ class StrategyOneCausalEvidence:
         self.session = session
         self.hod = hod_plan
         self.bos = StrategyOneBosCursor(pivot_plan)
-        self.v7 = FixedV7Cache(
-            market_plan=market_plan, seed_plan=seed_plan,
+        self.v7 = (FixedV7IntervalCache(
+            market_plan=market_plan, interval_plan=interval_plan,
             session=session, client=client,
-            observe_completed_second=self.bos.observe_second,
-            prefetch_horizon_ms=900_000, stage_time=stage_time)
+            observe_completed_second=self.bos.observe_second)
+            if interval_plan is not None else FixedV7Cache(
+                market_plan=market_plan, seed_plan=seed_plan,
+                session=session, client=client,
+                observe_completed_second=self.bos.observe_second,
+                prefetch_horizon_ms=900_000, stage_time=stage_time))
         self.activations = ActivationCatalog()
         self._resistance: dict[str, ResistanceObservation] = {}
         self._completed_breaks: dict[str, tuple[ResistanceBreak, ...]] = {}

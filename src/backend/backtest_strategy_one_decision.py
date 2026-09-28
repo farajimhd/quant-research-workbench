@@ -15,6 +15,7 @@ from typing import Mapping, Sequence
 from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 from src.backend.fixed_v7_stream import FixedV7Cache
+from src.backend.fixed_v7_interval_cache import FixedV7IntervalCache
 from src.trading_runtime.strategy_one_hod_product import HodContext
 from src.trading_runtime.strategy_one_position import (
     ProtectionTransition, open_protection,
@@ -79,11 +80,12 @@ def candidate_entry_protection(
 
 async def certified_v7_candidate_protection(
     candidate: StrategyOneDecisionCandidate, *,
-    v7_cache: FixedV7Cache, hod_context: HodContext, tick: float,
+    v7_cache: FixedV7Cache | FixedV7IntervalCache,
+    hod_context: HodContext, tick: float,
 ) -> ProtectionTransition | None:
     """Join one candidate to its pinned, causally caught-up V7 geometry."""
     if (not isinstance(candidate, StrategyOneDecisionCandidate)
-            or not isinstance(v7_cache, FixedV7Cache)):
+            or not isinstance(v7_cache, (FixedV7Cache, FixedV7IntervalCache))):
         raise TypeError("Strategy 1 needs certified candidate and V7 cache")
     row = candidate.market_row
     at = market_day_boundary(date.fromisoformat(

@@ -32,6 +32,7 @@ from src.backend.backtest_strategy_one_coordinator import (
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
 from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
+from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.backtest_strategy_one_financial import read_strategy_one_financial_views
 from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
@@ -84,6 +85,7 @@ async def run_certified_strategy_one_session(
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     max_workers: int = 4,
     stage_time: Callable[[str, float], None] | None = None,
+    interval_plan: CertifiedV7IntervalPlan | None = None,
 ) -> StrategyOneProposalCounts:
     """Compose the certified sparse route without legacy frames or events.
 
@@ -96,6 +98,8 @@ async def run_certified_strategy_one_session(
             or not isinstance(pivots, CertifiedPivotPlan)
             or not isinstance(hod, CertifiedHodPlan)
             or not isinstance(seeds, CertifiedSeedPlan)
+            or interval_plan is not None
+            and not isinstance(interval_plan, CertifiedV7IntervalPlan)
             or not isinstance(entry, CertifiedEntryEvidencePlan)
             or not isinstance(prices, PriceLevelPlan)
             or len(market.sessions) != 1
@@ -167,6 +171,7 @@ async def run_certified_strategy_one_session(
                 market_plan=evidence_market, seed_plan=seeds,
                 pivot_plan=pivots, hod_plan=hod,
                 session=date.fromisoformat(projected.sessions[0]), client=reader,
+                interval_plan=interval_plan,
                 stage_time=stage_time)
             if stage_time is not None:
                 stage_time("strategy_one_evidence_init", evidence_started)

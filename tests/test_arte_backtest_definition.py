@@ -23,6 +23,9 @@ from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DI
 from src.trading_runtime.strategy_one_entry_evidence_schema import (
     PRODUCT_DIGEST as ENTRY_DIGEST,
 )
+from src.trading_runtime.strategy_one_v7_interval_schema import (
+    PRODUCT_DIGEST as V7_INTERVAL_DIGEST,
+)
 
 
 RUN_MONTH = date(2026, 9, 1)  # September execution of an August market session.
@@ -63,9 +66,11 @@ def test_strategy_one_definition_pins_all_certified_entry_dependencies():
               "strategy_one_activation_token": "f" * 64,
               "strategy_one_hod_token": "1" * 64,
               "strategy_one_entry_token": "2" * 64,
+              "strategy_one_v7_interval_token": "3" * 64,
               "strategy_one_pivot_digest": PRODUCT_DIGEST,
               "strategy_one_hod_digest": HOD_DIGEST,
-              "strategy_one_entry_digest": ENTRY_DIGEST}
+              "strategy_one_entry_digest": ENTRY_DIGEST,
+              "strategy_one_v7_interval_digest": V7_INTERVAL_DIGEST}
     assert _definition(configuration_revision=config,
                        market_data_plan=market).market_data_plan == market
     for missing in ("strategy_one_candidate_token",
@@ -76,10 +81,12 @@ def test_strategy_one_definition_pins_all_certified_entry_dependencies():
                     "strategy_one_activation_token",
                     "strategy_one_hod_token",
                     "strategy_one_entry_token",
+                    "strategy_one_v7_interval_token",
                     "strategy_one_pivot_digest",
                     "strategy_one_hod_digest",
-                    "strategy_one_entry_digest"):
-        with pytest.raises(ValueError, match="pinned candidates, activations, pivots, HOD, and entry evidence"):
+                    "strategy_one_entry_digest",
+                    "strategy_one_v7_interval_digest"):
+        with pytest.raises(ValueError, match="pinned candidates, activations, pivots, V7 intervals, HOD, and entry evidence"):
             _definition(configuration_revision=config,
                         market_data_plan={key: value for key, value in market.items()
                                           if key != missing})
