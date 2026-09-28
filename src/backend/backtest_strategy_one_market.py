@@ -24,6 +24,13 @@ from src.backend.backtest_strategy_one_preparation import (
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
 
+# Aug 18 full-market certified projection: 200 shards / 62,072 rows.
+# Read-only fetch took 6.849s at 4 lanes, 3.753s at 8, 3.125s at 16.
+# Keep the socket/worker ceiling explicit; the financial coordinator is still
+# single ordered authority and never executes in this pool.
+DEFAULT_SPARSE_READ_WORKERS = 16
+
+
 @dataclass(frozen=True, slots=True)
 class StrategyOneDecisionCandidate:
     """One exact persisted 100 ms row with its certified closed-bar evidence."""
@@ -117,7 +124,7 @@ def candidate_market_shards(
 def load_sparse_candidate_market(
     market: CertifiedMarketDayPlan, candidates: CertifiedCandidatePlan, *,
     price_plan: PriceLevelPlan, client_factory: Callable[[], Any],
-    max_workers: int = 4, max_rows: int = 250_000,
+    max_workers: int = DEFAULT_SPARSE_READ_WORKERS, max_rows: int = 250_000,
 ) -> tuple[Mapping[str, Any], ...]:
     """Read exact certified entry boundaries in parallel; return global order."""
     if (len(market.sessions) != 1 or market.execution_interval.kind != "fixed"

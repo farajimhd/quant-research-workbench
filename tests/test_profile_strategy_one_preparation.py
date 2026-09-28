@@ -22,7 +22,7 @@ def test_profiler_rule_contract_and_plain_result(monkeypatch, capsys):
     assert "candidate boundaries 14891" in output
     assert "Preflight 43.132s" in output
     assert calls[0][1] == {"through_boundary_ms": 57_600_000,
-                           "max_workers": 4}
+                           "max_workers": 16}
 
 
 def test_certified_read_reports_persisted_path_without_regeneration(monkeypatch, capsys):

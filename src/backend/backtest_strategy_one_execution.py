@@ -36,6 +36,7 @@ from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7Inter
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.backtest_strategy_one_financial import read_strategy_one_financial_views
 from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
+from src.backend.backtest_strategy_one_market import DEFAULT_SPARSE_READ_WORKERS
 from src.backend.backtest_strategy_one_scheduler import (
     StrategyOneBoundaryScheduler, StrategyOneBoundaryWork,
     build_certified_strategy_one_scheduler,
@@ -84,7 +85,7 @@ async def run_certified_strategy_one_session(
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     manager_ready: Callable[[StrategyOneManagementRunner], None] | None = None,
-    max_workers: int = 4,
+    max_workers: int = DEFAULT_SPARSE_READ_WORKERS,
     stage_time: Callable[[str, float], None] | None = None,
     interval_plan: CertifiedV7IntervalPlan | None = None,
 ) -> StrategyOneProposalCounts:

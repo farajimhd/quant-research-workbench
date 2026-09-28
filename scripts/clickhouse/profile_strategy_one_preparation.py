@@ -252,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tickers", default="", help="Comma-separated subset; default all attested tickers")
     parser.add_argument("--through-boundary-ms", type=int, default=57_600_000,
                         help="Completed boundary after 04:00 New York; default full 16-hour session")
-    parser.add_argument("--max-workers", type=int, default=4)
+    parser.add_argument("--max-workers", type=int, default=16)
     parser.add_argument("--certified-read", action="store_true",
                         help="Profile persisted candidate certification and fixed market reads; never regenerate candidates")
     parser.add_argument("--sparse-market", action="store_true",

@@ -22,7 +22,8 @@ from src.backend.backtest_market_data import (
 from src.backend.backtest_liquidity_price import PriceLevelPlan
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 from src.backend.backtest_strategy_one_market import (
-    attach_sparse_candidate_evidence, load_sparse_candidate_market,
+    DEFAULT_SPARSE_READ_WORKERS, attach_sparse_candidate_evidence,
+    load_sparse_candidate_market,
 )
 from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
 from src.backend.backtest_strategy_one_activation import (
@@ -41,7 +42,7 @@ def build_certified_strategy_one_scheduler(
     plan: CertifiedMarketDayPlan, candidates: CertifiedCandidatePlan, *,
     activations: CertifiedActivationPlan,
     price_plan: PriceLevelPlan, through_boundary_ms: int,
-    client_factory: Callable[[], Any], max_workers: int = 4,
+    client_factory: Callable[[], Any], max_workers: int = DEFAULT_SPARSE_READ_WORKERS,
     max_candidate_rows: int = 250_000,
     activation_source_candidates: CertifiedCandidatePlan | None = None,
     stage_time: Callable[[str, float], None] | None = None,

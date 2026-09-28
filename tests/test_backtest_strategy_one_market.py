@@ -1,8 +1,12 @@
 """Certified sparse Strategy 1 market loader keeps source and memory bounds."""
+from inspect import signature
+
 import numpy as np
 import pytest
 
 from src.backend import backtest_strategy_one_market as subject
+from src.backend.backtest_strategy_one_execution import run_certified_strategy_one_session
+from src.backend.backtest_strategy_one_scheduler import build_certified_strategy_one_scheduler
 from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
@@ -15,6 +19,15 @@ from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 DAY = "2026-08-18"
 BUILD = "a" * 64
 ATTEMPT = "00000000-0000-0000-0000-000000000001"
+
+
+def test_measured_sparse_read_default_reaches_the_running_session():
+    expected = subject.DEFAULT_SPARSE_READ_WORKERS
+    assert expected == 16
+    for operation in (subject.load_sparse_candidate_market,
+                      build_certified_strategy_one_scheduler,
+                      run_certified_strategy_one_session):
+        assert signature(operation).parameters["max_workers"].default == expected
 
 
 def prepared(ticker, clocks):

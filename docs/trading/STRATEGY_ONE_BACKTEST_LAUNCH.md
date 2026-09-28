@@ -106,3 +106,9 @@ while writer close took 0.001s and Keeper close took 0.105s. The asynchronous
 writer committed 10 units and 2,217 event rows with zero failures. A fresh
 `v4-terminal-page` request independently confirmed completed status, verified
 sequence 2,217 and market cursor, a flat account, and no review limitations.
+
+Read-only sparse-market profiles on that certified Aug 18 build fetched the
+same 62,072 candidate rows for 957 tickers from 200 bounded shards at each
+worker setting. The exact-key fetch took 6.849s with 4 workers, 3.753s with
+8, and 3.125s with 16. The Backtest's bounded sparse-read default is now 16;
+this measurement does not include preflight, brokerage, or journal completion.
