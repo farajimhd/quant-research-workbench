@@ -66,6 +66,17 @@ before admitting orders. Do not infer completeness from wall clock, a recent
 event, a session-wide count, or the in-memory snapshot. Backtest remains
 SELECT-only on its separate certified `arte` products.
 
+The upstream `q` sequence is **not** such a watermark: the provider explicitly
+documents increasing but non-consecutive per-ticker values for both
+[stock trades](https://massive.com/docs/websocket/stocks/trades) and
+[stock quotes](https://massive.com/docs/websocket/stocks/quotes). A numerical
+gap does not identify a missing packet, and a later `q` does not certify that
+an otherwise silent 100 ms bucket is complete. The current QMD sort key only
+orders events it has observed. Any producer certificate must instead bind an
+acknowledged ingest prefix to persisted canonical rows and address late or
+omitted source delivery explicitly; do not treat a locally assigned arrival
+counter as an upstream completeness proof.
+
 The consumer joins this completed liquidity row with the closed indicator
 pairs by session, ticker, resolution, and completed boundary. A 100 ms
 decision is eligible only after all required input products for that boundary

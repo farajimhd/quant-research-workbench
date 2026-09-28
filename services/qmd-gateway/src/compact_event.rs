@@ -746,6 +746,8 @@ impl SharedCompactEventStore {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct EventSortKey {
     sip_timestamp_us: u64,
+    // Provider `q` increases per ticker but is not consecutive. It helps
+    // order observed events; gaps cannot certify loss or finish a sparse bar.
     source_sequence: u64,
     event_type: u8,
     arrival_sequence: u64,
