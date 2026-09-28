@@ -2336,11 +2336,17 @@ class ReplayRunController:
                     'Terminal fixed Backtest requires lifecycle-last typed account captures')
             manager = getattr(self, '_strategy_one_manager', None)
             manager_state = None
+            broker_state = None
             if manager is not None:
                 boundary = dict(self._source_cursor).get('boundary_ms')
                 if type(boundary) is not int:
                     raise RuntimeError('Strategy 1 checkpoint has no completed boundary')
                 manager_state = manager.capture_state(boundary_ms=boundary)
+                broker = getattr(self._runtime, 'broker', None)
+                capture_broker = getattr(broker, 'broker_match_snapshot_state', None)
+                if capture_broker is None:
+                    raise RuntimeError('Strategy 1 broker cannot capture match state')
+                broker_state = (boundary, capture_broker())
             snapshot = {} if nonblocking_fixed else self.stream_snapshot()
             self._checkpoint_phase = 'checkpoint_capture'
             self._checkpoint_started_at = datetime.now(UTC)
@@ -2382,7 +2388,7 @@ class ReplayRunController:
                     interval_at_enqueue = self._restart_checkpoint_interval_events()
                     receipt = publisher.enqueue_checkpoint(
                         boundary_id=boundary_id, status='running',
-                        manager_state=manager_state)
+                        manager_state=manager_state, broker_state=broker_state)
                     self._checkpoint_io_task = receipt
                     def completed(done):
                         try:
@@ -2406,6 +2412,7 @@ class ReplayRunController:
                 self._checkpoint_io_task = asyncio.create_task(publisher.fence_checkpoint(
                     boundary_id=boundary_id, status='running',
                     manager_state=manager_state,
+                    broker_state=broker_state,
                 ))
                 try:
                     await asyncio.shield(self._checkpoint_io_task)

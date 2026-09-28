@@ -1398,6 +1398,7 @@ def _insert(
     dispatch_terminal_account_id: str | None = None,
     dispatch_snapshot_account_id: str | None = None,
     dispatch_manager_snapshot_hash: str | None = None,
+    dispatch_broker_snapshot_hash: str | None = None,
     dispatch_policy_hash: str | None = None,
     dispatch_sync_account_id: str | None = None,
     dispatch_sync_revision: int | None = None,
@@ -1428,6 +1429,7 @@ def _insert(
                 any(value is not None for value in (
                     dispatch_sequence, dispatch_batch_id, dispatch_terminal_account_id,
                     dispatch_snapshot_account_id, dispatch_manager_snapshot_hash,
+                    dispatch_broker_snapshot_hash,
                     dispatch_policy_hash)) or
                 dispatch_run_context):
             raise RuntimeError("Portfolio sync INSERT lacks strict dispatch identity")
@@ -1445,6 +1447,11 @@ def _insert(
         raise RuntimeError("Policy INSERT lacks durable dispatch authority")
     if dispatch_manager_snapshot_hash is not None and dispatch is None:
         raise RuntimeError("Manager snapshot INSERT lacks durable dispatch authority")
+    if dispatch_broker_snapshot_hash is not None and dispatch is None:
+        raise RuntimeError("Broker snapshot INSERT lacks durable dispatch authority")
+    if (name in {table.name for table in BROKER_MATCH_SNAPSHOT_TABLES}
+            and dispatch_broker_snapshot_hash is None):
+        raise RuntimeError("Broker snapshot INSERT lacks its typed snapshot fence")
     if dispatch is not None:
         if dispatch_policy_hash is not None:
             policy_tables = {"trading_portfolio_policy_v1",
@@ -1456,7 +1463,8 @@ def _insert(
                     or any(value is not None for value in (
                         dispatch_sequence, dispatch_batch_id,
                         dispatch_terminal_account_id, dispatch_snapshot_account_id,
-                        dispatch_manager_snapshot_hash))
+                        dispatch_manager_snapshot_hash,
+                        dispatch_broker_snapshot_hash))
                     or dispatch_run_context):
                 raise ValueError("Policy dispatch identity differs from typed rows")
             dispatch.execute_policy_insert(
@@ -1479,6 +1487,12 @@ def _insert(
                        or row.get("snapshot_id") != rows[0].get("snapshot_id")
                        for row in rows)):
             raise ValueError("Manager snapshot dispatch identity differs from typed rows")
+        if dispatch_broker_snapshot_hash is not None and (
+                name not in {table.name for table in BROKER_MATCH_SNAPSHOT_TABLES}
+                or any(row.get("checkpoint_sequence") != dispatch_sequence
+                       or row.get("snapshot_id") != rows[0].get("snapshot_id")
+                       for row in rows)):
+            raise ValueError("Broker snapshot dispatch identity differs from typed rows")
         run_ids = {row.get("run_id") for row in rows}
         if len(run_ids) != 1 or not isinstance(next(iter(run_ids)), str) or not next(iter(run_ids)):
             raise RuntimeError("Durable typed INSERT lacks one run identity")
@@ -1489,7 +1503,8 @@ def _insert(
             batch_last_sequence=(0 if dispatch_run_context else dispatch_sequence),
             terminal_account_id=dispatch_terminal_account_id,
             snapshot_account_id=dispatch_snapshot_account_id,
-            manager_snapshot_hash=dispatch_manager_snapshot_hash)
+            manager_snapshot_hash=dispatch_manager_snapshot_hash,
+            broker_snapshot_hash=dispatch_broker_snapshot_hash)
     else:
         client.execute(sql)
     return sql
@@ -3440,6 +3455,15 @@ class _ManagerSnapshotUnit:
     state: Any
 
 
+@dataclass(frozen=True, slots=True)
+class _BrokerMatchSnapshotUnit:
+    session_date: date
+    checkpoint_sequence: int
+    boundary_ms: int
+    journal_batch_id: str
+    state: Any
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
@@ -3537,7 +3561,7 @@ class ArteJournalWriter:
                   | V4ProtectionReconciliationBatch
                   | _DurabilityBarrier | _AdmissionUnit
                   | _PortfolioSyncUnit | _TerminalBacktestUnit
-                  | _ManagerSnapshotUnit,
+                  | _ManagerSnapshotUnit | _BrokerMatchSnapshotUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
@@ -4097,6 +4121,40 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_broker_match_snapshot(self, *, session_date: date,
+                                     checkpoint_sequence: int,
+                                     boundary_ms: int,
+                                     journal_batch_id: str,
+                                     state: Any) -> Future[str]:
+        """Queue completed-boundary broker match state off the engine path."""
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(session_date, date)
+                or type(checkpoint_sequence) is not int
+                or checkpoint_sequence < 1
+                or type(boundary_ms) is not int or boundary_ms < 0
+                or not isinstance(state, dict)):
+            raise ValueError("Broker match snapshot needs a typed V4 boundary")
+        try:
+            if str(UUID(journal_batch_id)) != journal_batch_id:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Broker match snapshot batch ID is invalid") from exc
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((
+                    _BrokerMatchSnapshotUnit(session_date, checkpoint_sequence,
+                                             boundary_ms, journal_batch_id, state),
+                    receipt))
+            except Full as exc:
+                raise JournalQueueFull("Broker match snapshot queue is full") from exc
+            self._accepted_writes = True
+        return receipt
+
     def _run(self) -> None:
         from .arte_journal_compound_v4 import V4CompoundBatch
         from .arte_oms_tactic_projection import V4OmsTacticBatch
@@ -4104,7 +4162,8 @@ class ArteJournalWriter:
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
-            | _TerminalBacktestUnit | _ManagerSnapshotUnit,
+            | _TerminalBacktestUnit | _ManagerSnapshotUnit
+            | _BrokerMatchSnapshotUnit,
             Future[str],
         ] | None = None
         while True:
@@ -4158,7 +4217,8 @@ class ArteJournalWriter:
                                             _DurabilityBarrier))
                         and not (self._journal_profile == "backtest_v4"
                                  and isinstance(group[0][0], (
-                                     _TerminalBacktestUnit, _ManagerSnapshotUnit)))):
+                                     _TerminalBacktestUnit, _ManagerSnapshotUnit,
+                                     _BrokerMatchSnapshotUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
                 if isinstance(group[0][0], V4CompoundBatch):
                     from .arte_journal_compound_v4 import publish_compound_v4
@@ -4340,6 +4400,22 @@ class ArteJournalWriter:
                         checkpoint_sequence=unit.checkpoint_sequence,
                         state=unit.state)
                     publish_manager_snapshot(
+                        self._client, self._client.manager_keeper_session, rows,
+                        journal_batch_id=unit.journal_batch_id)
+                    committed_id = unit.journal_batch_id
+                elif isinstance(group[0][0], _BrokerMatchSnapshotUnit):
+                    from src.trading_runtime.strategy_one_broker_match_snapshot import (
+                        project_broker_match_snapshot, publish_broker_match_snapshot,
+                    )
+                    unit = group[0][0]
+                    if self._last_commit_id != unit.journal_batch_id:
+                        raise RuntimeError(
+                            "Broker match snapshot has no preceding ordered V4 commit")
+                    rows = project_broker_match_snapshot(
+                        run_id=self._run_id, session_date=unit.session_date,
+                        checkpoint_sequence=unit.checkpoint_sequence,
+                        boundary_ms=unit.boundary_ms, state=unit.state)
+                    publish_broker_match_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
                         journal_batch_id=unit.journal_batch_id)
                     committed_id = unit.journal_batch_id

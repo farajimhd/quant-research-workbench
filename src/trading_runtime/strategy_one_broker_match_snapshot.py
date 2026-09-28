@@ -574,3 +574,95 @@ def load_attested_broker_match_snapshot(
     if keeper.read_head(run_id=run_id) != first:
         raise RuntimeError("Broker match Keeper head changed during cold read")
     return rows
+
+
+def publish_broker_match_snapshot(
+    client: Any, session: ManagedKeeperSession,
+    rows: BrokerMatchSnapshotRows, *, journal_batch_id: str,
+) -> BrokerMatchHead:
+    """Journal-worker-only children-first publication, then Keeper CAS.
+
+    An uncertain INSERT never selects a head. The execution thread may only
+    submit this work through its bounded journal queue and receives a future.
+    """
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+    from src.trading_runtime.arte_journal_writer import _insert
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    if (not isinstance(session, ManagedKeeperSession) or not session.writable
+            or getattr(client, "typed_insert_strict", False) is not True
+            or not isinstance(getattr(client, "typed_insert_dispatch", None),
+                              TypedInsertDispatch)
+            or client.typed_insert_dispatch.keeper is not session.client):
+        raise RuntimeError("Broker match publication lacks fenced writer")
+    expected = verify_broker_match_snapshot(rows)
+    seal = expected.snapshot
+    run_id, sequence = seal["run_id"], seal["checkpoint_sequence"]
+    try:
+        if str(UUID(journal_batch_id)) != journal_batch_id:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Broker match batch ID is invalid") from exc
+    prefix = load_verified_v4_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != sequence
+            or prefix.last_batch_id != journal_batch_id):
+        raise RuntimeError("Broker match lacks exact running V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict) or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != sequence
+            or cursor.get("batch_id") != journal_batch_id
+            or cursor.get("boundary_ms") != seal["boundary_ms"]
+            or cursor.get("session_date") != seal["session_date"]):
+        raise RuntimeError("Broker match cursor differs from captured state")
+    reader = ManagedBrokerMatchHeadReader(session)
+    path = reader.path(run_id)
+    if session.client.exists(path) is None:
+        previous = None
+    else:
+        previous = reader.read_head(run_id=run_id)
+        if previous.checkpoint_sequence == sequence:
+            if (previous.journal_batch_id != journal_batch_id
+                    or previous.snapshot_hash != seal["content_hash"]
+                    or load_attested_broker_match_snapshot(
+                        client, reader, run_id=run_id,
+                        checkpoint_sequence=sequence) != expected):
+                raise RuntimeError("Broker match repeat differs from selected state")
+            return previous
+        if previous.checkpoint_sequence > sequence:
+            raise RuntimeError("Broker match would rewind Keeper head")
+
+    families = ((ACCOUNT, expected.accounts), (POSITION, expected.positions),
+                (OPEN_ORDER, expected.open_orders), (TICKER, expected.tickers),
+                (MARK, expected.marks), (ROOT, (seal,)))
+    operations: list[tuple[str, str]] = []
+    for contract, family in families:
+        if not family:
+            continue
+        token = (f"broker-match:{run_id}:{sequence}:"
+                 f"{seal['content_hash']}:{contract.name}")
+        _insert(client, contract.name, family, token,
+                dispatch_sequence=sequence,
+                dispatch_batch_id=journal_batch_id,
+                dispatch_broker_snapshot_hash=seal["content_hash"])
+        operations.append((contract.name, token))
+    observed = load_unattested_broker_match_snapshot(
+        client, run_id=run_id, checkpoint_sequence=sequence)
+    if observed != expected:
+        raise RuntimeError("Broker match readback differs from captured state")
+    for table, token in operations:
+        client.typed_insert_dispatch.seal_verified_operation(
+            run_id=run_id, table=table, token=token,
+            batch_id=journal_batch_id, batch_last_sequence=sequence,
+            broker_snapshot=True)
+    client.typed_insert_dispatch.compact_verified_broker_match_snapshot(
+        run_id=run_id, batch_id=journal_batch_id,
+        last_sequence=sequence, snapshot_hash=seal["content_hash"],
+        operations=tuple(operations), previous=previous)
+    selected = reader.read_head(run_id=run_id)
+    if (selected.checkpoint_sequence != sequence
+            or selected.journal_batch_id != journal_batch_id
+            or selected.snapshot_hash != seal["content_hash"]):
+        raise RuntimeError("Broker match Keeper readback differs")
+    return selected

@@ -316,6 +316,55 @@ class SimulatedBrokerAdapter:
             "next_execution_id": self._next_execution_id,
         }
 
+    def broker_match_snapshot_state(self) -> dict[str, Any]:
+        """Capture only normalized fixed-bar matching state for async publication.
+
+        Historical executions and source-market rows are deliberately excluded:
+        they have independent journal/ARTE authorities and must not be copied
+        on the causal execution thread at each checkpoint.
+        """
+        if not self._bar_mode:
+            raise RuntimeError("Broker match snapshot requires fixed-bar mode")
+        return {
+            "schema_version": 4,
+            "initial_time": self.initial_time.isoformat() if self.initial_time else None,
+            "performance_extrema": dict(self._performance),
+            "performance_marks": {str(k): list(v) for k, v in self._performance_marks.items()},
+            "bar_mode": True,
+            "bar_boundaries": {key: value.isoformat() for key, value in self._bar_boundaries.items()},
+            "bar_marks_by_ticker": dict(self._bar_marks_by_ticker),
+            "account_ids": list(self._account_ids),
+            "cash": dict(self._cash),
+            "realized_pnl": dict(self._realized_pnl),
+            "positions": {
+                account_id: [asdict(position) for position in positions.values()]
+                for account_id, positions in self._positions.items()
+            },
+            "orders": [
+                {
+                    "request": _checkpoint_order_request(state.request),
+                    "order_id": state.order_id,
+                    "status": state.status.value,
+                    "submitted_at": state.submitted_at.isoformat(),
+                    "oca_group": state.oca_group,
+                    "filled": state.filled,
+                    "avg_price": state.avg_price,
+                    "commission_paid": state.commission_paid,
+                    "stop_triggered": state.stop_triggered,
+                    "trailing_reference": state.trailing_reference,
+                    "status_description": state.status_description,
+                }
+                for state in self._orders.values() if state.status in OPEN_ORDER_STATUSES
+            ],
+            "quotes_by_ticker": {
+                ticker: _market_event_checkpoint(event)
+                for ticker, event in self._quotes_by_ticker.items()
+            },
+            "marks": {str(conid): value for conid, value in self._marks.items()},
+            "next_order_id": self._next_order_id,
+            "next_execution_id": self._next_execution_id,
+        }
+
     def restore_checkpoint_state(self, payload: dict[str, Any]) -> None:
         """Restore only an exact, complete simulator checkpoint."""
         schema_version = int(payload.get("schema_version") or 0)

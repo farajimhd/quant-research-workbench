@@ -170,6 +170,12 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
             run_id="backtest:one", session_date=day,
             checkpoint_sequence=42, boundary_ms=boundary_ms,
             state=self.broker.checkpoint_state())
+        compact_rows = project_broker_match_snapshot(
+            run_id="backtest:one", session_date=day,
+            checkpoint_sequence=42, boundary_ms=boundary_ms,
+            state=self.broker.broker_match_snapshot_state())
+        self.assertEqual(compact_rows, rows)
+        self.assertNotIn("executions", self.broker.broker_match_snapshot_state())
         self.assertEqual(rows.snapshot["account_count"], 1)
         self.assertEqual(rows.snapshot["position_count"], 1)
         self.assertEqual(rows.snapshot["open_order_count"], 1)
