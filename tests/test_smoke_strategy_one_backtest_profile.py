@@ -1,7 +1,9 @@
 """The workstation smoke probe reports causal V7 reads separately."""
 
+import pytest
+
 from scripts.clickhouse.smoke_strategy_one_backtest import (
-    _SqlCallProfile, _profile_sql_calls,
+    _SqlCallProfile, _audit_causal_journal, _profile_sql_calls,
 )
 
 
@@ -48,3 +50,50 @@ def test_sql_profile_times_streaming_v7_iterator_without_retaining_sql(
     assert ClickHouseHttpClient.iter_json_each_row is stream
     profile.print_summary()
     assert "v7_completed_second_stream: calls=1 iterator_s=" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("backdate", [False, True])
+def test_smoke_audits_every_saved_journal_page(monkeypatch, capsys, backdate):
+    from src.backend import backtest_v4_saved_review
+    from src.trading_runtime import arte_journal_writer
+
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    monkeypatch.setattr(arte_journal_writer,
+                        "backtest_v4_operator_client_from_env", lambda: client)
+
+    def row(sequence, family, at, detail):
+        return {"event": {"sequence": sequence, "event_time": at},
+                "detail_family": family, "detail": detail}
+
+    source = "2026-08-19 08:00:42.100000000"
+    action = ("2026-08-19 08:00:42.064247000" if backdate else source)
+    pages = (
+        {"events": (row(1, "trading_strategy_intent_v1", source,
+                        {"intent_id": "intent-1"}),),
+         "next_sequence": 1, "complete": False},
+        {"events": (row(2, "trading_portfolio_decision_v1", action,
+                        {"request_id": "intent-1"}),),
+         "next_sequence": 2, "complete": True},
+    )
+
+    def load(_client, _run_id, *, after_sequence, limit):
+        assert _client is client and limit == 1000
+        page = pages[after_sequence]
+        return {**page, "status": "completed", "market_cursor_verified": True,
+                "limitations": [], "verified_sequence": 2}
+
+    monkeypatch.setattr(backtest_v4_saved_review,
+                        "load_v4_terminal_review_page", load)
+    if backdate:
+        with pytest.raises(RuntimeError, match="precedes its intent"):
+            _audit_causal_journal("run-1")
+    else:
+        _audit_causal_journal("run-1")
+        assert "events=2 intents=1 linked_actions=1 backdated=0" in capsys.readouterr().out
+    assert client.closed

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import cProfile
 from datetime import date, datetime, time, timedelta
 from io import StringIO
@@ -91,6 +91,58 @@ def _print_completed_profile(controller) -> None:
               f"event_rows={row['event_rows']} "
               f"worker_s={row['publish_ns_total'] / 1e9:.3f} "
               f"max_s={row['publish_ns_max'] / 1e9:.3f}", flush=True)
+
+
+def _audit_causal_journal(run_id: str) -> None:
+    """Read every verified page and reject backdated decision descendants."""
+    from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page
+    from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
+
+    intents: dict[str, datetime] = {}
+    linked = sequence = 0
+    with closing(backtest_v4_operator_client_from_env()) as client:
+        while True:
+            page = load_v4_terminal_review_page(
+                client, run_id, after_sequence=sequence, limit=1000)
+            if (page["status"] != "completed"
+                    or not page["market_cursor_verified"]
+                    or page["limitations"]):
+                raise RuntimeError("Strategy 1 terminal authority is incomplete")
+            for row in page["events"]:
+                event, detail = row["event"], row["detail"]
+                if int(event["sequence"]) != sequence + 1:
+                    raise RuntimeError("Strategy 1 terminal journal has a sequence gap")
+                sequence += 1
+                at = datetime.fromisoformat(event["event_time"])
+                family = row["detail_family"]
+                if family == "trading_strategy_intent_v1":
+                    identity = detail["intent_id"]
+                    if identity in intents:
+                        raise RuntimeError("Strategy 1 journal repeats an intent")
+                    intents[identity] = at
+                else:
+                    key = {
+                        "trading_portfolio_decision_v1": "request_id",
+                        "trading_portfolio_reservation_event_v1": "intent_id",
+                        "trading_oms_group_state_v1": "strategy_intent_id",
+                    }.get(family)
+                    identity = detail.get(key) if key else None
+                    if identity:
+                        source = intents.get(identity)
+                        if source is None or at < source:
+                            raise RuntimeError(
+                                "Strategy 1 journal action precedes its intent")
+                        linked += 1
+            if page["complete"]:
+                if (sequence != page["verified_sequence"]
+                        or page["next_sequence"] != sequence
+                        or not intents or not linked):
+                    raise RuntimeError("Strategy 1 terminal journal audit is incomplete")
+                break
+            if page["next_sequence"] != sequence:
+                raise RuntimeError("Strategy 1 terminal page did not advance")
+    print(f"Causal journal: events={sequence} intents={len(intents)} "
+          f"linked_actions={linked} backdated=0", flush=True)
 
 
 def _profile_preflight_call(call, **kwargs):
@@ -328,6 +380,7 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
     if controller.run_dir.exists():
         raise RuntimeError("Strategy 1 integration wrote a run-local directory")
     _print_completed_profile(controller)
+    _audit_causal_journal(controller.run_id)
     sql_profile.print_summary()
 
 
@@ -342,6 +395,8 @@ def main() -> None:
     parser.add_argument("--initial-cash", type=int, default=10_000,
                         help="simulated account cash; default matches the Backtest UI")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--audit-run-id", default="",
+                        help="read-only causal audit of a completed Strategy 1 run")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="show the slowest preflight calls; does not create market data")
     parser.add_argument("--preflight-repeats", type=int, choices=(1, 2), default=1,
@@ -349,6 +404,12 @@ def main() -> None:
     parser.add_argument("--profile-execution", action="store_true",
                         help="show main event-loop calls; profile overhead affects wall time")
     args = parser.parse_args()
+    if args.audit_run_id:
+        if args.apply or args.profile_preflight or args.profile_execution:
+            parser.error("Saved-run audit is read-only and cannot start a probe")
+        _load_private_credentials()
+        _audit_causal_journal(args.audit_run_id)
+        return
     if args.apply and args.preflight_repeats != 1:
         parser.error("Repeated preflight is read-only; omit --apply")
     if args.ticker and (not args.ticker.isascii() or not args.ticker.isalnum()):
