@@ -66,6 +66,14 @@ before admitting orders. Do not infer completeness from wall clock, a recent
 event, a session-wide count, or the in-memory snapshot. Backtest remains
 SELECT-only on its separate certified `arte` products.
 
+QMD now has a bounded, keyset-paged read-only `q_live.events FINAL` cold reader
+for v6 ticker/range diagnostics. It preserves the reducer's canonical sort
+key and rejects wrong-version, out-of-range, duplicate, or disordered rows.
+This reader is deliberately not wired to order admission: no source-complete
+per-ticker certificate or late-write fence exists yet. Page exhaustion means
+only that the current query returned no more rows, not that the source is
+complete.
+
 The upstream `q` sequence is **not** such a watermark: the provider explicitly
 documents increasing but non-consecutive per-ticker values for both
 [stock trades](https://massive.com/docs/websocket/stocks/trades) and

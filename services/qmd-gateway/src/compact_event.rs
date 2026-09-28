@@ -753,6 +753,88 @@ struct EventSortKey {
     arrival_sequence: u64,
 }
 
+/// A bounded diagnostic cold page from canonical q_live.events. This is not
+/// an upstream completeness certificate or a live order-admission permit.
+pub struct CanonicalLiquidityReplayPage {
+    pub events: Vec<LiveCompactEvent>,
+    pub next_cursor: Option<(u64, u64, u8, u64)>,
+    pub has_more: bool,
+}
+
+fn canonical_liquidity_replay_sql(
+    table: &str,
+    ticker: &str,
+    start_us: u64,
+    end_us: u64,
+    after: Option<(u64, u64, u8, u64)>,
+    page_size: usize,
+) -> Result<String, String> {
+    if table.is_empty() || !table.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+        return Err("canonical liquidity replay table identifier is invalid".into());
+    }
+    if ticker.is_empty() || ticker.len() > 32 || !ticker.bytes().all(|byte| byte.is_ascii_uppercase()
+        || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')) {
+        return Err("canonical liquidity replay ticker is invalid".into());
+    }
+    if start_us == 0 || start_us >= end_us || end_us > i64::MAX as u64
+        || page_size == 0 || page_size > 4096 {
+        return Err("canonical liquidity replay range or page size is invalid".into());
+    }
+    if after.is_some_and(|(time, _, kind, _)| time < start_us || time >= end_us || kind > 1) {
+        return Err("canonical liquidity replay cursor is outside the requested range".into());
+    }
+    let cursor = after.map(|(time, sequence, kind, arrival)| format!(
+        " AND tuple(sip_timestamp_us, source_sequence, bitAnd(event_meta, 1), arrival_sequence) > tuple({time}, {sequence}, {kind}, {arrival})"
+    )).unwrap_or_default();
+    Ok(format!(
+        "SELECT event_date, schema_version, toUnixTimestamp64Milli(ingest_ts) AS ingest_ts_ms, arrival_sequence, ticker, event_meta, execution_timestamp_us, sip_timestamp_us, price_primary_int, price_secondary_int, size_primary, size_secondary, exchange_primary, exchange_secondary, condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5, source_sequence, issue_flags FROM {table} FINAL WHERE ticker = '{ticker}' AND event_date BETWEEN toDate(fromUnixTimestamp64Micro(toInt64({start_us}))) AND toDate(fromUnixTimestamp64Micro(toInt64({end_us}))) AND sip_timestamp_us >= {start_us} AND sip_timestamp_us < {end_us}{cursor} ORDER BY sip_timestamp_us, source_sequence, bitAnd(event_meta, 1), arrival_sequence LIMIT {} SETTINGS output_format_json_quote_64bit_integers = 0 FORMAT JSONEachRow",
+        page_size + 1,
+    ))
+}
+
+fn parse_canonical_liquidity_replay_page(
+    response: &str,
+    ticker: &str,
+    start_us: u64,
+    end_us: u64,
+    after: Option<(u64, u64, u8, u64)>,
+    page_size: usize,
+) -> Result<CanonicalLiquidityReplayPage, String> {
+    let mut events = Vec::with_capacity(page_size.min(4096));
+    let mut previous = after;
+    for line in response.lines() {
+        if events.len() > page_size {
+            return Err("canonical liquidity replay exceeded its page bound".into());
+        }
+        let mut value: serde_json::Value = serde_json::from_str(line)
+            .map_err(|error| format!("canonical liquidity replay row is invalid: {error}"))?;
+        let fields = value.as_object_mut().ok_or("canonical liquidity replay row is not an object")?;
+        let millis = fields.remove("ingest_ts_ms").and_then(|value| value.as_i64())
+            .ok_or("canonical liquidity replay ingest clock is invalid")?;
+        let ingest = DateTime::<Utc>::from_timestamp_millis(millis)
+            .ok_or("canonical liquidity replay ingest clock is outside UTC range")?;
+        fields.insert("ingest_ts".into(), serde_json::Value::String(ingest.to_rfc3339()));
+        let event: LiveCompactEvent = serde_json::from_value(value)
+            .map_err(|error| format!("canonical liquidity replay field is invalid: {error}"))?;
+        let key = EventSortKey::from_event(&event);
+        let tuple = (key.sip_timestamp_us, key.source_sequence, key.event_type, key.arrival_sequence);
+        if event.ticker != ticker || event.schema_version != LIVE_COMPACT_EVENT_SCHEMA_VERSION
+            || event.sip_timestamp_us < start_us || event.sip_timestamp_us >= end_us
+            || previous.is_some_and(|prior| tuple <= prior) {
+            return Err("canonical liquidity replay identity, version, range, or order differs".into());
+        }
+        previous = Some(tuple);
+        events.push(event);
+    }
+    let has_more = events.len() > page_size;
+    if has_more { events.pop(); }
+    let next_cursor = events.last().map(|event| {
+        let key = EventSortKey::from_event(event);
+        (key.sip_timestamp_us, key.source_sequence, key.event_type, key.arrival_sequence)
+    }).or(after);
+    Ok(CanonicalLiquidityReplayPage { events, next_cursor, has_more })
+}
+
 impl EventSortKey {
     fn from_event(event: &LiveCompactEvent) -> Self {
         Self {
@@ -1217,6 +1299,31 @@ impl CompactPersistPending {
 }
 
 impl CompactEventClickHouseWriter {
+    /// Cold/control-plane read only. A page proves neither upstream delivery
+    /// completeness nor that a later INSERT cannot arrive; callers must not
+    /// use it to enable Strategy 1 live orders.
+    pub async fn read_canonical_liquidity_replay_page(
+        &self,
+        ticker: &str,
+        start_us: u64,
+        end_us: u64,
+        after: Option<(u64, u64, u8, u64)>,
+        page_size: usize,
+    ) -> Result<CanonicalLiquidityReplayPage, String> {
+        if self.config.clickhouse_database != "q_live"
+            || self.config.compact_event_table != "events"
+            || !self.config.persist_compact_events {
+            return Err("canonical liquidity replay requires durable q_live.events".into());
+        }
+        let sql = canonical_liquidity_replay_sql(
+            &self.config.compact_event_table, ticker, start_us, end_us, after, page_size,
+        )?;
+        let response = self.query(&sql, true).await?;
+        parse_canonical_liquidity_replay_page(
+            &response, ticker, start_us, end_us, after, page_size,
+        )
+    }
+
     pub fn new(
         config: GatewayConfig,
         references: CompactEventReferences,
@@ -2681,6 +2788,65 @@ mod tests {
         )
         .unwrap()
         .event
+    }
+
+    fn replay_wire_row(event: &LiveCompactEvent) -> String {
+        let mut value = serde_json::to_value(event).unwrap();
+        let fields = value.as_object_mut().unwrap();
+        fields.remove("ingest_ts");
+        fields.insert("ingest_ts_ms".into(), serde_json::json!(event.ingest_ts.timestamp_millis()));
+        value.to_string()
+    }
+
+    #[test]
+    fn canonical_liquidity_replay_is_bounded_ordered_and_read_only() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 24, 14, 30, 0).unwrap()
+            .timestamp_micros() as u64;
+        let sql = canonical_liquidity_replay_sql(
+            "events", "TEST", start, start + 2_000_000, None, 1,
+        ).unwrap();
+        assert!(sql.starts_with("SELECT event_date"));
+        assert!(sql.contains("FROM events FINAL"));
+        assert!(sql.contains("LIMIT 2 SETTINGS output_format_json_quote_64bit_integers = 0 FORMAT JSONEachRow"));
+        assert!(!sql.contains("INSERT INTO"));
+        assert!(canonical_liquidity_replay_sql(
+            "events", "TEST' OR 1=1", start, start + 1, None, 1,
+        ).is_err());
+        assert!(canonical_liquidity_replay_sql(
+            "events", "TEST", start, start + 1, None, 4097,
+        ).is_err());
+        let mut first = compact_quote_at(Utc.timestamp_micros(start as i64).unwrap(), 1);
+        first.arrival_sequence = 10;
+        let mut second = compact_quote_at(Utc.timestamp_micros(start as i64).unwrap()
+            + chrono::Duration::milliseconds(100), 2);
+        second.arrival_sequence = 11;
+        let wire = format!("{}\n{}", replay_wire_row(&first), replay_wire_row(&second));
+        let page = parse_canonical_liquidity_replay_page(
+            &wire, "TEST", start, start + 2_000_000, None, 1,
+        ).unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert!(page.has_more);
+        let cursor = page.next_cursor.unwrap();
+        assert_eq!(cursor.3, 10);
+        assert!(parse_canonical_liquidity_replay_page(
+            &wire, "TEST", start, start + 2_000_000, Some(cursor), 1,
+        ).is_err());
+        let next = parse_canonical_liquidity_replay_page(
+            &replay_wire_row(&second), "TEST", start, start + 2_000_000, Some(cursor), 1,
+        ).unwrap();
+        assert!(!next.has_more);
+        assert_eq!(next.events[0].arrival_sequence, 11);
+    }
+
+    #[test]
+    fn canonical_liquidity_replay_rejects_preclassified_rows() {
+        let time = Utc.with_ymd_and_hms(2026, 8, 24, 14, 30, 0).unwrap();
+        let start = time.timestamp_micros() as u64;
+        let mut event = compact_quote_at(time, 1);
+        event.schema_version = 5;
+        assert!(parse_canonical_liquidity_replay_page(
+            &replay_wire_row(&event), "TEST", start, start + 100_000, None, 1,
+        ).is_err());
     }
 
     fn market_quote(sequence: u64) -> MarketEvent {
