@@ -126,7 +126,13 @@ impl LiquidityReducer {
             // An ordered later source event can close the final in-session
             // bucket even though that event does not belong in the session.
             // Silence or a wall-clock tick cannot make the same claim.
-            return Ok(self.take_completed_through(event.sip_timestamp_us));
+            let mut completed = self.take_completed_through(event.sip_timestamp_us);
+            if let Some(row) = completed.as_mut() {
+                // The later event is the evidence that closes this bucket. Its
+                // source receipt must be durable before the row is published.
+                row.source_arrival_sequences.push(event.arrival_sequence);
+            }
+            return Ok(completed);
         }
         let mut completed = None;
         if self.session_date.as_ref().is_some_and(|prior| prior != &date) {
@@ -143,6 +149,11 @@ impl LiquidityReducer {
         if self.pending.as_ref().is_some_and(|row| row.bucket_index != index) {
             completed = self.pending.take();
             self.pending_seen.clear();
+        }
+        if let Some(row) = completed.as_mut() {
+            // Do not publish a completed bucket before the closing event has
+            // itself reached canonical persistence and coverage authority.
+            row.source_arrival_sequences.push(event.arrival_sequence);
         }
         // Match ordinary bars' canonical identity. A replayed source event
         // must not add a second trade or grant broker liquidity twice.
@@ -356,7 +367,7 @@ mod tests {
         assert_eq!(trade_bucket.ask_int, 100_100);
         assert_eq!(trade_bucket.quote_timestamp_us, event(100, 1, false).sip_timestamp_us);
         assert_eq!(trade_bucket.execution_vwap, 10.0);
-        assert_eq!(trade_bucket.source_arrival_sequences, vec![1, 2]);
+        assert_eq!(trade_bucket.source_arrival_sequences, vec![1, 2, 3]);
         assert!(serde_json::to_value(&trade_bucket).unwrap()
             .get("source_arrival_sequences").is_none());
         let quote_only = reducer.take_completed_through(event(300, 4, false).sip_timestamp_us)
@@ -384,7 +395,7 @@ mod tests {
         assert_eq!(row.trade_count, 1);
         assert_eq!(row.volume, 100.0);
         assert_eq!(row.execution_volume, 100.0);
-        assert_eq!(row.source_arrival_sequences, vec![1, 2]);
+        assert_eq!(row.source_arrival_sequences, vec![1, 2, 4]);
     }
 
     #[test]
@@ -449,6 +460,7 @@ mod tests {
         assert_eq!(row.event_count, 1);
         assert_eq!(row.quote_event_count, 1);
         assert_eq!(row.last_event_us, event(100, 1, false).sip_timestamp_us);
+        assert_eq!(row.source_arrival_sequences, vec![1, 2]);
         assert!(reducer.take_completed_through(after_hours.sip_timestamp_us).is_none());
     }
 }

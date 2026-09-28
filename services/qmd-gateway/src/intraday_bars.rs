@@ -2528,7 +2528,8 @@ mod tests {
         let mut pending = LiquidityHoldback::default();
         assert!(pending.push(CompletedLiquidityBucket {
             ticker: "TEST".into(),
-            source_arrival_sequences: vec![1, 2],
+            // Arrival 4 is the later source event that proves the bucket ended.
+            source_arrival_sequences: vec![1, 2, 4],
             ..CompletedLiquidityBucket::default()
         }));
         assert!(pending.push(CompletedLiquidityBucket {
@@ -2548,6 +2549,9 @@ mod tests {
         pending.release_all(&durability, &sender);
         assert!(receiver.try_recv().is_err());
         durability.mark_persisted(&[quote_event(1, 1, 999, 1_001)]);
+        pending.release_all(&durability, &sender);
+        assert!(receiver.try_recv().is_err());
+        durability.mark_persisted(&[quote_event(1, 4, 999, 1_001)]);
         pending.release_all(&durability, &sender);
         assert_eq!(pending.events, 0);
         assert_eq!(pending.rows, 0);
