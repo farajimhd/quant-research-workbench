@@ -7,7 +7,9 @@ import pytest
 from src.backend.backtest_strategy_one_evidence import (
     StrategyOneManagementEvidence,
 )
-from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
+from src.backend.backtest_strategy_one_management import (
+    StrategyOneManagementRunner, StrategyOneManagementState,
+)
 from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
 from src.trading_runtime.strategy_one_position import (
     ResistanceBreak, confirm_protection_transition,
@@ -134,5 +136,39 @@ def test_management_rejects_evidence_from_another_completed_boundary():
         with pytest.raises(ValueError, match="causal boundary"):
             await manager.on_management(_financial(), {}, 31_000)
         assert runtime.calls == [("entry", 30_100)]
+
+    asyncio.run(run())
+
+
+def test_typed_manager_capture_restores_pending_entry_position_and_breaks():
+    async def run():
+        source, runtime = _Evidence(), _Runtime()
+        first = StrategyOneManagementRunner(
+            runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await first.on_entry_proposal(_proposal())
+        await first.on_management(_financial(), {}, 30_100)
+        source.rows[31_000] = _evidence(31_000, quote=False, breaks=(
+            ResistanceBreak(31_000, _level("B1", 9.8)),))
+        await first.on_management(_financial(), {}, 31_000)
+        captured = first.capture_state(boundary_ms=31_000)
+        assert isinstance(captured, StrategyOneManagementState)
+        original_lower = captured.pending_breaks[0][1][0].level["lower"]
+        first._pending_breaks[("DU1", "A1", "AAA")][0].level["lower"] = 1.0
+        assert captured.pending_breaks[0][1][0].level["lower"] == original_lower
+        first._pending_breaks[("DU1", "A1", "AAA")][0].level["lower"] = original_lower
+        second = StrategyOneManagementRunner(
+            runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        second.restore_state(captured)
+        assert second.capture_state(boundary_ms=31_000) == captured
+        source.rows[31_100] = _evidence(31_100)
+        await first.on_management(_financial(), {}, 31_100)
+        await second.on_management(_financial(), {}, 31_100)
+        assert second.capture_state(boundary_ms=31_100) == first.capture_state(
+            boundary_ms=31_100)
+        with pytest.raises(RuntimeError, match="already active"):
+            second.restore_state(captured)
+        with pytest.raises(ValueError, match="entry source"):
+            second._validate_capture(replace(captured, submitted=()),
+                                     max_pending_breaks=256)
 
     asyncio.run(run())

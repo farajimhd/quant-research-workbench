@@ -7,7 +7,9 @@ Portfolio/OMS retains sole order authority and confirms protection changes.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import isfinite
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
 
 from src.trading_runtime.strategy_one_management_evidence import (
@@ -28,6 +30,19 @@ class StrategyOneManagementEvidenceSource(Protocol):
         self, ticker: str, resolutions: Mapping[int, Mapping], *,
         boundary_ms: int,
     ) -> StrategyOneManagementEvidence: ...
+
+
+ManagerKey = tuple[str, str, str]  # account, assignment, ticker
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyOneManagementState:
+    """Typed mutable-state capture; never a JSON/disk checkpoint."""
+
+    boundary_ms: int
+    submitted: tuple[tuple[ManagerKey, StrategyOneEntryProposal], ...]
+    positions: tuple[tuple[ManagerKey, ProtectionState], ...]
+    pending_breaks: tuple[tuple[ManagerKey, tuple[ResistanceBreak, ...]], ...]
 
 
 class StrategyOneManagementRunner:
@@ -51,6 +66,81 @@ class StrategyOneManagementRunner:
         self._submitted: dict[tuple[str, str, str], StrategyOneEntryProposal] = {}
         self._positions: dict[tuple[str, str, str], ProtectionState] = {}
         self._pending_breaks: dict[tuple[str, str, str], list[ResistanceBreak]] = {}
+
+    @staticmethod
+    def _validate_capture(state: StrategyOneManagementState, *,
+                          max_pending_breaks: int) -> None:
+        if (not isinstance(state, StrategyOneManagementState)
+                or type(state.boundary_ms) is not int
+                or not 0 <= state.boundary_ms <= 57_600_000
+                or state.boundary_ms % 100):
+            raise ValueError("Strategy 1 management capture has no causal boundary")
+        keys = {}
+        for family in ("submitted", "positions", "pending_breaks"):
+            rows = getattr(state, family)
+            identities = [key for key, _ in rows]
+            if (any(not isinstance(key, tuple) or len(key) != 3
+                           or any(type(part) is not str or not part for part in key)
+                           or key[2] != key[2].upper() for key in identities)
+                    or identities != sorted(set(identities))):
+                raise ValueError("Strategy 1 management capture repeats an identity")
+            keys[family] = set(identities)
+        if not keys["positions"] <= keys["submitted"] or not keys[
+                "pending_breaks"] <= keys["submitted"]:
+            raise ValueError("Strategy 1 management state lacks its entry source")
+        for key, proposal in state.submitted:
+            if (not isinstance(proposal, StrategyOneEntryProposal)
+                    or (proposal.account_id, proposal.assignment_id,
+                        proposal.ticker) != key
+                    or proposal.boundary_ms > state.boundary_ms):
+                raise ValueError("Strategy 1 submitted entry differs from capture")
+        for _, position in state.positions:
+            if (not isinstance(position, ProtectionState)
+                    or position.boundary_ms > state.boundary_ms):
+                raise ValueError("Strategy 1 position is ahead of capture")
+        for _, breaks in state.pending_breaks:
+            if (not isinstance(breaks, tuple) or len(breaks) > max_pending_breaks
+                    or any(not isinstance(row, ResistanceBreak)
+                           or not isinstance(row.level, Mapping)
+                           or set(row.level) != {
+                               "unified_level_id", "lower", "upper", "role", "side"}
+                           or type(row.level["unified_level_id"]) is not str
+                           or not row.level["unified_level_id"]
+                           or row.level["role"] != "resistance"
+                           or row.level["side"] != "resistance"
+                           or type(row.level["lower"]) not in (int, float)
+                           or type(row.level["upper"]) not in (int, float)
+                           or not isfinite(row.level["lower"])
+                           or not isfinite(row.level["upper"])
+                           or not 0 < row.level["lower"] <= row.level["upper"]
+                           or row.completed_boundary_ms > state.boundary_ms
+                           for row in breaks)):
+                raise ValueError("Strategy 1 pending break is ahead of capture")
+
+    def capture_state(self, *, boundary_ms: int) -> StrategyOneManagementState:
+        """Capture only position-owned facts at an ordered global boundary."""
+        state = StrategyOneManagementState(
+            boundary_ms,
+            tuple(sorted(self._submitted.items())),
+            tuple(sorted(self._positions.items())),
+            tuple(sorted((key, tuple(ResistanceBreak(
+                row.completed_boundary_ms, MappingProxyType(dict(row.level)))
+                for row in value)) for key, value in
+                         self._pending_breaks.items())),
+        )
+        self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
+        return state
+
+    def restore_state(self, state: StrategyOneManagementState) -> None:
+        """Cold typed restore only; a populated manager cannot be overwritten."""
+        if self._submitted or self._positions or self._pending_breaks:
+            raise RuntimeError("Strategy 1 manager is already active")
+        self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
+        self._submitted = dict(state.submitted)
+        self._positions = dict(state.positions)
+        self._pending_breaks = {key: [ResistanceBreak(
+            row.completed_boundary_ms, MappingProxyType(dict(row.level)))
+            for row in rows] for key, rows in state.pending_breaks}
 
     def owns_position_source(self, financial: StrategyOneFinancialView) -> bool:
         """Check ownership before cleanup; a same-bucket exit cannot reenter."""
