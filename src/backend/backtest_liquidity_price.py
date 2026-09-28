@@ -5,12 +5,14 @@ No canonical event, builder, market write, or disk ledger is available here.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
 import re
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
@@ -76,8 +78,10 @@ def _token(build_id: str, units: tuple[PriceLevelUnit, ...]) -> str:
     return sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 
 
-def certify_price_level_plan(market: CertifiedMarketDayPlan,
-                             client: Any) -> PriceLevelPlan:
+def certify_price_level_plan(
+    market: CertifiedMarketDayPlan, client: Any, *,
+    read_client_factory: Callable[[], Any] | None = None,
+) -> PriceLevelPlan:
     """Certify exact child attempts in bounded grouped SELECTs before execution."""
     if market.execution_interval.kind != "fixed" or not market.units:
         raise ValueError("Price levels require a pinned fixed market-day plan")
@@ -91,7 +95,8 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
         cached = PRICE_PLAN_CACHE.get(market.token, before)
         if cached is not None and price_inventory_fingerprint(client) == before:
             return cached
-    plan = _certify_price_level_plan_uncached(market, client)
+    plan = _certify_price_level_plan_uncached(
+        market, client, read_client_factory=read_client_factory)
     if cacheable:
         after = price_inventory_fingerprint(client)
         if after != before:
@@ -100,8 +105,10 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
     return plan
 
 
-def _certify_price_level_plan_uncached(market: CertifiedMarketDayPlan,
-                                      client: Any) -> PriceLevelPlan:
+def _certify_price_level_plan_uncached(
+    market: CertifiedMarketDayPlan, client: Any, *,
+    read_client_factory: Callable[[], Any] | None = None,
+) -> PriceLevelPlan:
     table_names = ("liquidity_execution_price_100ms_v1",
                    "liquidity_execution_price_coverage_v1")
     catalog = _rows(client, "SELECT name,storage_policy FROM system.tables "
@@ -121,18 +128,19 @@ def _certify_price_level_plan_uncached(market: CertifiedMarketDayPlan,
     if not expected or len(expected) != sum(unit.stage == "broker_100ms"
                                        for unit in market.units):
         raise ValueError("Market-day liquidity attempts are missing or duplicate")
-    results: list[PriceLevelUnit] = []
     ordered = sorted(expected.items())
     # Both SELECTs are grouped by the same pinned ticker-day scopes. A bounded
     # 256-scope batch cuts HTTP round trips for a full-universe preflight while
     # keeping the IN expression and aggregate memory bounded. Every row is
     # still audited below.
-    for offset in range(0, len(ordered), _CERTIFICATION_BATCH_SIZE):
-        batch = ordered[offset:offset + _CERTIFICATION_BATCH_SIZE]
+    batches = tuple(ordered[offset:offset + _CERTIFICATION_BATCH_SIZE]
+                    for offset in range(0, len(ordered), _CERTIFICATION_BATCH_SIZE))
+
+    def scan_batch(batch, reader) -> tuple[PriceLevelUnit, ...]:
         scopes = ",".join(
             f"(toDate({_literal(day)}),{_literal(ticker)},toUUID({_literal(attempt)}))"
             for (day, ticker), attempt in batch)
-        coverage = _rows(client, f"""SELECT session_date,ticker,
+        coverage = _rows(reader, f"""SELECT session_date,ticker,
           toString(source_attempt_id) AS source_attempt_text,
           toString(derivation_attempt_id) AS derivation_attempt_text,
           price_row_count,eligible_bucket_count,total_execution_volume,content_hash
@@ -167,7 +175,7 @@ def _certify_price_level_plan_uncached(market: CertifiedMarketDayPlan,
             f"toUUID({_literal(unit.source_attempt_id)}),"
             f"toUUID({_literal(unit.derivation_attempt_id)}))"
             for unit in covered.values())
-        summaries = _rows(client, f"""SELECT session_date,ticker,
+        summaries = _rows(reader, f"""SELECT session_date,ticker,
           toString(source_attempt_id) AS source_attempt_text,
           toString(derivation_attempt_id) AS derivation_attempt_text,
           count() AS row_count,uniqExact((bucket_index,price_int)) AS unique_keys,
@@ -203,6 +211,27 @@ def _certify_price_level_plan_uncached(market: CertifiedMarketDayPlan,
             seen.add(key)
         if seen != {key for key, unit in covered.items() if unit.price_row_count > 0}:
             raise RuntimeError("Eligible-price rows are missing from published coverage")
-        results.extend(covered[key] for key, _ in batch)
-    units = tuple(results)
+        return tuple(covered[key] for key, _ in batch)
+
+    if read_client_factory is None:
+        results = tuple(unit for batch in batches
+                        for unit in scan_batch(batch, client))
+    else:
+        if not callable(read_client_factory):
+            raise TypeError("Price-level batch reader factory is invalid")
+
+        def scan_owned(batch):
+            reader = read_client_factory()
+            if reader is None or not callable(getattr(reader, "close", None)):
+                raise TypeError("Price-level batch reader must be closable")
+            with closing(reader):
+                return scan_batch(batch, reader)
+
+        # Independent sockets and ordered results retain the exact audit while
+        # bounding ClickHouse query pressure to four concurrent shards.
+        with ThreadPoolExecutor(max_workers=min(4, len(batches)),
+                                thread_name_prefix="price-level-seals") as pool:
+            results = tuple(unit for batch in pool.map(scan_owned, batches)
+                            for unit in batch)
+    units = results
     return PriceLevelPlan(market.build_id, units, _token(market.build_id, units))

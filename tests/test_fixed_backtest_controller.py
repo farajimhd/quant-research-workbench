@@ -48,7 +48,7 @@ def _stub_price_plan(monkeypatch):
             return self
     child = Plan()
     monkeypatch.setattr(backtest_liquidity_price, "certify_price_level_plan",
-                        lambda *_args: child)
+                        lambda *_args, **_kwargs: child)
     monkeypatch.setattr(market_data, "readonly_clickhouse_client",
                         lambda **_kwargs: SimpleNamespace(close=lambda: None))
     return child

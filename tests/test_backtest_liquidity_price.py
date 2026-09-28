@@ -1,5 +1,6 @@
 """Fixed Backtest may certify eligible prices, but never build them."""
 import json
+from threading import Barrier
 
 import pytest
 
@@ -88,6 +89,46 @@ def test_certified_child_plan_pins_source_attempt_and_read_only_hash():
     assert all("AS source_attempt_id" not in query and
                "AS derivation_attempt_id" not in query
                for query in reader.queries)
+
+
+def test_price_certification_uses_bounded_independent_readers(monkeypatch):
+    monkeypatch.setattr(price_subject, "_CERTIFICATION_BATCH_SIZE", 1)
+    market = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "definition",
+        ("2026-08-18",), ("ABCD", "WXYZ"),
+        (*_plan().units, MarketDayUnit(
+            "build", "2026-08-18", "WXYZ", "broker_100ms",
+            SOURCE, "source", 10, "hash")),
+        (100,), "two-ticker-market-token")
+    concurrent = Barrier(2, timeout=5)
+    owned = []
+
+    class OwnedReader(Reader):
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+
+        def execute(self, query):
+            if "FROM arte.liquidity_execution_price_coverage_v1" in query:
+                concurrent.wait()
+            ticker = "WXYZ" if "'WXYZ'" in query else "ABCD"
+            return super().execute(query.replace("WXYZ", "ABCD")).replace(
+                "ABCD", ticker)
+
+        def close(self):
+            self.closed = True
+
+    def factory():
+        reader = OwnedReader()
+        owned.append(reader)
+        return reader
+
+    plan = certify_price_level_plan(
+        market, Reader(), read_client_factory=factory)
+    assert tuple(unit.ticker for unit in plan.units) == ("ABCD", "WXYZ")
+    assert len(owned) == 2 and all(reader.closed for reader in owned)
+    assert all(query.startswith("SELECT") and "INSERT" not in query
+               for reader in owned for query in reader.queries)
 
 
 def test_missing_or_misplaced_child_blocks_preflight():

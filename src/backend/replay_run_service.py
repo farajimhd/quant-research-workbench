@@ -3326,7 +3326,10 @@ class ReplayRunController:
         def recheck_prices():
             with closing(readonly_clickhouse_client(
                     market_stream=True, v3_read_principal=True)) as reader:
-                return certify_price_level_plan(plan, reader)
+                return certify_price_level_plan(
+                    plan, reader,
+                    read_client_factory=lambda: readonly_clickhouse_client(
+                        market_stream=True, v3_read_principal=True))
         price_plan = await asyncio.to_thread(recheck_prices)
         if price_plan.token != expected_price_token:
             raise ValueError("Certified passive-fill prices changed after preflight")
@@ -11118,7 +11121,10 @@ def _certify_fixed_price_plan(certified: Any) -> Any:
 
     with closing(readonly_clickhouse_client(
             market_stream=True, v3_read_principal=True)) as reader:
-        return certify_price_level_plan(certified, reader)
+        return certify_price_level_plan(
+            certified, reader,
+            read_client_factory=lambda: readonly_clickhouse_client(
+                market_stream=True, v3_read_principal=True))
 
 
 def backtest_preflight(
