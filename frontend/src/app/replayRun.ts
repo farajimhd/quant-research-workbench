@@ -31,6 +31,7 @@ export type CanvasReplayRun = {
   created_at: string;
   current_time: string;
   error: string;
+  journal_backend?: "arte_typed_journal_v4" | "sqlite_v1";
   execution_mode?: "manual" | "strategy";
   mode?: "backtest" | "backtest_debug" | "replay";
   navigation_action?: {

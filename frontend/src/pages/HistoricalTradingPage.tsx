@@ -342,7 +342,25 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   });
 
   useEffect(() => {
-    if (selectedRunId || !run || !["completed", "stopped", "failed"].includes(run.status)) return;
+    if (!run || !["completed", "stopped", "failed"].includes(run.status)) return;
+    if (run.journal_backend === "arte_typed_journal_v4") {
+      const controller = new AbortController();
+      api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/v4-terminal-page?after_sequence=0&limit=100`, {
+        signal: controller.signal, timeoutMs: 60_000,
+      }).then((page) => {
+        if (controller.signal.aborted) return;
+        if (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== run.run_id) {
+          throw new Error("Saved Strategy 1 review identity differs from the completed run.");
+        }
+        setV4ReviewPage(page);
+        setRun(null);
+        setError("");
+      }).catch((reason) => {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+      return () => controller.abort();
+    }
+    if (selectedRunId) return;
     api<BacktestResults>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/results`, { timeoutMs: 60_000 })
       .then(setResults)
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
@@ -353,7 +371,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         setComparison(null);
         setComparisonError(reason instanceof Error ? reason.message : String(reason));
       });
-  }, [run?.run_id, run?.status]);
+  }, [run?.run_id, run?.status, restoreAttempt]);
 
   async function createRun() {
     if (!launchReady || checking || loadingOptions || !currentPreflight) return;
@@ -452,11 +470,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     const selectedPlanMatchesRun = run.configuration_revision_id === candidateId && selectedPlan?.run_plan_id === runPlanId;
     const strategyName = activeRunIdentity?.strategy_name || activeRunIdentity?.strategy_id || (selectedPlanMatchesRun ? selectedPlan?.name : "") || "Strategy unavailable";
     const strategyRevision = activeRunIdentity?.strategy_revision || (selectedPlanMatchesRun ? selectedPlan?.strategy_revision : 0);
-    return <CanvasWorkspaceSurface
-      canvasId="main"
-      manager={false}
-      modeControls={<div className="historical-canvas-run-state historical-backtest-progress">
-        <div className="historical-backtest-progress-actions"><span className="historical-backtest-engine" title="Accelerated causal engine"><Zap aria-hidden="true" size={11} /><span>Accelerated causal engine</span></span><button className="button secondary compact" aria-haspopup="dialog" onClick={() => setDetailsOpen(true)} type="button">Details{run.level_book_coverage?.excluded_ticker_count ? ` · ${run.level_book_coverage.excluded_ticker_count} excluded` : ""}</button><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{(terminal || run.review_only) && run.status !== "completed" && run.checkpoint?.resume_supported ? <button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void resumeRun()} type="button"><Play size={14} />{controlBusy === "resume" ? "Resuming…" : "Resume from checkpoint"}</button> : null}{!terminal && !run.review_only ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
+    const progressControls = <div className="historical-canvas-run-state historical-backtest-progress">
+        <div className="historical-backtest-progress-actions"><span className="historical-backtest-engine" title="Accelerated causal engine"><Zap aria-hidden="true" size={11} /><span>Accelerated causal engine</span></span><button className="button secondary compact" aria-haspopup="dialog" onClick={() => setDetailsOpen(true)} type="button">Details{run.level_book_coverage?.excluded_ticker_count ? ` · ${run.level_book_coverage.excluded_ticker_count} excluded` : ""}</button><button aria-label="Return to Backtest setup" className="button secondary compact" onClick={returnToSetup} type="button"><ArrowLeft size={14} /> Setup</button>{run.journal_backend === "arte_typed_journal_v4" && terminal && error ? <button className="button secondary compact" onClick={() => setRestoreAttempt(value => value + 1)} type="button"><RefreshCcw size={14} /> Retry review</button> : null}{(terminal || run.review_only) && run.status !== "completed" && run.checkpoint?.resume_supported ? <button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void resumeRun()} type="button"><Play size={14} />{controlBusy === "resume" ? "Resuming…" : "Resume from checkpoint"}</button> : null}{!terminal && !run.review_only ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}</div>
         <div className="historical-backtest-progress-heading"><strong>{warming || checkpointing || waiting ? <LoaderCircle aria-hidden="true" className="spin" size={12} /> : null} {workLabel}</strong><b>{checkpointing ? `${Math.floor(work?.elapsed_seconds ?? 0)}s` : progressKnown ? `${progressPercent}%` : "Preparing"}</b></div>
 
         <div aria-label={`${progressLabel} progress`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={progressKnown ? progressPercent : undefined} aria-valuetext={checkpointing ? `${workLabel} - ${Math.floor(work?.elapsed_seconds ?? 0)} seconds` : warming && preparation?.total ? `${preparation.completed.toLocaleString()} of ${preparation.total.toLocaleString()} ${preparationVerb} · ${progressPercent}%` : progressKnown ? `${progressPercent}%` : "Preparing"} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progressPercent}%` }} /></div>
@@ -482,10 +497,15 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           </div>
         </Modal> : null}
         {error ? <div className="canvas-inline-error" role="alert">{error}</div> : null}
-      </div>}
-      replayRun={run}
-      runtimeWorkspaceId="main"
-    />;
+      </div>;
+    // V4 has a typed saved chart and review, not the legacy canvas/SQLite
+    // journal reader. During its short execution show the existing progress
+    // controls; transition to the persisted review once the commit is sealed.
+    if (run.journal_backend === "arte_typed_journal_v4") {
+      return <div className="backtest-v4-running">{progressControls}</div>;
+    }
+    return <CanvasWorkspaceSurface canvasId="main" manager={false}
+      modeControls={progressControls} replayRun={run} runtimeWorkspaceId="main" />;
   }
 
   if (selectedRunId && v4ReviewPage?.run.run_id === selectedRunId) return <div className="backtest-v4-direct-review">

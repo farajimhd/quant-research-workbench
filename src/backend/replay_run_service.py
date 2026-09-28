@@ -1647,6 +1647,10 @@ class ReplayRunController:
             "schema_version": 1,
             "mode": self.definition.mode.value,
             "run_id": self.run_id,
+            "journal_backend": (
+                "arte_typed_journal_v4" if self.definition.mode == RunMode.BACKTEST
+                else "sqlite_v1"
+            ),
             "proposal": {
                 "proposal_id": proposal_id,
                 "authority": authority,

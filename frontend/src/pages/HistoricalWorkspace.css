@@ -54,6 +54,14 @@
 .backtest-run-history [role="alert"] { color: var(--destructive); }
 .backtest-v4-review { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; min-width: 0; }
 .backtest-v4-direct-review { height: 100%; min-height: 0; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
+.backtest-v4-running { height: 100%; min-height: 0; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
+.backtest-v4-running > .historical-backtest-progress { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin: 0 auto; max-width: 960px; padding: 16px; }
+.backtest-v4-running .historical-backtest-progress-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch; }
+.backtest-v4-running .historical-backtest-strategy { flex-basis: auto; min-width: 0; width: auto; }
+@media (max-width: 720px) {
+  .backtest-v4-running .historical-backtest-progress-facts { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .backtest-v4-running .historical-backtest-strategy { border-right: 0; padding-right: 0; }
+}
 .backtest-v4-direct-review .backtest-v4-review { border: 1px solid var(--border); border-radius: 8px; margin: 0; padding: 16px; }
 .backtest-v4-review :is(header, footer) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .backtest-v4-review header p { color: var(--muted-foreground); }
