@@ -121,6 +121,28 @@ def test_live_v5_ack_install_is_opt_in_and_no_row_writes(monkeypatch):
     assert not any(sql.startswith("INSERT ") for sql in client.statements)
 
 
+def test_strategy_one_activation_install_has_four_exact_tables_and_no_rows(monkeypatch):
+    client = Client()
+    contracts = install.profile_contracts("live-strategy-one-activation")
+    monkeypatch.setattr(install, "plan_missing",
+                        lambda _, *, profile: (
+                            tuple(table.name for table in contracts), ())
+                        if profile == "live-strategy-one-activation"
+                        else pytest.fail("wrong profile"))
+    verified = []
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda _, *, tables: verified.append(
+                            tuple(table.name for table in tables)))
+    assert install.install_missing(
+        client, apply=False, profile="live-strategy-one-activation") == (0, 0)
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.install_missing(
+        client, apply=True, profile="live-strategy-one-activation") == (0, 4)
+    assert verified == [tuple(table.name for table in contracts)] * 2
+    assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == 4
+    assert not any(sql.startswith("INSERT ") for sql in client.statements)
+
+
 def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
     client = Client()
     monkeypatch.setattr(install.platform, "node", lambda: "DESKTOP-SAAI85T")

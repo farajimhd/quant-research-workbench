@@ -48,9 +48,14 @@ from src.backend.live_strategy_one_approval import TABLE as STRATEGY_ONE_APPROVA
 from src.trading_runtime.arte_journal_writer import journal_client_from_env
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
+from src.trading_runtime.arte_strategy_one_activation_schema import (
+    STRATEGY_ONE_ACTIVATION_TABLES,
+)
 
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
+    if profile == "live-strategy-one-activation":
+        return STRATEGY_ONE_ACTIVATION_TABLES
     if profile == "live-strategy-one-v5-ack":
         return (ACKNOWLEDGEMENT_V5,)
     if profile == "oms-execution-tactic":
@@ -117,6 +122,7 @@ def main() -> int:
                         help="print operator-reviewed CREATE TABLE statements")
     parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3", "commit-v4",
                                               "live-strategy-one-approval",
+                                              "live-strategy-one-activation",
                                               "live-strategy-one-v5-ack",
                                               "oms-execution-tactic"),
                         default="fixed-v2", help="exact journal table layout")

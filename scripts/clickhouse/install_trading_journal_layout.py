@@ -923,6 +923,7 @@ def main() -> int:
                         help="apply requested table DDL after exact preflight")
     parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3", "commit-v4",
                                               "live-strategy-one-approval",
+                                              "live-strategy-one-activation",
                                               "live-strategy-one-v5-ack",
                                               "oms-execution-tactic"),
                         default="fixed-v2", help="exact journal table layout")

@@ -29,6 +29,9 @@ from src.backend.live_strategy_one_approval import TABLE as APPROVAL
 from src.backend.live_plan_membership import TABLES as PLAN_MEMBERSHIP_TABLES
 from src.backend.live_assignment_base_keeper import KeeperAssignmentHead
 from src.trading_runtime.keeper_session import ManagedKeeperSession
+from src.trading_runtime.arte_strategy_one_activation_schema import (
+    STRATEGY_ONE_ACTIVATION_TABLES,
+)
 
 
 PRINCIPAL = "strategy_one_live_v4_runner"
@@ -60,7 +63,10 @@ _V4_LIVE_DETAIL = frozenset({
 
 def live_v4_storage_contracts() -> tuple[Any, ...]:
     """Keep live-only normalized extensions out of Backtest's storage gate."""
-    return (*v4_storage_contracts(), ACKNOWLEDGEMENT_V5)
+    return (*v4_storage_contracts(), ACKNOWLEDGEMENT_V5,
+            *STRATEGY_ONE_ACTIVATION_TABLES)
+
+
 _PORTFOLIO_WRITE = frozenset({
     "trading_portfolio_snapshot_v1", "trading_portfolio_disabled_strategy_v1",
     "trading_portfolio_command_v1", "trading_portfolio_request_v1",
@@ -109,7 +115,8 @@ def desired_plan() -> LiveV4PrincipalPlan:
     family = frozenset(_v4_family_table(name) for name, _, _, _ in _FAMILIES
                        if name not in _EXCLUDED_FAMILY)
     writable = (family | frozenset(table.name for table in V4_COMMIT_TABLES)
-                | _V4_LIVE_DETAIL | _PORTFOLIO_WRITE | _CONTEXT_WRITE)
+                | _V4_LIVE_DETAIL | _PORTFOLIO_WRITE | _CONTEXT_WRITE
+                | frozenset(table.name for table in STRATEGY_ONE_ACTIVATION_TABLES))
     contracts = {table.name for table in live_v4_storage_contracts()}
     if not writable | _POLICY_READ <= contracts:
         raise RuntimeError("Live V4 principal references an unmodeled table")
