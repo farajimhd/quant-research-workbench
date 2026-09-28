@@ -84,6 +84,12 @@ def test_catalog_defines_operator_profiles_and_dynamic_dependencies() -> None:
         "market-data",
     }
     assert profiles["middleware"] == profiles["intelligence"]
+    assert profiles["app"] == ("workstation-backend", "workstation-frontend")
+    app_order = service_manager._topological_order(services, set(profiles["app"]))
+    assert app_order == ["workstation-backend", "workstation-frontend"]
+    assert services["workstation-backend"].launcher == "scripts/connect_workstation_backtest.py"
+    assert services["workstation-frontend"].environment["VITE_API_PROXY_TARGET"] == "http://127.0.0.1:8000"
+    assert services["frontend"].dependencies == ("backend",)
     assert services["reference-gateway"].dependencies == ("ibkr-supervisor",)
     assert services["news-hypothesis"].dependencies == ("model-gateway",)
     assert services["text-intelligence"].dependencies == ()
@@ -227,8 +233,8 @@ def test_dev_is_running_stale_while_stale_also_includes_stopped(
         lambda url, timeout=2.0: (True, "HTTP 200", {"status": "ok"}),
     )
 
-    assert manager.resolve_target("dev", within="app") == {"backend"}
-    assert manager.resolve_target("stale", within="app") == {"backend", "frontend"}
+    assert manager.resolve_target("dev", within="historical-core") == {"backend"}
+    assert manager.resolve_target("stale", within="historical-core") == {"backend", "frontend"}
 
 
 def test_start_plan_expands_dependencies_without_mutating_runtime(
