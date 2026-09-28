@@ -2208,7 +2208,9 @@ fn event_identity(event: &LiveCompactEvent) -> EventIdentity {
     EventIdentity {
         sip_timestamp_us: event.sip_timestamp_us,
         source_sequence: event.source_sequence,
-        event_meta: event.event_meta,
+        // V6 reporting flags annotate a source trade; they do not make a
+        // second source event when an older V5 row is replayed or repaired.
+        event_meta: event.event_meta & 0x3f,
         price_primary_int: event.price_primary_int,
         price_secondary_int: event.price_secondary_int,
         size_primary_bits: event.size_primary.to_bits(),
@@ -2348,6 +2350,18 @@ mod tests {
         expected.update_event(&second, &points(&second)[0]);
         assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(expected).unwrap());
         assert!(replay.push(&first, decoder.decode(&first)).is_err());
+    }
+
+    #[test]
+    fn source_event_identity_ignores_v6_reporting_annotation() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 5, 0).unwrap().timestamp_micros() as u64;
+        let mut legacy = quote_event(start, 1, 0, 40_000);
+        legacy.event_meta = 3;
+        legacy.schema_version = 5;
+        let mut classified = legacy.clone();
+        classified.event_meta |= 0xc0;
+        classified.schema_version = 6;
+        assert!(event_identity(&legacy) == event_identity(&classified));
     }
 
     fn quote_event(timestamp_us: u64, sequence: u64, bid: u32, ask: u32) -> LiveCompactEvent {
