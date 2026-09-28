@@ -155,7 +155,9 @@ def publish_session(*, session_date: str, build_id: str,
         frames = traceback.extract_tb(exc.__traceback__)
         stage = next((f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
                       for frame in reversed(frames)
-                      if Path(frame.filename).is_relative_to(REPO_ROOT)),
+                      if Path(frame.filename).name in {
+                          "v7_interval_derivation.py",
+                          "v7_interval_publication.py"}),
                      "external_dependency")
         raise V7IntervalCampaignFailure(
             f"V7 publication stopped at {symbol}: {type(exc).__name__} "
