@@ -109,14 +109,18 @@ sequences (or an equivalent normalized membership relation), not merely its
 minimum, maximum, and count. The bounded in-memory acknowledgement tracker
 accepts sparse sets and advances only through individually acknowledged
 sequences; it is not connected to publication or live admission yet.
-QMD also defines inactive typed `q_live.strategy_one_source_batch_v1` and
+QMD defines typed `q_live.strategy_one_source_batch_v1` and
 `q_live.strategy_one_source_member_v1` contracts. A batch row carries its
 producer epoch, date, identity, exact member count, extrema, and acknowledgement
 clock; each member row carries one arrival sequence, ticker, and canonical
 scalar-row digest. Both schemas explicitly use `live_market_ssd` and contain
 no JSON, arrays, or blobs. On its next managed startup, QMD creates and
-verifies these tables on `live_market_ssd`, then its background compact-event workers
-publish exact members and batch rows after canonical INSERT acknowledgement
+verifies these tables and `q_live.strategy_one_source_event_v1` on
+`live_market_ssd`. The versioned source event table retains every accepted
+arrival under `(source_date, producer_epoch, ticker, arrival_sequence)`, so
+the older `q_live.events` replacement key cannot merge two receipt members.
+The background compact-event workers publish exact versioned source rows,
+then members and batch rows after the ordinary canonical INSERT acknowledgement
 and before releasing the ordinary QMD durability holdback. Ambiguous receipt
 responses retain the same rows and deduplication token for retry. This is
 still **not** a Strategy 1 live admission permit: cold readback, Keeper

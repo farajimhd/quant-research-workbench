@@ -13,6 +13,30 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const BATCH_TABLE: &str = "strategy_one_source_batch_v1";
 pub const MEMBER_TABLE: &str = "strategy_one_source_member_v1";
+pub const EVENT_TABLE: &str = "strategy_one_source_event_v1";
+
+/// Strategy 1's exact live source is separate from the older q_live.events
+/// ReplacingMergeTree, whose sorting key can merge distinct arrivals.
+pub fn event_table_sql() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {EVENT_TABLE} (\
+         source_date Date, producer_epoch FixedString(32), arrival_sequence UInt64, \
+         schema_version UInt16, ingest_ts DateTime64(3, 'UTC'), \
+         ticker LowCardinality(String), event_meta UInt8, \
+         execution_timestamp_us UInt64, sip_timestamp_us UInt64, \
+         price_primary_int UInt32, price_secondary_int UInt32, \
+         size_primary Float32, size_secondary Float32, \
+         exchange_primary UInt8, exchange_secondary UInt8, \
+         condition_token_1 UInt8, condition_token_2 UInt8, condition_token_3 UInt8, \
+         condition_token_4 UInt8, condition_token_5 UInt8, \
+         source_sequence UInt64, issue_flags UInt16) \
+         ENGINE = ReplacingMergeTree(ingest_ts) \
+         PARTITION BY toYYYYMM(source_date) \
+         ORDER BY (source_date, producer_epoch, ticker, arrival_sequence) \
+         SETTINGS storage_policy = 'live_market_ssd', \
+         non_replicated_deduplication_window = 1000"
+    )
+}
 
 pub fn batch_table_sql() -> String {
     format!(
@@ -48,24 +72,54 @@ pub fn verify_storage_contract(tables: &str, parts: &str) -> Result<(), &'static
         let fields = line.split('\t').collect::<Vec<_>>();
         if fields.len() != 5
             || !seen.insert(fields[0])
-            || fields[1] != "MergeTree"
+            || fields[1] != (if fields[0] == EVENT_TABLE {
+                "ReplacingMergeTree"
+            } else { "MergeTree" })
             || fields[2] != "toYYYYMM(source_date)"
             || fields[4] != "live_market_ssd"
             || (fields[0] == BATCH_TABLE && fields[3] != "source_date, producer_epoch, batch_id")
             || (fields[0] == MEMBER_TABLE
                 && fields[3] != "source_date, producer_epoch, arrival_sequence")
+            || (fields[0] == EVENT_TABLE
+                && fields[3] != "source_date, producer_epoch, ticker, arrival_sequence")
         {
             return Err("Strategy 1 source receipt table contract or SSD policy differs");
         }
     }
-    if seen != BTreeSet::from([BATCH_TABLE, MEMBER_TABLE]) {
+    if seen != BTreeSet::from([BATCH_TABLE, MEMBER_TABLE, EVENT_TABLE]) {
         return Err("Strategy 1 source receipt table contract or SSD policy differs");
     }
     for line in parts.lines() {
         let fields = line.split('\t').collect::<Vec<_>>();
-        if fields.len() != 2 || fields[0].is_empty() || fields[1] != "live_market_ssd" {
+        if fields.len() != 2 || !seen.contains(fields[0])
+            || fields[1] != "live_market_ssd" {
             return Err("Strategy 1 source receipt has active parts outside live_market_ssd");
         }
+    }
+    Ok(())
+}
+
+pub fn verify_event_columns(rows: &str) -> Result<(), &'static str> {
+    const COLUMNS: [(&str, &str); 21] = [
+        ("source_date", "Date"), ("producer_epoch", "FixedString(32)"),
+        ("arrival_sequence", "UInt64"), ("schema_version", "UInt16"),
+        ("ingest_ts", "DateTime64(3, 'UTC')"),
+        ("ticker", "LowCardinality(String)"), ("event_meta", "UInt8"),
+        ("execution_timestamp_us", "UInt64"), ("sip_timestamp_us", "UInt64"),
+        ("price_primary_int", "UInt32"), ("price_secondary_int", "UInt32"),
+        ("size_primary", "Float32"), ("size_secondary", "Float32"),
+        ("exchange_primary", "UInt8"), ("exchange_secondary", "UInt8"),
+        ("condition_token_1", "UInt8"), ("condition_token_2", "UInt8"),
+        ("condition_token_3", "UInt8"), ("condition_token_4", "UInt8"),
+        ("condition_token_5", "UInt8"), ("source_sequence", "UInt64"),
+    ];
+    let actual = rows.lines().map(|row| row.split_once('\t'))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("Strategy 1 source event has malformed columns")?;
+    if actual.len() != COLUMNS.len() + 1
+        || actual[..COLUMNS.len()] != COLUMNS
+        || actual[COLUMNS.len()] != ("issue_flags", "UInt16") {
+        return Err("Strategy 1 source event has incompatible columns");
     }
     Ok(())
 }
@@ -275,11 +329,19 @@ mod tests {
     }
 
     #[test]
-    fn both_tables_are_typed_and_ssd_placed() {
-        for sql in [batch_table_sql(), member_table_sql()] {
+    fn source_tables_are_typed_and_ssd_placed() {
+        for sql in [batch_table_sql(), member_table_sql(), event_table_sql()] {
             assert!(sql.contains("storage_policy = 'live_market_ssd'"));
             assert!(sql.contains("PARTITION BY toYYYYMM(source_date)"));
             assert!(!sql.to_lowercase().contains("json"));
+        }
+        let source = event_table_sql();
+        assert!(source.contains(
+            "ORDER BY (source_date, producer_epoch, ticker, arrival_sequence)"));
+        assert!(source.contains("ENGINE = ReplacingMergeTree(ingest_ts)"));
+        for field in ["execution_timestamp_us", "sip_timestamp_us",
+                      "source_sequence", "issue_flags", "condition_token_5"] {
+            assert!(source.contains(field));
         }
     }
 
@@ -287,13 +349,36 @@ mod tests {
     fn storage_contract_rejects_missing_or_off_disk_parts() {
         let tables = format!(
             "{BATCH_TABLE}\tMergeTree\ttoYYYYMM(source_date)\tsource_date, producer_epoch, batch_id\tlive_market_ssd\n\
-             {MEMBER_TABLE}\tMergeTree\ttoYYYYMM(source_date)\tsource_date, producer_epoch, arrival_sequence\tlive_market_ssd\n"
+             {MEMBER_TABLE}\tMergeTree\ttoYYYYMM(source_date)\tsource_date, producer_epoch, arrival_sequence\tlive_market_ssd\n\
+             {EVENT_TABLE}\tReplacingMergeTree\ttoYYYYMM(source_date)\tsource_date, producer_epoch, ticker, arrival_sequence\tlive_market_ssd\n"
         );
-        assert!(verify_storage_contract(&tables, "part_1\tlive_market_ssd\n").is_ok());
-        assert!(verify_storage_contract(&tables, "part_1\tdefault\n").is_err());
-        assert!(verify_storage_contract(&tables, "part_1\tlive_market_ssd\textra\n").is_err());
+        assert!(verify_storage_contract(&tables, &format!("{EVENT_TABLE}\tlive_market_ssd\n")).is_ok());
+        assert!(verify_storage_contract(&tables, &format!("{EVENT_TABLE}\tdefault\n")).is_err());
+        assert!(verify_storage_contract(&tables, "foreign\tlive_market_ssd\n").is_err());
+        assert!(verify_storage_contract(&tables, &format!("{EVENT_TABLE}\tlive_market_ssd\textra\n")).is_err());
         assert!(verify_storage_contract(&tables.replace("MergeTree", "Memory"), "").is_err());
         assert!(verify_storage_contract(&tables.lines().next().unwrap().to_owned(), "").is_err());
+    }
+
+    #[test]
+    fn source_event_columns_are_exact_and_ordered() {
+        let columns = [
+            "source_date\tDate", "producer_epoch\tFixedString(32)",
+            "arrival_sequence\tUInt64", "schema_version\tUInt16",
+            "ingest_ts\tDateTime64(3, 'UTC')", "ticker\tLowCardinality(String)",
+            "event_meta\tUInt8", "execution_timestamp_us\tUInt64",
+            "sip_timestamp_us\tUInt64", "price_primary_int\tUInt32",
+            "price_secondary_int\tUInt32", "size_primary\tFloat32",
+            "size_secondary\tFloat32", "exchange_primary\tUInt8",
+            "exchange_secondary\tUInt8", "condition_token_1\tUInt8",
+            "condition_token_2\tUInt8", "condition_token_3\tUInt8",
+            "condition_token_4\tUInt8", "condition_token_5\tUInt8",
+            "source_sequence\tUInt64", "issue_flags\tUInt16",
+        ].join("\n");
+        assert!(verify_event_columns(&columns).is_ok());
+        assert!(verify_event_columns(&columns.replace("arrival_sequence\tUInt64",
+                                                      "arrival_sequence\tString")).is_err());
+        assert!(verify_event_columns(&columns.replace("issue_flags\tUInt16", "")).is_err());
     }
 
     #[test]

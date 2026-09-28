@@ -7,9 +7,10 @@ use crate::market_products::MarketProductEventRouter;
 use crate::metrics::{QueueFailureKind, SharedMetrics};
 use crate::strategy_one_liquidity::{CompletedLiquidityBucket, LiquidityReducer};
 use crate::strategy_one_source_receipt::{
-    batch_table_sql, member_table_sql, prepare_receipts, verify_storage_contract,
+    batch_table_sql, event_table_sql, member_table_sql, prepare_receipts,
+    verify_event_columns, verify_storage_contract,
     BatchReceipt, MemberReceipt,
-    BATCH_TABLE, MEMBER_TABLE,
+    BATCH_TABLE, EVENT_TABLE, MEMBER_TABLE,
 };
 use crate::strategy_one_trade_reporting::{reporting_flags, reporting_reason, DELAYED, EVALUATED};
 use crate::timefmt::clickhouse_datetime64;
@@ -28,6 +29,32 @@ use tokio::time::{interval, sleep, Duration, Instant};
 
 pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 6;
 pub const QUOTE_EVENT_TYPE: u8 = 0;
+
+fn persisted_event_row(event: &LiveCompactEvent) -> serde_json::Value {
+    json!({
+        "event_date": event.event_date,
+        "schema_version": event.schema_version,
+        "ingest_ts": clickhouse_datetime64(&event.ingest_ts),
+        "arrival_sequence": event.arrival_sequence,
+        "ticker": event.ticker,
+        "event_meta": event.event_meta,
+        "execution_timestamp_us": event.execution_timestamp_us,
+        "sip_timestamp_us": event.sip_timestamp_us,
+        "price_primary_int": event.price_primary_int,
+        "price_secondary_int": event.price_secondary_int,
+        "size_primary": event.size_primary,
+        "size_secondary": event.size_secondary,
+        "exchange_primary": event.exchange_primary,
+        "exchange_secondary": event.exchange_secondary,
+        "condition_token_1": event.condition_token_1,
+        "condition_token_2": event.condition_token_2,
+        "condition_token_3": event.condition_token_3,
+        "condition_token_4": event.condition_token_4,
+        "condition_token_5": event.condition_token_5,
+        "source_sequence": event.source_sequence,
+        "issue_flags": event.issue_flags,
+    })
+}
 pub const TRADE_EVENT_TYPE: u8 = 1;
 const CONDITION_TOKEN_SLOTS: usize = 5;
 const MAX_PRECISE_PRICE: f64 = 429_496.7295;
@@ -1282,6 +1309,7 @@ struct CompactPersistWork {
     events: Vec<LiveCompactEvent>,
     issues: Vec<(LiveCompactEvent, CompactEventIssue)>,
     events_inserted: bool,
+    source_events_inserted: bool,
     receipt_members_inserted: bool,
     receipt_batches_inserted: bool,
     prepared_receipts: Option<(Vec<BatchReceipt>, Vec<MemberReceipt>)>,
@@ -1449,7 +1477,8 @@ impl CompactEventClickHouseWriter {
         self.execute(&self.create_live_coverage_table_sql(), true).await?;
         self.execute(&batch_table_sql(), true).await?;
         self.execute(&member_table_sql(), true).await?;
-        for table in [BATCH_TABLE, MEMBER_TABLE] {
+        self.execute(&event_table_sql(), true).await?;
+        for table in [BATCH_TABLE, MEMBER_TABLE, EVENT_TABLE] {
             self.execute(&format!(
                 "ALTER TABLE {table} MODIFY SETTING non_replicated_deduplication_window = 1000"
             ), true).await?;
@@ -1715,6 +1744,7 @@ impl CompactEventClickHouseWriter {
             ),
             issues: std::mem::take(issue_batch),
             events_inserted: false,
+            source_events_inserted: false,
             receipt_members_inserted: false,
             receipt_batches_inserted: false,
             prepared_receipts: None,
@@ -1909,6 +1939,20 @@ impl CompactEventClickHouseWriter {
                 }
             }
         }
+        if !work.source_events_inserted {
+            let Some(epoch) = self.source_receipt_epoch.get() else {
+                self.metrics.record_lane_failure(
+                    "strategy_one_source_receipt", "producer epoch is not initialized");
+                return;
+            };
+            match self.insert_strategy_one_source_events(epoch, &work.events).await {
+                Ok(()) => work.source_events_inserted = true,
+                Err(error) => {
+                    self.metrics.record_lane_failure("strategy_one_source_receipt", &error);
+                    return;
+                }
+            }
+        }
         let (batches, members) = work.prepared_receipts.as_ref().expect("prepared receipts");
         if !work.receipt_members_inserted {
             match self.insert_source_receipt_rows(MEMBER_TABLE, members).await {
@@ -1950,6 +1994,7 @@ impl CompactEventClickHouseWriter {
                 self.durability.mark_persisted(&work.events);
                 work.events.clear();
                 work.events_inserted = false;
+                work.source_events_inserted = false;
                 work.receipt_members_inserted = false;
                 work.receipt_batches_inserted = false;
                 work.prepared_receipts = None;
@@ -1988,46 +2033,26 @@ impl CompactEventClickHouseWriter {
         let rows = self.query(&format!(
             "SELECT name,engine,partition_key,sorting_key,storage_policy \
              FROM system.tables WHERE database=currentDatabase() \
-             AND name IN ('{BATCH_TABLE}','{MEMBER_TABLE}') \
+             AND name IN ('{BATCH_TABLE}','{MEMBER_TABLE}','{EVENT_TABLE}') \
              ORDER BY name FORMAT TabSeparatedRaw"
         ), true).await?;
         let parts = self.query(&format!(
-            "SELECT name,disk_name FROM system.parts WHERE database=currentDatabase() \
-             AND active AND table IN ('{BATCH_TABLE}','{MEMBER_TABLE}') \
+            "SELECT table,disk_name FROM system.parts WHERE database=currentDatabase() \
+             AND active AND table IN ('{BATCH_TABLE}','{MEMBER_TABLE}','{EVENT_TABLE}') \
              FORMAT TabSeparatedRaw"
         ), true).await?;
-        verify_storage_contract(&rows, &parts).map_err(str::to_owned)
+        verify_storage_contract(&rows, &parts).map_err(str::to_owned)?;
+        let columns = self.query(&format!(
+            "SELECT name,type FROM system.columns WHERE database=currentDatabase() \
+             AND table='{EVENT_TABLE}' ORDER BY position FORMAT TabSeparatedRaw"
+        ), true).await?;
+        verify_event_columns(&columns).map_err(str::to_owned)
     }
 
     async fn insert_events(&self, rows: &[LiveCompactEvent]) -> Result<(), String> {
         let body = rows
             .iter()
-            .map(|event| {
-                json!({
-                    "event_date": event.event_date,
-                    "schema_version": event.schema_version,
-                    "ingest_ts": clickhouse_datetime64(&event.ingest_ts),
-                    "arrival_sequence": event.arrival_sequence,
-                    "ticker": event.ticker,
-                    "event_meta": event.event_meta,
-                    "execution_timestamp_us": event.execution_timestamp_us,
-                    "sip_timestamp_us": event.sip_timestamp_us,
-                    "price_primary_int": event.price_primary_int,
-                    "price_secondary_int": event.price_secondary_int,
-                    "size_primary": event.size_primary,
-                    "size_secondary": event.size_secondary,
-                    "exchange_primary": event.exchange_primary,
-                    "exchange_secondary": event.exchange_secondary,
-                    "condition_token_1": event.condition_token_1,
-                    "condition_token_2": event.condition_token_2,
-                    "condition_token_3": event.condition_token_3,
-                    "condition_token_4": event.condition_token_4,
-                    "condition_token_5": event.condition_token_5,
-                    "source_sequence": event.source_sequence,
-                    "issue_flags": event.issue_flags,
-                })
-                .to_string()
-            })
+            .map(|event| persisted_event_row(event).to_string())
             .collect::<Vec<_>>()
             .join("\n");
         let batch_token = digest(&SHA256, body.as_bytes())
@@ -2043,6 +2068,24 @@ impl CompactEventClickHouseWriter {
             body,
         )
         .await
+    }
+
+    async fn insert_strategy_one_source_events(
+        &self, epoch: &str, rows: &[LiveCompactEvent],
+    ) -> Result<(), String> {
+        let body = rows.iter().map(|event| {
+            let mut row = persisted_event_row(event);
+            let object = row.as_object_mut().expect("persisted event is an object");
+            let day = object.remove("event_date").expect("event date");
+            object.insert("source_date".into(), day);
+            object.insert("producer_epoch".into(), json!(epoch));
+            row.to_string()
+        }).collect::<Vec<_>>().join("\n");
+        let token = digest(&SHA256, body.as_bytes()).as_ref().iter()
+            .map(|byte| format!("{byte:02x}")).collect::<String>();
+        self.query_with_body(&format!(
+            "INSERT INTO {EVENT_TABLE} SETTINGS insert_deduplication_token = '{token}' FORMAT JSONEachRow"
+        ), body).await
     }
 
     async fn latest_arrival_sequence(&self) -> Result<u64, String> {
