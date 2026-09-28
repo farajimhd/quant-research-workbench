@@ -171,6 +171,7 @@ impl LiquidityReducer {
         row.quote_event_count = row.quote_event_count.saturating_add(1);
         if bid == 0 || ask < bid || !ask_size.is_finite() || !bid_size.is_finite()
             || ask_size < 0.0 || bid_size < 0.0 {
+            self.project_quote();
             return;
         }
         let quote = Quote { timestamp_us: event.sip_timestamp_us, bid_int: bid, ask_int: ask, bid_size, ask_size };
@@ -361,7 +362,11 @@ mod tests {
         let mut crossed = event(1_100, 2, false);
         crossed.price_secondary_int = 1_002;
         reducer.push(&crossed, &decoder, &rules).unwrap();
-        reducer.push(&event(1_200, 3, true), &decoder, &rules).unwrap();
+        let crossed_only = reducer.push(&event(1_200, 3, true), &decoder, &rules)
+            .unwrap().unwrap();
+        assert_eq!(crossed_only.quote_event_count, 1);
+        assert_eq!(crossed_only.quote_valid, 1);
+        assert_eq!(crossed_only.quote_timestamp_us, event(100, 1, false).sip_timestamp_us);
         let row = reducer.push(&event(1_300, 4, false), &decoder, &rules)
             .unwrap().unwrap();
         assert_eq!(row.volume, 100.0);
