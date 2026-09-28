@@ -179,8 +179,11 @@ def _market_product_placement(client: Any) -> None:
     if (len(tables) != len(names) or {row.get("name") for row in tables} != set(names)
             or any(row.get("storage_policy") != "live_market_ssd" for row in tables)):
         raise RuntimeError("Market-day product table policy is not live_market_ssd")
+    # Placement is a predicate over (table, disk), not over every part. A
+    # full part inventory can transfer thousands of redundant rows during
+    # every cold Backtest preflight; DISTINCT preserves the fail-closed check.
     parts = [json.loads(line) for line in client.execute(
-        "SELECT table,disk_name FROM system.parts WHERE active AND database='arte' "
+        "SELECT DISTINCT table,disk_name FROM system.parts WHERE active AND database='arte' "
         f"AND table IN ({quoted}) FORMAT JSONEachRow").splitlines() if line.strip()]
     if any(row.get("table") not in names or row.get("disk_name") != "live_market_ssd"
            for row in parts):
