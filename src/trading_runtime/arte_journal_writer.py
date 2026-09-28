@@ -227,10 +227,9 @@ def journal_client_from_env() -> Any:
     from research.mlops.clickhouse import ClickHouseHttpClient
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
-    url = workstation_ipv4_transport(
-        os.environ.get("TRADING_JOURNAL_CLICKHOUSE_URL", "").strip())
-    user = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_USER", "").strip()
-    password = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "")
+    url, user, password = _dedicated_clickhouse_credentials(
+        "TRADING_JOURNAL_CLICKHOUSE_", "TRADING_JOURNAL_CREDENTIAL_FILE")
+    url = workstation_ipv4_transport(url)
     if not url or not user or not password:
         raise ValueError("Typed journal requires dedicated ClickHouse URL, user, and password")
     market_users = {os.environ.get(key, "").strip() for key in (
@@ -315,13 +314,38 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
 def _v4_runner_credentials() -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
-    url = workstation_ipv4_transport(
-        os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_URL", "").strip())
-    user = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "").strip()
-    password = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD", "")
+    url, user, password = _dedicated_clickhouse_credentials(
+        "BACKTEST_V4_RUNNER_CLICKHOUSE_", "BACKTEST_V4_RUNNER_CREDENTIAL_FILE")
+    url = workstation_ipv4_transport(url)
     if not url or user != "backtest_v4_runner" or not password:
         raise ValueError("V4 Backtest requires its dedicated runner credential")
     return url, user, password
+
+
+def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, str, str]:
+    """Load exact named principal from environment or a private external file.
+
+    The file path may be a protected workstation share. Never copy its secret
+    into repository, runtime artifacts, logs, or a service fingerprint.
+    """
+    from pathlib import Path
+
+    keys = tuple(prefix + suffix for suffix in ("URL", "USER", "PASSWORD"))
+    inline = tuple(os.environ.get(key, "") for key in keys)
+    path = os.environ.get(path_key, "").strip()
+    if path:
+        if any(inline):
+            raise ValueError("Dedicated ClickHouse credentials cannot mix file and inline values")
+        found: dict[str, str] = {}
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            key, separator, value = line.partition("=")
+            if not separator or key not in keys or key in found:
+                raise ValueError("Dedicated ClickHouse credential file has invalid fields")
+            found[key] = value
+        inline = tuple(found.get(key, "") for key in keys)
+    return inline[0].strip(), inline[1].strip(), inline[2]
 
 
 def backtest_v4_operator_client_from_env() -> Any:

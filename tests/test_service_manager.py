@@ -89,6 +89,8 @@ def test_catalog_defines_operator_profiles_and_dynamic_dependencies() -> None:
     assert profiles["app"] == ("backend", "frontend")
     assert services["backend"].launcher == "scripts/run_backend.ps1"
     assert services["frontend"].dependencies == ("backend",)
+    assert services["backend"].environment["BACKTEST_V4_RUNNER_CREDENTIAL_FILE"].startswith(
+        "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\")
     assert services["reference-gateway"].dependencies == ("ibkr-supervisor",)
     assert services["news-hypothesis"].dependencies == ("model-gateway",)
     assert services["text-intelligence"].dependencies == ()

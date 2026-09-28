@@ -7,12 +7,18 @@ it must not substitute an SSH-forwarded workstation API. ClickHouse is reachable
 from the laptop at the workstation HTTP port 18123. The app must never fall back
 to SQLite or to a general ClickHouse account.
 
+The managed local backend reads the dedicated V3 market reader, V4 runner,
+and journal credential files over the protected workstation share. It copies
+no credential into the repository or a laptop artifact. All three principals
+were verified from the laptop with read-only `SELECT 1` on 2026-09-28.
+
 **Current operational blocker:** the user selected a secured LAN Keeper endpoint
 for the laptop. The client now requires an explicit private IPv4 endpoint,
 CA certificate, and client certificate/key; it enables TLS, peer verification,
 and hostname verification. Keeper's secure listener, mutually authenticated
 certificates, laptop-only firewall rule, and laptop-owned dedicated Backtest
-credentials must still be deployed and verified. Therefore starting the local
+credentials are available; Keeper mTLS must still be deployed and verified.
+Therefore starting the local
 app does not yet make Strategy 1 Backtest launchable. Do not expose the existing
 plaintext Keeper port 9181 on the LAN or bypass TLS verification.
 The workstation-backend and SSH-API procedure used in the historical tests

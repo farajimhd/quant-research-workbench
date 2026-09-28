@@ -143,6 +143,29 @@ def test_typed_journal_client_requires_a_separate_complete_identity(monkeypatch)
         client.close()
 
 
+def test_dedicated_clickhouse_file_credentials_are_exact_and_nonmixing(tmp_path, monkeypatch):
+    for key in ("BACKTEST_V4_RUNNER_CLICKHOUSE_URL",
+                "BACKTEST_V4_RUNNER_CLICKHOUSE_USER",
+                "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    credential = tmp_path / "runner.env"
+    credential.write_text(
+        "BACKTEST_V4_RUNNER_CLICKHOUSE_URL=http://desktop-saai85t:18123\n"
+        "BACKTEST_V4_RUNNER_CLICKHOUSE_USER=backtest_v4_runner\n"
+        "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD=test-only\n",
+        encoding="utf-8")
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CREDENTIAL_FILE", str(credential))
+    assert writer_module._v4_runner_credentials()[1] == "backtest_v4_runner"
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "backtest_v4_runner")
+    with pytest.raises(ValueError, match="mix file and inline"):
+        writer_module._v4_runner_credentials()
+    monkeypatch.delenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER")
+    credential.write_text(credential.read_text(encoding="utf-8") + "UNKNOWN=1\n",
+                          encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid fields"):
+        writer_module._v4_runner_credentials()
+
+
 def test_v4_and_journal_clients_use_private_workstation_ipv4(monkeypatch) -> None:
     from src.trading_runtime import clickhouse_transport
 
