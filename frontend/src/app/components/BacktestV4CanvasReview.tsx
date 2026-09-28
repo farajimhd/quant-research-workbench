@@ -363,12 +363,11 @@ export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
       runLabel={`${ticker} · Charts & Quotes`} runStatus="completed" sourceLabel="ARTE saved market"
       showHealth={false} metaForContainer={() => ({ sourceLabel: "ARTE verified V4", status: "ready", freshness: "Saved run" })}
       renderContainer={() => <ChartsQuotesMarketLayout symbol={ticker} end={savedAsOf} savedQuote={quote} layout={layout} onLayoutChange={setLayout}
-        contextLabels={{ left: "5s intraday context", right: "30s intraday context" }}
         mainChartMaximized={maximized}
         mainChart={<BacktestV4SavedChart embedded initialFrame={mainFrame} runId={runId} ticker={ticker} onQuoteChange={value => setQuote(value ?? null)}
           toolbarAction={<button aria-label={maximized ? "Restore chart panels" : "Maximize main chart"} className="toolbar-button" onClick={() => setMaximized(value => !value)} title={maximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} />}
-        monthChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="5s" panelLabel="5s context · certified ARTE" runId={runId} ticker={ticker} />}
-        dailyChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="30s" panelLabel="30s context · certified ARTE" runId={runId} ticker={ticker} />}
+        monthChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1mo" allowedFrames={["1mo"]} initialShowMacd={false} panelLabel="Monthly context · limited ARTE history" runId={runId} ticker={ticker} />}
+        dailyChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1d" allowedFrames={["1d"]} initialShowMacd={false} panelLabel="Daily context · limited ARTE history" runId={runId} ticker={ticker} />}
         reservedPanel={<div className="trading-disclosure">Saved Backtest review · order entry disabled</div>} />} />
   </div>;
 }

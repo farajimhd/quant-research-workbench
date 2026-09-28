@@ -13,6 +13,7 @@ from typing import Any, Callable
 from uuid import UUID
 
 from src.backend.arte_chart_reader import _RESOLUTIONS, chart_page
+from src.backend.backtest_v4_chart_context import context_chart_page
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS, assert_select_only,
     certified_market_plan_from_arte, market_day_boundary,
@@ -108,11 +109,13 @@ def cold_v4_chart_page(
     """Read a page only after terminal, definition, release, and plan parity."""
     normalized = str(UUID(run_id))
     symbol = ticker.strip().upper()
-    if (not symbol or timeframe not in _RESOLUTIONS
+    context_frame = timeframe in {"1d", "1mo"}
+    if (not symbol or (timeframe not in _RESOLUTIONS and not context_frame)
             or type(row_limit) is not int or not 1 <= row_limit <= 5000
             or before_boundary_ms is not None and (
                 type(before_boundary_ms) is not int
                 or not 0 < before_boundary_ms <= 57_600_000
+                or context_frame
                 or before_boundary_ms % _RESOLUTIONS[timeframe]
             )
             or not isinstance(indicator_columns, tuple)
@@ -120,25 +123,35 @@ def cold_v4_chart_page(
             or any(not isinstance(column, str) or not column.isidentifier()
                    or len(column) > 64 for column in indicator_columns)):
         raise ValueError("Saved Strategy 1 chart request is invalid")
-    session, _, cursor, plan = certified_saved_run_plan(
+    session, run_context, cursor, plan = certified_saved_run_plan(
         journal_client, market_client, run_id=normalized, plan_loader=plan_loader)
     if (symbol not in plan.tickers
-            or _RESOLUTIONS[timeframe] not in plan.required_resolutions_ms):
+            or (not context_frame
+                and _RESOLUTIONS[timeframe] not in plan.required_resolutions_ms)):
         raise RuntimeError("Saved chart cannot reproduce its certified market plan")
     cursor_ms = int(cursor["boundary_ms"])
     end_ms = min(cursor_ms, before_boundary_ms or cursor_ms)
     if end_ms <= 0:
         raise ValueError("Saved Strategy 1 chart has no completed boundary")
-    selected = sorted(set(indicator_columns))
-    page = chart_page(
-        session=session, ticker=symbol, timeframe=timeframe,
-        page_start=market_day_boundary(session, 0),
-        page_end=market_day_boundary(session, end_ms), row_limit=row_limit,
-        stage="full", indicator_columns=selected,
-        include_market_signals=False, include_structure=False,
-        allow_persisted_bars=True, mode="backtest", pinned_plan=plan,
-        read_client=market_client,
-    )
+    if context_frame:
+        release = certify_strategy_one_configuration(market_client)
+        if release.payload_hash != run_context["configuration_hash"]:
+            raise RuntimeError("Saved context release differs from market plan")
+        page = context_chart_page(
+            market_client, session=session, ticker=symbol,
+            boundary_ms=end_ms, timeframe=timeframe, run_plan=plan,
+            configuration=release.payload, plan_loader=plan_loader)
+    else:
+        selected = sorted(set(indicator_columns))
+        page = chart_page(
+            session=session, ticker=symbol, timeframe=timeframe,
+            page_start=market_day_boundary(session, 0),
+            page_end=market_day_boundary(session, end_ms), row_limit=row_limit,
+            stage="full", indicator_columns=selected,
+            include_market_signals=False, include_structure=False,
+            allow_persisted_bars=True, mode="backtest", pinned_plan=plan,
+            read_client=market_client,
+        )
     if page is None:
         raise RuntimeError("Certified saved chart has no persisted ARTE page")
     quote = _pinned_quote(market_client, plan, session=session, ticker=symbol,

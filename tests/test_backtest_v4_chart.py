@@ -103,6 +103,10 @@ def test_cold_chart_rejects_invalid_page_before_any_authority_read(monkeypatch):
         subject.cold_v4_chart_page(
             object(), object(), run_id=RUN_ID, ticker="SUGP",
             timeframe="1s", before_boundary_ms=150)
+    with pytest.raises(ValueError, match="invalid"):
+        subject.cold_v4_chart_page(
+            object(), object(), run_id=RUN_ID, ticker="SUGP",
+            timeframe="1mo", before_boundary_ms=18_000_000)
 
 
 def test_pinned_quote_rejects_future_timestamp(monkeypatch):
@@ -114,3 +118,26 @@ def test_pinned_quote_rejects_future_timestamp(monkeypatch):
     with pytest.raises(RuntimeError, match="newer than"):
         subject._pinned_quote(FutureClient(), plan, session=date(2026, 8, 18),
                               ticker="SUGP", boundary_ms=18_000_000)
+
+
+def test_saved_daily_context_uses_arte_context_reader_not_intraday_reader(monkeypatch):
+    plan = _fixtures(monkeypatch)
+    monkeypatch.setattr(subject, "chart_page", lambda **_kwargs: pytest.fail(
+        "daily context reached intraday chart reader"))
+    seen = []
+    def context(*args, **kwargs):
+        seen.append(kwargs)
+        return {"bars": [], "indicators": [], "has_more": False,
+                "next_before": "", "indicator_provenance": {
+                    "unavailable_columns": []}}
+    monkeypatch.setattr(subject, "context_chart_page", context)
+    class ReadClient:
+        def execute(self, query):
+            assert "arte.liquidity_100ms_v1" in query
+            return ""
+    result = subject.cold_v4_chart_page(
+        object(), ReadClient(), run_id=RUN_ID, ticker="SUGP",
+        timeframe="1d", plan_loader=lambda **_kwargs: plan)
+    assert result["timeframe"] == "1d"
+    assert seen[0]["run_plan"] is plan
+    assert seen[0]["boundary_ms"] == 19_500_000
