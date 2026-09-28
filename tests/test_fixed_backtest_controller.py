@@ -143,7 +143,8 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(
         execution_interval="100ms",
-        requested_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+        requested_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc),
+        session_end=datetime(2026, 8, 18, 13, 30, tzinfo=timezone.utc))
     controller._journal = BacktestMemoryJournal(run_id=RUN)
     controller._strategy = AssignedStrategyOne([StrategyAssignment(
         "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
@@ -187,11 +188,13 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
         v7_intervals=object(),
         entry=object(), prices=object()))
     assert controller._source_cursor == ({
-        "session_date": DAY, "boundary_ms": 100, "sequence": 1}
+        "session_date": DAY, "boundary_ms": 19_800_000, "sequence": 1}
         if not stop_requested else {})
     assert controller.processed_events == (0 if stop_requested else 1)
     assert controller._data_authority["fixed_market_data"]["frame_spool"] is False
-    assert controller._after_event.await_count == (0 if stop_requested else 1)
+    assert controller._after_event.await_count == (0 if stop_requested else 2)
+    if not stop_requested:
+        controller._after_event.assert_awaited_with(controller.definition.session_end)
     controller._finish.assert_awaited_once_with(
         "stopped" if stop_requested else "completed")
     controller._process_strategy_frame.assert_not_awaited()

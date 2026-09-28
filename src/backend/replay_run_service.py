@@ -3460,6 +3460,23 @@ class ReplayRunController:
         finally:
             self._strategy_one_manager = None
             self._record_stage_time("strategy_one_session", session_started)
+        if self._stop_requested:
+            await self._finish("stopped")
+            return
+        terminal_boundary = self._fixed_through_boundary_ms()
+        prior_boundary = int(self._source_cursor.get("boundary_ms") or 0)
+        if prior_boundary > terminal_boundary:
+            raise RuntimeError("Strategy 1 sparse cursor passed the certified session end")
+        # No market row is fabricated for the trailing empty interval. The
+        # scheduler alone advances to 09:30 so terminal V4 evidence proves
+        # the requested full session rather than its last observed bar.
+        self._source_cursor = {
+            "session_date": day, "boundary_ms": terminal_boundary,
+            "sequence": boundary_count,
+        }
+        self.current_time = self.definition.session_end
+        if prior_boundary < terminal_boundary:
+            await self._after_event(self.definition.session_end)
         await self._finish("completed")
 
     async def _run_engine(self) -> None:
