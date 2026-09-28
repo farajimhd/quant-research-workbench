@@ -32,6 +32,7 @@ from src.backend.live_signal_journal_preflight import (
     staged_grants, staged_live_signal_storage_preflight,
 )
 from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
+from src.backend.live_strategy_one_assignment import TABLE as STRATEGY_ONE_ASSIGNMENT_TABLE
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.strategy_one_configuration_tree import (
     NODE_TABLE as STRATEGY_ONE_NODE_TABLE,
@@ -188,6 +189,8 @@ def _grants(*, staged_live_signal: bool = False,
             statements.extend(
                 f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"
                 for table in LIVE_PLAN_MEMBERSHIP_TABLES)
+            statements.append(
+                f"GRANT SELECT, INSERT ON arte.{STRATEGY_ONE_ASSIGNMENT_TABLE.name} TO {PRINCIPAL}")
         return tuple(statements)
     statements = [
         f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"
@@ -207,6 +210,8 @@ def _grants(*, staged_live_signal: bool = False,
         statements.extend(
             f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"
             for table in LIVE_PLAN_MEMBERSHIP_TABLES)
+        statements.append(
+            f"GRANT SELECT, INSERT ON arte.{STRATEGY_ONE_ASSIGNMENT_TABLE.name} TO {PRINCIPAL}")
     return tuple(statements)
 
 
@@ -333,7 +338,8 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
     if staged_live_signal:
         staged_live_signal_storage_preflight(client)
     if staged_live_plan_membership:
-        storage_preflight(client, tables=LIVE_PLAN_MEMBERSHIP_TABLES)
+        storage_preflight(client, tables=(*LIVE_PLAN_MEMBERSHIP_TABLES,
+                                          STRATEGY_ONE_ASSIGNMENT_TABLE))
     if fixed_backtest_v2:
         # The journal principal never creates tables. An operator must install
         # and review the complete V2 DDL before permissions are changed.

@@ -46,16 +46,18 @@ def test_fixed_v2_grants_revoke_legacy_inserts_and_exclude_market_writes() -> No
         fixed_backtest_v2=True, staged_live_plan_membership=True))
     assert combined - set(grants) == {
         f"GRANT SELECT, INSERT ON arte.{table.name} TO trading_journal_writer"
-        for table in provision.LIVE_PLAN_MEMBERSHIP_TABLES
+        for table in (*provision.LIVE_PLAN_MEMBERSHIP_TABLES,
+                      provision.STRATEGY_ONE_ASSIGNMENT_TABLE)
     }
 
 
-def test_staged_live_membership_adds_only_three_typed_table_grants() -> None:
+def test_staged_live_membership_adds_only_typed_control_plane_grants() -> None:
     base = set(provision._grants())
     extended = set(provision._grants(staged_live_plan_membership=True))
     assert extended - base == {
         f"GRANT SELECT, INSERT ON arte.{table.name} TO trading_journal_writer"
-        for table in provision.LIVE_PLAN_MEMBERSHIP_TABLES
+        for table in (*provision.LIVE_PLAN_MEMBERSHIP_TABLES,
+                      provision.STRATEGY_ONE_ASSIGNMENT_TABLE)
     }
     assert not any("INSERT ON arte.bars_v1" in grant for grant in extended)
 
