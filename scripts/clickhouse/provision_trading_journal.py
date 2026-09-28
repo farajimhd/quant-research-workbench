@@ -231,7 +231,8 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
               fixed_backtest_v2: bool = False,
               staged_live_signal_only: bool = False,
               oms_execution_tactic_only: bool = False,
-              strategy_one_live_read_only: bool = False) -> None:
+              strategy_one_live_read_only: bool = False,
+              strategy_one_assignment_publish_only: bool = False) -> None:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Provisioning must run on DESKTOP-SAAI85T")
     if not SECRET_ROOT.is_dir():
@@ -254,6 +255,28 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
     if present not in {"0", "1"}:
         raise RuntimeError("ClickHouse principal inventory is inconsistent")
     print(f"Journal principal: {'present' if present == '1' else 'absent'}")
+    if strategy_one_assignment_publish_only:
+        if any((staged_live_signal, staged_live_signal_only,
+                staged_live_plan_membership, fixed_backtest_v2,
+                oms_execution_tactic_only, strategy_one_live_read_only)):
+            raise ValueError("Assignment producer grant cannot be combined with another profile")
+        if present != "1":
+            raise RuntimeError("Assignment producer grant requires an existing principal")
+        grant = (f"GRANT SELECT, INSERT ON arte.{STRATEGY_ONE_ASSIGNMENT_TABLE.name} "
+                 f"TO {PRINCIPAL}")
+        print("Required grants: 1 exact assignment fact grant")
+        if not apply:
+            print("Plan only; no credential or ClickHouse state changed")
+            return
+        storage_preflight(client, tables=(STRATEGY_ONE_ASSIGNMENT_TABLE,))
+        password = _credential(SECRET_PATH, account_exists=True)
+        writer = ClickHouseHttpClient(url, PRINCIPAL, password, timeout_seconds=20)
+        if writer.execute("SELECT currentUser()").strip() != PRINCIPAL:
+            raise RuntimeError("Assignment producer credential authenticated as wrong user")
+        client.execute(grant)
+        storage_preflight(writer, tables=(STRATEGY_ONE_ASSIGNMENT_TABLE,))
+        print("Assignment fact producer grant verified; 0 rows inserted")
+        return
     if strategy_one_live_read_only:
         if any((staged_live_signal, staged_live_signal_only,
                 staged_live_plan_membership, fixed_backtest_v2,
@@ -383,6 +406,8 @@ def main() -> int:
                         help="grant only preprovisioned normalized OMS tactic tables")
     parser.add_argument("--strategy-one-live-read-only", action="store_true",
                         help="grant only Strategy 1 release and approval SELECT access")
+    parser.add_argument("--strategy-one-assignment-publish-only", action="store_true",
+                        help="grant only the normalized Strategy 1 assignment fact table")
     parser.add_argument("--inspect-effective-grants", action="store_true",
                         help="print the existing journal principal's effective grants without changes")
     parser.add_argument("--staged-live-plan-membership", action="store_true",
@@ -416,7 +441,8 @@ def main() -> int:
                   fixed_backtest_v2=args.fixed_backtest_v2,
                   staged_live_signal_only=args.staged_live_signal_only,
                   oms_execution_tactic_only=args.oms_execution_tactic_only,
-                  strategy_one_live_read_only=args.strategy_one_live_read_only)
+                  strategy_one_live_read_only=args.strategy_one_live_read_only,
+                  strategy_one_assignment_publish_only=args.strategy_one_assignment_publish_only)
     except Exception as exc:
         print(f"Journal provisioning failed: {exc}", file=sys.stderr)
         return 1

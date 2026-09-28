@@ -144,6 +144,39 @@ def test_oms_tactic_grants_are_opt_in_and_exact(
     assert checked == [TABLES, TABLES]
 
 
+def test_strategy_one_assignment_producer_grant_is_single_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Admin:
+        def __init__(self):
+            self.calls = []
+        def execute(self, sql):
+            self.calls.append(sql)
+            return "1\n" if sql.startswith("SELECT count() FROM system.users") else ""
+    class Writer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def execute(self, sql):
+            assert sql == "SELECT currentUser()"
+            return provision.PRINCIPAL
+    admin = Admin()
+    checked = []
+    monkeypatch.setattr(provision.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(provision, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provision, "_admin_client", lambda _url: admin)
+    monkeypatch.setattr(provision, "_credential", lambda *_args, **_kwargs: "private")
+    monkeypatch.setattr(provision, "ClickHouseHttpClient", Writer)
+    monkeypatch.setattr(provision, "storage_preflight",
+                        lambda _client, *, tables: checked.append(tables))
+    provision.provision("http://127.0.0.1:8123", apply=True,
+                        strategy_one_assignment_publish_only=True)
+    assert admin.calls[1:] == [
+        f"GRANT SELECT, INSERT ON arte.{provision.STRATEGY_ONE_ASSIGNMENT_TABLE.name} "
+        f"TO {provision.PRINCIPAL}"]
+    assert checked == [(provision.STRATEGY_ONE_ASSIGNMENT_TABLE,)] * 2
+
+
+
 def test_strategy_one_live_read_grants_are_three_exact_selects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
