@@ -1307,6 +1307,10 @@ def test_fixed_controller_applies_all_liquidity_before_any_strategy_frame(monkey
     ]
     assert controller.processed_events == 4
     assert events[-1] == ("finish", "completed", "")
+    # The final scheduled boundary is certified even when the persisted tape
+    # has no price-bearing row there; no synthetic market row is evaluated.
+    assert controller._source_cursor == {
+        "session_date": DAY, "boundary_ms": 2000, "sequence": 4}
 
 
 def test_fixed_controller_runtime_fills_only_after_decision_boundary(monkeypatch):

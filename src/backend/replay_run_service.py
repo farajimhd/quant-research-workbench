@@ -4115,6 +4115,23 @@ class ReplayRunController:
             reader.shutdown(wait=True, cancel_futures=True)
             if v7_reader is not None:
                 await asyncio.to_thread(v7_reader.close)
+        if self._stop_requested:
+            await self._finish("stopped")
+            return
+        # The persisted tape is sparse. Exhausting its last price/liquidity
+        # row does not mean the requested session ended at that row. Advance
+        # the scheduler cursor to the certified terminal boundary without
+        # fabricating a bar, quote, trade, or broker fill. This also makes the
+        # terminal ClickHouse fence prove the full requested clock was scanned.
+        terminal_day = self.definition.session_end.astimezone(NEW_YORK).date().isoformat()
+        prior_day = str(self._source_cursor.get("session_date") or terminal_day)
+        prior_boundary = int(self._source_cursor.get("boundary_ms") or 0)
+        if (prior_day, prior_boundary) > (terminal_day, through_boundary_ms):
+            raise RuntimeError("Fixed market cursor passed the certified session end")
+        self._source_cursor = {"session_date": terminal_day,
+                               "boundary_ms": through_boundary_ms,
+                               "sequence": sequence}
+        await self._after_event(self.definition.session_end)
         await self._finish("completed")
 
     async def _market_event_batches(self):
