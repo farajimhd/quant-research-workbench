@@ -37,6 +37,7 @@ from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+from src.trading_runtime.arte_order_modify_command_v1 import MODIFY_COMMAND
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
     ALLOCATION as V4_ALLOCATION, V4PortfolioAllocationBatch,
@@ -92,6 +93,7 @@ _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
 _CONTRACTS[ACKNOWLEDGEMENT_V5.name] = ACKNOWLEDGEMENT_V5
 _CONTRACTS[CANCEL.name] = CANCEL
 _CONTRACTS[REPRICE.name] = REPRICE
+_CONTRACTS[MODIFY_COMMAND.name] = MODIFY_COMMAND
 _CONTRACTS[V4_ALLOCATION.name] = V4_ALLOCATION
 _CONTRACTS.update({table.name: table for table in RISK_ACTION_TABLES})
 _CONTRACTS.update({table.name: table for table in PROTECTION_RECONCILIATION_TABLES})
