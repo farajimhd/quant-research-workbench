@@ -86,6 +86,40 @@ def test_sparse_loader_merges_concurrent_shards_by_global_boundary(monkeypatch):
     assert len(closed) == len(visited)
 
 
+def test_sparse_loader_scales_pool_to_surviving_shards(monkeypatch):
+    def rows(scoped, *, candidate_boundaries, price_plan, client):
+        for ticker, clocks in candidate_boundaries.items():
+            for boundary in clocks:
+                yield {"session_date": DAY, "ticker": ticker,
+                       "boundary_ms": boundary, "resolution_ms": 100,
+                       "price_valid": 1, "indicator_resolution_ms": 100}
+
+    class Client:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(subject, "iter_candidate_market_rows", rows)
+    original_pool = subject.ThreadPoolExecutor
+    workers = []
+
+    def pool(*, max_workers):
+        workers.append(max_workers)
+        return original_pool(max_workers=max_workers)
+
+    monkeypatch.setattr(subject, "ThreadPoolExecutor", pool)
+    one = (prepared("AAA", (100,)),)
+    market, prices, candidates = authority(one)
+    assert len(subject.load_sparse_candidate_market(
+        market, candidates, price_plan=prices, client_factory=Client)) == 1
+    assert workers == []
+
+    many = tuple(prepared(f"T{index:02d}", (100,)) for index in range(10))
+    market, prices, candidates = authority(many)
+    assert len(subject.load_sparse_candidate_market(
+        market, candidates, price_plan=prices, client_factory=Client)) == 10
+    assert workers == [2]
+
+
 def test_sparse_loader_rejects_budget_and_missing_market_row(monkeypatch):
     items = (prepared("AAA", (100, 200)),)
     market, prices, candidates = authority(items)

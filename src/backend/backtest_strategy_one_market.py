@@ -159,9 +159,14 @@ def load_sparse_candidate_market(
                 client=client))
 
     rows: list[Mapping[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for batch in pool.map(read, shards):
-            rows.extend(batch)
+    if len(shards) == 1:
+        # Static gating commonly leaves one tiny read; do not create a pool
+        # or sixteen idle clients for that causal run prefix.
+        rows.extend(read(shards[0]))
+    else:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(shards))) as pool:
+            for batch in pool.map(read, shards):
+                rows.extend(batch)
     if len(rows) != expected:
         raise RuntimeError("Strategy 1 sparse market rows differ from certified candidates")
     rows.sort(key=lambda row: (int(row["boundary_ms"]), str(row["ticker"])))

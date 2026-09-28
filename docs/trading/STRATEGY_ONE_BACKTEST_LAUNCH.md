@@ -110,5 +110,14 @@ sequence 2,217 and market cursor, a flat account, and no review limitations.
 Read-only sparse-market profiles on that certified Aug 18 build fetched the
 same 62,072 candidate rows for 957 tickers from 200 bounded shards at each
 worker setting. The exact-key fetch took 6.849s with 4 workers, 3.753s with
-8, and 3.125s with 16. The Backtest's bounded sparse-read default is now 16;
-this measurement does not include preflight, brokerage, or journal completion.
+8, and 3.125s with 16. The Backtest's sparse-read ceiling is now 16, but it
+opens no more lanes than the vectorized static gate leaves surviving shards.
+This raw-source profile does not include that gate, preflight, brokerage, or
+journal completion.
+
+The first end-to-end run after the ceiling change, run
+`dcc439aa-4113-4005-ae9e-d06d4ccc0812`, took 32.081s of execution.
+Its actual post-gate sparse load was only 0.189s, so the worker increase did
+not measurably accelerate this session relative to the preceding 31.818s run.
+Both runs cold-verified 2,217 committed journal events with identical category
+counts and final account balances, no open positions, and no review limitations.
