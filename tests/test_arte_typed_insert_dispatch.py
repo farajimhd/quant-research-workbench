@@ -910,3 +910,30 @@ def test_manager_snapshot_rejects_foreign_cursor_before_insert():
             batch_id=BATCH_ID, batch_last_sequence=2,
             manager_snapshot_hash=MANAGER_HASH)
     assert client.calls == []
+
+
+def test_manager_snapshot_lost_insert_response_cannot_select_head():
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    compact_running_prefix(authority)
+    table = "trading_strategy_one_manager_snapshot_v1"
+    token = f"manager-state:run-1:1:{MANAGER_HASH}:{table}"
+    sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+    client = Client(authority, lose_response=True)
+    with pytest.raises(TimeoutError, match="response lost"):
+        authority.execute_typed_insert(
+            client, run_id="run-1", table=table, token=token, sql=sql,
+            batch_id=BATCH_ID, batch_last_sequence=1,
+            manager_snapshot_hash=MANAGER_HASH)
+    assert ManagedManagerSnapshotHeadReader.path("run-1") not in authority.keeper.rows
+    with pytest.raises(KeeperUnavailable, match="pending or ambiguous"):
+        authority.acquire_cold_barrier("run-1")
+    client.lose_response = False
+    with pytest.raises(KeeperUnavailable, match="ambiguous pending"):
+        authority.execute_typed_insert(
+            client, run_id="run-1", table=table, token=token, sql=sql,
+            batch_id=BATCH_ID, batch_last_sequence=1,
+            manager_snapshot_hash=MANAGER_HASH)
+    assert len(client.calls) == 1
