@@ -48,7 +48,8 @@ _INTERVAL = _BASE + (
 )
 _COVERAGE = _BASE + (
     ("bars_attempt_id", "UUID"),
-    ("seed_checkpoint_hash", "FixedString(64)"),
+    ("source_checkpoint_hash", "String"),
+    ("decoded_seed_hash", "FixedString(64)"),
     ("seed_source_plan_hash", "FixedString(64)"),
     ("split_evidence_hash", "FixedString(64)"),
     ("seed_input_policy", "LowCardinality(String)"),

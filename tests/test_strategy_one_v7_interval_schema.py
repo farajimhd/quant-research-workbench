@@ -51,7 +51,8 @@ def test_v7_derivative_is_three_scalar_ssd_tables():
                for sql in statements)
     assert "valid_from_ms" in statements[1]
     assert "valid_to_ms" in statements[1]
-    assert "seed_checkpoint_hash" in statements[2]
+    assert "source_checkpoint_hash" in statements[2]
+    assert "decoded_seed_hash" in statements[2]
     client = Catalog()
     schema.install_tables(client)
     assert client.created == list(statements)
