@@ -1,9 +1,10 @@
 """Typed OMS group-state projection; no runtime cutover is implied.
 
-The live strategy still carries open-ended order raw metadata and broker algo
-parameters. Those inputs fail closed until named typed child contracts exist.
-V4 tactic rows are cold-recoverable; broker-state fingerprints and external
-broker reconciliation remain outside this stage.
+Exact canonical Strategy 1 order lineage is checked against the typed intent
+and protection proof instead of being stored as raw metadata. Arbitrary raw
+metadata and broker algo parameters fail closed. Cold OMS rows still contain
+flat orders only; reconstructing executable lineage, broker-state fingerprints,
+and external broker reconciliation remain outside this stage.
 """
 from __future__ import annotations
 

@@ -199,10 +199,13 @@ participate in the same typed commit fence; the cold reader verifies parent
 and child identities, order/broker ordinals, batch membership, and a total
 child-row budget. Operator DDL installed the families on `live_market_ssd`, and
 a journal-only two-batch intent-to-OMS publication and cold read passed. This
-is not a live OMS cutover: strategy orders with `raw` canonical metadata or
-broker algo parameters fail closed; remaining intent metadata, tactic/runtime
-state, and broker reconciliation must be normalized and restored before SQLite
-can be removed. Live OMS also replaces `group.intent` content under the same
+is not a live OMS cutover: the group projector accepts exact canonical
+Strategy 1 `raw` lineage only when it can reconstruct it from the typed intent
+and authorized protection proof; arbitrary raw metadata and broker algo
+parameters fail closed. The cold reader returns flat orders and does not yet
+restore executable lineage. Remaining intent metadata, tactic/runtime state,
+and broker reconciliation must be normalized and restored before SQLite can
+be removed. Live OMS also replaces `group.intent` content under the same
 logical `intent_id` during target/stop amendments. The staged group projector
 rejects any state whose full typed intent differs from the pinned immutable
 publication batch. `trading_strategy_intent_use_v1` now links an OMS state or
@@ -218,9 +221,11 @@ or the remaining live runtime cutover.
 The simple `OrderRequest` projection now preserves the broker's named flat
 instructions, including security type, listing exchange, `auxPrice`, trailing
 settings, manual/single-group flags, operator/referrer, strategy, and parent
-broker-order identity. It rejects nonempty `raw` and `strategyParameters`;
-strategy-originated orders commonly carry nested canonical metadata, so the
-live OMS command gate is **not** enabled by this projection alone.
+broker-order identity. It rejects `strategyParameters` and arbitrary `raw`.
+The Strategy 1 command projector accepts exact canonical lineage only with a
+fence-committed typed source intent and identity links, then persists the flat
+order; this does not reconstruct the full live OMS state or enable broker
+dispatch after cold restart.
 A separate typed `trading_order_command_context_v1` child row links a command
 to its strategy intent, OMS group, and policy version without changing or
 rehashing older command rows. Publication requires that the intent be in the
