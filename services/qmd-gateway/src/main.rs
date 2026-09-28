@@ -89,6 +89,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "computation", config.compact_events_enabled, false,
     );
     metrics.register_lane(
+        "strategy_one_source_receipt", "Strategy 1 compact source receipts",
+        "writer", config.compact_events_enabled && config.persist_compact_events,
+        config.compact_events_enabled && config.persist_compact_events,
+    );
+    metrics.register_lane(
         "intraday_repairs",
         "Deferred intraday repair execution",
         "repair",
@@ -283,6 +288,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ))
         })?;
         if config.persist_compact_events {
+            metrics.set_lane_state(
+                "strategy_one_source_receipt", "healthy",
+                "Typed source receipt tables and SSD placement verified; awaiting batches.",
+            );
             metrics.set_lane_state(
                 "compact_events",
                 "healthy",

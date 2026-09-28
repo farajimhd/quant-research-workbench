@@ -83,7 +83,7 @@ Environment variables:
 - `QMD_CLICKHOUSE_DATABASE`, falls back to `REAL_LIVE_CLICKHOUSE_WRITE_DATABASE`, then `q_live`
 - `QMD_CLICKHOUSE_USER`, falls back to `REAL_LIVE_CLICKHOUSE_WRITE_USER` and shared ClickHouse user variables, then `default`
 - `QMD_CLICKHOUSE_PASSWORD`, falls back to `REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD` and shared ClickHouse password variables
-- `QMD_CLICKHOUSE_STORAGE_POLICY`, optional; falls back to `CLICKHOUSE_LIVE_STORAGE_POLICY`
+- `QMD_CLICKHOUSE_STORAGE_POLICY`, required as `live_market_ssd` when compact-event persistence is enabled; falls back to `CLICKHOUSE_LIVE_STORAGE_POLICY`
 - `QMD_CLICKHOUSE_MAX_BATCH`, default `10000`
 - `QMD_CLICKHOUSE_FLUSH_INTERVAL_MS`, default `5000`
 - `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`

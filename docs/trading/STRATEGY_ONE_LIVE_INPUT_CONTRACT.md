@@ -114,10 +114,13 @@ QMD also defines inactive typed `q_live.strategy_one_source_batch_v1` and
 producer epoch, date, identity, exact member count, extrema, and acknowledgement
 clock; each member row carries one arrival sequence, ticker, and canonical
 scalar-row digest. Both schemas explicitly use `live_market_ssd` and contain
-no JSON, arrays, or blobs. Defining the schema and deterministic membership
-hashes does not yet create or publish these tables: producer writes, readback,
-part-placement checks, Keeper selection, and delayed-write fencing must be
-implemented before they can be used for recovery or admission.
+no JSON, arrays, or blobs. On its next managed startup, QMD creates and
+verifies these tables on `live_market_ssd`, then its background compact-event workers
+publish exact members and batch rows after canonical INSERT acknowledgement
+and before releasing the ordinary QMD durability holdback. Ambiguous receipt
+responses retain the same rows and deduplication token for retry. This is
+still **not** a Strategy 1 live admission permit: cold readback, Keeper
+selection, old-writer delayed-write fencing, and upstream continuity remain.
 
 Each process incarnation needs a fresh producer epoch in the canonical row and
 receipt identity. A delayed INSERT from an older incarnation must never be

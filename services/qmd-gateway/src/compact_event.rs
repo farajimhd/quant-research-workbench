@@ -6,17 +6,23 @@ use crate::intraday_bars::{DurableCompactEvents, IntradayBarRouter};
 use crate::market_products::MarketProductEventRouter;
 use crate::metrics::{QueueFailureKind, SharedMetrics};
 use crate::strategy_one_liquidity::{CompletedLiquidityBucket, LiquidityReducer};
+use crate::strategy_one_source_receipt::{
+    batch_table_sql, member_table_sql, prepare_receipts, verify_storage_contract,
+    BatchReceipt, MemberReceipt,
+    BATCH_TABLE, MEMBER_TABLE,
+};
 use crate::strategy_one_trade_reporting::{reporting_flags, reporting_reason, DELAYED, EVALUATED};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
 use ring::digest::{digest, SHA256};
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio::time::{interval, sleep, Duration, Instant};
 
@@ -1269,12 +1275,16 @@ pub struct CompactEventClickHouseWriter {
     intraday_bar_router: IntradayBarRouter,
     durability: DurableCompactEvents,
     coverage_windows: Arc<Mutex<HashMap<(String, String), CoverageWindow>>>,
+    source_receipt_epoch: Arc<OnceLock<String>>,
 }
 
 struct CompactPersistWork {
     events: Vec<LiveCompactEvent>,
     issues: Vec<(LiveCompactEvent, CompactEventIssue)>,
     events_inserted: bool,
+    receipt_members_inserted: bool,
+    receipt_batches_inserted: bool,
+    prepared_receipts: Option<(Vec<BatchReceipt>, Vec<MemberReceipt>)>,
     coverage_sql: Option<String>,
 }
 
@@ -1403,6 +1413,7 @@ impl CompactEventClickHouseWriter {
             intraday_bar_router,
             durability,
             coverage_windows: Arc::new(Mutex::new(HashMap::new())),
+            source_receipt_epoch: Arc::new(OnceLock::new()),
         }
     }
 
@@ -1411,6 +1422,9 @@ impl CompactEventClickHouseWriter {
             return Ok(());
         }
         validate_live_compact_write_database(&self.config.clickhouse_database)?;
+        if self.config.clickhouse_storage_policy != "live_market_ssd" {
+            return Err("Strategy 1 source receipts require live_market_ssd storage policy".into());
+        }
         self.execute(
             &format!(
                 "CREATE DATABASE IF NOT EXISTS `{}`",
@@ -1432,8 +1446,22 @@ impl CompactEventClickHouseWriter {
             .await?;
         self.execute(&self.create_issue_table_sql(), true).await?;
         self.execute("ALTER TABLE qmd_compact_event_issue_v1 ADD COLUMN IF NOT EXISTS raw_tape UInt8 AFTER arrival_sequence", true).await?;
-        self.execute(&self.create_live_coverage_table_sql(), true)
-            .await
+        self.execute(&self.create_live_coverage_table_sql(), true).await?;
+        self.execute(&batch_table_sql(), true).await?;
+        self.execute(&member_table_sql(), true).await?;
+        for table in [BATCH_TABLE, MEMBER_TABLE] {
+            self.execute(&format!(
+                "ALTER TABLE {table} MODIFY SETTING non_replicated_deduplication_window = 1000"
+            ), true).await?;
+        }
+        self.verify_source_receipt_storage().await?;
+        let mut random = [0u8; 16];
+        SystemRandom::new().fill(&mut random)
+            .map_err(|_| "Strategy 1 source receipt epoch entropy unavailable")?;
+        let epoch = random.iter().map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.source_receipt_epoch.set(epoch)
+            .map_err(|_| "Strategy 1 source receipt epoch initialized twice".to_string())
     }
 
     pub async fn run(
@@ -1687,6 +1715,9 @@ impl CompactEventClickHouseWriter {
             ),
             issues: std::mem::take(issue_batch),
             events_inserted: false,
+            receipt_members_inserted: false,
+            receipt_batches_inserted: false,
+            prepared_receipts: None,
             coverage_sql: None,
         };
         if let Err(error) = sender.send(work).await {
@@ -1863,6 +1894,45 @@ impl CompactEventClickHouseWriter {
                 }
             }
         }
+        if work.prepared_receipts.is_none() {
+            let Some(epoch) = self.source_receipt_epoch.get() else {
+                self.metrics.record_lane_failure(
+                    "strategy_one_source_receipt", "producer epoch is not initialized");
+                return;
+            };
+            let acknowledged_at = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+            match prepare_receipts(epoch, &acknowledged_at, &work.events) {
+                Ok(receipts) => work.prepared_receipts = Some(receipts),
+                Err(error) => {
+                    self.metrics.record_lane_failure("strategy_one_source_receipt", error);
+                    return;
+                }
+            }
+        }
+        let (batches, members) = work.prepared_receipts.as_ref().expect("prepared receipts");
+        if !work.receipt_members_inserted {
+            match self.insert_source_receipt_rows(MEMBER_TABLE, members).await {
+                Ok(()) => work.receipt_members_inserted = true,
+                Err(error) => {
+                    self.metrics.record_lane_failure("strategy_one_source_receipt", &error);
+                    return;
+                }
+            }
+        }
+        if !work.receipt_batches_inserted {
+            match self.insert_source_receipt_rows(BATCH_TABLE, batches).await {
+                Ok(()) => {
+                    work.receipt_batches_inserted = true;
+                    self.metrics.record_lane_success(
+                        "strategy_one_source_receipt", members.len() as u64,
+                        "Acknowledged exact typed compact-event batch membership.");
+                }
+                Err(error) => {
+                    self.metrics.record_lane_failure("strategy_one_source_receipt", &error);
+                    return;
+                }
+            }
+        }
         if work.coverage_sql.is_none() {
             work.coverage_sql = Some(
                 self.live_event_coverage_sql("compact_persisted", &work.events, "", 0)
@@ -1874,11 +1944,15 @@ impl CompactEventClickHouseWriter {
             .await
         {
             Ok(_) => {
-                // A live consumer may act only after canonical rows and their
-                // coverage receipt have both been acknowledged.
+                // The ordinary QMD consumer needs canonical rows and coverage.
+                // Strategy 1 additionally needs typed receipts, but still has
+                // no cold-recovery or live order-admission permit here.
                 self.durability.mark_persisted(&work.events);
                 work.events.clear();
                 work.events_inserted = false;
+                work.receipt_members_inserted = false;
+                work.receipt_batches_inserted = false;
+                work.prepared_receipts = None;
                 work.coverage_sql = None;
                 self.metrics.record_lane_success(
                     "coverage_ledger", 1, "Recorded compact-event coverage confirmation.",
@@ -1891,6 +1965,38 @@ impl CompactEventClickHouseWriter {
                 eprintln!("ClickHouse qmd live coverage update failed: {error}");
             }
         }
+    }
+
+    async fn insert_source_receipt_rows<T: Serialize>(
+        &self, table: &str, rows: &[T],
+    ) -> Result<(), String> {
+        if !matches!(table, BATCH_TABLE | MEMBER_TABLE) || rows.is_empty() {
+            return Err("Strategy 1 receipt insert has invalid table or rows".into());
+        }
+        let body = rows.iter().map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?.join("\n");
+        let token = digest(&SHA256, body.as_bytes()).as_ref().iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.query_with_body(&format!(
+            "INSERT INTO {table} SETTINGS insert_deduplication_token = '{token}' FORMAT JSONEachRow"
+        ), body).await
+    }
+
+    async fn verify_source_receipt_storage(&self) -> Result<(), String> {
+        let rows = self.query(&format!(
+            "SELECT name,engine,partition_key,sorting_key,storage_policy \
+             FROM system.tables WHERE database=currentDatabase() \
+             AND name IN ('{BATCH_TABLE}','{MEMBER_TABLE}') \
+             ORDER BY name FORMAT TabSeparatedRaw"
+        ), true).await?;
+        let parts = self.query(&format!(
+            "SELECT name,disk_name FROM system.parts WHERE database=currentDatabase() \
+             AND active AND table IN ('{BATCH_TABLE}','{MEMBER_TABLE}') \
+             FORMAT TabSeparatedRaw"
+        ), true).await?;
+        verify_storage_contract(&rows, &parts).map_err(str::to_owned)
     }
 
     async fn insert_events(&self, rows: &[LiveCompactEvent]) -> Result<(), String> {
@@ -2018,7 +2124,7 @@ impl CompactEventClickHouseWriter {
         let table_contract = self
             .query(
                 &format!(
-                    "SELECT engine, partition_key, sorting_key FROM system.tables WHERE database = currentDatabase() AND name = '{}' FORMAT TabSeparatedRaw",
+                    "SELECT engine, partition_key, sorting_key, storage_policy FROM system.tables WHERE database = currentDatabase() AND name = '{}' FORMAT TabSeparatedRaw",
                     escape_sql_string(&self.config.compact_event_table)
                 ),
                 true,
@@ -2026,15 +2132,25 @@ impl CompactEventClickHouseWriter {
             .await?;
         let fields = table_contract.trim().split('\t').collect::<Vec<_>>();
         let expected_sorting_key = "ticker, sip_timestamp_us, source_sequence, bitAnd(event_meta, 1), event_meta, price_primary_int, price_secondary_int, size_primary, size_secondary, exchange_primary, exchange_secondary, condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5";
-        if fields.len() != 3
+        if fields.len() != 4
             || fields[0] != "ReplacingMergeTree"
             || fields[1] != "event_date"
             || fields[2] != expected_sorting_key
+            || fields[3] != "live_market_ssd"
         {
             return Err(format!(
                 "{}.{} does not satisfy the canonical live-event engine contract; expected ReplacingMergeTree partitioned by event_date with the exact canonical sorting key, received {:?}",
                 self.config.clickhouse_database, self.config.compact_event_table, fields
             ));
+        }
+        let parts = self.query(&format!(
+            "SELECT disk_name FROM system.parts WHERE database=currentDatabase() \
+             AND table='{}' AND active FORMAT TabSeparatedRaw",
+            escape_sql_string(&self.config.compact_event_table)), true).await?;
+        if parts.lines().any(|disk| disk != "live_market_ssd") {
+            return Err(format!(
+                "{}.{} has canonical compact parts outside live_market_ssd",
+                self.config.clickhouse_database, self.config.compact_event_table));
         }
         Ok(())
     }

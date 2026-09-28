@@ -22,7 +22,8 @@ pub fn batch_table_sql() -> String {
          acknowledged_at DateTime64(6, 'UTC')) \
          ENGINE = MergeTree PARTITION BY toYYYYMM(source_date) \
          ORDER BY (source_date, producer_epoch, batch_id) \
-         SETTINGS storage_policy = 'live_market_ssd'"
+         SETTINGS storage_policy = 'live_market_ssd', \
+         non_replicated_deduplication_window = 1000"
     )
 }
 
@@ -34,8 +35,39 @@ pub fn member_table_sql() -> String {
          ticker LowCardinality(String), canonical_row_hash FixedString(64)) \
          ENGINE = MergeTree PARTITION BY toYYYYMM(source_date) \
          ORDER BY (source_date, producer_epoch, arrival_sequence) \
-         SETTINGS storage_policy = 'live_market_ssd'"
+         SETTINGS storage_policy = 'live_market_ssd', \
+         non_replicated_deduplication_window = 1000"
     )
+}
+
+/// Validate physical storage before QMD admits a receipt writer. A table
+/// setting alone is insufficient when older active parts remain elsewhere.
+pub fn verify_storage_contract(tables: &str, parts: &str) -> Result<(), &'static str> {
+    let mut seen = BTreeSet::new();
+    for line in tables.lines() {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 5
+            || !seen.insert(fields[0])
+            || fields[1] != "MergeTree"
+            || fields[2] != "toYYYYMM(source_date)"
+            || fields[4] != "live_market_ssd"
+            || (fields[0] == BATCH_TABLE && fields[3] != "source_date, producer_epoch, batch_id")
+            || (fields[0] == MEMBER_TABLE
+                && fields[3] != "source_date, producer_epoch, arrival_sequence")
+        {
+            return Err("Strategy 1 source receipt table contract or SSD policy differs");
+        }
+    }
+    if seen != BTreeSet::from([BATCH_TABLE, MEMBER_TABLE]) {
+        return Err("Strategy 1 source receipt table contract or SSD policy differs");
+    }
+    for line in parts.lines() {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 2 || fields[0].is_empty() || fields[1] != "live_market_ssd" {
+            return Err("Strategy 1 source receipt has active parts outside live_market_ssd");
+        }
+    }
+    Ok(())
 }
 
 fn hex_hash(bytes: &[u8]) -> String {
@@ -249,6 +281,19 @@ mod tests {
             assert!(sql.contains("PARTITION BY toYYYYMM(source_date)"));
             assert!(!sql.to_lowercase().contains("json"));
         }
+    }
+
+    #[test]
+    fn storage_contract_rejects_missing_or_off_disk_parts() {
+        let tables = format!(
+            "{BATCH_TABLE}\tMergeTree\ttoYYYYMM(source_date)\tsource_date, producer_epoch, batch_id\tlive_market_ssd\n\
+             {MEMBER_TABLE}\tMergeTree\ttoYYYYMM(source_date)\tsource_date, producer_epoch, arrival_sequence\tlive_market_ssd\n"
+        );
+        assert!(verify_storage_contract(&tables, "part_1\tlive_market_ssd\n").is_ok());
+        assert!(verify_storage_contract(&tables, "part_1\tdefault\n").is_err());
+        assert!(verify_storage_contract(&tables, "part_1\tlive_market_ssd\textra\n").is_err());
+        assert!(verify_storage_contract(&tables.replace("MergeTree", "Memory"), "").is_err());
+        assert!(verify_storage_contract(&tables.lines().next().unwrap().to_owned(), "").is_err());
     }
 
     #[test]
