@@ -215,7 +215,9 @@ def build_entry_context_rows(*, run_id: str, report: dict[str, Any],
             "session_date": session.isoformat(), "run_id": run_id,
             "episode_id": episode_id, "ticker": ticker,
             "symbol_id": reference["symbol_id"], "conid": conid,
-            "entry_at_utc": entry_at_utc.isoformat(timespec="microseconds"),
+            # ClickHouse DateTime64 JSONEachRow accepts its canonical UTC
+            # wall-clock form, not Python's ISO '+00:00' offset suffix.
+            "entry_at_utc": entry_at_utc.strftime("%Y-%m-%d %H:%M:%S.%f"),
             "market_build_id": plan.build_id, "market_plan_token": plan.token,
             "bars_attempt_id": units[0].attempt_id,
             "reference_float_date": reference["float_date"],

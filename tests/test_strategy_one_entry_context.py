@@ -125,3 +125,27 @@ def test_saved_entry_context_absence_does_not_invent_values():
             "report": {"episodes": []}}
     assert subject.attach_saved_entry_context(
         Reader(), page, market_plan_token="f" * 64) is page
+
+
+def test_entry_timestamp_uses_clickhouse_datetime64_wire_form(monkeypatch):
+    monkeypatch.setattr(subject, "pinned_entry_volume", lambda *_a, **_k: {
+        "session_volume": 10, "last_minute_volume": 5,
+        "last_minute_trade_count": 2})
+    monkeypatch.setattr(subject, "asof_reference", lambda *_a, **_k: {
+        "symbol_id": "identity", "float_date": None,
+        "float_source": "unavailable", "float_evidence_hash": "",
+        "float_value": None, "shares_date": None,
+        "shares_source": "unavailable", "shares_evidence_hash": "",
+        "shares_value": None})
+    monkeypatch.setattr(subject, "certified_entry_rvol", lambda *_a, **_k: (None, None))
+    rows = subject.build_entry_context_rows(
+        run_id="33333333-3333-4333-8333-333333333333",
+        report={"episodes": [{
+            "episode_id": "22222222-2222-4222-8222-222222222222",
+            "instrument": {"symbol": "WFF", "conid": 872439877},
+            "opened_at": "2026-08-18T10:00:00.123456-04:00"}]},
+        session=SESSION, plan=_plan(), market_client=object(),
+        reference_client=object(), baseline_provider=lambda *_a: {
+            "content_hash": "a" * 64, "source_revision": {"token": "source"}})
+    assert rows[0]["entry_at_utc"] == "2026-08-18 14:00:00.123456"
+    assert "+00:00" not in json.dumps(rows[0])
