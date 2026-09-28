@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -17,7 +17,9 @@ from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     TABLES as BROKER_MATCH_TABLES, project_broker_match_snapshot,
-    verify_broker_match_snapshot, load_unattested_broker_match_snapshot,
+    BrokerMatchHead, verify_broker_match_snapshot,
+    load_attested_broker_match_snapshot,
+    load_unattested_broker_match_snapshot,
 )
 from src.backend.backtest_market_data import market_day_boundary
 from tests.test_trading_runtime import quote, trade
@@ -207,6 +209,28 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(load_unattested_broker_match_snapshot(
             reader, run_id="backtest:one", checkpoint_sequence=42), rows)
         self.assertTrue(reader.last_sql.startswith("SELECT "))
+        batch = "00000000-0000-0000-0000-000000000042"
+        prefix = SimpleNamespace(status="running", last_sequence=42,
+                                 batch_ids=(batch,), last_batch_id=batch)
+        selected = BrokerMatchHead("backtest:one", 42, batch,
+                                   rows.snapshot["content_hash"], 0)
+        keeper = SimpleNamespace(read_head=lambda **_kwargs: selected)
+        cursor = {"run_id": "backtest:one", "event_sequence": 42,
+                  "batch_id": batch, "boundary_ms": boundary_ms,
+                  "session_date": day.isoformat()}
+        with patch("src.trading_runtime.arte_journal_commit_v4.load_verified_v4_prefix",
+                   return_value=prefix), patch(
+                "src.trading_runtime.arte_journal_projection.load_latest_backtest_cursor",
+                return_value=cursor):
+            self.assertEqual(load_attested_broker_match_snapshot(
+                reader, keeper, run_id="backtest:one",
+                checkpoint_sequence=42), rows)
+            changed = SimpleNamespace(read_head=lambda **_kwargs: replace(
+                selected, snapshot_hash="0" * 64))
+            with self.assertRaisesRegex(RuntimeError, "differs from selected cursor"):
+                load_attested_broker_match_snapshot(
+                    reader, changed, run_id="backtest:one",
+                    checkpoint_sequence=42)
         self.assertTrue(all("live_market_ssd" in table.ddl()
                             for table in BROKER_MATCH_TABLES))
         self.assertTrue(all("json" not in name and "blob" not in name

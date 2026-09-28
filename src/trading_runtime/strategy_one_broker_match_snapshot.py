@@ -10,14 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from hashlib import sha256
 import json
 from math import isfinite
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.backend.backtest_market_data import market_day_boundary
 from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES, OrderStatus
+from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.strategy_one_protection_snapshot import _digest
 
 
@@ -110,6 +112,60 @@ class BrokerMatchSnapshotRows:
     open_orders: tuple[dict[str, Any], ...]
     tickers: tuple[dict[str, Any], ...]
     marks: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerMatchHead:
+    run_id: str
+    checkpoint_sequence: int
+    journal_batch_id: str
+    snapshot_hash: str
+    keeper_version: int
+
+
+class BrokerMatchHeadReader(Protocol):
+    def read_head(self, *, run_id: str) -> BrokerMatchHead: ...
+
+
+class ManagedBrokerMatchHeadReader:
+    """Read only the Keeper-selected root, never adopt orphan rows."""
+
+    def __init__(self, session: ManagedKeeperSession) -> None:
+        if not isinstance(session, ManagedKeeperSession):
+            raise TypeError("Broker match head needs managed Keeper")
+        self._session = session
+
+    @staticmethod
+    def path(run_id: str) -> str:
+        if (type(run_id) is not str or not run_id
+                or any(char in run_id for char in "\r\n\x00")):
+            raise ValueError("Broker match head run is invalid")
+        return ("/trading/strategy-one-broker-match/v1/"
+                + sha256(run_id.encode()).hexdigest() + "/head")
+
+    def read_head(self, *, run_id: str) -> BrokerMatchHead:
+        session, client = self._session, self._session.client
+        if not session.writable or client.client_id is None:
+            raise RuntimeError("Broker match Keeper session is unavailable")
+        generation, client_id = session._generation, client.client_id
+        try:
+            raw, stat = client.get(self.path(run_id))
+            fields = raw.decode("utf-8").split("\n")
+            if (len(fields) != 5 or fields[:2] != ["1", run_id]
+                    or str(int(fields[2])) != fields[2] or int(fields[2]) < 1
+                    or str(UUID(fields[3])) != fields[3]
+                    or len(fields[4]) != 64
+                    or any(char not in "0123456789abcdef" for char in fields[4])
+                    or type(stat.version) is not int or stat.version < 0):
+                raise ValueError
+            head = BrokerMatchHead(
+                run_id, int(fields[2]), fields[3], fields[4], stat.version)
+        except Exception as exc:
+            raise ValueError("Broker match Keeper head missing or corrupt") from exc
+        if (not session.writable or session._generation != generation
+                or client.client_id != client_id):
+            raise RuntimeError("Broker match Keeper session changed during read")
+        return head
 
 
 def _float(value: Any, label: str) -> float:
@@ -468,3 +524,53 @@ def load_unattested_broker_match_snapshot(
         children.append(rows)
     return verify_broker_match_snapshot(
         BrokerMatchSnapshotRows(root, *children))
+
+
+def load_attested_broker_match_snapshot(
+    client: Any, keeper: BrokerMatchHeadReader, *,
+    run_id: str, checkpoint_sequence: int,
+) -> BrokerMatchSnapshotRows:
+    """Require exact Keeper, V4, and market-cursor agreement on cold read.
+
+    A verified broker root alone is not a complete executable checkpoint:
+    manager, OMS, portfolio, and controller recovery must independently join
+    this same cursor before the resume gate may open.
+    """
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+
+    if (type(run_id) is not str or not run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or not callable(getattr(client, "execute", None))
+            or not callable(getattr(keeper, "read_head", None))):
+        raise ValueError("Broker match cold read lacks exact authorities")
+    prefix = load_verified_v4_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != checkpoint_sequence
+            or not prefix.batch_ids
+            or prefix.last_batch_id != prefix.batch_ids[-1]):
+        raise RuntimeError("Broker match lacks a running verified V4 cursor")
+    first = keeper.read_head(run_id=run_id)
+    if (not isinstance(first, BrokerMatchHead)
+            or first.run_id != run_id
+            or first.checkpoint_sequence != checkpoint_sequence
+            or first.journal_batch_id != prefix.last_batch_id
+            or type(first.keeper_version) is not int or first.keeper_version < 0
+            or len(first.snapshot_hash) != 64
+            or any(char not in "0123456789abcdef"
+                   for char in first.snapshot_hash)):
+        raise RuntimeError("Broker match Keeper head differs from V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict) or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != checkpoint_sequence
+            or cursor.get("batch_id") != prefix.last_batch_id):
+        raise RuntimeError("Broker match lacks a committed market cursor")
+    rows = load_unattested_broker_match_snapshot(
+        client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+    if (rows.snapshot["content_hash"] != first.snapshot_hash
+            or rows.snapshot["boundary_ms"] != cursor.get("boundary_ms")
+            or rows.snapshot["session_date"] != cursor.get("session_date")):
+        raise RuntimeError("Broker match seal differs from selected cursor")
+    if keeper.read_head(run_id=run_id) != first:
+        raise RuntimeError("Broker match Keeper head changed during cold read")
+    return rows
