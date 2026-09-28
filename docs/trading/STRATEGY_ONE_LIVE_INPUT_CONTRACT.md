@@ -38,8 +38,10 @@ participant clock is absent, so liquidity consumers must use the v6 flags,
 not timestamp equality. V5 and earlier trade rows have no classification and
 cannot be interpreted as timely; no in-place backfill is permitted. The
 strict market-day token resolver includes valid 04:00–04:05 trades and rejects
-unknown tokens instead of silently dropping them. The completed liquidity
-reducer, persistence, and publication remain to be implemented.
+unknown tokens instead of silently dropping them. A typed per-ticker 100 ms
+reducer now calculates completed bucket values, but it is not yet wired to
+the ordered service lane or a persistent/publication surface; live order
+admission remains disabled.
 
 The consumer joins this completed liquidity row with the closed indicator
 pairs by session, ticker, resolution, and completed boundary. A 100 ms

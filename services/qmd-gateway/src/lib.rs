@@ -47,4 +47,5 @@ pub mod structure_checkpoint_json;
 pub mod structure_focus;
 pub mod structure_prominence;
 pub mod strategy_one_trade_reporting;
+pub mod strategy_one_liquidity;
 pub mod timefmt;
