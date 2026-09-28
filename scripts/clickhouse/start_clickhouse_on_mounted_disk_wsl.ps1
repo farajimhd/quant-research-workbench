@@ -29,6 +29,9 @@ param(
     [string]$QuantResearchWorkbenchReadDatabases = "",
     [string]$QuantResearchWorkbenchWriteDatabases = "",
     [string]$AllowQuantResearchWorkbenchCreateDatabase = "",
+    # Secure Keeper remains disabled unless certificates and a laptop-only
+    # firewall/port-forward have been provisioned explicitly.
+    [string]$EnableKeeperLanTls = "",
 
     # =============================================================================
     # Set only when you intentionally want to re-run the expensive recursive
@@ -363,6 +366,11 @@ $EffectiveAllowQuantResearchWorkbenchCreateDatabase = Resolve-BoolSetting `
     -EnvironmentNames @("CLICKHOUSE_QUANT_RESEARCH_WORKBENCH_ALLOW_CREATE_DATABASE", "CLICKHOUSE_LAPTOP_ALLOW_CREATE_DATABASE") `
     -DotEnvValues $RepoDotEnvValues `
     -Default $false
+$EffectiveEnableKeeperLanTls = Resolve-BoolSetting `
+    -ParameterValue $EnableKeeperLanTls `
+    -EnvironmentNames @("CLICKHOUSE_KEEPER_LAN_TLS_ENABLED") `
+    -DotEnvValues $RepoDotEnvValues `
+    -Default $false
 $EffectiveForcePermissionRepair = Resolve-BoolSetting `
     -ParameterValue $ForcePermissionRepair `
     -EnvironmentNames @("CLICKHOUSE_FORCE_PERMISSION_REPAIR") `
@@ -397,6 +405,15 @@ if (-not (Test-Path -LiteralPath $EffectiveUsersDirWindows)) {
 }
 
 Assert-LocalOnlyKeeperPort
+if ($EffectiveEnableKeeperLanTls) {
+    # Fail before stopping ClickHouse or touching managed disks. Certificate
+    # content and private keys never enter this script's output or repository.
+    wsl -d $Distro -u root -- bash -c `
+        'for name in ca.crt server.crt server.key; do test -r "/etc/clickhouse-server/keeper-tls/$name" || exit 1; done'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Secure Keeper server certificates are not installed in WSL."
+    }
+}
 
 Write-Host "==== Step 1: Ensure WSL distro is reachable ===="
 wsl -d $Distro --cd / -- echo "WSL distro reachable." | Out-Null
@@ -471,6 +488,7 @@ $BootstrapEnv = @(
     "CLICKHOUSE_QUANT_RESEARCH_WORKBENCH_READ_DATABASES=$QuantResearchWorkbenchReadDatabases",
     "CLICKHOUSE_QUANT_RESEARCH_WORKBENCH_WRITE_DATABASES=$QuantResearchWorkbenchWriteDatabases",
     "CLICKHOUSE_QUANT_RESEARCH_WORKBENCH_ALLOW_CREATE_DATABASE=$EffectiveAllowQuantResearchWorkbenchCreateDatabase",
+    "CLICKHOUSE_KEEPER_LAN_TLS_ENABLED=$EffectiveEnableKeeperLanTls",
     "CLICKHOUSE_FORCE_PERMISSION_REPAIR=$EffectiveForcePermissionRepair",
     "CLICKHOUSE_STARTUP_READY_TIMEOUT_SECONDS=$EffectiveStartupReadyTimeoutSeconds"
 )

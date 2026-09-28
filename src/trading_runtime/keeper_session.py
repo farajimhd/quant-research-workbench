@@ -11,7 +11,7 @@ from threading import Lock
 from time import monotonic
 from typing import Any, Callable, Mapping
 
-from src.trading_runtime.keeper_endpoint import discover_workstation_keeper_endpoint
+from src.trading_runtime.keeper_endpoint import discover_keeper_endpoint
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 
 
@@ -117,9 +117,9 @@ class ManagedKeeperSession:
 def open_workstation_keeper_session(
     *, timeout_seconds: float = 5.0,
     client_factory: Callable[..., Any] | None = None,
-    discover: Callable[..., Any] = discover_workstation_keeper_endpoint,
+    discover: Callable[..., Any] = discover_keeper_endpoint,
 ) -> ManagedKeeperSession:
-    """Connect from native Windows to the current WSL-private Keeper address."""
+    """Connect to local private Keeper or an explicitly configured mTLS peer."""
     if not 0 < timeout_seconds <= 30:
         raise ValueError("Keeper connection timeout is invalid")
     if client_factory is None:
@@ -129,8 +129,13 @@ def open_workstation_keeper_session(
             raise RuntimeError("Kazoo 2.11.0 is required for Keeper ownership") from exc
         client_factory = KazooClient
     endpoint = discover()
-    client = client_factory(hosts=f"{endpoint.host}:{endpoint.port}",
-                            timeout=timeout_seconds)
+    kwargs = {"hosts": f"{endpoint.host}:{endpoint.port}",
+              "timeout": timeout_seconds}
+    if getattr(endpoint, "secure", False):
+        kwargs.update(use_ssl=True, verify_certs=True, check_hostname=True,
+                      ca=str(endpoint.ca_file), certfile=str(endpoint.cert_file),
+                      keyfile=str(endpoint.key_file))
+    client = client_factory(**kwargs)
     session = ManagedKeeperSession(client)
     try:
         client.start(timeout=timeout_seconds)

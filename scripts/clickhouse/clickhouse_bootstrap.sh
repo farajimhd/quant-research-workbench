@@ -292,10 +292,23 @@ install_clickhouse_config_overlays() {
     install -d -o clickhouse -g clickhouse -m 750 "$users_target"
 
     rm -f "$config_target"/*trading-dashboard*.xml
+    # Omit the secure LAN listener until certificates have been provisioned
+    # outside the repository and the operator explicitly enables strict mTLS.
+    rm -f "$config_target/51-trading-keeper-lan-tls.xml"
     rm -f "$users_target"/*trading-dashboard*.xml
 
     shopt -s nullglob
     for source_file in "$REPO_CLICKHOUSE_DIR/config.d"/*.xml; do
+        if [[ "$(basename "$source_file")" == "51-trading-keeper-lan-tls.xml" ]]; then
+            if [[ "${CLICKHOUSE_KEEPER_LAN_TLS_ENABLED:-false}" != "True" &&
+                  "${CLICKHOUSE_KEEPER_LAN_TLS_ENABLED:-false}" != "true" ]]; then
+                continue
+            fi
+            for certificate in ca.crt server.crt server.key; do
+                [[ -r "/etc/clickhouse-server/keeper-tls/$certificate" ]] \
+                    || die "Secure Keeper certificate is not readable: $certificate"
+            done
+        fi
         target_file="$config_target/$(basename "$source_file")"
         install -o clickhouse -g clickhouse -m 400 "$source_file" "$target_file"
     done

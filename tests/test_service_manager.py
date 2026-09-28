@@ -84,6 +84,11 @@ def test_catalog_defines_operator_profiles_and_dynamic_dependencies() -> None:
         "market-data",
     }
     assert profiles["middleware"] == profiles["intelligence"]
+    # The app backend is laptop-owned; ClickHouse lives on the workstation.
+    # Never make the app profile depend on an SSH-forwarded workstation API.
+    assert profiles["app"] == ("backend", "frontend")
+    assert services["backend"].launcher == "scripts/run_backend.ps1"
+    assert services["frontend"].dependencies == ("backend",)
     assert services["reference-gateway"].dependencies == ("ibkr-supervisor",)
     assert services["news-hypothesis"].dependencies == ("model-gateway",)
     assert services["text-intelligence"].dependencies == ()

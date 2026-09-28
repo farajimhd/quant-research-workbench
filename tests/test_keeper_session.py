@@ -95,6 +95,29 @@ def test_session_freezes_on_suspend_and_requires_new_attestation_after_reconnect
     assert client.stopped and client.closed
 
 
+def test_secure_keeper_session_requires_verified_mutual_tls(tmp_path):
+    client = Client(timeout=5.0)
+    captured = {}
+    def factory(**kwargs):
+        captured.update(kwargs)
+        return client
+    session = open_workstation_keeper_session(
+        client_factory=factory,
+        discover=lambda: SimpleNamespace(
+            host="192.168.1.218", port=9281, secure=True,
+            ca_file=tmp_path / "ca.pem", cert_file=tmp_path / "client.pem",
+            key_file=tmp_path / "client.key"),
+    )
+    assert captured == {
+        "hosts": "192.168.1.218:9281", "timeout": 5.0,
+        "use_ssl": True, "verify_certs": True, "check_hostname": True,
+        "ca": str(tmp_path / "ca.pem"),
+        "certfile": str(tmp_path / "client.pem"),
+        "keyfile": str(tmp_path / "client.key"),
+    }
+    session.close()
+
+
 def test_session_rejects_expired_lease_and_read_only_connection():
     client = Client(timeout=5.0)
     client.start(timeout=5)

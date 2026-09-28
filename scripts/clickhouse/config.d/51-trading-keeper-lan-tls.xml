@@ -1,0 +1,18 @@
+<clickhouse>
+    <!-- Installed only by the managed bootstrap when strict mTLS is enabled. -->
+    <keeper_server>
+        <tcp_port_secure>9281</tcp_port_secure>
+    </keeper_server>
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-server/keeper-tls/server.crt</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/keeper-tls/server.key</privateKeyFile>
+            <caConfig>/etc/clickhouse-server/keeper-tls/ca.crt</caConfig>
+            <verificationMode>strict</verificationMode>
+            <invalidCertificateHandler>
+                <name>RejectCertificateHandler</name>
+            </invalidCertificateHandler>
+            <disableProtocols>sslv2,sslv3</disableProtocols>
+        </server>
+    </openSSL>
+</clickhouse>

@@ -1,0 +1,21 @@
+from pathlib import Path
+from xml.etree import ElementTree
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CLICKHOUSE = ROOT / "scripts" / "clickhouse"
+
+
+def test_secure_keeper_overlay_is_strict_and_does_not_replace_private_port():
+    private = ElementTree.parse(CLICKHOUSE / "config.d" / "50-trading-keeper.xml").getroot()
+    secure = ElementTree.parse(CLICKHOUSE / "config.d" / "51-trading-keeper-lan-tls.xml").getroot()
+    assert private.findtext("keeper_server/tcp_port") == "9181"
+    assert secure.findtext("keeper_server/tcp_port_secure") == "9281"
+    assert secure.findtext("openSSL/server/verificationMode") == "strict"
+    assert secure.findtext("openSSL/server/invalidCertificateHandler/name") == "RejectCertificateHandler"
+    for name in ("certificateFile", "privateKeyFile", "caConfig"):
+        assert secure.findtext(f"openSSL/server/{name}").startswith(
+            "/etc/clickhouse-server/keeper-tls/")
+    bootstrap = (CLICKHOUSE / "clickhouse_bootstrap.sh").read_text(encoding="utf-8")
+    assert 'CLICKHOUSE_KEEPER_LAN_TLS_ENABLED:-false' in bootstrap
+    assert 'rm -f "$config_target/51-trading-keeper-lan-tls.xml"' in bootstrap

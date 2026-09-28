@@ -48,3 +48,21 @@ def test_keeper_discovery_rejects_other_hosts_and_unreachable_listener(monkeypat
                 command, 0, "172.25.158.41", ""),
             connect=lambda *_a, **_k: (_ for _ in ()).throw(OSError()),
         )
+
+
+def test_laptop_keeper_requires_private_endpoint_and_complete_mtls(tmp_path, monkeypatch):
+    monkeypatch.setattr(keeper_endpoint.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(keeper_endpoint.platform, "node", lambda: "LAPTOP")
+    monkeypatch.setenv("TRADING_KEEPER_LAN_HOST", "192.168.1.218")
+    monkeypatch.setenv("TRADING_KEEPER_LAN_PORT", "9281")
+    with pytest.raises(RuntimeError, match="certificate"):
+        keeper_endpoint.discover_keeper_endpoint()
+    for name in ("CA_FILE", "CLIENT_CERT_FILE", "CLIENT_KEY_FILE"):
+        path = tmp_path / name
+        path.write_text("test", encoding="utf-8")
+        monkeypatch.setenv(f"TRADING_KEEPER_{name}", str(path))
+    endpoint = keeper_endpoint.discover_keeper_endpoint()
+    assert (endpoint.host, endpoint.port, endpoint.secure) == ("192.168.1.218", 9281, True)
+    monkeypatch.setenv("TRADING_KEEPER_LAN_HOST", "8.8.8.8")
+    with pytest.raises(RuntimeError, match="private IPv4"):
+        keeper_endpoint.discover_keeper_endpoint()
