@@ -28,6 +28,36 @@ from src.trading_runtime.strategy_one_v7 import PROVISIONAL_SEED_POLICY
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 
 
+class V7ReadbackMismatch(RuntimeError):
+    """Safe field-level discrepancy, without source prices or SQL."""
+
+
+_INTERVAL_FIELDS = ("level_id", "ordinal", "valid_from_ms", "valid_to_ms",
+                    "lower_bits", "upper_bits", "role", "transition_from",
+                    "confirmed_at_ms", "historical")
+
+
+def _readback_mismatch(actual_clocks: tuple[int, ...],
+                       expected_clocks: tuple[int, ...],
+                       actual_intervals: tuple[tuple[object, ...], ...],
+                       expected_intervals: tuple[tuple[object, ...], ...]) -> str | None:
+    if len(actual_clocks) != len(expected_clocks):
+        return (f"clock count {len(actual_clocks)} != "
+                f"{len(expected_clocks)}")
+    for index, (actual, expected) in enumerate(zip(actual_clocks, expected_clocks)):
+        if actual != expected:
+            return f"clock index {index} differs"
+    if len(actual_intervals) != len(expected_intervals):
+        return (f"interval count {len(actual_intervals)} != "
+                f"{len(expected_intervals)}")
+    for index, (actual, expected) in enumerate(zip(actual_intervals,
+                                                    expected_intervals)):
+        for field, left, right in zip(_INTERVAL_FIELDS, actual, expected):
+            if left != right:
+                return f"interval index {index} field {field} differs"
+    return None
+
+
 def _hash(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                              allow_nan=False).encode()).hexdigest()
@@ -223,9 +253,11 @@ def publish_unit(writer: Any, reader: Any, item: DerivedV7TickerDay, *,
                        "level_id,ordinal,valid_from_ms,valid_to_ms,lower,upper,"
                        "role,transition_from,confirmed_at_ms,historical) "
                        f"VALUES {values}")
-    if (_read_clocks(reader, item, attempt) != item.valid_seconds
-            or _read_intervals(reader, item, attempt) != _expected_intervals(item)):
-        raise RuntimeError("V7 derivative child read-back differs from source")
+    mismatch = _readback_mismatch(
+        _read_clocks(reader, item, attempt), item.valid_seconds,
+        _read_intervals(reader, item, attempt), _expected_intervals(item))
+    if mismatch is not None:
+        raise V7ReadbackMismatch(mismatch)
     writer.execute(f"""INSERT INTO {COVERAGE_TABLE}
       (source_build_id,session_date,ticker,derivation_attempt_id,
        bars_attempt_id,source_checkpoint_hash,decoded_seed_hash,

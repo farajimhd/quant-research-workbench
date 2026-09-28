@@ -9,6 +9,14 @@ from pipelines.strategy_one.v7_interval_derivation import DerivedV7TickerDay
 from src.trading_runtime.strategy_one_v7_intervals import V7LevelInterval
 
 
+def test_readback_discrepancy_reports_only_field_identity():
+    expected = (("secret-level", 0, 1000, 2000, 10, 20, "support", "", 1, True),)
+    actual = (("secret-level", 0, 1000, 2000, 11, 20, "support", "", 1, True),)
+    assert publication._readback_mismatch((1000,), (1000,), actual, expected) == (
+        "interval index 0 field lower_bits differs")
+    assert publication._readback_mismatch((1000,), (1000,), expected, expected) is None
+
+
 ATTEMPT = str(UUID(int=21))
 
 
@@ -72,7 +80,7 @@ def test_v7_uncertain_child_never_reaches_coverage(monkeypatch):
                         lambda *_args: expected.valid_seconds
                         if writer.sqls else ())
     monkeypatch.setattr(publication, "_read_intervals", lambda *_args: ())
-    with pytest.raises(RuntimeError, match="child read-back"):
+    with pytest.raises(publication.V7ReadbackMismatch, match="interval count"):
         publication.publish_unit(writer, writer, expected,
                                  attempt_id=ATTEMPT)
     assert all("INSERT INTO arte.strategy_one_v7_coverage_v1" not in sql

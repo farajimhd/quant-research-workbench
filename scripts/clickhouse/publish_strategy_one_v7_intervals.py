@@ -24,7 +24,9 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
 from pipelines.strategy_one.v7_interval_derivation import derive_ticker_day
-from pipelines.strategy_one.v7_interval_publication import publish_unit
+from pipelines.strategy_one.v7_interval_publication import (
+    V7ReadbackMismatch, publish_unit,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient
 from scripts.clickhouse.provision_strategy_one_candidate_producer import (
     PRINCIPAL, WORKSTATION_IPV4, _GRANTS, _credential, _grant_set,
@@ -161,7 +163,9 @@ def publish_session(*, session_date: str, build_id: str,
                      "external_dependency")
         raise V7IntervalCampaignFailure(
             f"V7 publication stopped at {symbol}: {type(exc).__name__} "
-            f"at {stage}; rerun verifies prior coverage") from None
+            f"at {stage}"
+            f"{f' ({exc})' if isinstance(exc, V7ReadbackMismatch) else ''}; "
+            "rerun verifies prior coverage") from None
     print(f"Verified {len(tickers)} ticker-days; "
           f"{monotonic() - started:.1f}s wall time.", flush=True)
     return {"published": published, "skipped": skipped, "failed": failed,
