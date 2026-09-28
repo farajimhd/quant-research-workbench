@@ -46,7 +46,8 @@ def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
     assert {table.name for table in live.live_v4_storage_contracts()} - {
         table.name for table in live.v4_storage_contracts()
     } == {"trading_broker_acknowledgement_v5",
-          "trading_order_modify_command_v1"} | activation | signal
+          "trading_order_modify_command_v1",
+          "strategy_one_live_assignment_v1"} | activation | signal
     assert activation <= plan.insert_arte
     assert signal <= plan.insert_arte
     assert not activation & {table.name for table in live.v4_storage_contracts()}
@@ -65,6 +66,8 @@ def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
                 "live_plan_assignment_member_typed_v1",
                 "live_plan_activated_watch_typed_v1"} & plan.insert_arte
     assert not {"trading_commit_v1", "trading_commit_v2"} & plan.insert_arte
+    assert "strategy_one_live_assignment_v1" in plan.select_arte
+    assert "strategy_one_live_assignment_v1" not in plan.insert_arte
     assert not plan.insert_arte.intersection({
         "bars_v1", "indicators_v1", "liquidity_100ms_v1"})
     assert plan.select_reference == frozenset({
@@ -88,11 +91,12 @@ def test_preflight_uses_exact_plan_and_checks_principal(monkeypatch):
     plan = live.desired_plan()
     assert calls[0][1] == plan.insert_arte | live._POLICY_READ
     assert calls[1][1] == {table.name for table in live.PLAN_MEMBERSHIP_TABLES}
-    assert calls[2][1]["journal_tables"] == plan.insert_arte
-    assert calls[2][1]["read_only_tables"] == (
+    assert calls[2][1] == {"strategy_one_live_assignment_v1"}
+    assert calls[3][1]["journal_tables"] == plan.insert_arte
+    assert calls[3][1]["read_only_tables"] == (
         plan.select_arte - plan.insert_arte - live.MARKET_READ_TABLES)
-    assert calls[2][1]["reference_read_tables"] == plan.select_reference
-    assert calls[2][1]["allow_live_event_replay"] is True
+    assert calls[3][1]["reference_read_tables"] == plan.select_reference
+    assert calls[3][1]["allow_live_event_replay"] is True
     with pytest.raises(RuntimeError, match="another principal"):
         live.live_v4_preflight(Client("backtest_v4_runner"))
 

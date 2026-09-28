@@ -28,6 +28,7 @@ from src.trading_runtime.strategy_one_configuration_tree import (
 )
 from src.backend.live_strategy_one_approval import TABLE as APPROVAL
 from src.backend.live_plan_membership import TABLES as PLAN_MEMBERSHIP_TABLES
+from src.backend.live_strategy_one_assignment import TABLE as STRATEGY_ONE_ASSIGNMENT
 from src.backend.live_assignment_base_keeper import KeeperAssignmentHead
 from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.arte_strategy_one_activation_schema import (
@@ -41,6 +42,7 @@ MANAGED_URL = "http://DESKTOP-SAAI85T:18123"
 _CONFIG_READ = (frozenset({NODE_TABLE.split(".", 1)[1],
                            RELEASE_TABLE.split(".", 1)[1], APPROVAL.name})
                 | frozenset(table.name for table in PLAN_MEMBERSHIP_TABLES))
+_ASSIGNMENT_READ = frozenset({STRATEGY_ONE_ASSIGNMENT.name})
 _LEGACY_COMMIT_READ = frozenset({"trading_commit_v1", "trading_commit_v2"})
 _EXCLUDED_FAMILY = frozenset({
     "trading_backtest_cursor_v1", "trading_backtest_market_authority_v1",
@@ -67,7 +69,8 @@ _V4_LIVE_DETAIL = frozenset({
 def live_v4_storage_contracts() -> tuple[Any, ...]:
     """Keep live-only normalized extensions out of Backtest's storage gate."""
     return (*v4_storage_contracts(), ACKNOWLEDGEMENT_V5, MODIFY_COMMAND,
-            *STRATEGY_ONE_ACTIVATION_TABLES, *STRATEGY_ONE_SIGNAL_TABLES)
+            *STRATEGY_ONE_ACTIVATION_TABLES, *STRATEGY_ONE_SIGNAL_TABLES,
+            STRATEGY_ONE_ASSIGNMENT)
 
 
 _PORTFOLIO_WRITE = frozenset({
@@ -127,7 +130,8 @@ def desired_plan() -> LiveV4PrincipalPlan:
     if any("backtest" in name for name in writable):
         raise RuntimeError("Live V4 principal would write a Backtest table")
     return LiveV4PrincipalPlan(
-        PRINCIPAL, writable | _POLICY_READ | _CONFIG_READ | _LEGACY_COMMIT_READ
+        PRINCIPAL, writable | _POLICY_READ | _CONFIG_READ | _ASSIGNMENT_READ
+        | _LEGACY_COMMIT_READ
         | MARKET_READ_TABLES,
         writable,
         frozenset({"storage_policies", "tables", "columns", "parts",
@@ -143,6 +147,7 @@ def live_v4_preflight(client: Any) -> None:
     names = plan.insert_arte | _POLICY_READ
     storage_preflight(client, tables=tuple(contracts[name] for name in sorted(names)))
     storage_preflight(client, tables=PLAN_MEMBERSHIP_TABLES)
+    storage_preflight(client, tables=(STRATEGY_ONE_ASSIGNMENT,))
     # The configuration tree has its own exact schema verifier; the approval
     # contract is separately checked by journal_permission_preflight.
     journal_permission_preflight(
