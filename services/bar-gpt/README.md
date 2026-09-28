@@ -1,5 +1,8 @@
 # BarGPT Service
 
+For CPU-first historical evaluation, paced capacity trials, and read-only live
+latency observation, see [EVALUATION.md](EVALUATION.md).
+
 BarGPT Service is the production inference boundary for versioned BarGPT v2
 and v3 checkpoints. It owns causal context caches, mode-scoped serving leases,
 full-prefix dynamic batching, raw prediction preservation, semantic decoding,
