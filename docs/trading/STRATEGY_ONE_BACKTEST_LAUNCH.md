@@ -62,3 +62,12 @@ terminal account state with no limitations. The run created no directory under
 the workstation Backtest runtime root. The test backend and SSH tunnel
 were stopped afterward. This validates the app routes, not visual browser
 interaction or live trading.
+
+On 2026-09-28, a separate backend on workstation loopback port 8001 using the
+synced source opened that saved V4 run in the actual Backtest UI. The WFF chart
+loaded 1,000 persisted 1-second bars and 1,000 closed MACD rows through the
+verified boundary. Targeted browser review passed at 1440×900/dark/100% and
+1024×768/light/125%, with no layout redesign or objective UI issues. The
+temporary backend, tunnels, and frontend were stopped; the pre-existing
+workstation backend on port 8000 was left running. This verifies cold saved
+review and chart rendering, not live order admission.
