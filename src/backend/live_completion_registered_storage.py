@@ -23,18 +23,21 @@ class RegisteredCompletionStorage:
 
     def __init__(self, read_client: Any, insert_client: Any,
                  dispatch: CompletionInsertDispatch, *, session_key: str) -> None:
-        self.run_id = completion_insert_run_id(session_key)
+        self.run_id = completion_insert_run_id(
+            session_key, strategy_one=dispatch.strategy_one)
         self._session_key = session_key
         self._read = read_client
         self._insert = insert_client
         self._dispatch = dispatch
+        self.strategy_one = dispatch.strategy_one
+        self.table = dispatch.table
 
     def _rows(self, sql: str) -> list[dict[str, Any]]:
         return [canonical_row(COMPLETION, json.loads(line))
                 for line in self._read.execute(sql).splitlines() if line.strip()]
 
     def initialize_new_session(self) -> None:
-        sql = ("SELECT 1 FROM arte.live_signal_work_completion_typed_v1 "
+        sql = (f"SELECT 1 FROM arte.{self.table} "
                f"WHERE session_key=toDate('{self._session_key}') "
                "LIMIT 1 FORMAT JSONEachRow")
         self._dispatch.initialize_new_session(
@@ -51,7 +54,7 @@ class RegisteredCompletionStorage:
             f"{self.run_id}\x00{resource}\x00{normalized['content_hash']}".encode()
         ).hexdigest()
         columns = ",".join(name for name, _ in COMPLETION.columns)
-        sql = (f"INSERT INTO arte.{COMPLETION.name} ({columns}) SETTINGS "
+        sql = (f"INSERT INTO arte.{self.table} ({columns}) SETTINGS "
                "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
                f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n"
                + canonical_json(normalized))
@@ -69,7 +72,7 @@ class RegisteredCompletionStorage:
             raise ValueError("completion read scope differs")
         columns = ",".join(name for name, _ in COMPLETION.columns)
         return self._rows(
-            f"SELECT {columns} FROM arte.{COMPLETION.name} "
+            f"SELECT {columns} FROM arte.{self.table} "
             f"WHERE session_key=toDate('{session_key}') "
             f"AND source_batch_sequence={source_batch_sequence} "
             f"AND ordinal={ordinal} LIMIT 2 FORMAT JSONEachRow")

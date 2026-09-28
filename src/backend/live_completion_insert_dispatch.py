@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 from src.backend.live_signal_completion_keeper import completion_resource
 from src.backend.live_signal_work_completion import COMPLETION
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.backend.signal_stream_typed_readback import canonical_row
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.keeper_ownership import (
@@ -24,11 +25,14 @@ from src.trading_runtime.keeper_ownership import (
 _ZERO = "0" * 64
 
 
-def completion_insert_run_id(session_key: str) -> str:
+def completion_insert_run_id(session_key: str, *, strategy_one: bool = False) -> str:
     if (type(session_key) is not str
             or date.fromisoformat(session_key).isoformat() != session_key):
         raise ValueError("completion INSERT session is invalid")
-    return f"signal-completion:{session_key}"
+    if type(strategy_one) is not bool:
+        raise ValueError("completion INSERT mode is invalid")
+    prefix = "strategy-one-signal-completion" if strategy_one else "signal-completion"
+    return f"{prefix}:{session_key}"
 
 
 def _gate_path(run_id: str) -> str:
@@ -86,13 +90,26 @@ def _decode(wire: bytes) -> _Gate:
 class CompletionInsertDispatch:
     """One serial writer per session; all methods are control-plane I/O."""
 
-    def __init__(self, keeper: Any) -> None:
+    def __init__(self, keeper: Any, *, strategy_one: bool = False) -> None:
+        if type(strategy_one) is not bool:
+            raise ValueError("completion INSERT mode is invalid")
         self.keeper = keeper
+        self.strategy_one = strategy_one
+        self.table = (strategy_one_signal_table(COMPLETION.name) if strategy_one
+                      else COMPLETION.name)
+
+    def _scope(self, run_id: str) -> None:
+        prefix = ("strategy-one-signal-completion:" if self.strategy_one
+                  else "signal-completion:")
+        if not run_id.startswith(prefix):
+            raise ValueError("completion run differs from table authority")
+        completion_insert_run_id(run_id.removeprefix(prefix),
+                                 strategy_one=self.strategy_one)
 
     def initialize_new_session(self, run_id: str, *, has_ch_rows: bool) -> None:
-        if not run_id.startswith("signal-completion:") or type(has_ch_rows) is not bool or has_ch_rows:
+        self._scope(run_id)
+        if type(has_ch_rows) is not bool or has_ch_rows:
             raise KeeperUnavailable("completion INSERT session has unregistered rows")
-        completion_insert_run_id(run_id.removeprefix("signal-completion:"))
         self.keeper.ensure_path(_path("completion_insert_gate"))
         self.keeper.ensure_path(_path("completion_insert_receipt", run_id))
         try:
@@ -101,6 +118,7 @@ class CompletionInsertDispatch:
             raise KeeperUnavailable("completion INSERT session already exists") from exc
 
     def _read(self, run_id: str) -> tuple[_Gate, int]:
+        self._scope(run_id)
         try:
             wire, stat = self.keeper.get(_gate_path(run_id))
         except Exception as exc:
@@ -119,7 +137,7 @@ class CompletionInsertDispatch:
                 or re.fullmatch(r"[0-9a-f]{64}", row_hash) is None
                 or re.fullmatch(r"[A-Za-z0-9:._-]{1,256}", token) is None
                 or not sql.startswith(
-                    "INSERT INTO arte.live_signal_work_completion_typed_v1 (")
+                    f"INSERT INTO arte.{self.table} (")
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
                 or f"insert_deduplication_token='{token}'" not in sql):
             raise ValueError("completion INSERT SQL contract differs")
@@ -142,8 +160,14 @@ class CompletionInsertDispatch:
         else:
             raise KeeperUnavailable("completion INSERT registration CAS contended")
         # Never retry an ambiguous response: the server may still commit it.
-        client.execute(sql, query_id="arte_completion_" + sha256(
-            f"{run_id}\x00{resource}\x00{token}".encode()).hexdigest())
+        query_id = "arte_completion_" + sha256(
+            f"{run_id}\x00{resource}\x00{token}".encode()).hexdigest()
+        registered = getattr(client, "execute_registered_signal_insert", None)
+        if self.strategy_one and callable(registered):
+            registered(sql, query_id=query_id, kind="completion", dispatch=self,
+                       run_id=run_id, sequence=0, table=self.table)
+        else:
+            client.execute(sql, query_id=query_id)
         for _ in range(8):
             gate, version = self._read(run_id)
             if gate != pending:

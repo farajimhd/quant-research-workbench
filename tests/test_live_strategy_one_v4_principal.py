@@ -381,3 +381,30 @@ def test_live_dispatch_insert_uses_pending_isolated_keeper_operation():
                      phase="intent", table=table, row_hash=digest, sql=sql)
     assert len(raw.inserts) == 1 and raw.inserts[0][0] == sql
     lease.release()
+
+
+def test_live_completion_insert_uses_pending_isolated_keeper_operation():
+    from src.backend.live_completion_insert_dispatch import (
+        CompletionInsertDispatch, completion_insert_run_id,
+    )
+
+    lease = _lease()
+    raw = Client()
+    guarded = live.LiveV4WriterClient(raw, lease)
+    dispatch = CompletionInsertDispatch(
+        lease.owner._session.client, strategy_one=True)
+    run_id = completion_insert_run_id("2026-09-27", strategy_one=True)
+    dispatch.initialize_new_session(run_id, has_ch_rows=False)
+    token = "completion-test"
+    sql = (f"INSERT INTO arte.{dispatch.table} (session_key) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+    dispatch.execute(guarded, run_id=run_id, resource="a" * 64,
+                     row_hash="b" * 64, sql=sql, token=token)
+    assert len(raw.inserts) == 1 and raw.inserts[0][0] == sql
+    with pytest.raises(RuntimeError, match="pending Keeper"):
+        guarded.execute_registered_signal_insert(
+            sql, query_id="arte_completion_" + "c" * 64,
+            kind="completion", dispatch=dispatch, run_id=run_id,
+            sequence=0, table=dispatch.table)
+    lease.release()

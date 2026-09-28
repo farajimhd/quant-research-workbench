@@ -122,3 +122,26 @@ def test_registered_completion_worker_seals_only_after_attestation() -> None:
     storage.close_for_cold()
     storage.assert_cold_receipts({resource: result.row["content_hash"]})
     assert len(client.rows) == 1
+
+
+def test_strategy_one_completion_uses_isolated_table_and_gate() -> None:
+    row = _row()
+    isolated = "trading_strategy_one_live_signal_work_completion_typed_v1"
+    gate = CompletionInsertDispatch(_Client(_Store(), 11), strategy_one=True)
+    run_id = completion_insert_run_id(SESSION, strategy_one=True)
+    assert gate.table == isolated
+    gate.initialize_new_session(run_id, has_ch_rows=False)
+    with pytest.raises(ValueError, match="authority"):
+        gate._read(RUN)
+    resource = completion_resource(row["session_key"], row["source_batch_sequence"],
+                                   row["ordinal"], row["delivery_id"])
+    sql = _sql().replace("arte.live_signal_work_completion_typed_v1",
+                         f"arte.{isolated}")
+    class Client:
+        def execute_registered_signal_insert(self, sql, **kwargs):
+            assert kwargs["kind"] == "completion"
+            assert kwargs["table"] == isolated
+            assert kwargs["run_id"] == run_id
+    gate.execute(Client(), run_id=run_id, resource=resource,
+                 row_hash=row["content_hash"], sql=sql, token="completion-test")
+    assert gate._read(run_id)[0].status == "ack"

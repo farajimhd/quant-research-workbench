@@ -260,10 +260,11 @@ class LiveV4WriterClient:
         self, sql: str, *, query_id: str, kind: str, dispatch: Any,
         run_id: str, sequence: int, table: str, phase: str = "",
     ) -> Any:
-        """Admit only a pending Strategy 1 source/dispatch Keeper operation."""
+        """Admit only a pending Strategy 1 signal Keeper operation."""
         self.live_v4_lease.assert_current()
         isolated = {item.name for item in STRATEGY_ONE_SIGNAL_TABLES}
-        prefixes = {"source": "arte_signal_source_", "dispatch": "arte_dispatch_"}
+        prefixes = {"source": "arte_signal_source_", "dispatch": "arte_dispatch_",
+                    "completion": "arte_completion_"}
         prefix = prefixes.get(kind)
         if (prefix is None or table not in isolated
                 or not isinstance(query_id, str)
@@ -276,7 +277,10 @@ class LiveV4WriterClient:
             raise RuntimeError("Live V4 signal INSERT lacks isolated registered authority")
         gate, _ = dispatch._read(run_id)
         digest = sha256(sql.encode()).hexdigest()
-        if kind == "source":
+        if kind == "completion":
+            pending = (table == dispatch.table and gate.mode == "open"
+                       and gate.status == "pending" and gate.sql_hash == digest)
+        elif kind == "source":
             pending = (gate.mode == "open" and gate.active
                        and gate.sequence == sequence and gate.status == "pending"
                        and gate.table == table and gate.sql_hash == digest)
