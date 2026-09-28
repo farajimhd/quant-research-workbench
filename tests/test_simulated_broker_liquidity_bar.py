@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     TABLES as BROKER_MATCH_TABLES, project_broker_match_snapshot,
+    verify_broker_match_snapshot, load_unattested_broker_match_snapshot,
 )
 from src.backend.backtest_market_data import market_day_boundary
 from tests.test_trading_runtime import quote, trade
@@ -172,6 +174,39 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows.snapshot["ticker_count"], 1)
         self.assertEqual(rows.open_orders[0]["filled"], 4.0)
         self.assertEqual(rows.tickers[0]["last_boundary_ms"], boundary_ms)
+        self.assertEqual(verify_broker_match_snapshot(rows), rows)
+        stored = replace(
+            rows,
+            snapshot={**rows.snapshot, "initial_time": rows.snapshot[
+                "initial_time"].replace("T", " ").removesuffix("+00:00")},
+            open_orders=({**rows.open_orders[0], "submitted_at": rows.open_orders[0][
+                "submitted_at"].replace("T", " ").removesuffix("+00:00")},),
+        )
+        self.assertEqual(verify_broker_match_snapshot(stored), rows)
+        with self.assertRaisesRegex(ValueError, "child identity or hash"):
+            verify_broker_match_snapshot(replace(
+                stored, open_orders=({**stored.open_orders[0], "filled": 5.0},)))
+        with self.assertRaisesRegex(ValueError, "family seal"):
+            verify_broker_match_snapshot(replace(stored, open_orders=()))
+        class Reader:
+            def execute(self, sql):
+                self.last_sql = sql
+                family = next(table.name for table in BROKER_MATCH_TABLES
+                              if f"arte.{table.name} " in sql)
+                values = {
+                    BROKER_MATCH_TABLES[0].name: (stored.snapshot,),
+                    BROKER_MATCH_TABLES[1].name: stored.accounts,
+                    BROKER_MATCH_TABLES[2].name: stored.positions,
+                    BROKER_MATCH_TABLES[3].name: stored.open_orders,
+                    BROKER_MATCH_TABLES[4].name: stored.tickers,
+                    BROKER_MATCH_TABLES[5].name: stored.marks,
+                }[family]
+                return "\n".join(json.dumps(row) for row in values)
+
+        reader = Reader()
+        self.assertEqual(load_unattested_broker_match_snapshot(
+            reader, run_id="backtest:one", checkpoint_sequence=42), rows)
+        self.assertTrue(reader.last_sql.startswith("SELECT "))
         self.assertTrue(all("live_market_ssd" in table.ddl()
                             for table in BROKER_MATCH_TABLES))
         self.assertTrue(all("json" not in name and "blob" not in name

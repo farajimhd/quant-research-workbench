@@ -9,10 +9,11 @@ they may participate in cold recovery. No resume gate uses this module yet.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+import json
 from math import isfinite
 from typing import Any, Mapping
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.backend.backtest_market_data import market_day_boundary
 from src.trading_runtime.arte_journal_schema import TableContract
@@ -92,6 +93,7 @@ MARK = TableContract(
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("conid", "UInt64"), ("mark", "Float64"),
+     ("has_performance_path", "UInt8"),
      ("unrealized", "Float64"), ("market_value", "Float64"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
@@ -113,7 +115,9 @@ class BrokerMatchSnapshotRows:
 def _float(value: Any, label: str) -> float:
     if type(value) not in (int, float) or not isfinite(value):
         raise ValueError(f"Broker match snapshot has invalid {label}")
-    return float(value)
+    # ClickHouse's Float64 JSON renderer need not preserve a negative zero
+    # spelling; canonicalize it before sealing on both write and cold read.
+    return 0.0 if value == 0 else float(value)
 
 
 def _time(value: Any, label: str) -> datetime:
@@ -121,6 +125,19 @@ def _time(value: Any, label: str) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError(f"Broker match snapshot has naive {label}")
     return parsed
+
+
+def _utc_text(value: Any, label: str, *, from_clickhouse: bool = False) -> str:
+    """Use one UTC microsecond representation on both sides of ClickHouse."""
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(
+        str(value).replace(" ", "T"))
+    if parsed.tzinfo is None:
+        if not from_clickhouse:
+            raise ValueError(f"Broker match snapshot has naive {label}")
+        # DateTime64(6, 'UTC') is a typed UTC column. JSONEachRow renders it
+        # without a timezone suffix; this branch is readback-only.
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _sealed(common: dict[str, Any], **fields: Any) -> dict[str, Any]:
@@ -149,6 +166,8 @@ def project_broker_match_snapshot(
             or boundary_ms % 100 or not isinstance(state, Mapping)
             or state.get("schema_version") != 4 or state.get("bar_mode") is not True):
         raise ValueError("Broker match snapshot needs completed Strategy 1 bar state")
+    if state.get("trades") or state.get("trades_by_ticker"):
+        raise ValueError("Broker match snapshot cannot omit event-mode trade state")
     origin = market_day_boundary(session_date, 0)
     global_at = origin.timestamp() + boundary_ms / 1000
     initial = _time(state.get("initial_time"), "initial time")
@@ -208,7 +227,8 @@ def project_broker_match_snapshot(
             account_id=str(request["acctId"]),
             client_order_id=str(request["cOID"]),
             conid=int(request["conid"]), ticker=str(request["ticker"]),
-            status=status.value, submitted_at=submitted.isoformat(),
+            status=status.value,
+            submitted_at=_utc_text(submitted, "order submission"),
             oca_group=str(order.get("oca_group") or ""),
             filled=_float(order["filled"], "filled quantity"),
             avg_price=_float(order["avg_price"], "fill average"),
@@ -251,6 +271,7 @@ def project_broker_match_snapshot(
             raise ValueError("Broker performance path is invalid")
         marks.append(_sealed(common, conid=int(conid),
                              mark=_float(value, "mark"),
+                             has_performance_path=int(conid in performance_marks),
                              unrealized=_float(path[0], "unrealized mark"),
                              market_value=_float(path[1], "market value mark")))
     performance = dict(state.get("performance_extrema") or {})
@@ -258,11 +279,13 @@ def project_broker_match_snapshot(
     if as_of is not None and _time(as_of, "performance time").timestamp() > global_at:
         raise ValueError("Broker performance path is from the future")
     root = dict(**common, session_date=session_date.isoformat(),
-                boundary_ms=boundary_ms, initial_time=initial.isoformat(),
+                boundary_ms=boundary_ms,
+                initial_time=_utc_text(initial, "initial time"),
                 next_order_id=int(state["next_order_id"]),
                 next_execution_id=int(state["next_execution_id"]),
                 performance_complete=int(bool(performance["complete"])),
-                performance_as_of=as_of)
+                performance_as_of=(_utc_text(as_of, "performance time")
+                                   if as_of is not None else None))
     if root["next_order_id"] < 1 or root["next_execution_id"] < 1:
         raise ValueError("Broker counters are invalid")
     for name in ("unrealized", "market_value", "peak_unrealized",
@@ -275,3 +298,173 @@ def project_broker_match_snapshot(
         root[f"{name}_count"], root[f"{name}_hash"] = _family(rows)
     return BrokerMatchSnapshotRows(
         {**root, "content_hash": _digest(root)}, *families)
+
+
+def _canonical_row(contract: TableContract, value: Mapping[str, Any]) -> dict[str, Any]:
+    kinds = dict(contract.columns)
+    if not isinstance(value, Mapping) or set(value) != set(kinds):
+        raise ValueError("Broker match row has missing or extra columns")
+    row: dict[str, Any] = {}
+    for name, kind in contract.columns:
+        item = value[name]
+        if item is None:
+            if not kind.startswith("Nullable("):
+                raise ValueError("Broker match row has unexpected null")
+            row[name] = None
+        elif "DateTime64(" in kind:
+            row[name] = _utc_text(item, name, from_clickhouse=True)
+        elif kind == "Float64":
+            row[name] = _float(item, name)
+        elif kind.startswith("UInt"):
+            if type(item) is not int or item < 0:
+                raise ValueError("Broker match integer is invalid")
+            row[name] = item
+        elif kind == "UUID":
+            row[name] = str(UUID(str(item)))
+        elif kind == "Date":
+            row[name] = date.fromisoformat(str(item)).isoformat()
+        else:
+            if type(item) is not str:
+                raise ValueError("Broker match string is invalid")
+            row[name] = item
+    return row
+
+
+def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSnapshotRows:
+    """Reject missing, duplicated, foreign, or altered child rows.
+
+    This verifies the ClickHouse row contract, not Keeper or the V4 journal
+    cursor. Read order is canonicalized; both separate authorities are
+    mandatory before executable restore.
+    """
+    if not isinstance(rows, BrokerMatchSnapshotRows):
+        raise ValueError("Broker match recovery needs typed rows")
+    root = _canonical_row(ROOT, rows.snapshot)
+    families = []
+    keys = (
+        ("account_id",), ("account_id", "conid"),
+        ("broker_order_id",), ("ticker",), ("conid",),
+    )
+    for contract, source, identity in zip(
+            TABLES[1:], (rows.accounts, rows.positions, rows.open_orders,
+                         rows.tickers, rows.marks), keys, strict=True):
+        normalized = tuple(_canonical_row(contract, row) for row in source)
+        normalized = tuple(sorted(normalized, key=lambda row: tuple(
+            row[name] for name in identity)))
+        identities = [tuple(row[name] for name in identity) for row in normalized]
+        if len(set(identities)) != len(identities):
+            raise ValueError("Broker match child identity is duplicated")
+        for row in normalized:
+            if (any(row[name] != root[name] for name in
+                    ("snapshot_id", "run_id", "snapshot_month",
+                     "checkpoint_sequence"))
+                    or row["content_hash"] != _digest({
+                        name: item for name, item in row.items()
+                        if name != "content_hash"})):
+                raise ValueError("Broker match child identity or hash differs")
+        families.append(normalized)
+    if (not root["run_id"] or root["checkpoint_sequence"] < 1
+            or not 0 < root["boundary_ms"] <= 57_600_000
+            or root["boundary_ms"] % 100
+            or root["snapshot_id"] != str(uuid5(
+                NAMESPACE_URL, f"strategy-one-broker-match-v1:"
+                f"{root['run_id']}:{root['checkpoint_sequence']}"))
+            or root["snapshot_month"] != root["session_date"][:7] + "-01"
+            or root["next_order_id"] < 1 or root["next_execution_id"] < 1
+            or root["performance_complete"] not in (0, 1)):
+        raise ValueError("Broker match snapshot root identity is invalid")
+    cutoff = market_day_boundary(date.fromisoformat(root["session_date"]),
+                                 root["boundary_ms"])
+    if (_time(root["initial_time"], "initial time") > cutoff
+            or root["performance_as_of"] is not None
+            and _time(root["performance_as_of"], "performance time") > cutoff):
+        raise ValueError("Broker match snapshot time is after cutoff")
+    for name, group in zip(("account", "position", "open_order", "ticker", "mark"),
+                           families, strict=True):
+        count, digest = _family(group)
+        if root[f"{name}_count"] != count or root[f"{name}_hash"] != digest:
+            raise ValueError("Broker match child family seal differs")
+    accounts, positions, orders, tickers, marks = families
+    account_ids = {row["account_id"] for row in accounts}
+    if (not account_ids or any(row["account_id"] not in account_ids
+                               for row in (*positions, *orders))):
+        raise ValueError("Broker match child account differs")
+    for row in orders:
+        if (OrderStatus(row["status"]) not in OPEN_ORDER_STATUSES
+                or not row["client_order_id"] or not row["ticker"]
+                or row["conid"] < 1 or row["filled"] < 0
+                or row["commission_paid"] < 0
+                or _time(row["submitted_at"], "order time") > cutoff):
+            raise ValueError("Broker match open order is invalid")
+    for row in tickers:
+        if (not row["ticker"] or not 0 < row["last_boundary_ms"] <= root["boundary_ms"]
+                or row["last_boundary_ms"] % 100
+                or row["has_mark"] not in (0, 1)
+                or row["has_quote"] not in (0, 1)
+                or not row["has_mark"] and row["mark"] != 0
+                or bool(row["quote_timestamp_us"]) != bool(row["has_quote"])):
+            raise ValueError("Broker match ticker boundary is invalid")
+        at = market_day_boundary(date.fromisoformat(root["session_date"]),
+                                 row["last_boundary_ms"])
+        if row["quote_timestamp_us"] > round(at.timestamp() * 1_000_000):
+            raise ValueError("Broker match quote is from the future")
+    if (any(row["conid"] < 1 for row in (*positions, *marks))
+            or any(row["has_performance_path"] not in (0, 1)
+                   or not row["has_performance_path"]
+                   and (row["unrealized"] != 0 or row["market_value"] != 0)
+                   for row in marks)):
+        raise ValueError("Broker match conid is invalid")
+    if root["content_hash"] != _digest({
+            name: value for name, value in root.items() if name != "content_hash"}):
+        raise ValueError("Broker match root hash differs")
+    return BrokerMatchSnapshotRows(root, *families)
+
+
+def load_unattested_broker_match_snapshot(
+    client: Any, *, run_id: str, checkpoint_sequence: int,
+) -> BrokerMatchSnapshotRows:
+    """SELECT exact rows; caller must still verify the V4/Keeper cursor.
+
+    The root is coverage-last. LIMIT count+1 bounds a corrupt child family
+    before Python decodes an unbounded failed-attempt accumulation.
+    """
+    from src.backend.backtest_market_data import _literal, assert_select_only
+
+    if (type(run_id) is not str or not run_id or "\x00" in run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or not callable(getattr(client, "execute", None))):
+        raise ValueError("Broker match cold read needs an exact run and cursor")
+
+    def read(table: TableContract, *, limit: int,
+             snapshot_id: str | None = None) -> tuple[dict[str, Any], ...]:
+        where = (f"run_id={_literal(run_id)} "
+                 f"AND checkpoint_sequence={checkpoint_sequence}")
+        if snapshot_id is not None:
+            where += f" AND snapshot_id=toUUID({_literal(snapshot_id)})"
+        sql = assert_select_only(
+            f"SELECT * FROM arte.{table.name} WHERE {where} "
+            f"LIMIT {limit} FORMAT JSONEachRow")
+        return tuple(json.loads(line) for line in client.execute(sql).splitlines()
+                     if line.strip())
+
+    roots = read(ROOT, limit=2)
+    if len(roots) != 1:
+        raise ValueError("Broker match root is missing or duplicate")
+    root = _canonical_row(ROOT, roots[0])
+    if (root["run_id"] != run_id
+            or root["checkpoint_sequence"] != checkpoint_sequence):
+        raise ValueError("Broker match root differs from requested cursor")
+    children = []
+    for table, name in zip(TABLES[1:],
+                           ("account", "position", "open_order", "ticker", "mark"),
+                           strict=True):
+        expected = root[f"{name}_count"]
+        if expected > 1_000_000:
+            raise ValueError("Broker match family exceeds bounded cold read")
+        rows = read(table, limit=expected + 1,
+                    snapshot_id=root["snapshot_id"])
+        if len(rows) != expected:
+            raise ValueError("Broker match family is missing or duplicate")
+        children.append(rows)
+    return verify_broker_match_snapshot(
+        BrokerMatchSnapshotRows(root, *children))
