@@ -11,7 +11,9 @@ from dataclasses import dataclass, replace
 from math import isfinite
 from typing import Mapping, Sequence
 
+from src.market_engine.derived_trade_policy import POLICY
 from src.market_engine.streaming_level_book import VERSION
+from src.trading_runtime.strategy_one_v7 import PROVISIONAL_SEED_POLICY
 
 
 SESSION_MS = 57_600_000
@@ -98,6 +100,15 @@ class V7IntervalProjector:
         self._active = next_rows
         self._last_boundary = boundary_ms
 
+    def observe_unchanged(self, *, boundary_ms: int) -> None:
+        """Refresh a valid second without reprojecting an unchanged V7 book."""
+        if (self._last_boundary < 0 or type(boundary_ms) is not int
+                or not 0 < boundary_ms <= SESSION_MS or boundary_ms % 1_000
+                or boundary_ms <= self._last_boundary):
+            raise ValueError("V7 unchanged projection needs a later valid second")
+        self._valid_seconds.append(boundary_ms)
+        self._last_boundary = boundary_ms
+
     def finish(self) -> tuple[tuple[int, ...], tuple[V7LevelInterval, ...]]:
         if self._last_boundary < 0:
             raise ValueError("V7 derivative has no initial seed projection")
@@ -106,12 +117,14 @@ class V7IntervalProjector:
             rows, key=lambda row: (row.valid_from_ms, row.level_id)))
 
 
-def levels_at(*, boundary_ms: int, valid_seconds: Sequence[int],
+def levels_at(*, boundary_ms: int, seed_policy: str,
+              valid_seconds: Sequence[int],
               intervals: Sequence[V7LevelInterval]) -> tuple[dict[str, object], ...]:
     """Read completed geometry at a 100ms boundary, without future access."""
     from bisect import bisect_right
 
-    if (type(boundary_ms) is not int or not 0 <= boundary_ms <= SESSION_MS
+    if (seed_policy not in {POLICY, PROVISIONAL_SEED_POLICY}
+            or type(boundary_ms) is not int or not 0 <= boundary_ms <= SESSION_MS
             or boundary_ms % 100):
         raise ValueError("V7 derivative lookup needs a 100ms session boundary")
     if (any(type(value) is not int or value <= 0 or value % 1_000
@@ -136,4 +149,6 @@ def levels_at(*, boundary_ms: int, valid_seconds: Sequence[int],
         "confirmed_at_ms": row.confirmed_at_ms,
         "historical": row.historical,
         "book_version": VERSION,
+        "input_policy": POLICY,
+        "seed_input_policy": seed_policy,
     } for row in sorted(rows, key=lambda item: item.ordinal))
