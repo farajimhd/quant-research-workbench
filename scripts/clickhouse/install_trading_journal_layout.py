@@ -42,6 +42,12 @@ from src.backend.backtest_squeeze_episode_schema import (
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
+from src.trading_runtime.strategy_one_management_snapshot import (
+    TABLES as STRATEGY_ONE_MANAGER_TABLES,
+)
+from src.trading_runtime.strategy_one_protection_snapshot import (
+    TABLES as STRATEGY_ONE_PROTECTION_TABLES,
+)
 from src.backend.live_signal_journal_preflight import (
     LIVE_SIGNAL_TABLES, staged_live_signal_storage_preflight,
 )
@@ -391,6 +397,43 @@ def install_live_plan_membership(client: object, *, apply: bool) -> str:
                 f"ALTER TABLE arte.{table.name} ADD COLUMN IF NOT EXISTS "
                 "publication_id UUID AFTER membership_sequence")
             storage_preflight(client, tables=(table,))
+    return "upgraded"
+
+
+def install_strategy_one_manager_snapshot(client: object, *, apply: bool) -> str:
+    """Install exact app-owned scalar checkpoint tables, without publishing rows."""
+    contracts = (*STRATEGY_ONE_PROTECTION_TABLES,
+                 *STRATEGY_ONE_MANAGER_TABLES)
+    policies = [json.loads(line) for line in client.execute(
+        "SELECT disks FROM system.storage_policies "
+        f"WHERE policy_name='{STORAGE_POLICY}' FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    if len(policies) != 1 or policies[0].get("disks") != [STORAGE_POLICY]:
+        raise RuntimeError("Strategy 1 checkpoint requires SSD-only live_market_ssd")
+    if client.execute("SELECT count() FROM system.databases WHERE name='arte'").strip() != "1":
+        raise RuntimeError("Existing arte database is required")
+    names = ",".join(f"'{table.name}'" for table in contracts)
+    inventory = [json.loads(line) for line in client.execute(
+        "SELECT name FROM system.tables WHERE database='arte' "
+        f"AND name IN ({names}) FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    installed = {row.get("name") for row in inventory}
+    if (len(installed) != len(inventory)
+            or any(set(row) != {"name"} for row in inventory)
+            or not installed <= {table.name for table in contracts}):
+        raise RuntimeError("Strategy 1 checkpoint inventory is ambiguous")
+    for table in contracts:
+        if table.name in installed:
+            storage_preflight(client, tables=(table,))
+    if len(installed) == len(contracts):
+        return "verified"
+    if not apply:
+        return "planned"
+    for table in contracts:
+        if table.name not in installed:
+            client.execute(table.ddl())
+            storage_preflight(client, tables=(table,))
+    storage_preflight(client, tables=contracts)
     return "upgraded"
 
 
@@ -891,6 +934,8 @@ def main() -> int:
                         help="verify or install empty-fence V3 allocation fill")
     parser.add_argument("--install-live-plan-membership", action="store_true",
                         help="verify or install typed live plan membership tables")
+    parser.add_argument("--install-strategy-one-manager-snapshot", action="store_true",
+                        help="verify or install typed Strategy 1 manager checkpoint tables")
     parser.add_argument("--install-live-signal", action="store_true",
                         help="verify or install normalized live signal tables")
     args = parser.parse_args()
@@ -920,6 +965,7 @@ def main() -> int:
                     args.upgrade_v3_protected_exit_snapshot,
                     args.upgrade_v3_portfolio_allocation_fill,
                     args.install_live_plan_membership,
+                    args.install_strategy_one_manager_snapshot,
                     args.install_live_signal)) > 1:
                 parser.error("Select only one layout upgrade at a time")
             if args.install_live_signal:
@@ -928,6 +974,9 @@ def main() -> int:
             elif args.install_live_plan_membership:
                 result = install_live_plan_membership(client, apply=args.apply)
                 print(f"Live plan membership layout: {result}; no rows inserted")
+            elif args.install_strategy_one_manager_snapshot:
+                result = install_strategy_one_manager_snapshot(client, apply=args.apply)
+                print(f"Strategy 1 manager checkpoint layout: {result}; no rows inserted")
             elif args.upgrade_v3_portfolio_allocation_fill:
                 result = upgrade_v3_portfolio_allocation_fill(client, apply=args.apply)
                 print(f"V3 portfolio-allocation layout: {result}; no rows inserted")
