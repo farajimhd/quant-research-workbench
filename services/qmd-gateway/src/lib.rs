@@ -46,4 +46,5 @@ pub mod structure_book_intervals;
 pub mod structure_checkpoint_json;
 pub mod structure_focus;
 pub mod structure_prominence;
+pub mod strategy_one_trade_reporting;
 pub mod timefmt;

@@ -31,6 +31,18 @@ existing QMD default `TradeAggregationRules.resolve` and
 `MarketEvent.is_excluded_from_derived_state` exclude that opening interval;
 they cannot be reused unchanged for this product.
 
+The ordered QMD compact event currently stores `execution_timestamp_us` as
+`participant_ts.unwrap_or(sip_ts)`. That loses whether the participant clock
+was actually supplied. Its `event_meta` bits 6–7 are not populated with the
+historical reporting flags. Do not infer a timely report from equal timestamps.
+Before the liquidity producer consumes compact events, publish a new version
+of the live compact contract with the `trade_reporting_v1` evaluated/delayed
+bits (or an equivalently typed, lossless field) computed while the original
+participant-clock presence and exact condition codes are available. Persist
+the evidence in the canonical live row so restart recovery reaches the same
+classification. Existing compact versions retain their prior semantics; no
+silent reinterpretation or in-place backfill is permitted.
+
 The consumer joins this completed liquidity row with the closed indicator
 pairs by session, ticker, resolution, and completed boundary. A 100 ms
 decision is eligible only after all required input products for that boundary
