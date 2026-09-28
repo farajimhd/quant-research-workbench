@@ -475,7 +475,6 @@ pub(crate) struct EventIdentity {
     exchange_primary: u8,
     exchange_secondary: u8,
     condition_tokens: [u8; 5],
-    issue_flags: u16,
 }
 
 #[derive(Clone, Serialize)]
@@ -2357,7 +2356,6 @@ pub(crate) fn event_identity(event: &LiveCompactEvent) -> EventIdentity {
             event.condition_token_4,
             event.condition_token_5,
         ],
-        issue_flags: event.issue_flags,
     }
 }
 
@@ -2494,6 +2492,10 @@ mod tests {
         let mut classified = legacy.clone();
         classified.event_meta |= 0xc0;
         classified.schema_version = 6;
+        assert!(event_identity(&legacy) == event_identity(&classified));
+        // q_live.events uses ReplacingMergeTree without issue_flags in its
+        // sorting identity. Diagnostic reclassification cannot add liquidity.
+        classified.issue_flags = 7;
         assert!(event_identity(&legacy) == event_identity(&classified));
     }
 

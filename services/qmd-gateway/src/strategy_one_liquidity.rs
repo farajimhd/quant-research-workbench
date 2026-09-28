@@ -375,6 +375,7 @@ mod tests {
         reducer.push(&event(100, 2, true), &decoder, &rules).unwrap();
         let mut repeated = event(100, 2, true);
         repeated.arrival_sequence = 3;
+        repeated.issue_flags = 7;
         assert!(reducer.push(&repeated, &decoder, &rules).unwrap().is_none());
         let row = reducer.push(&event(200, 4, false), &decoder, &rules)
             .unwrap().unwrap();
