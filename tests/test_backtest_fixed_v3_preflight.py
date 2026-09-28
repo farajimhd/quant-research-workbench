@@ -73,5 +73,7 @@ def test_v3_reader_requires_only_exact_v7_split_reference(monkeypatch):
     )
     assert {name.split(".", 1)[1] for name in (
         CONTEXT_TABLE, HOD_COVERAGE_TABLE)} <= seen[0]["read_only_tables"]
+    from src.trading_runtime.strategy_one_v7_interval_schema import TABLES as V7_TABLES
+    assert {name.split(".", 1)[1] for name in V7_TABLES} <= seen[0]["read_only_tables"]
     assert seen[0]["reference_read_tables"] == frozenset({
         ("q_live", "market_stock_split_v1")})
