@@ -20,9 +20,6 @@ from src.trading_runtime.arte_activation_insert_dispatch import (
 from src.trading_runtime.arte_activation_projection import (
     ActivationProjection, strategy_one_activation_run_id,
 )
-from src.trading_runtime.arte_journal_schema import (
-    journal_permission_preflight, storage_preflight,
-)
 
 
 _NEW_YORK = ZoneInfo("America/New_York")
@@ -48,16 +45,16 @@ class RegisteredActivationWriter:
             raise ValueError("Registered activation session or mode is invalid")
         if type(capacity) is not int or capacity < 1:
             raise ValueError("Registered activation capacity is invalid")
+        if (not isinstance(dispatch, ActivationInsertDispatch)
+                or not dispatch.strategy_one or not callable(preflight)):
+            raise ValueError(
+                "Strategy 1 activation needs isolated dispatch and exact preflight")
         plans = tuple(run_plan_ids)
         if not plans or len(plans) != len(set(plans)):
             raise ValueError("Registered activation plans are missing or duplicate")
         self._run_ids = {plan: strategy_one_activation_run_id(
             session_date, mode=mode, run_plan_id=plan) for plan in plans}
-        if preflight is None:
-            storage_preflight(client)
-            journal_permission_preflight(client)
-        else:
-            preflight(client)
+        preflight(client)
         for run_id in self._run_ids.values():
             dispatch.assert_open(run_id)
         self._client = client

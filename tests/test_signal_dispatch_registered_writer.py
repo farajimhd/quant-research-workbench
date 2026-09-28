@@ -167,7 +167,8 @@ def test_registered_intent_activation_ack_chain_admits_after_both_receipts() -> 
     cursor_writer, cursor_dispatch = _writer(cursor_client, lambda _: None)
     activation_client = _ActivationClient()
     activation_client.release.set()
-    activation_dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    activation_dispatch = ActivationInsertDispatch(
+        _Client(_Store(), 11), strategy_one=True)
     activation_run = strategy_one_activation_run_id(
         date(2026, 9, 24),
         mode="paper", run_plan_id="plan-1")
@@ -188,7 +189,11 @@ def test_registered_intent_activation_ack_chain_admits_after_both_receipts() -> 
         assert [row["delivery_id"] for row in admitted] == [delivery["delivery_id"]]
         cursor_dispatch.close_for_cold(RUN)
         activation_dispatch.close_for_cold(activation_run)
-        parent_hash = activation_client.rows["trading_activation_v1"][0]["content_hash"]
+        from src.trading_runtime.arte_strategy_one_activation_schema import (
+            strategy_one_activation_table,
+        )
+        parent_hash = activation_client.rows[
+            strategy_one_activation_table("trading_activation_v1")][0]["content_hash"]
         activation_dispatch.assert_cold_receipts(activation_run, {
             delivery["delivery_id"]: activation_insert_proof(
                 delivery["delivery_id"], parent_hash)})

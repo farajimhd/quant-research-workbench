@@ -19,6 +19,9 @@ from src.trading_runtime.arte_activation_projection import (
     prepare_activation_rows,
 )
 from src.trading_runtime.arte_journal_schema import ACTIVATION_TABLES
+from src.trading_runtime.arte_strategy_one_activation_schema import (
+    strategy_one_activation_table,
+)
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.keeper_ownership import (
     KeeperUnavailable, _committed, _identity, _path,
@@ -29,12 +32,15 @@ _TABLES = tuple(table.name for table in ACTIVATION_TABLES)
 _ZERO = "0" * 64
 
 
-def _gate_path(run_id: str) -> str:
-    return _path("activation_insert_dispatch", run_id)
+def _gate_path(run_id: str, *, strategy_one: bool = False) -> str:
+    return _path("strategy_one_activation_insert_dispatch" if strategy_one
+                 else "activation_insert_dispatch", run_id)
 
 
-def _receipt_path(run_id: str, delivery_id: str) -> str:
-    return _path("activation_insert_receipt", run_id, delivery_id)
+def _receipt_path(run_id: str, delivery_id: str, *,
+                  strategy_one: bool = False) -> str:
+    return _path("strategy_one_activation_insert_receipt" if strategy_one
+                 else "activation_insert_receipt", run_id, delivery_id)
 
 
 def activation_insert_proof(delivery_id: str, parent_hash: str) -> str:
@@ -99,23 +105,37 @@ def _decode(wire: bytes) -> _Gate:
 class ActivationInsertDispatch:
     """Serial per-run publisher; network work belongs only on a writer thread."""
 
-    def __init__(self, keeper: Any) -> None:
+    def __init__(self, keeper: Any, *, strategy_one: bool = False) -> None:
+        if type(strategy_one) is not bool:
+            raise TypeError("Activation dispatch table authority must be explicit")
         self.keeper = keeper
+        self.strategy_one = strategy_one
+
+    def _gate_path(self, run_id: str) -> str:
+        return _gate_path(run_id, strategy_one=self.strategy_one)
+
+    def _receipt_path(self, run_id: str, delivery_id: str) -> str:
+        return _receipt_path(run_id, delivery_id,
+                             strategy_one=self.strategy_one)
 
     def initialize_new_run(self, run_id: str, *, has_ch_rows: bool) -> None:
         _identity(run_id, "activation run")
         if type(has_ch_rows) is not bool or has_ch_rows:
             raise KeeperUnavailable("Activation run has unregistered ClickHouse rows")
-        self.keeper.ensure_path(_path("activation_insert_dispatch"))
-        self.keeper.ensure_path(_path("activation_insert_receipt"))
+        self.keeper.ensure_path(_path(
+            "strategy_one_activation_insert_dispatch" if self.strategy_one
+            else "activation_insert_dispatch"))
+        self.keeper.ensure_path(_path(
+            "strategy_one_activation_insert_receipt" if self.strategy_one
+            else "activation_insert_receipt"))
         try:
-            self.keeper.create(_gate_path(run_id), _Gate().wire())
+            self.keeper.create(self._gate_path(run_id), _Gate().wire())
         except Exception as exc:
             raise KeeperUnavailable("Activation dispatch run already exists") from exc
 
     def _read(self, run_id: str) -> tuple[_Gate, int]:
         try:
-            wire, stat = self.keeper.get(_gate_path(run_id))
+            wire, stat = self.keeper.get(self._gate_path(run_id))
         except Exception as exc:
             raise KeeperUnavailable("Activation dispatch run is absent") from exc
         return _decode(wire), stat.version
@@ -127,8 +147,8 @@ class ActivationInsertDispatch:
 
     def _cas(self, run_id: str, version: int, gate: _Gate) -> bool:
         txn = self.keeper.transaction()
-        txn.check(_gate_path(run_id), version=version)
-        txn.set_data(_gate_path(run_id), gate.wire(), version=version)
+        txn.check(self._gate_path(run_id), version=version)
+        txn.set_data(self._gate_path(run_id), gate.wire(), version=version)
         return _committed(txn.commit())
 
     def reserve(self, run_id: str, delivery_id: str,
@@ -143,7 +163,7 @@ class ActivationInsertDispatch:
             raise ValueError("Activation dispatch row families are invalid")
         digest = sha256(delivery_id.encode()).hexdigest()
         try:
-            self.keeper.get(_receipt_path(run_id, delivery_id))
+            self.keeper.get(self._receipt_path(run_id, delivery_id))
         except Exception as exc:
             if type(exc).__name__ != "NoNodeError":
                 raise KeeperUnavailable("Activation receipt cannot be inspected") from exc
@@ -166,12 +186,16 @@ class ActivationInsertDispatch:
 
     def execute(self, client: Any, *, run_id: str, delivery_id: str,
                 table: str, row_hash: str, sql: str) -> None:
+        physical_table = (strategy_one_activation_table(table)
+                          if self.strategy_one and table in _TABLES else table)
         if (table not in _TABLES or
                 re.fullmatch(r"[0-9a-f]{64}", row_hash) is None or
-                not sql.startswith(f"INSERT INTO arte.{table} (") or
+                not sql.startswith(f"INSERT INTO arte.{physical_table} (") or
                 "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql):
             raise ValueError("Activation INSERT contract is invalid")
-        token = f"activation:{run_id}:{sha256(delivery_id.encode()).hexdigest()}:{table}:{row_hash}"
+        token_scope = "strategy_one_activation" if self.strategy_one else "activation"
+        token = (f"{token_scope}:{run_id}:{sha256(delivery_id.encode()).hexdigest()}:"
+                 f"{table}:{row_hash}")
         if f"insert_deduplication_token='{token}'" not in sql:
             raise ValueError("Activation INSERT deduplication token differs")
         query_id = "arte_activation_" + sha256(token.encode()).hexdigest()
@@ -242,10 +266,10 @@ class ActivationInsertDispatch:
                     _family_hash(({"content_hash": parent_hash},))):
                 raise KeeperUnavailable("Activation has unresolved INSERT operations")
             txn = self.keeper.transaction()
-            txn.check(_gate_path(run_id), version=version)
-            txn.create(_receipt_path(run_id, delivery_id), proof.encode(),
+            txn.check(self._gate_path(run_id), version=version)
+            txn.create(self._receipt_path(run_id, delivery_id), proof.encode(),
                        ephemeral=False)
-            txn.set_data(_gate_path(run_id), _Gate(
+            txn.set_data(self._gate_path(run_id), _Gate(
                 count=gate.count + 1,
                 proof_xor=f"{int(gate.proof_xor, 16) ^ int(proof, 16):064x}"
             ).wire(), version=version)
@@ -275,7 +299,7 @@ class ActivationInsertDispatch:
         for delivery_id, proof in expected.items():
             _identity(delivery_id, "delivery")
             try:
-                value, _ = self.keeper.get(_receipt_path(run_id, delivery_id))
+                value, _ = self.keeper.get(self._receipt_path(run_id, delivery_id))
             except Exception as exc:
                 raise KeeperUnavailable("Activation dispatch receipt is absent") from exc
             if value != proof.encode():
@@ -305,6 +329,10 @@ def publish_registered_activation(
     """
     if not isinstance(projected, ActivationProjection):
         raise TypeError("Registered activation needs a frozen projection")
+    if not isinstance(dispatch, ActivationInsertDispatch) or not dispatch.strategy_one:
+        raise ValueError("Strategy 1 activation requires its isolated Keeper dispatch")
+    if not isinstance(run_id, str) or not run_id.startswith("strategy-one:"):
+        raise ValueError("Strategy 1 activation requires its isolated run scope")
     prepared = prepare_activation_rows(projected, run_id=run_id)
     committed_at = committed_at or datetime.now(timezone.utc)
     commit = prepare_activation_commit_row(prepared, committed_at=committed_at)
@@ -313,7 +341,7 @@ def publish_registered_activation(
     identity = {key: str(parent[key]) for key in (
         "run_id", "session_date", "run_plan_id", "ticker", "event_id")}
     delivery_id = str(parent["delivery_id"])
-    _require_first_watch_identity(client, identity)
+    _require_first_watch_identity(client, identity, strategy_one=True)
     hashes = {name: _family_hash(rows) if rows else None
               for name, rows in families.items()}
     dispatch.reserve(run_id, delivery_id, hashes)
@@ -325,23 +353,24 @@ def publish_registered_activation(
         row_hash = hashes[name]
         if row_hash is None:
             raise RuntimeError("Activation family hash is absent")
-        token = (f"activation:{run_id}:{sha256(delivery_id.encode()).hexdigest()}:"
+        token = (f"strategy_one_activation:{run_id}:{sha256(delivery_id.encode()).hexdigest()}:"
                  f"{name}:{row_hash}")
         columns = ",".join(column for column, _ in contracts[name].columns)
         body = "\n".join(canonical_json(row) for row in rows)
-        sql = (f"INSERT INTO arte.{name} ({columns}) SETTINGS "
+        physical_name = strategy_one_activation_table(name)
+        sql = (f"INSERT INTO arte.{physical_name} ({columns}) SETTINGS "
                "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
                f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{body}")
         dispatch.execute(client, run_id=run_id, delivery_id=delivery_id,
                          table=name, row_hash=row_hash, sql=sql)
-        stored = _stored(client, name, identity)
+        stored = _stored(client, name, identity, strategy_one=True)
         if (len(stored) != len(rows) or
                 sorted(row["content_hash"] for row in stored) !=
                 sorted(row["content_hash"] for row in rows)):
             raise RuntimeError("Activation typed family readback differs")
         dispatch.seal_readback(run_id=run_id, delivery_id=delivery_id,
                                table=name, row_hash=row_hash)
-    _verify_rows(client, identity, require_commit=True)
+    _verify_rows(client, identity, require_commit=True, strategy_one=True)
     dispatch.compact(run_id=run_id, delivery_id=delivery_id,
                      parent_hash=parent["content_hash"])
     return parent["content_hash"]

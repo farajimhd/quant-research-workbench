@@ -30,6 +30,9 @@ from src.trading_runtime.arte_activation_projection import (
 from src.trading_runtime.arte_activation_insert_dispatch import (
     activation_insert_proof,
 )
+from src.trading_runtime.arte_strategy_one_activation_schema import (
+    strategy_one_activation_table,
+)
 from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
 from tests.test_arte_activation_projection import _MemoryClient
 from tests.test_live_signal_work_completion import Keeper, Storage
@@ -75,9 +78,11 @@ def _case(*, activation_run_id: str = ACTIVATION_RUN_ID):
         # the legacy publisher is deliberately forbidden from this run scope.
         prepared = prepare_activation_rows(projected, run_id=activation_run_id)
         for table, rows in prepared.items():
-            activation_client.rows[table].extend(rows)
-        activation_hash = activation_client.rows["trading_activation_v1"][0]["content_hash"]
-        activation_client.rows["trading_activation_commit_v1"].append(
+            activation_client.rows[strategy_one_activation_table(table)].extend(rows)
+        activation_hash = activation_client.rows[
+            strategy_one_activation_table("trading_activation_v1")][0]["content_hash"]
+        activation_client.rows[strategy_one_activation_table(
+            "trading_activation_commit_v1")].append(
             prepare_activation_commit_row(
                 prepared, committed_at=datetime.now(timezone.utc)))
     assert activation_hash == prepare_activation_rows(
@@ -372,6 +377,11 @@ def test_attested_strategy_one_scope_cannot_read_legacy_activation_rows() -> Non
         SESSION, mode="paper", run_plan_id="plan-1")
     activation, dispatch, completion, keeper, delivery = _case(
         activation_run_id=run_id)
+    # A delayed legacy INSERT under the same run string cannot enter the
+    # dedicated Strategy 1 table inventory or its Keeper receipt namespace.
+    activation.rows["trading_activation_v1"].append(dict(
+        activation.rows[strategy_one_activation_table(
+            "trading_activation_v1")][0], event_id="legacy-orphan"))
     kwargs = dict(session_date=SESSION, source_commit_hashes=("b" * 64,),
                   configuration_revision_id="approved-1")
     with pytest.raises((ValueError, RuntimeError), match="Activation|activation"):
@@ -382,11 +392,13 @@ def test_attested_strategy_one_scope_cannot_read_legacy_activation_rows() -> Non
             activation, dispatch, completion, keeper,
             activation_run_id=run_id, **kwargs)
     class ClosedDispatch:
+        strategy_one = True
         def assert_cold_receipts(self, observed_run_id, receipts):
             assert observed_run_id == run_id
             assert receipts == {delivery["delivery_id"]: activation_insert_proof(
                 delivery["delivery_id"],
-                activation.rows["trading_activation_v1"][0]["content_hash"])}
+                activation.rows[strategy_one_activation_table(
+                    "trading_activation_v1")][0]["content_hash"])}
     class ClosedCursor:
         def assert_cold_receipts(self, observed_run_id, receipts):
             assert observed_run_id == dispatch_run_id(
@@ -439,6 +451,7 @@ def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
         def close_for_cold(self):
             events.append("completion-closed")
     class Activation:
+        strategy_one = True
         def close_for_cold(self, run_id):
             assert run_id == strategy_one_activation_run_id(
                 SESSION, mode="paper", run_plan_id="plan-1")
@@ -519,6 +532,7 @@ def test_registered_empty_strategy_one_session_has_no_activation_watch() -> None
         def assert_cold_receipts(self, receipts):
             assert receipts == {}
     class Activation:
+        strategy_one = True
         def close_for_cold(self, run_id):
             assert run_id == strategy_one_activation_run_id(
                 SESSION, mode="paper", run_plan_id="plan-1")
@@ -540,7 +554,7 @@ def test_registered_empty_strategy_one_session_has_no_activation_watch() -> None
     class OrphanActivation(EmptyClickHouse):
         def execute(self, sql):
             if (sql.startswith("SELECT DISTINCT run_plan_id,ticker,event_id ")
-                    and "FROM arte.trading_activation_v1" in sql):
+                    and f"FROM arte.{strategy_one_activation_table('trading_activation_v1')}" in sql):
                 return json.dumps({"run_plan_id": "plan-1", "ticker": "AAA",
                                    "event_id": EVENT_ID})
             return super().execute(sql)

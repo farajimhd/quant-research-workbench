@@ -14,6 +14,9 @@ from src.trading_runtime.arte_activation_projection import (
     strategy_one_activation_run_id,
 )
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
+from src.trading_runtime.arte_strategy_one_activation_schema import (
+    strategy_one_activation_table,
+)
 from test_keeper_ownership import _Client, _Store
 from tests.test_arte_activation_projection import _MemoryClient, _delivery
 
@@ -128,16 +131,20 @@ def test_registered_publisher_round_trips_normalized_strategy_one_rows() -> None
     run_id = strategy_one_activation_run_id(
         date(2026, 8, 21), mode="paper", run_plan_id="plan-1")
     client = _ActivationClient()
-    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11), strategy_one=True)
     dispatch.initialize_new_run(run_id, has_ch_rows=False)
     parent_hash = publish_registered_activation(
         client, dispatch, project_activation(_delivery()), run_id=run_id,
         committed_at=datetime(2026, 8, 21, 8, 11, tzinfo=timezone.utc))
     restored = load_activation(
         client, session_date=date(2026, 8, 21), run_plan_id="plan-1",
-        ticker="SUGP", event_id="event-1", run_id=run_id)
+        ticker="SUGP", event_id="event-1", run_id=run_id,
+        strategy_one=True)
     assert restored["delivery_id"] == DELIVERY
     assert len(client.inserts) == 4
+    assert set(client.inserts) == {
+        strategy_one_activation_table(name) for name in _TABLES}
+    assert all(not client.rows[name] for name in _TABLES)
     dispatch.close_for_cold(run_id)
     dispatch.assert_cold_receipts(run_id, {
         DELIVERY: activation_insert_proof(DELIVERY, parent_hash)})
@@ -146,13 +153,24 @@ def test_registered_publisher_round_trips_normalized_strategy_one_rows() -> None
 def test_registered_publisher_lost_response_blocks_cold_recovery() -> None:
     run_id = strategy_one_activation_run_id(
         date(2026, 8, 21), mode="paper", run_plan_id="plan-1")
-    client = _ActivationClient(lose_table="trading_activation_v1",
+    client = _ActivationClient(lose_table=strategy_one_activation_table("trading_activation_v1"),
                                persist_before_loss=True)
-    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11), strategy_one=True)
     dispatch.initialize_new_run(run_id, has_ch_rows=False)
     with pytest.raises(TimeoutError, match="lost activation INSERT response"):
         publish_registered_activation(
             client, dispatch, project_activation(_delivery()), run_id=run_id)
     with pytest.raises(KeeperUnavailable, match="unresolved"):
         dispatch.close_for_cold(run_id)
-    assert len(client.rows["trading_activation_v1"]) == 1
+    assert len(client.rows[strategy_one_activation_table("trading_activation_v1")]) == 1
+
+
+def test_registered_publisher_rejects_legacy_dispatch_before_any_insert() -> None:
+    run_id = strategy_one_activation_run_id(
+        date(2026, 8, 21), mode="paper", run_plan_id="plan-1")
+    client = _ActivationClient()
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    with pytest.raises(ValueError, match="isolated Keeper dispatch"):
+        publish_registered_activation(
+            client, dispatch, project_activation(_delivery()), run_id=run_id)
+    assert client.inserts == []

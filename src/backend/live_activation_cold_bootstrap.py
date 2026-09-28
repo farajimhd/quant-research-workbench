@@ -136,7 +136,8 @@ def cold_audit_activation_watches(
     activations = load_day_activations(
         activation_client, session_date=session_date,
         page_size=min(1024, len(expected) + 1),
-        max_inventory_rows_per_family=len(expected), run_id=activation_run_id)
+        max_inventory_rows_per_family=len(expected), run_id=activation_run_id,
+        strategy_one=activation_run_id != ACTIVATION_RUN_ID)
     if len(activations) != len(expected):
         raise ValueError("cold activation inventory differs from completed dispatch")
     observed: set[str] = set()
@@ -182,7 +183,8 @@ def read_attested_activation_prefix(
         raise ValueError("activation receipt read requires a session date")
     if activation_run_id != ACTIVATION_RUN_ID and (
             activation_dispatch is None or registered_dispatch is None
-            or registered_completion is None):
+            or registered_completion is None
+            or not activation_dispatch.strategy_one):
         raise ActivationRecoveryUnfenced(
             "Strategy 1 activation read lacks registered INSERT drain proof")
     proofs = read_completed_dispatch_prefix(
@@ -201,7 +203,7 @@ def read_attested_activation_prefix(
             activation_client, session_date=session_date,
             page_size=min(1024, len(proofs) + 1),
             max_inventory_rows_per_family=len(proofs),
-            run_id=activation_run_id)
+            run_id=activation_run_id, strategy_one=True)
         if len(day_rows) != len(proofs):
             raise ValueError("Strategy 1 activation inventory differs from dispatch")
         strategy_one_rows = {row["delivery_id"]: row for row in day_rows}

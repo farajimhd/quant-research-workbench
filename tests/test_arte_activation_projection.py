@@ -45,6 +45,10 @@ def _delivery() -> dict:
 class _MemoryClient:
     def __init__(self) -> None:
         self.rows: dict[str, list[dict]] = {table.name: [] for table in ACTIVATION_TABLES}
+        from src.trading_runtime.arte_strategy_one_activation_schema import (
+            STRATEGY_ONE_ACTIVATION_TABLES,
+        )
+        self.rows.update({table.name: [] for table in STRATEGY_ONE_ACTIVATION_TABLES})
         self.inserts: list[str] = []
 
     def execute(self, sql: str) -> str:
@@ -137,8 +141,10 @@ class ActivationProjectionTests(unittest.TestCase):
         self.assertNotEqual(old_parent["content_hash"], new_parent["content_hash"])
         client = _MemoryClient()
         _publish(client, projected)
+        with self.assertRaisesRegex(ValueError, "physical table authority"):
+            load_day_activations(client, session_date=day, run_id=new_run)
         self.assertEqual(load_day_activations(
-            client, session_date=day, run_id=new_run), ())
+            client, session_date=day, run_id=new_run, strategy_one=True), ())
         self.assertEqual(len(load_day_activations(client, session_date=day)), 1)
         with self.assertRaisesRegex(ValueError, "run scope"):
             strategy_one_activation_run_id(day, mode="paper", run_plan_id=" plan-1")

@@ -17,6 +17,9 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from src.trading_runtime.arte_journal_schema import ACTIVATION_TABLES
+from src.trading_runtime.arte_strategy_one_activation_schema import (
+    strategy_one_activation_table,
+)
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.strategy_activation import strategy_observation_from_signal_occurrence
 
@@ -53,6 +56,12 @@ def _activation_run_id(value: str) -> str:
     if (not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9:._-]{1,128}", value)):
         raise ValueError("Activation run identity is invalid")
     return value
+
+
+def _require_table_authority(run_id: str, *, strategy_one: bool) -> None:
+    if type(strategy_one) is not bool or (
+            run_id.startswith("strategy-one:") != strategy_one):
+        raise ValueError("Activation run and physical table authority differ")
 
 
 def _scalar(value: Any) -> tuple[str, str]:
@@ -306,10 +315,18 @@ def _literal(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def _stored(client: Any, name: str, identity: Mapping[str, str]) -> tuple[dict[str, Any], ...]:
+def _physical_table(name: str, *, strategy_one: bool) -> str:
+    if name not in _ACTIVATION_CONTRACTS:
+        raise ValueError("Unknown normalized activation family")
+    return strategy_one_activation_table(name) if strategy_one else name
+
+
+def _stored(client: Any, name: str, identity: Mapping[str, str], *,
+            strategy_one: bool = False) -> tuple[dict[str, Any], ...]:
     where = " AND ".join(f"{key}={_literal(value)}" for key, value in identity.items())
     response = client.execute(
-        f"SELECT * FROM arte.{name} WHERE {where} LIMIT 4097 FORMAT JSONEachRow")
+        f"SELECT * FROM arte.{_physical_table(name, strategy_one=strategy_one)} "
+        f"WHERE {where} LIMIT 4097 FORMAT JSONEachRow")
     rows = tuple(json.loads(line) for line in response.splitlines() if line.strip())
     if len(rows) > 4096:
         raise RuntimeError("Activation recovery exceeds bounded row limit")
@@ -358,8 +375,10 @@ def prepare_activation_commit_row(
     })
 
 
-def _verify_rows(client: Any, identity: Mapping[str, str], *, require_commit: bool) -> dict[str, tuple[dict[str, Any], ...]]:
-    result = {name: _stored(client, name, identity) for name in _ACTIVATION_CONTRACTS}
+def _verify_rows(client: Any, identity: Mapping[str, str], *, require_commit: bool,
+                 strategy_one: bool = False) -> dict[str, tuple[dict[str, Any], ...]]:
+    result = {name: _stored(client, name, identity, strategy_one=strategy_one)
+              for name in _ACTIVATION_CONTRACTS}
     parents, commits = result["trading_activation_v1"], result["trading_activation_commit_v1"]
     if len(parents) > 1 or len(commits) > 1:
         raise RuntimeError("Activation has duplicate parent or commit rows")
@@ -393,13 +412,14 @@ def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: 
         f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}")
 
 
-def _require_first_watch_identity(client: Any, identity: Mapping[str, str]) -> None:
+def _require_first_watch_identity(client: Any, identity: Mapping[str, str], *,
+                                  strategy_one: bool = False) -> None:
     """Reject a second event for a plan/ticker, including unfinished attempts."""
     where = " AND ".join(f"{key}={_literal(identity[key])}" for key in (
         "run_id", "session_date", "run_plan_id", "ticker"))
     for name in _ACTIVATION_CONTRACTS:
         response = client.execute(
-            f"SELECT DISTINCT event_id FROM arte.{name} WHERE {where} "
+            f"SELECT DISTINCT event_id FROM arte.{_physical_table(name, strategy_one=strategy_one)} WHERE {where} "
             "LIMIT 2 FORMAT JSONEachRow")
         rows = tuple(json.loads(line) for line in response.splitlines() if line.strip())
         if (len(rows) > 1 or any(set(row) != {"event_id"}
@@ -477,12 +497,15 @@ def publish_activation(client: Any, projected: ActivationProjection, *,
 
 def load_activation(client: Any, *, session_date: date, run_plan_id: str,
                     ticker: str, event_id: str,
-                    run_id: str = ACTIVATION_RUN_ID) -> dict[str, Any]:
+                    run_id: str = ACTIVATION_RUN_ID,
+                    strategy_one: bool = False) -> dict[str, Any]:
     """Restore only a complete, hash-verified activation."""
+    _require_table_authority(run_id, strategy_one=strategy_one)
     identity = {"run_id": _activation_run_id(run_id), "session_date": session_date.isoformat(),
                 "run_plan_id": run_plan_id,
                 "ticker": ticker, "event_id": event_id}
-    rows = _verify_rows(client, identity, require_commit=True)
+    rows = _verify_rows(client, identity, require_commit=True,
+                        strategy_one=strategy_one)
     parent = rows["trading_activation_v1"][0]
     delivery = tuple((key, str(parent[key])) for key in (
         "delivery_id", "run_plan_id", "profile_id", "book_id", "ticker",
@@ -501,7 +524,8 @@ def load_activation(client: Any, *, session_date: date, run_plan_id: str,
 
 def load_session_activations(client: Any, *, session_date: date,
                              run_plan_id: str, ticker: str,
-                             run_id: str = ACTIVATION_RUN_ID
+                             run_id: str = ACTIVATION_RUN_ID,
+                             strategy_one: bool = False,
                              ) -> tuple[dict[str, Any], ...]:
     """Audit every current-session row for one plan/ticker before replay.
 
@@ -511,13 +535,14 @@ def load_session_activations(client: Any, *, session_date: date,
     if (type(session_date) is not date or not isinstance(run_plan_id, str)
             or not run_plan_id or not isinstance(ticker, str) or not ticker):
         raise ValueError("Activation recovery requires a session, run plan, and ticker")
+    _require_table_authority(run_id, strategy_one=strategy_one)
     identity = {"run_id": _activation_run_id(run_id), "session_date": session_date.isoformat(),
                 "run_plan_id": run_plan_id, "ticker": ticker}
     where = " AND ".join(f"{key}={_literal(value)}" for key, value in identity.items())
     event_ids: set[str] = set()
     for name in _ACTIVATION_CONTRACTS:
         response = client.execute(
-            f"SELECT event_id FROM arte.{name} WHERE {where} "
+            f"SELECT event_id FROM arte.{_physical_table(name, strategy_one=strategy_one)} WHERE {where} "
             "LIMIT 4097 FORMAT JSONEachRow")
         rows = tuple(json.loads(line) for line in response.splitlines() if line.strip())
         if len(rows) > 4096:
@@ -530,7 +555,7 @@ def load_session_activations(client: Any, *, session_date: date,
             raise RuntimeError("Activation session audit exceeds bounded event limit")
     return tuple(load_activation(client, session_date=session_date,
                                  run_plan_id=run_plan_id, ticker=ticker, event_id=event_id,
-                                 run_id=run_id)
+                                 run_id=run_id, strategy_one=strategy_one)
                  for event_id in sorted(event_ids))
 
 
@@ -538,6 +563,7 @@ def load_day_activations(client: Any, *, session_date: date,
                          page_size: int = 1024,
                          max_inventory_rows_per_family: int = 100_000,
                          run_id: str = ACTIVATION_RUN_ID,
+                         strategy_one: bool = False,
                          ) -> tuple[dict[str, Any], ...]:
     """Discover and audit every current-day activation, including orphan rows.
 
@@ -550,6 +576,7 @@ def load_day_activations(client: Any, *, session_date: date,
             or type(max_inventory_rows_per_family) is not int
             or not 0 <= max_inventory_rows_per_family <= 100_000):
         raise ValueError("Activation day inventory requires a date and bounded page")
+    _require_table_authority(run_id, strategy_one=strategy_one)
     day = session_date.isoformat()
     run_id = _activation_run_id(run_id)
     identities: set[tuple[str, str]] = set()
@@ -564,7 +591,7 @@ def load_day_activations(client: Any, *, session_date: date,
                 where += f" AND (run_plan_id,ticker,event_id)>({cursor})"
             response = client.execute(
                 "SELECT DISTINCT run_plan_id,ticker,event_id "
-                f"FROM arte.{name} WHERE {where} "
+                f"FROM arte.{_physical_table(name, strategy_one=strategy_one)} WHERE {where} "
                 "ORDER BY run_plan_id,ticker,event_id "
                 f"LIMIT {page_size} FORMAT JSONEachRow")
             rows = tuple(json.loads(line) for line in response.splitlines() if line.strip())
@@ -595,7 +622,7 @@ def load_day_activations(client: Any, *, session_date: date,
     for run_plan_id, ticker in sorted(identities):
         matches = load_session_activations(client, session_date=session_date,
                                            run_plan_id=run_plan_id, ticker=ticker,
-                                           run_id=run_id)
+                                           run_id=run_id, strategy_one=strategy_one)
         if len(matches) != 1:
             raise RuntimeError("Activation day has zero or multiple committed watches for one plan/ticker")
         restored.append(matches[0])

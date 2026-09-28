@@ -45,7 +45,7 @@ class _BlockingClient(_MemoryClient):
 
 
 def _writer(client: _BlockingClient, *, capacity: int = 1):
-    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11), strategy_one=True)
     dispatch.initialize_new_run(RUN, has_ch_rows=False)
     writer = RegisteredActivationWriter(
         client, dispatch, session_date=SESSION, mode="paper",
