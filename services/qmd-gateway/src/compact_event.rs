@@ -25,6 +25,16 @@ pub const TRADE_EVENT_TYPE: u8 = 1;
 const CONDITION_TOKEN_SLOTS: usize = 5;
 const MAX_PRECISE_PRICE: f64 = 429_496.7295;
 
+fn parse_arrival_sequence_high_watermark(row: &str) -> Result<u64, String> {
+    let value = row.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("q_live.events returned an invalid arrival-sequence high-water mark".into());
+    }
+    value.parse::<u64>().map_err(|_| {
+        "q_live.events arrival-sequence high-water mark exceeds UInt64".into()
+    })
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LiveCompactEvent {
     pub arrival_sequence: u64,
@@ -1279,6 +1289,16 @@ impl CompactEventClickHouseWriter {
     }
 
     async fn run_merged(self, mut receiver: mpsc::Receiver<MarketEvent>) {
+        // Arrival sequence is a durable source identity. Never resume at zero
+        // when its authoritative ClickHouse high-water mark is unreadable.
+        let mut arrival_sequence = match self.latest_arrival_sequence().await {
+            Ok(sequence) => sequence,
+            Err(error) => {
+                self.metrics.record_lane_failure("compact_events", &error);
+                eprintln!("Compact event arrival sequence bootstrap failed closed: {error}");
+                return;
+            }
+        };
         const PERSIST_WORKER_COUNT: usize = 2;
         let (persist_sender, persist_receiver) = mpsc::channel::<CompactPersistWork>(4);
         let persist_receiver = Arc::new(Mutex::new(persist_receiver));
@@ -1295,15 +1315,6 @@ impl CompactEventClickHouseWriter {
         let mut batch = Vec::with_capacity(self.config.compact_event_max_clickhouse_batch);
         let mut issue_batch = Vec::new();
         let mut issues_seen = 0u64;
-        let mut arrival_sequence = self
-            .latest_arrival_sequence()
-            .await
-            .unwrap_or_else(|error| {
-                eprintln!(
-                    "Compact event arrival sequence bootstrap failed; starting from zero: {error}"
-                );
-                0
-            });
         let mut reorder_buffers: HashMap<String, TickerReorderBuffer> = HashMap::new();
         let mut reorder_pending_count = 0u64;
         let reorder_lag_us = self
@@ -1319,7 +1330,22 @@ impl CompactEventClickHouseWriter {
                     match event {
                         Some(event) => match compact_event_from_market_event(&event, &self.references) {
                             Ok(mut conversion) => {
-                                arrival_sequence = arrival_sequence.saturating_add(1);
+                                let Some(next_sequence) = arrival_sequence.checked_add(1) else {
+                                    self.metrics.record_lane_failure(
+                                        "compact_events", "durable arrival sequence exhausted UInt64");
+                                    let ready = self.drain_reorder_buffers(
+                                        &mut reorder_buffers, &mut batch,
+                                        &mut reorder_pending_count, reorder_lag_us, true);
+                                    self.route_ordered_intraday_events(ready);
+                                    self.submit_persist_work(
+                                        &persist_sender, &mut batch, &mut issue_batch).await;
+                                    drop(persist_sender);
+                                    for handle in persist_handles {
+                                        let _ = handle.await;
+                                    }
+                                    return;
+                                };
+                                arrival_sequence = next_sequence;
                                 conversion.event.arrival_sequence = arrival_sequence;
                                 if let Some(issue) = conversion.issue.take() {
                                     issues_seen = issues_seen.saturating_add(1);
@@ -1744,7 +1770,7 @@ impl CompactEventClickHouseWriter {
                 true,
             )
             .await?;
-        Ok(row.trim().parse::<u64>().unwrap_or(0))
+        parse_arrival_sequence_high_watermark(&row)
     }
 
     async fn ensure_compact_event_table(&self) -> Result<(), String> {
@@ -2503,6 +2529,16 @@ fn escape_sql_string(value: &str) -> String {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn durable_arrival_high_watermark_never_defaults_to_zero_on_bad_result() {
+        assert_eq!(parse_arrival_sequence_high_watermark("0\n").unwrap(), 0);
+        assert_eq!(parse_arrival_sequence_high_watermark("184\n").unwrap(), 184);
+        for row in ["", "\\N", "not-a-number", "-1", "1\t2",
+                    "18446744073709551616"] {
+            assert!(parse_arrival_sequence_high_watermark(row).is_err());
+        }
+    }
 
     #[test]
     fn volume_sql_token_rules_match_decoder_and_resolver_combinations() {
