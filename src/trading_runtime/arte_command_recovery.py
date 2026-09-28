@@ -198,11 +198,18 @@ async def audit_v4_fresh_command_admission(
     prefix = await asyncio.to_thread(load_verified_v4_prefix, client, run_id)
     if prefix is None:
         raise RuntimeError("No verified V4 journal prefix for command admission")
+    run_filter = f"run_id={_literal(run_id)}"
     rows = await asyncio.to_thread(
         _rows, client,
-        "SELECT count() AS command_count FROM arte.trading_event_v1 "
-        f"WHERE run_id={_literal(run_id)} AND category='command' "
-        "FORMAT JSONEachRow",
+        "SELECT sum(n) AS command_count FROM ("
+        "SELECT count() AS n FROM arte.trading_event_v1 "
+        f"WHERE {run_filter} AND category='command' "
+        "UNION ALL SELECT count() AS n FROM arte.trading_order_command_v1 "
+        f"WHERE {run_filter} "
+        "UNION ALL SELECT count() AS n FROM arte.trading_order_cancel_activity_v4 "
+        f"WHERE {run_filter} "
+        "UNION ALL SELECT count() AS n FROM arte.trading_order_modify_command_v1 "
+        f"WHERE {run_filter}) FORMAT JSONEachRow",
     )
     if len(rows) != 1:
         raise RuntimeError("V4 command inventory is ambiguous")

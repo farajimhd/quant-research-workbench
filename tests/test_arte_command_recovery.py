@@ -21,7 +21,9 @@ def test_v4_fresh_admission_uses_v4_prefix_not_legacy_journal(monkeypatch):
     monkeypatch.setattr(arte_journal_writer, "_rows", inventory)
     result = asyncio.run(recovery.audit_v4_fresh_command_admission(None, "live:DU1"))
     assert result.admission_safe
-    assert "arte.trading_event_v1" in seen[0]
+    assert all(f"arte.{table}" in seen[0] for table in (
+        "trading_event_v1", "trading_order_command_v1",
+        "trading_order_cancel_activity_v4", "trading_order_modify_command_v1"))
     assert "category='command'" in seen[0]
 
 
