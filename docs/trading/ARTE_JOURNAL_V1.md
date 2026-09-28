@@ -206,7 +206,10 @@ parameters fail closed. The cold reader returns flat orders and does not yet
 restore executable lineage by itself. A separate cold helper can now rebuild
 supported Strategy 1 entry-group lineage from one exact typed intent and a
 complete, bounded protection history; it rejects ambiguous target amendments
-and does not rehydrate the OMS actor or reconcile broker state. Remaining
+and does not rehydrate the OMS actor or reconcile broker state. A read-only
+cold join now pairs each latest Strategy 1 OMS group with its exact committed
+intent revision and this complete protection head; missing revisions or a
+mismatched head fail closed. Remaining
 intent metadata, tactic/runtime state,
 and broker reconciliation must be normalized and restored before SQLite can
 be removed. Live OMS also replaces `group.intent` content under the same

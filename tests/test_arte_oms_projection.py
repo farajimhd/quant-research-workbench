@@ -18,7 +18,8 @@ from src.trading_runtime.arte_oms_projection import (
     load_committed_oms_admission_page, load_committed_oms_decision_page,
     load_committed_oms_group_state_page,
     load_latest_committed_oms_groups,
-    oms_group_state_batch, reconstruct_strategy_one_oms_lineage,
+    load_recovered_strategy_one_oms_lineage, oms_group_state_batch,
+    reconstruct_strategy_one_oms_lineage,
 )
 from src.trading_runtime.arte_intent_projection import RecoveredIntent
 from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
@@ -83,6 +84,62 @@ def test_strategy_one_cold_order_lineage_uses_complete_typed_target_proof() -> N
     with pytest.raises(ValueError, match="complete typed authority"):
         reconstruct_strategy_one_oms_lineage(
             state, recovered_intent, replace(base, through_sequence=2))
+
+
+def test_strategy_one_cold_join_uses_exact_intent_and_complete_history(
+        monkeypatch) -> None:
+    from src.trading_runtime import arte_intent_projection as intents
+    from src.trading_runtime import arte_journal_reader as reader
+    from src.trading_runtime import arte_oms_projection as oms
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+
+    run_id, source_batch, group_batch = "live:DU1", str(uuid4()), str(uuid4())
+    record_id = str(uuid4())
+    source = intent(ticker="AAA", intent_id="entry-1")
+    recovered_intent = RecoveredIntent(1, "DU1", record_id, source_batch, source)
+    order = OrderRequest(acctId="DU1", conid=123, cOID="target-1",
+                         ticker="AAA", orderType="LMT", side="SELL",
+                         quantity=5, price=12.5)
+    group = RecoveredOmsGroupState(
+        2, record_id,
+        {"run_id": run_id, "batch_id": group_batch,
+         "account_id": "DU1", "group_id": "group-1",
+         "strategy_id": STRATEGY_ID, "strategy_revision": 1,
+         "strategy_intent_id": source.intent_id},
+        (order,), (0,), ("target",), (), (), (),
+    )
+    prefix = V4CommittedPrefix(
+        run_id, 2, group_batch, "bar:2", "running",
+        (source_batch, group_batch))
+    history = CompleteProtectionHistory(
+        run_id, 2, prefix.batch_ids, ())
+    monkeypatch.setattr(reader, "load_complete_typed_protection_history",
+                        lambda *_a, **_k: history)
+    monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
+                        lambda *_a, **_k: (group,))
+    requested = []
+    def exact_intent(_client, _prefix, *, limit, record_ids):
+        requested.append((limit, record_ids))
+        return (recovered_intent,)
+    monkeypatch.setattr(intents, "load_committed_strategy_intent_page",
+                        exact_intent)
+    joined = load_recovered_strategy_one_oms_lineage(
+        object(), prefix, allowed_accounts=frozenset({"DU1"}))
+    assert requested == [(1, (record_id,))]
+    assert joined[0].through_sequence == 2
+    assert joined[0].orders[0].raw["canonical_run_id"] == run_id
+    monkeypatch.setattr(reader, "load_complete_typed_protection_history",
+                        lambda *_a, **_k: replace(history, through_sequence=1))
+    with pytest.raises(RuntimeError, match="history head differs"):
+        load_recovered_strategy_one_oms_lineage(
+            object(), prefix, allowed_accounts=frozenset({"DU1"}))
+    monkeypatch.setattr(reader, "load_complete_typed_protection_history",
+                        lambda *_a, **_k: history)
+    monkeypatch.setattr(intents, "load_committed_strategy_intent_page",
+                        lambda *_a, **_k: ())
+    with pytest.raises(RuntimeError, match="incomplete"):
+        load_recovered_strategy_one_oms_lineage(
+            object(), prefix, allowed_accounts=frozenset({"DU1"}))
 
 
 def test_oms_duration_precision_is_bounded_without_rounding_financial_fields() -> None:

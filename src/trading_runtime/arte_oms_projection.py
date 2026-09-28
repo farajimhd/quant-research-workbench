@@ -488,6 +488,14 @@ class _ColdLineageView:
     terminal_broker_order_ids: frozenset[str]
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveredStrategyOneOmsLineage:
+    state: RecoveredOmsGroupState
+    source_intent: Any
+    orders: tuple[OrderRequest, ...]
+    through_sequence: int
+
+
 def reconstruct_strategy_one_oms_lineage(
     state: RecoveredOmsGroupState, source_intent: Any,
     protection_history: Any,
@@ -575,6 +583,71 @@ def reconstruct_strategy_one_oms_lineage(
             "canonical_metadata": metadata,
         }))
     return tuple(rebuilt)
+
+
+def load_recovered_strategy_one_oms_lineage(
+    client: Any, prefix: VerifiedPrefix, *,
+    allowed_accounts: frozenset[str], page_size: int = 200,
+    max_transitions: int = 20_000, max_groups: int = 2_000,
+    max_events: int = 100_000,
+) -> tuple[RecoveredStrategyOneOmsLineage, ...]:
+    """Cold-join latest OMS groups to exact intents and complete protection.
+
+    This returns diagnostic, fully typed lineage only. It does not reconstruct
+    broker state or grant permission to resume an OMS actor or send an order.
+    """
+    from src.trading_runtime.arte_intent_projection import (
+        load_committed_strategy_intent_page,
+    )
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime.arte_journal_reader import (
+        load_complete_typed_protection_history,
+    )
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+    if (not isinstance(prefix, V4CommittedPrefix)
+            or type(allowed_accounts) is not frozenset or not allowed_accounts
+            or any(type(value) is not str or not value for value in allowed_accounts)
+            or type(page_size) is not int or not 1 <= page_size <= 200
+            or type(max_transitions) is not int or max_transitions < page_size
+            or type(max_groups) is not int or not 1 <= max_groups <= max_transitions
+            or type(max_events) is not int or max_events < 1):
+        raise ValueError("Strategy 1 OMS cold join needs bounded V4 authority")
+    history = load_complete_typed_protection_history(
+        client, prefix, page_size=page_size, max_events=max_events)
+    if (history.run_id != prefix.run_id
+            or history.through_sequence != prefix.last_sequence
+            or history.committed_batch_ids != prefix.batch_ids):
+        raise RuntimeError("Strategy 1 OMS protection history head differs")
+    groups = load_latest_committed_oms_groups(
+        client, prefix, page_size=page_size,
+        max_transitions=max_transitions, allowed_accounts=allowed_accounts,
+        strategy_identity=(STRATEGY_ID, STRATEGY_NUMBER), require_tactic=True)
+    if len(groups) > max_groups:
+        raise RuntimeError("Strategy 1 OMS cold group inventory exceeds bound")
+    wanted = {group.intent_record_id for group in groups}
+    if None in wanted:
+        raise RuntimeError("Strategy 1 OMS group lacks an intent revision")
+    by_id = {}
+    identifiers = sorted(wanted)
+    for start in range(0, len(identifiers), page_size):
+        chunk = tuple(identifiers[start:start + page_size])
+        page = load_committed_strategy_intent_page(
+            client, prefix, limit=len(chunk), record_ids=chunk)
+        if len(page) != len(chunk):
+            raise RuntimeError("Strategy 1 OMS intent join is incomplete")
+        for row in page:
+            if row.record_id in by_id:
+                raise RuntimeError("Strategy 1 OMS intent revision was duplicated")
+            by_id[row.record_id] = row
+    if set(by_id) != wanted:
+        raise RuntimeError("Strategy 1 OMS intent identities differ")
+    return tuple(RecoveredStrategyOneOmsLineage(
+        group, by_id[group.intent_record_id],
+        reconstruct_strategy_one_oms_lineage(
+            group, by_id[group.intent_record_id], history),
+        history.through_sequence,
+    ) for group in groups)
 
 
 def load_latest_committed_oms_groups(
