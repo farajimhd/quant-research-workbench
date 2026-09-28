@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from src.trading_runtime.arte_command_recovery import audit_committed_commands
-from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.arte_journal_writer import TypedJournalBatch, V4OrderCancelBatch
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
@@ -25,12 +25,15 @@ class _JournalWriter(Protocol):
 
     def submit(self, batch: TypedJournalBatch) -> ThreadFuture[str]: ...
     def submit_base_v4(self, batch: TypedJournalBatch) -> ThreadFuture[str]: ...
+    def submit_order_cancel_v4(self, unit: V4OrderCancelBatch) -> ThreadFuture[str]: ...
 
 
 class _OrderBroker(Protocol):
     async def place_orders(
         self, account_id: str, orders: list[OrderRequest],
     ) -> list[dict[str, Any]]: ...
+
+    async def cancel_order(self, account_id: str, order_id: str) -> dict[str, Any]: ...
 
 
 class CommandQueueFull(RuntimeError):
@@ -43,6 +46,14 @@ class _PendingCommand:
     account_id: str
     orders: tuple[OrderRequest, ...]
     result: asyncio.Future[list[dict[str, Any]]]
+
+
+@dataclass(slots=True)
+class _PendingCancel:
+    unit: V4OrderCancelBatch
+    account_id: str
+    order_id: str
+    result: asyncio.Future[dict[str, Any]]
 
 
 def _command_matches_order(row: Any, order: OrderRequest) -> bool:
@@ -101,20 +112,25 @@ class ArteCommandDispatcher:
         if profile == "backtest_v4":
             raise ValueError("Live command lane cannot use a Backtest V4 writer")
         self._live_v4 = profile == "live_v4"
-        if self._live_v4 and not callable(getattr(writer, "submit_base_v4", None)):
+        if (self._live_v4
+                and (not callable(getattr(writer, "submit_base_v4", None))
+                     or not callable(getattr(writer, "submit_order_cancel_v4", None)))):
             raise ValueError("Live V4 command lane requires its explicit family writer")
         self._live_lease = getattr(writer, "live_v4_lease", None) if self._live_v4 else None
         if self._live_v4 and not callable(getattr(self._live_lease, "assert_current", None)):
             raise ValueError("Live V4 command lane requires its pinned Keeper lease")
         self._writer = writer
         self._broker = broker
-        self._queue: asyncio.Queue[_PendingCommand | None] = asyncio.Queue(maxsize=capacity)
+        self._queue: asyncio.Queue[_PendingCommand | _PendingCancel | None] = asyncio.Queue(maxsize=capacity)
         self._task: asyncio.Task[None] | None = None
         self._error: BaseException | None = None
         self._admission_error: CommandQueueFull | None = None
         self._closed = False
         self._audited_run_id: str | None = None
         self._starting = False
+        # Only broker IDs acknowledged on this fenced lane may be cancelled.
+        # Cold recovery must reconstruct this map before resumed admission.
+        self._placed_order_groups: dict[tuple[str, str], tuple[str, str]] = {}
 
     async def start(self, client: Any, run_id: str) -> None:
         """Audit committed state on the control plane before accepting orders."""
@@ -162,15 +178,36 @@ class ArteCommandDispatcher:
                         for row in batch.order_commands}
             lineage = {str(row.get("parent_record_id")): row
                        for row in batch.v4_command_lineages}
+            contexts = {str(row.get("parent_record_id")): row
+                        for row in batch.order_contexts}
+            intent_uses = {str(row.get("parent_record_id")): row
+                           for row in batch.intent_uses}
             if (len(commands) != len(orders) or len(lineage) != len(orders)
+                    or len(contexts) != len(orders)
+                    or len(intent_uses) != len(orders)
                     or set(commands) != set(lineage)
+                    or set(commands) != set(contexts)
+                    or set(commands) != set(intent_uses)
                     or any((row.get("strategy_id"), row.get("strategy_revision"))
                            != (STRATEGY_ID, STRATEGY_NUMBER)
                            for row in commands.values())
                     or any(row.get("run_id") != batch.run_id
                            or row.get("batch_id") != batch.batch_id
                            or row.get("account_id") != commands[parent].get("account_id")
-                           for parent, row in lineage.items())):
+                           for parent, row in lineage.items())
+                    or any(row.get("run_id") != batch.run_id
+                           or row.get("batch_id") != batch.batch_id
+                           or row.get("account_id") != account_id
+                           or not row.get("order_group_id")
+                           or not row.get("strategy_intent_id")
+                           or not row.get("policy_version")
+                           for row in contexts.values())
+                    or any(row.get("run_id") != batch.run_id
+                           or row.get("batch_id") != batch.batch_id
+                           or row.get("account_id") != account_id
+                           or not row.get("intent_record_id")
+                           or not row.get("intent_content_hash")
+                           for row in intent_uses.values())):
                 raise ValueError("Live V4 command lacks Strategy 1 typed lineage")
         # TypedJournalBatch already freezes row mappings at construction.
         # OrderRequest.raw remains mutable, so own the broker request snapshot.
@@ -186,6 +223,47 @@ class ArteCommandDispatcher:
             raise self._admission_error from exc
         return result
 
+    def submit_cancel(
+        self, unit: V4OrderCancelBatch, account_id: str, order_id: str,
+    ) -> asyncio.Future[dict[str, Any]]:
+        """Queue one typed protection cancellation, never a raw OMS cancel."""
+        if not self._live_v4 or self._task is None or self._closed:
+            raise RuntimeError("Live V4 cancellation lane is not accepting orders")
+        if self._error is not None:
+            raise RuntimeError("Command dispatcher requires broker reconciliation") from self._error
+        if self._admission_error is not None:
+            raise RuntimeError("Command admission stopped after queue saturation") from self._admission_error
+        if not isinstance(unit, V4OrderCancelBatch):
+            raise TypeError("Cancellation needs its normalized V4 batch")
+        base, detail = unit.base, unit.cancellation
+        event = base.events[0]
+        if (base.run_id != self._audited_run_id or base.status != "running"
+                or (event["category"], event["entity_type"])
+                   != ("command", "order_cancel")
+                or event["account_id"] != account_id
+                or event["entity_id"] != order_id
+                or detail["record_id"] != event["record_id"]
+                or detail["run_id"] != base.run_id
+                or detail["batch_id"] != base.batch_id
+                or detail["broker_order_id"] != order_id
+                or detail["result_kind"] != "command"
+                or detail["reason"] != "replace_strategy_protection"
+                or not detail["order_group_id"] or not detail["intent_id"]
+                or event["causation_id"] != detail["intent_id"]
+                or self._placed_order_groups.get((account_id, order_id))
+                   != (detail["ticker"], detail["order_group_id"])
+                or (detail["strategy_id"], detail["strategy_revision"])
+                   != (STRATEGY_ID, STRATEGY_NUMBER)):
+            raise ValueError("Live V4 cancellation lacks exact Strategy 1 lineage")
+        result: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        try:
+            self._queue.put_nowait(_PendingCancel(unit, account_id, order_id, result))
+        except asyncio.QueueFull as exc:
+            self._admission_error = CommandQueueFull(
+                "Command queue is full; stop new order admission")
+            raise self._admission_error from exc
+        return result
+
     async def _run(self) -> None:
         while True:
             pending = await self._queue.get()
@@ -198,18 +276,42 @@ class ArteCommandDispatcher:
                     # A queued command may outlive its owner. Do not publish a
                     # new command under a Keeper lease already known to be lost.
                     await asyncio.to_thread(self._live_lease.assert_current)
-                receipt = (self._writer.submit_base_v4(pending.batch)
-                           if self._live_v4 else self._writer.submit(pending.batch))
+                batch = pending.unit.base if isinstance(pending, _PendingCancel) else pending.batch
+                receipt = (self._writer.submit_order_cancel_v4(pending.unit)
+                           if isinstance(pending, _PendingCancel)
+                           else self._writer.submit_base_v4(batch)
+                           if self._live_v4 else self._writer.submit(batch))
                 committed_id = await asyncio.wrap_future(receipt)
-                if UUID(str(committed_id)) != UUID(pending.batch.batch_id):
+                if UUID(str(committed_id)) != UUID(batch.batch_id):
                     raise RuntimeError("Committed command receipt differs from submitted batch")
                 if self._live_v4:
                     # A receipt under an old owner cannot dispatch a new
                     # broker side effect after a Keeper takeover.
                     await asyncio.to_thread(self._live_lease.assert_current)
-                response = await self._broker.place_orders(
-                    pending.account_id, list(pending.orders),
-                )
+                response = (await self._broker.cancel_order(
+                    pending.account_id, pending.order_id)
+                    if isinstance(pending, _PendingCancel)
+                    else await self._broker.place_orders(
+                        pending.account_id, list(pending.orders)))
+                if self._live_v4 and isinstance(pending, _PendingCommand):
+                    if (not isinstance(response, list)
+                            or len(response) != len(pending.orders)
+                            or any(not isinstance(row, dict)
+                                   or not str(row.get("order_id") or "")
+                                   for row in response)):
+                        raise RuntimeError(
+                            "Live place reply lacks exact order identities; reconcile broker")
+                    contexts = {str(row["parent_record_id"]): row
+                                for row in pending.batch.order_contexts}
+                    additions = {}
+                    for order, command, reply in zip(
+                            pending.orders, pending.batch.order_commands, response):
+                        key = (pending.account_id, str(reply["order_id"]))
+                        if key in additions or key in self._placed_order_groups:
+                            raise RuntimeError("Live place reply repeats a broker order ID")
+                        context = contexts[str(command["record_id"])]
+                        additions[key] = (order.ticker, str(context["order_group_id"]))
+                    self._placed_order_groups.update(additions)
                 pending.result.set_result(response)
             except asyncio.CancelledError as exc:
                 self._error = RuntimeError(

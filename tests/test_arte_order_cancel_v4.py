@@ -21,6 +21,9 @@ def record(category, entity_type, payload):
 @pytest.mark.parametrize(("category", "entity_type", "payload", "result"), [
     ("command", "order_cancel",
      {"reason": "replace_strategy_protection", "ticker": "AAA"}, "command"),
+    ("command", "order_cancel",
+     {"reason": "replace_strategy_protection", "ticker": "AAA",
+      "order_group_id": "group-1", "intent_id": "intent-1"}, "command"),
     ("broker", "order_cancel_requested",
      {"msg": "Request was submitted", "order_id": 42,
       "conid": 123, "account": "DU1"}, "submitted"),

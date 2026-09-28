@@ -65,8 +65,11 @@ def project_order_cancel_v4(
         raise ValueError("Cancellation identity is invalid")
     result_kind, status, message, conid = "command", "", "", None
     if kind == ("command", "order_cancel"):
-        if (set(payload) != common | {"reason", "ticker"}
-                or reason != "replace_strategy_protection" or not ticker):
+        basic = common | {"reason", "ticker"}
+        with_lineage = basic | {"order_group_id", "intent_id"}
+        if (set(payload) not in (basic, with_lineage)
+                or reason != "replace_strategy_protection" or not ticker
+                or set(payload) == with_lineage and (not group_id or not intent_id)):
             raise ValueError("Cancellation command has unmodeled fields")
     else:
         reply = payload.get("broker_response", {

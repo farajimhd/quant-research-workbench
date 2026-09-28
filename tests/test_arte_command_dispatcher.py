@@ -15,7 +15,9 @@ from src.trading_runtime.arte_command_dispatcher import (
 )
 from src.trading_runtime.arte_command_recovery import CommandRecoveryAudit
 from src.trading_runtime.arte_journal_projection import order_command_batch
+from src.trading_runtime.arte_order_cancel_v4 import order_cancel_batch_v4
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.journal_contract import JournalRecord
 
 
 def _command():
@@ -40,8 +42,13 @@ def _strategy_one_command():
     lineage = {"parent_record_id": command["record_id"],
                "run_id": batch.run_id, "batch_id": batch.batch_id,
                "account_id": command["account_id"]}
+    context = {**lineage, "order_group_id": "group-1",
+               "strategy_intent_id": "intent-1", "policy_version": "policy-1"}
+    intent_use = {**lineage, "intent_record_id": str(uuid4()),
+                  "intent_content_hash": "a" * 64}
     return replace(batch, order_commands=(command,),
-                   v4_command_lineages=(lineage,)), request
+                   v4_command_lineages=(lineage,), order_contexts=(context,),
+                   intent_uses=(intent_use,)), request
 
 
 class _Writer:
@@ -80,6 +87,9 @@ class _LiveV4Writer(_Writer):
     def submit_base_v4(self, batch):
         return super().submit(batch)
 
+    def submit_order_cancel_v4(self, unit):
+        return super().submit(unit.base)
+
 
 class _Broker:
     def __init__(self) -> None:
@@ -88,6 +98,36 @@ class _Broker:
     async def place_orders(self, account_id, orders):
         self.calls.append((account_id, orders))
         return [{"order_id": "broker-1"}]
+
+    async def cancel_order(self, account_id, order_id):
+        self.calls.append(("cancel", account_id, order_id))
+        return {"msg": "Request was submitted", "order_id": order_id}
+
+
+def _strategy_one_cancel():
+    now = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    record = JournalRecord(
+        str(uuid4()), "live:DU1", 1, now, now, "command", "order_cancel",
+        "broker-1", "DU1", {
+            "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+            "correlation_id": "correlation", "causation_id": "intent-2",
+            "reason": "replace_strategy_protection", "ticker": "TEST",
+            "order_group_id": "group-1", "intent_id": "intent-2",
+        })
+    return order_cancel_batch_v4(
+        record, run_month=date(2026, 8, 1), attempt_id=str(uuid4()),
+        batch_id=str(uuid4()),
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor="cancel-1")
+
+
+async def _seed_live_order(dispatcher, writer):
+    batch, request = _strategy_one_command()
+    ticket = dispatcher.submit(batch, "DU1", (request,))
+    await asyncio.wait_for(writer.submitted.wait(), 1)
+    writer.receipts[-1].set_result(batch.batch_id)
+    await ticket
+    writer.submitted.clear()
 
 
 def _fresh_audit(status="running", commands=0):
@@ -200,6 +240,77 @@ def test_live_v4_lost_owner_while_queued_never_publishes_command(monkeypatch) ->
             await second_ticket
         assert len(writer.batches) == 1
         assert broker.calls == []
+        with pytest.raises(RuntimeError, match="broker reconciliation"):
+            await dispatcher.close()
+    asyncio.run(scenario())
+
+
+def test_live_v4_cancel_waits_for_its_typed_receipt(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer, broker = _LiveV4Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        await _seed_live_order(dispatcher, writer)
+        unit = _strategy_one_cancel()
+        ticket = dispatcher.submit_cancel(unit, "DU1", "broker-1")
+        await asyncio.wait_for(writer.submitted.wait(), 1)
+        assert len(broker.calls) == 1
+        writer.receipts[1].set_result(unit.base.batch_id)
+        assert await ticket == {"msg": "Request was submitted", "order_id": "broker-1"}
+        assert broker.calls[-1] == ("cancel", "DU1", "broker-1")
+        await dispatcher.close()
+    asyncio.run(scenario())
+
+
+def test_live_v4_cancel_rejects_missing_intent_lineage(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer, broker = _LiveV4Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        await _seed_live_order(dispatcher, writer)
+        unit = _strategy_one_cancel()
+        missing = replace(unit, cancellation={**unit.cancellation, "intent_id": ""})
+        with pytest.raises(ValueError, match="Strategy 1 lineage"):
+            dispatcher.submit_cancel(missing, "DU1", "broker-1")
+        assert len(writer.batches) == 1 and len(broker.calls) == 1
+        await dispatcher.close()
+    asyncio.run(scenario())
+
+
+def test_live_v4_cancel_rejects_a_foreign_broker_order_group(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer, broker = _LiveV4Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        await _seed_live_order(dispatcher, writer)
+        unit = _strategy_one_cancel()
+        foreign = replace(unit, cancellation={
+            **unit.cancellation, "order_group_id": "foreign-group"})
+        with pytest.raises(ValueError, match="Strategy 1 lineage"):
+            dispatcher.submit_cancel(foreign, "DU1", "broker-1")
+        assert len(writer.batches) == 1 and len(broker.calls) == 1
+        await dispatcher.close()
+    asyncio.run(scenario())
+
+
+def test_live_v4_cancel_lost_keeper_owner_never_reaches_broker(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer, broker = _LiveV4Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        await _seed_live_order(dispatcher, writer)
+        unit = _strategy_one_cancel()
+        ticket = dispatcher.submit_cancel(unit, "DU1", "broker-1")
+        await asyncio.wait_for(writer.submitted.wait(), 1)
+        writer.live_v4_lease.current = False
+        writer.receipts[1].set_result(unit.base.batch_id)
+        with pytest.raises(RuntimeError, match="lease lost"):
+            await ticket
+        assert len(broker.calls) == 1
         with pytest.raises(RuntimeError, match="broker reconciliation"):
             await dispatcher.close()
     asyncio.run(scenario())
