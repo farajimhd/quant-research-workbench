@@ -44,12 +44,12 @@ _MANAGER_TABLES = frozenset({
     "trading_strategy_one_manager_pending_break_v1",
 })
 _BROKER_MATCH_TABLES = frozenset({
-    "trading_strategy_one_broker_match_snapshot_v1",
-    "trading_strategy_one_broker_match_account_v1",
-    "trading_strategy_one_broker_match_position_v1",
-    "trading_strategy_one_broker_match_open_order_v1",
-    "trading_strategy_one_broker_match_ticker_v1",
-    "trading_strategy_one_broker_match_performance_mark_v1",
+    "trading_strategy_one_broker_match_snapshot_v2",
+    "trading_strategy_one_broker_match_account_v2",
+    "trading_strategy_one_broker_match_position_v2",
+    "trading_strategy_one_broker_match_open_order_v2",
+    "trading_strategy_one_broker_match_ticker_v2",
+    "trading_strategy_one_broker_match_performance_mark_v2",
 })
 
 
@@ -497,12 +497,8 @@ class TypedInsertDispatch:
                              broker_snapshot_hash: str | None = None) -> None:
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")
-                or (table in _BROKER_MATCH_TABLES and not (
-                        "async_insert=0,insert_deduplicate=1" in sql
-                        and ",precise_float_parsing=1" in sql))
-                or (table not in _BROKER_MATCH_TABLES and
-                    "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1"
-                    not in sql)
+                or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1"
+                   not in sql
                 or "insert_deduplication_token=" not in sql):
             raise ValueError("Typed dispatch requires the acknowledged arte INSERT contract")
         if (type(batch_last_sequence) is not int or batch_last_sequence < 0
@@ -1026,7 +1022,7 @@ class TypedInsertDispatch:
         if (type(last_sequence) is not int or last_sequence < 1
                 or re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None
                 or not operations or len(set(operations)) != len(operations)
-                or "trading_strategy_one_broker_match_snapshot_v1"
+                or "trading_strategy_one_broker_match_snapshot_v2"
                    not in {table for table, _ in operations}):
             raise ValueError("Broker match operation inventory is invalid")
         try:

@@ -9,11 +9,11 @@ they may participate in cold recovery. No resume gate uses this module yet.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
 from math import isfinite
-import struct
 from typing import Any, Mapping, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -25,7 +25,7 @@ from src.trading_runtime.strategy_one_protection_snapshot import _digest
 
 
 ROOT = TableContract(
-    "trading_strategy_one_broker_match_snapshot_v1",
+    "trading_strategy_one_broker_match_snapshot_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("session_date", "Date"),
      ("checkpoint_sequence", "UInt64"), ("boundary_ms", "UInt32"),
@@ -33,9 +33,9 @@ ROOT = TableContract(
      ("next_order_id", "UInt64"), ("next_execution_id", "UInt64"),
      ("performance_complete", "UInt8"),
      ("performance_as_of", "Nullable(DateTime64(6, 'UTC'))"),
-     ("unrealized", "Float64"), ("market_value", "Float64"),
-     ("peak_unrealized", "Float64"), ("worst_unrealized", "Float64"),
-     ("equity_peak", "Float64"), ("maximum_drawdown", "Float64"),
+     ("unrealized", "Decimal(38, 18)"), ("market_value", "Decimal(38, 18)"),
+     ("peak_unrealized", "Decimal(38, 18)"), ("worst_unrealized", "Decimal(38, 18)"),
+     ("equity_peak", "Decimal(38, 18)"), ("maximum_drawdown", "Decimal(38, 18)"),
      ("account_count", "UInt32"), ("account_hash", "FixedString(64)"),
      ("position_count", "UInt32"), ("position_hash", "FixedString(64)"),
      ("open_order_count", "UInt32"), ("open_order_hash", "FixedString(64)"),
@@ -45,59 +45,59 @@ ROOT = TableContract(
     "toYYYYMM(snapshot_month)", "run_id, checkpoint_sequence, snapshot_id",
 )
 ACCOUNT = TableContract(
-    "trading_strategy_one_broker_match_account_v1",
+    "trading_strategy_one_broker_match_account_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
-     ("account_id", "String"), ("cash", "Float64"),
-     ("realized_pnl", "Float64"), ("content_hash", "FixedString(64)")),
+     ("account_id", "String"), ("cash", "Decimal(38, 18)"),
+     ("realized_pnl", "Decimal(38, 18)"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, account_id",
 )
 POSITION = TableContract(
-    "trading_strategy_one_broker_match_position_v1",
+    "trading_strategy_one_broker_match_position_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("account_id", "String"), ("conid", "UInt64"),
      ("ticker", "LowCardinality(String)"),
-     ("quantity", "Float64"), ("avg_cost", "Float64"),
-     ("realized_pnl", "Float64"), ("content_hash", "FixedString(64)")),
+     ("quantity", "Decimal(38, 18)"), ("avg_cost", "Decimal(38, 18)"),
+     ("realized_pnl", "Decimal(38, 18)"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, account_id, conid",
 )
 OPEN_ORDER = TableContract(
-    "trading_strategy_one_broker_match_open_order_v1",
+    "trading_strategy_one_broker_match_open_order_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("broker_order_id", "String"), ("account_id", "String"),
      ("client_order_id", "String"), ("conid", "UInt64"),
      ("ticker", "LowCardinality(String)"), ("status", "String"),
      ("submitted_at", "DateTime64(6, 'UTC')"),
-     ("oca_group", "String"), ("filled", "Float64"),
-     ("avg_price", "Float64"), ("commission_paid", "Float64"),
-     ("stop_triggered", "UInt8"), ("trailing_reference", "Float64"),
+     ("oca_group", "String"), ("filled", "Decimal(38, 18)"),
+     ("avg_price", "Decimal(38, 18)"), ("commission_paid", "Decimal(38, 18)"),
+     ("stop_triggered", "UInt8"), ("trailing_reference", "Decimal(38, 18)"),
      ("status_description", "String"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, broker_order_id",
 )
 TICKER = TableContract(
-    "trading_strategy_one_broker_match_ticker_v1",
+    "trading_strategy_one_broker_match_ticker_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("ticker", "LowCardinality(String)"), ("last_boundary_ms", "UInt32"),
-     ("has_mark", "UInt8"), ("mark", "Float64"),
+     ("has_mark", "UInt8"), ("mark", "Decimal(38, 18)"),
      ("has_quote", "UInt8"), ("quote_timestamp_us", "UInt64"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, ticker",
 )
 MARK = TableContract(
-    "trading_strategy_one_broker_match_performance_mark_v1",
+    "trading_strategy_one_broker_match_performance_mark_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
-     ("conid", "UInt64"), ("mark", "Float64"),
+     ("conid", "UInt64"), ("mark", "Decimal(38, 18)"),
      ("has_performance_path", "UInt8"),
-     ("unrealized", "Float64"), ("market_value", "Float64"),
+     ("unrealized", "Decimal(38, 18)"), ("market_value", "Decimal(38, 18)"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, conid",
@@ -141,7 +141,7 @@ class ManagedBrokerMatchHeadReader:
         if (type(run_id) is not str or not run_id
                 or any(char in run_id for char in "\r\n\x00")):
             raise ValueError("Broker match head run is invalid")
-        return ("/trading/strategy-one-broker-match/v1/"
+        return ("/trading/strategy-one-broker-match/v2/"
                 + sha256(run_id.encode()).hexdigest() + "/head")
 
     def read_head(self, *, run_id: str) -> BrokerMatchHead:
@@ -231,7 +231,7 @@ def project_broker_match_snapshot(
     if initial.timestamp() > global_at:
         raise ValueError("Broker initial time is after checkpoint")
     snapshot_id = str(uuid5(NAMESPACE_URL,
-                            f"strategy-one-broker-match-v1:{run_id}:{checkpoint_sequence}"))
+                            f"strategy-one-broker-match-v2:{run_id}:{checkpoint_sequence}"))
     common = dict(snapshot_id=snapshot_id, run_id=run_id,
                   snapshot_month=session_date.replace(day=1).isoformat(),
                   checkpoint_sequence=checkpoint_sequence)
@@ -370,6 +370,14 @@ def _canonical_row(contract: TableContract, value: Mapping[str, Any]) -> dict[st
             row[name] = None
         elif "DateTime64(" in kind:
             row[name] = _utc_text(item, name, from_clickhouse=True)
+        elif kind == "Decimal(38, 18)":
+            try:
+                exact = Decimal(str(item))
+            except InvalidOperation as exc:
+                raise ValueError("Broker match decimal is invalid") from exc
+            if not exact.is_finite() or exact.as_tuple().exponent < -18:
+                raise ValueError("Broker match decimal exceeds exact scale")
+            row[name] = _float(float(exact), name)
         elif kind == "Float64":
             row[name] = _float(item, name)
         elif kind.startswith("UInt"):
@@ -425,7 +433,7 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
             or not 0 < root["boundary_ms"] <= 57_600_000
             or root["boundary_ms"] % 100
             or root["snapshot_id"] != str(uuid5(
-                NAMESPACE_URL, f"strategy-one-broker-match-v1:"
+                NAMESPACE_URL, f"strategy-one-broker-match-v2:"
                 f"{root['run_id']}:{root['checkpoint_sequence']}"))
             or root["snapshot_month"] != root["session_date"][:7] + "-01"
             or root["next_order_id"] < 1 or root["next_execution_id"] < 1
@@ -499,27 +507,11 @@ def load_unattested_broker_match_snapshot(
                  f"AND checkpoint_sequence={checkpoint_sequence}")
         if snapshot_id is not None:
             where += f" AND snapshot_id=toUUID({_literal(snapshot_id)})"
-        float_columns = tuple(name for name, kind in table.columns
-                              if kind == "Float64")
-        bit_columns = "".join(
-            f", reinterpretAsUInt64({name}) AS __bits_{name}"
-            for name in float_columns)
         sql = assert_select_only(
-            f"SELECT *{bit_columns} FROM arte.{table.name} WHERE {where} "
+            f"SELECT * FROM arte.{table.name} WHERE {where} "
             f"LIMIT {limit} FORMAT JSONEachRow")
-        result = []
-        for line in client.execute(sql).splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            for name in float_columns:
-                bits = row.pop(f"__bits_{name}", None)
-                if (isinstance(bits, bool) or not str(bits).isdigit()
-                        or not 0 <= int(bits) < 2**64):
-                    raise ValueError("Broker match Float64 bit evidence is missing")
-                row[name] = struct.unpack("<d", struct.pack("<Q", int(bits)))[0]
-            result.append(row)
-        return tuple(result)
+        return tuple(json.loads(line) for line in client.execute(sql).splitlines()
+                     if line.strip())
 
     roots = read(ROOT, limit=2)
     if len(roots) != 1:

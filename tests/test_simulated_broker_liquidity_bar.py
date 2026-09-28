@@ -209,14 +209,14 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
                     BROKER_MATCH_TABLES[4].name: stored.tickers,
                     BROKER_MATCH_TABLES[5].name: stored.marks,
                 }[family]
-                import struct
+                from decimal import Decimal
                 columns = dict(next(table for table in BROKER_MATCH_TABLES
                                     if table.name == family).columns)
                 return "\n".join(json.dumps({
                     **row,
-                    **{f"__bits_{name}": struct.unpack(
-                        "<Q", struct.pack("<d", row[name]))[0]
-                       for name, kind in columns.items() if kind == "Float64"}
+                    **{name: format(Decimal(str(row[name])), ".18f")
+                       for name, kind in columns.items()
+                       if kind == "Decimal(38, 18)"}
                 }) for row in values)
 
         reader = Reader()
