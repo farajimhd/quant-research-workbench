@@ -35,6 +35,14 @@ _POLICY_TABLES = frozenset({
     "trading_portfolio_policy_execution_policy_v1",
     "trading_portfolio_policy_protection_profile_v1",
 })
+_MANAGER_TABLES = frozenset({
+    "trading_strategy_one_protection_snapshot_v1",
+    "trading_strategy_one_protection_state_v1",
+    "trading_strategy_one_protection_resistance_v1",
+    "trading_strategy_one_manager_snapshot_v1",
+    "trading_strategy_one_manager_source_v1",
+    "trading_strategy_one_manager_pending_break_v1",
+})
 
 
 def _gate_path(run_id: str) -> str:
@@ -55,6 +63,18 @@ def _terminal_receipt_path(run_id: str, account_id: str) -> str:
 
 def _snapshot_head_path(run_id: str, account_id: str) -> str:
     return _path("typed_dispatch_snapshot_head", run_id, account_id)
+
+
+def _manager_head_path(run_id: str) -> str:
+    from src.trading_runtime.strategy_one_management_snapshot import (
+        ManagedManagerSnapshotHeadReader,
+    )
+    return ManagedManagerSnapshotHeadReader.path(run_id)
+
+
+def _manager_token(run_id: str, sequence: int, digest: str,
+                   table: str) -> str:
+    return f"manager-state:{run_id}:{sequence}:{digest}:{table}"
 
 
 def _policy_gate_path(policy_hash: str) -> str:
@@ -452,7 +472,8 @@ class TypedInsertDispatch:
                              batch_id: str | None = None,
                              batch_last_sequence: int | None = None,
                              terminal_account_id: str | None = None,
-                             snapshot_account_id: str | None = None) -> None:
+                             snapshot_account_id: str | None = None,
+                             manager_snapshot_hash: str | None = None) -> None:
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
@@ -460,12 +481,25 @@ class TypedInsertDispatch:
             raise ValueError("Typed dispatch requires the acknowledged arte INSERT contract")
         if (type(batch_last_sequence) is not int or batch_last_sequence < 0
                 or not isinstance(batch_id, str)
-                or (snapshot_account_id is None and
+                or (snapshot_account_id is None and manager_snapshot_hash is None and
                     (batch_last_sequence == 0) != (batch_id == _ZERO_BATCH))
                 or (snapshot_account_id is not None and batch_id != _ZERO_BATCH)):
             raise KeeperUnavailable("Strict typed dispatch lacks batch sequence authority")
-        if terminal_account_id is not None and snapshot_account_id is not None:
+        if sum(value is not None for value in (
+                terminal_account_id, snapshot_account_id,
+                manager_snapshot_hash)) > 1:
             raise ValueError("Typed INSERT has multiple parent families")
+        if manager_snapshot_hash is not None:
+            if (table not in _MANAGER_TABLES or batch_last_sequence < 1
+                    or re.fullmatch(r"[0-9a-f]{64}", manager_snapshot_hash) is None
+                    or token != _manager_token(
+                        run_id, batch_last_sequence, manager_snapshot_hash, table)):
+                raise KeeperUnavailable("Manager snapshot dispatch identity is invalid")
+            try:
+                if str(UUID(batch_id)) != batch_id or batch_id == _ZERO_BATCH:
+                    raise ValueError("noncanonical UUID")
+            except (TypeError, ValueError) as exc:
+                raise KeeperUnavailable("Manager snapshot batch ID is invalid") from exc
         if snapshot_account_id is not None:
             _identity(snapshot_account_id, "account")
             if batch_last_sequence < 1 or table not in _SNAPSHOT_TABLES:
@@ -488,7 +522,14 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch run is cold-fenced")
-            if snapshot_account_id is not None:
+            if manager_snapshot_hash is not None:
+                self._read_context_receipt(run_id)
+                if (gate.active_batch_id != _ZERO_BATCH
+                        or gate.compacted_through != batch_last_sequence
+                        or gate.compacted_batch_id != batch_id):
+                    raise KeeperUnavailable(
+                        "Manager snapshot differs from compacted running prefix")
+            elif snapshot_account_id is not None:
                 self._read_context_receipt(run_id)
                 head = self._read_snapshot_head(run_id, snapshot_account_id)
                 if (head is None or head[0].active_revision != batch_last_sequence
@@ -510,11 +551,16 @@ class TypedInsertDispatch:
                     raise KeeperUnavailable("Terminal account receipt already sealed")
             elif batch_last_sequence and gate.active_batch_id != batch_id:
                 raise KeeperUnavailable("Competing typed batch owns the run prefix")
-            if snapshot_account_id is None and terminal_account_id is None and batch_last_sequence and batch_last_sequence <= gate.compacted_through:
+            if (manager_snapshot_hash is None and snapshot_account_id is None
+                    and terminal_account_id is None and batch_last_sequence
+                    and batch_last_sequence <= gate.compacted_through):
                 return  # Exact CH batch readback and watermark check still follow.
-            if snapshot_account_id is None and terminal_account_id is None and not batch_last_sequence and gate.active_batch_id != _ZERO_BATCH:
+            if (manager_snapshot_hash is None and snapshot_account_id is None
+                    and terminal_account_id is None and not batch_last_sequence
+                    and gate.active_batch_id != _ZERO_BATCH):
                 raise KeeperUnavailable("Run context cannot dispatch during a batch")
-            if snapshot_account_id is None and terminal_account_id is None and not batch_last_sequence:
+            if (manager_snapshot_hash is None and snapshot_account_id is None
+                    and terminal_account_id is None and not batch_last_sequence):
                 try:
                     self.keeper.get(_context_receipt_path(run_id))
                 except Exception as exc:
@@ -580,7 +626,8 @@ class TypedInsertDispatch:
                                 batch_id: str | None = None,
                                 batch_last_sequence: int | None = None,
                                 terminal: bool = False,
-                                snapshot: bool = False) -> None:
+                                snapshot: bool = False,
+                                manager_snapshot: bool = False) -> None:
         """Caller must invoke only after exact parent late-fence readback.
 
         Unwired parent publishers leave acknowledged operations in-flight,
@@ -593,7 +640,8 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch cannot seal outside open parent")
-            if (not terminal and not snapshot and type(batch_last_sequence) is int and batch_last_sequence > 0
+            if (not terminal and not snapshot and not manager_snapshot
+                    and type(batch_last_sequence) is int and batch_last_sequence > 0
                     and batch_last_sequence <= gate.compacted_through):
                 return
             try:
@@ -829,6 +877,106 @@ class TypedInsertDispatch:
             if _committed(txn.commit()):
                 return
         raise KeeperUnavailable("Portfolio snapshot compaction CAS contended")
+
+    def compact_verified_manager_snapshot(
+        self, *, run_id: str, batch_id: str, last_sequence: int,
+        snapshot_hash: str, operations: tuple[tuple[str, str], ...],
+        previous: Any | None,
+    ) -> None:
+        """Select read-back-verified scalar rows at one compacted V4 cursor.
+
+        The caller must verify every selected ClickHouse row before invoking
+        this CAS. Until it succeeds, orphan rows have no recovery authority.
+        """
+        from src.trading_runtime.strategy_one_management_snapshot import (
+            ManagerSnapshotHead,
+        )
+        _identity(run_id, "run")
+        if (type(last_sequence) is not int or last_sequence < 1
+                or re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None
+                or not operations or len(set(operations)) != len(operations)
+                or {"trading_strategy_one_protection_snapshot_v1",
+                    "trading_strategy_one_manager_snapshot_v1"}
+                - {table for table, _ in operations}):
+            raise ValueError("Manager snapshot operation inventory is invalid")
+        try:
+            if str(UUID(batch_id)) != batch_id or batch_id == _ZERO_BATCH:
+                raise ValueError("zero or noncanonical batch")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Manager snapshot batch ID is invalid") from exc
+        if previous is not None and (
+                not isinstance(previous, ManagerSnapshotHead)
+                or previous.run_id != run_id
+                or not 0 < previous.checkpoint_sequence < last_sequence):
+            raise ValueError("Manager snapshot previous head is invalid")
+        self._read_context_receipt(run_id)
+        path = _manager_head_path(run_id)
+        wire = (f"1\n{run_id}\n{last_sequence}\n{batch_id}\n"
+                f"{snapshot_hash}").encode("utf-8")
+        self.keeper.ensure_path(path.rsplit("/", 1)[0])
+        for _ in range(8):
+            gate, gate_version = self._read_gate(run_id)
+            if (gate.mode != "open" or gate.inflight
+                    or gate.active_batch_id != _ZERO_BATCH
+                    or gate.compacted_through != last_sequence
+                    or gate.compacted_batch_id != batch_id):
+                raise KeeperUnavailable(
+                    "Manager snapshot lacks quiescent compacted V4 prefix")
+            try:
+                current_raw, current_stat = self.keeper.get(path)
+            except Exception as exc:
+                if type(exc).__name__ != "NoNodeError":
+                    raise KeeperUnavailable("Manager snapshot head cannot be read") from exc
+                current_raw, current_stat = None, None
+            if current_raw == wire and not gate.registered:
+                return
+            if previous is None:
+                if current_raw is not None:
+                    raise KeeperUnavailable("Manager snapshot head already exists")
+            elif (current_raw != (f"1\n{run_id}\n"
+                    f"{previous.checkpoint_sequence}\n"
+                    f"{previous.journal_batch_id}\n"
+                    f"{previous.snapshot_hash}").encode("utf-8")
+                    or current_stat.version != previous.keeper_version):
+                raise KeeperUnavailable("Manager snapshot previous head changed")
+            paths = []
+            for table, token in operations:
+                if (table not in _MANAGER_TABLES
+                        or token != _manager_token(
+                            run_id, last_sequence, snapshot_hash, table)):
+                    raise KeeperUnavailable("Manager snapshot operation identity differs")
+                query_id = typed_insert_query_id(run_id, table, token)
+                op_path = _operation_path(run_id, query_id)
+                try:
+                    value, stat = self.keeper.get(op_path)
+                except Exception as exc:
+                    raise KeeperUnavailable(
+                        "Manager snapshot dispatch operation is missing") from exc
+                parts = value.decode("utf-8").split("\n")
+                if (len(parts) != 9
+                        or parts[:5] != ["3", run_id, table, query_id,
+                            sha256(token.encode()).hexdigest()]
+                        or parts[6:] != [batch_id, str(last_sequence), "sealed"]):
+                    raise KeeperUnavailable("Manager snapshot operation is not sealed")
+                paths.append((op_path, stat.version))
+            if gate.registered != len(paths):
+                raise KeeperUnavailable(
+                    "Manager snapshot has unresolved dispatch operations")
+            txn = self.keeper.transaction()
+            txn.check(_gate_path(run_id), version=gate_version)
+            for op_path, op_version in paths:
+                txn.delete(op_path, version=op_version)
+            if current_raw is None:
+                txn.create(path, wire)
+            else:
+                txn.set_data(path, wire, version=current_stat.version)
+            txn.set_data(_gate_path(run_id), _Gate(
+                "open", 0, gate.epoch, 0, gate.compacted_through,
+                gate.compacted_batch_id, gate.compacted_commit_hash,
+                _ZERO_BATCH).wire(), version=gate_version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Manager snapshot head CAS contended")
 
     def assert_snapshot_head(self, *, run_id: str, account_id: str,
                              revision: int, fence_hash: str) -> None:

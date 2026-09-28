@@ -1392,6 +1392,7 @@ def _insert(
     dispatch_batch_id: str | None = None, dispatch_run_context: bool = False,
     dispatch_terminal_account_id: str | None = None,
     dispatch_snapshot_account_id: str | None = None,
+    dispatch_manager_snapshot_hash: str | None = None,
     dispatch_policy_hash: str | None = None,
     dispatch_sync_account_id: str | None = None,
     dispatch_sync_revision: int | None = None,
@@ -1421,7 +1422,8 @@ def _insert(
                 rows[0].get("state_revision") != dispatch_sync_revision or
                 any(value is not None for value in (
                     dispatch_sequence, dispatch_batch_id, dispatch_terminal_account_id,
-                    dispatch_snapshot_account_id, dispatch_policy_hash)) or
+                    dispatch_snapshot_account_id, dispatch_manager_snapshot_hash,
+                    dispatch_policy_hash)) or
                 dispatch_run_context):
             raise RuntimeError("Portfolio sync INSERT lacks strict dispatch identity")
         sync_dispatch.execute(client, run_id=rows[0]["run_id"],
@@ -1436,6 +1438,8 @@ def _insert(
         raise RuntimeError("Strict typed journal INSERT lacks durable dispatch authority")
     if dispatch_policy_hash is not None and dispatch is None:
         raise RuntimeError("Policy INSERT lacks durable dispatch authority")
+    if dispatch_manager_snapshot_hash is not None and dispatch is None:
+        raise RuntimeError("Manager snapshot INSERT lacks durable dispatch authority")
     if dispatch is not None:
         if dispatch_policy_hash is not None:
             policy_tables = {"trading_portfolio_policy_v1",
@@ -1446,7 +1450,8 @@ def _insert(
                     or any(row.get("policy_hash") != dispatch_policy_hash for row in rows)
                     or any(value is not None for value in (
                         dispatch_sequence, dispatch_batch_id,
-                        dispatch_terminal_account_id, dispatch_snapshot_account_id))
+                        dispatch_terminal_account_id, dispatch_snapshot_account_id,
+                        dispatch_manager_snapshot_hash))
                     or dispatch_run_context):
                 raise ValueError("Policy dispatch identity differs from typed rows")
             dispatch.execute_policy_insert(
@@ -1461,6 +1466,14 @@ def _insert(
                 row.get("account_id") != dispatch_snapshot_account_id
                 or row.get("state_revision") != dispatch_sequence for row in rows):
             raise ValueError("Snapshot dispatch identity differs from typed rows")
+        if dispatch_manager_snapshot_hash is not None and (
+                name not in {table.name for table in (
+                    *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
+                )}
+                or any(row.get("checkpoint_sequence") != dispatch_sequence
+                       or row.get("snapshot_id") != rows[0].get("snapshot_id")
+                       for row in rows)):
+            raise ValueError("Manager snapshot dispatch identity differs from typed rows")
         run_ids = {row.get("run_id") for row in rows}
         if len(run_ids) != 1 or not isinstance(next(iter(run_ids)), str) or not next(iter(run_ids)):
             raise RuntimeError("Durable typed INSERT lacks one run identity")
@@ -1470,7 +1483,8 @@ def _insert(
             batch_id=(_ZERO_DISPATCH_BATCH if dispatch_run_context or dispatch_snapshot_account_id is not None else dispatch_batch_id),
             batch_last_sequence=(0 if dispatch_run_context else dispatch_sequence),
             terminal_account_id=dispatch_terminal_account_id,
-            snapshot_account_id=dispatch_snapshot_account_id)
+            snapshot_account_id=dispatch_snapshot_account_id,
+            manager_snapshot_hash=dispatch_manager_snapshot_hash)
     else:
         client.execute(sql)
     return sql

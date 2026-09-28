@@ -11,6 +11,9 @@ from src.trading_runtime.arte_typed_insert_dispatch import (
     TypedInsertDispatch, _gate_path, typed_insert_query_id,
 )
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
+from src.trading_runtime.strategy_one_management_snapshot import (
+    ManagedManagerSnapshotHeadReader,
+)
 
 
 SQL = ("INSERT INTO arte.trading_event_v1 (run_id) SETTINGS "
@@ -18,6 +21,7 @@ SQL = ("INSERT INTO arte.trading_event_v1 (run_id) SETTINGS "
        "insert_deduplication_token='batch-1' FORMAT JSONEachRow\n{}")
 BATCH_ID = "00000000-0000-0000-0000-000000000012"
 ZERO_BATCH = "00000000-0000-0000-0000-000000000000"
+MANAGER_HASH = "b" * 64
 
 
 def reserve_direct(authority):
@@ -37,6 +41,18 @@ def compact_direct(authority, token="batch-1"):
     authority.compact_verified_batch(run_id="run-1", batch_id=BATCH_ID,
         prior_batch_id=ZERO_BATCH, first_sequence=1, last_sequence=1,
         commit_hash="a" * 64, operations=(("trading_event_v1", token),))
+
+
+def compact_running_prefix(authority):
+    reserve_direct(authority)
+    authority.execute_typed_insert(
+        Client(authority), run_id="run-1", table="trading_event_v1",
+        token="batch-1", sql=SQL, batch_id=BATCH_ID,
+        batch_last_sequence=1)
+    authority.seal_verified_operation(
+        run_id="run-1", table="trading_event_v1", token="batch-1",
+        batch_id=BATCH_ID, batch_last_sequence=1)
+    compact_direct(authority)
 
 
 class NoNodeError(Exception):
@@ -844,3 +860,53 @@ def test_strict_compaction_rejects_unattested_legacy_prefix() -> None:
         barrier.assert_fenced(first.run_id)
     with pytest.raises(KeeperUnavailable, match="prefix lacks dispatch compaction"):
         barrier.verify_committed_prefix(client, journal_profile="v1")
+
+
+def test_manager_snapshot_rows_are_dispatched_only_at_compacted_cursor():
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    compact_running_prefix(authority)
+    tables = ("trading_strategy_one_protection_snapshot_v1",
+              "trading_strategy_one_manager_snapshot_v1")
+    operations = []
+    for table in tables:
+        token = f"manager-state:run-1:1:{MANAGER_HASH}:{table}"
+        sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
+               "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+               f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+        authority.execute_typed_insert(
+            Client(authority), run_id="run-1", table=table,
+            token=token, sql=sql, batch_id=BATCH_ID,
+            batch_last_sequence=1, manager_snapshot_hash=MANAGER_HASH)
+        operations.append((table, token))
+    assert authority._read_gate("run-1")[0].inflight == 2
+    for table, token in operations:
+        authority.seal_verified_operation(
+            run_id="run-1", table=table, token=token,
+            batch_id=BATCH_ID, batch_last_sequence=1,
+            manager_snapshot=True)
+    authority.compact_verified_manager_snapshot(
+        run_id="run-1", batch_id=BATCH_ID, last_sequence=1,
+        snapshot_hash=MANAGER_HASH, operations=tuple(operations), previous=None)
+    raw, _ = authority.keeper.get(
+        ManagedManagerSnapshotHeadReader.path("run-1"))
+    assert raw == f"1\nrun-1\n1\n{BATCH_ID}\n{MANAGER_HASH}".encode()
+    assert authority._read_gate("run-1")[0].registered == 0
+
+
+def test_manager_snapshot_rejects_foreign_cursor_before_insert():
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    compact_running_prefix(authority)
+    table = "trading_strategy_one_manager_snapshot_v1"
+    token = f"manager-state:run-1:2:{MANAGER_HASH}:{table}"
+    sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+    client = Client(authority)
+    with pytest.raises(KeeperUnavailable, match="compacted running prefix"):
+        authority.execute_typed_insert(
+            client, run_id="run-1", table=table, token=token, sql=sql,
+            batch_id=BATCH_ID, batch_last_sequence=2,
+            manager_snapshot_hash=MANAGER_HASH)
+    assert client.calls == []
