@@ -343,6 +343,58 @@ def test_live_v4_entry_ingress_seals_proposal_off_actor_before_receipt():
     assert writer.batches[0].entry_evidence[0]["boundary_ms"] == 31_000
 
 
+def test_live_v4_protection_intent_requires_exact_completed_source():
+    from test_strategy_one_protection_intent import financial, previous, transition
+    from src.trading_runtime.strategy_one_protection_intent import (
+        strategy_one_protection_intents,
+    )
+
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "live"
+
+        def submit_base_v4(self, unit):
+            receipt = Writer.submit(self, unit)
+            receipt.set_result(unit.batch_id)
+            return receipt
+
+    config = {"strategy_id": "early-squeeze-strategy", "strategy_revision": 1}
+    session = date(2026, 8, 18)
+    intent = strategy_one_protection_intents(
+        previous(), transition(), financial(), session_date=session,
+        bid=10., ask=10.01,
+    )[0]
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, intent.event_time, AT,
+        "strategy", "strategy_intent", intent.intent_id, "DU1",
+        {**intent.payload(), **config},
+    )
+    writer = LiveWriter()
+    ingress = TypedJournalIngress(
+        writer, run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live", "expected_config": config},
+    )
+    tampered = JournalRecord(
+        source.record_id, source.run_id, source.sequence,
+        source.event_time, source.recorded_at, source.category,
+        source.entity_type, source.entity_id, source.account_id,
+        {**source.payload, "profit_target_price": 12.},
+    )
+    with pytest.raises(ValueError, match="completed source"):
+        ingress.submit_strategy_one_protection_intent(
+            tampered, previous=previous(), transition=transition(),
+            financial=financial(), session_date=session, bid=10., ask=10.01,
+            source_cursor="boundary-31000")
+    receipt = ingress.submit_strategy_one_protection_intent(
+        source, previous=previous(), transition=transition(),
+        financial=financial(), session_date=session, bid=10., ask=10.01,
+        source_cursor="boundary-31000")
+    ingress.close()
+    assert receipt.result() == writer.batches[0].batch_id
+    assert writer.batches[0].intents[0]["intent_id"] == intent.intent_id
+
+
 def test_live_v5_broker_reply_ingress_uses_worker_and_snapshots_response():
     class LiveWriter(Writer):
         journal_profile = "live_v4"

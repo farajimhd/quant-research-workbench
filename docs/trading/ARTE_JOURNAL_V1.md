@@ -245,6 +245,10 @@ verify all live state families without JSON or SQLite, exact SSD placement and
 grants, idempotent and interrupted publication recovery, broker reconciliation,
 command safety, and cold restart after loss of run-local files. The existing
 legacy live runtime must not be switched to an incomplete typed journal.
+The inactive Live V4 ingress now accepts an exact Strategy 1 stop/target intent
+only after reconstructing it from the numbered completed-boundary transition;
+its receipt still resolves asynchronously after the normalized intent commit.
+This does not persist the transition snapshot or authorize an OMS amendment.
 QMD's Strategy 1 100 ms liquidity stream now holds completed rows in bounded
 per-ticker queues until every source compact event in the row has both a
 ClickHouse insert and live-coverage acknowledgement. Out-of-order

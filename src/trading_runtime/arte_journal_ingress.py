@@ -154,6 +154,57 @@ class TypedJournalIngress:
         return self._enqueue(frozen, source_cursor,
                              (deepcopy(proposal), session_date), False, None)
 
+    def submit_strategy_one_protection_intent(
+        self, record: JournalRecord, *, previous: Any, transition: Any,
+        financial: Any, session_date: date, bid: float, ask: float,
+        source_cursor: str,
+    ) -> Future[str]:
+        """Queue only a numbered stop/target intent proven by its causal source.
+
+        This publishes the scalar semantic intent, not an OMS amendment or a
+        recovery checkpoint. Those require their own committed typed evidence.
+        """
+        from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+        from .strategy_one_protection_intent import strategy_one_protection_intents
+
+        if (not self._live_v4 or not isinstance(record, JournalRecord)
+                or (record.category, record.entity_type) !=
+                   ("strategy", "strategy_intent")
+                or type(session_date) is not date
+                or not isinstance(source_cursor, str) or not source_cursor
+                or source_cursor.lstrip().startswith(("{", "["))
+                or record.event_time.tzinfo is None
+                or record.recorded_at.tzinfo is None
+                or not callable(getattr(self._writer, "submit_base_v4", None))):
+            raise ValueError("Live Strategy 1 protection intent requires a typed source")
+        UUID(record.record_id)
+        config = self._projection_context.get("expected_config")
+        if (not isinstance(config, dict)
+                or config.get("strategy_id") != STRATEGY_ID
+                or config.get("strategy_revision") != STRATEGY_NUMBER
+                or record.payload.get("strategy_id") != STRATEGY_ID
+                or record.payload.get("strategy_revision") != STRATEGY_NUMBER):
+            raise ValueError("Live Strategy 1 protection differs from pinned strategy")
+        intents = strategy_one_protection_intents(
+            previous, transition, financial, session_date=session_date,
+            bid=bid, ask=ask)
+        matching = [intent for intent in intents if intent.intent_id == record.entity_id]
+        payload = {key: value for key, value in record.payload.items()
+                   if key not in {"strategy_id", "strategy_revision",
+                                  "correlation_id", "causation_id"}}
+        if (len(matching) != 1
+                or record.account_id != financial.account_id
+                or record.event_time != matching[0].event_time
+                or canonical_json(payload) != canonical_json(matching[0].payload())):
+            raise ValueError("Live Strategy 1 protection differs from completed source")
+        frozen = JournalRecord(
+            record.record_id, record.run_id, record.sequence,
+            record.event_time, record.recorded_at, record.category,
+            record.entity_type, record.entity_id, record.account_id,
+            deepcopy(record.payload),
+        )
+        return self._enqueue(frozen, source_cursor, None, False, None)
+
     def submit_protection_change(
         self, record: JournalRecord, *, source_cursor: str,
     ) -> Future[str]:
