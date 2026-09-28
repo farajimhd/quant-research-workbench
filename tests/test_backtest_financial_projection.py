@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import replace
 from datetime import timedelta, date, time
 from time import perf_counter
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -83,8 +84,12 @@ def test_financial_projection_marks_without_fills_is_pure_and_matches_reconcilia
 
 def test_monitoring_does_not_split_passive_engine_batches(tmp_path):
     async def check():
-        controller = ReplayRunController(ReplayRunDefinition(session_date=date(2026,7,28), start_time=time(9,45),
-            mode=ReplayMode.BACKTEST, tickers=('AAPL',), configuration_revision=approved_configuration()), runtime_root=tmp_path)
+        with patch('src.backend.experimental_structure_book.resolve', return_value={
+            'version': 'causal-level-book-v7-mle-1', 'ticker': '*',
+            'start': '2026-01-01', 'end': '2026-12-31', 'fingerprint': 'f' * 64,
+        }):
+            controller = ReplayRunController(ReplayRunDefinition(session_date=date(2026,7,28), start_time=time(9,45),
+                mode=ReplayMode.BACKTEST, tickers=('AAPL',), configuration_revision=approved_configuration()), runtime_root=tmp_path)
         controller._runtime = object()
         controller._journal = object()
         controller._pending_passive_market_events = [quote(bid=99, ask=100)]
@@ -93,6 +98,12 @@ def test_monitoring_does_not_split_passive_engine_batches(tmp_path):
             capture.assert_not_called()
             assert len(controller._pending_passive_market_events) == 1
             controller._pending_passive_market_events.clear()
+            await controller._publish(force=True)
+            capture.assert_called_once()
+            # Strategy 1 V4 has no legacy canvas reader. A forced progress
+            # update must not deep-copy every assignment for that path.
+            controller._journal_publisher = SimpleNamespace(
+                writer=SimpleNamespace(journal_profile='backtest_v4'))
             await controller._publish(force=True)
             capture.assert_called_once()
     asyncio.run(check())
