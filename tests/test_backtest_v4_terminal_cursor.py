@@ -60,3 +60,57 @@ def test_v4_terminal_fences_cursor_before_lifecycle(monkeypatch):
     assert [name for name, _ in calls] == [
         "cursor", "lifecycle", "publish_terminal"]
     assert controller._runtime_finished is True
+
+
+def test_v4_terminal_reuses_inflight_final_cursor(monkeypatch):
+    day = date(2026, 8, 18)
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST,
+                                            session_date=day)
+    controller._account_map = {"A": "SIM-01-A"}
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._runtime_finished = False
+    controller._source_cursor = {"session_date": day, "boundary_ms": 100,
+                                 "sequence": 1}
+    controller._frame_cursor = {}
+    controller.current_time = market_day_boundary(day, 100)
+    calls = []
+
+    async def fence(_at, *, checkpoint_status):
+        raise AssertionError(f"duplicate terminal cursor fence: {checkpoint_status}")
+
+    async def finish(*, status):
+        calls.append("lifecycle")
+        controller._journal.append(
+            run_id=RUN, category="lifecycle", entity_type="run",
+            entity_id=RUN, event_time=controller.current_time,
+            payload={"status": status})
+
+    def enqueue(_captures):
+        calls.append("publish_terminal")
+        return asyncio.create_task(asyncio.sleep(0))
+
+    publisher = SimpleNamespace(
+        writer=SimpleNamespace(journal_profile="backtest_v4"),
+        _source_cursor="start", enqueue_terminal=enqueue,
+    )
+    controller._journal_publisher = publisher
+    controller._runtime = SimpleNamespace(
+        finish=finish,
+        portfolio=SimpleNamespace(capture_recovery_snapshot=lambda *_a, **_k:
+                                  object()),
+    )
+    monkeypatch.setattr(controller, "_save_restart_checkpoint_responsive", fence)
+
+    async def exercise():
+        async def prior_commit():
+            await asyncio.sleep(0)
+            publisher._source_cursor = "2026-08-18:100"
+            calls.append("cursor")
+
+        controller._checkpoint_io_task = asyncio.create_task(prior_commit())
+        await controller._finish_fixed_v4("completed")
+
+    asyncio.run(exercise())
+    assert calls == ["cursor", "lifecycle", "publish_terminal"]

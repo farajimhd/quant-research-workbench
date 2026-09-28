@@ -7052,6 +7052,19 @@ class ReplayRunController:
         boundary_id, _ = backtest_cursor_record_fields(
             self._source_cursor, self._frame_cursor, completed_at=cursor_time)
         phase_started = time.perf_counter()
+        # A nonblocking checkpoint at this same completed boundary may still
+        # be in flight. Resolve its durable receipt before deciding whether a
+        # second running commit is necessary for the terminal cursor.
+        prior = getattr(self, '_checkpoint_io_task', None)
+        if prior is not None:
+            try:
+                await asyncio.shield(prior)
+            except asyncio.CancelledError:
+                await prior
+                raise
+        publish_error = getattr(self, '_journal_publish_error', None)
+        if publish_error is not None:
+            raise RuntimeError('Fixed Backtest journal publication failed') from publish_error
         if publisher._source_cursor != boundary_id:
             await self._save_restart_checkpoint_responsive(
                 cursor_time, checkpoint_status='running')
