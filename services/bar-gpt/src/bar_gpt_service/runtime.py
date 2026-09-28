@@ -25,6 +25,7 @@ from .sources import (
     consume_qmd_events,
 )
 from .warm_snapshots import WarmSnapshotStore
+from .prediction_journal import PredictionJournal
 
 
 class ContextWarmingError(RuntimeError):
@@ -114,6 +115,7 @@ class BarGptRuntime:
         # configured capacity available to bounded interactive scopes.
         self._warm_gate = PrioritySemaphore(config.warm_concurrency, background_limit=1)
         self._stop_requested = Event()
+        self._prediction_journal = PredictionJournal(config.runtime_root / "predictions")
         self._pending_historical: dict[tuple[str, str], list[RawBar]] = {}
         self._snapshot_store: WarmSnapshotStore | None = None
         self._event_lock = RLock()
@@ -128,6 +130,8 @@ class BarGptRuntime:
 
     async def start(self) -> None:
         self._stop_requested.clear()
+        self._prediction_journal.close()
+        self._prediction_journal = PredictionJournal(self.config.runtime_root / "predictions")
         runtime_parent = self.config.runtime_root.parent
         if not runtime_parent.exists():
             raise RuntimeError(f"required runtime root is unavailable: {runtime_parent}")
@@ -175,6 +179,7 @@ class BarGptRuntime:
         await asyncio.gather(*self._warm_tasks.values(), *self._tasks, return_exceptions=True)
         self._warm_tasks.clear()
         self._tasks.clear()
+        await asyncio.to_thread(self._prediction_journal.close)
 
     def health(self) -> dict[str, Any]:
         active = self.active_tickers()
@@ -616,11 +621,7 @@ class BarGptRuntime:
         asyncio.create_task(self._publish_backend(prediction))
 
     def _append_prediction(self, prediction: dict[str, Any]) -> None:
-        day = datetime.now(UTC).date().isoformat()
-        path = self.config.runtime_root / "predictions" / f"{day}.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(prediction, separators=(",", ":"), allow_nan=False) + "\n")
+        self._prediction_journal.append(prediction)
 
     async def _publish_backend(self, prediction: dict[str, Any]) -> None:
         payload = {

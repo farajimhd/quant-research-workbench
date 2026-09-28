@@ -124,3 +124,18 @@ Tests exercise real CPU checkpoint loading, inference, decoding, journaling, res
 native target equality, future-data exclusion, reconciliation failures, immutable
 manifests, GPU contention refusal and scoring. Tiny synthetic test weights and bars
 are implementation evidence only, never market-quality or capacity evidence.
+
+Prediction journals retain an open daily file, serialize appends, and flush each
+record before publication completes. Rotation and shutdown close the file. This
+preserves the prior JSONL format and buffer visibility; neither version provides
+an fsync/power-loss guarantee. Keep pre-change capacity evidence separately from
+reruns of this implementation.
+
+Prepared packets remain bound to their implementation hash. Reusing packets after
+a journal-only change requires a new derived dataset directory and explicit
+compatibility evidence: retain the parent plan identity and preparation code hash,
+verify every packet hash unchanged, and record an exhaustive code-file comparison
+showing only the reviewed journal/lifecycle and test changes. All data preparation,
+feature, cache, model, decoding and scoring code must match. Do not overwrite the
+original manifests or bypass replay's hash check. Any data-path change requires
+new preparation and parity evidence.
