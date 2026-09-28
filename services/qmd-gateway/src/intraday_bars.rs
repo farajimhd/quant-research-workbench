@@ -464,7 +464,7 @@ struct EventPoint {
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
-struct EventIdentity {
+pub(crate) struct EventIdentity {
     sip_timestamp_us: u64,
     source_sequence: u64,
     event_meta: u8,
@@ -2337,7 +2337,7 @@ fn sort_key(event: &LiveCompactEvent) -> SortKey {
     )
 }
 
-fn event_identity(event: &LiveCompactEvent) -> EventIdentity {
+pub(crate) fn event_identity(event: &LiveCompactEvent) -> EventIdentity {
     EventIdentity {
         sip_timestamp_us: event.sip_timestamp_us,
         source_sequence: event.source_sequence,

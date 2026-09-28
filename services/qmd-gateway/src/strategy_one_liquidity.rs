@@ -7,10 +7,12 @@
 
 use crate::bars::{TradeAggregationRules, REGULAR_SESSION_END_SECONDS, REGULAR_SESSION_START_SECONDS};
 use crate::compact_event::{CompactEventDecoder, LiveCompactEvent, TRADE_EVENT_TYPE};
+use crate::intraday_bars::{event_identity, EventIdentity};
 use crate::strategy_one_trade_reporting::DELAYED;
 use chrono::{Datelike, Timelike};
 use chrono_tz::America::New_York;
 use serde::Serialize;
+use std::collections::HashSet;
 
 const BUCKET_US: u64 = 100_000;
 const START_US: u64 = 4 * 3_600_000_000;
@@ -90,6 +92,7 @@ pub struct LiquidityReducer {
     session_date: Option<String>,
     last_key: Option<(u64, u64, u8, u64)>,
     pending: Option<CompletedLiquidityBucket>,
+    pending_seen: HashSet<EventIdentity>,
     quote: Option<Quote>,
     cumulative_volume: f64,
     cumulative_notional: f64,
@@ -128,6 +131,7 @@ impl LiquidityReducer {
         let mut completed = None;
         if self.session_date.as_ref().is_some_and(|prior| prior != &date) {
             completed = self.pending.take();
+            self.pending_seen.clear();
             self.quote = None;
             self.cumulative_volume = 0.0;
             self.cumulative_notional = 0.0;
@@ -138,6 +142,12 @@ impl LiquidityReducer {
         let index = ((local_us - START_US) / BUCKET_US) as u32;
         if self.pending.as_ref().is_some_and(|row| row.bucket_index != index) {
             completed = self.pending.take();
+            self.pending_seen.clear();
+        }
+        // Match ordinary bars' canonical identity. A replayed source event
+        // must not add a second trade or grant broker liquidity twice.
+        if !self.pending_seen.insert(event_identity(event)) {
+            return Ok(completed);
         }
         let row = self.pending.get_or_insert_with(|| CompletedLiquidityBucket {
             session_date: date,
@@ -174,6 +184,7 @@ impl LiquidityReducer {
     /// complete. A wall-clock tick by itself is not source completeness proof.
     pub fn take_completed_through(&mut self, watermark_us: u64) -> Option<CompletedLiquidityBucket> {
         if self.pending.as_ref().is_some_and(|row| row.bucket_end_us <= watermark_us) {
+            self.pending_seen.clear();
             self.pending.take()
         } else {
             None
@@ -354,6 +365,25 @@ mod tests {
         assert_eq!(quote_only.price_valid, 0);
         assert_eq!(quote_only.cumulative_volume, 100.0);
         assert_eq!(quote_only.execution_vwap, 10.0);
+    }
+
+    #[test]
+    fn replayed_trade_cannot_double_count_volume_or_broker_liquidity() {
+        let (decoder, rules) = context();
+        let mut reducer = LiquidityReducer::default();
+        reducer.push(&event(100, 1, false), &decoder, &rules).unwrap();
+        reducer.push(&event(100, 2, true), &decoder, &rules).unwrap();
+        let mut repeated = event(100, 2, true);
+        repeated.arrival_sequence = 3;
+        assert!(reducer.push(&repeated, &decoder, &rules).unwrap().is_none());
+        let row = reducer.push(&event(200, 4, false), &decoder, &rules)
+            .unwrap().unwrap();
+        assert_eq!(row.event_count, 2);
+        assert_eq!(row.source_trade_count, 1);
+        assert_eq!(row.trade_count, 1);
+        assert_eq!(row.volume, 100.0);
+        assert_eq!(row.execution_volume, 100.0);
+        assert_eq!(row.source_arrival_sequences, vec![1, 2]);
     }
 
     #[test]
