@@ -67,6 +67,9 @@ from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMB
 from src.trading_runtime.strategy_one_management_snapshot import (
     TABLES as MANAGER_SNAPSHOT_TABLES,
 )
+from src.trading_runtime.strategy_one_broker_match_snapshot import (
+    TABLES as BROKER_MATCH_SNAPSHOT_TABLES,
+)
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES as PROTECTION_SNAPSHOT_TABLES,
 )
@@ -80,6 +83,7 @@ if TYPE_CHECKING:
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS.update({table.name: table for table in (
     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
+    *BROKER_MATCH_SNAPSHOT_TABLES,
 )})
 _CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
@@ -1886,6 +1890,9 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     from src.trading_runtime.strategy_one_protection_snapshot import (
         TABLES as protection_tables,
     )
+    from src.trading_runtime.strategy_one_broker_match_snapshot import (
+        TABLES as broker_match_tables,
+    )
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
                  RESERVATION_REASON,
@@ -1893,7 +1900,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
                  *OMS_TACTIC_TABLES,
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES,
-                 *protection_tables, *manager_tables)
+                 *protection_tables, *manager_tables, *broker_match_tables)
     by_name = {}
     for contract in contracts:
         previous = by_name.setdefault(contract.name, contract)
