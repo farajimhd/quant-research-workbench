@@ -1848,11 +1848,15 @@ def journal_permission_preflight(
     client: Any, *, journal_tables: frozenset[str] | None = None,
     read_only_tables: frozenset[str] = frozenset(),
     reference_read_tables: frozenset[tuple[str, str]] = frozenset(),
+    allow_live_event_replay: bool = False,
 ) -> None:
     """Fail closed unless this principal can only read market and append journal."""
     journal = ({table.name for table in TABLES} if journal_tables is None
                else set(journal_tables))
-    if not reference_read_tables <= frozenset({("q_live", "market_stock_split_v1")}):
+    allowed_references = {("q_live", "market_stock_split_v1")}
+    if allow_live_event_replay:
+        allowed_references.add(("q_live", "events"))
+    if not reference_read_tables <= allowed_references:
         raise ValueError("Journal reference-read exception is outside the V7 split contract")
     market = MARKET_READ_TABLES
     # The staged live-signal profile is an explicit, all-or-nothing extension

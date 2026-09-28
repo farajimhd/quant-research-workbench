@@ -136,7 +136,8 @@ def live_v4_preflight(client: Any) -> None:
     journal_permission_preflight(
         client, journal_tables=plan.insert_arte,
         read_only_tables=plan.select_arte - plan.insert_arte - MARKET_READ_TABLES,
-        reference_read_tables=plan.select_reference)
+        reference_read_tables=plan.select_reference,
+        allow_live_event_replay=True)
     if client.execute("SELECT currentUser()").strip() != PRINCIPAL:
         raise RuntimeError("Live V4 credential authenticates as another principal")
 

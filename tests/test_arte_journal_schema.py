@@ -366,6 +366,13 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     assert "SHOW GRANTS FINAL" in client.calls
     assert sum(sql.startswith("CHECK GRANT ") for sql in client.calls) <= 8
     reference = frozenset({("q_live", "market_stock_split_v1")})
+    live_replay = frozenset({("q_live", "events")})
+    with pytest.raises(ValueError, match="outside the V7 split contract"):
+        journal_permission_preflight(client, reference_read_tables=live_replay)
+    with pytest.raises(ValueError, match="reference table"):
+        journal_permission_preflight(
+            client, reference_read_tables=live_replay,
+            allow_live_event_replay=True)
     with pytest.raises(ValueError, match="reference table"):
         journal_permission_preflight(client, reference_read_tables=reference)
     client.reference = True

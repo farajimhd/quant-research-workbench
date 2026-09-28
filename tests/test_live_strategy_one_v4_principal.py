@@ -86,6 +86,7 @@ def test_preflight_uses_exact_plan_and_checks_principal(monkeypatch):
     assert calls[2][1]["read_only_tables"] == (
         plan.select_arte - plan.insert_arte - live.MARKET_READ_TABLES)
     assert calls[2][1]["reference_read_tables"] == plan.select_reference
+    assert calls[2][1]["allow_live_event_replay"] is True
     with pytest.raises(RuntimeError, match="another principal"):
         live.live_v4_preflight(Client("backtest_v4_runner"))
 
