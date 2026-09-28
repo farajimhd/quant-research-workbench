@@ -19,6 +19,9 @@ def test_secure_keeper_overlay_is_strict_and_does_not_replace_private_port():
     bootstrap = (CLICKHOUSE / "clickhouse_bootstrap.sh").read_text(encoding="utf-8")
     assert 'CLICKHOUSE_KEEPER_LAN_TLS_ENABLED:-false' in bootstrap
     assert 'rm -f "$config_target/51-trading-keeper-lan-tls.xml"' in bootstrap
+    launcher = (CLICKHOUSE / "start_clickhouse_on_mounted_disk_wsl.ps1").read_text(
+        encoding="utf-8")
+    assert "connectaddress=$($KeeperWslIp[0])" in launcher
 
 
 def test_certificate_provisioner_keeps_private_keys_on_origin_hosts():

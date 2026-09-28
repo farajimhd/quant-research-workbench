@@ -557,7 +557,7 @@ if ($EffectiveEnableKeeperLanTls) {
     }
     if ($ExistingForward.Count -eq 0) {
         netsh interface portproxy add v4tov4 listenaddress=$KeeperLanIp listenport=9281 `
-            connectaddress=$KeeperWslIp[0] connectport=9281 | Out-Null
+            connectaddress=$($KeeperWslIp[0]) connectport=9281 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Could not publish the restricted Keeper TLS forward." }
     }
     Write-Host "Keeper mTLS: workstation $KeeperLanIp`:9281 forwards to WSL for laptop $KeeperLaptopIp only."
