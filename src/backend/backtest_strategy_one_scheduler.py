@@ -9,9 +9,11 @@ decision; the broker still enforces new-order activation delay.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass
 from contextlib import closing
 from heapq import heappop, heappush
+from itertools import islice
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, Mapping
 
@@ -36,6 +38,43 @@ if TYPE_CHECKING:
 
 MarketGroup = tuple[int, Mapping[int, Mapping]]
 MarketSource = Callable[[str, int], Iterator[MarketGroup]]
+
+
+class _BufferedMarketIterator(Iterator[MarketGroup]):
+    """Bound the read-ahead; expose when the next row may need market I/O."""
+
+    def __init__(self, source: Iterator[MarketGroup], *, batch_size: int = 256) -> None:
+        if batch_size < 1:
+            raise ValueError("Active market read-ahead must be positive")
+        self._source = source
+        self._batch_size = batch_size
+        self._buffer: deque[MarketGroup] = deque()
+        self._closed = False
+
+    @property
+    def has_buffered_next(self) -> bool:
+        return bool(self._buffer)
+
+    def __iter__(self) -> _BufferedMarketIterator:
+        return self
+
+    def __next__(self) -> MarketGroup:
+        if self._closed:
+            raise StopIteration
+        if not self._buffer:
+            self._buffer.extend(islice(self._source, self._batch_size))
+        if not self._buffer:
+            raise StopIteration
+        return self._buffer.popleft()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._buffer.clear()
+        close = getattr(self._source, "close", None)
+        if close is not None:
+            close()
 
 
 def build_certified_strategy_one_scheduler(
@@ -111,6 +150,9 @@ def persisted_active_market_source(
         raise ValueError("Active Strategy 1 source lacks a certified fixed session")
 
     def source(ticker: str, after_boundary_ms: int) -> Iterator[MarketGroup]:
+        return _BufferedMarketIterator(rows_for_ticker(ticker, after_boundary_ms))
+
+    def rows_for_ticker(ticker: str, after_boundary_ms: int) -> Iterator[MarketGroup]:
         started = perf_counter() if stage_time is not None else 0.0
         first_recorded = False
         if ticker not in plan.tickers or type(after_boundary_ms) is not int \
@@ -309,6 +351,27 @@ class StrategyOneBoundaryScheduler:
     def active_tickers(self) -> tuple[str, ...]:
         return tuple(sorted(self._active))
 
+    def pop_next_may_block(self) -> bool:
+        """Only the refill boundary must enter a worker thread."""
+        if self._closed:
+            raise RuntimeError("Strategy 1 scheduler is closed")
+        valid = [head for head in self._heads
+                 if head[1] in self._active
+                 and head[2] == self._generation[head[1]]]
+        if not valid:
+            return False
+        active_at = min(head[0] for head in valid)
+        candidate_at = (int(self._candidate.market_row["boundary_ms"])
+                        if self._candidate is not None else None)
+        activation_at = (self._activation.boundary_ms
+                         if self._activation is not None else None)
+        if any(boundary is not None and boundary < active_at
+               for boundary in (candidate_at, activation_at)):
+            return False
+        return any(not isinstance(self._active[ticker], _BufferedMarketIterator)
+                   or not self._active[ticker].has_buffered_next
+                   for boundary, ticker, _, _ in valid if boundary == active_at)
+
     def pop_next(self) -> StrategyOneBoundaryWork | None:
         if self._closed:
             raise RuntimeError("Strategy 1 scheduler is closed")
@@ -452,7 +515,7 @@ async def run_strategy_one_boundaries(
             # vectorized preparation gain. Active streams alone can perform
             # a ClickHouse fetch while advancing their prefetched head.
             active = scheduler.active_tickers
-            if set(active) - set(scheduler.exhausted_tickers):
+            if scheduler.pop_next_may_block():
                 work = await timed("strategy_one_scheduler", asyncio.to_thread(
                     scheduler.pop_next))
             else:

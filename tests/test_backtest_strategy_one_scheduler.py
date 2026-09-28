@@ -9,6 +9,7 @@ from src.backend.backtest_strategy_one_scheduler import (
     StrategyOneBoundaryScheduler, persisted_active_market_source,
     run_strategy_one_boundaries,
 )
+from src.backend import backtest_strategy_one_scheduler as scheduler_module
 from src.backend.backtest_strategy_one_market import (
     StrategyOneDecisionCandidate, attach_sparse_candidate_evidence,
 )
@@ -29,6 +30,35 @@ from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 
 
 DAY = "2026-08-18"
+
+
+def test_active_market_read_ahead_refills_only_at_bounded_edges():
+    fetched = []
+    def rows():
+        for boundary in (100, 200, 300, 400, 500):
+            fetched.append(boundary)
+            yield group("AAA", boundary)
+
+    buffered = scheduler_module._BufferedMarketIterator(rows(), batch_size=2)
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter(()),
+        active_source=lambda _ticker, _after: buffered)
+    clock.activate("AAA")
+    assert fetched == [100, 200]
+    assert not clock.pop_next_may_block()
+    assert clock.pop_next().boundary_ms == 100
+    assert fetched == [100, 200]
+    assert clock.pop_next_may_block()
+    assert clock.pop_next().boundary_ms == 200
+    assert fetched == [100, 200, 300, 400]
+    assert not clock.pop_next_may_block()
+    assert clock.pop_next().boundary_ms == 300
+    assert clock.pop_next_may_block()
+    assert clock.pop_next().boundary_ms == 400
+    assert fetched == [100, 200, 300, 400, 500]
+    assert clock.pop_next().boundary_ms == 500
+    assert clock.pop_next() is None
+    clock.close()
 
 
 def test_financially_active_symbols_include_open_orders_and_nonflat_positions():
