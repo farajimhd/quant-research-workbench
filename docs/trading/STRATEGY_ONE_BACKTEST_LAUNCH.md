@@ -12,15 +12,20 @@ and journal credential files over the protected workstation share. It copies
 no credential into the repository or a laptop artifact. All three principals
 were verified from the laptop with read-only `SELECT 1` on 2026-09-28.
 
-**Current operational blocker:** the user selected a secured LAN Keeper endpoint
-for the laptop. The client now requires an explicit private IPv4 endpoint,
-CA certificate, and client certificate/key; it enables TLS, peer verification,
-and hostname verification. Keeper's secure listener, mutually authenticated
-certificates, laptop-only firewall rule, and laptop-owned dedicated Backtest
-credentials are available; Keeper mTLS must still be deployed and verified.
-Therefore starting the local
-app does not yet make Strategy 1 Backtest launchable. Do not expose the existing
-plaintext Keeper port 9181 on the LAN or bypass TLS verification.
+**Keeper cutover:** the user selected a secured LAN Keeper endpoint. The client
+requires an explicit private IPv4 endpoint, CA certificate, and client
+certificate/key; it enables TLS, peer verification, and hostname verification.
+The laptop client key and workstation CA/server keys remain on their origin
+hosts. The managed ClickHouse start performs a certificate preflight before
+stopping the server, installs the strict-TLS listener on 9281, preserves the
+block on plaintext 9181, and publishes a Windows forward restricted to laptop
+192.168.1.99. The server certificate names workstation 192.168.1.218. If
+either address changes, update the managed settings and reissue the certificate
+before restart; never bypass verification or widen the firewall rule.
+
+The listener and end-to-end laptop Keeper session must still be restarted and
+verified before a local Strategy 1 Backtest is launchable. Saved-run evidence
+pages can be read directly from ClickHouse without starting a new Backtest.
 The workstation-backend and SSH-API procedure used in the historical tests
 below was a validation setup, not the app deployment contract.
 

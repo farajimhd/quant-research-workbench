@@ -32,6 +32,8 @@ param(
     # Secure Keeper remains disabled unless certificates and a laptop-only
     # firewall/port-forward have been provisioned explicitly.
     [string]$EnableKeeperLanTls = "",
+    [string]$KeeperLanIp = "",
+    [string]$KeeperLaptopIp = "",
 
     # =============================================================================
     # Set only when you intentionally want to re-run the expensive recursive
@@ -370,7 +372,17 @@ $EffectiveEnableKeeperLanTls = Resolve-BoolSetting `
     -ParameterValue $EnableKeeperLanTls `
     -EnvironmentNames @("CLICKHOUSE_KEEPER_LAN_TLS_ENABLED") `
     -DotEnvValues $RepoDotEnvValues `
-    -Default $false
+    -Default $true
+$KeeperLanIp = Resolve-Setting `
+    -ParameterValue $KeeperLanIp `
+    -EnvironmentNames @("CLICKHOUSE_KEEPER_LAN_IP") `
+    -DotEnvValues $RepoDotEnvValues `
+    -Default "192.168.1.218"
+$KeeperLaptopIp = Resolve-Setting `
+    -ParameterValue $KeeperLaptopIp `
+    -EnvironmentNames @("CLICKHOUSE_KEEPER_LAPTOP_IP") `
+    -DotEnvValues $RepoDotEnvValues `
+    -Default "192.168.1.99"
 $EffectiveForcePermissionRepair = Resolve-BoolSetting `
     -ParameterValue $ForcePermissionRepair `
     -EnvironmentNames @("CLICKHOUSE_FORCE_PERMISSION_REPAIR") `
@@ -384,6 +396,8 @@ $EffectiveStartupReadyTimeoutSeconds = Resolve-PositiveIntegerSetting `
 
 Assert-IPv4Literal -Name "WorkstationLanIp" -Value $WorkstationLanIp
 Assert-IPv4Literal -Name "QuantResearchWorkbenchIp" -Value $QuantResearchWorkbenchIp
+Assert-IPv4Literal -Name "KeeperLanIp" -Value $KeeperLanIp
+Assert-IPv4Literal -Name "KeeperLaptopIp" -Value $KeeperLaptopIp
 Assert-Sha256Hex -Name "AdminPasswordSha256Hex" -Value $AdminPasswordSha256Hex
 Assert-Sha256Hex -Name "TradingDashboardAppPasswordSha256Hex" -Value $TradingDashboardAppPasswordSha256Hex
 Assert-Sha256Hex -Name "QuantResearchWorkbenchPasswordSha256Hex" -Value $QuantResearchWorkbenchPasswordSha256Hex
@@ -496,6 +510,57 @@ $BootstrapEnv = @(
 wsl -d $Distro -u root --cd / -- env @BootstrapEnv bash "$BootstrapScriptWsl"
 if ($LASTEXITCODE -ne 0) {
     throw "ClickHouse bootstrap failed in WSL distro '$Distro' with exit code $LASTEXITCODE."
+}
+
+if ($EffectiveEnableKeeperLanTls) {
+    # Only the laptop's exact LAN address may reach the mTLS listener. Keep
+    # plaintext 9181 blocked. WSL's NAT address is rediscovered each restart.
+    $KeeperRuleName = "QuantWorkbench-ClickHouse-Keeper-TLS-9281"
+    $KeeperRule = Get-NetFirewallRule -Name $KeeperRuleName -ErrorAction SilentlyContinue
+    if ($null -eq $KeeperRule) {
+        New-NetFirewallRule -Name $KeeperRuleName `
+            -DisplayName "Keeper mTLS from Quant Workbench laptop only" `
+            -Direction Inbound -Action Allow -Enabled True -Profile Any `
+            -Protocol TCP -LocalAddress $KeeperLanIp `
+            -RemoteAddress $KeeperLaptopIp -LocalPort 9281 | Out-Null
+        $KeeperRule = Get-NetFirewallRule -Name $KeeperRuleName -ErrorAction Stop
+    }
+    $KeeperPortFilter = $KeeperRule | Get-NetFirewallPortFilter
+    $KeeperAddressFilter = $KeeperRule | Get-NetFirewallAddressFilter
+    if ($KeeperRule.Enabled -ne "True" -or $KeeperRule.Direction -ne "Inbound" -or
+        $KeeperRule.Action -ne "Allow" -or $KeeperPortFilter.Protocol -ne "TCP" -or
+        $KeeperPortFilter.LocalPort -ne "9281" -or
+        $KeeperAddressFilter.LocalAddress -ne $KeeperLanIp -or
+        $KeeperAddressFilter.RemoteAddress -ne $KeeperLaptopIp) {
+        throw "Keeper mTLS firewall rule does not restrict traffic to the laptop."
+    }
+    $WslAddressCandidates = @(wsl -d $Distro -- hostname -I) -split '\s+'
+    $KeeperWslIp = @($WslAddressCandidates | Where-Object {
+        $_ -match '^172\.|^192\.168\.|^10\.' -and $_ -ne $KeeperLanIp
+    } | Select-Object -First 1)
+    if ($KeeperWslIp.Count -ne 1) {
+        throw "Could not identify the private WSL Keeper address."
+    }
+    Assert-IPv4Literal -Name "KeeperWslIp" -Value $KeeperWslIp[0]
+    $ExistingForward = @(netsh interface portproxy show v4tov4 | Where-Object {
+        $_ -match "^\s*$([regex]::Escape($KeeperLanIp))\s+9281\s+"
+    })
+    if ($ExistingForward.Count -gt 1) {
+        throw "Multiple Keeper portproxy entries exist; refusing to change them."
+    }
+    if ($ExistingForward.Count -eq 1) {
+        if ($ExistingForward[0] -notmatch "^\s*$([regex]::Escape($KeeperLanIp))\s+9281\s+$([regex]::Escape($KeeperWslIp[0]))\s+9281\s*$") {
+            netsh interface portproxy delete v4tov4 listenaddress=$KeeperLanIp listenport=9281 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not retire the prior exact Keeper forward." }
+            $ExistingForward = @()
+        }
+    }
+    if ($ExistingForward.Count -eq 0) {
+        netsh interface portproxy add v4tov4 listenaddress=$KeeperLanIp listenport=9281 `
+            connectaddress=$KeeperWslIp[0] connectport=9281 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not publish the restricted Keeper TLS forward." }
+    }
+    Write-Host "Keeper mTLS: workstation $KeeperLanIp`:9281 forwards to WSL for laptop $KeeperLaptopIp only."
 }
 
 Write-Host "==== Done ===="

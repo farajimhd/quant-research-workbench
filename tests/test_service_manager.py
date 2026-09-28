@@ -91,6 +91,8 @@ def test_catalog_defines_operator_profiles_and_dynamic_dependencies() -> None:
     assert services["frontend"].dependencies == ("backend",)
     assert services["backend"].environment["BACKTEST_V4_RUNNER_CREDENTIAL_FILE"].startswith(
         "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\")
+    assert services["backend"].environment["TRADING_KEEPER_LAN_HOST"] == "192.168.1.218"
+    assert services["backend"].environment["TRADING_KEEPER_LAN_PORT"] == "9281"
     assert services["reference-gateway"].dependencies == ("ibkr-supervisor",)
     assert services["news-hypothesis"].dependencies == ("model-gateway",)
     assert services["text-intelligence"].dependencies == ()

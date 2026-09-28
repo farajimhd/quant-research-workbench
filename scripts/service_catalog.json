@@ -57,7 +57,12 @@
       "environment": {
         "BACKTEST_V3_READ_CREDENTIAL_FILE": "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\backtest_v3_read.env",
         "BACKTEST_V4_RUNNER_CREDENTIAL_FILE": "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\backtest_v4_runner.env",
-        "TRADING_JOURNAL_CREDENTIAL_FILE": "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\trading_journal.env"
+        "TRADING_JOURNAL_CREDENTIAL_FILE": "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\trading_journal.env",
+        "TRADING_KEEPER_LAN_HOST": "192.168.1.218",
+        "TRADING_KEEPER_LAN_PORT": "9281",
+        "TRADING_KEEPER_CA_FILE": "D:\\TradingML\\secrets\\keeper-lan\\ca.crt",
+        "TRADING_KEEPER_CLIENT_CERT_FILE": "D:\\TradingML\\secrets\\keeper-lan\\client.crt",
+        "TRADING_KEEPER_CLIENT_KEY_FILE": "D:\\TradingML\\secrets\\keeper-lan\\client.key"
       },
       "start_priority": 80,
       "fingerprint_env": ["TEXT_INTELLIGENCE_URL", "TEXT_INTELLIGENCE_SEC_REVIEW_ADMISSION_TIMEOUT_SECONDS"],
