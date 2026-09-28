@@ -71,3 +71,12 @@ verified boundary. Targeted browser review passed at 1440×900/dark/100% and
 temporary backend, tunnels, and frontend were stopped; the pre-existing
 workstation backend on port 8000 was left running. This verifies cold saved
 review and chart rendering, not live order admission.
+
+A read-only full-market Aug 18 preflight profile on the workstation ran twice
+in one process and once in a fresh process. With profiling overhead, the two
+cold calls took 32.113s and 33.178s; the in-process warm call took 3.883s.
+Both cold profiles included a Keeper connection drop during Kazoo session
+shutdown, with 11.615s and 12.592s spent in `ManagedKeeperSession.close`.
+These profiled values are not the uninstrumented app latency above. The
+probe used plan-only mode and inserted no market or journal rows. The
+repeatable Keeper close cost remains a preflight optimization target.
