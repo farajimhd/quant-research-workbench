@@ -1156,6 +1156,8 @@ pub struct CompactEventClickHouseWriter {
 struct CompactPersistWork {
     events: Vec<LiveCompactEvent>,
     issues: Vec<(LiveCompactEvent, CompactEventIssue)>,
+    events_inserted: bool,
+    coverage_sql: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1518,6 +1520,8 @@ impl CompactEventClickHouseWriter {
                 Vec::with_capacity(self.config.compact_event_max_clickhouse_batch),
             ),
             issues: std::mem::take(issue_batch),
+            events_inserted: false,
+            coverage_sql: None,
         };
         if let Err(error) = sender.send(work).await {
             eprintln!(
@@ -1525,7 +1529,7 @@ impl CompactEventClickHouseWriter {
             );
             let mut work = error.0;
             while !work.events.is_empty() || !work.issues.is_empty() {
-                self.flush_persisted(&mut work.events).await;
+                self.flush_persisted(&mut work).await;
                 self.flush_issues(&mut work.issues).await;
                 if !work.events.is_empty() || !work.issues.is_empty() {
                     sleep(Duration::from_millis(250)).await;
@@ -1551,7 +1555,7 @@ impl CompactEventClickHouseWriter {
                 work.issues.len() as u64,
             );
             while !work.events.is_empty() || !work.issues.is_empty() {
-                self.flush_persisted(&mut work.events).await;
+                self.flush_persisted(&mut work).await;
                 self.flush_issues(&mut work.issues).await;
                 if !work.events.is_empty() || !work.issues.is_empty() {
                     sleep(Duration::from_millis(250)).await;
@@ -1652,61 +1656,73 @@ impl CompactEventClickHouseWriter {
         }
     }
 
-    async fn flush_persisted(&self, batch: &mut Vec<LiveCompactEvent>) {
-        if batch.is_empty() || !self.config.persist_compact_events {
+    async fn flush_persisted(&self, work: &mut CompactPersistWork) {
+        if work.events.is_empty() || !self.config.persist_compact_events {
             return;
         }
-        batch.sort_by(|left, right| {
-            left.ticker
-                .cmp(&right.ticker)
-                .then_with(|| EventSortKey::from_event(left).cmp(&EventSortKey::from_event(right)))
-        });
-        match self.insert_events(batch).await {
-            Ok(()) => {
-                let count = batch.len() as u64;
-                self.metrics.inc_compact_events_persisted(count);
-                let coverage_result = self
-                    .record_live_event_coverage("compact_persisted", batch, "", 0)
-                    .await;
-                // A live consumer may act on a source receipt only after both
-                // canonical rows and their coverage evidence are acknowledged.
-                if coverage_result.is_ok() {
-                    self.durability.mark_persisted(batch);
+        if !work.events_inserted {
+            work.events.sort_by(|left, right| {
+                left.ticker
+                    .cmp(&right.ticker)
+                    .then_with(|| EventSortKey::from_event(left).cmp(&EventSortKey::from_event(right)))
+            });
+            match self.insert_events(&work.events).await {
+                Ok(()) => {
+                    let count = work.events.len() as u64;
+                    self.metrics.inc_compact_events_persisted(count);
+                    work.events_inserted = true;
+                    self.metrics.record_lane_success(
+                        "compact_events",
+                        count,
+                        "Committed normalized compact events to q_live.events.",
+                    );
                 }
-                batch.clear();
-                self.metrics.record_lane_success(
-                    "compact_events",
-                    count,
-                    "Committed normalized compact events to q_live.events.",
-                );
-                match coverage_result {
-                    Ok(()) => self.metrics.record_lane_success(
-                        "coverage_ledger",
-                        1,
-                        "Recorded compact-event coverage confirmation.",
-                    ),
-                    Err(error) => {
-                        self.metrics.record_lane_failure("coverage_ledger", &error);
-                        eprintln!("ClickHouse qmd live coverage update failed: {error}");
+                Err(error) => {
+                    match self
+                        .record_live_event_coverage("failed", &work.events, &error, 1)
+                        .await
+                    {
+                        Ok(()) => self.metrics.record_lane_success(
+                            "coverage_ledger",
+                            1,
+                            "Recorded the compact persistence failure for coverage recovery.",
+                        ),
+                        Err(coverage_error) => self
+                            .metrics
+                            .record_lane_failure("coverage_ledger", &coverage_error),
                     }
+                    self.metrics.record_lane_failure("compact_events", &error);
+                    eprintln!("ClickHouse compact event insert failed: {error}");
+                    return;
                 }
             }
+        }
+        if work.coverage_sql.is_none() {
+            work.coverage_sql = Some(
+                self.live_event_coverage_sql("compact_persisted", &work.events, "", 0)
+                    .await,
+            );
+        }
+        match self
+            .query(work.coverage_sql.as_deref().expect("coverage statement"), true)
+            .await
+        {
+            Ok(_) => {
+                // A live consumer may act only after canonical rows and their
+                // coverage receipt have both been acknowledged.
+                self.durability.mark_persisted(&work.events);
+                work.events.clear();
+                work.events_inserted = false;
+                work.coverage_sql = None;
+                self.metrics.record_lane_success(
+                    "coverage_ledger", 1, "Recorded compact-event coverage confirmation.",
+                );
+            }
             Err(error) => {
-                match self
-                    .record_live_event_coverage("failed", batch, &error, 1)
-                    .await
-                {
-                    Ok(()) => self.metrics.record_lane_success(
-                        "coverage_ledger",
-                        1,
-                        "Recorded the compact persistence failure for coverage recovery.",
-                    ),
-                    Err(coverage_error) => self
-                        .metrics
-                        .record_lane_failure("coverage_ledger", &coverage_error),
-                }
-                self.metrics.record_lane_failure("compact_events", &error);
-                eprintln!("ClickHouse compact event insert failed: {error}");
+                // Retain the identical coverage statement and source receipts.
+                // Rebuilding it would increment the cumulative window twice.
+                self.metrics.record_lane_failure("coverage_ledger", &error);
+                eprintln!("ClickHouse qmd live coverage update failed: {error}");
             }
         }
     }
@@ -2026,6 +2042,17 @@ impl CompactEventClickHouseWriter {
         if rows.is_empty() {
             return Ok(());
         }
+        let sql = self.live_event_coverage_sql(status, rows, error, error_count).await;
+        self.query(&sql, true).await.map(|_| ())
+    }
+
+    async fn live_event_coverage_sql(
+        &self,
+        status: &str,
+        rows: &[LiveCompactEvent],
+        error: &str,
+        error_count: u64,
+    ) -> String {
         let now = Utc::now();
         let grouped = compact_coverage_groups(rows);
         let mut windows = self.coverage_windows.lock().await;
@@ -2071,15 +2098,10 @@ impl CompactEventClickHouseWriter {
             .map(|row| row.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        self.query(
-            &format!(
-                "INSERT INTO {} FORMAT JSONEachRow\n{body}",
-                self.config.qmd_live_event_coverage_table
-            ),
-            true,
+        format!(
+            "INSERT INTO {} FORMAT JSONEachRow\n{body}",
+            self.config.qmd_live_event_coverage_table
         )
-        .await
-        .map(|_| ())
     }
 
     async fn execute(&self, sql: &str, use_database: bool) -> Result<(), String> {
