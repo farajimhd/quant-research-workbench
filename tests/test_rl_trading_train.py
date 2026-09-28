@@ -8,6 +8,7 @@ import torch
 from research.rl_trading.v1.common import bounds, digest, file_hash
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS
 from research.rl_trading.v1 import train, evaluate_supervised, evaluate_replay
+from research.rl_trading.v1.data import SessionShard
 from research.rl_trading.v1.model import MarketPolicy
 from src.market_engine.level_book_store import write
 
@@ -61,6 +62,18 @@ def test_flat_or_losing_replay_cannot_be_selected_as_profitable():
     assert not train._eligible_replay(report)
     report['val_profit'] = 1.
     assert train._eligible_replay(report)
+
+
+def test_streamed_shard_releases_touched_maps_without_changing_values(tmp_path):
+    shard = SessionShard(_shard(tmp_path/'day',date(2026,8,20)))
+    before = shard.arrays['features']
+    expected = float(before[0,0,0])
+    shard.release_mapped_pages()
+    assert before._mmap.closed
+    assert shard.arrays['features'] is not before
+    assert float(shard.arrays['features'][0,0,0]) == expected
+    shard.release_mapped_pages()
+    assert float(shard.arrays['features'][0,0,0]) == expected
 
 
 def test_warm_start_transfers_ticker_identity_by_name(tmp_path):

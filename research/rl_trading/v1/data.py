@@ -81,6 +81,22 @@ class SessionShard:
                 or not self.arrays['done'][-1] or np.any(self.arrays['done'][:-1])):
             raise ValueError('Training shard tensor shape or terminal contract changed')
 
+    def release_mapped_pages(self):
+        """Drop pages touched by a streamed session while retaining its file contract.
+
+        Windows keeps pages of live NumPy memory maps in the process working set.
+        Across many sessions this can exhaust host RAM even though only one
+        session is resident on the GPU. Reopening the certified files leaves
+        lightweight maps ready for the next epoch and unmaps the touched pages.
+        Call only after consumers of the old arrays have finished.
+        """
+        previous = self.arrays
+        remapped = {name: np.load(Path(array.filename),mmap_mode='r',allow_pickle=False)
+                    for name,array in previous.items()}
+        self.arrays = remapped
+        for array in previous.values():
+            array._mmap.close()
+
     def to_gpu(self, device: torch.device, ticker_vocab: dict[str,int],
                *, reserve_fraction: float = .3):
         if device.type != 'cuda':

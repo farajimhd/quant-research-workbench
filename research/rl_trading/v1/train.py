@@ -94,6 +94,7 @@ def _run_validation(model, shards, resident, device, vocab, batch_size,
                     del data
                     gc.collect()
                     torch.cuda.empty_cache()
+                    shard.release_mapped_pages()
     model.train()
     return dict(loss=totals['loss']/max(1,totals['samples']),
         **classification_metrics(confusion,exact))
@@ -112,6 +113,7 @@ def _run_closed_loop(model, shards, resident, device, vocab):
                     del data
                     gc.collect()
                     torch.cuda.empty_cache()
+                    shard.release_mapped_pages()
             if not result['complete']:
                 raise ValueError('Training replay did not reach liquidation')
             reports.append(dict(date=shard.plan['date'],profit=result['profit'],
@@ -374,6 +376,7 @@ def run(args):
                     del data
                     gc.collect()
                     torch.cuda.empty_cache()
+                    shard.release_mapped_pages()
                 if args.max_steps and global_step >= args.max_steps:
                     break
             torch.cuda.synchronize()
