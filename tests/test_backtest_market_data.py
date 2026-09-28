@@ -10,6 +10,7 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan,
     ExecutionInterval,
     MarketDayUnit,
+    _market_stage_batches,
     assert_select_only,
     market_day_boundary,
     market_day_source_sqls,
@@ -313,7 +314,9 @@ class BacktestMarketDataTests(unittest.TestCase):
             def close(self):
                 self.closed = True
 
-        verify_market_day_plan(plan, read_client_factory=Worker)
+        self.assertEqual(len(_market_stage_batches(plan, len(tickers), "bars")), 2)
+        with patch("src.backend.backtest_market_data._MARKET_CERTIFICATION_BATCH_SIZE", 1024):
+            verify_market_day_plan(plan, read_client_factory=Worker)
         self.assertEqual(len(readers), 6)
         self.assertEqual(sorted(len(reader.queries) for reader in readers),
                          [1, 1, 1, 2, 2, 2])
@@ -330,8 +333,9 @@ class BacktestMarketDataTests(unittest.TestCase):
                 return "" if ("arte.liquidity_100ms_v1" in sql
                               and "'T2048'" in sql) else result
 
-        with self.assertRaisesRegex(ValueError, "integrity changed.*T2048"):
-            verify_market_day_plan(plan, read_client_factory=MissingWorker)
+        with patch("src.backend.backtest_market_data._MARKET_CERTIFICATION_BATCH_SIZE", 1024):
+            with self.assertRaisesRegex(ValueError, "integrity changed.*T2048"):
+                verify_market_day_plan(plan, read_client_factory=MissingWorker)
 
     def test_liquidity_bucket_upper_bound_is_exact_completed_boundary(self) -> None:
         plan = self._plan()

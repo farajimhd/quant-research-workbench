@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 ARTE_DATABASE = "arte"
 MARKET_DAY_TABLES = ("bars_v1", "indicators_v1", "liquidity_100ms_v1")
 MARKET_DAY_STAGES = ("bars", "technical", "broker_100ms")
+_MARKET_CERTIFICATION_BATCH_SIZE = 2048
 FIXED_EXECUTION_BLOCKER = (
     "Fixed-interval Backtest remains blocked until the native persisted-bar "
     "strategy, liquidity-bar broker, V7, and ClickHouse journal path passes "
@@ -427,10 +428,10 @@ def _market_stage_batches(plan: CertifiedMarketDayPlan, expected: int,
     for unit in units:
         by_day.setdefault(unit.session_date, []).append(unit)
     return tuple(
-        (day, tuple(ordered[offset:offset + 1024]))
+        (day, tuple(ordered[offset:offset + _MARKET_CERTIFICATION_BATCH_SIZE]))
         for day, day_units in sorted(by_day.items())
         for ordered in (sorted(day_units, key=lambda unit: unit.ticker),)
-        for offset in range(0, len(ordered), 1024)
+        for offset in range(0, len(ordered), _MARKET_CERTIFICATION_BATCH_SIZE)
     )
 
 
