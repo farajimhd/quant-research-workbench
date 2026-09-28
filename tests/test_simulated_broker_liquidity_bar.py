@@ -1,6 +1,7 @@
 """Native completed-liquidity-bucket execution, without synthetic tape events."""
 import unittest
 from dataclasses import replace
+from datetime import date
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,10 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
+from src.trading_runtime.strategy_one_broker_match_snapshot import (
+    TABLES as BROKER_MATCH_TABLES, project_broker_match_snapshot,
+)
+from src.backend.backtest_market_data import market_day_boundary
 from tests.test_trading_runtime import quote, trade
 
 
@@ -150,6 +155,28 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.broker._cash, restored._cash)
         self.assertEqual(self.broker._positions, restored._positions)
         self.assertEqual(self.broker._orders, restored._orders)
+
+    async def test_open_order_match_state_projects_to_normalized_rows(self):
+        await self.order("MKT", quantity=10, oid="partial")
+        at = START + timedelta(milliseconds=100)
+        await self.broker.on_liquidity_bar(bar(at, ask_size=4), at=at)
+        day = date(2026, 8, 18)
+        boundary_ms = round((at - market_day_boundary(day, 0)).total_seconds() * 1000)
+        rows = project_broker_match_snapshot(
+            run_id="backtest:one", session_date=day,
+            checkpoint_sequence=42, boundary_ms=boundary_ms,
+            state=self.broker.checkpoint_state())
+        self.assertEqual(rows.snapshot["account_count"], 1)
+        self.assertEqual(rows.snapshot["position_count"], 1)
+        self.assertEqual(rows.snapshot["open_order_count"], 1)
+        self.assertEqual(rows.snapshot["ticker_count"], 1)
+        self.assertEqual(rows.open_orders[0]["filled"], 4.0)
+        self.assertEqual(rows.tickers[0]["last_boundary_ms"], boundary_ms)
+        self.assertTrue(all("live_market_ssd" in table.ddl()
+                            for table in BROKER_MATCH_TABLES))
+        self.assertTrue(all("json" not in name and "blob" not in name
+                            for table in BROKER_MATCH_TABLES
+                            for name, _ in table.columns))
 
     async def test_ticker_quote_checkpoint_is_not_derivable_from_conid_index(self):
         observed = replace(quote(bid=9.99, ask=10.0),
