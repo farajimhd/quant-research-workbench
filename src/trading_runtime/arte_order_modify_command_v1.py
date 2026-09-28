@@ -7,6 +7,7 @@ as a substitute for the pre-broker command.
 from __future__ import annotations
 
 from datetime import timezone
+from datetime import date
 from decimal import Decimal, InvalidOperation
 import re
 from typing import Any
@@ -154,3 +155,19 @@ def project_order_modify_command_v1(
         "requested_at": record.event_time.astimezone(timezone.utc).isoformat(),
     })
     return event, detail
+
+
+def order_modify_command_batch_v4(
+    record: JournalRecord, request: OrderRequest, *, run_month: date,
+    attempt_id: str, batch_id: str, prior_batch_id: str, source_cursor: str,
+):
+    from .arte_journal_writer import TypedJournalBatch, V4OrderModifyCommandBatch
+
+    if run_month.day != 1:
+        raise ValueError("Modify command run month must start on day one")
+    event, detail = project_order_modify_command_v1(
+        record, request, attempt_id=attempt_id, batch_id=batch_id)
+    base = TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,))
+    return V4OrderModifyCommandBatch(base, detail)

@@ -7,6 +7,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_strategy_one_approval import TABLE as STRATEGY_ONE_APPROVAL
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
+from src.trading_runtime.arte_order_modify_command_v1 import MODIFY_COMMAND
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_strategy_one_activation_schema import (
     STRATEGY_ONE_ACTIVATION_TABLES,
@@ -26,6 +27,14 @@ def test_live_v5_ack_layout_is_one_normalized_live_only_table():
     assert plan.profile_contracts("live-strategy-one-v5-ack") == (
         ACKNOWLEDGEMENT_V5,)
     assert "JSON" not in ACKNOWLEDGEMENT_V5.ddl()
+
+
+def test_live_modify_command_layout_is_one_normalized_live_only_table():
+    assert plan.profile_contracts("live-strategy-one-modify-command") == (
+        MODIFY_COMMAND,)
+    ddl = MODIFY_COMMAND.ddl()
+    assert "live_market_ssd" in ddl
+    assert "JSON" not in ddl and "Array(" not in ddl
 
 
 def test_strategy_one_activation_plan_is_four_isolated_normalized_tables(monkeypatch):

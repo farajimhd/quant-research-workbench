@@ -22,6 +22,7 @@ from src.trading_runtime.arte_journal_writer import (
     _FAMILIES, _v4_family_table, v4_storage_contracts,
 )
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
+from src.trading_runtime.arte_order_modify_command_v1 import MODIFY_COMMAND
 from src.trading_runtime.strategy_one_configuration_tree import (
     NODE_TABLE, RELEASE_TABLE,
 )
@@ -52,6 +53,7 @@ _V4_LIVE_DETAIL = frozenset({
     "trading_portfolio_reservation_reason_v1",
     "trading_broker_acknowledgement_v4",
     "trading_order_cancel_activity_v4", "trading_order_reprice_v4",
+    "trading_order_modify_command_v1",
     "trading_risk_action_v4", "trading_risk_action_reply_v4",
     "trading_oms_execution_tactic_v1", "trading_oms_execution_step_v1",
     "trading_order_command_lineage_v1",
@@ -64,7 +66,7 @@ _V4_LIVE_DETAIL = frozenset({
 
 def live_v4_storage_contracts() -> tuple[Any, ...]:
     """Keep live-only normalized extensions out of Backtest's storage gate."""
-    return (*v4_storage_contracts(), ACKNOWLEDGEMENT_V5,
+    return (*v4_storage_contracts(), ACKNOWLEDGEMENT_V5, MODIFY_COMMAND,
             *STRATEGY_ONE_ACTIVATION_TABLES, *STRATEGY_ONE_SIGNAL_TABLES)
 
 

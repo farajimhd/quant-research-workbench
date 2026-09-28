@@ -580,6 +580,23 @@ class V4OrderRepriceBatch:
 
 
 @dataclass(frozen=True, slots=True)
+class V4OrderModifyCommandBatch:
+    """One flat live modification command with a distinct broker target."""
+
+    base: TypedJournalBatch
+    modification: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.base, TypedJournalBatch)
+                or self.base.status != "running"
+                or len(self.base.events) != 1
+                or not isinstance(self.modification, Mapping)):
+            raise ValueError("V4 modification requires one running command event")
+        object.__setattr__(self, "modification",
+                           MappingProxyType(dict(self.modification)))
+
+
+@dataclass(frozen=True, slots=True)
 class V4ProtectionChangeBatch:
     """One normalized protection revision and its numbered entry identities."""
 
@@ -616,6 +633,7 @@ def _sealed_families(
     v4_allocation_ids: tuple[str, ...] = (),
     v4_order_cancel_ids: tuple[str, ...] = (),
     v4_order_reprice_ids: tuple[str, ...] = (),
+    v4_order_modify_ids: tuple[str, ...] = (),
     v4_risk_action_ids: tuple[str, ...] = (),
     v4_protection_ids: tuple[str, ...] = (),
     v4_reconciliation_ids: tuple[str, ...] = (),
@@ -823,6 +841,14 @@ def _sealed_families(
             if identity in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[identity] = REPRICE.name
+    if v4_order_modify_ids:
+        expected_details = {**expected_details,
+                            ("command", "order_modify"): MODIFY_COMMAND.name}
+        for record_id in v4_order_modify_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = MODIFY_COMMAND.name
     if v4_risk_action_ids:
         expected_details = {**expected_details,
             ("risk", "kill_entry_order"): RISK_ACTION_TABLES[0].name,
@@ -3575,7 +3601,8 @@ class ArteJournalWriter:
                   | V4ReservationReasonBatch
                   | V4BrokerAcknowledgementBatch
                   | V5BrokerAcknowledgementBatch
-                  | V4OrderCancelBatch | V4OrderRepriceBatch | V4RiskActionBatch
+                  | V4OrderCancelBatch | V4OrderRepriceBatch
+                  | V4OrderModifyCommandBatch | V4RiskActionBatch
                   | V4ProtectionChangeBatch
                   | V4ProtectionReconciliationBatch
                   | _DurabilityBarrier | _AdmissionUnit
@@ -3855,6 +3882,26 @@ class ArteJournalWriter:
                 self._queue.put_nowait((unit, receipt))
             except Full as exc:
                 raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_order_modify_command_v4(
+        self, unit: V4OrderModifyCommandBatch,
+    ) -> Future[str]:
+        """Queue one exact live modify command; no broker I/O occurs here."""
+        if (self._journal_profile != "live_v4"
+                or not isinstance(unit, V4OrderModifyCommandBatch)):
+            raise ValueError("Modification command requires the Live V4 writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("Live V4 writer is closed or failed")
+            if unit.base.run_id != self._run_id:
+                raise ValueError("Live V4 writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("Live V4 journal queue is full; stop admission") from exc
             self._accepted_writes = True
             return receipt
 
@@ -4240,6 +4287,7 @@ class ArteJournalWriter:
                                             V5BrokerAcknowledgementBatch,
                                             V4OrderCancelBatch,
                                             V4OrderRepriceBatch,
+                                            V4OrderModifyCommandBatch,
                                             V4RiskActionBatch,
                                             V4ProtectionChangeBatch,
                                             V4ProtectionReconciliationBatch,
@@ -4287,6 +4335,13 @@ class ArteJournalWriter:
                     unit = group[0][0]
                     committed_id = publish_order_reprice_batch_v4(
                         self._client, unit.base, repricing=unit.repricing)
+                elif isinstance(group[0][0], V4OrderModifyCommandBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_order_modify_command_batch_v4,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_order_modify_command_batch_v4(
+                        self._client, unit.base, modification=unit.modification)
                 elif isinstance(group[0][0], V4OrderCancelBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_order_cancel_batch_v4,

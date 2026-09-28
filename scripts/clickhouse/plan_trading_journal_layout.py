@@ -29,6 +29,7 @@ from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+from src.trading_runtime.arte_order_modify_command_v1 import MODIFY_COMMAND
 from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     TABLES as PROTECTION_RECONCILIATION_TABLES,
@@ -61,6 +62,8 @@ def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
         return STRATEGY_ONE_ACTIVATION_TABLES
     if profile == "live-strategy-one-v5-ack":
         return (ACKNOWLEDGEMENT_V5,)
+    if profile == "live-strategy-one-modify-command":
+        return (MODIFY_COMMAND,)
     if profile == "oms-execution-tactic":
         return OMS_TACTIC_TABLES
     if profile == "live-strategy-one-approval":
@@ -128,6 +131,7 @@ def main() -> int:
                                               "live-strategy-one-activation",
                                               "live-strategy-one-signal",
                                               "live-strategy-one-v5-ack",
+                                              "live-strategy-one-modify-command",
                                               "oms-execution-tactic"),
                         default="fixed-v2", help="exact journal table layout")
     args = parser.parse_args()

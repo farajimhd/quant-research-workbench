@@ -23,6 +23,7 @@ from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+from src.trading_runtime.arte_order_modify_command_v1 import MODIFY_COMMAND
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
     ALLOCATION as V4_ALLOCATION, seal_portfolio_allocation_v3,
 )
@@ -45,6 +46,22 @@ from src.backend.backtest_protection_change_v3 import (
 
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
+
+
+def _same_utc_time(left, right) -> bool:
+    """Compare DateTime64(9) event and DateTime64(6) detail clocks."""
+    def parse(value):
+        raw = str(value)
+        fraction = re.search(r"\.(\d+)(?:Z|[+-]\d\d:\d\d)?$", raw)
+        digits = fraction.group(1) if fraction else ""
+        if len(digits) > 9:
+            raise ValueError("Journal clock exceeds DateTime64(9) precision")
+        at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        utc = (at if at.tzinfo is not None
+               else at.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+        return utc, int(digits[6:].ljust(3, "0") or "0")
+
+    return parse(left) == parse(right)
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,7 +361,7 @@ def _load_verified_details_v4(
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
-                    REPRICE.name,
+                    REPRICE.name, MODIFY_COMMAND.name,
                     V4_ALLOCATION.name, RESERVATION_REASON.name,
                     "trading_portfolio_reservation_event_v1",
                     RISK_ACTION.name, RISK_REPLY.name,
@@ -451,6 +468,28 @@ def _load_verified_details_v4(
         if (row["category"], row["entity_type"]) in
            {("broker", "order_repriced"), ("broker", "order_reprice_error")}} != seen_reprice:
         raise RuntimeError("V4 repricing has missing typed detail")
+    modifications = related_rows.get(MODIFY_COMMAND.name, ())
+    seen_modify = set()
+    for row in modifications:
+        record_id = str(UUID(str(row["record_id"])))
+        parent = events.get(record_id)
+        if (record_id in seen_modify or parent is None
+                or (parent["category"], parent["entity_type"])
+                   != ("command", "order_modify")
+                or parent["entity_id"] != row["broker_order_id"]
+                or parent["account_id"] != row["account_id"]
+                or parent["run_id"] != row["run_id"]
+                or parent["event_month"] != row["event_month"]
+                or str(UUID(str(parent["batch_id"])))
+                   != str(UUID(str(row["batch_id"])))
+                or not _same_utc_time(parent["event_time"], row["requested_at"])
+                or parent["causation_id"] != row["intent_id"]):
+            raise RuntimeError("V4 modify command differs from its event")
+        seen_modify.add(record_id)
+    if {record_id for record_id, row in events.items()
+        if (row["category"], row["entity_type"])
+           == ("command", "order_modify")} != seen_modify:
+        raise RuntimeError("V4 modify command has missing typed detail")
     try:
         seal_portfolio_allocation_v3(
             related_rows.get(V4_ALLOCATION.name, ()), tuple(events.values()),
@@ -717,6 +756,14 @@ def publish_order_reprice_batch_v4(client, batch, *, repricing) -> str:
         client, batch, order_reprice_row=repricing)
 
 
+def publish_order_modify_command_batch_v4(client, batch, *, modification) -> str:
+    """Commit a live broker modification before its external side effect."""
+    if getattr(client, "live_v4_lease", None) is None:
+        raise RuntimeError("Modify command requires the live Keeper lease")
+    return _publish_typed_batch_v4(
+        client, batch, order_modify_command_row=modification)
+
+
 def publish_risk_action_batch_v4(client, batch, *, action, replies) -> str:
     """Commit one risk action and every ordered scalar broker reply."""
     return _publish_typed_batch_v4(
@@ -881,6 +928,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                             broker_acknowledgement_v5_row=None,
                             order_cancel_row=None,
                             order_reprice_row=None,
+                            order_modify_command_row=None,
                             risk_action_row=None,
                             risk_reply_rows=(),
                             protection_change_row=None,
@@ -925,6 +973,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             broker_acknowledgement_row, broker_acknowledgement_v5_row,
             order_cancel_row,
             order_reprice_row,
+            order_modify_command_row,
             risk_action_row,
             protection_change_row, protection_reconciliation_row,
             broker_snapshot_rows)) > 1:
@@ -1072,6 +1121,30 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                    != (reprice["result_kind"] == "modified")):
             raise ValueError("V4 repricing differs from its parent")
         reprice_rows = (reprice,)
+    modify_command_rows = ()
+    if order_modify_command_row is not None:
+        if (live_lease is None or len(batch.events) != 1
+                or not isinstance(order_modify_command_row, Mapping)
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                   != ("command", "order_modify")):
+            raise ValueError("V4 modification lacks a live command envelope")
+        modified = typed_row(MODIFY_COMMAND.name, {
+            key: value for key, value in order_modify_command_row.items()
+            if key != "content_hash"})
+        event = batch.events[0]
+        if ("content_hash" in order_modify_command_row
+                and modified["content_hash"] != order_modify_command_row["content_hash"]
+                or str(UUID(str(modified["record_id"])))
+                   != str(UUID(str(event["record_id"])))
+                or modified["run_id"] != batch.run_id
+                or str(UUID(str(modified["batch_id"]))) != batch.batch_id
+                or modified["event_month"] != event["event_month"]
+                or modified["account_id"] != event["account_id"]
+                or modified["broker_order_id"] != event["entity_id"]
+                or not _same_utc_time(modified["requested_at"], event["event_time"])
+                or modified["intent_id"] != event["causation_id"]):
+            raise ValueError("V4 modification differs from its typed event")
+        modify_command_rows = (modified,)
     risk_rows = ()
     risk_replies = ()
     if risk_action_row is not None:
@@ -1185,6 +1258,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         v4_allocation_ids=tuple(row["record_id"] for row in allocation_rows),
         v4_order_cancel_ids=tuple(row["record_id"] for row in cancel_rows),
         v4_order_reprice_ids=tuple(row["record_id"] for row in reprice_rows),
+        v4_order_modify_ids=tuple(row["record_id"] for row in modify_command_rows),
         v4_risk_action_ids=tuple(row["record_id"] for row in risk_rows),
         v4_protection_ids=tuple(row["record_id"] for row in protection_rows),
         v4_reconciliation_ids=tuple(row["record_id"] for row in reconciliation_rows),
@@ -1268,6 +1342,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((CANCEL.name, cancel_rows),)
     if reprice_rows:
         families += ((REPRICE.name, reprice_rows),)
+    if modify_command_rows:
+        families += ((MODIFY_COMMAND.name, modify_command_rows),)
     if risk_rows:
         families += ((RISK_ACTION.name, risk_rows),
                      (RISK_REPLY.name, risk_replies))

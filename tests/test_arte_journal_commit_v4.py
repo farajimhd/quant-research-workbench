@@ -800,6 +800,59 @@ def test_v4_cancel_command_and_reply_are_fenced_and_cold_verified(monkeypatch):
         load_verified_v4_prefix(client, "run-cancel")
 
 
+def test_live_modify_command_requires_keeper_and_cold_verifies_exact_fields():
+    from src.trading_runtime.arte_order_modify_command_v1 import (
+        MODIFY_COMMAND, order_modify_command_batch_v4,
+    )
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        publish_order_modify_command_batch_v4,
+    )
+    from src.trading_runtime.ibkr_schema import OrderRequest
+
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    source = JournalRecord(
+        str(UUID(int=230)), "run-modify", 1, at, at,
+        "command", "order_modify", "broker-42", "DU1", {
+            "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+            "correlation_id": "correlation", "causation_id": "intent-2",
+            "order_group_id": "group-1", "intent_id": "intent-2",
+            "source_intent_record_id": str(UUID(int=231)),
+            "source_intent_content_hash": "a" * 64,
+            "oms_group_record_id": str(UUID(int=232)),
+            "reason": "protection_trail",
+        })
+    request = OrderRequest(
+        acctId="DU1", conid=123, cOID="client-1", ticker="AAA",
+        orderType="LMT", side="SELL", quantity=5, price=12.34)
+    unit = order_modify_command_batch_v4(
+        source, request, run_month=date(2026, 8, 1),
+        attempt_id=str(UUID(int=233)), batch_id=str(UUID(int=234)),
+        prior_batch_id=str(UUID(int=0)), source_cursor="2026-08-18:31000")
+    client = attached_v4_client()
+    with pytest.raises(RuntimeError, match="live Keeper lease"):
+        publish_order_modify_command_batch_v4(
+            client, unit.base, modification=unit.modification)
+    assert client.inserts == []
+    client.live_v4_lease = SimpleNamespace(
+        run_id=source.run_id, assert_current=lambda: None)
+    assert publish_order_modify_command_batch_v4(
+        client, unit.base, modification=unit.modification) == unit.base.batch_id
+    assert load_verified_v4_prefix(client, source.run_id).last_sequence == 1
+    assert len(client.tables[MODIFY_COMMAND.name]) == 1
+    client.tables[MODIFY_COMMAND.name][0]["limit_price"] = "12.35"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_v4_prefix(client, source.run_id)
+
+
+def test_modify_command_clock_comparison_retains_event_nanoseconds():
+    from src.trading_runtime.arte_journal_commit_v4 import _same_utc_time
+
+    assert _same_utc_time("2026-08-18 08:00:31.123456000+00:00",
+                          "2026-08-18T08:00:31.123456+00:00")
+    assert not _same_utc_time("2026-08-18 08:00:31.123456001+00:00",
+                              "2026-08-18T08:00:31.123456+00:00")
+
+
 def test_v4_cancellation_uses_nonblocking_writer_lane(monkeypatch):
     from src.trading_runtime.arte_order_cancel_v4 import order_cancel_batch_v4
 

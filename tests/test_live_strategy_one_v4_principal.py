@@ -45,7 +45,8 @@ def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
             "trading_broker_acknowledgement_v5"} <= plan.insert_arte
     assert {table.name for table in live.live_v4_storage_contracts()} - {
         table.name for table in live.v4_storage_contracts()
-    } == {"trading_broker_acknowledgement_v5"} | activation | signal
+    } == {"trading_broker_acknowledgement_v5",
+          "trading_order_modify_command_v1"} | activation | signal
     assert activation <= plan.insert_arte
     assert signal <= plan.insert_arte
     assert not activation & {table.name for table in live.v4_storage_contracts()}
