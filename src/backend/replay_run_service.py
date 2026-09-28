@@ -3151,6 +3151,8 @@ class ReplayRunController:
             started_at=self.created_at)
 
         def bootstrap():
+            bootstrap_timings = {}
+            bootstrap_phase = time.perf_counter()
             keeper = open_workstation_keeper_session()
             assembly = None
             writer = None
@@ -3165,6 +3167,9 @@ class ReplayRunController:
                         keeper_session=keeper)
                     terminal = control_clients.enter_context(closing(
                         backtest_v4_operator_client_from_env()))
+                    bootstrap_timings["strategy_one_journal_clients"] = (
+                        time.perf_counter() - bootstrap_phase)
+                    bootstrap_phase = time.perf_counter()
                     assembly = publish_and_assemble_fixed_v4_journal(
                         context, reader, writer, terminal,
                         run=run, config=config, account_ids=account_ids,
@@ -3174,6 +3179,9 @@ class ReplayRunController:
                         expected_market_start=self.definition.session_start,
                         projection_certifier=certify_strategy_one_v4_projection,
                         writer_factory=ArteJournalWriter)
+                    bootstrap_timings["strategy_one_journal_assembly"] = (
+                        time.perf_counter() - bootstrap_phase)
+                    bootstrap_phase = time.perf_counter()
                     coordinator = KeeperOwnershipCoordinator(keeper.client)
                     resource_id = f"backtest-definition:{self.run_id}"
                     lease = coordinator.acquire_portfolio_admission_lease(
@@ -3189,7 +3197,9 @@ class ReplayRunController:
                         coordinator.release_portfolio_admission_lease(
                             resource_id, owner_id=lease["owner_id"],
                             epoch=lease["epoch"])
-                return assembly, keeper
+                    bootstrap_timings["strategy_one_definition_publish"] = (
+                        time.perf_counter() - bootstrap_phase)
+                return assembly, keeper, bootstrap_timings
             except BaseException:
                 try:
                     if assembly is not None:
@@ -3203,9 +3213,13 @@ class ReplayRunController:
 
         bootstrap_started = time.perf_counter()
         try:
-            assembly, keeper = await asyncio.to_thread(bootstrap)
+            assembly, keeper, bootstrap_timings = await asyncio.to_thread(bootstrap)
         finally:
             self._record_stage_time("strategy_one_journal_bootstrap", bootstrap_started)
+        for stage, elapsed in bootstrap_timings.items():
+            self._stage_timings[stage] = {
+                "calls": 1, "seconds": elapsed, "maximum_seconds": elapsed,
+            }
         self._fixed_v4_account_ids = account_ids
         try:
             self._attach_fixed_journal_assembly(assembly)
