@@ -45,6 +45,9 @@ from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABL
 from src.trading_runtime.strategy_one_management_snapshot import (
     TABLES as STRATEGY_ONE_MANAGER_TABLES,
 )
+from src.trading_runtime.strategy_one_broker_match_snapshot import (
+    TABLES as STRATEGY_ONE_BROKER_MATCH_TABLES,
+)
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES as STRATEGY_ONE_PROTECTION_TABLES,
 )
@@ -404,6 +407,19 @@ def install_strategy_one_manager_snapshot(client: object, *, apply: bool) -> str
     """Install exact app-owned scalar checkpoint tables, without publishing rows."""
     contracts = (*STRATEGY_ONE_PROTECTION_TABLES,
                  *STRATEGY_ONE_MANAGER_TABLES)
+    return _install_strategy_one_checkpoint_tables(client, contracts=contracts,
+                                                   apply=apply)
+
+
+def install_strategy_one_broker_match_snapshot(client: object, *, apply: bool) -> str:
+    """Install only normalized broker recovery rows, never market products."""
+    return _install_strategy_one_checkpoint_tables(
+        client, contracts=STRATEGY_ONE_BROKER_MATCH_TABLES, apply=apply)
+
+
+def _install_strategy_one_checkpoint_tables(
+    client: object, *, contracts: tuple[TableContract, ...], apply: bool,
+) -> str:
     policies = [json.loads(line) for line in client.execute(
         "SELECT disks FROM system.storage_policies "
         f"WHERE policy_name='{STORAGE_POLICY}' FORMAT JSONEachRow"
@@ -936,6 +952,8 @@ def main() -> int:
                         help="verify or install typed live plan membership tables")
     parser.add_argument("--install-strategy-one-manager-snapshot", action="store_true",
                         help="verify or install typed Strategy 1 manager checkpoint tables")
+    parser.add_argument("--install-strategy-one-broker-match-snapshot", action="store_true",
+                        help="verify or install normalized Strategy 1 broker match checkpoint tables")
     parser.add_argument("--install-live-signal", action="store_true",
                         help="verify or install normalized live signal tables")
     args = parser.parse_args()
@@ -966,6 +984,7 @@ def main() -> int:
                     args.upgrade_v3_portfolio_allocation_fill,
                     args.install_live_plan_membership,
                     args.install_strategy_one_manager_snapshot,
+                    args.install_strategy_one_broker_match_snapshot,
                     args.install_live_signal)) > 1:
                 parser.error("Select only one layout upgrade at a time")
             if args.install_live_signal:
@@ -977,6 +996,9 @@ def main() -> int:
             elif args.install_strategy_one_manager_snapshot:
                 result = install_strategy_one_manager_snapshot(client, apply=args.apply)
                 print(f"Strategy 1 manager checkpoint layout: {result}; no rows inserted")
+            elif args.install_strategy_one_broker_match_snapshot:
+                result = install_strategy_one_broker_match_snapshot(client, apply=args.apply)
+                print(f"Strategy 1 broker match checkpoint layout: {result}; no rows inserted")
             elif args.upgrade_v3_portfolio_allocation_fill:
                 result = upgrade_v3_portfolio_allocation_fill(client, apply=args.apply)
                 print(f"V3 portfolio-allocation layout: {result}; no rows inserted")
