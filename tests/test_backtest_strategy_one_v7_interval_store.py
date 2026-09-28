@@ -22,7 +22,7 @@ DAY = "2026-08-18"
 BAR_ATTEMPT = str(UUID(int=1))
 DERIVATION_ATTEMPT = str(UUID(int=2))
 LEVEL = V7LevelInterval("level-1", 0, 0, 57_600_001, 10.0, 10.2,
-                        "resistance", "", 1_800_000_000_000, True)
+                        "resistance", "", 1_700_000_000_000, True)
 
 
 class Reader:
@@ -116,3 +116,16 @@ def test_unchanged_physical_inventory_reuses_verified_arrays(monkeypatch):
         market, seeds, session_date=DAY, candidate_tickers=("TEST",),
         client=reader)
     assert first is second and reader.child_reads == 2
+
+
+def test_overlapping_ordinal_and_future_confirmation_fail_closed():
+    import pytest
+    from dataclasses import replace
+    with pytest.raises(RuntimeError, match="ordinal"):
+        store._validate_children(
+            (1000,), (LEVEL, replace(LEVEL, level_id="other")),
+            origin_ms=1_800_000_000_000)
+    with pytest.raises(RuntimeError, match="causal geometry"):
+        store._validate_children(
+            (1000,), (replace(LEVEL, confirmed_at_ms=1_900_000_000_000),),
+            origin_ms=1_800_000_000_000)

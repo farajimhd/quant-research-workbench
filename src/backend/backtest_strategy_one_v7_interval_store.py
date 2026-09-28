@@ -9,11 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+from math import isfinite
 import re
 from typing import Any, Sequence
 from uuid import UUID
 
-from src.backend.backtest_market_data import CertifiedMarketDayPlan
+from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan, market_day_boundary,
+)
 from src.backend.backtest_market_plan_cache import (
     FingerprintPlanCache, product_inventory_fingerprint,
 )
@@ -25,7 +28,7 @@ from src.trading_runtime.strategy_one_v7_interval_schema import (
     verify_tables,
 )
 from src.trading_runtime.strategy_one_v7_intervals import (
-    V7LevelInterval, clock_hash, interval_hash, levels_at,
+    SESSION_MS, V7LevelInterval, clock_hash, interval_hash, levels_at,
 )
 
 
@@ -90,6 +93,48 @@ def _arrow_columns(client: Any, sql: str,
         if tuple(batch.schema.names) != names:
             raise RuntimeError("Strategy 1 V7 Arrow columns differ from contract")
         yield [batch.column(index).to_pylist() for index in range(len(names))]
+
+
+def _validate_children(seconds: tuple[int, ...],
+                       rows: tuple[V7LevelInterval, ...], *,
+                       origin_ms: int) -> None:
+    if (any(type(value) is not int or not 0 < value <= SESSION_MS
+            or value % 1_000 for value in seconds)
+            or any(left >= right for left, right in zip(seconds, seconds[1:]))):
+        raise RuntimeError("Strategy 1 V7 validity clock is malformed")
+    valid_clocks = set(seconds)
+    changes: list[tuple[int, int, V7LevelInterval]] = []
+    for row in rows:
+        if (not row.level_id or type(row.ordinal) is not int
+                or row.ordinal < 0
+                or not 0 <= row.valid_from_ms < row.valid_to_ms <= SESSION_MS + 1
+                or row.valid_from_ms != 0
+                and row.valid_from_ms not in valid_clocks
+                or row.valid_to_ms != SESSION_MS + 1
+                and row.valid_to_ms not in valid_clocks
+                or not isfinite(row.lower) or not isfinite(row.upper)
+                or not 0 < row.lower <= row.upper
+                or row.role not in {"support", "resistance", "transition"}
+                or row.transition_from not in {"", "support", "resistance"}
+                or not 0 < row.confirmed_at_ms <= origin_ms + row.valid_from_ms
+                or type(row.historical) is not bool):
+            raise RuntimeError("Strategy 1 V7 interval violates causal geometry")
+        changes.append((row.valid_to_ms, 0, row))
+        changes.append((row.valid_from_ms, 1, row))
+    active_ids: set[str] = set()
+    active_ordinals: set[int] = set()
+    for _, kind, row in sorted(changes, key=lambda item: (item[0], item[1])):
+        if kind == 0:
+            if (row.level_id not in active_ids
+                    or row.ordinal not in active_ordinals):
+                raise RuntimeError("Strategy 1 V7 interval closes an absent level")
+            active_ids.remove(row.level_id)
+            active_ordinals.remove(row.ordinal)
+        else:
+            if row.level_id in active_ids or row.ordinal in active_ordinals:
+                raise RuntimeError("Strategy 1 V7 intervals overlap in identity or ordinal")
+            active_ids.add(row.level_id)
+            active_ordinals.add(row.ordinal)
 
 
 def certify_v7_interval_plan(
@@ -183,6 +228,7 @@ def certify_v7_interval_plan(
     clocks: dict[str, list[int]] = {ticker: [] for ticker in candidate_tickers}
     intervals: dict[str, list[V7LevelInterval]] = {
         ticker: [] for ticker in candidate_tickers}
+    origin_ms = round(market_day_boundary(session_date, 0).timestamp() * 1_000)
     for ticker_col, attempt_col, boundary_col in _arrow_columns(client,
             f"SELECT ticker,toString(derivation_attempt_id) AS attempt_id,"
             f"boundary_ms FROM {CLOCK_TABLE} WHERE {child_where} "
@@ -207,6 +253,8 @@ def certify_v7_interval_plan(
             unit = coverage_by_ticker[str(ticker)]
             if str(attempt) != unit.attempt_id:
                 continue
+            if type(historical) is not int or historical not in (0, 1):
+                raise RuntimeError("Strategy 1 V7 historical flag is malformed")
             intervals[unit.ticker].append(V7LevelInterval(
                 str(identity), int(ordinal), int(start), int(stop),
                 float(lower), float(upper), str(role),
@@ -228,7 +276,8 @@ def certify_v7_interval_plan(
                 or interval_hash(tuple(sorted(rows, key=lambda row: (
                     row.valid_from_ms, row.level_id)))) != unit.interval_hash):
             raise RuntimeError("Strategy 1 V7 children differ from coverage")
-        # Also validate causal interval geometry at representative boundaries.
+        _validate_children(seconds, rows, origin_ms=origin_ms)
+        # Validate the same strategy-facing projection invoked by execution.
         levels_at(boundary_ms=0, seed_policy=unit.seed_input_policy,
                   valid_seconds=seconds, intervals=rows)
         coverage.append(unit)
