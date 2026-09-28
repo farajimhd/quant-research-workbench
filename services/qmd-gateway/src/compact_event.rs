@@ -182,6 +182,35 @@ pub struct CompactEventDecoder {
 }
 
 impl CompactEventDecoder {
+    /// Match the ARTE market-day condition projection at 04:00-20:00 ET.
+    /// Unknown nonzero tokens fail closed instead of disappearing during
+    /// `decode`, and the live chart bar's 04:05 exclusion is not applied.
+    pub fn market_day_trade_rule(
+        &self,
+        event: &LiveCompactEvent,
+        rules: &TradeAggregationRules,
+        extended_hours: bool,
+    ) -> TradeUpdateRule {
+        if event.event_type() != TRADE_EVENT_TYPE {
+            return TradeUpdateRule::excluded();
+        }
+        let tokens = [
+            event.condition_token_1,
+            event.condition_token_2,
+            event.condition_token_3,
+            event.condition_token_4,
+            event.condition_token_5,
+        ];
+        let mut conditions = Vec::with_capacity(tokens.len());
+        for token in tokens.into_iter().filter(|token| *token != 0) {
+            let Some(condition) = self.trade_conditions.get(&token) else {
+                return TradeUpdateRule::excluded();
+            };
+            conditions.push(*condition);
+        }
+        rules.resolve_for_session(&conditions, extended_hours)
+    }
+
     /// SQL equivalent of decode(...).conditions followed by resolve(...).update_volume.
     /// Unknown compact tokens are dropped by decode and therefore do not veto a trade.
     /// Derive the token rules from the loaded authority, including Form T's
@@ -2835,6 +2864,26 @@ mod tests {
         legacy.event_meta &= 0x3f;
         assert_eq!(legacy.trade_reporting_flags(), None);
         assert_eq!(CompactEventIdentity::from(&legacy), CompactEventIdentity::from(&delayed));
+    }
+
+    #[test]
+    fn market_day_rule_keeps_early_valid_trades_and_rejects_unknown_tokens() {
+        let sip = Utc.with_ymd_and_hms(2026, 8, 18, 8, 1, 0).unwrap();
+        let trade = TradeEvent {
+            conditions: vec![], exchange: 4, ingest_ts: sip,
+            participant_ts: Some(sip), price: 10.0,
+            raw: serde_json::Value::Null, sequence: 9, size: 100.0,
+            tape: 1, ticker: "TEST".to_string(), trade_id: "1".to_string(),
+            trf_id: 0, trf_ts: None, ts: sip,
+        };
+        let decoder = references().decoder();
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let mut event = compact_trade_event(&trade, &references()).unwrap().event;
+        assert_eq!(decoder.market_day_trade_rule(&event, &rules, true), TradeUpdateRule::regular());
+        assert_eq!(rules.resolve(&[], sip).update_volume, false);
+        event.condition_token_1 = 255;
+        let excluded = decoder.market_day_trade_rule(&event, &rules, true);
+        assert!(!excluded.update_last && !excluded.update_high_low && !excluded.update_volume);
     }
 
     #[test]

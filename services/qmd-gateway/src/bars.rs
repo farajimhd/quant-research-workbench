@@ -39,7 +39,7 @@ impl TradeUpdateRule {
         }
     }
 
-    const fn excluded() -> Self {
+    pub(crate) const fn excluded() -> Self {
         Self {
             update_high_low: false,
             update_last: false,
