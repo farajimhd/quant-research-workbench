@@ -5,7 +5,8 @@ import pytest
 from src.trading_runtime.arte_journal_projection import runtime_lifecycle_batch
 from src.trading_runtime.arte_journal_reader import (
     TypedJournalEvent, _V4_EVENT_DETAILS, _detail_family,
-    load_typed_event_page, load_typed_protection_page,
+    load_complete_typed_protection_history, load_typed_event_page,
+    load_typed_protection_page, TypedProtectionPage,
     readonly_typed_journal_client,
 )
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
@@ -97,6 +98,33 @@ def test_v4_protection_page_checks_zero_child_inventory_and_advances_cursor(
     monkeypatch.setattr(reader, "_rows", lambda *_a: [{"record_id": record.record_id}])
     with pytest.raises(RuntimeError, match="excess children"):
         load_typed_protection_page(object(), prefix)
+
+
+def test_complete_protection_history_requires_every_committed_page(monkeypatch) -> None:
+    from src.trading_runtime import arte_journal_reader as reader
+
+    batch_id = "00000000-0000-0000-0000-000000000082"
+    prefix = V4CommittedPrefix(RUN, 3, batch_id, "bar:3", "running", (batch_id,))
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000083", RUN, 2, AT, AT,
+        "protection", "protection_change", "broker-1", "DU1", {},
+    )
+    calls = []
+    def page(_client, _prefix, *, after_sequence, limit, max_children):
+        calls.append((after_sequence, limit, max_children))
+        return {0: TypedProtectionPage(1, ()),
+                1: TypedProtectionPage(2, (record,)),
+                2: TypedProtectionPage(3, ())}[after_sequence]
+    monkeypatch.setattr(reader, "load_typed_protection_page", page)
+    assert load_complete_typed_protection_history(
+        object(), prefix, page_size=1, max_events=3) == (record,)
+    assert calls == [(0, 1, 50_000), (1, 1, 50_000), (2, 1, 50_000)]
+    with pytest.raises(RuntimeError, match="event bound"):
+        load_complete_typed_protection_history(object(), prefix, max_events=2)
+    monkeypatch.setattr(reader, "load_typed_protection_page",
+                        lambda *_a, **_k: TypedProtectionPage(0, ()))
+    with pytest.raises(RuntimeError, match="did not advance"):
+        load_complete_typed_protection_history(object(), prefix)
 
 
 def test_v4_review_resolves_every_supplement_without_changing_legacy_map() -> None:

@@ -76,6 +76,8 @@ def load_typed_protection_page(
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 
     if (not isinstance(prefix, V4CommittedPrefix)
+            or not prefix.batch_ids or type(prefix.last_sequence) is not int
+            or prefix.last_sequence < 1
             or type(max_children) is not int or max_children < 0):
         raise ValueError("Typed protection page needs V4 authority and a child bound")
     page = load_typed_event_page(
@@ -123,6 +125,44 @@ def load_typed_protection_page(
         int(page[-1].event["sequence"]) if page else after_sequence,
         tuple(result),
     )
+
+
+def load_complete_typed_protection_history(
+    client: Any, prefix: VerifiedPrefix, *, page_size: int = 500,
+    max_events: int = 100_000, max_children_per_page: int = 50_000,
+) -> tuple[JournalRecord, ...]:
+    """Prove the complete V4 protection history through one committed head.
+
+    No absence claim is valid after only one page. An over-budget live run must
+    use a separately certified recovery anchor rather than silently truncating
+    this scan. This is evidence for later OMS recovery, not execution authority.
+    """
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+
+    if (not isinstance(prefix, V4CommittedPrefix)
+            or not prefix.batch_ids or type(prefix.last_sequence) is not int
+            or prefix.last_sequence < 1
+            or type(page_size) is not int or not 1 <= page_size <= 1000
+            or type(max_events) is not int or max_events < 1
+            or type(max_children_per_page) is not int
+            or max_children_per_page < 0):
+        raise ValueError("Complete protection history needs bounded V4 authority")
+    if prefix.last_sequence > max_events:
+        raise RuntimeError("Committed protection history exceeds its event bound")
+    cursor = 0
+    records: list[JournalRecord] = []
+    while cursor < prefix.last_sequence:
+        page = load_typed_protection_page(
+            client, prefix, after_sequence=cursor, limit=page_size,
+            max_children=max_children_per_page)
+        if not cursor < page.next_sequence <= prefix.last_sequence:
+            raise RuntimeError("Committed protection history did not advance")
+        if any(not cursor < row.sequence <= page.next_sequence
+               for row in page.records):
+            raise RuntimeError("Committed protection record is outside its page")
+        records.extend(page.records)
+        cursor = page.next_sequence
+    return tuple(records)
 
 
 # V4 supplements use the same event parent but replace or extend the V1
