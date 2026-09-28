@@ -8,7 +8,7 @@
 use crate::compact_event::LiveCompactEvent;
 use chrono::{NaiveDate, NaiveDateTime};
 use ring::digest::{digest, SHA256};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const BATCH_TABLE: &str = "strategy_one_source_batch_v1";
@@ -160,7 +160,7 @@ pub fn canonical_row_hash(event: &LiveCompactEvent) -> String {
     hex_hash(wire.to_string().as_bytes())
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BatchReceipt {
     pub source_date: String,
     pub producer_epoch: String,
@@ -171,7 +171,7 @@ pub struct BatchReceipt {
     pub acknowledged_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct MemberReceipt {
     pub source_date: String,
     pub producer_epoch: String,
@@ -281,6 +281,73 @@ pub fn verify_batch_readback(
         return Err("source batch readback differs from exact member hashes");
     }
     Ok(())
+}
+
+pub fn batch_readback_sql(
+    source_date: &str, epoch: &str, batch_id: &str,
+) -> Result<String, &'static str> {
+    if NaiveDate::parse_from_str(source_date, "%Y-%m-%d")
+        .map(|day| day.to_string() != source_date).unwrap_or(true)
+        || !valid_hex(epoch, 32) || !valid_hex(batch_id, 64) {
+        return Err("source batch readback has invalid identity");
+    }
+    Ok(format!(
+        "SELECT source_date,producer_epoch,batch_id,event_count,\
+         first_arrival_sequence,last_arrival_sequence,\
+         toString(acknowledged_at) AS acknowledged_at \
+         FROM {BATCH_TABLE} WHERE source_date='{source_date}' \
+         AND producer_epoch='{epoch}' AND batch_id='{batch_id}' \
+         LIMIT 2 SETTINGS output_format_json_quote_64bit_integers=0 \
+         FORMAT JSONEachRow"
+    ))
+}
+
+pub fn member_readback_sql(batch: &BatchReceipt) -> Result<String, &'static str> {
+    batch_readback_sql(&batch.source_date, &batch.producer_epoch, &batch.batch_id)?;
+    let limit = checked_readback_limit(batch.event_count)?;
+    Ok(format!(
+        "SELECT source_date,producer_epoch,arrival_sequence,batch_id,ticker,\
+         canonical_row_hash FROM {MEMBER_TABLE} \
+         WHERE source_date='{day}' AND producer_epoch='{epoch}' \
+         AND batch_id='{batch_id}' ORDER BY arrival_sequence LIMIT {limit} \
+         SETTINGS output_format_json_quote_64bit_integers=0 FORMAT JSONEachRow",
+        day=batch.source_date, epoch=batch.producer_epoch, batch_id=batch.batch_id,
+    ))
+}
+
+pub fn event_readback_sql(batch: &BatchReceipt) -> Result<String, &'static str> {
+    batch_readback_sql(&batch.source_date, &batch.producer_epoch, &batch.batch_id)?;
+    let limit = checked_readback_limit(batch.event_count)?;
+    Ok(format!(
+        "SELECT source_date AS event_date,schema_version,\
+         concat(replaceOne(toString(ingest_ts),' ','T'),'Z') AS ingest_ts,\
+         arrival_sequence,ticker,event_meta,execution_timestamp_us,\
+         sip_timestamp_us,price_primary_int,price_secondary_int,\
+         size_primary,size_secondary,exchange_primary,exchange_secondary,\
+         condition_token_1,condition_token_2,condition_token_3,\
+         condition_token_4,condition_token_5,source_sequence,issue_flags \
+         FROM {EVENT_TABLE} FINAL WHERE source_date='{day}' \
+         AND producer_epoch='{epoch}' AND (ticker,arrival_sequence) IN \
+         (SELECT ticker,arrival_sequence FROM {MEMBER_TABLE} \
+         WHERE source_date='{day}' AND producer_epoch='{epoch}' \
+         AND batch_id='{batch_id}') \
+         ORDER BY arrival_sequence LIMIT {limit} \
+         SETTINGS output_format_json_quote_64bit_integers=0 FORMAT JSONEachRow",
+        day=batch.source_date, epoch=batch.producer_epoch, batch_id=batch.batch_id,
+    ))
+}
+
+fn valid_hex(value: &str, width: usize) -> bool {
+    value.len() == width && value.bytes().all(|byte| {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    })
+}
+
+fn checked_readback_limit(count: u32) -> Result<u32, &'static str> {
+    if !(1..=100_000).contains(&count) {
+        return Err("source batch readback exceeds bounded inventory");
+    }
+    Ok(count + 1)
 }
 
 #[cfg(test)]
@@ -442,5 +509,31 @@ mod tests {
         let mut wrong_epoch = members.clone();
         wrong_epoch[0].producer_epoch = "fedcba9876543210fedcba9876543210".into();
         assert!(verify_batch_readback(batch, &wrong_epoch, &source).is_err());
+    }
+
+    #[test]
+    fn cold_queries_are_identity_pinned_and_bounded() {
+        let epoch = "0123456789abcdef0123456789abcdef";
+        let (batches, _) = prepare_receipts(
+            epoch, "2026-08-18 12:00:00.000000",
+            &[event("2026-08-18", "A", 1)]).unwrap();
+        let batch = &batches[0];
+        assert!(batch_readback_sql("2026-08-18", epoch, &batch.batch_id)
+            .unwrap().contains("LIMIT 2"));
+        let member = member_readback_sql(batch).unwrap();
+        let source = event_readback_sql(batch).unwrap();
+        for sql in [&member, &source] {
+            assert!(sql.contains("LIMIT 2"));
+            assert!(sql.contains(&format!("batch_id='{}'", batch.batch_id)));
+            assert!(sql.contains(&format!("producer_epoch='{epoch}'")));
+        }
+        assert!(source.contains("FROM strategy_one_source_event_v1 FINAL"));
+        assert!(batch_readback_sql("2026-08-18' OR 1=1", epoch,
+                                   &batch.batch_id).is_err());
+        assert!(batch_readback_sql("2026-08-18", epoch,
+                                   "f'. OR 1=1").is_err());
+        let mut oversized = batch.clone();
+        oversized.event_count = 100_001;
+        assert!(event_readback_sql(&oversized).is_err());
     }
 }

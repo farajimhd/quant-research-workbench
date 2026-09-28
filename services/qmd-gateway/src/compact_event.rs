@@ -7,8 +7,9 @@ use crate::market_products::MarketProductEventRouter;
 use crate::metrics::{QueueFailureKind, SharedMetrics};
 use crate::strategy_one_liquidity::{CompletedLiquidityBucket, LiquidityReducer};
 use crate::strategy_one_source_receipt::{
-    batch_table_sql, event_table_sql, member_table_sql, prepare_receipts,
-    verify_event_columns, verify_storage_contract,
+    batch_readback_sql, batch_table_sql, event_readback_sql, event_table_sql,
+    member_readback_sql, member_table_sql, prepare_receipts,
+    verify_batch_readback, verify_event_columns, verify_storage_contract,
     BatchReceipt, MemberReceipt,
     BATCH_TABLE, EVENT_TABLE, MEMBER_TABLE,
 };
@@ -2049,6 +2050,30 @@ impl CompactEventClickHouseWriter {
         verify_event_columns(&columns).map_err(str::to_owned)
     }
 
+    /// Diagnostic cold readback only. A valid batch does not certify a complete
+    /// upstream feed, Keeper prefix, or safe live order admission.
+    pub async fn cold_verify_strategy_one_source_batch(
+        &self, source_date: &str, epoch: &str, batch_id: &str,
+    ) -> Result<(), String> {
+        fn decode_rows<T: serde::de::DeserializeOwned>(body: &str) -> Result<Vec<T>, String> {
+            body.lines().map(|line| serde_json::from_str(line)
+                .map_err(|error| format!("Strategy 1 cold row decode failed: {error}")))
+                .collect()
+        }
+        let batch_sql = batch_readback_sql(source_date, epoch, batch_id)
+            .map_err(str::to_owned)?;
+        let batches: Vec<BatchReceipt> = decode_rows(&self.query(&batch_sql, true).await?)?;
+        if batches.len() != 1 {
+            return Err("Strategy 1 source batch readback is absent or duplicated".into());
+        }
+        let batch = &batches[0];
+        let members: Vec<MemberReceipt> = decode_rows(&self.query(
+            &member_readback_sql(batch).map_err(str::to_owned)?, true).await?)?;
+        let events: Vec<LiveCompactEvent> = decode_rows(&self.query(
+            &event_readback_sql(batch).map_err(str::to_owned)?, true).await?)?;
+        verify_batch_readback(batch, &members, &events).map_err(str::to_owned)
+    }
+
     async fn insert_events(&self, rows: &[LiveCompactEvent]) -> Result<(), String> {
         let body = rows
             .iter()
@@ -2885,6 +2910,23 @@ mod tests {
                     "18446744073709551616"] {
             assert!(parse_arrival_sequence_high_watermark(row).is_err());
         }
+    }
+
+    #[test]
+    fn source_event_readback_decodes_the_canonical_scalar_projection() {
+        let at = Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap();
+        let mut event = compact_quote_at(at, 1);
+        event.arrival_sequence = 7;
+        let mut row = persisted_event_row(&event);
+        let object = row.as_object_mut().unwrap();
+        let clock = object["ingest_ts"].as_str().unwrap().replace(' ', "T") + "Z";
+        object.insert("ingest_ts".into(), json!(clock));
+        let decoded: LiveCompactEvent = serde_json::from_value(row).unwrap();
+        assert_eq!(decoded.arrival_sequence, 7);
+        assert_eq!(decoded.ticker, event.ticker);
+        assert_eq!(
+            crate::strategy_one_source_receipt::canonical_row_hash(&decoded),
+            crate::strategy_one_source_receipt::canonical_row_hash(&event));
     }
 
     #[test]

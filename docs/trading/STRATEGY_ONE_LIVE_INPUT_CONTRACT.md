@@ -123,8 +123,15 @@ The background compact-event workers publish exact versioned source rows,
 then members and batch rows after the ordinary canonical INSERT acknowledgement
 and before releasing the ordinary QMD durability holdback. Ambiguous receipt
 responses retain the same rows and deduplication token for retry. This is
-still **not** a Strategy 1 live admission permit: cold readback, Keeper
-selection, old-writer delayed-write fencing, and upstream continuity remain.
+still **not** a Strategy 1 live admission permit. QMD has a bounded diagnostic
+cold readback for one exact batch: it reads at most the declared count plus
+one member and member-selected source row, rejects mismatches within that
+batch, and compares
+each stored scalar-row digest with the acknowledged member. The queries and
+schema were checked against the workstation ClickHouse with empty tables;
+no persisted batch has yet been read back. Keeper-selected prefix publication,
+orphan source-row inventory, old-writer delayed-write fencing, and upstream
+continuity remain.
 
 Each process incarnation needs a fresh producer epoch in the canonical row and
 receipt identity. A delayed INSERT from an older incarnation must never be
