@@ -15,6 +15,19 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+def _restore_stdlib_ssl_for_keeper() -> None:
+    """Undo interpreter-wide truststore injection before backend threads start."""
+    if not ssl.SSLContext.__module__.startswith(
+        ("truststore.", "pip._vendor.truststore.")
+    ):
+        return
+    try:
+        from truststore import extract_from_ssl
+    except ImportError:
+        from pip._vendor.truststore import extract_from_ssl
+    extract_from_ssl()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the Quant Workbench backend API.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -26,12 +39,7 @@ def main() -> int:
     # Windows installations. Kazoo's Keeper TLS socket is incompatible with
     # that wrapper; restore the standard context before any backend worker or
     # network client starts. Keeper still verifies its pinned CA and hostname.
-    if ssl.SSLContext.__module__.startswith(("truststore.", "pip._vendor.truststore.")):
-        try:
-            from truststore import extract_from_ssl
-        except ImportError:
-            from pip._vendor.truststore import extract_from_ssl
-        extract_from_ssl()
+    _restore_stdlib_ssl_for_keeper()
 
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
