@@ -703,6 +703,40 @@ def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch)
             cold=cold, read_client=object())
 
 
+def test_fresh_strategy_one_live_oms_requires_no_orphan_journal_facts(monkeypatch):
+    calls = []
+
+    class Barrier:
+        def assert_fenced(self, run_id):
+            assert run_id == RUN
+            calls.append("fence")
+
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 0, {"mode": "live", "account_ids": ("DU1",)}, None, Barrier())
+    reads = []
+
+    def empty(_client, sql):
+        reads.append(sql)
+        return []
+
+    monkeypatch.setattr(bootstrap, "_rows", empty)
+    assert bootstrap.recover_strategy_one_live_oms(
+        cold=cold, read_client=object()) == ()
+    assert calls == ["fence", "fence"]
+    assert any("arte.trading_oms_group_state_v1" in sql for sql in reads)
+    assert not any("arte.trading_portfolio_sync_fence_v1" in sql for sql in reads)
+
+    def orphan(_client, sql):
+        if "arte.trading_oms_group_state_v1" in sql:
+            return [{"batch_id": "orphan"}]
+        return []
+
+    monkeypatch.setattr(bootstrap, "_rows", orphan)
+    with pytest.raises(RuntimeError, match="uncommitted typed journal fact"):
+        bootstrap.recover_strategy_one_live_oms(
+            cold=cold, read_client=object())
+
+
 def test_strategy_one_live_oms_rejects_contradictory_source_intent(monkeypatch):
     from src.trading_runtime import arte_oms_projection as oms
     from src.trading_runtime import arte_intent_projection as intents

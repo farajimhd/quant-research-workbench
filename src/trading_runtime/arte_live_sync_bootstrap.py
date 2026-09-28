@@ -364,6 +364,27 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
     if not accounts or len(set(accounts)) != len(accounts):
         raise ValueError("Strategy 1 OMS recovery lacks exact account membership")
     cold.barrier.assert_fenced(cold.run_id)
+    if cold.prefix is None:
+        # A newly published run context precedes its first V4 journal commit.
+        # Only the separately attested admission/portfolio-sync fences may
+        # exist at this point. Reject an interrupted uncommitted journal insert
+        # instead of silently recovering an empty OMS over orphan detail rows.
+        from src.trading_runtime.arte_journal_writer import v4_storage_contracts
+
+        independent_fences = {
+            "trading_admission_fence_v1",
+            "trading_portfolio_sync_fence_v1",
+            "trading_portfolio_sync_snapshot_marker_v1",
+        }
+        for contract in v4_storage_contracts():
+            names = {name for name, _ in contract.columns}
+            if {"run_id", "batch_id"} <= names and contract.name not in independent_fences:
+                if _rows(read_client,
+                         f"SELECT batch_id FROM arte.{contract.name} "
+                         f"WHERE run_id={_literal(cold.run_id)} LIMIT 1 FORMAT JSONEachRow"):
+                    raise RuntimeError("Fresh live run has an uncommitted typed journal fact")
+        cold.barrier.assert_fenced(cold.run_id)
+        return ()
     groups = load_latest_committed_oms_groups(
         read_client, cold.prefix, allowed_accounts=frozenset(accounts),
         strategy_identity=(STRATEGY_ID, STRATEGY_NUMBER),
