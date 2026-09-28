@@ -226,6 +226,11 @@ def prepare_compound_v4_families(
 
     if type(compound) is not V4CompoundBatch:
         raise TypeError("V4 mixed preparation requires a compound batch")
+    if getattr(client, "live_v4_lease", None) is not None and any(
+            getattr(compound.base, name) for name in (
+                "backtest_cursors", "backtest_market_authorities",
+                "backtest_progress", "prepared_v7_leases")):
+        raise ValueError("Live V4 compound cannot publish Backtest-only families")
     table_for_key = {
         "command_lineages": V4_ORDER_COMMAND_LINEAGE.name,
         "entry_evidence": ENTRY_EVIDENCE.name,

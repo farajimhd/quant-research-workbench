@@ -198,6 +198,20 @@ def test_compound_publishes_one_cold_verified_commit_for_two_events():
     assert prefix.last_sequence == 2
 
 
+def test_direct_live_compound_rejects_backtest_rows_before_any_insert():
+    first = _base(1, 11, 0)
+    second = _base(2, 12, 11)
+    compound = coalesce_v4_units((first, second))
+    client = attached_v4_client()
+    client.live_v4_lease = SimpleNamespace(assert_current=lambda: None,
+                                           run_id=RUN)
+    rejected = replace(compound.base, backtest_progress=(
+        {"record_id": str(UUID(int=999))},))
+    with pytest.raises(ValueError, match="Backtest-only"):
+        publish_compound_v4(client, replace(compound, base=rejected))
+    assert client.inserts == []
+
+
 def test_compound_can_cold_verify_intent_and_its_causal_oms_consumer():
     at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
     source_intent = intent()
