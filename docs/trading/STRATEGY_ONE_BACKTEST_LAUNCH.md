@@ -47,6 +47,22 @@ observations, not a throughput guarantee. A cold saved-chart certificate read
 took about 40s in a standalone check, and one concurrent cold API request hit
 the 60s ClickHouse timeout; cold chart latency still needs optimization.
 
+A later clean laptop backend restart returned the same saved chart in 9.380s
+cold and 0.682s warm; two simultaneous cold app requests both returned HTTP
+200 in 10.7s. The earlier 60s timeout was not reproducible under this bounded
+concurrency check, so it remains an observed load-dependent failure, not a
+proven steady-state latency. The browser-tested Strategy 1 recent-runs path
+now uses the dedicated V4 credential file and skips legacy disk inventories:
+32 typed ClickHouse runs loaded in 0.418s, newest run first. Previously the
+page omitted all V4 runs and enumerated 1,105 legacy files. Its saved WFF
+chart loaded persisted bars and closed MACD in the laptop UI without a page
+error. Journal-table CSS no longer constrains the chart library's internal
+table: at 1440px, the plotting cell measured 918px rather than 260px.
+Light/default and dark/1.25-scale browser checks found no horizontal page
+overflow; timeframe labels now use the theme foreground color. The frontend
+production build and opt-in saved-review browser tests passed. These checks
+do not imply that every chart state or theme/scale combination was exercised.
+
 Saved-run evidence pages can be read directly from ClickHouse without starting
 a new Backtest.
 The workstation-backend and SSH-API procedure used in the historical tests
