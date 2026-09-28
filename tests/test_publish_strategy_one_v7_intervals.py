@@ -4,6 +4,29 @@ from __future__ import annotations
 from scripts.clickhouse import publish_strategy_one_v7_intervals as command
 
 
+def test_source_retry_uses_fresh_reader_and_never_retries_insert(monkeypatch):
+    from http.client import IncompleteRead
+    monkeypatch.setattr(command, "sleep", lambda _seconds: None)
+
+    class Reader:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    first, second = Reader(), Reader()
+    replacements = []
+    def derive(reader):
+        if reader is first:
+            raise IncompleteRead(b"")
+        return "derived"
+    result, active = command._derive_with_source_retry(
+        derive, first, lambda: second, replacements.append)
+    assert result == "derived" and active is second
+    assert first.closed and not second.closed and replacements == [second]
+
+
 def test_dry_run_has_no_connection(capsys, monkeypatch):
     monkeypatch.setattr(command, "publish_session", lambda **_kwargs: (_ for _ in ()).throw(
         AssertionError("dry-run connected")))

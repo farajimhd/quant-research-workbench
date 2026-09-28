@@ -10,6 +10,7 @@ import argparse
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import closing
 from datetime import date
+from http.client import IncompleteRead, RemoteDisconnected
 import os
 from pathlib import Path
 import platform
@@ -17,6 +18,8 @@ import sys
 import traceback
 from threading import Lock, local
 from time import monotonic
+from time import sleep
+from urllib.error import URLError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -47,6 +50,26 @@ from src.trading_runtime.strategy_one_v7_interval_schema import verify_tables
 
 class V7IntervalCampaignFailure(RuntimeError):
     """Locally constructed, secret-free operator diagnostic."""
+
+
+_SOURCE_TRANSPORT_ERRORS = (IncompleteRead, RemoteDisconnected,
+                            ConnectionResetError, BrokenPipeError,
+                            TimeoutError, URLError)
+
+
+def _derive_with_source_retry(derive, reader, reader_factory, on_retry):
+    """Retry only a read-only derivation, never an uncertain publication."""
+    for attempt in range(3):
+        try:
+            return derive(reader), reader
+        except _SOURCE_TRANSPORT_ERRORS:
+            if attempt == 2:
+                raise
+            reader.close()
+            sleep(0.25 * (attempt + 1))
+            reader = reader_factory()
+            on_retry(reader)
+    raise AssertionError("Unreachable V7 source retry state")
 
 
 def _writer(password: str) -> ClickHouseHttpClient:
@@ -94,6 +117,12 @@ def publish_session(*, session_date: str, build_id: str,
     state = local()
     opened: list[object] = []
     opened_lock = Lock()
+    retries = [0]
+
+    def replaced_reader(reader):
+        with opened_lock:
+            opened.append(reader)
+            retries[0] += 1
 
     def worker(symbol: str) -> str:
         clients = getattr(state, "clients", None)
@@ -105,9 +134,14 @@ def publish_session(*, session_date: str, build_id: str,
                 opened.extend(clients)
             state.clients = clients
         writer, source, coverage_reader = clients
-        item = derive_ticker_day(market=market, seeds=seeds,
-                                 session_date=session_date, ticker=symbol,
-                                 reader=source)
+        item, source = _derive_with_source_retry(
+            lambda active: derive_ticker_day(
+                market=market, seeds=seeds,
+                session_date=session_date, ticker=symbol, reader=active),
+            source,
+            lambda: v3_client("read", market_stream=True, persistent=False),
+            replaced_reader)
+        state.clients = (writer, source, coverage_reader)
         return publish_unit(writer, coverage_reader, item)
 
     published = skipped = failed = 0
@@ -146,7 +180,8 @@ def publish_session(*, session_date: str, build_id: str,
                 if monotonic() - last_report >= 10 or not pending or failed:
                     queued = len(tickers) - published - skipped - failed - len(pending)
                     print(f"V7 coverage: published={published} skipped={skipped} "
-                          f"failed={failed} active={len(pending)} queued={queued}",
+                          f"retried={retries[0]} failed={failed} "
+                          f"active={len(pending)} queued={queued}",
                           flush=True)
                     last_report = monotonic()
     finally:
@@ -167,8 +202,10 @@ def publish_session(*, session_date: str, build_id: str,
             f"{f' ({exc})' if isinstance(exc, V7ReadbackMismatch) else ''}; "
             "rerun verifies prior coverage") from None
     print(f"Verified {len(tickers)} ticker-days; "
+          f"source_retries={retries[0]}; "
           f"{monotonic() - started:.1f}s wall time.", flush=True)
-    return {"published": published, "skipped": skipped, "failed": failed,
+    return {"published": published, "skipped": skipped,
+            "retried": retries[0], "failed": failed,
             "tickers": len(tickers)}
 
 
