@@ -379,6 +379,28 @@ def test_live_v4_modify_rejects_foreign_target_before_journaling(monkeypatch) ->
     asyncio.run(scenario())
 
 
+def test_live_v4_cancel_admission_blocks_later_amendment(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer, broker = _LiveV4Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        await _seed_live_order(dispatcher, writer)
+        cancel = _strategy_one_cancel()
+        cancel_ticket = dispatcher.submit_cancel(cancel, "DU1", "broker-1")
+        modify, request = _strategy_one_modify()
+        with pytest.raises(ValueError, match="exact Strategy 1 lineage"):
+            dispatcher.submit_modify(modify, "DU1", "broker-1", request)
+        with pytest.raises(ValueError, match="Strategy 1 lineage"):
+            dispatcher.submit_cancel(_strategy_one_cancel(), "DU1", "broker-1")
+        await asyncio.wait_for(writer.submitted.wait(), 1)
+        writer.receipts[1].set_result(cancel.base.batch_id)
+        await cancel_ticket
+        assert len(broker.calls) == 2
+        await dispatcher.close()
+    asyncio.run(scenario())
+
+
 def test_live_v4_modify_lost_owner_never_reaches_broker(monkeypatch) -> None:
     _install_audit(monkeypatch)
     async def scenario() -> None:

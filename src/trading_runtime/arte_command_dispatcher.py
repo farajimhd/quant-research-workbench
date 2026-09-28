@@ -149,6 +149,9 @@ class ArteCommandDispatcher:
         # Only broker IDs acknowledged on this fenced lane may be cancelled.
         # Cold recovery must reconstruct this map before resumed admission.
         self._placed_order_groups: dict[tuple[str, str], tuple[str, str]] = {}
+        # A cancel response is not terminal broker proof. Once queued, the
+        # target cannot be amended or cancelled again without reconciliation.
+        self._canceling_targets: set[tuple[str, str]] = set()
 
     async def start(self, client: Any, run_id: str) -> None:
         """Audit committed state on the control plane before accepting orders."""
@@ -270,6 +273,7 @@ class ArteCommandDispatcher:
                 or event["causation_id"] != detail["intent_id"]
                 or self._placed_order_groups.get((account_id, order_id))
                    != (detail["ticker"], detail["order_group_id"])
+                or (account_id, order_id) in self._canceling_targets
                 or (detail["strategy_id"], detail["strategy_revision"])
                    != (STRATEGY_ID, STRATEGY_NUMBER)):
             raise ValueError("Live V4 cancellation lacks exact Strategy 1 lineage")
@@ -280,6 +284,7 @@ class ArteCommandDispatcher:
             self._admission_error = CommandQueueFull(
                 "Command queue is full; stop new order admission")
             raise self._admission_error from exc
+        self._canceling_targets.add((account_id, order_id))
         return result
 
     def submit_modify(
@@ -311,6 +316,7 @@ class ArteCommandDispatcher:
                 or event["causation_id"] != detail["intent_id"]
                 or self._placed_order_groups.get((account_id, order_id))
                    != (detail["ticker"], detail["order_group_id"])
+                or (account_id, order_id) in self._canceling_targets
                 or (detail["strategy_id"], detail["strategy_revision"])
                    != (STRATEGY_ID, STRATEGY_NUMBER)
                 or not _command_matches_order(detail, request)):
