@@ -89,7 +89,9 @@ class LiveOrderDurabilityBridge(Generic[Command, Result]):
             self._closed = True
             async def drain() -> None:
                 await self._queue.put(None)
-                await self._worker
+                # A timeout cancels drain(), not the worker; record the
+                # reconciliation reason before explicitly interrupting it.
+                await asyncio.shield(self._worker)
             try:
                 await asyncio.wait_for(drain(), timeout=timeout_seconds)
             except TimeoutError as exc:
