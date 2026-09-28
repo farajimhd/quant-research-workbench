@@ -33,6 +33,9 @@ from src.backend.live_strategy_one_v4_principal import (
     PRINCIPAL, _CONFIG_READ, desired_plan, live_v4_preflight,
     live_v4_storage_contracts,
 )
+from src.backend.managed_live_strategy_one_credentials import (
+    load_managed_live_v4_credentials,
+)
 from src.backend.live_strategy_one_approval import TABLE as APPROVAL
 from src.backend.live_plan_membership import TABLES as PLAN_MEMBERSHIP_TABLES
 from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES, storage_preflight
@@ -114,18 +117,56 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
             close()
 
 
+def check_existing(*, client_factory: Callable[[str, str, str], Any]) -> None:
+    """Verify the installed principal without admin access or a mutation."""
+    values: dict[str, str] = {}
+    if not load_managed_live_v4_credentials(environment=values):
+        raise RuntimeError("Managed Live V4 credential is unavailable")
+    if (values[URL_KEY] != URL or values[USER_KEY] != PRINCIPAL
+            or len(values[PASSWORD_KEY]) < 40):
+        raise RuntimeError("Managed Live V4 credential differs from its principal")
+    client = client_factory(
+        f"http://{WORKSTATION_IPV4}:18123", PRINCIPAL, values[PASSWORD_KEY])
+    try:
+        live_v4_preflight(client)
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=URL)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--check", action="store_true",
+                        help="read-only installed principal, grants, and SSD check")
     parser.add_argument("--confirm-live-v4-runner", action="store_true")
     args = parser.parse_args(argv)
+    if args.apply and args.check:
+        parser.error("--apply and --check are mutually exclusive")
     plan = desired_plan()
     print(f"Live V4 runner: {plan.principal}; arte SELECT {len(plan.select_arte)}, "
           f"arte INSERT {len(plan.insert_arte)}, "
           f"reference SELECT {len(plan.select_reference)}")
-    if not args.apply:
+    if not args.apply and not args.check:
         print("Plan only; no connection, credential, grant, or row changed")
+        return 0
+    if args.check:
+        try:
+            if platform.node().upper() != "DESKTOP-SAAI85T" or args.url != URL:
+                raise RuntimeError("Live V4 check requires the managed workstation endpoint")
+            check_existing(client_factory=lambda url, user, password:
+                           ClickHouseHttpClient(url, user, password,
+                                                timeout_seconds=20))
+        except Exception as exc:
+            frames = traceback.extract_tb(exc.__traceback__)
+            stage = next((f"{frame.name}:{frame.lineno}" for frame in reversed(frames)
+                          if frame.filename == __file__), "external_dependency")
+            print(f"Live V4 read-only check failed: {type(exc).__name__} at {stage}",
+                  file=sys.stderr)
+            return 1
+        print("Live V4 principal authenticated; exact grants and SSD verified; 0 rows inserted")
         return 0
     if not args.confirm_live_v4_runner:
         parser.error("--apply requires --confirm-live-v4-runner")

@@ -124,6 +124,36 @@ def test_live_v4_provisioner_grants_only_the_exact_plan(monkeypatch):
     assert writer.closed
 
 
+def test_existing_live_v4_check_is_select_only_and_closes_client(monkeypatch):
+    writer = Client()
+    calls = []
+
+    def credential(*, environment):
+        environment.update({
+            provision.URL_KEY: provision.URL,
+            provision.USER_KEY: live.PRINCIPAL,
+            provision.PASSWORD_KEY: "x" * 48,
+        })
+        return True
+
+    monkeypatch.setattr(provision, "load_managed_live_v4_credentials", credential)
+    monkeypatch.setattr(provision, "live_v4_preflight",
+                        lambda client: calls.append(client))
+    provision.check_existing(client_factory=lambda url, user, password: (
+        writer if (url, user, password) ==
+        (f"http://{provision.WORKSTATION_IPV4}:18123", live.PRINCIPAL,
+         "x" * 48) else None))
+    assert calls == [writer]
+    assert writer.closed and writer.inserts == []
+
+
+def test_existing_live_v4_check_rejects_missing_credential(monkeypatch):
+    monkeypatch.setattr(provision, "load_managed_live_v4_credentials",
+                        lambda **_kwargs: False)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        provision.check_existing(client_factory=lambda *_args: None)
+
+
 def test_client_factory_requires_current_keeper_and_closes_on_failure(monkeypatch):
     calls = []
     client = Client()
