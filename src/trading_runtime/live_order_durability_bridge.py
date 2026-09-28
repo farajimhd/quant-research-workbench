@@ -26,21 +26,24 @@ class LiveOrderDurabilityBridge(Generic[Command, Result]):
             raise ValueError("Live order bridge needs a broker and positive bound")
         self._submit_broker = submit_broker
         self._queue: asyncio.Queue[
-            tuple[Command, ThreadFuture[str], asyncio.Future[Result]] | None
+            tuple[Command, str, ThreadFuture[str], asyncio.Future[Result]] | None
         ] = asyncio.Queue(maxsize=capacity)
         self._worker = asyncio.create_task(self._run(), name="live-order-durability")
         self._failure: BaseException | None = None
         self._closed = False
 
-    def offer(self, command: Command, receipt: ThreadFuture[str]) -> asyncio.Future[Result]:
+    def offer(self, command: Command, receipt: ThreadFuture[str], *,
+              expected_commit_id: str) -> asyncio.Future[Result]:
         """Accept immediately or fail closed; no network or durability wait."""
         if not isinstance(receipt, ThreadFuture):
             raise TypeError("Live order needs its typed journal receipt")
+        if not isinstance(expected_commit_id, str) or not expected_commit_id:
+            raise ValueError("Live order needs its exact normalized commit identity")
         if self._closed or self._failure is not None or self._worker.done():
             raise RuntimeError("Live order bridge is closed or failed") from self._failure
         result: asyncio.Future[Result] = asyncio.get_running_loop().create_future()
         try:
-            self._queue.put_nowait((command, receipt, result))
+            self._queue.put_nowait((command, expected_commit_id, receipt, result))
         except asyncio.QueueFull as exc:
             self._failure = RuntimeError("Live order queue is full; stop new admission")
             raise self._failure from exc
@@ -52,15 +55,16 @@ class LiveOrderDurabilityBridge(Generic[Command, Result]):
             try:
                 if item is None:
                     return
-                command, receipt, result = item
+                command, expected_commit_id, receipt, result = item
                 if self._failure is not None:
                     if not result.done():
                         result.set_exception(self._failure)
                     continue
                 try:
                     commit_id = await asyncio.wrap_future(receipt)
-                    if not isinstance(commit_id, str) or not commit_id:
-                        raise RuntimeError("Live order lacks a durable journal commit")
+                    if commit_id != expected_commit_id:
+                        raise RuntimeError(
+                            "Live order receipt differs from its normalized commit")
                     if self._failure is not None:
                         raise self._failure
                     broker_result = await self._submit_broker(command)
@@ -104,8 +108,8 @@ class LiveOrderDurabilityBridge(Generic[Command, Result]):
                     pass
                 while not self._queue.empty():
                     item = self._queue.get_nowait()
-                    if item is not None and not item[2].done():
-                        item[2].set_exception(self._failure)
+                    if item is not None and not item[3].done():
+                        item[3].set_exception(self._failure)
                     self._queue.task_done()
                 raise self._failure from exc
         else:
