@@ -12,3 +12,8 @@
 | `docs/` | Durable architecture, operations, and continuity records | `docs/AGENTS.md` |
 
 The laptop repository is the source of truth. Laptop runtime output belongs under `D:\TradingML\runtimes`; workstation runtime output belongs under `\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes`.
+
+Before creating or changing a numbered trading strategy, read
+`docs/architecture/STRATEGY_CREATION_STANDARD.md`; its publication and
+producer/preflight boundaries are binding across `src/`, `frontend/`, and
+Backtest/live execution.

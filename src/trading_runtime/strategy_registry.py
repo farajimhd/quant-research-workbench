@@ -114,7 +114,12 @@ _BUILTINS_REGISTERED = False
 
 
 def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
-    """Publish once; there is deliberately no replace or mutable edit API."""
+    """Publish once; there is deliberately no replace or mutable edit API.
+
+    New strategy authors must follow docs/architecture/STRATEGY_CREATION_STANDARD.md.
+    In particular, a changed shared rule or execution clock is a changed
+    trading behavior: register the next number, never repoint this release.
+    """
     release.verify()
     _ensure_builtin_executors()
     with _LOCK:

@@ -142,7 +142,13 @@ def persisted_active_market_source(
     through_boundary_ms: int, client_factory: Callable[[], Any],
     stage_time: Callable[[str, float], None] | None = None,
 ) -> MarketSource:
-    """Open one SELECT-only ticker stream only while its financial state lives."""
+    """Open one SELECT-only ticker stream only while its financial state lives.
+
+    New numbered strategies must pin their own completed-input contract and
+    pass strict preflight before constructing a scheduler. Never put an
+    on-miss builder or event/raw-file fallback here; see the strategy creation
+    standard and keep broker liquidity on completed persisted boundaries.
+    """
     if (len(plan.sessions) != 1 or not isinstance(price_plan, PriceLevelPlan)
             or type(through_boundary_ms) is not int
             or not 0 < through_boundary_ms <= 57_600_000

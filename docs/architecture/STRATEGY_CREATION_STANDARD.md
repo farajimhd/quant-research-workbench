@@ -62,6 +62,40 @@ fences and the same typed fact contracts in Backtest and live. No Strategy 1
 SQLite or run-local disk journal is a durability authority. A full queue or
 failed writer stops new admission rather than silently dropping facts.
 
+## Required implementation pattern for a new number
+
+Follow this sequence for every new or changed trading behavior. Reuse the
+contracts and architecture, **not** Strategy 1's number, sealed rows, or
+candidate identity. A requested change to Strategy 1 becomes Strategy 2;
+the old release and its runs remain executable for exact reproduction.
+
+| Stage | Required artifact and boundary | Strategy 1 example |
+|---|---|---|
+| 1. Specify | One reviewed behavior specification and `NumberedStrategyRelease` seal. Declare activation, entry, re-entry, additions, stop/target precedence, sizing, permissions, interval, fill policy, and technical dependencies before registering the number. | `strategy_one_contract.py`, `strategy_registry.py` |
+| 2. Source | Typed QMD/producer products with resolution, timestamp semantics, build/attempt identity, coverage, and an explicit missing-data result. Request a new producer product before a rule can consume an unavailable indicator. A reusable expensive derivative is calculated once by producer-owned code and published coverage-last in normalized `arte` columns. | `backtest_market_data.py`, `backtest_strategy_one_candidate_store.py` |
+| 3. Preflight | Compile the release's minimal dependency plan and verify every required source, revision, interval, identity, storage policy, and read-only market grant before the Backtest page or run can start. Missing data is an error, never an invitation to build it in Backtest. | `replay_run_service.py` fixed preflight |
+| 4. Filter | Apply reusable, revision-pinned pure rule functions to bounded columnar batches. Emit immutable candidate indexes, causal boundary references, and reason-bit masks. Keep data extraction and candidate materialization bounded and measured. The mask is a necessary condition, never order authorization. | `strategy_one_contract.py`, `backtest_strategy_one_static_gate.py` |
+| 5. Execute | Advance only surviving candidates through sequential per-ticker state and one deterministic global Portfolio/OMS/broker coordinator. Read only completed rows; order activation and fills use the declared broker contract. No state transition may see a future bar, indicator, quote, level, or fill. | `backtest_strategy_one_scheduler.py`, `strategy_one_stateful.py` |
+| 6. Persist | Emit the same normalized typed decision, command, acknowledgement, fill, and financial contracts in Backtest and live. Use bounded asynchronous ClickHouse writers and Keeper ownership; the execution callback never waits on ClickHouse. A broker side effect waits in its separate command lane for its exact durable receipt. Do not use SQLite, run-local disk, JSON/blob evidence, or a generic event payload as the authority. | `arte_journal_writer.py`, `arte_command_dispatcher.py` |
+| 7. Publish | Test the sealed number through preflight, full-session all-ticker app launch, causal replay, fill and capital determinism, cold recovery, and read-only enforcement. Record observed runtime and unresolved differences. Enable live separately only after broker/OMS recovery and all live gates pass. | `STRATEGY_ONE_BACKTEST_LAUNCH.md` |
+
+Keep shared rules independent of strategy orchestration so a scanner, Signal
+Stream, and another strategy can pin the same rule revision. Put only
+position/order-dependent logic in the causal state machine. Do not convert a
+rule into a Python per-row hot loop merely to reuse it; expose a typed
+columnar evaluator and verify its output against scalar edge-case fixtures.
+Changing a shared rule does not retroactively change a sealed consumer: pin
+the old rule for that consumer and publish a new Strategy number if the new
+rule changes its decisions.
+
+Before editing, inspect the numbered release, its frozen input and rule
+contracts, prior experiment results, and the relevant `AGENTS.md` files.
+When a required product is unavailable, stop at preflight and implement its
+producer and coverage certificate first. Do not fork a private bar, MACD,
+signal, V7, or liquidity calculation inside the new strategy. Never remove a
+live or Backtest safety gate merely because a unit test or a small ticker
+probe passed; the complete runnable path must be verified.
+
 ## Publication checklist
 
 Before registering the next number, seal a canonical manifest containing the

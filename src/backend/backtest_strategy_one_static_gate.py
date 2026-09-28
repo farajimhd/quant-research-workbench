@@ -52,7 +52,13 @@ class StrategyOneStaticGate:
 def compile_static_entry_gate(
     candidates: CertifiedCandidatePlan, entry: CertifiedEntryEvidencePlan,
 ) -> StrategyOneStaticGate:
-    """Vectorize only position-independent rules over a certified run prefix."""
+    """Vectorize only position-independent rules over a certified run prefix.
+
+    For another numbered strategy, follow the seven-stage creation standard
+    in docs/architecture/STRATEGY_CREATION_STANDARD.md. Reuse a revision-pinned
+    producer/rule contract, not this mask's Strategy 1-specific thresholds.
+    This output is eligibility evidence; Portfolio/OMS alone authorizes orders.
+    """
     if (not isinstance(candidates, CertifiedCandidatePlan)
             or not isinstance(entry, CertifiedEntryEvidencePlan)
             or candidates.source_build_id != entry.source_build_id

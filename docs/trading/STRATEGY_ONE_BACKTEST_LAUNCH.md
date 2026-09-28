@@ -30,7 +30,20 @@ SQLite-backed replacement. The app's visual layout is unchanged.
 
 ## Measured full-market premarket validation
 
-On the current Strategy 1 code hash
+On 2026-09-28, the synced branch at `7ac7162c1` repeated the full Aug 18
+04:00–09:30 ET all-ticker probe. Read-only preflight took 27.418s with no
+unresolved checks; execution took 29.234s and processed 7,381 persisted
+liquidity rows. Run `22e2fe67-076c-43e4-ba9a-7375a532183f` completed with
+2,216 normalized journal events, seven committed writer units, zero writer
+failures, 58 intents, 966 linked actions, and no backdated descendants.
+Stage timing was 14.435s for the causal session, 6.496s for terminal
+durability, 3.601s for ten active-ticker first rows, and 3.723s for twenty
+reconciliation calls. Keeper logged connection-drop/retry messages during
+the run and shutdown; the run completed and the cold causal audit passed,
+but the messages still merit operational diagnosis. This controller-path
+probe does not constitute a visual browser QA of the saved review/chart.
+
+In earlier app-route validation on Strategy 1 code hash
 `6760ec7e70322d34955c17acbd34b24e8b1b26a2597d8a70ec5cb3777fdcc565`,
 two independent workstation app-route runs of the entire Aug 18 04:00–09:30 ET
 premarket completed in 29.612s and 29.834s of execution after 23.559s and
