@@ -270,13 +270,16 @@ def _best_initialization(parent_root, manifest, *, run_root, device):
     old_args, new_args = parent['arguments'], manifest['arguments']
     if (old_args.get('liquidation_buffer_seconds') != 120 or
             new_args.get('liquidation_buffer_seconds') != 900 or
-            {k:v for k,v in old_args.items() if k != 'liquidation_buffer_seconds'} !=
-            {k:v for k,v in new_args.items() if k != 'liquidation_buffer_seconds'}):
+            new_args.get('min_completed_episodes',0) < old_args.get('min_completed_episodes',0) or
+            {k:v for k,v in old_args.items() if k not in ('liquidation_buffer_seconds','min_completed_episodes')} !=
+            {k:v for k,v in new_args.items() if k not in ('liquidation_buffer_seconds','min_completed_episodes')}):
         raise ValueError('Best-policy initialization changes other training settings')
     old_code, new_code = parent['code']['files'], manifest['code']['files']
     if (set(old_code) != set(new_code) or
             any(old_code[name] != new_code[name] for name in old_code if name not in PRE_EARLY_EXIT_HASHES) or
-            any(old_code.get(name) != expected for name,expected in PRE_EARLY_EXIT_HASHES.items())):
+            any(old_code.get(name) not in ((expected,PILOT_TRAIN_HASH) if name.endswith('train.py')
+                                                else (expected,))
+                for name,expected in PRE_EARLY_EXIT_HASHES.items())):
         raise ValueError('Best-policy initialization changed unapproved source')
     best_path = parent_root/'checkpoint_best.pt'
     best = torch.load(best_path,map_location=device,weights_only=False)
