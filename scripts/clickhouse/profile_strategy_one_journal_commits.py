@@ -47,7 +47,7 @@ def _profile(rows: list[dict]) -> tuple[str, ...]:
                 or first != previous_sequence + 1 or last - first + 1 != size
                 or not 1 <= size <= _MAX_COMMIT_EVENTS):
             raise ValueError(
-                "V4 commit header differs from the diagnostic's chain/batch bound: "
+                "Non-contiguous V4 commit header differs from the diagnostic's chain/batch bound: "
                 f"first={first} expected_first={previous_sequence + 1} "
                 f"last={last} events={size} bound={_MAX_COMMIT_EVENTS} "
                 f"prior_matches={str(UUID(str(row['prior_batch_id']))) == previous_id}")

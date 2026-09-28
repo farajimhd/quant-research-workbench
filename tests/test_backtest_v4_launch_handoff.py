@@ -31,6 +31,9 @@ def test_v4_writer_consumes_only_a_fresh_same_client_preflight(monkeypatch):
                         })
     client = SimpleNamespace(
         typed_insert_strict=True, typed_insert_dispatch=TypedInsertDispatch(object()),
+        execute=lambda sql: ('{"name":"strategy_one_entry_context_v1"}'
+                             if "FROM system.tables" in sql
+                             and "strategy_one_entry_context_v1" in sql else ""),
         close=lambda: None,
     )
     seal = arte_journal_writer._v4_preflight(client)
