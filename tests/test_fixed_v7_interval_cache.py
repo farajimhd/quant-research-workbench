@@ -45,6 +45,14 @@ def fixtures():
     return market, product
 
 
+def test_interval_plan_requires_ticker_aligned_columns_and_rejects_missing_ticker():
+    _, product = fixtures()
+    with pytest.raises(ValueError, match="lacks certified V7 intervals"):
+        product.levels("MISSING", boundary_ms=1000)
+    with pytest.raises(ValueError, match="not ticker-aligned"):
+        replace(product, valid_seconds=(("WRONG", (1000,)),))
+
+
 def test_persisted_cache_observes_only_completed_price_valid_seconds(monkeypatch):
     market, product = fixtures()
     source = {"ticker": "TEST", "resolution_ms": 1000,

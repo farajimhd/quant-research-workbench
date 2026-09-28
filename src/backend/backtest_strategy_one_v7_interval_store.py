@@ -6,7 +6,8 @@ columns, validated against a pinned bars/seed plan, and shared immutably.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from bisect import bisect_left
+from dataclasses import dataclass, field
 from hashlib import sha256
 import json
 from math import isfinite
@@ -62,12 +63,20 @@ class CertifiedV7IntervalPlan:
     valid_seconds: tuple[tuple[str, tuple[int, ...]], ...]
     intervals: tuple[tuple[str, tuple[V7LevelInterval, ...]], ...]
     token: str
+    _tickers: tuple[str, ...] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        tickers = tuple(row.ticker for row in self.coverage)
+        if (tuple(sorted(set(tickers))) != tickers
+                or tuple(row[0] for row in self.valid_seconds) != tickers
+                or tuple(row[0] for row in self.intervals) != tickers):
+            raise ValueError("Strategy 1 V7 interval plan is not ticker-aligned")
+        object.__setattr__(self, "_tickers", tickers)
 
     def levels(self, ticker: str, *, boundary_ms: int) -> tuple[dict[str, object], ...]:
-        """Causal 100ms lookup from the already verified immutable columns."""
-        index = next((index for index, row in enumerate(self.coverage)
-                      if row.ticker == ticker), None)
-        if index is None:
+        """Causal 100ms lookup without scanning the all-ticker coverage."""
+        index = bisect_left(self._tickers, ticker)
+        if index == len(self._tickers) or self._tickers[index] != ticker:
             raise ValueError("Strategy 1 ticker lacks certified V7 intervals")
         return levels_at(
             boundary_ms=boundary_ms,
