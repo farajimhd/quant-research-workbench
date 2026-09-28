@@ -234,7 +234,8 @@ def run(args):
             weight_decay=args.weight_decay,grad_clip=args.grad_clip,
             trade_weight=args.trade_weight,value_weight=args.value_weight,
             seed=args.seed,allow_segment=args.allow_segment,archive_every=args.archive_every,
-            replay_every=args.replay_every,unknown_ticker_dropout=args.unknown_ticker_dropout,
+            replay_every=args.replay_every,replay_train=args.replay_train,
+            unknown_ticker_dropout=args.unknown_ticker_dropout,
             data_mode=args.data_mode,
             init_checkpoint=str(args.init_checkpoint.resolve()) if args.init_checkpoint else None,
             init_checkpoint_hash=file_hash(args.init_checkpoint) if args.init_checkpoint else None),
@@ -414,20 +415,19 @@ def run(args):
             if args.replay_every and (epoch == 0 or (epoch+1)%args.replay_every == 0
                     or epoch+1 == args.epochs):
                 replay_start = perf_counter()
-                train_replays = _run_closed_loop(model,train_shards,resident,device,vocab)
+                train_replays = (_run_closed_loop(model,train_shards,resident,device,vocab)
+                    if args.replay_train else [])
                 val_replays = _run_closed_loop(model,val_shards,resident,device,vocab)
                 replay_report = dict(config_hash=config['config_hash'],epoch=epoch+1,
                     train=train_replays,validation=val_replays,
-                    train_profit=sum(item['profit'] for item in train_replays),
+                    train_profit=sum(item['profit'] for item in train_replays) if train_replays else None,
                     val_profit=sum(item['profit'] for item in val_replays),
-                    train_fees=sum(item['fees_paid'] for item in train_replays),
+                    train_fees=sum(item['fees_paid'] for item in train_replays) if train_replays else None,
                     val_fees=sum(item['fees_paid'] for item in val_replays),
                     val_max_drawdown=max(item['max_drawdown'] for item in val_replays),
                     wall_seconds=perf_counter()-replay_start)
                 write(paths.run_root/f'closed_loop_epoch_{epoch+1:03d}.json',replay_report)
-                report.update({'replay/train_profit':replay_report['train_profit'],
-                    'replay/val_profit':replay_report['val_profit'],
-                    'replay/train_fees':replay_report['train_fees'],
+                report.update({'replay/val_profit':replay_report['val_profit'],
                     'replay/val_fees':replay_report['val_fees'],
                     'replay/val_max_drawdown':replay_report['val_max_drawdown'],
                     'replay/wall_seconds':replay_report['wall_seconds'],
@@ -438,14 +438,17 @@ def run(args):
                     'replay/val_buys':sum(item['buys'] for item in val_replays),
                     'replay/val_sells':sum(item['voluntary_sells'] for item in val_replays),
                     'replay/val_max_open_lots':max(item['max_open_lots'] for item in val_replays),
-                    'replay/train_position_seconds':sum(item['position_seconds'] for item in train_replays),
-                    'replay/train_buys':sum(item['buys'] for item in train_replays),
                     **{f'replay/{split}/{item["date"]}/{key}':item[key]
                         for split,items in (('train',train_replays),('val',val_replays))
                         for item in items for key in ('profit','fees_paid','buys','voluntary_sells',
                             'position_seconds','exposure_seconds','average_holding_seconds')}})
-                console.print(f'Epoch {epoch+1} closed loop | train '
-                    f'${replay_report["train_profit"]:,.2f} | validation '
+                if train_replays:
+                    report.update({'replay/train_profit':replay_report['train_profit'],
+                        'replay/train_fees':replay_report['train_fees'],
+                        'replay/train_position_seconds':sum(item['position_seconds'] for item in train_replays),
+                        'replay/train_buys':sum(item['buys'] for item in train_replays)})
+                train_text = (f'${replay_report["train_profit"]:,.2f}' if train_replays else 'skipped')
+                console.print(f'Epoch {epoch+1} closed loop | train {train_text} | validation '
                     f'${replay_report["val_profit"]:,.2f} | '
                     f'drawdown {replay_report["val_max_drawdown"]:.1%}')
                 if (_eligible_replay(replay_report) and (replay_best is None or
@@ -504,6 +507,8 @@ def main(argv=None):
     parser.add_argument('--archive-every',type=int,default=5)
     parser.add_argument('--replay-every',type=int,default=10,
         help='Full closed-loop training and validation replay interval; 0 disables')
+    parser.add_argument('--replay-train',action=argparse.BooleanOptionalAction,default=True,
+        help='Include training-day diagnostics in each fee-aware replay; validation always runs')
     parser.add_argument('--unknown-ticker-dropout',type=float,default=.1,
         help='Training probability of replacing ticker identity with a learned unknown token')
     parser.add_argument('--max-steps',type=int,default=0,help='Bounded smoke validation only')
