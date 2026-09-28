@@ -843,9 +843,16 @@ fn parse_canonical_liquidity_replay_page(
         fields.insert("ingest_ts".into(), serde_json::Value::String(ingest.to_rfc3339()));
         let event: LiveCompactEvent = serde_json::from_value(value)
             .map_err(|error| format!("canonical liquidity replay field is invalid: {error}"))?;
+        let source_us = i64::try_from(event.sip_timestamp_us)
+            .map_err(|_| "canonical liquidity replay source clock exceeds Int64")?;
+        let source_date = DateTime::<Utc>::from_timestamp_micros(source_us)
+            .ok_or("canonical liquidity replay source clock is outside UTC range")?
+            .date_naive().to_string();
         let key = EventSortKey::from_event(&event);
         let tuple = (key.sip_timestamp_us, key.source_sequence, key.event_type, key.arrival_sequence);
         if event.ticker != ticker || event.schema_version != LIVE_COMPACT_EVENT_SCHEMA_VERSION
+            || event.event_date != source_date || event.source_sequence == 0
+            || event.arrival_sequence == 0
             || event.sip_timestamp_us < start_us || event.sip_timestamp_us >= end_us
             || previous.is_some_and(|prior| tuple <= prior) {
             return Err("canonical liquidity replay identity, version, range, or order differs".into());
@@ -2891,6 +2898,16 @@ mod tests {
         let start = time.timestamp_micros() as u64;
         let mut event = compact_quote_at(time, 1);
         event.schema_version = 5;
+        assert!(parse_canonical_liquidity_replay_page(
+            &replay_wire_row(&event), "TEST", start, start + 100_000, None, 1,
+        ).is_err());
+        event.schema_version = LIVE_COMPACT_EVENT_SCHEMA_VERSION;
+        event.event_date = "2026-08-23".into();
+        assert!(parse_canonical_liquidity_replay_page(
+            &replay_wire_row(&event), "TEST", start, start + 100_000, None, 1,
+        ).is_err());
+        event.event_date = "2026-08-24".into();
+        event.source_sequence = 0;
         assert!(parse_canonical_liquidity_replay_page(
             &replay_wire_row(&event), "TEST", start, start + 100_000, None, 1,
         ).is_err());
