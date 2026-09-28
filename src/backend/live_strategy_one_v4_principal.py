@@ -120,7 +120,7 @@ def desired_plan() -> LiveV4PrincipalPlan:
         writable,
         frozenset({"storage_policies", "tables", "columns", "parts",
                    "data_skipping_indices"}),
-        frozenset({("q_live", "market_stock_split_v1")}),
+        frozenset({("q_live", "events"), ("q_live", "market_stock_split_v1")}),
     )
 
 

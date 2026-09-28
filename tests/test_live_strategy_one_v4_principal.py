@@ -61,7 +61,8 @@ def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
     assert not {"trading_commit_v1", "trading_commit_v2"} & plan.insert_arte
     assert not plan.insert_arte.intersection({
         "bars_v1", "indicators_v1", "liquidity_100ms_v1"})
-    assert plan.select_reference == frozenset({("q_live", "market_stock_split_v1")})
+    assert plan.select_reference == frozenset({
+        ("q_live", "events"), ("q_live", "market_stock_split_v1")})
     grants = plan.grants()
     assert len(grants) == len(set(grants))
     assert all(" TO strategy_one_live_v4_runner" in grant for grant in grants)
