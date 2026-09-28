@@ -102,7 +102,7 @@ def test_fixed_plan_reuses_only_unchanged_verified_snapshot(monkeypatch):
     from src.backend import backtest_market_data as market
     from src.trading_runtime import arte_market_day_cold_preflight as cold
     from src.trading_runtime import arte_market_day_keeper as keeper_module
-    from src.trading_runtime import keeper_session as session_module
+    from src.backend import backtest_market_keeper_pool as keeper_pool
     from research.mlops import clickhouse
 
     class Reader:
@@ -111,13 +111,16 @@ def test_fixed_plan_reuses_only_unchanged_verified_snapshot(monkeypatch):
 
     class Session:
         client = object()
+        writable = True
         def close(self):
             pass
 
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
     monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
-    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_pool, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_pool, "MARKET_CERTIFICATE_KEEPER_POOL",
+                        keeper_pool.MarketCertificateKeeperPool())
     monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
                         lambda _: SimpleNamespace(load=lambda _build: "proof"))
     generations = []
@@ -151,7 +154,7 @@ def test_cold_plan_rechecks_pinned_build_during_unrelated_part_growth(
     from src.backend import backtest_market_data as market
     from src.trading_runtime import arte_market_day_cold_preflight as cold
     from src.trading_runtime import arte_market_day_keeper as keeper_module
-    from src.trading_runtime import keeper_session as session_module
+    from src.backend import backtest_market_keeper_pool as keeper_pool
     from research.mlops import clickhouse
 
     class Reader:
@@ -160,13 +163,16 @@ def test_cold_plan_rechecks_pinned_build_during_unrelated_part_growth(
 
     class Session:
         client = object()
+        writable = True
         def close(self):
             pass
 
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
     monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
-    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_pool, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_pool, "MARKET_CERTIFICATE_KEEPER_POOL",
+                        keeper_pool.MarketCertificateKeeperPool())
     monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
                         lambda _: SimpleNamespace(load=lambda _build: "proof"))
     fingerprints = iter(("before", "after"))
@@ -199,7 +205,7 @@ def test_unrelated_part_growth_reuses_full_audit_with_selected_fence(monkeypatch
     from src.backend import backtest_market_data as market
     from src.trading_runtime import arte_market_day_cold_preflight as cold
     from src.trading_runtime import arte_market_day_keeper as keeper_module
-    from src.trading_runtime import keeper_session as session_module
+    from src.backend import backtest_market_keeper_pool as keeper_pool
     from research.mlops import clickhouse
 
     class Reader:
@@ -208,13 +214,16 @@ def test_unrelated_part_growth_reuses_full_audit_with_selected_fence(monkeypatch
 
     class Session:
         client = object()
+        writable = True
         def close(self):
             pass
 
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
     monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
-    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_pool, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_pool, "MARKET_CERTIFICATE_KEEPER_POOL",
+                        keeper_pool.MarketCertificateKeeperPool())
     monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
                         lambda _: SimpleNamespace(load=lambda _build: "proof"))
     scans = []
@@ -243,7 +252,7 @@ def test_selected_part_change_during_cache_recheck_forces_full_audit(monkeypatch
     from src.backend import backtest_market_data as market
     from src.trading_runtime import arte_market_day_cold_preflight as cold
     from src.trading_runtime import arte_market_day_keeper as keeper_module
-    from src.trading_runtime import keeper_session as session_module
+    from src.backend import backtest_market_keeper_pool as keeper_pool
     from research.mlops import clickhouse
 
     class Reader:
@@ -252,13 +261,16 @@ def test_selected_part_change_during_cache_recheck_forces_full_audit(monkeypatch
 
     class Session:
         client = object()
+        writable = True
         def close(self):
             pass
 
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
     monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
-    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_pool, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_pool, "MARKET_CERTIFICATE_KEEPER_POOL",
+                        keeper_pool.MarketCertificateKeeperPool())
     monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
                         lambda _: SimpleNamespace(load=lambda _build: "proof"))
     scans = []

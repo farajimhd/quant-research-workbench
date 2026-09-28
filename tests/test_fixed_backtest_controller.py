@@ -182,6 +182,7 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
         market=market, execution_market=market,
         candidates=object(),
         activations=object(), pivots=object(), hod=object(), seeds=object(),
+        v7_intervals=object(),
         entry=object(), prices=object()))
     assert controller._source_cursor == ({
         "session_date": DAY, "boundary_ms": 100, "sequence": 1}

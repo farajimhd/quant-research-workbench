@@ -131,6 +131,7 @@ class BacktestMarketDataTests(unittest.TestCase):
     def test_fixed_plan_uses_clickhouse_certificate_and_keeper_only(self) -> None:
         from unittest.mock import Mock, patch
         from src.backend.backtest_market_data import certified_market_plan_from_arte
+        from src.backend.backtest_market_keeper_pool import MarketCertificateKeeperPool
 
         class Closed:
             def __init__(self):
@@ -140,6 +141,7 @@ class BacktestMarketDataTests(unittest.TestCase):
         reader = Closed()
         session = Closed()
         session.client = object()
+        session.writable = True
         def discover_while_keeper_open(*_args, **_kwargs):
             self.assertFalse(session.closed)
             return "certified"
@@ -147,8 +149,10 @@ class BacktestMarketDataTests(unittest.TestCase):
                     return_value=reader) as open_reader,
               patch("src.trading_runtime.arte_market_day_cold_preflight.market_day_fence_build_ids",
                     return_value=("a" * 64,)) as fence_ids,
-              patch("src.trading_runtime.keeper_session.open_workstation_keeper_session",
+              patch("src.backend.backtest_market_keeper_pool.open_workstation_keeper_session",
                     return_value=session),
+              patch("src.backend.backtest_market_keeper_pool.MARKET_CERTIFICATE_KEEPER_POOL",
+                    new=MarketCertificateKeeperPool()) as keeper_pool,
               patch("src.trading_runtime.arte_market_day_keeper.MarketDayKeeperReader",
                     return_value=Mock(load=Mock(return_value="attested"))) as keeper_reader,
               patch("src.trading_runtime.arte_market_day_cold_preflight.discover_cold_certified_market_day_plan",
@@ -160,11 +164,13 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertEqual(discover.call_args.kwargs["sessions"], ("2026-08-18",))
         self.assertEqual(discover.call_args.kwargs["expected_build_ids"], ("a" * 64,))
         self.assertIs(discover.call_args.kwargs["use_seals"], True)
-        self.assertTrue(session.closed)
+        self.assertFalse(session.closed)
         self.assertEqual(discover.call_args.args[1].load("a" * 64), "attested")
         self.assertIs(discover.call_args.args[1], keeper_reader.return_value)
         fence_ids.assert_called_once()
-        self.assertTrue(reader.closed and session.closed)
+        self.assertTrue(reader.closed)
+        keeper_pool.close()
+        self.assertTrue(session.closed)
 
     def test_certificate_reader_retries_only_lost_select_response(self) -> None:
         from http.client import RemoteDisconnected
