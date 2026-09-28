@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Clock3, Globe2, MapPin, PanelRightOpen, Maximize2, Minimize2 } from "lucide-react";
 import { api } from "../../api/client";
 import { TradingWorkspace } from "./TradingWorkspace";
@@ -108,6 +108,9 @@ function EvidenceTable({ rows, columns, empty, onSymbolSelect }: {
 export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
   runId: string; initialPage: V4Page; onClose: () => void;
 }) {
+  // Keep the certified Canvas interactive while paging the typed journal.
+  // Larger runs stay bounded and expose explicit manual continuation.
+  const automaticEventLimit = 5_000;
   const [events, setEvents] = useState(initialPage.events);
   const [nextSequence, setNextSequence] = useState(initialPage.next_sequence);
   const [eventsComplete, setEventsComplete] = useState(initialPage.complete);
@@ -125,6 +128,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
   const [eventError, setEventError] = useState("");
   const [loadingTrades, setLoadingTrades] = useState(false);
   const [loadingEvents, setLoadingEvents] = useState(false);
+  const eventRequestInFlight = useRef(false);
   const [managementOpen, setManagementOpen] = useState(false);
   const [savedLayout] = useState<CanvasWorkspaceState | null>(() =>
     readCanvasWorkspaceStateByStorageKey(V4_LAYOUT_KEY)
@@ -221,17 +225,27 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
   }
 
   async function loadMoreEvents() {
-    if (eventsComplete || loadingEvents) return;
+    if (eventsComplete || eventRequestInFlight.current) return;
+    eventRequestInFlight.current = true;
     setLoadingEvents(true);
     setEventError("");
     try {
       const page = await api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=${nextSequence}&limit=500`, { timeoutMs: 60_000 });
+      if (!page.complete && (page.events.length === 0 || page.next_sequence <= nextSequence)) {
+        throw new Error("Verified journal page did not advance");
+      }
       setEvents(current => [...current, ...page.events]);
       setNextSequence(page.next_sequence);
       setEventsComplete(page.complete);
     } catch (error) { setEventError(error instanceof Error ? error.message : String(error)); }
-    finally { setLoadingEvents(false); }
+    finally { eventRequestInFlight.current = false; setLoadingEvents(false); }
   }
+
+  useEffect(() => {
+    if (!eventsComplete && !loadingEvents && !eventError && events.length < automaticEventLimit) {
+      void loadMoreEvents();
+    }
+  }, [eventsComplete, loadingEvents, eventError, events.length, nextSequence]);
 
   const accounts = Object.entries(initialPage.financial_accounts).map(([account_id, account]) => ({ account_id, ...account }));
   const financialAccounts = accounts.map(account => ({
@@ -308,8 +322,9 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
             historicalRows={activityRows} historicalPage={{ complete: true }}
             onSettingsChange={patch => setActivitySettings(current => ({ ...current, ...patch }))}
             onTickerSelect={openV4Ticker} runId={runId} settings={activitySettings} />
+            {!eventsComplete ? <p className="trading-disclosure" role="status">{events.length.toLocaleString()} verified journal events loaded{loadingEvents ? "; loading more…" : "; more available."}</p> : null}
             {eventError ? <p role="alert">Journal page unavailable: {eventError}</p> : null}
-            {!eventsComplete ? <button className="button secondary compact" disabled={loadingEvents} onClick={() => void loadMoreEvents()} type="button">Load more events</button> : null}
+            {!eventsComplete && (events.length >= automaticEventLimit || eventError) ? <button className="button secondary compact" disabled={loadingEvents} onClick={() => void loadMoreEvents()} type="button">Load more events</button> : null}
           </section>;
           case "positions": return positionTrading ? <PositionsPreview data={positionTrading}
             onSymbolSelect={openV4Ticker} orderEvidenceComplete={false} settings={presentationSettings.positions} />

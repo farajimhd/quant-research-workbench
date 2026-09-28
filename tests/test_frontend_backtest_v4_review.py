@@ -16,6 +16,84 @@ def _performance_page():
 
 @unittest.skipUnless(os.environ.get("BACKTEST_REVIEW_UI"), "opt-in managed browser check")
 class BacktestV4ReviewUITests(unittest.TestCase):
+    def test_saved_activity_loads_other_tickers_from_verified_next_page(self):
+        from playwright.sync_api import sync_playwright
+
+        evidence = Path(os.environ["BACKTEST_REVIEW_EVIDENCE"])
+        evidence.mkdir(parents=True, exist_ok=True)
+        run_id = "ca03805f-c2d0-4417-9ac7-e1ffbc5e3079"
+        requests = []
+
+        def event(sequence, ticker):
+            return {"event": {"sequence": sequence,
+                    "event_time": "2026-08-18T08:05:00Z",
+                    "category": "strategy", "entity_type": "strategy_intent",
+                    "entity_id": f"intent-{sequence}", "account_id": "SIM-01-REPLAY"},
+                    "detail_family": "trading_strategy_intent_v1",
+                    "detail": {"ticker": ticker, "action": "enter_long"}}
+
+        def terminal_page(after):
+            return {"schema_version": "strategy-one-v4-terminal-review-page-v1",
+                    "run": {"run_id": run_id, "session_date": "2026-08-18",
+                            "strategy_id": "early-squeeze-strategy", "strategy_revision": 1},
+                    "status": "completed", "verified_sequence": 2,
+                    "market_cursor_verified": True,
+                    "market_cursor": {"session_date": "2026-08-18", "boundary_ms": 300000},
+                    "limitations": [], "financial_accounts": {},
+                    "events": [event(1, "WFF")] if after == 0 else [event(2, "ABC")],
+                    "next_sequence": 1 if after == 0 else 2,
+                    "complete": after != 0}
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1440, "height": 900})
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+
+                def handle(route):
+                    from urllib.parse import parse_qs, urlsplit
+                    url = route.request.url
+                    if urlsplit(url).path.endswith("/api/trading/backtest/runs"):
+                        payload = {"rows": [{"run_id": run_id, "status": "completed",
+                            "session_date": "2026-08-18", "tickers": [],
+                            "journal_backend": "arte_typed_journal_v4",
+                            "v4_review_available": True}]}
+                    elif "/v4-terminal-page" in url:
+                        after = int(parse_qs(urlsplit(url).query).get("after_sequence", ["0"])[0])
+                        requests.append(after)
+                        payload = terminal_page(after)
+                    elif "/v4-performance" in url:
+                        payload = _performance_page()
+                    elif "/v4-trade-history" in url:
+                        payload = {"fills": [], "commissions": [],
+                                   "next_fill_sequence": 0, "next_commission_sequence": 0,
+                                   "complete": True}
+                    elif "/v4-order-history" in url:
+                        payload = {"commands": [], "transitions": [],
+                                   "next_command_sequence": 0,
+                                   "next_transition_sequence": 0, "complete": True}
+                    elif "/configuration-options" in url:
+                        payload = {"candidates": [], "candidate_id": "",
+                                   "run_plan_id": "", "available_run_plans": [],
+                                   "error": ""}
+                    elif url.endswith("/backtest/structure-books"):
+                        payload = {"items": []}
+                    else:
+                        payload = {}
+                    route.fulfill(json=payload)
+
+                page.route("**/api/trading/**", handle)
+                page.goto("http://127.0.0.1:5173/#backtest-trading")
+                page.get_by_role("button", name=f"Review backtest {run_id[:8]}").click()
+                page.get_by_role("button", name="Open ABC Charts & Quotes in a new tab").first.wait_for()
+                self.assertEqual(requests, [0, 1])
+                self.assertEqual(errors, [])
+                page.locator(".backtest-v4-canvas-review").screenshot(
+                    path=str(evidence / "v4-activity-verified-next-page.png"))
+            finally:
+                browser.close()
+
     def test_terminal_balances_remain_legible_at_compact_scale(self):
         from playwright.sync_api import sync_playwright
 
