@@ -33,6 +33,17 @@ def _command():
     return batch, request
 
 
+def _strategy_one_command():
+    batch, request = _command()
+    command = {**batch.order_commands[0],
+               "strategy_id": "early-squeeze-strategy", "strategy_revision": 1}
+    lineage = {"parent_record_id": command["record_id"],
+               "run_id": batch.run_id, "batch_id": batch.batch_id,
+               "account_id": command["account_id"]}
+    return replace(batch, order_commands=(command,),
+                   v4_command_lineages=(lineage,)), request
+
+
 class _Writer:
     coalesce_batches = False
 
@@ -111,13 +122,25 @@ def test_broker_send_waits_for_durable_receipt_without_blocking_submit(monkeypat
     asyncio.run(scenario())
 
 
+def test_live_v4_rejects_command_without_strategy_one_lineage(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        dispatcher = ArteCommandDispatcher(_LiveV4Writer(), _Broker())
+        await dispatcher.start(None, "live:DU1")
+        batch, request = _command()
+        with pytest.raises(ValueError, match="Strategy 1 typed lineage"):
+            dispatcher.submit(batch, "DU1", (request,))
+        await dispatcher.close()
+    asyncio.run(scenario())
+
+
 def test_live_v4_command_uses_explicit_family_receipt(monkeypatch) -> None:
     _install_audit(monkeypatch)
     async def scenario() -> None:
         writer, broker = _LiveV4Writer(), _Broker()
         dispatcher = ArteCommandDispatcher(writer, broker)
         await dispatcher.start(None, "live:DU1")
-        batch, request = _command()
+        batch, request = _strategy_one_command()
         ticket = dispatcher.submit(batch, "DU1", (request,))
         await asyncio.wait_for(writer.submitted.wait(), 1)
         assert broker.calls == []

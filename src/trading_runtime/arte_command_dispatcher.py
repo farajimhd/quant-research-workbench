@@ -16,6 +16,7 @@ from uuid import UUID
 from src.trading_runtime.arte_command_recovery import audit_committed_commands
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
 class _JournalWriter(Protocol):
@@ -147,6 +148,21 @@ class ArteCommandDispatcher:
                 or any(not _command_matches_order(row, order)
                        for row, order in zip(batch.order_commands, orders))):
             raise ValueError("Typed command batch differs from broker requests")
+        if self._live_v4:
+            commands = {str(row.get("record_id")): row
+                        for row in batch.order_commands}
+            lineage = {str(row.get("parent_record_id")): row
+                       for row in batch.v4_command_lineages}
+            if (len(commands) != len(orders) or len(lineage) != len(orders)
+                    or set(commands) != set(lineage)
+                    or any((row.get("strategy_id"), row.get("strategy_revision"))
+                           != (STRATEGY_ID, STRATEGY_NUMBER)
+                           for row in commands.values())
+                    or any(row.get("run_id") != batch.run_id
+                           or row.get("batch_id") != batch.batch_id
+                           or row.get("account_id") != commands[parent].get("account_id")
+                           for parent, row in lineage.items())):
+                raise ValueError("Live V4 command lacks Strategy 1 typed lineage")
         # TypedJournalBatch already freezes row mappings at construction.
         # OrderRequest.raw remains mutable, so own the broker request snapshot.
         sealed_orders = deepcopy(orders)
