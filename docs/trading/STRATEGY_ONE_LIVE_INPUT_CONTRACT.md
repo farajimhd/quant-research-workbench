@@ -119,6 +119,9 @@ verifies these tables and `q_live.strategy_one_source_event_v1` on
 `live_market_ssd`. The versioned source event table retains every accepted
 arrival under `(source_date, producer_epoch, ticker, arrival_sequence)`, so
 the older `q_live.events` replacement key cannot merge two receipt members.
+The receipt and readback bound matches QMD's configured maximum of 250,000
+events per persistence batch; a new epoch's local prefix starts after the
+existing arrival counter rather than incorrectly requiring sequence one.
 The background compact-event workers publish exact versioned source rows,
 then members and batch rows after the ordinary canonical INSERT acknowledgement
 and before releasing the ordinary QMD durability holdback. Ambiguous receipt

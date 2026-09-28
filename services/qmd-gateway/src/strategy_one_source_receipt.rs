@@ -6,6 +6,7 @@
 //! fence old ClickHouse INSERTs, or authorize live trading by themselves.
 
 use crate::compact_event::LiveCompactEvent;
+use crate::config::COMPACT_EVENT_MAX_BATCH_EVENTS;
 use chrono::{NaiveDate, NaiveDateTime};
 use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const BATCH_TABLE: &str = "strategy_one_source_batch_v1";
 pub const MEMBER_TABLE: &str = "strategy_one_source_member_v1";
 pub const EVENT_TABLE: &str = "strategy_one_source_event_v1";
+/// Shared with GatewayConfig's producer batch bound; never silently diverge.
+pub const MAX_BATCH_EVENTS: usize = COMPACT_EVENT_MAX_BATCH_EVENTS;
 
 /// Strategy 1's exact live source is separate from the older q_live.events
 /// ReplacingMergeTree, whose sorting key can merge distinct arrivals.
@@ -194,7 +197,7 @@ pub fn prepare_receipts(
             .map(|clock| clock.format("%Y-%m-%d %H:%M:%S%.6f").to_string() != acknowledged_at)
             .unwrap_or(true)
         || events.is_empty()
-        || events.len() > 100_000
+        || events.len() > MAX_BATCH_EVENTS
     {
         return Err("source receipt needs a bounded epoch, clock, and event batch");
     }
@@ -261,7 +264,7 @@ pub fn verify_batch_readback(
     events: &[LiveCompactEvent],
 ) -> Result<(), &'static str> {
     if batch.event_count == 0
-        || batch.event_count > 100_000
+        || batch.event_count as usize > MAX_BATCH_EVENTS
         || members.len() != batch.event_count as usize
         || events.len() != batch.event_count as usize
         || events.iter().any(|row| row.event_date != batch.source_date)
@@ -344,7 +347,7 @@ fn valid_hex(value: &str, width: usize) -> bool {
 }
 
 fn checked_readback_limit(count: u32) -> Result<u32, &'static str> {
-    if !(1..=100_000).contains(&count) {
+    if count == 0 || count as usize > MAX_BATCH_EVENTS {
         return Err("source batch readback exceeds bounded inventory");
     }
     Ok(count + 1)
@@ -533,7 +536,9 @@ mod tests {
         assert!(batch_readback_sql("2026-08-18", epoch,
                                    "f'. OR 1=1").is_err());
         let mut oversized = batch.clone();
-        oversized.event_count = 100_001;
+        oversized.event_count = MAX_BATCH_EVENTS as u32 + 1;
         assert!(event_readback_sql(&oversized).is_err());
+        assert_eq!(checked_readback_limit(MAX_BATCH_EVENTS as u32),
+                   Ok(MAX_BATCH_EVENTS as u32 + 1));
     }
 }

@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_QMD_HOST_ROLE: &str = "laptop";
+pub const COMPACT_EVENT_MAX_BATCH_EVENTS: usize = 250_000;
 
 pub fn is_valid_qmd_host_role(value: &str) -> bool {
     matches!(value, "laptop" | "workstation")
@@ -266,7 +267,7 @@ impl GatewayConfig {
                 "QMD_COMPACT_EVENT_MAX_CLICKHOUSE_BATCH",
                 50_000,
             )
-            .clamp(1_000, 250_000),
+            .clamp(1_000, COMPACT_EVENT_MAX_BATCH_EVENTS),
             compact_event_live_buffer_events_per_ticker: env_usize(
                 "QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER",
                 512,

@@ -21,11 +21,20 @@ pub struct AcknowledgedPrefix {
 
 impl AcknowledgedPrefix {
     pub fn new(max_pending_sequences: usize) -> Result<Self, &'static str> {
-        if max_pending_sequences == 0 {
-            return Err("acknowledgement capacity must be positive");
+        Self::starting_after(0, max_pending_sequences)
+    }
+
+    /// A new producer epoch inherits the locally assigned arrival counter,
+    /// but only sequences strictly after `start_after` belong to this epoch.
+    /// This base is not a certificate for any earlier epoch or upstream feed.
+    pub fn starting_after(
+        start_after: u64, max_pending_sequences: usize,
+    ) -> Result<Self, &'static str> {
+        if max_pending_sequences == 0 || start_after == u64::MAX {
+            return Err("acknowledgement base or capacity is invalid");
         }
         Ok(Self {
-            sealed_through: 0,
+            sealed_through: start_after,
             pending: BTreeSet::new(),
             max_pending_sequences,
         })
@@ -129,5 +138,15 @@ mod tests {
         assert_eq!(prefix.acknowledge(&[1, 3]), Ok(1));
         assert_eq!(prefix.pending_sequences(), 1);
         assert_eq!(prefix.acknowledge(&[2]), Ok(3));
+    }
+
+    #[test]
+    fn fresh_epoch_starts_after_the_existing_arrival_counter() {
+        let mut prefix = AcknowledgedPrefix::starting_after(91, 3).unwrap();
+        assert_eq!(prefix.sealed_through(), 91);
+        assert_eq!(prefix.acknowledge(&[94, 92]), Ok(92));
+        assert_eq!(prefix.acknowledge(&[93]), Ok(94));
+        assert!(prefix.acknowledge(&[91]).is_err());
+        assert!(AcknowledgedPrefix::starting_after(u64::MAX, 3).is_err());
     }
 }
