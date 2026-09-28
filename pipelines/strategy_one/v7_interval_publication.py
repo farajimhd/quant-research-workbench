@@ -191,7 +191,9 @@ def publish_unit(writer: Any, reader: Any, item: DerivedV7TickerDay, *,
         raise ValueError("V7 derivative publication lacks typed source or writer")
     _validate_item(item)
     expected = _expected_coverage(item)
-    verify_tables(writer)
+    # The exact producer principal has only product SELECT/INSERT authority;
+    # the separate read principal owns system-catalog and SSD-part inspection.
+    verify_tables(reader)
     existing = _verify_covered(reader, item, expected)
     if existing is not None:
         return "already_published"
