@@ -122,8 +122,7 @@ class FixedV7IntervalCache:
         for row in iter_persisted_v7_seconds(
                 self.market_plan, session_date=self.session.isoformat(),
                 ticker=ticker, after_boundary_ms=after,
-                through_boundary_ms=through_ms, client=self.client,
-                columnar=True):
+                through_boundary_ms=through_ms, client=self.client):
             boundary = ((int(row["bucket_index"]) + 1) * 1_000
                         - SESSION_OPEN_OFFSET_MS)
             if not after < boundary <= through_ms:
