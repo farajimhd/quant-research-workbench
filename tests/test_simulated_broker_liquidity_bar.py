@@ -191,7 +191,7 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
                 "submitted_at"].replace("T", " ").removesuffix("+00:00")},),
         )
         self.assertEqual(verify_broker_match_snapshot(stored), rows)
-        with self.assertRaisesRegex(ValueError, "child identity or hash"):
+        with self.assertRaisesRegex(ValueError, "child hash differs"):
             verify_broker_match_snapshot(replace(
                 stored, open_orders=({**stored.open_orders[0], "filled": 5.0},)))
         with self.assertRaisesRegex(ValueError, "family seal"):
@@ -209,7 +209,15 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
                     BROKER_MATCH_TABLES[4].name: stored.tickers,
                     BROKER_MATCH_TABLES[5].name: stored.marks,
                 }[family]
-                return "\n".join(json.dumps(row) for row in values)
+                import struct
+                columns = dict(next(table for table in BROKER_MATCH_TABLES
+                                    if table.name == family).columns)
+                return "\n".join(json.dumps({
+                    **row,
+                    **{f"__bits_{name}": struct.unpack(
+                        "<Q", struct.pack("<d", row[name]))[0]
+                       for name, kind in columns.items() if kind == "Float64"}
+                }) for row in values)
 
         reader = Reader()
         self.assertEqual(load_unattested_broker_match_snapshot(

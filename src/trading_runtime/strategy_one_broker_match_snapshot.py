@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
 from math import isfinite
+import struct
 from typing import Any, Mapping, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -411,13 +412,14 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
         if len(set(identities)) != len(identities):
             raise ValueError("Broker match child identity is duplicated")
         for row in normalized:
-            if (any(row[name] != root[name] for name in
-                    ("snapshot_id", "run_id", "snapshot_month",
-                     "checkpoint_sequence"))
-                    or row["content_hash"] != _digest({
-                        name: item for name, item in row.items()
-                        if name != "content_hash"})):
-                raise ValueError("Broker match child identity or hash differs")
+            if any(row[name] != root[name] for name in
+                   ("snapshot_id", "run_id", "snapshot_month",
+                    "checkpoint_sequence")):
+                raise ValueError(f"Broker match {contract.name} child identity differs")
+            if row["content_hash"] != _digest({
+                    name: item for name, item in row.items()
+                    if name != "content_hash"}):
+                raise ValueError(f"Broker match {contract.name} child hash differs")
         families.append(normalized)
     if (not root["run_id"] or root["checkpoint_sequence"] < 1
             or not 0 < root["boundary_ms"] <= 57_600_000
@@ -497,11 +499,27 @@ def load_unattested_broker_match_snapshot(
                  f"AND checkpoint_sequence={checkpoint_sequence}")
         if snapshot_id is not None:
             where += f" AND snapshot_id=toUUID({_literal(snapshot_id)})"
+        float_columns = tuple(name for name, kind in table.columns
+                              if kind == "Float64")
+        bit_columns = "".join(
+            f", reinterpretAsUInt64({name}) AS __bits_{name}"
+            for name in float_columns)
         sql = assert_select_only(
-            f"SELECT * FROM arte.{table.name} WHERE {where} "
+            f"SELECT *{bit_columns} FROM arte.{table.name} WHERE {where} "
             f"LIMIT {limit} FORMAT JSONEachRow")
-        return tuple(json.loads(line) for line in client.execute(sql).splitlines()
-                     if line.strip())
+        result = []
+        for line in client.execute(sql).splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            for name in float_columns:
+                bits = row.pop(f"__bits_{name}", None)
+                if (isinstance(bits, bool) or not str(bits).isdigit()
+                        or not 0 <= int(bits) < 2**64):
+                    raise ValueError("Broker match Float64 bit evidence is missing")
+                row[name] = struct.unpack("<d", struct.pack("<Q", int(bits)))[0]
+            result.append(row)
+        return tuple(result)
 
     roots = read(ROOT, limit=2)
     if len(roots) != 1:
