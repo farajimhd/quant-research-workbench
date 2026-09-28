@@ -1,207 +1,115 @@
 # Strategy creation and numbering standard
 
-Status: draft. Strategy 1 is not published or selectable until all admission
-checks below pass. The legacy Candidate 350 remains a historical reproduction
-identity, not the new user-facing Strategy number.
+Status: binding creation policy. Strategy 1 has an immutable, selectable
+**100 ms Backtest-only** release. Its legacy Candidate 350 source identity is
+not a second user-facing version. Strategy 1 is not approved for live order
+admission or as evidence of profitability.
 
 ## One trading identity
 
 `strategy_number` is the sole user-facing version of a complete trading
-behavior. It covers activation, admission, entries, additions, exits, stop and
-target selection, sizing, re-entry, rule precedence, required input clocks, and
-the effective evaluation interval. A change to any of these after publication
-requires the next number. Do not edit the prior specification or dispatch its
-number to new behavior. Do not reuse a number after a rejected experiment.
+behavior. It includes activation, entry and re-entry, additions, exits,
+stop/target selection and precedence, sizing, permissions, input clocks, and
+evaluation interval. Once a numbered release is sealed or used for a run,
+**any behavioral change requires the next number**. Do not edit or replace the
+old release, silently redirect its number, or reuse a rejected number.
+Historical runs retain their original number and content digest.
 
-Configuration-row revisions, implementation revisions, QMD product versions,
-broker contracts, schema versions, and run IDs remain separate technical
-identities. They must be pinned in the run, but never presented as competing
-Strategy versions. A run records the strategy number and content digest on
-every decision, order, fill, and journal projection. Historical runs keep
-their original identities without a retroactive alias.
+Configuration, code, QMD product, broker, schema, rule-set, and run revisions
+are technical identities. Pin them in the release and run, but do not present
+them as competing Strategy versions. A content digest is an integrity seal,
+not a cryptographic signature unless a signing authority actually exists.
 
 ## Input and execution authority
 
-Each Strategy declares typed input fields, source product, resolution,
-effective/observed clock, readiness, freshness, and missing-data behavior.
-QMD or an ingestion-owned producer creates bars, indicators, and structural
-products; a Strategy only consumes them. If a new Strategy needs MACD at one
-minute, QMD must publish and certify that input before the Strategy can be
-admitted. Backtest SELECTs certified immutable products and may not create or
-repair them. Missing required products fail preflight before workspace entry.
-The Backtest market principal has no INSERT/ALTER/CREATE grants.
+Define every input as a typed field with product, resolution, event/observed
+clock, completed-boundary availability, freshness, and missing-data behavior.
+QMD or another producer-owned pipeline publishes bars, indicators, liquidity,
+and structural products. A Strategy only consumes them. For example, a new
+one-minute MACD rule first requires a certified one-minute QMD indicator; a
+Strategy may not calculate or approximate that MACD from trades or other bars.
 
-The default evaluation interval is completed 100 ms boundaries. An explicitly
-selected event-mode Strategy can consume events. Every rule's input clock must
-be causal at that interval; a completed 1-minute MACD is unavailable until the
-minute closes. A forming higher-timeframe MACD at 100 ms boundaries is a
-distinct QMD product, not a value silently calculated by Strategy code from a
-trade or a later completed bar. Sparse buckets and quote-only boundaries must
-not be turned into invented trades or candles.
+Backtest SELECTs only certified immutable `arte` products with a market
+principal that cannot INSERT, ALTER, CREATE, repair, or materialize them.
+Missing coverage fails preflight before entering the Backtest workspace.
+Expensive reusable derivatives may be published once by a separate producer
+as normalized, typed, coverage-sealed `arte` tables; no JSON/blob substitute.
+
+The default evaluation interval is completed 100 ms boundaries. Event mode
+must be declared explicitly. A completed higher-timeframe indicator is not
+available until its own boundary closes; a forming value is a distinct
+producer product. Sparse and quote-only buckets must not become invented
+trades or candles. The fixed broker consumes completed persisted liquidity
+buckets without fabricating intra-bucket order. Pin the fill contract,
+activation delay, spread/quote freshness, liquidity budgets, and ambiguous
+stop/target policy independently of the interval.
 
 ## Reusable rules and bounded state
 
-Stateless scanner, Signal Stream, Watchlist, and Strategy gates compile from
-the same versioned typed rule-set catalog. Evaluate them in bounded columnar
-batches across ticker/bucket arrays; produce Boolean candidate masks and
-compact reason codes. Avoid row dictionaries, repeated deep copies, and
-per-ticker Python evaluation for rejected rows. A rule-set implementation
-change that alters decisions requires a new rule-set version and, for every
-published consuming Strategy, a new Strategy number.
+Compile shared versioned scanner, Watchlist, Signal Stream, and Strategy
+predicates over bounded typed columnar batches. Emit candidate masks, compact
+reason codes, and exact causal boundary references. Do not evaluate every
+rejected row through a Python strategy state machine or repeatedly copy rich
+row dictionaries. A decision-changing rule-set revision also requires a new
+number for each published consuming Strategy.
 
-Only survivors enter the causal state machine for swing sequencing, position
-management, stop/target ratchets, OMS, fills, and shared cash. Do not vectorize
-across future time or reorder shared financial mutations. Global coordination
-must be deterministic across worker counts. The broker consumes completed
-persisted liquidity buckets in fixed mode; no aggregate row may be expanded
-into fictional quote/trade event ordering. Journal publication is normalized,
-ClickHouse-only, bounded, asynchronous from the hot engine, and uses the same
-decision/fill contract for Backtest and live trading. Failure or backpressure
-is explicit; no silent loss.
+Only survivors enter sequential causal activation, position, stop/target,
+portfolio, OMS, and broker state. Never vectorize across future time or
+reorder shared cash and liquidity mutations. A single deterministic global
+coordinator owns those mutations; results must match across worker counts.
+Use a bounded, asynchronous, normalized ClickHouse journal with Keeper
+fences and the same typed fact contracts in Backtest and live. No Strategy 1
+SQLite or run-local disk journal is a durability authority. A full queue or
+failed writer stops new admission rather than silently dropping facts.
 
-## Publication seal
+## Publication checklist
 
-Before publication, create a canonical manifest with strategy number, exact
-rule-set revisions, input product/build contracts, interval, broker/fill
-policy, code revision, and an approved human-readable rule specification.
-Hash its canonical encoding and record the approval and code commit. A digest
-is an integrity seal; call it a cryptographic signature only if an actual
-signing key and verification authority exist. Runtime registration, Backtest
-preflight, and live deployment must compare the installed manifest to the
-approved seal and fail closed on mismatch. Never allow `replace=True` for a
-published numbered Strategy. No saved configuration may mutate that seal.
+Before registering the next number, seal a canonical manifest containing the
+approved human-readable rules, exact rule-set revisions, typed input product
+and build contracts, evaluation interval, broker/fill policy, code revision,
+and content digest. Store approval and code commit. Runtime registration,
+preflight, and deployment must verify the same seal; published registration
+cannot use `replace=True`.
 
-Publication requires causal future-tail independence, missing-input rejection,
-completed-boundary availability, exact rule-set and strategy unit tests,
-live/Backtest decision parity where their input contracts match, broker
-partial-fill and shared-liquidity tests, cross-ticker cash determinism,
-checkpoint/recovery equality, and app launch-to-terminal-run validation. A
-Backtest completing without an exception is implementation acceptance, not
-profitability or live-release acceptance.
+Verify future-tail independence, missing-input failure, completed-boundary
+availability, rule and Strategy tests, live/Backtest decisions where input
+contracts match, partial fills and shared liquidity, cross-ticker cash and
+worker-count determinism, checkpoint/resume equality, and an app
+launch-to-terminal run. A Backtest completing without error is implementation
+evidence, not live release or profitability acceptance.
 
-## Strategy 1 admission blockers
+## Strategy 1 sealed Backtest behavior and current limits
 
-Strategy 1 starts from Candidate 350's entry/lifecycle gates but uses only
-completed MACD at the declared 1s/5s/10s/30s boundaries, not its event-time
-forming-MACD previews. Candidate 350's $1 current-price purchase floor remains
-a vectorized entry gate; a sub-$1 Early Squeeze stays watched without
-authorizing a purchase. It replaces initial and rising swing protection with
-one tick below the low of the immediately preceding completed price-bearing
-30s bar. A missing/empty latest 30s bucket supplies no stop; it is not
-silently carried forward. Each disjoint group of three accepted resistances
-can also raise the stop under the lowest band in that group. Both paths only
-raise protection, and a simultaneous qualifying update chooses resistance.
-The target reuses the historical 3/2/1 overhead-resistance ordinal rule,
-never moving downward. These selections are drafted in
-`src/trading_runtime/strategy_one_contract.py` and are not registered.
-`src/trading_runtime/strategy_one_columnar.py` implements a pure necessary-
-condition entry mask using completed MACD, liquidity quote/VWAP, cumulative
-eligible share/dollar volume, completed 10s/60s eligible-trade rates, executable
-spread, prior close, and the last completed 30s low. Its liquidity windows
-exclude trades at the exact expired boundary and read only pinned `arte`
-liquidity rows. It neither owns activation nor suppresses
-management of an existing position. The read-only
-`src/backend/backtest_strategy_one_loader.py` now projects one certified
-ticker/session through bounded Arrow batches into this mask, including exact
-indicator-row checks. Its candidates must still pass Candidate 350's
-surviving stateful entry/lifecycle rules. No path yet dispatches this draft
-from the application.
-Do not dispatch a sparse candidate into
-`early_squeeze_momentum.evaluate`: that legacy evaluator authorizes its BOS
-and resistance state from event-time `market_data_update` trades and computes
-forming MACD previews, while Strategy 1 has completed-bar clocks and no
-fictional trade ordering within a liquidity bucket. Port the surviving
-activation, confirmed/supported BOS, late-HOD, frozen-gap, entry/add/reentry,
-pending-order, and permission gates into a numbered Strategy 1 state machine
-with explicit completed-bar and V7 inputs. The columnar mask is only a
-necessary condition; its survivor must never submit an order by itself.
-The draft completed-bar BOS transition is in `strategy_one_bos.py`. Its
-confirmed swing input is not inferred from V7 geometry: a separate
-producer-owned `strategy_one_pivot_interval_v1` product is specified with
-one row per unique active pivot interval and a coverage-last seal. The
-normalizer matches the shared detector's pivot visibility on recorded
-completed candles; the producer derivation reads certified 1s ARTE bars.
-The producer-side publisher inserts interval rows under an immutable attempt,
-reads them back, and publishes coverage last; an uncertain insert cannot
-authorize a Backtest read. Backtest now certifies selected ticker coverage,
-source bar attempts, scalar content hashes, and causal visibility at preflight
-and rechecks its token at launch. The separate workstation producer command
-`scripts/clickhouse/publish_strategy_one_pivots.py` publishes only the sealed
-candidate tickers with bounded workers and coverage-last restart behavior.
-The August 18 full-session pivot campaign read-back-certified all 957
-candidate ticker-days. Other sessions still need their own producer campaign.
-Frozen activation geometry must use the signal's
-original price, not a later entry candidate: `backtest_strategy_one_activation`
-now SELECTs each distinct episode start once from the pinned completed 100ms
-bar attempt and pins its scalar token at preflight and launch. It neither
-persists a redundant activation-price table nor creates a bar in Backtest.
-The sparse scheduler emits these starts as separate causal work before a
-same-boundary entry candidate. `strategy_one_activation_state` freezes the
-resistance-gap evidence once from the V7 projection known at that start; a
-missing gap remains missing for that episode rather than being repaired by a
-later level book.
-`src/backend/backtest_strategy_one_preparation.py` now scans the full certified
-universe for completed-bar Early Squeeze starts, loads only episode-bearing
-tickers in bounded read-only lanes, and merges compact candidate cursors in
-stable boundary/ticker order. This remains preparation, not strategy activation,
-portfolio mutation, or a runnable Backtest controller.
-For a single flat-start session, V7 prior seed coverage is required only for
-tickers with at least one surviving columnar candidate boundary. This is a
-necessary-condition reduction, not permission to skip an eligible ticker or
-synthesize a missing seed. A producer-owned normalized candidate and coverage
-product has been drafted in `arte`; Backtest now requires complete, exact
-coverage and pins its content token at preflight, then rechecks that token at
-execution. The candidate rule has its own technical digest, distinct from the
-unpublished complete Strategy 1 release seal; this lets the producer certify
-the expensive reusable mask without falsely claiming that Strategy 1 is live.
-Coverage pins the exact full-session squeeze SQL hash. A shorter Backtest
-certifies this complete immutable product first, then projects only candidate
-boundaries within its requested horizon; a prefix is never published as a
-second source product or confused with full-session coverage.
-The producer campaign for the certified August 18, 2026 full session has
-published and read-back-verified all 6,100 ticker-days, including empty
-candidate sets. Other sessions still require their own exact coverage. The
-published Strategy 1 release seal and executable runtime are not yet complete,
-so this path currently fails closed. A multi-session
-or position-carrying Strategy must define a broader V7 dependency contract.
-The read-only full-session workstation profile found 62,072 candidate
-boundaries across 957 tickers. Certified candidate lookup took 1.895 seconds;
-the former all-boundary fixed market stream decoded 26,488,823 rows in
-547.632 seconds. A bounded four-worker SELECT of the same 62,072 exact
-candidate market rows took 6.833 seconds. These are data-read measurements,
-not Backtest runtime or fill-equivalence results. Candidate rows may drive
-entry decisions only; once an order or position exists, the causal coordinator
-must continue reading the relevant liquidity and management windows until
-that financial state is resolved. Skipping those windows would silently omit
-fills, stops, targets, and exits.
-The producer-owned `strategy_one_entry_activation_v1`,
-`strategy_one_entry_activation_resistance_v1`,
-`strategy_one_entry_evidence_v1`, and `strategy_one_entry_coverage_v1` tables
-now store the expensive frozen V7/BOS/initial-protection facts as normalized
-scalar rows, with no copied bars, book snapshots, JSON, or blobs. Each
-ticker-day is sealed only after exact child read-back. On August 18 all 957
-candidate ticker-days and 62,072 candidate boundaries were certified; the
-read-only entry seal took 2.124 seconds on the workstation after the market
-plan was established. This is input certification, not Backtest runtime or
-authorization to launch Strategy 1. The app requires this seal at preflight
-and rechecks it at launch. The numbered state machine, active-symbol broker
-tape, typed ClickHouse journal recovery, and fill-equivalence acceptance
-remain required before the fixed execution gate can open.
-`src/trading_runtime/strategy_one_position.py` now owns a pure, deterministic
-active-position protection reducer: entry requires the completed 30s stop and
-third overhead target; accepted 1s resistance breaks are deduplicated and
-ordered causally; three-break and 30s-low stop proposals ratchet upward with
-resistance precedence; target re-ranking only follows a completed
-price-bearing evaluation bar. It returns amendments for the coordinator and
-does not submit orders or write a journal. Stateful activation, surviving
-Candidate 350 entry gates, OMS wiring, and run dispatch remain unfinished.
-`src/trading_runtime/strategy_one_v7.py` checks each projected level against
-its own preflight-pinned prior seed policy. This admits the explicitly approved
-provisional V1 seed without relaxing legacy strategies or implicitly switching
-to filtered V2; an empty prior seed uses the filtered runtime policy. A stale
-projection supplies no entry geometry, while mixed policy or future geometry
-fails closed.
-The active fixed Backtest preflight also blocks on unfinished ClickHouse-only
-runtime/journal recovery. These contracts must be delivered and verified
-before Strategy 1 can become selectable. Do not bypass them by launching the
-legacy event/SQLite path or synthesizing missing inputs.
+Strategy 1 consumes certified `arte.bars_v1`, `arte.indicators_v1`,
+`arte.liquidity_100ms_v1`, V7 structural intervals, and normalized
+producer-owned candidate, pivot, HOD, and entry-evidence products. The
+configuration is an exactly-one, coverage-last normalized `arte` release.
+Its 100 ms Backtest uses completed 1s/5s/10s/30s MACD, a vectorized
+necessary-condition mask, sparse candidate work, causal V7 and BOS state,
+and the shared portfolio/OMS/broker coordinator. It does not dispatch
+Candidate 350's event-time evaluator or compute forming MACD itself.
+
+Entry requires an immediately preceding completed price-bearing 30s low;
+one tick below it is the initial stop. An absent/empty latest 30s bucket
+does not carry a prior low forward. Stops only ratchet upward; after each
+disjoint group of three accepted resistance breaks, the resistance path can
+raise the stop, and it wins a simultaneous qualifying 30s-low update. The
+target follows the historical 3/2/1 overhead-resistance ordinal rule and
+never moves down. These exact rules are in
+`src/trading_runtime/strategy_one_contract.py` and
+`src/trading_runtime/strategy_one_position.py`.
+
+Re-entry after a completed position is currently **fail-closed** in
+`strategy_one_stateful.py`. Candidate 350 required an event-native crossing
+of the prior position's high; aggregate 100 ms bars cannot prove that exact
+sequence. Do not infer it from an unordered bucket, and do not enable a new
+completed-bar crossing by changing Strategy 1. If approved, specify and
+publish that changed behavior as Strategy 2, with its own seal and parity
+tests. Live Strategy 1 order admission also remains closed until durable
+completed-liquidity replay/watermark, typed journal, broker reconciliation,
+and cold-recovery acceptance pass. Neither limitation may be hidden by
+falling back to the legacy event/SQLite runtime.
+
+The workstation full-market Aug 18/19 Backtest measurements, API launch,
+normalized journal validation, and remaining operational limits are recorded
+in `docs/trading/STRATEGY_ONE_BACKTEST_LAUNCH.md`.
