@@ -1101,10 +1101,10 @@ class ColdDispatchBarrier:
         )
         from src.trading_runtime.journal_contract import canonical_json
 
-        if journal_profile not in {"v1", "backtest_v2", "backtest_v4"}:
+        if journal_profile not in {"v1", "backtest_v2", "backtest_v4", "live_v4"}:
             raise ValueError("Cold dispatch needs an explicit typed journal profile")
         self.prefix_verified = False
-        if journal_profile == "backtest_v4":
+        if journal_profile in {"backtest_v4", "live_v4"}:
             from src.trading_runtime.arte_journal_commit_v4 import (
                 load_verified_v4_prefix,
             )

@@ -267,7 +267,10 @@ def verify_live_sync_cold_start(*, run_id: str, read_client: Any,
         raise KeeperUnavailable("Allocated run context differs from cold context")
     if context.get("mode") != "live":
         raise KeeperUnavailable("Cold sync run context is not live")
-    prefix = base.verify_committed_prefix(read_client, journal_profile="v1")
+    # Strategy 1's dedicated live writer uses the normalized V4 chain. A V1
+    # prefix belongs to a different journal contract and is never an
+    # executable cold-recovery authority for this numbered strategy.
+    prefix = base.verify_committed_prefix(read_client, journal_profile="live_v4")
     barrier = SyncColdBarrier(sync_dispatch, run_id, base, keeper)
     barrier.assert_fenced(run_id)
     count = audit_attested_portfolio_sync_transitions(

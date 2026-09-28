@@ -550,7 +550,8 @@ def test_cold_barrier_pins_exact_closed_gate_watermark() -> None:
         barrier.release()
 
 
-def test_v4_cold_barrier_accepts_only_empty_verified_prefix() -> None:
+@pytest.mark.parametrize("journal_profile", ("backtest_v4", "live_v4"))
+def test_v4_cold_barrier_accepts_only_empty_verified_prefix(journal_profile) -> None:
     from test_arte_journal_writer import MemoryClient
 
     authority = TypedInsertDispatch(Keeper())
@@ -558,15 +559,16 @@ def test_v4_cold_barrier_accepts_only_empty_verified_prefix() -> None:
     barrier = authority.acquire_cold_barrier("run-1")
     client = MemoryClient()
     assert barrier.verify_committed_prefix(
-        client, journal_profile="backtest_v4") is None
+        client, journal_profile=journal_profile) is None
     assert barrier.prefix_verified
     client.tables["trading_commit_v1"] = [{"run_id": "run-1", "batch_id": BATCH_ID}]
     with pytest.raises(KeeperUnavailable, match="cannot mix V4"):
-        barrier.verify_committed_prefix(client, journal_profile="backtest_v4")
+        barrier.verify_committed_prefix(client, journal_profile=journal_profile)
     assert not barrier.prefix_verified
 
 
-def test_v4_cold_barrier_matches_nonempty_keeper_watermark() -> None:
+@pytest.mark.parametrize("journal_profile", ("backtest_v4", "live_v4"))
+def test_v4_cold_barrier_matches_nonempty_keeper_watermark(journal_profile) -> None:
     from test_arte_journal_writer import MemoryClient, batch
     from src.trading_runtime.arte_journal_commit_v4 import (
         publish_base_typed_batch_v4,
@@ -588,11 +590,11 @@ def test_v4_cold_barrier_matches_nonempty_keeper_watermark() -> None:
     assert publish_base_typed_batch_v4(client, item) == item.batch_id
     barrier = authority.acquire_cold_barrier(item.run_id)
     prefix = barrier.verify_committed_prefix(
-        client, journal_profile="backtest_v4")
+        client, journal_profile=journal_profile)
     assert (prefix.last_sequence, prefix.last_batch_id) == (1, item.batch_id)
     client.tables["trading_commit_v4"][0]["source_cursor"] = "tampered"
     with pytest.raises((RuntimeError, KeeperUnavailable)):
-        barrier.verify_committed_prefix(client, journal_profile="backtest_v4")
+        barrier.verify_committed_prefix(client, journal_profile=journal_profile)
     assert not barrier.prefix_verified
 
 

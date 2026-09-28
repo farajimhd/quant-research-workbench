@@ -527,7 +527,7 @@ def test_cold_start_closes_sync_before_core_and_requires_live_context(monkeypatc
             order.append("context")
             return {"mode": "live"}
         def verify_committed_prefix(self, _client, *, journal_profile):
-            assert journal_profile == "v1"
+            assert journal_profile == "live_v4"
             order.append("prefix")
             return None
     def acquire(_run_id):
