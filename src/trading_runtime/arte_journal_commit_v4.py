@@ -1434,12 +1434,13 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
     # Relationships to earlier records must be checked against a committed
     # V4 prefix before any detail row is inserted. An uncommitted orphan detail
     # is never sufficient evidence for a fill, fee, or OMS command.
+    profile = "live_v4" if live_lease is not None else "backtest_v4"
     _verify_commission_links(
-        client, batch, base_families, journal_profile="backtest_v4")
+        client, batch, base_families, journal_profile=profile)
     _verify_exact_intent_uses(
-        client, batch, base_families, journal_profile="backtest_v4")
+        client, batch, base_families, journal_profile=profile)
     _verify_order_context_links(
-        client, batch, base_families, journal_profile="backtest_v4")
+        client, batch, base_families, journal_profile=profile)
     dispatch.assert_next_batch(
         run_id=batch.run_id, batch_id=batch.batch_id,
         prior_batch_id=batch.prior_batch_id,

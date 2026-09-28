@@ -1376,6 +1376,54 @@ def test_live_v4_writer_uses_same_typed_commit_without_backtest_authority(monkey
                           journal_profile="backtest_v4", coalesce_batches=False)
 
 
+def test_live_v4_compound_seals_two_events_and_rejects_backtest_family(monkeypatch):
+    from src.backend import live_strategy_one_v4_principal as live_principal
+    from src.trading_runtime.arte_journal_compound_v4 import coalesce_v4_units
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+
+    first = batch()
+    second_id = str(UUID(int=1407))
+    second_event = typed_row("trading_event_v1", {
+        **{key: value for key, value in first.events[0].items()
+           if key != "content_hash"},
+        "record_id": str(UUID(int=1408)), "batch_id": second_id,
+        "sequence": 2,
+    })
+    second = replace(first, batch_id=second_id, prior_batch_id=first.batch_id,
+                     first_sequence=2, last_sequence=2, events=(second_event,))
+    compound = coalesce_v4_units((first, second))
+    client = attached_v4_client()
+    monkeypatch.setattr(live_principal, "live_v4_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run_id: {"mode": "live", "account_ids": ("DU1",)})
+    keeper_client = FakeKazoo()
+    keeper_client.add_listener = lambda listener: None
+    keeper_client.remove_listener = lambda listener: None
+    keeper_client.stop = lambda: None
+    keeper_client.close = lambda: None
+    session = ManagedKeeperSession(keeper_client)
+    session._on_state("CONNECTED")
+    lease = live_principal.LiveV4KeeperLease.acquire(
+        session, run_id=first.run_id, owner_id="live-compound-test")
+    client.live_v4_lease = lease
+    journal = ArteJournalWriter(
+        client, run_id=first.run_id, journal_profile="live_v4",
+        coalesce_batches=False)
+    try:
+        rejected = replace(compound.base, backtest_progress=(
+            {"record_id": str(UUID(int=1409))},))
+        with pytest.raises(ValueError, match="Backtest-only"):
+            journal.submit_compound_v4(replace(compound, base=rejected))
+        assert journal.submit_compound_v4(compound).result(timeout=5) == second_id
+        assert client.inserts == ["trading_event_v1", "trading_commit_family_v4",
+                                  "trading_commit_v4"]
+    finally:
+        journal.close()
+        lease.release()
+        session.close()
+
+
 def test_v4_terminal_writer_queue_waits_for_anchor_before_receipt(monkeypatch):
     from threading import Event
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors

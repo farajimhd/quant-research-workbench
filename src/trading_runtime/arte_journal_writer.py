@@ -1397,7 +1397,7 @@ def _profile_table(name: str, journal_profile: str) -> str:
     if journal_profile == "backtest_v3":
         return {"trading_strategy_signal_v1": "trading_strategy_signal_v2",
                 "trading_commit_v1": "trading_commit_v3"}.get(name, name)
-    if journal_profile == "backtest_v4":
+    if journal_profile in {"backtest_v4", "live_v4"}:
         return {"trading_strategy_signal_v1": "trading_strategy_signal_v2",
                 "trading_commit_v1": "trading_commit_v4"}.get(name, name)
     raise ValueError("Unknown typed journal profile")
@@ -3683,10 +3683,15 @@ class ArteJournalWriter:
         """Queue one bounded mixed V4 commit without caller-side network I/O."""
         from .arte_journal_compound_v4 import V4CompoundBatch
 
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or type(unit) is not V4CompoundBatch
                 or unit.base.run_id != self._run_id):
-            raise ValueError("V4 compound requires its pinned Backtest writer")
+            raise ValueError("V4 compound requires its pinned writer")
+        if self._journal_profile == "live_v4" and any(
+                getattr(unit.base, name) for name in (
+                    "backtest_cursors", "backtest_market_authorities",
+                    "backtest_progress", "prepared_v7_leases")):
+            raise ValueError("Live V4 compound cannot publish Backtest-only families")
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
