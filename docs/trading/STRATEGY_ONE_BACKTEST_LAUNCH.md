@@ -50,6 +50,18 @@ run-local directory. These are observed workstation timings, not a throughput
 guarantee. Live Strategy 1 order admission and Candidate 350 re-entry parity
 remain separate acceptance gates.
 
+On 2026-09-28, after adding a normalized V4 command-lineage child and
+provisioning its exact Backtest and Live grants, the app route repeated the
+entire Aug 18 premarket for all tradable tickers. Run
+`798b6ed5-16f4-4e80-8ece-a810d89ae9cb` passed preflight in 22.718s and
+completed execution in 30.266s, processing 7,381 persisted liquidity rows.
+The journal committed 2,217 events in 10 units with zero failed units. A
+separate read-only cold verification reached sequence 2,217 and reconstructed
+all 30 order commands from normalized typed intent, Portfolio, OMS, and
+lineage rows. The V4 journal layout check verified all 16 tables and SSD
+placement after the run. These observations do not grant Live order admission;
+broker reconciliation and executable OMS restoration remain separate gates.
+
 An additional workstation app-API run selected the full Aug 18 session by
 passing the exclusive `anchor_date=2026-08-19`. Its preflight returned
 `strategy_run_ready=true`, `execution_interval=100ms`, zero blocked checks,
