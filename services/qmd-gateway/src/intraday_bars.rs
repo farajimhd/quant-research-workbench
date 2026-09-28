@@ -5,6 +5,7 @@ use crate::event::MarketEvent;
 use crate::maintenance::SharedMaintenanceState;
 use crate::market_calendar::MarketCalendarClient;
 use crate::metrics::{QueueFailureKind, SharedMetrics};
+use crate::strategy_one_liquidity::{LiquidityReducer, LiquidityUpdate};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -13,7 +14,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -146,6 +147,9 @@ fn intraday_coverage_groups(rows: &[IntradayBarRow]) -> BTreeMap<String, Coverag
 #[derive(Clone)]
 pub struct IntradayBarRouter {
     senders: Vec<mpsc::Sender<LiveCompactEvent>>,
+    liquidity_updates: broadcast::Sender<LiquidityUpdate>,
+    liquidity_invalidated: Arc<AtomicBool>,
+    metrics: SharedMetrics,
 }
 
 pub struct IntradayBarService {
@@ -153,6 +157,7 @@ pub struct IntradayBarService {
     pub reconciler: IntradayBarReconciler,
     pub router: IntradayBarRouter,
     pub rows: broadcast::Sender<IntradayBarRow>,
+    pub liquidity_rows: broadcast::Sender<LiquidityUpdate>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -364,6 +369,13 @@ pub async fn run_intraday_bar_reconciliation_service(
 }
 
 impl IntradayBarRouter {
+    pub fn invalidate_liquidity(&self, ticker: &str, reason: &str) {
+        self.liquidity_invalidated.store(true, Ordering::Release);
+        self.metrics.set_lane_state("strategy_one_liquidity", "degraded", reason);
+        let _ = self.liquidity_updates.send(LiquidityUpdate::Invalidated {
+            ticker: "*".to_string(), reason: format!("{ticker}: {reason}"),
+        });
+    }
     pub async fn send(
         &self,
         event: LiveCompactEvent,
@@ -612,6 +624,8 @@ pub async fn spawn_intraday_bar_service(
     validate_identifier(&config.derived_coverage_table, "QMD_DERIVED_COVERAGE_TABLE")?;
 
     let (broadcast_sender, _) = broadcast::channel(10_000);
+    let (liquidity_sender, _) = broadcast::channel(10_000);
+    let liquidity_invalidated = Arc::new(AtomicBool::new(false));
     let durability = DurableCompactEvents::default();
     let writer = IntradayBarWriter::new(config.clone(), metrics.clone(), resolutions.clone());
     writer.initialize().await?;
@@ -653,6 +667,8 @@ pub async fn spawn_intraday_bar_service(
         let (sender, mut receiver) = mpsc::channel::<LiveCompactEvent>(per_shard_capacity);
         let output = writer_senders[shard_id % writer_count].clone();
         let live_rows = broadcast_sender.clone();
+        let live_liquidity = liquidity_sender.clone();
+        let shard_liquidity_invalidated = liquidity_invalidated.clone();
         let shard_resolutions = resolutions.clone();
         let shard_metrics = metrics.clone();
         let shard_decoder = decoder.clone();
@@ -667,6 +683,8 @@ pub async fn spawn_intraday_bar_service(
             let mut max_seen: HashMap<(String, String), i64> = HashMap::new();
             let mut finalized_through: HashMap<FinalizedSeries, i64> = HashMap::new();
             let mut pending_repairs: HashMap<RepairRequest, PendingRepair> = HashMap::new();
+            let mut liquidity: HashMap<String, LiquidityReducer> = HashMap::new();
+            let mut liquidity_failed: HashSet<String> = HashSet::new();
             let mut cleanup_tick = interval(Duration::from_millis(100));
             loop {
                 let event = tokio::select! {
@@ -702,6 +720,26 @@ pub async fn spawn_intraday_bar_service(
                         continue;
                     }
                 };
+                if !shard_liquidity_invalidated.load(Ordering::Acquire)
+                    && !liquidity_failed.contains(&event.ticker) {
+                    match liquidity.entry(event.ticker.clone()).or_default().push(
+                        &event, &shard_decoder, &shard_trade_rules,
+                    ) {
+                        Ok(Some(row)) => { let _ = live_liquidity.send(LiquidityUpdate::Completed { row }); }
+                        Ok(None) => {}
+                        Err(error) => {
+                            liquidity_failed.insert(event.ticker.clone());
+                            liquidity.remove(&event.ticker);
+                            let _ = live_liquidity.send(LiquidityUpdate::Invalidated {
+                                ticker: event.ticker.clone(), reason: error.clone(),
+                            });
+                            shard_metrics.set_lane_state(
+                                "strategy_one_liquidity", "degraded",
+                                &format!("A ticker's ordered liquidity input failed closed: {error}"),
+                            );
+                        }
+                    }
+                }
                 let Some((local_date, local_session_us)) =
                     local_coordinates(event.sip_timestamp_us)
                 else {
@@ -807,8 +845,12 @@ pub async fn spawn_intraday_bar_service(
         reconciler: IntradayBarReconciler {
             writer: writer.clone(),
         },
-        router: IntradayBarRouter { senders },
+        router: IntradayBarRouter {
+            senders, liquidity_updates: liquidity_sender.clone(),
+            liquidity_invalidated, metrics: metrics.clone(),
+        },
         rows: broadcast_sender,
+        liquidity_rows: liquidity_sender,
         tasks,
     })
 }
@@ -2362,6 +2404,28 @@ mod tests {
         classified.event_meta |= 0xc0;
         classified.schema_version = 6;
         assert!(event_identity(&legacy) == event_identity(&classified));
+    }
+
+    #[test]
+    fn ordered_queue_loss_invalidates_all_live_liquidity_lanes() {
+        let (events, _receiver) = mpsc::channel(1);
+        let (updates, mut subscriber) = broadcast::channel(2);
+        let invalidated = Arc::new(AtomicBool::new(false));
+        let metrics = SharedMetrics::new();
+        metrics.register_lane("strategy_one_liquidity", "test", "computation", true, false);
+        let router = IntradayBarRouter {
+            senders: vec![events], liquidity_updates: updates,
+            liquidity_invalidated: invalidated.clone(), metrics,
+        };
+        router.invalidate_liquidity("TEST", "ordered queue full");
+        assert!(invalidated.load(Ordering::Acquire));
+        match subscriber.try_recv().unwrap() {
+            LiquidityUpdate::Invalidated { ticker, reason } => {
+                assert_eq!(ticker, "*");
+                assert!(reason.contains("TEST"));
+            }
+            LiquidityUpdate::Completed { .. } => panic!("expected global invalidation"),
+        }
     }
 
     fn quote_event(timestamp_us: u64, sequence: u64, bid: u32, ask: u32) -> LiveCompactEvent {

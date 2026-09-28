@@ -21,6 +21,7 @@ use crate::indicators::{
 use crate::intraday_bars::{
     IntradayBarRow, INTRADAY_BAR_CALCULATION_REVISION, INTRADAY_BAR_SCHEMA_VERSION,
 };
+use crate::strategy_one_liquidity::LiquidityUpdate;
 use crate::live_market_state::{
     LiveMarketStateSnapshot, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
     TickerLiveMarketStateSnapshot,
@@ -86,6 +87,7 @@ pub struct AppState {
     pub products: SharedMarketProductStore,
     pub metrics: SharedMetrics,
     pub intraday_bars: broadcast::Sender<IntradayBarRow>,
+    pub strategy_one_liquidity: broadcast::Sender<LiquidityUpdate>,
     pub scanner: SharedScannerStore,
     pub scanner_deltas: broadcast::Sender<ScannerRowDelta>,
     pub scanner_events: broadcast::Sender<MarketSignalDelta>,
@@ -320,6 +322,7 @@ pub fn app(state: AppState) -> Router {
             get(compact_event_batch_stream),
         )
         .route("/stream/intraday-bars", get(intraday_bar_stream))
+        .route("/stream/strategy-one-liquidity", get(strategy_one_liquidity_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/live-market-state", get(live_market_state_stream))
         .route("/stream/scanner", get(scanner_stream))
@@ -2771,6 +2774,38 @@ async fn intraday_bar_stream(
     ws.on_upgrade(move |socket| async move {
         stream_intraday_bars(socket, state).await;
     })
+}
+
+async fn strategy_one_liquidity_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        stream_strategy_one_liquidity(socket, state).await;
+    })
+}
+
+async fn stream_strategy_one_liquidity(mut socket: WebSocket, state: Arc<AppState>) {
+    let mut receiver = state.strategy_one_liquidity.subscribe();
+    loop {
+        match receiver.recv().await {
+            Ok(update) => {
+                if socket.send(Message::Text(
+                    serde_json::to_string(&update).unwrap_or_else(|_| "{}".to_string()).into(),
+                )).await.is_err() { break; }
+            }
+            Err(broadcast::error::RecvError::Lagged(count)) => {
+                let frame = serde_json::json!({
+                    "kind": "invalidated", "ticker": "*", "reason": "liquidity_stream_lagged",
+                    "skipped_updates": count,
+                });
+                let _ = socket.send(Message::Text(frame.to_string().into())).await;
+                let _ = socket.close().await;
+                break;
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
 }
 
 async fn stream_intraday_bars(mut socket: WebSocket, state: Arc<AppState>) {

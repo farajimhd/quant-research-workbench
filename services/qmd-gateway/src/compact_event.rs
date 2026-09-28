@@ -1406,7 +1406,8 @@ impl CompactEventClickHouseWriter {
                                 } else {
                                     match self.intraday_bar_router.try_send(conversion.event) {
                                         Ok(()) => {}
-                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                        Err(mpsc::error::TrySendError::Full(event)) => {
+                                            self.intraday_bar_router.invalidate_liquidity(&event.ticker, "ordered compact input queue full");
                                             self.metrics.inc_intraday_bar_event_dropped();
                                             self.metrics.record_queue_failure(
                                                 "intraday_bars",
@@ -1414,7 +1415,8 @@ impl CompactEventClickHouseWriter {
                                                 "The bounded intraday queue is full while compact persistence is disabled; canonical bar input was rejected.",
                                             );
                                         }
-                                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        Err(mpsc::error::TrySendError::Closed(event)) => {
+                                            self.intraday_bar_router.invalidate_liquidity(&event.ticker, "ordered compact input queue closed");
                                             self.metrics.inc_intraday_bar_event_dropped();
                                             self.metrics.record_queue_failure(
                                                 "intraday_bars",
@@ -1602,7 +1604,8 @@ impl CompactEventClickHouseWriter {
         for event in events {
             match self.intraday_bar_router.try_send(event) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(mpsc::error::TrySendError::Full(event)) => {
+                    self.intraday_bar_router.invalidate_liquidity(&event.ticker, "ordered compact input queue full");
                     self.metrics.inc_intraday_bar_event_dropped();
                     self.metrics.record_queue_failure(
                         "intraday_bars",
@@ -1610,7 +1613,8 @@ impl CompactEventClickHouseWriter {
                         "The bounded ordered-event queue is full; compact events remain durable and the affected bar range is deferred to canonical reconciliation.",
                     );
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(mpsc::error::TrySendError::Closed(event)) => {
+                    self.intraday_bar_router.invalidate_liquidity(&event.ticker, "ordered compact input queue closed");
                     self.metrics.inc_intraday_bar_event_dropped();
                     self.metrics.record_queue_failure(
                         "intraday_bars",

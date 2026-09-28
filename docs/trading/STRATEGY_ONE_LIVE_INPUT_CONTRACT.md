@@ -39,9 +39,13 @@ not timestamp equality. V5 and earlier trade rows have no classification and
 cannot be interpreted as timely; no in-place backfill is permitted. The
 strict market-day token resolver includes valid 04:00–04:05 trades and rejects
 unknown tokens instead of silently dropping them. A typed per-ticker 100 ms
-reducer now calculates completed bucket values, but it is not yet wired to
-the ordered service lane or a persistent/publication surface; live order
-admission remains disabled.
+reducer now calculates completed bucket values from QMD's ordered per-ticker
+lane and publishes them on `/stream/strategy-one-liquidity`. Queue loss
+broadcasts a terminal `invalidated` update and stops further liquidity
+projection until restart; stream lag closes the subscriber. The stream has no
+durable replay/snapshot contract yet, and sparse final buckets lack a source
+watermark publication path. It is therefore not an order-admission permit;
+live order admission remains disabled.
 
 The consumer joins this completed liquidity row with the closed indicator
 pairs by session, ticker, resolution, and completed boundary. A 100 ms

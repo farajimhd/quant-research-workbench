@@ -64,6 +64,13 @@ pub struct CompletedLiquidityBucket {
     pub quote_valid: u8,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LiquidityUpdate {
+    Completed { row: CompletedLiquidityBucket },
+    Invalidated { ticker: String, reason: String },
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Quote {
     timestamp_us: u64,

@@ -85,6 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         true,
     );
     metrics.register_lane(
+        "strategy_one_liquidity", "Strategy 1 completed liquidity",
+        "computation", config.compact_events_enabled, false,
+    );
+    metrics.register_lane(
         "intraday_repairs",
         "Deferred intraday repair execution",
         "repair",
@@ -465,6 +469,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         market_calendar: market_calendar.clone(),
         products,
         intraday_bars: intraday_bar_service.rows.clone(),
+        strategy_one_liquidity: intraday_bar_service.liquidity_rows.clone(),
         scanner,
         scanner_deltas: scanner_delta_sender,
         scanner_events: scanner_sender,
