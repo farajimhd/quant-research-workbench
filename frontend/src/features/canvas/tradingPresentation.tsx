@@ -109,6 +109,8 @@ type TradingDataTableProps = {
   defaultSort?: string;
   filterColumn?: string;
   filterLabel?: string;
+  secondaryFilterColumn?: string;
+  secondaryFilterLabel?: string;
   onSymbolSelect?: (symbol: string) => void;
   onRowOpen?: (row: PreviewRow) => void;
   renderExpanded?: (row: PreviewRow) => ReactNode;
@@ -116,11 +118,12 @@ type TradingDataTableProps = {
   searchPlaceholder: string;
 };
 
-export function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "All", onRowOpen, onSymbolSelect, renderExpanded, rows, searchPlaceholder }: TradingDataTableProps) {
+export function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "All", secondaryFilterColumn, secondaryFilterLabel = "All", onRowOpen, onSymbolSelect, renderExpanded, rows, searchPlaceholder }: TradingDataTableProps) {
   const pageSize = 100;
   const visibleColumns = useMemo(() => columns.filter((column) => column !== "logo" && column !== "company_name"), [columns]);
   const [queryText, setQueryText] = useState("");
   const [filterValue, setFilterValue] = useState("all");
+  const [secondaryFilterValue, setSecondaryFilterValue] = useState("all");
   const [sortColumn, setSortColumn] = useState(defaultSort || columns[0] || "");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [expandedKey, setExpandedKey] = useState("");
@@ -128,15 +131,17 @@ export function TradingDataTable({ columns, defaultSort, filterColumn, filterLab
   const tickerColumns = columns.filter(isPreviewTickerColumn);
   const presentations = useTickerPresentations(rows.flatMap((row) => tickerColumns.map((column) => String(row[column] || ""))));
   const filterOptions = useMemo(() => filterColumn ? Array.from(new Set(rows.map((row) => String(row[filterColumn] ?? "").trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right)) : [], [filterColumn, rows]);
+  const secondaryFilterOptions = useMemo(() => secondaryFilterColumn ? Array.from(new Set(rows.map((row) => String(row[secondaryFilterColumn] ?? "").trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right)) : [], [secondaryFilterColumn, rows]);
   const visibleRows = useMemo(() => {
     const queryValue = queryText.trim().toLowerCase();
     const filtered = rows.filter((row) => {
       if (filterColumn && filterValue !== "all" && String(row[filterColumn] ?? "") !== filterValue) return false;
+      if (secondaryFilterColumn && secondaryFilterValue !== "all" && String(row[secondaryFilterColumn] ?? "") !== secondaryFilterValue) return false;
       if (!queryValue) return true;
       return visibleColumns.some((column) => searchableValue(row[column]).includes(queryValue));
     });
     return [...filtered].sort((left, right) => compareTradingValues(left[sortColumn], right[sortColumn]) * (sortDirection === "asc" ? 1 : -1));
-  }, [filterColumn, filterValue, queryText, rows, sortColumn, sortDirection, visibleColumns]);
+  }, [filterColumn, filterValue, secondaryFilterColumn, secondaryFilterValue, queryText, rows, sortColumn, sortDirection, visibleColumns]);
   const pageCount = Math.max(1, Math.ceil(visibleRows.length / pageSize));
   const activePage = Math.min(page, pageCount - 1);
   const pageRows = visibleRows.slice(activePage * pageSize, (activePage + 1) * pageSize);
@@ -150,6 +155,7 @@ export function TradingDataTable({ columns, defaultSort, filterColumn, filterLab
     <div className="trading-table-toolbar">
       <label className="trading-table-search"><Search aria-hidden="true" size={14} /><input aria-label={searchPlaceholder} onChange={(event) => { setQueryText(event.target.value); setPage(0); setExpandedKey(""); }} placeholder={searchPlaceholder} value={queryText} /></label>
       {filterColumn ? <label className="trading-table-filter"><Filter aria-hidden="true" size={13} /><select aria-label={`Filter by ${filterLabel}`} onChange={(event) => { setFilterValue(event.target.value); setPage(0); setExpandedKey(""); }} value={filterValue}><option value="all">{filterLabel}</option>{filterOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}
+      {secondaryFilterColumn ? <label className="trading-table-filter"><Filter aria-hidden="true" size={13} /><select aria-label={`Filter by ${secondaryFilterLabel}`} onChange={(event) => { setSecondaryFilterValue(event.target.value); setPage(0); setExpandedKey(""); }} value={secondaryFilterValue}><option value="all">{secondaryFilterLabel}</option>{secondaryFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}
       <span className="trading-table-count">{visibleRows.length} of {rows.length}</span>
       {pageCount > 1 ? <div aria-label="Table pages" className="trading-table-pages"><button aria-label="Previous table page" disabled={activePage === 0} onClick={() => { setPage((current) => Math.max(0, current - 1)); setExpandedKey(""); }} type="button">Previous</button><span>{activePage + 1} / {pageCount}</span><button aria-label="Next table page" disabled={activePage >= pageCount - 1} onClick={() => { setPage((current) => Math.min(pageCount - 1, current + 1)); setExpandedKey(""); }} type="button">Next</button></div> : null}
     </div>
@@ -193,7 +199,7 @@ function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: s
     const ticker = String(row[column] || "").trim().toUpperCase();
     return <SecurityIdentityCell companyName={String(row.company_name ?? row.issuer_name ?? presentations[ticker]?.issuer_name ?? "")} country={String(row.country ?? row.company_country_code ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency} onTickerSelect={onSymbolSelect} secCount={row.sec_count ?? presentations[ticker]?.sec_count} secLabels={row.sec_labels ?? presentations[ticker]?.sec_labels} secRecency={row.sec_recency ?? presentations[ticker]?.sec_recency} secReviewDirection={row.sec_review_fundamental_direction ?? presentations[ticker]?.sec_review_fundamental_direction} secReviewStatus={row.sec_review_status ?? presentations[ticker]?.sec_review_status} secSynthesisCount={row.sec_synthesis_count ?? presentations[ticker]?.sec_synthesis_count} secSynthesisDirection={row.sec_synthesis_direction ?? presentations[ticker]?.sec_synthesis_direction} ticker={ticker} />;
   }
-  if (isPreviewTimeColumn(column)) return <MarketTime includeSeconds value={String(row[column] || "")} />;
+  if (isPreviewTimeColumn(column)) return <MarketTime includeSeconds includeSubseconds value={String(row[column] || "")} />;
   return <PresentedValue column={column} value={row[column]} />;
 }
 
@@ -804,6 +810,7 @@ export function TradingJournalPreview({ data, onSymbolSelect, readOnly = false, 
   const risk = report?.risk ?? {};
   const execution = report?.execution ?? {};
   const episodes = (report?.episodes ?? []).slice(0, settings.limit).map((row) => ({
+    opened_at: row.opened_at,
     closed_at: row.closed_at,
     symbol: nestedValue(row, "instrument", "symbol"),
     side: row.side,
@@ -812,6 +819,13 @@ export function TradingJournalPreview({ data, onSymbolSelect, readOnly = false, 
     setup: row.setup || "—",
     quantity: row.quantity,
     entry_price: row.entry_price,
+    // Entry context is optional historical evidence, never reconstructed from
+    // the current quote/reference snapshot. Missing producer fields stay blank.
+    entry_shares_outstanding: row.entry_shares_outstanding ?? null,
+    entry_rvol: row.entry_rvol ?? null,
+    entry_float_shares: row.entry_float_shares ?? null,
+    entry_last_minute_trade_count: row.entry_last_minute_trade_count ?? null,
+    entry_last_minute_volume: row.entry_last_minute_volume ?? null,
     exit_price: row.exit_price,
     net_pnl: row.net_pnl,
     risk_multiple: row.risk_multiple,
@@ -883,7 +897,7 @@ export function TradingJournalPreview({ data, onSymbolSelect, readOnly = false, 
       <JournalPnlCandleChart candles={report?.pnl_candles?.[pnlTimeframe] ?? []} onTimeframeChange={setPnlTimeframe} timeframe={pnlTimeframe} />
     </div> : null}
     {view === "strategies" ? <div className="performance-strategy-view"><StrategyComparisonChart rows={strategyRows} /><TradingDataTable columns={["strategy", "revision", "trades", "net_pnl", "win_rate_pct", "expectancy", "profit_factor", "payoff_ratio", "max_drawdown"]} defaultSort="net_pnl" filterColumn="strategy" filterLabel="All strategies" rows={strategyRows} searchPlaceholder="Search strategies and revisions…" /></div> : null}
-    {view === "trades" ? <TradingDataTable columns={settings.showRiskMultiple ? ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "risk_multiple", "duration", "exit_reason"] : ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "duration", "exit_reason"]} defaultSort="closed_at" filterColumn="strategy" filterLabel="All strategies" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <JournalEpisodeDetail readOnly={readOnly} row={row} />} rows={episodes} searchPlaceholder="Search positions, symbols, setups, exits…" /> : null}
+    {view === "trades" ? <><div className="trading-disclosure">Entry context is shown only when retained point-in-time evidence exists; unavailable values are not inferred from current fundamentals.</div><TradingDataTable columns={["symbol", "opened_at", "closed_at", "side", "strategy", "revision", "setup", "quantity", "entry_price", "entry_shares_outstanding", "entry_rvol", "entry_float_shares", "entry_last_minute_trade_count", "entry_last_minute_volume", "exit_price", "net_pnl", ...(settings.showRiskMultiple ? ["risk_multiple"] : []), "duration", "exit_reason"]} defaultSort="closed_at" filterColumn="strategy" filterLabel="All strategies" secondaryFilterColumn="side" secondaryFilterLabel="All directions" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <JournalEpisodeDetail readOnly={readOnly} row={row} />} rows={episodes} searchPlaceholder="Search positions, symbols, setups, exits…" /></> : null}
     {view === "execution" ? <ExecutionJournalView execution={execution} /> : null}
     {view === "risk" ? <RiskJournalView risk={risk} summary={summary} /> : null}
     {guideOpen ? <TradingJournalGuide onClose={() => setGuideOpen(false)} /> : null}

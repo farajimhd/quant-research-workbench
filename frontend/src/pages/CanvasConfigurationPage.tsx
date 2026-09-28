@@ -1639,7 +1639,7 @@ function replayPreviewContext(run: CanvasReplayRun): CanvasPreviewContext {
   return { previewTime, sessionDate: run.session_date };
 }
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
-function previewClockReadings(context: CanvasPreviewContext, liveInstant?: Date) {
+export function previewClockReadings(context: CanvasPreviewContext, liveInstant?: Date) {
   const instant = liveInstant ?? dateInTimeZone(context.sessionDate, context.previewTime, "America/New_York");
   const format = (timeZone: string | undefined, includeDate: boolean) => {
     const detail = includeDate ? new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", timeZone, year: "numeric" }).format(instant) : "";

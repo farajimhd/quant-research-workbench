@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
-import { PanelRightOpen } from "lucide-react";
+import { Clock3, Globe2, MapPin, PanelRightOpen } from "lucide-react";
 import { api } from "../../api/client";
 import { TradingWorkspace } from "./TradingWorkspace";
 import { BacktestV4SavedChart } from "./BacktestV4SavedChart";
+import { MarketStatusBadge, historicalMarketStatus } from "./MarketStatusBadge";
+import { StrategyActivityContainer } from "./MarketScreenerContainers";
+import { dateInTimeZone } from "../timeZones";
+import { normalizeTicker } from "../tickerNavigation";
 import type { V4Page } from "./BacktestV4SavedReview";
 import { canvasRuntimeWorkspaceStorageKey, readCanvasRegistry,
   readCanvasWorkspaceStateByStorageKey, type CanvasWorkspaceState } from "../canvasWorkspace";
@@ -10,7 +14,7 @@ import { TRADING_WORKSPACE_CONTAINERS, type WorkspaceContainerId } from "../trad
 import type { PerformanceJournalReport } from "../../features/canvas/contracts";
 import { instanceSettings } from "../../features/canvas/settings";
 import { ExecutionsPreview, PositionsPreview, TradingDataTable, TradingJournalPreview } from "../../features/canvas/tradingPresentation";
-import { strategyReplayCanvasState } from "../../pages/CanvasConfigurationPage";
+import { previewClockReadings, strategyReplayCanvasState } from "../../pages/CanvasConfigurationPage";
 
 type TradePage = {
   schema_version: "strategy-one-v4-trade-history-page-v1";
@@ -57,14 +61,40 @@ function money(value: unknown, currency: string): string {
 function utcJournalTime(value: unknown): string {
   const raw = String(value ?? "");
   return /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?$/.test(raw)
-    ? `${raw.replace(" ", "T").replace(/(\.\d{3})\d+$/, "$1")}Z` : raw;
+    ? `${raw.replace(" ", "T")}Z` : raw;
 }
 
-function EvidenceTable({ rows, columns, empty }: {
+export function SavedV4CanvasHeader({ initialPage, onClose, managementOpen, onManage, title, backLabel = "Return to setup" }: {
+  initialPage: V4Page; onClose: () => void; managementOpen?: boolean;
+  onManage?: () => void; title: string; backLabel?: string;
+}) {
+  const sessionDate = initialPage.run.session_date || initialPage.market_cursor?.session_date || "";
+  const boundary = Number(initialPage.market_cursor?.boundary_ms ?? 0);
+  const instant = /^\d{4}-\d\d-\d\d$/.test(sessionDate)
+    ? new Date(dateInTimeZone(sessionDate, "04:00", "America/New_York").getTime() + boundary) : null;
+  const etTime = instant ? new Intl.DateTimeFormat("en-US", { hour: "2-digit", hourCycle: "h23", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(instant) : "";
+  const clocks = instant ? previewClockReadings({ sessionDate, previewTime: etTime }, instant) : [
+    { label: "ET", value: "—", detail: "Saved clock unavailable" },
+    { label: "Local", value: "—", detail: "" },
+    { label: "UTC", value: "—", detail: "" },
+  ];
+  const icons = [Clock3, MapPin, Globe2];
+  return <header className="canvas-config-toolbar">
+    <div className="canvas-clock-control" aria-label="Verified saved-run clock"><div className="canvas-clock-zones" aria-label="Preview time zones">
+      {clocks.map((clock, index) => { const Icon = icons[index]; return <span key={clock.label}><Icon aria-hidden="true" size={15} /><span><small>{clock.label}</small><strong>{clock.value}</strong><em>{clock.detail}</em></span></span>; })}
+    </div></div>
+    <MarketStatusBadge value={instant ? historicalMarketStatus(sessionDate, etTime) : { asOfEt: "", label: "Unavailable", source: "et-clock", status: "unavailable" }} />
+    <div className="canvas-mode-context-slot"><span title={`${title} · ${initialPage.status} · ${initialPage.verified_sequence.toLocaleString()} verified records`}>{title} · {initialPage.status} · {initialPage.verified_sequence.toLocaleString()} verified records</span><button className="button secondary compact" onClick={onClose} type="button">{backLabel}</button></div>
+    {onManage ? <div className="canvas-toolbar-actions"><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={onManage} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
+  </header>;
+}
+
+function EvidenceTable({ rows, columns, empty, onSymbolSelect }: {
   rows: Array<Record<string, unknown>>; columns: Array<[string, string]>; empty: string;
+  onSymbolSelect?: (symbol: string) => void;
 }) {
   return rows.length ? <TradingDataTable columns={columns.map(([key]) => key)}
-    defaultSort={columns[0][0]} rows={rows} searchPlaceholder="Search verified evidence…" />
+    defaultSort={columns[0][0]} onSymbolSelect={onSymbolSelect} rows={rows} searchPlaceholder="Search verified evidence…" />
     : <p className="trading-disclosure">{empty}</p>;
 }
 
@@ -92,7 +122,6 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
   const [eventError, setEventError] = useState("");
   const [loadingTrades, setLoadingTrades] = useState(false);
   const [loadingEvents, setLoadingEvents] = useState(false);
-  const [ticker, setTicker] = useState("");
   const [managementOpen, setManagementOpen] = useState(false);
   const [savedLayout] = useState<CanvasWorkspaceState | null>(() =>
     readCanvasWorkspaceStateByStorageKey(V4_LAYOUT_KEY)
@@ -103,8 +132,19 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
       journal: instanceSettings(registry, "performance_journal").performance_journal,
       fills: instanceSettings(registry, "fills").fills,
       positions: instanceSettings(registry, "positions").positions,
+      activity: instanceSettings(registry, "strategy_activity").strategy_activity,
     };
   });
+  const [activitySettings, setActivitySettings] = useState(presentationSettings.activity);
+
+  function openV4Ticker(value: string) {
+    const symbol = normalizeTicker(value);
+    if (!symbol) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("backtest_run", runId);
+    url.searchParams.set("backtest_ticker", symbol);
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -207,10 +247,21 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
     side: row.side === "B" ? "BUY" : row.side === "S" ? "SELL" : row.side,
     commission_status: feeByExecution.get(display(row.execution_id))?.status ?? "pending",
   }));
-  const journal = events.map(({ event, detail_family, detail }) => ({ ...event,
-    event_time: utcJournalTime(event.event_time), detail_family, ticker: detail?.ticker ?? "" }));
+  const activityCategories = new Set(["strategy", "portfolio_management", "protection", "order_management", "execution", "broker", "command"]);
+  const activityRows = events.filter(({ event }) => activityCategories.has(event.category)).map(({ event, detail_family, detail }) => ({
+    run_id: runId, sequence: event.sequence, record_id: "",
+    event_time: utcJournalTime(event.event_time), recorded_at: utcJournalTime(event.recorded_at),
+    event_type: event.category === "strategy" ? "decision" : event.category,
+    ticker: detail?.ticker ?? "", action: detail?.action ?? event.entity_type,
+    state: detail?.status ?? detail?.state ?? "", reason: detail?.reason ?? "",
+    reason_code: detail?.reason_code ?? "", reference_price: detail?.reference_price ?? null,
+    strategy_id: initialPage.run.strategy_id ?? "",
+    strategy_revision: initialPage.run.strategy_revision ?? null,
+    source: detail_family ?? "", entity_id: event.entity_id,
+    event_evidence: { ...(detail ?? {}), journal_record_id: event.record_id ?? "", detail_family },
+  }));
   const commandRows = orderCommands.map(row => ({ ...row, created_at: utcJournalTime(row.created_at) }));
-  const chartTicker = ticker || display(fillRows[0]?.ticker ?? events.find(item => typeof item.detail?.ticker === "string")?.detail?.ticker).replace("—", "");
+  const chartTicker = display(fillRows[0]?.ticker ?? events.find(item => typeof item.detail?.ticker === "string")?.detail?.ticker).replace("—", "");
   // The certified journal is complete for fills/fees, not for every old
   // Canvas broker view. Keep the performance projection honest about that.
   const performanceTrading = performance ? {
@@ -232,12 +283,8 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
     strategy_activity: [], activity: [],
   } : undefined;
   return <div className="canvas-config-page canvas-focus-page backtest-v4-canvas-review">
-    <header className="canvas-config-toolbar"><strong>Backtest Canvas · Strategy 1</strong><div className="canvas-mode-context-slot">
-      <span>{initialPage.status} · {initialPage.verified_sequence.toLocaleString()} verified records</span>
-      <button className="button secondary compact" onClick={onClose} type="button">Return to setup</button>
-    </div><div className="canvas-toolbar-actions"><button aria-expanded={managementOpen}
-      aria-label="Canvas management" className="button secondary compact canvas-management-toggle"
-      onClick={() => setManagementOpen(value => !value)} type="button"><PanelRightOpen size={13} /> Manage</button></div></header>
+    <SavedV4CanvasHeader initialPage={initialPage} onClose={onClose} title="Backtest Canvas · Strategy 1"
+      managementOpen={managementOpen} onManage={() => setManagementOpen(value => !value)} />
     <TradingWorkspace clockLabel="" commandBarVisible={false} compact
       definitionsOverride={DEFINITIONS} defaultOpenIds={REVIEW_CONTAINERS}
       excludedContainerIds={EXCLUDED}
@@ -250,27 +297,30 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
       renderContainer={definition => {
         switch (definition.id) {
           case "performance_journal": return <>{performanceError ? <p role="alert">Performance unavailable: {performanceError}</p> : null}
-            <TradingJournalPreview data={performanceTrading} onSymbolSelect={setTicker} readOnly settings={presentationSettings.journal} />
+            <TradingJournalPreview data={performanceTrading} onSymbolSelect={openV4Ticker} readOnly settings={presentationSettings.journal} />
           </>;
-          case "strategy_activity": return <section className="trading-preview"><p className="trading-disclosure">Verified journal events, in sequence. Strategy-only activity is identified by its category.</p>
-            <EvidenceTable rows={journal} columns={[["sequence", "Sequence"], ["event_time", "Time"], ["category", "Category"], ["entity_type", "Entity"], ["ticker", "Ticker"], ["detail_family", "Evidence"]]} empty="No verified journal events." />
+          case "strategy_activity": return <section className="trading-preview"><StrategyActivityContainer
+            asOf={new Date(dateInTimeZone(initialPage.market_cursor?.session_date || initialPage.run.session_date || "1970-01-01", "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()}
+            historicalRows={activityRows} historicalPage={{ complete: true }}
+            onSettingsChange={patch => setActivitySettings(current => ({ ...current, ...patch }))}
+            onTickerSelect={openV4Ticker} runId={runId} settings={activitySettings} />
             {eventError ? <p role="alert">Journal page unavailable: {eventError}</p> : null}
             {!eventsComplete ? <button className="button secondary compact" disabled={loadingEvents} onClick={() => void loadMoreEvents()} type="button">Load more events</button> : null}
           </section>;
           case "positions": return positionTrading ? <PositionsPreview data={positionTrading}
-            onSymbolSelect={setTicker} orderEvidenceComplete={false} settings={presentationSettings.positions} />
+            onSymbolSelect={openV4Ticker} orderEvidenceComplete={false} settings={presentationSettings.positions} />
             : <div className="trading-disclosure" role="status">{performanceError || tradeError || (accounts.some(account => account.expected_position_count > 0)
               ? "Open positions require marks not retained by this saved review; lifecycle presentation is unavailable."
               : "Loading complete verified position lifecycles…")}</div>;
           case "orders": return <section className="trading-preview trading-order-manager"><p className="trading-disclosure">{orders ? `${orderCommands.length.toLocaleString()} verified order commands. ` : "Loading verified order commands. "}{orderTransitions.length ? `${orderTransitions.length.toLocaleString()} state transitions are retained.` : "Lifecycle status is unavailable; commands are not assumed filled or working."}</p>
-            <EvidenceTable rows={commandRows} columns={[["created_at", "Submitted"], ["ticker", "Ticker"], ["side", "Side"], ["order_type", "Type"], ["quantity", "Quantity"], ["limit_price", "Limit"], ["client_order_id", "Client order"]]} empty={loadingOrders ? "Loading verified order commands…" : "No verified order command."} />
+            <EvidenceTable rows={commandRows} onSymbolSelect={openV4Ticker} columns={[["created_at", "Submitted"], ["ticker", "Ticker"], ["side", "Side"], ["order_type", "Type"], ["quantity", "Quantity"], ["limit_price", "Limit"], ["client_order_id", "Client order"]]} empty={loadingOrders ? "Loading verified order commands…" : "No verified order command."} />
             {orderError ? <p role="alert">Orders unavailable: {orderError}</p> : null}
             {orders && !orders.complete ? <button className="button secondary compact" disabled={loadingOrders} onClick={() => void loadMoreOrders()} type="button">Load more orders</button> : null}
           </section>;
           case "fills": return trade?.complete ? <ExecutionsPreview data={{ executions: canonicalFills,
             stale: true, complete: false, provider: "arte_typed_journal_v4", mode: "backtest",
             as_of: accounts[0] ? new Date(accounts[0].source_timestamp_ms).toISOString() : "",
-            stale_reason: "Complete verified fills and final fees; other broker domains are not projected." }} onSymbolSelect={setTicker} settings={presentationSettings.fills} />
+            stale_reason: "Complete verified fills and final fees; other broker domains are not projected." }} onSymbolSelect={openV4Ticker} settings={presentationSettings.fills} />
             : <section className="trading-preview"><p className="trading-disclosure">{loadingTrades ? "Loading complete verified fill history…" : "Complete fill history is not loaded yet."}</p>
               {tradeError ? <p role="alert">Fills unavailable: {tradeError}</p> : null}
               {trade && !trade.complete ? <button className="button secondary compact" disabled={loadingTrades} onClick={() => void loadMoreTrades()} type="button">Load more fills</button> : null}</section>;
@@ -282,5 +332,23 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
           default: return <div className="trading-disclosure">This container has no V4 projection.</div>;
         }
       }} />
+  </div>;
+}
+
+/** A ticker drilldown is a new, isolated Canvas page. It never rewrites the
+ * saved review layout or asks the legacy replay/chart reader for V4 data. */
+export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
+  runId: string; ticker: string; initialPage: V4Page; onClose: () => void;
+}) {
+  const definition = TRADING_WORKSPACE_CONTAINERS.filter(item => item.id === "charts_quotes");
+  return <div className="canvas-config-page canvas-focus-page backtest-v4-canvas-review backtest-v4-chart-focus">
+    <SavedV4CanvasHeader initialPage={initialPage} onClose={onClose} backLabel="Return to journal" title={`${ticker} · Charts & Quotes`} />
+    <TradingWorkspace clockLabel="" commandBarVisible={false} compact
+      definitionsOverride={definition} defaultOpenIds={["charts_quotes"]}
+      excludedContainerIds={TRADING_WORKSPACE_CONTAINERS.filter(item => item.id !== "charts_quotes").map(item => item.id)}
+      historicalSourceReady layoutPreset="focus" mode="backtest" persistState={false}
+      runLabel={`${ticker} · Charts & Quotes`} runStatus="completed" sourceLabel="ARTE saved market"
+      showHealth={false} metaForContainer={() => ({ sourceLabel: "ARTE verified V4", status: "ready", freshness: "Saved run" })}
+      renderContainer={() => <BacktestV4SavedChart embedded runId={runId} ticker={ticker} />} />
   </div>;
 }

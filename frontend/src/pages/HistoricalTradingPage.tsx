@@ -3,7 +3,8 @@ import { FilteredV7Preparation } from "../app/components/FilteredV7Preparation";
 import { BacktestRecoveryState } from "../app/components/BacktestRecoveryState";
 import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
 import type { V4Page } from "../app/components/BacktestV4SavedReview";
-import { BacktestV4CanvasReview } from "../app/components/BacktestV4CanvasReview";
+import { BacktestV4CanvasReview, BacktestV4ChartFocus } from "../app/components/BacktestV4CanvasReview";
+import { normalizeTicker } from "../app/tickerNavigation";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, LoaderCircle, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -509,8 +510,14 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       modeControls={progressControls} replayRun={run} runtimeWorkspaceId="main" />;
   }
 
-  if (selectedRunId && v4ReviewPage?.run.run_id === selectedRunId) return <BacktestV4CanvasReview
-    key={selectedRunId} runId={selectedRunId} initialPage={v4ReviewPage} onClose={returnToSetup} />;
+  if (selectedRunId && v4ReviewPage?.run.run_id === selectedRunId) {
+    const focusTicker = normalizeTicker(new URL(window.location.href).searchParams.get("backtest_ticker") || "");
+    if (focusTicker) return <BacktestV4ChartFocus key={`${selectedRunId}:${focusTicker}`}
+      runId={selectedRunId} ticker={focusTicker} initialPage={v4ReviewPage}
+      onClose={() => { const url = new URL(window.location.href); url.searchParams.delete("backtest_ticker"); window.location.assign(url.toString()); }} />;
+    return <BacktestV4CanvasReview key={selectedRunId} runId={selectedRunId}
+      initialPage={v4ReviewPage} onClose={returnToSetup} />;
+  }
 
   if (selectedRunId) return <BacktestRecoveryState error={restoreError}
     onRetry={() => { setRestoreError(""); setRestoreAttempt(value => value + 1); }} onSetup={returnToSetup} />;

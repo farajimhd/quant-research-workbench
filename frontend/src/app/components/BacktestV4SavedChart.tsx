@@ -9,7 +9,9 @@ type Indicator = { bar_start: string; macd_line?: number; macd_signal?: number;
   macd_histogram?: number };
 type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolean;
   next_before: string; session_date: string; ticker: string; timeframe: string;
-  verified_boundary_ms: number; indicator_provenance: { unavailable_columns: string[] } };
+  verified_boundary_ms: number; indicator_provenance: { unavailable_columns: string[] };
+  quote?: { bid: number; ask: number; bid_size: number; ask_size: number;
+    quote_timestamp_us: number; age_ms: number; fresh: boolean } | null };
 const FRAMES = ["100ms", "1s", "5s", "10s", "30s"] as const;
 const MACD = ["macd_line", "macd_signal", "macd_histogram"] as const;
 const pageCache = new Map<string, Promise<ChartPage>>();
@@ -133,6 +135,10 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false 
       <label><input type="checkbox" checked={showMacd} onChange={event => changeScope({ macd: event.target.checked })} /> Closed MACD</label>
     </div> : null}
     {!embedded ? <p className="backtest-v4-chart-source">ARTE closed bars and indicators · {page ? `verified through ${page.verified_boundary_ms.toLocaleString()} ms from 04:00 ET` : "verifying saved run…"}</p> : null}
+    {page ? <div className="backtest-v4-quote" aria-label={`${symbol} saved bid and ask`}>
+      {page.quote ? <><span><small>Bid</small><strong>{page.quote.bid.toFixed(4)}</strong><em>{page.quote.bid_size.toLocaleString()} shares</em></span><span><small>Ask</small><strong>{page.quote.ask.toFixed(4)}</strong><em>{page.quote.ask_size.toLocaleString()} shares</em></span><span><small>Quote at saved boundary</small><strong>{page.quote.fresh ? "Fresh" : "Stale"}</strong><em>{page.quote.age_ms.toLocaleString()} ms old · pinned liquidity</em></span></>
+        : <span><small>Quote at saved boundary</small><strong>Unavailable</strong><em>No certified quote in this window</em></span>}
+    </div> : null}
     {page?.indicator_provenance.unavailable_columns.length ? <p role="note">Stale indicators: {page.indicator_provenance.unavailable_columns.join(", ")}</p> : null}
     {error ? <p role="alert">Chart unavailable: {error}</p> : null}
     <ChartPanel persistedOnly payload={payload} ticker={symbol} timeframe={frame} timeframes={[...FRAMES]}

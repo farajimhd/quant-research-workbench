@@ -22,7 +22,7 @@ class BacktestHistoryTests(unittest.TestCase):
                 page.goto("http://127.0.0.1:5173/#backtest-trading")
                 table = page.get_by_role("region", name="Recent backtests table", exact=True)
                 table.wait_for(timeout=60_000)
-                table.locator("tbody tr").first.get_by_role(
+                table.locator("tbody tr").filter(has_text="a2c47451").get_by_role(
                     "button", name="Review backtest", exact=False).click()
                 review = page.locator(".backtest-v4-canvas-review")
                 review.get_by_text("Backtest Canvas · Strategy 1").wait_for(timeout=90_000)
@@ -31,7 +31,6 @@ class BacktestHistoryTests(unittest.TestCase):
                 self.assertIn("Trading Journal", review.inner_text())
                 self.assertIn("Execution Audit", review.inner_text())
                 self.assertEqual(page.locator(".backtest-v4-direct-review").count(), 0)
-                review.get_by_text("WFF", exact=True).first.wait_for(timeout=60_000)
                 review.get_by_text("10 episodes", exact=False).first.wait_for(timeout=60_000)
                 review.get_by_text("30 verified order commands", exact=False).first.wait_for(timeout=60_000)
                 self.assertNotIn("No frontend renderer is registered", review.inner_text())
@@ -44,6 +43,32 @@ class BacktestHistoryTests(unittest.TestCase):
                     page.screenshot(path=str(evidence / "real-strategy-one-review.png"))
                 review.get_by_role("tab", name="Positions", exact=False).click()
                 review.get_by_placeholder("Search positions, symbols, setups, exits…").wait_for()
+                journal = review.locator(".performance-journal")
+                self.assertEqual(journal.get_by_role("combobox", name="Filter by All directions").count(), 1)
+                self.assertEqual(journal.get_by_role("columnheader", name="entry shares outstanding", exact=False).count(), 1)
+                self.assertEqual(journal.get_by_role("columnheader", name="entry last minute trade count", exact=False).count(), 1)
+                review.get_by_text("WFF", exact=True).first.wait_for(timeout=60_000)
+                if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
+                    page.screenshot(path=str(evidence / "real-strategy-one-positions.png"))
+                with page.expect_popup() as opened:
+                    review.get_by_role("button", name="Open WFF Charts & Quotes in a new tab").first.click()
+                focus = opened.value
+                focus.locator(".backtest-v4-chart-focus").wait_for(timeout=60_000)
+                self.assertIn("backtest_ticker=WFF", focus.url)
+                self.assertIn("Charts & Quotes", focus.locator(".backtest-v4-chart-focus").inner_text())
+                focus.get_by_label("WFF saved bid and ask").wait_for(timeout=60_000)
+                focus.locator(".chart-shell canvas").first.wait_for(timeout=60_000)
+                self.assertNotIn("Chart unavailable", focus.locator(".backtest-v4-chart-focus").inner_text())
+                if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
+                    focus.screenshot(path=str(evidence / "real-strategy-one-chart-focus.png"))
+                focus.close()
+                activity = review.locator(".strategy-activity-surface")
+                activity.get_by_role("button", name="Inspect strategy event", exact=False).first.click()
+                activity.get_by_role("complementary", name="Strategy event details").wait_for()
+                self.assertIn(".", activity.get_by_role("complementary", name="Strategy event details").locator(".market-time-primary").first.inner_text())
+                if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
+                    activity.scroll_into_view_if_needed()
+                    page.screenshot(path=str(evidence / "real-strategy-one-activity.png"))
                 review.get_by_role("button", name="Expand row").first.click()
                 self.assertFalse(any("/journal/episodes/" in url for url in requests))
                 review.get_by_role("button", name="Canvas management").click()
@@ -71,7 +96,7 @@ class BacktestHistoryTests(unittest.TestCase):
                 page.goto("http://127.0.0.1:5173/#backtest-trading")
                 table = page.get_by_role("region", name="Recent backtests table", exact=True)
                 table.wait_for(timeout=60_000)
-                table.locator("tbody tr").first.get_by_role("button", name="Review backtest", exact=False).click()
+                table.locator("tbody tr").filter(has_text="a2c47451").get_by_role("button", name="Review backtest", exact=False).click()
                 review = page.locator(".backtest-v4-canvas-review")
                 review.get_by_text("10 episodes", exact=False).first.wait_for(timeout=90_000)
                 self.assertIn("Trading Journal", review.inner_text())

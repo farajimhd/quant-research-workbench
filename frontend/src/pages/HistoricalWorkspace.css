@@ -87,6 +87,11 @@
 .backtest-v4-chart-controls form { display: inline-flex; gap: 6px; align-items: center; }
 .backtest-v4-chart-controls input:not([type="checkbox"]) { width: 100px; }
 .backtest-v4-chart-source { color: var(--muted-foreground); font-size: 12px; }
+.backtest-v4-quote { display: flex; flex-wrap: wrap; gap: 0; border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; overflow: hidden; }
+.backtest-v4-quote > span { display: grid; gap: 2px; min-width: 130px; padding: 6px 12px; border-right: 1px solid var(--border); }
+.backtest-v4-quote > span:last-child { border-right: 0; }
+.backtest-v4-quote small, .backtest-v4-quote em { color: var(--muted-foreground); font-size: 10px; font-style: normal; }
+.backtest-v4-quote strong { font-size: 13px; }
 @media (max-width: 1100px) {
   .backtest-run-history > .backtest-history-scroll :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); min-width: 170px; border-left: 1px solid var(--border); }
   .backtest-v4-review > .backtest-history-scroll :is(th, td):last-child { position: static; border-left: 0; }
@@ -2261,31 +2266,13 @@
 .backtest-lazy-activity > .strategy-activity-surface { flex: 1; min-height: 0; }
 .historical-backtest-progress-heading .spin { animation: spin 0.85s linear infinite; vertical-align: middle; }
 .backtest-v4-canvas-review > .canvas-config-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "title manage" "context manage";
-  align-items: center;
-  min-height: 42px;
-  column-gap: 12px;
-  row-gap: 2px;
-  padding: 4px 12px;
-}
-
-.backtest-v4-canvas-review > .canvas-config-toolbar > strong {
-  grid-area: title;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  grid-template-columns: max-content max-content minmax(28px, 1fr) auto;
 }
 
 .backtest-v4-canvas-review > .canvas-config-toolbar .canvas-mode-context-slot {
-  grid-area: context;
   align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
-  min-width: 0;
-  overflow: visible;
+  gap: 8px;
+  padding: 0 8px;
   white-space: nowrap;
 }
 
@@ -2294,8 +2281,8 @@
   text-overflow: ellipsis;
 }
 
-.backtest-v4-canvas-review > .canvas-config-toolbar .canvas-toolbar-actions {
-  grid-area: manage;
+.backtest-v4-canvas-review > .canvas-config-toolbar .canvas-mode-context-slot > button {
+  flex-shrink: 0;
 }
 
 .backtest-v4-canvas-review .trading-freshness {
@@ -2315,6 +2302,5 @@
 }
 
 @media (max-width: 640px) {
-  .backtest-v4-canvas-review > .canvas-config-toolbar > strong { font-size: 12px; }
   .backtest-v4-canvas-review > .canvas-config-toolbar .canvas-mode-context-slot > span { display: none; }
 }

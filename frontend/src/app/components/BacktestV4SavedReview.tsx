@@ -15,7 +15,7 @@ type Account = {
 
 export type V4Page = {
   schema_version: "strategy-one-v4-terminal-review-page-v1";
-  run: { run_id: string };
+  run: { run_id: string; session_date?: string; strategy_id?: string; strategy_revision?: number };
   status: string;
   verified_sequence: number;
   market_cursor: { session_date: string; boundary_ms: number } | null;
@@ -24,7 +24,8 @@ export type V4Page = {
   financial_accounts: Record<string, Account>;
   events: Array<{
     event: { sequence: number; event_time: string; category: string;
-      entity_type: string; entity_id: string; account_id: string };
+      entity_type: string; entity_id: string; account_id: string;
+      record_id?: string; recorded_at?: string };
     detail_family: string | null;
     detail: Record<string, unknown> | null;
   }>;

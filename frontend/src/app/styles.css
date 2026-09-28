@@ -14531,6 +14531,7 @@ button {
 .strategy-activity-detail-meta > span:nth-child(n+3) { border-top: 1px solid var(--border); }
 .strategy-activity-detail-meta small { color: var(--muted-foreground); font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
 .strategy-activity-detail-meta strong { font-size: 12px; overflow-wrap: anywhere; }
+.strategy-activity-detail-meta strong button { border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; font-weight: inherit; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
 .strategy-activity-detail-meta em { color: var(--muted-foreground); font-size: 10px; font-style: normal; }
 .strategy-activity-evidence-cards { display: grid; gap: 10px; padding: 12px; }
 .strategy-activity-evidence-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 5%, transparent); overflow: hidden; }

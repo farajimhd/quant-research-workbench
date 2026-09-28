@@ -2597,13 +2597,20 @@ def capture(args: argparse.Namespace) -> int:
                         page.get_by_role("button", name=args.canvas_chart_timeframe, exact=True).click(timeout=args.timeout_ms)
                     page.wait_for_timeout(args.settle_ms)
                     if args.saved_v4_chart_ticker and scenario["page"] == "backtest-trading":
-                        page.get_by_role("button", name=f"Chart {args.saved_v4_chart_ticker}", exact=True).first.click(timeout=args.timeout_ms)
-                        saved_chart = page.get_by_role("region", name=f"Saved {args.saved_v4_chart_ticker} chart")
-                        saved_chart.get_by_text(re.compile(r"ARTE closed bars and indicators · verified through")).wait_for(timeout=args.timeout_ms)
-                        saved_chart.locator(".chart-shell canvas").first.wait_for(timeout=args.timeout_ms)
-                        if saved_chart.get_by_label("Show 1s Supertrend").count():
-                            raise RuntimeError("Saved ARTE chart exposed an unpersisted indicator")
-                        saved_chart.evaluate("element => element.scrollIntoView({block: 'start'})")
+                        ticker_button = page.get_by_role("button", name=f"Open {args.saved_v4_chart_ticker} Charts & Quotes in a new tab")
+                        if not ticker_button.count():
+                            page.get_by_role("tab", name="Positions", exact=False).click(timeout=args.timeout_ms)
+                        with page.expect_popup(timeout=args.timeout_ms) as opened:
+                            ticker_button.first.click(timeout=args.timeout_ms)
+                        focus = opened.value
+                        try:
+                            saved_chart = focus.get_by_role("region", name=f"Saved {args.saved_v4_chart_ticker} chart")
+                            saved_chart.get_by_label(f"{args.saved_v4_chart_ticker} saved bid and ask").wait_for(timeout=args.timeout_ms)
+                            saved_chart.locator(".chart-shell canvas").first.wait_for(timeout=args.timeout_ms)
+                            if saved_chart.get_by_label("Show 1s Supertrend").count():
+                                raise RuntimeError("Saved ARTE chart exposed an unpersisted indicator")
+                        finally:
+                            focus.close()
                     if args.hindsight_action_chart:
                         from action_values_review import mount_action_chart
                         mount_action_chart(page,args.hindsight_action_chart,args.canvas_symbol,args.canvas_session_date)
