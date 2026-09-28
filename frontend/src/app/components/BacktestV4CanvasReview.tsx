@@ -144,6 +144,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
     const url = new URL(window.location.href);
     url.searchParams.set("backtest_run", runId);
     url.searchParams.set("backtest_ticker", symbol);
+    url.hash = "canvas-focus";
     window.open(url, "_blank", "noopener,noreferrer");
   }
 

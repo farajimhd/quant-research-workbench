@@ -1,4 +1,6 @@
 import { LazyBacktestActivity } from "../app/components/LazyBacktestActivity";
+import { BacktestV4ChartFocus } from "../app/components/BacktestV4CanvasReview";
+import type { V4Page } from "../app/components/BacktestV4SavedReview";
 import { VisibleBacktestPanel } from "../app/components/VisibleBacktestPanel";
 import { openBacktestSetup, recoverBacktest } from "../app/backtestRecovery";
 import { Activity, Check, Clock3, Globe2, Link2, MapPin, Maximize2, Minimize2, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink } from "lucide-react";
@@ -95,7 +97,7 @@ import {
 import { marketSessionDate, useCanvasHistoricalChart } from "../features/canvas/chartData";
 import { nestedValue } from "../features/canvas/presentationFormat";
 import { cloneDefaultSettings, instanceSettings, normalizeSettings } from "../features/canvas/settings";
-import { chartsQuotesFocusProfile, ensureHistoricalChartsQuotesIndicators, openTickerChartsQuotes } from "../app/tickerNavigation";
+import { chartsQuotesFocusProfile, ensureHistoricalChartsQuotesIndicators, normalizeTicker, openTickerChartsQuotes } from "../app/tickerNavigation";
 import { useCanvasLiveScannerSnapshot, useCanvasScannerSnapshot } from "../features/canvas/scannerData";
 import { dateInTimeZone } from "../features/canvas/time";
 import { readLiveAccountKeys, TradingPerformanceStrip, useTradingPerformance } from "../features/trading-performance/TradingPerformance";
@@ -193,6 +195,9 @@ export function ApprovedCanvasRuntimePage({ accountKeys, mode, modeControls }: {
 
 export function CanvasFocusPage() {
   const params = new URLSearchParams(window.location.search);
+  const savedRunId = params.get("backtest_run") || "";
+  const savedTicker = normalizeTicker(params.get("backtest_ticker") || "");
+  if (savedRunId && savedTicker) return <SavedBacktestChartFocus runId={savedRunId} ticker={savedTicker} />;
   const canvasFocusToken = params.get("canvas_focus") || undefined;
   const acceptanceRuntimeMode = params.get("runtime_mode");
   const runtimeMode = acceptanceRuntimeMode === "live" || acceptanceRuntimeMode === "paper" ? acceptanceRuntimeMode : undefined;
@@ -1436,6 +1441,35 @@ function BacktestUnavailableContextChart({ label }: { label: string }) {
     <strong>{label} chart unavailable</strong>
     <span>No certified arte {label.toLowerCase()} bars exist for Backtest. Use the main intraday chart.</span>
   </div>;
+}
+
+function SavedBacktestChartFocus({ runId, ticker }: { runId: string; ticker: string }) {
+  const [page, setPage] = useState<V4Page | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    void api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=0&limit=100`, {
+      signal: controller.signal, timeoutMs: 60_000,
+    }).then(value => {
+      if (controller.signal.aborted) return;
+      if (value.schema_version !== "strategy-one-v4-terminal-review-page-v1" || value.run.run_id !== runId) {
+        throw new Error("Saved Backtest chart identity differs from the selected run.");
+      }
+      setPage(value);
+    }).catch(reason => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
+    });
+    return () => controller.abort();
+  }, [runId]);
+  const returnToJournal = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("backtest_ticker");
+    url.hash = "backtest-trading";
+    window.location.assign(url.toString());
+  };
+  if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error" role="alert">Chart unavailable: {error}</div><button onClick={returnToJournal} type="button">Return to journal</button></div>;
+  if (!page) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading saved Charts & Quotes" /></div>;
+  return <BacktestV4ChartFocus initialPage={page} onClose={returnToJournal} runId={runId} ticker={ticker} />;
 }
 
 function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
