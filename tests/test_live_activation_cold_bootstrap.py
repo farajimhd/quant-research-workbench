@@ -119,14 +119,18 @@ def _case(*, activation_run_id: str = ACTIVATION_RUN_ID):
                    "activation_receipt_hash": activation_hash}],
         acknowledged_at="2026-09-24T14:00:01+00:00")
     completion_storage, completion_keeper = Storage(), Keeper()
+    strategy_one = activation_run_id != ACTIVATION_RUN_ID
+    completion_storage.strategy_one = strategy_one
     completion = project_completion(
         intents, acks, ordinal=0, processed_at="2026-09-24T14:00:02+00:00",
         keeper_owner_id="owner-1", keeper_epoch=1)
     completion_storage.insert_completion_row(completion.row)
     resource = completion_resource(SESSION.isoformat(), 1, 0, delivery["delivery_id"])
     completion_keeper.proof = (resource, "owner-1", 1, completion.row["content_hash"])
-    return (activation_client, ColdStorage(intents, acks),
-            completion_storage, completion_keeper, delivery)
+    dispatch_storage = ColdStorage(intents, acks)
+    dispatch_storage.strategy_one = strategy_one
+    return (activation_client, dispatch_storage, completion_storage,
+            completion_keeper, delivery)
 
 
 def _audit(case):
@@ -420,12 +424,14 @@ def test_attested_strategy_one_scope_cannot_read_legacy_activation_rows() -> Non
                 activation.rows[strategy_one_activation_table(
                     "trading_activation_v1")][0]["content_hash"])}
     class ClosedCursor:
+        strategy_one = True
         def assert_cold_receipts(self, observed_run_id, receipts):
             assert observed_run_id == dispatch_run_id(
-                SESSION.isoformat(), "approved-1")
+                SESSION.isoformat(), "approved-1", strategy_one=True)
             assert len(receipts) == 1
             assert all(len(value) == 64 for value in receipts[1])
     class ClosedCompletion:
+        strategy_one = True
         def __init__(self):
             self.closed = False
         def close_for_cold(self):
@@ -457,6 +463,7 @@ def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
                            configuration_revision="approved-1",
                            source_revision="source-1")
     class Source:
+        strategy_one = True
         def acquire_bootstrap_barrier(self):
             events.append("source-closed")
             return 1, "b" * 64
@@ -464,11 +471,13 @@ def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
             assert fence == (1, "b" * 64)
             events.append("source-verified")
     class Dispatch:
+        strategy_one = True
         def close_for_cold(self, run_id):
             assert run_id == dispatch_run_id(
                 SESSION.isoformat(), "approved-1", strategy_one=True)
             events.append("dispatch-closed")
     class Completion:
+        strategy_one = True
         def close_for_cold(self):
             events.append("completion-closed")
     class Activation:
@@ -495,8 +504,10 @@ def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
                         lambda *_args, **_kwargs: ())
     run_id = strategy_one_activation_run_id(
         SESSION, mode="paper", run_plan_id="plan-1")
+    isolated_reader = SimpleNamespace(strategy_one=True)
     result = _cold_recover_activation_checkpoint_under_fence(
-        object(), object(), object(), SourceKeeper(), object(), object(), object(),
+        object(), isolated_reader, object(), SourceKeeper(), isolated_reader,
+        isolated_reader, object(),
         session_date=SESSION, configuration_revision_id="approved-1",
         source_revision_id="source-1", catalogs={}, receipt_defined=True,
         activation_run_id=run_id, activation_dispatch=Activation(),
@@ -509,13 +520,14 @@ def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
     assert events[-1] == "source-verified"
     events.clear()
     class PendingCompletion:
+        strategy_one = True
         def close_for_cold(self):
             events.append("completion-pending")
             raise RuntimeError("unacknowledged completion INSERT")
     with pytest.raises(RuntimeError, match="unacknowledged"):
         _cold_recover_activation_checkpoint_under_fence(
-            object(), object(), object(), SourceKeeper(), object(), object(),
-            object(), session_date=SESSION,
+            object(), isolated_reader, object(), SourceKeeper(), isolated_reader,
+            isolated_reader, object(), session_date=SESSION,
             configuration_revision_id="approved-1",
             source_revision_id="source-1", catalogs={}, receipt_defined=True,
             activation_run_id=run_id, activation_dispatch=Activation(),
@@ -531,6 +543,7 @@ def test_registered_empty_strategy_one_session_has_no_activation_watch() -> None
             assert sql.startswith("SELECT ") and " FORMAT JSONEachRow" in sql
             return ""
     class Source:
+        strategy_one = True
         def acquire_bootstrap_barrier(self):
             return 0, "0" * 64
         def assert_cold_prefix(self, fence):
@@ -543,12 +556,14 @@ def test_registered_empty_strategy_one_session_has_no_activation_watch() -> None
                 cursor_commit_hash="0" * 64,
                 configuration_revision="", source_revision="")
     class Dispatch:
+        strategy_one = True
         def close_for_cold(self, run_id):
             assert run_id == dispatch_run_id(
                 SESSION.isoformat(), "approved-1", strategy_one=True)
         def assert_cold_receipts(self, run_id, receipts):
             assert receipts == {}
     class Completion:
+        strategy_one = True
         def close_for_cold(self):
             pass
         def assert_cold_receipts(self, receipts):
@@ -562,17 +577,23 @@ def test_registered_empty_strategy_one_session_has_no_activation_watch() -> None
             assert receipts == {}
     run_id = strategy_one_activation_run_id(
         SESSION, mode="paper", run_plan_id="plan-1")
-    def audit(client):
+    def audit(client, *, source_strategy_one=True):
+        completion_storage = Storage()
+        completion_storage.strategy_one = True
         return _cold_recover_activation_checkpoint_under_fence(
-            client, ClickHouseSignalSourceReadStorage(client, {}), client,
-            SourceKeeper(), ClickHouseDispatchColdStorage(client),
-            Storage(), Keeper(), session_date=SESSION,
+            client, ClickHouseSignalSourceReadStorage(
+                client, {}, strategy_one=source_strategy_one),
+            client, SourceKeeper(),
+            ClickHouseDispatchColdStorage(client, strategy_one=True),
+            completion_storage, Keeper(), session_date=SESSION,
             configuration_revision_id="approved-1",
             source_revision_id="source-1", catalogs={}, receipt_defined=True,
             activation_run_id=run_id, activation_dispatch=Activation(),
             registered_dispatch=Dispatch(), registered_completion=Completion(),
             registered_source=Source())
     assert audit(EmptyClickHouse()) == ()
+    with pytest.raises(ActivationRecoveryUnfenced, match="authorities differ"):
+        audit(EmptyClickHouse(), source_strategy_one=False)
     class OrphanActivation(EmptyClickHouse):
         def execute(self, sql):
             if (sql.startswith("SELECT DISTINCT run_plan_id,ticker,event_id ")

@@ -196,7 +196,11 @@ def read_attested_activation_prefix(
     if activation_run_id != ACTIVATION_RUN_ID and (
             activation_dispatch is None or registered_dispatch is None
             or registered_completion is None
-            or not activation_dispatch.strategy_one):
+            or not activation_dispatch.strategy_one
+            or getattr(registered_dispatch, "strategy_one", False) is not True
+            or getattr(dispatch_storage, "strategy_one", False) is not True
+            or getattr(registered_completion, "strategy_one", False) is not True
+            or getattr(completion_storage, "strategy_one", False) is not True):
         raise ActivationRecoveryUnfenced(
             "Strategy 1 activation read lacks registered INSERT drain proof")
     proofs = read_completed_dispatch_prefix(
@@ -298,6 +302,15 @@ def _cold_recover_activation_checkpoint_under_fence(
                 or activation_dispatch is None))):
         raise ActivationRecoveryUnfenced(
             "Strategy 1 cold audit requires every registered INSERT drain")
+    if activation_run_id != ACTIVATION_RUN_ID and (
+            getattr(registered_source, "strategy_one", False) is not True
+            or getattr(source_storage, "strategy_one", False) is not True
+            or getattr(registered_dispatch, "strategy_one", False) is not True
+            or getattr(dispatch_storage, "strategy_one", False) is not True
+            or getattr(registered_completion, "strategy_one", False) is not True
+            or getattr(completion_storage, "strategy_one", False) is not True):
+        raise ActivationRecoveryUnfenced(
+            "Strategy 1 cold reader and registered writer authorities differ")
     source_fence = None
     if registered_source is not None:
         # The whole write graph is closed before the first ClickHouse SELECT.
