@@ -181,6 +181,30 @@ def test_live_v4_lost_owner_after_receipt_never_sends_order(monkeypatch) -> None
     asyncio.run(scenario())
 
 
+def test_live_v4_lost_owner_while_queued_never_publishes_command(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer, broker = _LiveV4Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        first, first_request = _strategy_one_command()
+        first_ticket = dispatcher.submit(first, "DU1", (first_request,))
+        await asyncio.wait_for(writer.submitted.wait(), 1)
+        second, second_request = _strategy_one_command()
+        second_ticket = dispatcher.submit(second, "DU1", (second_request,))
+        writer.live_v4_lease.current = False
+        writer.receipts[0].set_result(first.batch_id)
+        with pytest.raises(RuntimeError, match="lease lost"):
+            await first_ticket
+        with pytest.raises(RuntimeError, match="broker reconciliation"):
+            await second_ticket
+        assert len(writer.batches) == 1
+        assert broker.calls == []
+        with pytest.raises(RuntimeError, match="broker reconciliation"):
+            await dispatcher.close()
+    asyncio.run(scenario())
+
+
 def test_live_command_rejects_backtest_v4_writer() -> None:
     class BacktestWriter(_Writer):
         journal_profile = "backtest_v4"

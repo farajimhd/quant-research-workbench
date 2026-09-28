@@ -194,6 +194,10 @@ class ArteCommandDispatcher:
                     return
                 if self._error is not None:
                     raise RuntimeError("An earlier command requires broker reconciliation") from self._error
+                if self._live_v4:
+                    # A queued command may outlive its owner. Do not publish a
+                    # new command under a Keeper lease already known to be lost.
+                    await asyncio.to_thread(self._live_lease.assert_current)
                 receipt = (self._writer.submit_base_v4(pending.batch)
                            if self._live_v4 else self._writer.submit(pending.batch))
                 committed_id = await asyncio.wrap_future(receipt)
