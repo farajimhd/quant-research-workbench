@@ -3274,9 +3274,12 @@ class ReplayRunController:
         self._fixed_keeper_session = None
         try:
             if writer is not None:
+                close_started = time.perf_counter()
                 try:
                     await asyncio.to_thread(writer.close)
                 finally:
+                    self._record_stage_time(
+                        "strategy_one_journal_writer_close", close_started)
                     metrics = getattr(writer, 'metrics', None)
                     if callable(metrics):
                         self._journal_writer_final_metrics = metrics()
@@ -3286,7 +3289,12 @@ class ReplayRunController:
                     self._journal.close()
             finally:
                 if keeper is not None:
-                    await asyncio.to_thread(keeper.close)
+                    close_started = time.perf_counter()
+                    try:
+                        await asyncio.to_thread(keeper.close)
+                    finally:
+                        self._record_stage_time(
+                            "strategy_one_keeper_close", close_started)
 
     async def _fixed_certified_market_plan(self):
         from src.backend.backtest_market_data import (

@@ -159,3 +159,5 @@ def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
     assert "close:context" in calls and "close:keeper" not in calls
     asyncio.run(controller._close_fixed_journal())
     assert calls[-1] == "close:keeper"
+    assert controller._stage_timings["strategy_one_journal_writer_close"]["calls"] == 1
+    assert controller._stage_timings["strategy_one_keeper_close"]["calls"] == 1
