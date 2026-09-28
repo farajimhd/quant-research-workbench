@@ -36,11 +36,13 @@ def test_apply_requires_workstation_and_installs_exactly_once(capsys, monkeypatc
                         lambda value: installed.append(value))
     monkeypatch.setattr(command, "install_entry_evidence_tables",
                         lambda value: installed.append(value))
+    monkeypatch.setattr(command, "install_v7_interval_tables",
+                        lambda value: installed.append(value))
     monkeypatch.setattr(command, "rename_empty_legacy_rule_column",
                         lambda value: renamed.append(value))
     assert command.main(["--apply", "--confirm-strategy-one-candidates",
                          "--rename-empty-rule-column"]) == 0
-    assert installed == [client, client, client, client] and client.closed
+    assert installed == [client] * 5 and client.closed
     assert renamed == [client]
     assert "verified" in capsys.readouterr().out
 

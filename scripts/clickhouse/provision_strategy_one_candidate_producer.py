@@ -46,6 +46,10 @@ from src.trading_runtime.strategy_one_identity_schema import (
     IDENTITY_TABLE, COVERAGE_TABLE as IDENTITY_COVERAGE_TABLE,
     install_tables as install_identity_tables,
 )
+from src.trading_runtime.strategy_one_v7_interval_schema import (
+    TABLES as V7_INTERVAL_TABLES,
+    verify_tables as verify_v7_interval_tables,
+)
 
 
 URL = "http://DESKTOP-SAAI85T:18123"
@@ -57,7 +61,8 @@ _TABLES = (CANDIDATE_TABLE, COVERAGE_TABLE,
            HOD_CONTEXT_TABLE, HOD_COVERAGE_TABLE,
            ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE,
            EVIDENCE_TABLE, ENTRY_COVERAGE_TABLE,
-           IDENTITY_TABLE, IDENTITY_COVERAGE_TABLE)
+           IDENTITY_TABLE, IDENTITY_COVERAGE_TABLE,
+           *V7_INTERVAL_TABLES)
 _GRANTS = frozenset((privilege, table) for privilege in ("SELECT", "INSERT")
                     for table in _TABLES) | frozenset({
     ("SELECT", "q_live.feature_tradable_universe_v1")})
@@ -120,6 +125,7 @@ def provision(admin, *, credential, client_factory) -> None:
     verify_pivot_tables(admin)
     verify_hod_tables(admin)
     verify_entry_evidence_tables(admin)
+    verify_v7_interval_tables(admin)
     install_identity_tables(admin)
     present = admin.execute(
         "SELECT count() FROM system.users "

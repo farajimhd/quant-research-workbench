@@ -51,6 +51,9 @@ from src.trading_runtime.strategy_one_entry_evidence_schema import (
 from src.trading_runtime.strategy_one_identity_schema import (
     IDENTITY_TABLE, COVERAGE_TABLE as IDENTITY_COVERAGE_TABLE,
 )
+from src.trading_runtime.strategy_one_v7_interval_schema import (
+    TABLES as STRATEGY_ONE_V7_INTERVAL_TABLES,
+)
 from src.trading_runtime.strategy_one_configuration_tree import (
     NODE_TABLE as STRATEGY_ONE_CONFIG_NODE_TABLE,
     RELEASE_TABLE as STRATEGY_ONE_CONFIG_RELEASE_TABLE,
@@ -137,6 +140,7 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
                           ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE,
                           EVIDENCE_TABLE, ENTRY_COVERAGE_TABLE,
                           IDENTITY_TABLE, IDENTITY_COVERAGE_TABLE,
+                          *STRATEGY_ONE_V7_INTERVAL_TABLES,
                           STRATEGY_ONE_CONFIG_NODE_TABLE,
                           STRATEGY_ONE_CONFIG_RELEASE_TABLE,
                           V7_LINEAGE_TABLE)),

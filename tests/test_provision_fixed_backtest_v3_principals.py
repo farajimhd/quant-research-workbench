@@ -108,6 +108,11 @@ def test_exact_three_role_plan_matches_v3_preflight_tables():
     assert candidate_tables <= read.select_arte
     assert not candidate_tables & (read.insert_arte | running.insert_arte |
                                    terminal.insert_arte)
+    from src.trading_runtime.strategy_one_v7_interval_schema import TABLES as V7_TABLES
+    v7_tables = {name.split(".", 1)[1] for name in V7_TABLES}
+    assert v7_tables <= read.select_arte
+    assert not v7_tables & (read.insert_arte | running.insert_arte |
+                            terminal.insert_arte)
     from src.trading_runtime.strategy_one_hod_schema import (
         CONTEXT_TABLE, COVERAGE_TABLE as HOD_COVERAGE_TABLE,
     )

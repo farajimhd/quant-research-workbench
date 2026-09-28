@@ -44,6 +44,7 @@ def test_new_producer_grants_only_owned_products_and_dated_source(monkeypatch):
     monkeypatch.setattr(subject, "verify_pivot_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_hod_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_entry_evidence_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "verify_v7_interval_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "install_identity_tables", lambda _admin: None)
     admin = Admin()
     producer = Producer()
@@ -57,7 +58,7 @@ def test_new_producer_grants_only_owned_products_and_dated_source(monkeypatch):
     subject.provision(admin, credential=lambda **_kwargs: "p" * 40,
                       client_factory=lambda _user, _password: producer)
     assert producer.closed
-    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 25
+    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 31
     assert "GRANT SELECT ON q_live.feature_tradable_universe_v1 " \
            f"TO {subject.PRINCIPAL}" in admin.sql
     assert not any("GRANT INSERT ON q_live." in sql for sql in admin.sql)
@@ -70,6 +71,7 @@ def test_existing_broad_grant_fails_before_new_grant(monkeypatch):
     monkeypatch.setattr(subject, "verify_pivot_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_hod_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_entry_evidence_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "verify_v7_interval_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "install_identity_tables", lambda _admin: None)
     admin = Admin(present="1")
     producer = Producer((f"GRANT INSERT ON arte.bars_v1 TO {subject.PRINCIPAL}",))
