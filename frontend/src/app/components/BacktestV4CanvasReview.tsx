@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Clock3, Globe2, MapPin, PanelRightOpen, Maximize2, Minimize2 } from "lucide-react";
 import { api } from "../../api/client";
 import { TradingWorkspace } from "./TradingWorkspace";
-import { BacktestV4SavedChart } from "./BacktestV4SavedChart";
+import { BacktestV4SavedChart, SAVED_CHART_FRAMES } from "./BacktestV4SavedChart";
 import { ChartsQuotesMarketLayout, type SavedChartsQuote, type ChartsQuotesLayoutSettings } from "./MarketMicrostructureContainers";
 import { MarketStatusBadge, historicalMarketStatus } from "./MarketStatusBadge";
 import { StrategyActivityContainer } from "./MarketScreenerContainers";
@@ -343,7 +343,11 @@ export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
   runId: string; ticker: string; initialPage: V4Page; onClose: () => void;
 }) {
   const [maximized, setMaximized] = useState(true);
-  const [layout, setLayout] = useState<ChartsQuotesLayoutSettings>({ lowerRowPercent: 33, monthColumnPercent: 40, reservedColumnPercent: 20, tapeColumnPercent: 20 });
+  // Saved review keeps the certified Charts & Quotes geometry. Only its
+  // market-data adapter differs; it must never invoke a legacy chart builder.
+  const [settings] = useState(() => instanceSettings(readCanvasRegistry(), "charts_quotes").charts_quotes);
+  const [layout, setLayout] = useState<ChartsQuotesLayoutSettings>(settings.layout);
+  const mainFrame = SAVED_CHART_FRAMES.find(frame => frame === settings.main.timeframe) ?? "10s";
   const [quote, setQuote] = useState<SavedChartsQuote | null>(null);
   const sessionDate = initialPage.market_cursor?.session_date || initialPage.run.session_date;
   const savedAsOf = sessionDate && /^\d{4}-\d\d-\d\d$/.test(sessionDate)
@@ -359,8 +363,9 @@ export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
       runLabel={`${ticker} · Charts & Quotes`} runStatus="completed" sourceLabel="ARTE saved market"
       showHealth={false} metaForContainer={() => ({ sourceLabel: "ARTE verified V4", status: "ready", freshness: "Saved run" })}
       renderContainer={() => <ChartsQuotesMarketLayout symbol={ticker} end={savedAsOf} savedQuote={quote} layout={layout} onLayoutChange={setLayout}
+        contextLabels={{ left: "5s intraday context", right: "30s intraday context" }}
         mainChartMaximized={maximized}
-        mainChart={<BacktestV4SavedChart embedded runId={runId} ticker={ticker} onQuoteChange={value => setQuote(value ?? null)}
+        mainChart={<BacktestV4SavedChart embedded initialFrame={mainFrame} runId={runId} ticker={ticker} onQuoteChange={value => setQuote(value ?? null)}
           toolbarAction={<button aria-label={maximized ? "Restore chart panels" : "Maximize main chart"} className="toolbar-button" onClick={() => setMaximized(value => !value)} title={maximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} />}
         monthChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="5s" panelLabel="5s context · certified ARTE" runId={runId} ticker={ticker} />}
         dailyChart={<BacktestV4SavedChart embedded enabled={!maximized} initialFrame="30s" panelLabel="30s context · certified ARTE" runId={runId} ticker={ticker} />}

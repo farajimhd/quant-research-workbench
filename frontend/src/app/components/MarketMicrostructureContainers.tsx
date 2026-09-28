@@ -209,6 +209,7 @@ export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: Mark
 }
 
 export function ChartsQuotesMarketLayout({
+  contextLabels = { left: "monthly chart", right: "daily chart" },
   dailyChart,
   end,
   layout,
@@ -222,6 +223,7 @@ export function ChartsQuotesMarketLayout({
   start,
   symbol,
 }: {
+  contextLabels?: { left: string; right: string };
   dailyChart: ReactNode;
   end?: string;
   layout: ChartsQuotesLayoutSettings;
@@ -365,12 +367,12 @@ export function ChartsQuotesMarketLayout({
           {reservedPanel ?? <><span>Order entry</span><small>No strategy assignment is available.</small></>}
         </aside>
         <div className="charts-quotes-daily-chart">{dailyChart}</div>
-        <ChartsQuotesResizeHandle ariaLabel="Resize monthly chart and reserved workspace" className="charts-quotes-context-left-resizer" kind="context-left" maximum={workingLayout.monthColumnPercent + workingLayout.reservedColumnPercent - 12} minimum={20} onDoubleClick={() => {
+        <ChartsQuotesResizeHandle ariaLabel={`Resize ${contextLabels.left} and reserved workspace`} className="charts-quotes-context-left-resizer" kind="context-left" maximum={workingLayout.monthColumnPercent + workingLayout.reservedColumnPercent - 12} minimum={20} onDoubleClick={() => {
           const next = { ...workingLayout, monthColumnPercent: 40, reservedColumnPercent: 20 };
           setWorkingLayout(next);
           onLayoutChange(next);
         }} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.monthColumnPercent} />
-        <ChartsQuotesResizeHandle ariaLabel="Resize reserved workspace and daily chart" className="charts-quotes-context-right-resizer" kind="context-right" maximum={80} minimum={workingLayout.monthColumnPercent + 12} onDoubleClick={() => {
+        <ChartsQuotesResizeHandle ariaLabel={`Resize reserved workspace and ${contextLabels.right}`} className="charts-quotes-context-right-resizer" kind="context-right" maximum={80} minimum={workingLayout.monthColumnPercent + 12} onDoubleClick={() => {
           const next = { ...workingLayout, monthColumnPercent: 40, reservedColumnPercent: 20 };
           setWorkingLayout(next);
           onLayoutChange(next);

@@ -138,7 +138,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     {!embedded ? <header><h4>Persisted market chart</h4>{onClose ? <button className="button secondary compact" type="button" onClick={onClose}>Close chart</button> : null}</header> : null}
     {(!embedded || toolbarAction) ? <div className="backtest-v4-chart-controls">
       {!embedded ? <form onSubmit={submitTicker}><label>Ticker <input aria-label="Chart ticker" value={draftSymbol} onChange={event => setDraftSymbol(event.target.value.toUpperCase())} maxLength={24} /></label><button className="button secondary compact" type="submit">Show</button></form> : null}
-      <label>Resolution <select aria-label="Chart resolution" value={frame} onChange={event => changeScope({ frame: event.target.value as (typeof FRAMES)[number] })}>{FRAMES.map(value => <option key={value}>{value}</option>)}</select></label>
+      {!embedded ? <label>Resolution <select aria-label="Chart resolution" value={frame} onChange={event => changeScope({ frame: event.target.value as (typeof FRAMES)[number] })}>{FRAMES.map(value => <option key={value}>{value}</option>)}</select></label> : null}
       <label><input type="checkbox" checked={showMacd} onChange={event => changeScope({ macd: event.target.checked })} /> Closed MACD</label>
     </div> : null}
     {!embedded ? <p className="backtest-v4-chart-source">ARTE closed bars and indicators · {page ? `verified through ${page.verified_boundary_ms.toLocaleString()} ms from 04:00 ET` : "verifying saved run…"}</p> : null}
