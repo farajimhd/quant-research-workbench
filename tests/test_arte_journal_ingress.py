@@ -405,6 +405,63 @@ def test_live_v5_broker_reply_rejects_generic_ingress():
     ingress.close()
 
 
+def test_live_v5_reply_ingress_reaches_verified_keeper_commit(monkeypatch):
+    from src.backend import live_strategy_one_v4_principal as live_principal
+    from src.trading_runtime import arte_journal_writer as writer_module
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_writer import ArteJournalWriter
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+
+    keeper_client = FakeKazoo()
+    keeper_client.add_listener = lambda listener: None
+    keeper_client.remove_listener = lambda listener: None
+    keeper_client.stop = lambda: None
+    keeper_client.close = lambda: None
+    session = ManagedKeeperSession(keeper_client)
+    session._on_state("CONNECTED")
+    lease = live_principal.LiveV4KeeperLease.acquire(
+        session, run_id="run-1", owner_id="live-ack-ingress-test")
+    client = attached_v4_client()
+    client.live_v4_lease = lease
+    monkeypatch.setattr(live_principal, "live_v4_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {
+                            "mode": "live", "account_ids": ("DU1",)})
+    writer = ArteJournalWriter(
+        client, run_id="run-1", journal_profile="live_v4",
+        coalesce_batches=False)
+    ingress = TypedJournalIngress(
+        writer, run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live"})
+    response = {"order_id": "1001", "order_status": "PreSubmitted",
+                "encrypt_message": "1"}
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, AT, AT,
+        "broker", "order_acknowledgement", "1001", "DU1",
+        {**response, "order_group_id": "group-1",
+         "decision_to_submit_ms": 1.25})
+    try:
+        receipt = ingress.submit_broker_acknowledgement_v5(
+            source, source_cursor="broker:1001", provider="ibkr_cpapi",
+            client_order_id="client-1", order_group_id="group-1",
+            intent_id="intent-1", response=response,
+            decision_to_submit_ms=1.25,
+            correlation_id="corr-1", causation_id="cause-1")
+        ingress.close()
+        assert receipt.result(timeout=5)
+        assert load_verified_v4_prefix(client, "run-1").last_sequence == 1
+        assert [row["provider"] for row in client.tables[
+            "trading_broker_acknowledgement_v5"]] == ["ibkr_cpapi"]
+    finally:
+        ingress.close()
+        writer.close()
+        lease.release()
+        session.close()
+
+
 def test_live_v4_entry_ingress_rejects_changed_proposal_without_publication():
     class LiveWriter(Writer):
         journal_profile = "live_v4"
