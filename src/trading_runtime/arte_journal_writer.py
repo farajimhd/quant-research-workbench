@@ -1412,10 +1412,17 @@ def _insert(
         return None
     columns = tuple(column for column, _ in _CONTRACTS[contract_name].columns)
     body = "\n".join(canonical_json(_wire_row(contract_name, row)) for row in rows)
+    # ClickHouse's default fast JSON float parser can select an adjacent
+    # Float64 value (e.g. 2.7495 -> 2.7495000000000003). Broker checkpoint
+    # hashes and cold recovery require the exact source binary float.
+    float_setting = (",precise_float_parsing=1"
+                     if contract_name in {table.name for table in
+                                          BROKER_MATCH_SNAPSHOT_TABLES} else "")
     sql = (
         f"INSERT INTO arte.{_profile_table(name, journal_profile)} ({','.join(columns)}) "
         f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
-        f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}"
+        f"insert_deduplication_token={_literal(token)}{float_setting} "
+        f"FORMAT JSONEachRow\n{body}"
     )
     dispatch = getattr(client, "typed_insert_dispatch", None)
     sync_dispatch = getattr(client, "typed_sync_insert_dispatch", None)
