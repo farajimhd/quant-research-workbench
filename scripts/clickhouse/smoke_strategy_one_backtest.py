@@ -76,6 +76,10 @@ def _print_completed_profile(controller) -> None:
         print("  Compound commit: "
               f"prepare_s={metrics['compound_prepare_ns_total'] / 1e9:.3f} "
               f"publish_s={metrics['compound_publish_ns_total'] / 1e9:.3f}", flush=True)
+        for stage, duration_ns in sorted(
+                metrics.get("compound_publish_stages_ns", {}).items(),
+                key=lambda item: item[1], reverse=True):
+            print(f"    {stage}: {duration_ns / 1e9:.3f}s", flush=True)
     by_unit = metrics.get("publish_by_unit")
     if (not isinstance(by_unit, dict)
             or sum(row["units"] for row in by_unit.values())
