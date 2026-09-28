@@ -460,6 +460,49 @@ def test_best_policy_migration_verifies_lineage_and_resets_account(tmp_path):
         train._best_initialization(root,current,run_root=tmp_path/'bad',device='cpu')
 
 
+def test_policy_only_best_initialization_verifies_contract_and_resets_optimizer(tmp_path):
+    controller = str(train.Path('research/rl_trading/v2/train.py'))
+    current = dict(version='rl-trading-v2-ppo-single-account-sessions-4',job='train',
+        config=dict(version='rl-trading-v2-ppo-single-account-sessions-4',liquidation_buffer_seconds=900),
+        arguments=dict(liquidation_buffer_seconds=900,min_completed_episodes=3,
+                       learning_rate=3e-5,clip=.1,entropy_weight=.0001,target_kl=.01),
+        model=dict(features=3,width=16,heads=2),feature_names=['a','b','c'],
+        train=[dict(date='2026-08-19')],validation=[dict(date='2026-08-24')],
+        teacher_supervision=False,torch_version=torch.__version__,numpy_version=np.__version__,
+        wandb=dict(mode='disabled'),code=dict(files={controller:'new-controller','other.py':'same'}))
+    parent = json.loads(json.dumps(current))
+    parent['arguments'].update(min_completed_episodes=15,learning_rate=3e-4,
+                               clip=.2,entropy_weight=.001,target_kl=.03)
+    parent['code']['files'][controller] = train.EARLY_EXIT_TRAIN_HASH
+    parent['contract_hash'] = digest(parent)
+    root = tmp_path/'parent'
+    (root/'metrics').mkdir(parents=True)
+    write(root/'run_manifest.json',parent)
+    write(root/'metrics/000452.json',dict(validation_all_flat=True,validation_mean_return=.001))
+    torch.save(dict(contract_hash=parent['contract_hash'],best=.001,iteration=452,
+                    completed_episodes=4,policy=dict(weight=torch.ones(1)),
+                    optimizer=dict(stale='must-not-transfer')),root/'checkpoint_best.pt')
+    lineage,best = train._policy_only_initialization(root,current,
+        run_root=tmp_path/'child',device='cpu')
+    assert lineage['parent_best_iteration'] == 452
+    assert lineage['parent_best_checkpoint_hash'] == file_hash(root/'checkpoint_best.pt')
+    assert lineage['transferred'] == ['policy']
+    assert lineage['optimizer_state'] == 'fresh'
+    assert lineage['changed_optimization']['learning_rate'] == dict(parent=3e-4,child=3e-5)
+    assert best['policy']['weight'].item() == 1
+    bad = json.loads(json.dumps(current))
+    bad['config']['liquidation_buffer_seconds'] = 120
+    with pytest.raises(ValueError,match='config'):
+        train._policy_only_initialization(root,bad,run_root=tmp_path/'bad',device='cpu')
+    bad = json.loads(json.dumps(current))
+    bad['code']['files']['other.py'] = 'changed'
+    with pytest.raises(ValueError,match='source'):
+        train._policy_only_initialization(root,bad,run_root=tmp_path/'bad',device='cpu')
+    write(root/'metrics/000452.json',dict(validation_all_flat=False,validation_mean_return=.001))
+    with pytest.raises(ValueError,match='validation'):
+        train._policy_only_initialization(root,current,run_root=tmp_path/'bad',device='cpu')
+
+
 def test_arrival_band_cap_and_fees_are_applied_on_both_sides():
     prices = np.full((1,12),.9)
     prices[:,1:] = 1.1
