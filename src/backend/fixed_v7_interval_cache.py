@@ -51,6 +51,12 @@ class FixedV7IntervalCache:
         self._last_loaded_ms: dict[str, int] = {}
         self._last_observed_ms: dict[str, int] = {}
         self._last_completed_price: dict[str, Mapping[str, Any]] = {}
+        # Geometry changes only on a certified valid completed second. Keep
+        # one immutable-ish projection per ticker/input clock, but hand every
+        # caller fresh dictionaries so strategy code cannot mutate evidence.
+        self._level_projection: dict[
+            str, tuple[int, tuple[dict[str, object], ...]]
+        ] = {}
 
     @property
     def prefetches_seconds(self) -> bool:
@@ -183,4 +189,14 @@ class FixedV7IntervalCache:
         boundary = self._boundary_ms(as_of)
         completed = boundary // 1_000 * 1_000
         self._load_to(ticker, through_ms=completed)
-        return self.interval_plan.levels(ticker, boundary_ms=boundary)
+        clocks = self._clocks[ticker]
+        index = bisect_right(clocks, boundary) - 1
+        input_ms = clocks[index] if index >= 0 else 0
+        if boundary - input_ms > 1_000:
+            return ()
+        cached = self._level_projection.get(ticker)
+        if cached is None or cached[0] != input_ms:
+            rows = self.interval_plan.levels(ticker, boundary_ms=boundary)
+            cached = (input_ms, rows)
+            self._level_projection[ticker] = cached
+        return tuple(dict(row) for row in cached[1])

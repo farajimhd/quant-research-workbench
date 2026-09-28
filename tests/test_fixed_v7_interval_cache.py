@@ -110,3 +110,33 @@ def test_precomputed_entry_facts_load_only_exact_latest_completed_second(monkeyp
     cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, 6100))
     assert calls == [(4000, 5000)]
     assert cache.last_completed_price_second("TEST") is None
+
+
+def test_100ms_level_projection_reuses_completed_clock_without_shared_mutation(monkeypatch):
+    market, product = fixtures()
+    source = {"ticker": "TEST", "resolution_ms": 1000,
+              "bucket_index": 14_400, "price_valid": 1,
+              "extremes_valid": 1, "open_int": 100_000,
+              "close_int": 101_000}
+    monkeypatch.setattr(subject, "iter_persisted_v7_seconds",
+                        lambda *_args, **_kwargs: iter((source,)))
+    calls = []
+    original = CertifiedV7IntervalPlan.levels
+
+    def counted(self, ticker, *, boundary_ms):
+        calls.append(boundary_ms)
+        return original(self, ticker, boundary_ms=boundary_ms)
+
+    monkeypatch.setattr(CertifiedV7IntervalPlan, "levels", counted)
+    cache = subject.FixedV7IntervalCache(
+        market_plan=market, interval_plan=product, session=DAY,
+        client=Reader(), precomputed_entry_facts=True)
+    first = cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, 1100))
+    first[0]["lower"] = -1.0
+    for boundary in (1200, 1900, 2000):
+        rows = cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, boundary))
+        assert rows[0]["lower"] == 10.0
+    assert calls == [1100]
+    assert cache.strategy_one_levels(
+        "TEST", as_of=market_day_boundary(DAY, 2100)) == ()
+    assert calls == [1100]
