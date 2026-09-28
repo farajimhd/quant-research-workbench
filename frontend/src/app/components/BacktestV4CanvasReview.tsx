@@ -328,8 +328,13 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
             : <section className="trading-preview"><p className="trading-disclosure">{loadingTrades ? "Loading complete verified fill history…" : "Complete fill history is not loaded yet."}</p>
               {tradeError ? <p role="alert">Fills unavailable: {tradeError}</p> : null}
               {trade && !trade.complete ? <button className="button secondary compact" disabled={loadingTrades} onClick={() => void loadMoreTrades()} type="button">Load more fills</button> : null}</section>;
-          case "chart": return chartTicker ? <BacktestV4SavedChart embedded runId={runId} ticker={chartTicker} />
-            : <div className="trading-disclosure">Chart ticker will be selected from the first verified fill or journal signal.</div>;
+          // The journal's Chart affordance must open the certified multi-panel
+          // Charts & Quotes focus canvas, not introduce a second single-chart UI.
+          case "chart": return chartTicker ? <div className="trading-preview">
+            <button className="button secondary" onClick={() => openV4Ticker(chartTicker)} type="button">
+              Open {chartTicker} Charts &amp; Quotes focus canvas
+            </button>
+          </div> : <div className="trading-disclosure">Chart ticker will be selected from the first verified fill or journal signal.</div>;
           case "portfolio": return <section className="trading-preview"><p className="trading-disclosure">Verified terminal account snapshots. Intraday account marks are not inferred.</p>
             <EvidenceTable rows={financialAccounts} columns={[["account_id", "Account"], ["net_liquidation", "Net liquidation"], ["total_cash_value", "Cash"], ["gross_position_value", "Gross positions"], ["buying_power", "Buying power"], ["expected_position_count", "Open positions"]]} empty="No verified terminal account snapshot." />
           </section>;

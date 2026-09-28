@@ -333,6 +333,7 @@ class ReplayRunDefinitionTests(unittest.TestCase):
             snapshot = ReplayRunController(definition, runtime_root=Path(directory)).snapshot()
 
         self.assertEqual(snapshot["mode"], "backtest")
+        self.assertEqual(snapshot["journal_backend"], "arte_typed_journal_v4")
         self.assertEqual(snapshot["canvas_revision"], "canvas-test")
         self.assertEqual(snapshot["canvas_profile"]["defaultState"]["openIds"], ["chart"])
         self.assertEqual(snapshot["checkpoint"]["status"], "pending")
@@ -356,6 +357,7 @@ class ReplayRunDefinitionTests(unittest.TestCase):
             snapshot = ReplayRunController(definition, runtime_root=Path(directory)).snapshot()
 
         self.assertEqual(snapshot["speed"], 1.0)
+        self.assertEqual(snapshot["journal_backend"], "sqlite_v1")
 
     @patch("src.backend.experimental_structure_book.resolve", return_value={
         "version": "causal-level-book-v7-mle-1", "ticker": "*",

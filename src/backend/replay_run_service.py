@@ -1848,6 +1848,12 @@ class ReplayRunController:
             "schema_version": 1,
             "mode": self.definition.mode.value,
             "run_id": self.run_id,
+            # The running UI must select the typed V4 progress/review path
+            # before it can poll any legacy Canvas or SQLite projection.
+            "journal_backend": (
+                "arte_typed_journal_v4" if self.definition.mode == RunMode.BACKTEST
+                else "sqlite_v1"
+            ),
             "status": self.status,
             "runtime_ready": self._runtime_inputs_ready,
             "work_progress": self._work_progress_payload(),
