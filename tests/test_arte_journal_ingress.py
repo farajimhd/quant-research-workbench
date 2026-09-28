@@ -343,6 +343,68 @@ def test_live_v4_entry_ingress_seals_proposal_off_actor_before_receipt():
     assert writer.batches[0].entry_evidence[0]["boundary_ms"] == 31_000
 
 
+def test_live_v5_broker_reply_ingress_uses_worker_and_snapshots_response():
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "live"
+
+        def submit_base_v4(self, unit):
+            raise AssertionError("Broker reply must not use the base family")
+
+        def submit_broker_acknowledgement_v5(self, unit):
+            receipt = Writer.submit(self, unit)
+            receipt.set_result(unit.base.batch_id)
+            return receipt
+
+    response = {"order_id": "1001", "order_status": "PreSubmitted",
+                "encrypt_message": "1"}
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, AT, AT,
+        "broker", "order_acknowledgement", "1001", "DU1",
+        {**response, "order_group_id": "group-1",
+         "decision_to_submit_ms": 1.25})
+    writer = LiveWriter()
+    ingress = TypedJournalIngress(
+        writer, run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live"})
+    receipt = ingress.submit_broker_acknowledgement_v5(
+        source, source_cursor="broker:1001", provider="ibkr_cpapi",
+        client_order_id="client-1", order_group_id="group-1",
+        intent_id="intent-1", response=response, decision_to_submit_ms=1.25,
+        correlation_id="corr-1", causation_id="cause-1")
+    response["order_status"] = "Changed"
+    source.payload["order_status"] = "Changed"
+    ingress.close()
+    assert receipt.result() == writer.batches[0].base.batch_id
+    assert writer.batches[0].acknowledgement["order_status"] == "PreSubmitted"
+    assert writer.batches[0].base.events[0]["correlation_id"] == "corr-1"
+
+
+def test_live_v5_broker_reply_rejects_generic_ingress():
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "live"
+
+        def submit_base_v4(self, unit):
+            raise AssertionError("Broker reply must use its typed source")
+
+        def submit_broker_acknowledgement_v5(self, unit):
+            raise AssertionError("Invalid source must not publish")
+
+    ingress = TypedJournalIngress(
+        LiveWriter(), run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live"})
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, AT, AT,
+        "broker", "order_acknowledgement", "1001", "DU1",
+        {"order_id": "1001"})
+    with pytest.raises(ValueError, match="specialized typed source"):
+        ingress.submit(source, source_cursor="broker:1001")
+    ingress.close()
+
+
 def test_live_v4_entry_ingress_rejects_changed_proposal_without_publication():
     class LiveWriter(Writer):
         journal_profile = "live_v4"

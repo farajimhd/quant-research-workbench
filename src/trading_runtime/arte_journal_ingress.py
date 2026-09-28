@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import deque
 from concurrent.futures import Future, InvalidStateError
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, timezone
 from queue import Empty, Full, Queue
 from threading import Lock, Thread
@@ -33,6 +34,18 @@ _LIVE_V4_BASE_KINDS = frozenset({
     ("risk", "risk_snapshot"),
     ("risk", "continuous_risk_state"),
 })
+
+
+@dataclass(frozen=True, slots=True)
+class _BrokerReplyV5Source:
+    provider: str
+    client_order_id: str
+    order_group_id: str
+    intent_id: str
+    response: Mapping[str, Any]
+    decision_to_submit_ms: float | None
+    correlation_id: str
+    causation_id: str
 
 
 def _settle(receipt: Future[str], *, result: str | None = None,
@@ -80,7 +93,8 @@ class TypedJournalIngress:
         self._projection_context = context
         self._projector = projector
         self._queue: Queue[tuple[JournalRecord, str, Future[str],
-                                 tuple[Any, date] | None, bool] | None] = Queue(capacity)
+                                 tuple[Any, date] | None, bool,
+                                 _BrokerReplyV5Source | None] | None] = Queue(capacity)
         self._lock = Lock()
         self._error: BaseException | None = None
         self._closed = False
@@ -109,7 +123,7 @@ class TypedJournalIngress:
             record.entity_type, record.entity_id, record.account_id,
             deepcopy(record.payload),
         )
-        return self._enqueue(frozen, source_cursor, None, False)
+        return self._enqueue(frozen, source_cursor, None, False, None)
 
     def submit_strategy_one_entry(
         self, record: JournalRecord, *, proposal: Any,
@@ -138,7 +152,7 @@ class TypedJournalIngress:
             deepcopy(record.payload),
         )
         return self._enqueue(frozen, source_cursor,
-                             (deepcopy(proposal), session_date), False)
+                             (deepcopy(proposal), session_date), False, None)
 
     def submit_protection_change(
         self, record: JournalRecord, *, source_cursor: str,
@@ -161,11 +175,44 @@ class TypedJournalIngress:
             record.entity_type, record.entity_id, record.account_id,
             deepcopy(record.payload),
         )
-        return self._enqueue(frozen, source_cursor, None, True)
+        return self._enqueue(frozen, source_cursor, None, True, None)
+
+    def submit_broker_acknowledgement_v5(
+        self, record: JournalRecord, *, source_cursor: str,
+        provider: str, client_order_id: str, order_group_id: str,
+        intent_id: str, response: Mapping[str, Any],
+        decision_to_submit_ms: float | None,
+        correlation_id: str, causation_id: str,
+    ) -> Future[str]:
+        """Enqueue one exact live reply; projection and durability stay off-actor."""
+        if (not self._live_v4 or not isinstance(record, JournalRecord)
+                or (record.category, record.entity_type) !=
+                   ("broker", "order_acknowledgement")
+                or not callable(getattr(self._writer,
+                                        "submit_broker_acknowledgement_v5", None))
+                or not isinstance(response, Mapping)
+                or not isinstance(source_cursor, str) or not source_cursor
+                or source_cursor.lstrip().startswith(("{", "["))
+                or record.event_time.tzinfo is None
+                or record.recorded_at.tzinfo is None):
+            raise ValueError("Live broker reply requires its typed source")
+        UUID(record.record_id)
+        frozen = JournalRecord(
+            record.record_id, record.run_id, record.sequence,
+            record.event_time, record.recorded_at, record.category,
+            record.entity_type, record.entity_id, record.account_id,
+            deepcopy(record.payload),
+        )
+        source = _BrokerReplyV5Source(
+            provider, client_order_id, order_group_id, intent_id,
+            deepcopy(dict(response)), decision_to_submit_ms,
+            correlation_id, causation_id)
+        return self._enqueue(frozen, source_cursor, None, False, source)
 
     def _enqueue(self, frozen: JournalRecord, source_cursor: str,
                  entry_source: tuple[Any, date] | None,
-                 protection_change: bool) -> Future[str]:
+                 protection_change: bool,
+                 broker_reply: _BrokerReplyV5Source | None) -> Future[str]:
         with self._lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("Typed journal ingress is unavailable") from self._error
@@ -174,7 +221,8 @@ class TypedJournalIngress:
             receipt: Future[str] = Future()
             try:
                 self._queue.put_nowait((frozen, source_cursor, receipt,
-                                       entry_source, protection_change))
+                                       entry_source, protection_change,
+                                       broker_reply))
             except Full as exc:
                 raise JournalIngressFull("Typed ingress is full; stop new admission") from exc
             self._next_sequence += 1
@@ -192,14 +240,32 @@ class TypedJournalIngress:
                 if item is None:
                     self._queue.task_done()
                     break
-                record, cursor, receipt, entry_source, protection_change = item
+                record, cursor, receipt, entry_source, protection_change, broker_reply = item
                 try:
                     batch_id = str(uuid5(
                         NAMESPACE_URL,
                         f"{self._run_id}:{self._attempt_id}:{record.sequence}:"
                         f"{record.record_id}:typed-journal",
                     ))
-                    if protection_change:
+                    if broker_reply is not None:
+                        from src.trading_runtime.arte_broker_acknowledgement_v5 import (
+                            broker_acknowledgement_batch_v5,
+                        )
+                        unit = broker_acknowledgement_batch_v5(
+                            record, provider=broker_reply.provider,
+                            client_order_id=broker_reply.client_order_id,
+                            order_group_id=broker_reply.order_group_id,
+                            intent_id=broker_reply.intent_id,
+                            response=broker_reply.response,
+                            decision_to_submit_ms=broker_reply.decision_to_submit_ms,
+                            run_month=record.event_time.astimezone(timezone.utc).date().replace(day=1),
+                            attempt_id=self._attempt_id, batch_id=batch_id,
+                            prior_batch_id=self._prior_batch_id,
+                            source_cursor=cursor,
+                            correlation_id=broker_reply.correlation_id,
+                            causation_id=broker_reply.causation_id)
+                        batch = unit.base
+                    elif protection_change:
                         from src.trading_runtime.arte_protection_change_v4 import (
                             protection_change_batch_v4,
                         )
@@ -262,13 +328,15 @@ class TypedJournalIngress:
                             run_id=batch.run_id, batch_id=batch.batch_id,
                             parent_record_id=record.record_id)
                         unit = V4StrategyOneEntryBatch(batch, (evidence,))
-                    elif not protection_change:
+                    elif not protection_change and broker_reply is None:
                         unit = batch
                     while True:
                         try:
                             writer_receipt = (
                                 self._writer.submit_strategy_one_entry_v4(unit)
                                 if entry_source is not None else
+                                self._writer.submit_broker_acknowledgement_v5(unit)
+                                if broker_reply is not None else
                                 self._writer.submit_protection_change_v4(unit)
                                 if protection_change else
                                 self._writer.submit_base_v4(unit)
