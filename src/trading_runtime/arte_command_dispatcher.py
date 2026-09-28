@@ -23,6 +23,7 @@ class _JournalWriter(Protocol):
     def coalesce_batches(self) -> bool: ...
 
     def submit(self, batch: TypedJournalBatch) -> ThreadFuture[str]: ...
+    def submit_base_v4(self, batch: TypedJournalBatch) -> ThreadFuture[str]: ...
 
 
 class _OrderBroker(Protocol):
@@ -95,6 +96,12 @@ class ArteCommandDispatcher:
             raise ValueError("Command queue capacity must be positive")
         if getattr(writer, "coalesce_batches", None) is not False:
             raise ValueError("Command lane requires exact, non-coalesced journal receipts")
+        profile = getattr(writer, "journal_profile", None)
+        if profile == "backtest_v4":
+            raise ValueError("Live command lane cannot use a Backtest V4 writer")
+        self._live_v4 = profile == "live_v4"
+        if self._live_v4 and not callable(getattr(writer, "submit_base_v4", None)):
+            raise ValueError("Live V4 command lane requires its explicit family writer")
         self._writer = writer
         self._broker = broker
         self._queue: asyncio.Queue[_PendingCommand | None] = asyncio.Queue(maxsize=capacity)
@@ -162,7 +169,8 @@ class ArteCommandDispatcher:
                     return
                 if self._error is not None:
                     raise RuntimeError("An earlier command requires broker reconciliation") from self._error
-                receipt = self._writer.submit(pending.batch)
+                receipt = (self._writer.submit_base_v4(pending.batch)
+                           if self._live_v4 else self._writer.submit(pending.batch))
                 committed_id = await asyncio.wrap_future(receipt)
                 if UUID(str(committed_id)) != UUID(pending.batch.batch_id):
                     raise RuntimeError("Committed command receipt differs from submitted batch")

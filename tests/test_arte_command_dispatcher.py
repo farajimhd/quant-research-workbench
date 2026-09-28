@@ -49,6 +49,16 @@ class _Writer:
         return receipt
 
 
+class _LiveV4Writer(_Writer):
+    journal_profile = "live_v4"
+
+    def submit(self, batch):
+        raise AssertionError("Live V4 must not use legacy journal publication")
+
+    def submit_base_v4(self, batch):
+        return super().submit(batch)
+
+
 class _Broker:
     def __init__(self) -> None:
         self.calls = []
@@ -99,6 +109,30 @@ def test_broker_send_waits_for_durable_receipt_without_blocking_submit(monkeypat
             await dispatcher.close()
 
     asyncio.run(scenario())
+
+
+def test_live_v4_command_uses_explicit_family_receipt(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer, broker = _LiveV4Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        batch, request = _command()
+        ticket = dispatcher.submit(batch, "DU1", (request,))
+        await asyncio.wait_for(writer.submitted.wait(), 1)
+        assert broker.calls == []
+        writer.receipts[0].set_result(batch.batch_id)
+        await ticket
+        assert len(broker.calls) == 1
+        await dispatcher.close()
+    asyncio.run(scenario())
+
+
+def test_live_command_rejects_backtest_v4_writer() -> None:
+    class BacktestWriter(_Writer):
+        journal_profile = "backtest_v4"
+    with pytest.raises(ValueError, match="Backtest V4"):
+        ArteCommandDispatcher(BacktestWriter(), _Broker())
 
 
 def test_wrong_valid_receipt_never_sends_order(monkeypatch) -> None:
