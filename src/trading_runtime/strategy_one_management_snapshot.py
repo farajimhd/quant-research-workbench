@@ -24,7 +24,9 @@ from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.strategy_one_position import ResistanceBreak
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES as PROTECTION_TABLES,
-    ProtectionSnapshotRows, _digest, _price, project_protection_snapshot,
+    ProtectionSnapshotRows, _canonical_snapshot_row,
+    canonical_protection_snapshot_rows,
+    _digest, _price, project_protection_snapshot,
     restore_protection_snapshot, load_protection_snapshot_rows,
 )
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
@@ -210,6 +212,18 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
     """Reject partial/foreign children before constructing executable state."""
     if not isinstance(rows, ManagerSnapshotRows):
         raise ValueError("Strategy 1 manager recovery needs typed rows")
+    rows = ManagerSnapshotRows(
+        _canonical_snapshot_row(PARENT, rows.snapshot),
+        tuple(sorted((_canonical_snapshot_row(SOURCE, row)
+                      for row in rows.sources), key=lambda row: (
+                          row["account_id"], row["assignment_id"],
+                          row["ticker"]))),
+        tuple(sorted((_canonical_snapshot_row(BREAK, row)
+                      for row in rows.pending_breaks), key=lambda row: (
+                          row["account_id"], row["assignment_id"],
+                          row["ticker"], row["ordinal"]))),
+        canonical_protection_snapshot_rows(rows.protection),
+    )
     seal = rows.snapshot
     if (seal.get("content_hash") != _digest({
             key: value for key, value in seal.items() if key != "content_hash"})

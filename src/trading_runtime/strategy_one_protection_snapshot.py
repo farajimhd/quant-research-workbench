@@ -86,6 +86,37 @@ def _price(value: object) -> str:
     return format(exact, "f")
 
 
+def _canonical_snapshot_row(contract, row: Mapping) -> dict:
+    """Recover fixed-scale decimal text after ClickHouse JSON rendering."""
+    kinds = dict(contract.columns)
+    if not isinstance(row, Mapping) or set(row) != set(kinds):
+        raise ValueError("Strategy 1 checkpoint row has missing or extra columns")
+    canonical = dict(row)
+    for name, kind in contract.columns:
+        if "Decimal(" not in kind:
+            continue
+        value = row[name]
+        if value is None:
+            if not kind.startswith("Nullable("):
+                raise ValueError("Strategy 1 checkpoint decimal is unexpectedly null")
+            continue
+        canonical[name] = _price(value)
+    return canonical
+
+
+def canonical_protection_snapshot_rows(
+    rows: ProtectionSnapshotRows,
+) -> ProtectionSnapshotRows:
+    if not isinstance(rows, ProtectionSnapshotRows):
+        raise ValueError("Strategy 1 recovery needs typed snapshot rows")
+    return ProtectionSnapshotRows(
+        _canonical_snapshot_row(TABLES[0], rows.snapshot),
+        tuple(_canonical_snapshot_row(TABLES[1], row) for row in rows.states),
+        tuple(_canonical_snapshot_row(TABLES[2], row)
+              for row in rows.resistances),
+    )
+
+
 def _validate_state(state: ProtectionState, *, boundary_ms: int) -> None:
     if (not isinstance(state, ProtectionState)
             or type(state.boundary_ms) is not int
@@ -190,8 +221,7 @@ def project_protection_snapshot(*, run_id: str, session_date: date,
 def restore_protection_snapshot(rows: ProtectionSnapshotRows,
                                 ) -> dict[tuple[str, str, str], ProtectionState]:
     """Cold-verify the seal and every typed child before reconstructing state."""
-    if not isinstance(rows, ProtectionSnapshotRows):
-        raise ValueError("Strategy 1 recovery needs typed snapshot rows")
+    rows = canonical_protection_snapshot_rows(rows)
     seal = rows.snapshot
     if (seal.get("content_hash") != _digest({key: value for key, value in
                                             seal.items() if key != "content_hash"})
@@ -311,7 +341,8 @@ def load_protection_snapshot_rows(client: object, *, run_id: str,
         raise RuntimeError("Strategy 1 recovery child bound is invalid")
     states = read(TABLES[1].name, predicate, position_count + 1)
     resistances = read(TABLES[2].name, predicate, resistance_count + 1)
-    rows = ProtectionSnapshotRows(seal, states, resistances)
+    rows = canonical_protection_snapshot_rows(
+        ProtectionSnapshotRows(seal, states, resistances))
     restore_protection_snapshot(rows)
     return rows
 

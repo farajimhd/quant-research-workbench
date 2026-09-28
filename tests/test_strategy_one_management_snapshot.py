@@ -64,6 +64,22 @@ def test_manager_snapshot_rejects_missing_or_modified_children():
                 **rows.protection.snapshot, "content_hash": "0" * 64})))
 
 
+def test_manager_recovery_canonicalizes_clickhouse_decimal_text():
+    rows = _rows()
+    source = {**rows.sources[0],
+              "reference_ask": "10.01", "initial_stop": "9.69",
+              "initial_target": "10.3", "frozen_gap": "0.5"}
+    position = {**rows.protection.states[0],
+                "stop": "9.69", "target": "10.3"}
+    stored = replace(
+        rows, sources=(source,),
+        protection=replace(rows.protection, states=(position,)))
+    assert restore_manager_snapshot(stored) == restore_manager_snapshot(rows)
+    with pytest.raises(ValueError, match="source children differ"):
+        restore_manager_snapshot(replace(stored, sources=(
+            {**source, "reference_ask": "10.02"},)))
+
+
 def test_empty_manager_snapshot_seals_no_source_or_position():
     rows = project_manager_snapshot(
         run_id="backtest:one", session_date=date(2026, 8, 18),
