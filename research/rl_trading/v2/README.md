@@ -31,6 +31,18 @@ rollout; such a checkpoint cannot be selected, even if its marked equity is high
 Training still stops if its own account cannot finish flat, since resetting that
 account would falsely assume an executable liquidation.
 
+To extend a completed one-account campaign to more full passes, start a new
+versioned run with a larger `--min-completed-episodes`, a sufficient
+`--iterations` budget, and `--continue-from-run <completed-run-root>`. This
+verifies the parent data, model, execution code, configuration, and checkpoint
+before carrying forward policy, optimizer, RNG, account, session cursor, and
+the validation-best checkpoint. The new run records its parent checkpoint hash
+and gets its own W&B history. Ordinary `--resume` continues an interrupted
+run under its unchanged contract and W&B ID; it does not change the required
+number of sessions. Repeated passes use `--session-order cycle` and remain
+subject to later-date validation, since training return alone cannot establish
+convergence or generalization.
+
 ## Market and observation contract
 
 `build_data.py` reads the full population of a certified ARTE market-day build,
