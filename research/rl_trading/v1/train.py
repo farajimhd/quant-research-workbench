@@ -11,7 +11,6 @@ sys.path.insert(0,str(REPO))
 
 import argparse
 from contextlib import nullcontext
-import gc
 import math
 import signal
 from time import perf_counter
@@ -92,8 +91,6 @@ def _run_validation(model, shards, resident, device, vocab, batch_size,
             finally:
                 if resident is None:
                     del data
-                    gc.collect()
-                    torch.cuda.empty_cache()
                     shard.release_mapped_pages()
     model.train()
     return dict(loss=totals['loss']/max(1,totals['samples']),
@@ -111,8 +108,6 @@ def _run_closed_loop(model, shards, resident, device, vocab):
             finally:
                 if resident is None:
                     del data
-                    gc.collect()
-                    torch.cuda.empty_cache()
                     shard.release_mapped_pages()
             if not result['complete']:
                 raise ValueError('Training replay did not reach liquidation')
@@ -384,8 +379,6 @@ def run(args):
                 del batch,logits,value,loss,measure,index,order,generator
                 if resident is None:
                     del data
-                    gc.collect()
-                    torch.cuda.empty_cache()
                     shard.release_mapped_pages()
                 if args.max_steps and global_step >= args.max_steps:
                     break
