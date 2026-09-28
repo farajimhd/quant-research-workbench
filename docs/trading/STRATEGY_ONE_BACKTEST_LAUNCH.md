@@ -23,9 +23,32 @@ block on plaintext 9181, and publishes a Windows forward restricted to laptop
 either address changes, update the managed settings and reissue the certificate
 before restart; never bypass verification or widen the firewall rule.
 
-The listener and end-to-end laptop Keeper session must still be restarted and
-verified before a local Strategy 1 Backtest is launchable. Saved-run evidence
-pages can be read directly from ClickHouse without starting a new Backtest.
+The managed listener is running on the workstation. On 2026-09-28, a laptop
+Kazoo session verified the Keeper peer certificate, opened a writable session,
+and read the root children. The workstation's plaintext LAN Keeper port 9181
+remains blocked. The laptop backend restores Python's standard SSL context at
+startup if `pip-system-certs` has replaced it: the injected wrapper broke
+Kazoo's TLS socket, while the standard context still verifies the pinned CA
+and server hostname.
+
+The laptop-hosted backend and frontend were restarted with the secured Keeper
+settings. A local app-route preflight passed for all 6,100 Aug 18 tickers and
+100 ms evaluation in 24.985s, with no blocked checks. A subsequent local
+`POST /api/trading/backtest/runs` completed run
+`cccd2d2b-1211-415b-9477-d0fb73eff35a` in 45.800s from creation to the
+terminal update, processing 7,381 persisted liquidity rows. The causal
+session took 19.261s; final journal durability took 15.378s. The bounded
+asynchronous ClickHouse writer committed 2,216 normalized events in seven
+units with zero failed units. A separate saved terminal page returned completed
+status and a verified market cursor. Its WFF saved-chart request returned
+1,000 persisted 1-second bars and 1,000 closed MACD rows in 0.731s with a
+warm certificate cache. These laptop-to-workstation timings are measured
+observations, not a throughput guarantee. A cold saved-chart certificate read
+took about 40s in a standalone check, and one concurrent cold API request hit
+the 60s ClickHouse timeout; cold chart latency still needs optimization.
+
+Saved-run evidence pages can be read directly from ClickHouse without starting
+a new Backtest.
 The workstation-backend and SSH-API procedure used in the historical tests
 below was a validation setup, not the app deployment contract.
 
