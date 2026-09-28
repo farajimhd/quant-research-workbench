@@ -4169,7 +4169,7 @@ class OrderManagementEngine:
             candidate = datetime.now(timezone.utc)
         else:
             market = self.execution_market_data.snapshot(intent.ticker)
-            candidate = market.observed_at if market is not None else intent.event_time
+            candidate = max(market.observed_at, intent.event_time) if market is not None else intent.event_time
         candidate = candidate.astimezone(timezone.utc)
         if previous is not None:
             candidate = max(candidate, previous.astimezone(timezone.utc))

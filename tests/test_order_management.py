@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.trading_runtime.domain import InstrumentContract, TradingMode
@@ -107,6 +108,21 @@ class ProtectionRepairMetadataTests(unittest.TestCase):
 
 
 NOW = datetime.now(timezone.utc)
+
+
+def test_historical_oms_action_clock_never_precedes_its_strategy_decision() -> None:
+    manager = object.__new__(OrderManagementEngine)
+    manager.enforce_wall_clock_quote_freshness = False
+    strategy_intent = replace(intent(), event_time=NOW)
+    manager.execution_market_data = SimpleNamespace(snapshot=lambda _ticker: SimpleNamespace(
+        observed_at=NOW - timedelta(milliseconds=36)))
+    assert manager._causal_group_time(strategy_intent) == NOW
+    manager.execution_market_data = SimpleNamespace(snapshot=lambda _ticker: SimpleNamespace(
+        observed_at=NOW + timedelta(milliseconds=100)))
+    assert manager._causal_group_time(strategy_intent) == NOW + timedelta(milliseconds=100)
+    assert manager._causal_group_time(
+        strategy_intent, previous=NOW + timedelta(milliseconds=200)) == (
+            NOW + timedelta(milliseconds=200))
 
 
 def intent(
