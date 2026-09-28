@@ -13,10 +13,12 @@ from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
 import json
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 from uuid import UUID
 
-from src.backend.live_assignment_activation_join import AttestedPlanMembership
+from src.backend.live_assignment_activation_join import (
+    AttestedPlanMembership, PinnedAssignmentMember,
+)
 from src.trading_runtime.arte_journal_schema import TableContract, storage_preflight
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -99,6 +101,74 @@ class StrategyOneLiveAssignment:
     ticker: str
     conid: int
     content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyOneAssignmentSpec:
+    run_plan_id: str
+    assignment_id: str
+    revision: int
+    account_id: str
+    ticker: str
+    conid: int
+
+
+class StrategyOneAssignmentProducer:
+    """Control-plane writer; never construct this in the live or Backtest runner.
+
+    Membership publication invokes this after acquiring its Keeper claim and
+    before writing membership children/head. A unique publication UUID makes
+    uncertain MergeTree INSERT attempts inert until a human audits them.
+    """
+
+    def __init__(self, client: Any,
+                 specs: Sequence[StrategyOneAssignmentSpec]) -> None:
+        if not specs or len(specs) > 100_000 or any(
+                not isinstance(item, StrategyOneAssignmentSpec)
+                for item in specs):
+            raise ValueError("Strategy 1 assignment producer needs bounded typed facts")
+        self._client = client
+        self._specs = tuple(specs)
+
+    def publish(self, *, configuration_revision_id: str, session_key: str,
+                publication_id: str) -> tuple[PinnedAssignmentMember, ...]:
+        _publication_id(publication_id)
+        rows = [project_strategy_one_assignment(
+            configuration_revision_id=configuration_revision_id,
+            session_date=session_key, publication_id=publication_id,
+            run_plan_id=spec.run_plan_id,
+            assignment_id=spec.assignment_id, revision=spec.revision,
+            account_id=spec.account_id, ticker=spec.ticker, conid=spec.conid)
+            for spec in self._specs]
+        keys = [(row["run_plan_id"], row["assignment_id"]) for row in rows]
+        account_tickers = [(row["account_id"], row["ticker"]) for row in rows]
+        if len(set(keys)) != len(keys) or len(set(account_tickers)) != len(rows):
+            raise ValueError("Strategy 1 assignment producer has duplicate facts")
+        rows.sort(key=lambda row: (row["run_plan_id"], row["assignment_id"]))
+        storage_preflight(self._client, tables=(TABLE,))
+        literal = lambda value: "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        query = (f"SELECT {','.join(_COLUMNS)} FROM arte.{TABLE.name} "
+                 f"WHERE configuration_revision_id={literal(configuration_revision_id)} "
+                 f"AND session_date=toDate({literal(session_key)}) "
+                 f"AND publication_id=toUUID({literal(publication_id)}) "
+                 f"ORDER BY run_plan_id,assignment_id,revision "
+                 f"LIMIT {len(rows) + 1} FORMAT JSONEachRow")
+        def readback() -> list[dict[str, Any]]:
+            return [json.loads(line) for line in self._client.execute(query).splitlines()
+                    if line.strip()]
+        if readback():
+            raise RuntimeError("Strategy 1 assignment publication UUID is already used")
+        wire = "\n".join(canonical_json(row) for row in rows)
+        token = f"strategy-one-assignment:{configuration_revision_id}:{session_key}:{publication_id}"
+        self._client.execute(
+            f"INSERT INTO arte.{TABLE.name} ({','.join(_COLUMNS)}) "
+            "SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+            f"insert_deduplication_token={literal(token)} FORMAT JSONEachRow\n{wire}")
+        if readback() != rows:
+            raise RuntimeError("Strategy 1 assignment exact publication readback differs")
+        return tuple(PinnedAssignmentMember(
+            row["assignment_id"], row["run_plan_id"], row["revision"],
+            row["content_hash"]) for row in rows)
 
 
 def cold_read_strategy_one_assignments(

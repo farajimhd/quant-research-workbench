@@ -64,6 +64,11 @@ class MembershipKeeperPort(Protocol):
                 session_key: str, owner_id: str, epoch: int) -> bool: ...
 
 
+class AssignmentProducerPort(Protocol):
+    def publish(self, *, configuration_revision_id: str, session_key: str,
+                publication_id: str) -> tuple[PinnedAssignmentMember, ...]: ...
+
+
 class KeeperPlanMembershipPublisher:
     """Managed Keeper epoch/holder and persistent head CAS, no CH access."""
 
@@ -161,6 +166,7 @@ def publish_plan_membership(
     configuration_revision_id: str, session_key: str,
     approved_revision: ProofPort, source_cursor: ProofPort,
     owner_id: str,
+    assignment_producer: AssignmentProducerPort | None = None,
 ) -> tuple[int, str, int]:
     """Rows-first/head-last publication; control-plane only, never market path."""
     if (approved_revision is None or source_cursor is None
@@ -232,8 +238,20 @@ def publish_plan_membership(
             uncertain = True
             raise UncertainMembershipPublication(
                 "plan membership has orphan child rows at the next sequence")
+        pinned_members = members
+        if assignment_producer is not None:
+            if members:
+                raise ValueError("producer-owned assignments cannot mix with caller pins")
+            try:
+                pinned_members = assignment_producer.publish(
+                    configuration_revision_id=configuration_revision_id,
+                    session_key=session_key, publication_id=publication_id)
+            except BaseException as exc:
+                uncertain = True
+                raise UncertainMembershipPublication(
+                    "assignment publication outcome is uncertain") from exc
         parent, member_rows, watch_rows = project_plan_membership(
-            members, watches, configuration_revision_id=configuration_revision_id,
+            pinned_members, watches, configuration_revision_id=configuration_revision_id,
             configuration_content_hash=approved_revision.content_hash,
             session_key=session_key,
             source_cursor_commit_hash=source_cursor.content_hash,

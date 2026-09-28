@@ -157,3 +157,28 @@ def test_cold_join_rejects_duplicate_account_ticker():
         subject.cold_read_strategy_one_assignments(
             Client([first, second]), proof, configuration_revision_id=REVISION,
             session_date=SESSION, run_plan_id=PLAN)
+
+
+def test_producer_publishes_exact_scalar_rows_before_membership(monkeypatch):
+    monkeypatch.setattr(subject, "storage_preflight", lambda *_args, **_kwargs: None)
+    class Writer:
+        def __init__(self):
+            self.rows = []
+            self.calls = []
+        def execute(self, sql):
+            self.calls.append(sql)
+            if sql.startswith("SELECT "):
+                return "\n".join(json.dumps(row) for row in self.rows)
+            assert sql.startswith("INSERT INTO arte.strategy_one_live_assignment_v1")
+            self.rows = [json.loads(line) for line in sql.split("FORMAT JSONEachRow\n", 1)[1].splitlines()]
+            return ""
+    writer = Writer()
+    producer = subject.StrategyOneAssignmentProducer(writer, (
+        subject.StrategyOneAssignmentSpec(PLAN, "assignment-1", 1, "DU1", "AAPL", 12345),))
+    pinned = producer.publish(configuration_revision_id=REVISION,
+                              session_key=SESSION, publication_id=PUBLICATION)
+    assert pinned[0].base_hash == writer.rows[0]["content_hash"]
+    assert [call.startswith("SELECT ") for call in writer.calls] == [True, False, True]
+    with pytest.raises(RuntimeError, match="already used"):
+        producer.publish(configuration_revision_id=REVISION,
+                         session_key=SESSION, publication_id=PUBLICATION)

@@ -84,6 +84,45 @@ def test_membership_rows_first_exact_readback_then_keeper_head():
     assert _publish(rows, keeper)[0] == 2
 
 
+def test_assignment_producer_runs_under_claim_before_member_attestation():
+    rows, keeper = Rows(), _keeper()
+    class Producer:
+        def publish(self, *, configuration_revision_id, session_key, publication_id):
+            assert keeper.is_current(configuration_revision_id=configuration_revision_id,
+                                     session_key=session_key, owner_id="publisher", epoch=1)
+            assert not rows.parents
+            self.publication_id = publication_id
+            return (PinnedAssignmentMember("as-1", "plan-1", 1, "a" * 64),)
+    producer = Producer()
+    publish_plan_membership(
+        rows, keeper, [], [PlanWatchMember("plan-1", "ABC", "profile-1", "default")],
+        configuration_revision_id="config-1", session_key="2026-09-24",
+        approved_revision=Proof("config-1", "b" * 64),
+        source_cursor=Proof("2026-09-24", "c" * 64), owner_id="publisher",
+        assignment_producer=producer)
+    assert rows.parents[0]["publication_id"] == producer.publication_id
+    assert rows.members[(1, producer.publication_id)][0]["base_hash"] == "a" * 64
+
+
+def test_ambiguous_assignment_insert_never_attests_membership():
+    rows, keeper = Rows(), _keeper()
+    class UncertainProducer:
+        def publish(self, **_scope):
+            raise TimeoutError("INSERT may have committed")
+    with pytest.raises(UncertainMembershipPublication, match="assignment publication"):
+        publish_plan_membership(
+            rows, keeper, [], [], configuration_revision_id="config-1",
+            session_key="2026-09-24",
+            approved_revision=Proof("config-1", "b" * 64),
+            source_cursor=Proof("2026-09-24", "c" * 64),
+            owner_id="publisher", assignment_producer=UncertainProducer())
+    assert rows.parents == []
+    assert keeper.read_head_or_none(configuration_revision_id="config-1",
+                                    session_key="2026-09-24") is None
+    assert keeper.is_current(configuration_revision_id="config-1",
+                             session_key="2026-09-24", owner_id="publisher", epoch=1)
+
+
 def test_ambiguous_insert_and_lost_cas_response_retain_keeper_owner(monkeypatch):
     rows, keeper = Rows(), _keeper()
     rows.ambiguous = True
