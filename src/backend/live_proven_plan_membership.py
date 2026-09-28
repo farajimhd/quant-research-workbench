@@ -6,10 +6,17 @@ receipt/assignment/broker admission gates remain separate.
 """
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from src.backend.live_plan_membership import (
     PlanMembershipHead, PlanMembershipRows, TypedPlanMembershipAuthority,
 )
 from src.backend.live_plan_membership_publication import ProofPort
+from src.backend.live_approved_configuration_proof import cold_approved_configuration_proof
+from src.backend.live_signal_source_cursor_proof import cold_attested_signal_source_cursor
+from src.backend.live_strategy_one_approval import ApprovalHeadReader
+from src.backend.signal_stream_session_head import SignalSessionHeadKeeper
+from src.backend.signal_stream_typed_readback import SignalColdStorage
 
 
 def _digest(value: object) -> str:
@@ -74,3 +81,29 @@ class ProvenPlanMembershipAuthority:
             run_plan_id=run_plan_id)
         self._check_proofs()
         return result
+
+
+def cold_strategy_one_plan_membership_authority(
+    rows: PlanMembershipRows, keeper: PlanMembershipHead, *,
+    configuration_client: Any, approval_reader: ApprovalHeadReader,
+    source_storage: SignalColdStorage, source_commit_client: Any,
+    source_keeper: SignalSessionHeadKeeper, session_key: str, source_revision: str,
+    catalogs: Mapping[str, Any], mode: str, max_batches: int = 100_000,
+) -> ProvenPlanMembershipAuthority:
+    """Join three typed read authorities without granting live admission.
+
+    Both proofs are rechecked by the returned adapter at every membership
+    read. Numbered Strategy 1 must use its isolated source tables and Keeper
+    namespace; generic Signal Stream evidence cannot satisfy this join.
+    """
+    approved = cold_approved_configuration_proof(
+        configuration_client, approval_reader, mode=mode)
+    source = cold_attested_signal_source_cursor(
+        source_storage, source_commit_client, source_keeper,
+        session_key=session_key,
+        configuration_revision=approved.identity,
+        source_revision=source_revision, catalogs=catalogs,
+        max_batches=max_batches, strategy_one=True)
+    return ProvenPlanMembershipAuthority(
+        rows, keeper, approved=approved, source=source,
+        configuration_revision_id=approved.identity, session_key=session_key)

@@ -1,6 +1,9 @@
 import pytest
+from unittest.mock import patch
 
-from src.backend.live_proven_plan_membership import ProvenPlanMembershipAuthority
+from src.backend.live_proven_plan_membership import (
+    ProvenPlanMembershipAuthority, cold_strategy_one_plan_membership_authority,
+)
 from tests.test_live_plan_membership import CONFIG, SESSION, Keeper, Rows, _fixture
 
 
@@ -74,4 +77,31 @@ def test_proven_plan_rechecks_mutated_identity_and_hash_during_assertion():
 
     approved.assert_current = mutate_after_check
     with pytest.raises(RuntimeError, match="proof hash changed"):
+        authority.head_hash(configuration_revision_id=CONFIG, run_plan_id="plan-1")
+
+
+def test_numbered_cold_factory_binds_approved_revision_to_isolated_source():
+    parent, children, watches, _, _ = _fixture()
+    approved = Proof(CONFIG, "c" * 64)
+    source = Proof(SESSION, "d" * 64)
+    with patch(
+        "src.backend.live_proven_plan_membership.cold_approved_configuration_proof",
+        return_value=approved,
+    ) as approved_reader, patch(
+        "src.backend.live_proven_plan_membership.cold_attested_signal_source_cursor",
+        return_value=source,
+    ) as source_reader:
+        authority = cold_strategy_one_plan_membership_authority(
+            Rows(parent, children, watches), Keeper(parent),
+            configuration_client=object(), approval_reader=object(),
+            source_storage=object(), source_commit_client=object(),
+            source_keeper=object(), session_key=SESSION,
+            source_revision="source-1", catalogs={}, mode="live")
+    assert approved_reader.call_args.kwargs["mode"] == "live"
+    assert source_reader.call_args.kwargs["configuration_revision"] == CONFIG
+    assert source_reader.call_args.kwargs["strategy_one"] is True
+    assert len(authority.read_attested_plan(
+        configuration_revision_id=CONFIG, run_plan_id="plan-1").assignments) == 2
+    source.current = False
+    with pytest.raises(RuntimeError, match="external head changed"):
         authority.head_hash(configuration_revision_id=CONFIG, run_plan_id="plan-1")
