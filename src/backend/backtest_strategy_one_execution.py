@@ -150,7 +150,7 @@ async def run_certified_strategy_one_session(
         projected, survivors, activations=activation_schedule,
         price_plan=projected_prices, through_boundary_ms=through_boundary_ms,
         client_factory=client_factory, max_workers=max_workers,
-        activation_source_candidates=visible)
+        activation_source_candidates=visible, stage_time=stage_time)
     if stage_time is not None:
         stage_time("strategy_one_sparse_load", sparse_started)
     try:

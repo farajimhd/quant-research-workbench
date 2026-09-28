@@ -700,6 +700,7 @@ def test_active_source_reads_persisted_window_and_closes_on_deactivation():
             self.closed = True
 
     opened = []
+    timings = []
     def client():
         reader = Reader()
         opened.append(reader)
@@ -707,7 +708,8 @@ def test_active_source_reads_persisted_window_and_closes_on_deactivation():
 
     source = persisted_active_market_source(
         plan, price_plan=prices, through_boundary_ms=1_000,
-        client_factory=client)
+        client_factory=client,
+        stage_time=lambda name, started: timings.append((name, started)))
     clock = StrategyOneBoundaryScheduler(
         session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
         active_source=source)
@@ -715,6 +717,8 @@ def test_active_source_reads_persisted_window_and_closes_on_deactivation():
     clock.activate("AAA")
     assert clock.pop_next().boundary_ms == 200
     assert len(opened[0].queries) == 2
+    assert len(timings) == 1
+    assert timings[0][0] == "strategy_one_active_first_row"
     assert all("bucket_index>=144001" in sql for sql in opened[0].queries)
     clock.deactivate("AAA")
     assert opened[0].closed

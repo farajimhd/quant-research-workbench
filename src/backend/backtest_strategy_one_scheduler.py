@@ -44,6 +44,7 @@ def build_certified_strategy_one_scheduler(
     client_factory: Callable[[], Any], max_workers: int = 4,
     max_candidate_rows: int = 250_000,
     activation_source_candidates: CertifiedCandidatePlan | None = None,
+    stage_time: Callable[[str, float], None] | None = None,
 ) -> StrategyOneBoundaryScheduler:
     """Build the sparse causal tape solely from certified arte products."""
     if (len(plan.sessions) != 1 or plan.execution_interval.kind != "fixed"
@@ -86,7 +87,7 @@ def build_certified_strategy_one_scheduler(
     source = persisted_active_market_source(
         plan, price_plan=price_plan,
         through_boundary_ms=through_boundary_ms,
-        client_factory=client_factory)
+        client_factory=client_factory, stage_time=stage_time)
     return StrategyOneBoundaryScheduler(
         session_date=plan.sessions[0], candidate_rows=iter(paired),
         activation_rows=iter(activations.rows), active_source=source)
@@ -99,6 +100,7 @@ def build_certified_strategy_one_scheduler(
 def persisted_active_market_source(
     plan: CertifiedMarketDayPlan, *, price_plan: PriceLevelPlan,
     through_boundary_ms: int, client_factory: Callable[[], Any],
+    stage_time: Callable[[str, float], None] | None = None,
 ) -> MarketSource:
     """Open one SELECT-only ticker stream only while its financial state lives."""
     if (len(plan.sessions) != 1 or not isinstance(price_plan, PriceLevelPlan)
@@ -108,6 +110,8 @@ def persisted_active_market_source(
         raise ValueError("Active Strategy 1 source lacks a certified fixed session")
 
     def source(ticker: str, after_boundary_ms: int) -> Iterator[MarketGroup]:
+        started = perf_counter() if stage_time is not None else 0.0
+        first_recorded = False
         if ticker not in plan.tickers or type(after_boundary_ms) is not int \
                 or not 0 <= after_boundary_ms <= through_boundary_ms:
             raise ValueError("Active Strategy 1 source is outside certified scope")
@@ -126,9 +130,14 @@ def persisted_active_market_source(
                 for day, boundary, symbol, resolutions in iter_market_boundary_groups(rows):
                     if day != plan.sessions[0] or symbol != ticker:
                         raise ValueError("Active Strategy 1 market row changed ticker scope")
+                    if not first_recorded and stage_time is not None:
+                        stage_time("strategy_one_active_first_row", started)
+                        first_recorded = True
                     yield boundary, resolutions
             finally:
                 rows.close()
+                if not first_recorded and stage_time is not None:
+                    stage_time("strategy_one_active_first_row", started)
 
     return source
 
