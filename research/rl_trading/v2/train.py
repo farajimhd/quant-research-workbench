@@ -30,6 +30,10 @@ from research.mlops.wandb_utils import init_wandb
 # The frozen one-pass pilot predates explicit versioned continuation. Other
 # source bytes must still match exactly; this is its certified controller hash.
 PILOT_TRAIN_HASH = 'c814a0a450b7688f9561f922fa443eab7e5a1fbbe3cbe308fc0debd3046067ed'
+PRE_EARLY_EXIT_HASHES = {
+    str(Path('research/rl_trading/v2/config.py')): '42141072c818fbea0fc164d6cdf08f5d3079fec7fbb42aaeeb0fab8cbe8b97b5',
+    str(Path('research/rl_trading/v2/train.py')): 'f65b8861c8533a8f666471d560cff9ae24bb0c5b75c1d50ca73a3a996e54b50c',
+}
 
 
 def config_arguments(p):
@@ -67,6 +71,7 @@ def parser():
     p.add_argument('--stream-sessions',action='store_true')
     p.add_argument('--resume',action='store_true')
     p.add_argument('--continue-from-run',type=Path)
+    p.add_argument('--initialize-from-best',type=Path)
     p.add_argument('--allow-segment',action='store_true')
     p.add_argument('--wandb-mode',choices=('disabled','offline','online'),default='disabled')
     p.add_argument('--wandb-project',default='rl-trading-v2')
@@ -172,6 +177,8 @@ def train(args):
         raise ValueError('Streamed sessions require one account and chronological cycling')
     if not args.run_name or Path(args.run_name).name != args.run_name or args.run_name in ('.','..'):
         raise ValueError('Run name must be a single directory name')
+    if args.initialize_from_best and args.continue_from_run:
+        raise ValueError('Choose either exact continuation or best-policy initialization')
     config = Config(**{field.name:getattr(args,field.name) for field in fields(Config)})
     root = output_root()/'train'/args.run_name
     root.mkdir(parents=True,exist_ok=True)
@@ -238,6 +245,57 @@ def _continuation(parent_root, manifest, *, run_root, device):
     return lineage, saved, inherited_best
 
 
+def _best_initialization(parent_root, manifest, *, run_root, device):
+    """Transfer a verified best policy/optimizer, never an incompatible account."""
+    parent_root = Path(parent_root).resolve()
+    manifest = json.loads(json.dumps(manifest))
+    if parent_root == run_root.resolve():
+        raise ValueError('Best-policy initialization requires a new run directory')
+    parent = read(parent_root/'run_manifest.json')
+    if parent.get('contract_hash') != digest({k:v for k,v in parent.items() if k != 'contract_hash'}):
+        raise ValueError('Parent run manifest integrity failure')
+    for key in ('job','model','feature_names','train','validation','teacher_supervision',
+                'torch_version','numpy_version','wandb'):
+        if parent.get(key) != manifest.get(key):
+            raise ValueError('Best-policy initialization changes parent contract: ' + key)
+    if (parent.get('version') != 'rl-trading-v2-ppo-single-account-sessions-3' or
+            manifest.get('version') != 'rl-trading-v2-ppo-single-account-sessions-4'):
+        raise ValueError('Best-policy initialization requires the pinned early-exit migration')
+    old_config, new_config = parent['config'], manifest['config']
+    if (old_config.get('liquidation_buffer_seconds') != 120 or
+            new_config.get('liquidation_buffer_seconds') != 900 or
+            {k:v for k,v in old_config.items() if k not in ('version','liquidation_buffer_seconds')} !=
+            {k:v for k,v in new_config.items() if k not in ('version','liquidation_buffer_seconds')}):
+        raise ValueError('Best-policy initialization changes other execution assumptions')
+    old_args, new_args = parent['arguments'], manifest['arguments']
+    if (old_args.get('liquidation_buffer_seconds') != 120 or
+            new_args.get('liquidation_buffer_seconds') != 900 or
+            {k:v for k,v in old_args.items() if k != 'liquidation_buffer_seconds'} !=
+            {k:v for k,v in new_args.items() if k != 'liquidation_buffer_seconds'}):
+        raise ValueError('Best-policy initialization changes other training settings')
+    old_code, new_code = parent['code']['files'], manifest['code']['files']
+    if (set(old_code) != set(new_code) or
+            any(old_code[name] != new_code[name] for name in old_code if name not in PRE_EARLY_EXIT_HASHES) or
+            any(old_code.get(name) != expected for name,expected in PRE_EARLY_EXIT_HASHES.items())):
+        raise ValueError('Best-policy initialization changed unapproved source')
+    best_path = parent_root/'checkpoint_best.pt'
+    best = torch.load(best_path,map_location=device,weights_only=False)
+    if (best.get('contract_hash') != parent['contract_hash'] or
+            not np.isfinite(best.get('best',-float('inf'))) or
+            best.get('completed_episodes',0) < 1):
+        raise ValueError('Parent best checkpoint is not eligible')
+    metric = read(parent_root/'metrics'/f"{best['iteration']:06d}.json")
+    if (not metric.get('validation_all_flat') or
+            not np.isclose(metric.get('validation_mean_return',float('nan')),best['best'])):
+        raise ValueError('Parent best checkpoint lacks valid validation evidence')
+    lineage = dict(parent_run=str(parent_root),parent_contract_hash=parent['contract_hash'],
+                   parent_best_checkpoint_hash=file_hash(best_path),
+                   parent_best_iteration=best['iteration'],parent_best_score=best['best'],
+                   transferred=['policy','optimizer'],account_state='fresh',
+                   session_cursor='first_training_date',random_state='fresh_seed')
+    return lineage,best
+
+
 def _train_locked(args, config, root):
     torch.set_num_threads(args.threads)
     random.seed(args.seed)
@@ -260,7 +318,7 @@ def _train_locked(args, config, root):
             for i in range(args.min_completed_episodes))
         if args.iterations*args.rollout_steps < required:
             raise ValueError(f'Iteration budget cannot complete {args.min_completed_episodes} sessions; require at least {required} steps')
-    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run')}
+    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run','initialize_from_best')}
     manifest = dict(version=VERSION,job='train',config=config.manifest(),arguments=contract_args,
         model=dict(features=len(sessions[0].plan['feature_names']),width=args.width,heads=args.heads),
         feature_names=sessions[0].plan['feature_names'],code=code_identity(),
@@ -269,13 +327,17 @@ def _train_locked(args, config, root):
         output_root=str(root),wandb=dict(mode=args.wandb_mode,project=args.wandb_project,
                                          entity=args.wandb_entity),teacher_supervision=False,
         torch_version=torch.__version__,numpy_version=np.__version__)
-    inherited = inherited_best = None
+    inherited = inherited_best = initialized_best = None
     if args.continue_from_run:
         lineage, inherited, inherited_best = _continuation(args.continue_from_run,manifest,
                                                             run_root=root,device=args.device)
         manifest['lineage'] = lineage
         if inherited['iteration'] >= args.iterations:
             raise ValueError('Continuation iteration budget must exceed parent checkpoint')
+    if args.initialize_from_best:
+        lineage, initialized_best = _best_initialization(args.initialize_from_best,manifest,
+                                                          run_root=root,device=args.device)
+        manifest['lineage'] = lineage
     manifest['contract_hash'] = digest(manifest)
     path = root/'run_manifest.json'
     if path.exists():
@@ -348,6 +410,9 @@ def _train_locked(args, config, root):
                 inherited_best['contract_hash'] = manifest['contract_hash']
                 _save(root/'checkpoint_best.pt',inherited_best)
     else:
+        if initialized_best is not None:
+            policy.load_state_dict(initialized_best['policy'])
+            optimizer.load_state_dict(initialized_best['optimizer'])
         # Even interruption in the first rollout/validation has a restart point.
         _save(latest,snapshot(0))
     if start >= args.iterations:

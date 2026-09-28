@@ -2,7 +2,7 @@
 from dataclasses import asdict, dataclass
 import math
 
-VERSION = 'rl-trading-v2-ppo-single-account-sessions-3'
+VERSION = 'rl-trading-v2-ppo-single-account-sessions-4'
 # Upper bounds are inclusive, except the first band which excludes $1.
 SHARE_CAPS = ((1., 40000), (5., 35000), (10., 30000), (20., 25000),
               (50., 20000), (None, 15000))
@@ -26,7 +26,7 @@ class Config:
     min_volume_60s: float = 20000.
     min_trades_60s: int = 11
     max_price_age_seconds: int = 5
-    liquidation_buffer_seconds: int = 120
+    liquidation_buffer_seconds: int = 900
     commission_model: str = 'ibkr_us_fixed_20260926'
     extra_venue_fee_per_share: float = 0.
     # Broad parameterization bounds, not preferred durations or exit labels.
