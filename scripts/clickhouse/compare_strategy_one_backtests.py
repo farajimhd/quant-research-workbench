@@ -204,6 +204,11 @@ def main() -> None:
             failed |= not match
             print(f"{table}: {'MATCH' if match else 'DIFFER'} "
                   f"left={len(left)} right={len(right)}", flush=True)
+            if not match and len(left) == len(right):
+                changed = {fields[index] for before, after in zip(left, right)
+                           for index, (old, new) in enumerate(zip(before, after))
+                           if old != new}
+                print(f"  differing scalar fields: {', '.join(sorted(changed))}", flush=True)
         if args.explain:
             _explain_difference(client, args.left, args.right)
         if failed:
