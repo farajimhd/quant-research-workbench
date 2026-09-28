@@ -63,8 +63,12 @@ def test_replay_uses_identical_fees_for_terminal_sale(tmp_path):
     shard = SessionShard(root)
     def buy(state):
         return lambda step,mask,previous: 1 if state['index'] == 0 else 0
-    report = replay_session(shard,buy)
+    trace = {}
+    report = replay_session(shard,buy,trace=trace)
     q,fee = OrderCosts().buy_for_budget(10.,50.)
     expected = 100.-(q*10.+fee)+q*12.-OrderCosts().fee(q,12.,side='sell')
     assert math.isclose(report['terminal_cash'],expected,abs_tol=1e-8)
     assert report['fees_paid'] > 0
+    assert math.isclose(trace['positions'][0]['net_pnl'],report['profit'],abs_tol=1e-8)
+    assert math.isclose(sum(order['fee'] for order in trace['orders']),
+        report['fees_paid'],abs_tol=1e-8)

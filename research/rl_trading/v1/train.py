@@ -97,29 +97,48 @@ def _run_validation(model, shards, resident, device, vocab, batch_size,
         **classification_metrics(confusion,exact))
 
 
-def _run_closed_loop(model, shards, resident, device, vocab):
+def _run_closed_loop(model, shards, resident, device, vocab, *, trace_root=None,
+                     split=None, epoch=None, config_hash=None):
     model.eval()
     reports = []
     with torch.inference_mode():
         for shard in shards:
             data = _session_data(shard,resident,device,vocab)
+            trace = {} if trace_root is not None else None
             try:
-                result = replay_session(shard,ModelSelector(model,data,shard,device))
+                result = replay_session(shard,ModelSelector(model,data,shard,device),trace=trace)
             finally:
                 if resident is None:
                     del data
                     shard.release_mapped_pages()
             if not result['complete']:
                 raise ValueError('Training replay did not reach liquidation')
+            trace_file = None
+            if trace is not None:
+                trace_path = trace_root/f'{split}_{shard.plan["date"]}.json'
+                write(trace_path,dict(version='rl-trading-replay-trace-v1',
+                    config_hash=config_hash,epoch=epoch,split=split,
+                    date=shard.plan['date'],shard_plan_hash=shard.plan['plan_hash'],
+                    summary=result,orders=trace['orders'],positions=trace['positions']))
+                trace_file = str(trace_path)
             reports.append(dict(date=shard.plan['date'],profit=result['profit'],
                 profit_to_cash=result['profit_to_cash'],max_drawdown=result['max_drawdown'],
+                max_drawdown_time_us=result['max_drawdown_time_us'],
                 buys=result['buys'],voluntary_sells=result['sells']-result['forced_liquidations'],
                 forced_liquidations=result['forced_liquidations'],
                 fees_paid=result['fees_paid'],gross_profit_before_fees=result['gross_profit_before_fees'],
                 position_seconds=result['position_seconds'],
                 exposure_seconds=result['exposure_seconds'],
                 max_open_lots=result['max_open_lots'],
-                average_holding_seconds=result['average_holding_seconds']))
+                average_holding_seconds=result['average_holding_seconds'],
+                median_holding_seconds=result['median_holding_seconds'],
+                p90_holding_seconds=result['p90_holding_seconds'],
+                closed_positions=result['closed_positions'],
+                winning_positions=result['winning_positions'],
+                losing_positions=result['losing_positions'],
+                turnover_notional=result['turnover_notional'],
+                exposure_fraction=result['exposure_fraction'],
+                trace_file=trace_file))
     model.train()
     return reports
 
@@ -408,9 +427,18 @@ def run(args):
             if args.replay_every and (epoch == 0 or (epoch+1)%args.replay_every == 0
                     or epoch+1 == args.epochs):
                 replay_start = perf_counter()
-                train_replays = (_run_closed_loop(model,train_shards,resident,device,vocab)
+                trace_root = paths.run_root/'replay_traces'/f'epoch_{epoch+1:03d}'
+                train_replays = (_run_closed_loop(model,train_shards,resident,device,vocab,
+                    trace_root=trace_root,split='train',epoch=epoch+1,
+                    config_hash=config['config_hash'])
                     if args.replay_train else [])
-                val_replays = _run_closed_loop(model,val_shards,resident,device,vocab)
+                val_replays = _run_closed_loop(model,val_shards,resident,device,vocab,
+                    trace_root=trace_root,split='val',epoch=epoch+1,
+                    config_hash=config['config_hash'])
+                val_sells = sum(item['closed_positions'] for item in val_replays)
+                val_hold_seconds = sum(item['average_holding_seconds']*item['closed_positions']
+                    for item in val_replays)
+                val_wins = sum(item['winning_positions'] for item in val_replays)
                 replay_report = dict(config_hash=config['config_hash'],epoch=epoch+1,
                     train=train_replays,validation=val_replays,
                     train_profit=sum(item['profit'] for item in train_replays) if train_replays else None,
@@ -426,15 +454,23 @@ def run(args):
                     'replay/wall_seconds':replay_report['wall_seconds'],
                     'replay/val_position_seconds':sum(item['position_seconds'] for item in val_replays),
                     'replay/val_exposure_seconds':sum(item['exposure_seconds'] for item in val_replays),
-                    'replay/val_average_holding_seconds':sum(item['average_holding_seconds']
-                        for item in val_replays)/len(val_replays),
+                    'replay/val_average_holding_seconds':val_hold_seconds/max(1,val_sells),
+                    'replay/val_closed_positions':val_sells,
+                    'replay/val_win_rate':val_wins/max(1,val_sells),
+                    'replay/val_forced_liquidations':sum(item['forced_liquidations']
+                        for item in val_replays),
+                    'replay/val_turnover_notional':sum(item['turnover_notional']
+                        for item in val_replays),
                     'replay/val_buys':sum(item['buys'] for item in val_replays),
                     'replay/val_sells':sum(item['voluntary_sells'] for item in val_replays),
                     'replay/val_max_open_lots':max(item['max_open_lots'] for item in val_replays),
                     **{f'replay/{split}/{item["date"]}/{key}':item[key]
                         for split,items in (('train',train_replays),('val',val_replays))
                         for item in items for key in ('profit','fees_paid','buys','voluntary_sells',
-                            'position_seconds','exposure_seconds','average_holding_seconds')}})
+                            'forced_liquidations','position_seconds','exposure_seconds',
+                            'exposure_fraction','average_holding_seconds','median_holding_seconds',
+                            'p90_holding_seconds','closed_positions','winning_positions',
+                            'turnover_notional')}})
                 if train_replays:
                     report.update({'replay/train_profit':replay_report['train_profit'],
                         'replay/train_fees':replay_report['train_fees'],
@@ -444,6 +480,15 @@ def run(args):
                 console.print(f'Epoch {epoch+1} closed loop | train {train_text} | validation '
                     f'${replay_report["val_profit"]:,.2f} | '
                     f'drawdown {replay_report["val_max_drawdown"]:.1%}')
+                for split,items in (('train',train_replays),('val',val_replays)):
+                    for item in items:
+                        console.print(f'  {split} {item["date"]} | net ${item["profit"]:,.2f} | '
+                            f'fees ${item["fees_paid"]:,.2f} | buys {item["buys"]} | '
+                            f'exits {item["voluntary_sells"]} voluntary + '
+                            f'{item["forced_liquidations"]} forced | '
+                            f'median hold {item["median_holding_seconds"]/3600:.2f}h | '
+                            f'max DD {item["max_drawdown"]:.1%} | '
+                            f'positions {item["trace_file"]}')
                 if (_eligible_replay(replay_report) and (replay_best is None or
                         (replay_report['val_profit'],-replay_report['val_max_drawdown']) >
                         (replay_best['val_profit'],-replay_best['val_max_drawdown']))):

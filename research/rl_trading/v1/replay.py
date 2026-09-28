@@ -37,7 +37,8 @@ def _rank_chunk(volumes: np.ndarray, tickers: list[str], positions: np.ndarray) 
     return lexical[np.argsort(-selected,axis=1,kind='stable')]
 
 
-def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int = 0) -> dict:
+def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int = 0,
+                   trace: dict | None = None) -> dict:
     """Replay the entire session, unless a bounded smoke limit is explicit.
 
     ``prepare(state)`` returns ``select(step, mask, previous_token)``. The
@@ -65,6 +66,34 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
     fees_paid = 0.
     position_seconds = exposure_seconds = max_open_lots = 0
     holding_seconds = 0.
+    holding_durations = []
+    closed_net = []
+    turnover_notional = 0.
+    max_drawdown_time_us = None
+    if trace is not None:
+        if trace:
+            raise ValueError('Replay trace must start empty')
+        trace.update(orders=[],positions=[])
+
+    def record_sale(lot, time_us, price, fee, *, forced):
+        nonlocal holding_seconds, turnover_notional
+        duration = (time_us-lot.entry_us)/1_000_000
+        gross = lot.quantity*(price-lot.entry_price)
+        net = gross-lot.entry_fee-fee
+        holding_seconds += duration
+        holding_durations.append(duration)
+        closed_net.append(net)
+        turnover_notional += lot.quantity*price
+        if trace is not None:
+            trace['orders'].append(dict(time_us=time_us,action='sell',
+                ticker=tickers[lot.ticker_index],quantity=lot.quantity,price=price,
+                notional=lot.quantity*price,fee=fee,cash_after=cash,forced=forced,
+                entry_us=lot.entry_us))
+            trace['positions'].append(dict(ticker=tickers[lot.ticker_index],
+                entry_us=lot.entry_us,exit_us=time_us,quantity=lot.quantity,
+                entry_price=lot.entry_price,exit_price=price,
+                entry_fee=lot.entry_fee,exit_fee=fee,gross_pnl=gross,net_pnl=net,
+                holding_seconds=duration,forced_exit=forced))
     rows = shard.complete['rows'] if not max_seconds else min(max_seconds,shard.complete['rows'])
     if rows < 1:
         raise ValueError('Replay has no decision seconds')
@@ -114,7 +143,7 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
                 fees_paid += fee
                 sells += 1
                 forced += 1
-                holding_seconds += (time_us-lot.entry_us)/1_000_000
+                record_sale(lot,time_us,close_price,fee,forced=True)
             lots.clear()
         else:
             select = prepare(state)
@@ -145,6 +174,12 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
                     cash -= debit
                     fees_paid += fee
                     lots.append(Lot(ticker,quantity,price,time_us,fee))
+                    turnover_notional += quantity*price
+                    if trace is not None:
+                        trace['orders'].append(dict(time_us=time_us,action='buy',
+                            ticker=tickers[ticker],quantity=quantity,price=price,
+                            notional=quantity*price,fee=fee,cash_after=cash,
+                            forced=False,entry_us=time_us))
                     lots.sort(key=lambda lot:(tickers[lot.ticker_index],lot.entry_us,
                         lot.entry_price,lot.quantity))
                     buys += 1
@@ -158,7 +193,7 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
                     fees_paid += fee
                     used_sells.add(lot_index)
                     sells += 1
-                    holding_seconds += (time_us-lot.entry_us)/1_000_000
+                    record_sale(lot,time_us,close_price,fee,forced=False)
                 previous_token = token
         position_seconds += len(lots)
         exposure_seconds += bool(lots)
@@ -169,11 +204,16 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
         if not np.isfinite(equity) or cash < -1e-5:
             raise ValueError('Replay account became invalid')
         peak = max(peak,equity)
-        max_drawdown = max(max_drawdown,(peak-equity)/peak)
+        drawdown = (peak-equity)/peak
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+            max_drawdown_time_us = time_us
         previous_equity = equity
     complete = bool(arrays['done'][rows-1])
     if complete and lots:
         raise ValueError('Terminal replay has open positions')
+    if complete and not np.isclose(sum(closed_net),previous_equity-initial,atol=1e-5):
+        raise ValueError('Closed-position P&L does not reconcile to replay equity')
     return dict(seconds=rows,complete=complete,initial_cash=initial,
         terminal_cash=cash if complete else None,terminal_equity=previous_equity,
         profit=previous_equity-initial,profit_to_cash=(previous_equity-initial)/initial,
@@ -182,4 +222,11 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
         position_seconds=position_seconds,exposure_seconds=exposure_seconds,
         max_open_lots=max_open_lots,
         average_holding_seconds=holding_seconds/max(1,sells),
+        median_holding_seconds=float(np.median(holding_durations)) if holding_durations else 0.,
+        p90_holding_seconds=float(np.percentile(holding_durations,90)) if holding_durations else 0.,
+        closed_positions=len(closed_net),winning_positions=sum(x > 0 for x in closed_net),
+        losing_positions=sum(x < 0 for x in closed_net),
+        turnover_notional=turnover_notional,
+        exposure_fraction=exposure_seconds/rows,
+        max_drawdown_time_us=max_drawdown_time_us,
         gross_profit_before_fees=previous_equity-initial+fees_paid)

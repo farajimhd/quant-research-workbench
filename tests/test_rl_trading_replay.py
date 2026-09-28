@@ -27,7 +27,8 @@ def test_replay_uses_own_cash_and_forced_terminal_liquidation(tmp_path):
             return 1 if state['index'] == 0 else 0
         return select
 
-    result = replay_session(shard,buy_first_second)
+    trace = {}
+    result = replay_session(shard,buy_first_second,trace=trace)
     assert result['complete']
     assert result['terminal_cash'] == 110.
     assert result['profit'] == 10.
@@ -37,6 +38,16 @@ def test_replay_uses_own_cash_and_forced_terminal_liquidation(tmp_path):
     assert result['exposure_seconds'] == 1
     assert result['max_open_lots'] == 1
     assert result['average_holding_seconds'] == 1.
+    assert result['median_holding_seconds'] == 1.
+    assert result['p90_holding_seconds'] == 1.
+    assert result['closed_positions'] == 1
+    assert result['winning_positions'] == 1
+    assert result['turnover_notional'] == 110.
+    assert len(trace['orders']) == 2
+    assert trace['positions'] == [dict(ticker='A',entry_us=int(shard.arrays['time_us'][0]),
+        exit_us=int(shard.arrays['time_us'][1]),quantity=5.,entry_price=10.,
+        exit_price=12.,entry_fee=0.,exit_fee=0.,gross_pnl=10.,net_pnl=10.,
+        holding_seconds=1.,forced_exit=True)]
 
 
 def test_replay_volume_order_breaks_ties_by_stable_ticker_identity():
@@ -70,6 +81,33 @@ def test_replay_sell_token_uses_teacher_sorted_lot_order():
             return ([1,2] if state['index'] == 0 else [3,0])[step]
         return select
 
-    result = replay_session(shard,teacher)
+    trace = {}
+    result = replay_session(shard,teacher,trace=trace)
     assert result['profit'] == 50.
     assert result['sells'] == 2
+    assert len(trace['positions']) == 2
+    assert [item['forced_exit'] for item in trace['positions']] == [False,True]
+    assert sum(item['net_pnl'] for item in trace['positions']) == result['profit']
+
+
+def test_training_replay_persists_position_ledger(tmp_path,monkeypatch):
+    import research.rl_trading.v1.train as train
+    root = _shard(tmp_path/'session',date(2026,8,22))
+    shard = SessionShard(root)
+
+    class Model:
+        def eval(self): pass
+        def train(self): pass
+
+    monkeypatch.setattr(train,'_session_data',lambda *_: None)
+    monkeypatch.setattr(train,'ModelSelector',lambda *_:
+        lambda state:lambda step,mask,previous: 1 if state['index'] == 0 else 0)
+    reports = train._run_closed_loop(Model(),[shard],None,None,None,
+        trace_root=tmp_path/'trace',split='val',epoch=3,config_hash='test-hash')
+    assert len(reports) == 1
+    artifact = read(reports[0]['trace_file'])
+    assert artifact['config_hash'] == 'test-hash'
+    assert artifact['epoch'] == 3
+    assert len(artifact['orders']) == 2
+    assert len(artifact['positions']) == 1
+    assert artifact['summary']['profit'] == sum(x['net_pnl'] for x in artifact['positions'])

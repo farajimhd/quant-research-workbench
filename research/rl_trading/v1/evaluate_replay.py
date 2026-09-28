@@ -1,4 +1,4 @@
-"""Replay a frozen CUDA policy with its own evolving account on held-out shards."""
+"""Replay a frozen CUDA policy on held-out shards or configured diagnostic sessions."""
 from __future__ import annotations
 
 import os
@@ -10,6 +10,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(REPO))
 
 import argparse
+import math
 from time import perf_counter
 
 import numpy as np
@@ -24,7 +25,7 @@ from research.rl_trading.v1.replay import replay_session
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-closed-loop-replay-v1'
+VERSION = 'rl-trading-closed-loop-replay-v2'
 
 
 class ModelSelector:
@@ -73,22 +74,32 @@ def run(args):
         raise RuntimeError('Closed-loop replay requires CUDA')
     root = args.run.resolve()
     config = read(root/'config.json')
+    compatible_diagnostic_changes = {'train.py','replay.py','evaluate_replay.py'}
     for name,expected in config['code_hashes'].items():
-        if file_hash(Path(__file__).with_name(name)) != expected:
+        if (file_hash(Path(__file__).with_name(name)) != expected and
+                not (args.retrace_compatible and name in compatible_diagnostic_changes)):
             raise ValueError('Replay model code differs from checkpoint contract: '+name)
-    checkpoint_name = {'best-val':'checkpoint_best_val.pt',
-        'best-replay':'checkpoint_best_replay.pt','latest':'checkpoint_latest.pt'}[args.checkpoint]
+    checkpoint_name = (f'checkpoint_epoch_{args.checkpoint_epoch:012d}.pt'
+        if args.checkpoint_epoch else {'best-val':'checkpoint_best_val.pt',
+        'best-replay':'checkpoint_best_replay.pt','latest':'checkpoint_latest.pt'}[args.checkpoint])
     checkpoint = root/'checkpoints'/checkpoint_name
     saved = torch.load(checkpoint,map_location='cpu',weights_only=False)
     if saved['config_hash'] != config['config_hash']:
         raise ValueError('Replay checkpoint and run configuration differ')
     shards = [SessionShard(path) for path in args.test_shards]
-    protected = {SessionShard(Path(path),verify=False).plan['date']
-                 for path in config['train_shards']+config['val_shards']}
-    test_days = {s.plan['date'] for s in shards}
-    if (not shards or len({s.plan['date'] for s in shards}) != len(shards)
-            or protected & test_days or min(test_days) <= max(protected)):
-        raise ValueError('Replay needs distinct held-out dates after all training and validation')
+    supplied_roots = {str(shard.root) for shard in shards}
+    if not shards or len(supplied_roots) != len(shards):
+        raise ValueError('Replay sessions must be distinct')
+    if args.dataset == 'heldout':
+        protected = {SessionShard(Path(path),verify=False).plan['date']
+                     for path in config['train_shards']+config['val_shards']}
+        test_days = {s.plan['date'] for s in shards}
+        if protected & test_days or min(test_days) <= max(protected):
+            raise ValueError('Held-out replay needs dates after all training and validation')
+    else:
+        split = 'train_shards' if args.dataset == 'train-diagnostic' else 'val_shards'
+        if not supplied_roots <= {str(Path(path).resolve()) for path in config[split]}:
+            raise ValueError('Diagnostic replay needs exact configured '+split)
     if not args.allow_segment and any(s.plan['segment'] for s in shards):
         raise ValueError('Segment replay requires explicit bounded-smoke permission')
     first = shards[0].plan
@@ -104,13 +115,15 @@ def run(args):
     model.load_state_dict(saved['model'])
     model.eval()
     reports = []
+    traces = []
     console = Console()
     for shard in shards:
         data = shard.to_gpu(device,config['ticker_vocabulary'])
         start = perf_counter()
+        trace = {}
         with torch.inference_mode():
             result = replay_session(shard,ModelSelector(model,data,shard,device),
-                max_seconds=args.max_seconds)
+                max_seconds=args.max_seconds,trace=trace)
         torch.cuda.synchronize()
         wall_seconds = perf_counter()-start
         result.update(date=shard.plan['date'],shard=str(shard.root),
@@ -119,13 +132,26 @@ def run(args):
         result['teacher_profit'] = float(shard.complete['teacher_profit'])
         result['profit_minus_teacher'] = (result['profit']-result['teacher_profit']) if result['complete'] else None
         reports.append(result)
+        traces.append((shard.plan['date'],shard.plan['plan_hash'],result,trace))
         console.print(f"{result['date']} | {result['seconds']:,} seconds | "
             f"equity ${result['terminal_equity']:,.2f} | "
             f"P&L ${result['profit']:,.2f} | drawdown {result['max_drawdown']:.2%} | "
             f'{wall_seconds:.1f}s')
         del data
+    if args.dataset == 'val-diagnostic' and args.checkpoint_epoch:
+        original = read(root/f'closed_loop_epoch_{args.checkpoint_epoch:03d}.json')
+        by_day = {item['date']:item for item in original['validation']}
+        for result in reports:
+            prior = by_day[result['date']]
+            for key in ('profit','fees_paid','max_drawdown','average_holding_seconds'):
+                if not math.isclose(result[key],prior[key],rel_tol=1e-8,abs_tol=1e-5):
+                    raise ValueError(f'Retrace differs from original {result["date"]} {key}')
+            if result['buys'] != prior['buys'] or (result['sells']-
+                    result['forced_liquidations'] != prior['voluntary_sells']):
+                raise ValueError('Retrace trade counts differ from original validation replay')
     report = dict(version=VERSION,run=str(root),config_hash=config['config_hash'],
-        checkpoint_hash=file_hash(checkpoint),sessions=reports,
+        checkpoint_hash=file_hash(checkpoint),checkpoint=str(checkpoint),
+        dataset=args.dataset,retrace_compatible=args.retrace_compatible,sessions=reports,
         aggregate_profit=sum(item['profit'] for item in reports),
         complete=all(item['complete'] for item in reports))
     runtime = runtime_root().resolve()
@@ -135,6 +161,14 @@ def run(args):
         shard_hashes=[item['shard_plan_hash'] for item in reports],max_seconds=args.max_seconds))
     output = runtime/'rl-trading'/'v1'/'replay'/identity[:20]
     output.mkdir(parents=True,exist_ok=True)
+    report['trace_files'] = []
+    for day,plan_hash,summary,trace in traces:
+        trace_path = output/f'positions_{day}.json'
+        write(trace_path,dict(version='rl-trading-replay-trace-v1',date=day,
+            config_hash=config['config_hash'],checkpoint_hash=report['checkpoint_hash'],
+            shard_plan_hash=plan_hash,summary=summary,
+            orders=trace['orders'],positions=trace['positions']))
+        report['trace_files'].append(str(trace_path))
     write(output/'report.json',report)
     console.print('Replay report: '+str(output/'report.json'))
     return 0
@@ -146,10 +180,16 @@ def main(argv=None):
     parser.add_argument('--test-shards',type=Path,nargs='+',required=True)
     parser.add_argument('--device',type=int,default=0)
     parser.add_argument('--checkpoint',choices=('best-val','best-replay','latest'),default='best-val')
+    parser.add_argument('--checkpoint-epoch',type=int,default=0,
+        help='Replay a saved archive epoch rather than a moving checkpoint alias')
+    parser.add_argument('--dataset',choices=('heldout','train-diagnostic','val-diagnostic'),
+        default='heldout',help='Diagnostics are restricted to configured train or validation shards')
+    parser.add_argument('--retrace-compatible',action='store_true',
+        help='Allow only replay/training logger code changes while preserving model and data hashes')
     parser.add_argument('--max-seconds',type=int,default=0,help='Bounded smoke only')
     parser.add_argument('--allow-segment',action='store_true')
     args = parser.parse_args(argv)
-    if args.max_seconds < 0 or args.max_seconds and not args.allow_segment:
+    if args.checkpoint_epoch < 0 or args.max_seconds < 0 or args.max_seconds and not args.allow_segment:
         parser.error('Bounded replay requires --allow-segment')
     return run(args)
 
