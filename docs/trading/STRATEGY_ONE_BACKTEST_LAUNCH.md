@@ -49,3 +49,15 @@ ClickHouse journal queues drained with zero failed units; neither produced a
 run-local directory. These are observed workstation timings, not a throughput
 guarantee. Live Strategy 1 order admission and Candidate 350 re-entry parity
 remain separate acceptance gates.
+
+An additional workstation app-API run selected the full Aug 18 session by
+passing the exclusive `anchor_date=2026-08-19`. Its preflight returned
+`strategy_run_ready=true`, `execution_interval=100ms`, zero blocked checks,
+and the same certified market token above. POST `/api/trading/backtest/runs`
+created run `75ad9d96-8a92-4eed-9b7b-de89c4b5a097`; it completed in
+32.233s from creation to terminal update, processing 7,381 liquidity rows.
+The writer drained 10 units and 2,217 event rows with zero failures. A fresh
+`v4-terminal-page` read verified sequence 2,217, its market cursor, and the
+terminal account state with no limitations. The test backend and SSH tunnel
+were stopped afterward. This validates the app routes, not visual browser
+interaction or live trading.
