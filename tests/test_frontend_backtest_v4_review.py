@@ -4,6 +4,16 @@ import unittest
 from pathlib import Path
 
 
+def _performance_page():
+    return {"schema_version": "strategy-one-v4-performance-report-v1",
+            "report": {"schema_version": 2,
+                       "episode_definition": "flat_to_flat_position_lifecycle",
+                       "summary": {}, "episodes": [], "equity_curve": [],
+                       "pnl_candles": {"30m": [], "1h": [], "1d": [], "1M": []},
+                       "strategies": [], "execution": {}, "risk": {}, "scope": {}},
+            "position_lifecycles": [], "fill_count": 0, "fee_count": 0}
+
+
 @unittest.skipUnless(os.environ.get("BACKTEST_REVIEW_UI"), "opt-in managed browser check")
 class BacktestV4ReviewUITests(unittest.TestCase):
     def test_terminal_balances_remain_legible_at_compact_scale(self):
@@ -60,6 +70,18 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                                 payload = history
                             elif "/v4-terminal-page" in url:
                                 payload = review
+                            elif "/v4-performance" in url:
+                                payload = _performance_page()
+                            elif "/v4-trade-history" in url:
+                                payload = {"fills": [], "commissions": [],
+                                           "next_fill_sequence": 0,
+                                           "next_commission_sequence": 0,
+                                           "complete": True}
+                            elif "/v4-order-history" in url:
+                                payload = {"commands": [], "transitions": [],
+                                           "next_command_sequence": 0,
+                                           "next_transition_sequence": 0,
+                                           "complete": True}
                             elif "/configuration-options" in url:
                                 payload = {"candidates": [], "candidate_id": "",
                                            "run_plan_id": "", "available_run_plans": [],
@@ -73,14 +95,18 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                         page.route("**/api/trading/**", handle)
                         page.goto("http://127.0.0.1:5173/#backtest-trading")
                         page.get_by_role("button", name=f"Review backtest {run_id[:8]}").click()
-                        page.get_by_text("7,785 verified journal records").wait_for()
-                        cash = page.locator(
-                            '[aria-label="Terminal account balances"] tbody td:nth-child(3)')
+                        canvas = page.locator(".backtest-v4-canvas-review")
+                        canvas.get_by_text("7,785 verified records").wait_for()
+                        canvas.get_by_role("button", name="Canvas management").click()
+                        library = canvas.get_by_role("region", name="Container library")
+                        library.locator("article").filter(has_text="Portfolio").first.get_by_role(
+                            "button", name="Add").click()
+                        cash = canvas.get_by_text("$98,976.47", exact=True).first
                         self.assertEqual(cash.inner_text(), "$98,976.47")
                         self.assertEqual(cash.evaluate(
                             "node => getComputedStyle(node).whiteSpace"), "nowrap")
                         self.assertEqual(errors, [])
-                        section = page.locator(".backtest-v4-review")
+                        section = canvas
                         section.scroll_into_view_if_needed()
                         section.screenshot(path=str(evidence / f"v4-{theme}-{scale}-{width}.png"))
                         context.close()
@@ -145,6 +171,18 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                                                       "boundary_ms": 19726200},
                                     "limitations": [], "financial_accounts": {},
                                     "events": [], "next_sequence": 0, "complete": True}
+                            elif "/v4-performance" in url:
+                                payload = _performance_page()
+                            elif "/v4-trade-history" in url:
+                                payload = {"fills": [], "commissions": [],
+                                           "next_fill_sequence": 0,
+                                           "next_commission_sequence": 0,
+                                           "complete": True}
+                            elif "/v4-order-history" in url:
+                                payload = {"commands": [], "transitions": [],
+                                           "next_command_sequence": 0,
+                                           "next_transition_sequence": 0,
+                                           "complete": True}
                             else:
                                 payload = {}
                             route.fulfill(json=payload)
@@ -156,10 +194,10 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                         page.locator(".backtest-v4-running").screenshot(
                             path=str(evidence / f"v4-running-{theme}-{scale}-{width}.png"))
                         state["completed"] = True
-                        page.get_by_text("2,283 verified journal records").wait_for(timeout=10000)
+                        page.get_by_text("2,283 verified records").wait_for(timeout=10000)
                         self.assertEqual(state["legacy_requests"], [])
                         self.assertEqual(errors, [])
-                        page.locator(".backtest-v4-direct-review").screenshot(
+                        page.locator(".backtest-v4-canvas-review").screenshot(
                             path=str(evidence / f"v4-handoff-{theme}-{scale}-{width}.png"))
                     finally:
                         browser.close()

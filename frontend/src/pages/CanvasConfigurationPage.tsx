@@ -1716,7 +1716,7 @@ function strategyReplayLayouts(openIds: string[]): Record<string, WorkspaceWindo
     z: openIds.length - index,
   }]));
 }
-function strategyReplayCanvasState(state: CanvasWorkspaceState | null): CanvasWorkspaceState {
+export function strategyReplayCanvasState(state: CanvasWorkspaceState | null): CanvasWorkspaceState {
   // This is an operator workspace restore, not a publishable profile snapshot.
   // Preserve every saved presentation choice, including minimized/fullscreen
   // state, instead of normalizing those choices away.

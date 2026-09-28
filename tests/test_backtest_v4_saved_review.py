@@ -174,3 +174,104 @@ def test_financial_account_verifies_integral_float64_wire_values(monkeypatch):
     result = review._terminal_financial_accounts(Client(), _prefix(),
                                                  ("SIM-01-A",))
     assert result["SIM-01-A"]["gross_position_value"] == 0.0
+
+
+def test_trade_history_uses_verified_prefix_and_independent_cursors(monkeypatch):
+    observed = []
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
+                        {"prefix": _prefix()})
+    monkeypatch.setattr(review, "load_committed_execution_page",
+                        lambda _client, prefix, **kw: (
+                            observed.append(("fills", prefix, kw)) or
+                            ({"sequence": 1, "execution_id": "fill-1"},)))
+    monkeypatch.setattr(review, "load_committed_commission_page",
+                        lambda _client, prefix, **kw: (
+                            observed.append(("fees", prefix, kw)) or
+                            ({"sequence": 2, "execution_id": "fill-1"},)))
+    monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
+    page = review.load_v4_trade_history_page(Client(), RUN, limit=1)
+    assert [(kind, params) for kind, _, params in observed] == [
+        ("fills", {"after_sequence": 0, "limit": 1}),
+        ("fees", {"after_sequence": 0, "limit": 1}),
+    ]
+    assert all(prefix is observed[0][1] for _, prefix, _ in observed)
+    assert page["next_fill_sequence"] == 1
+    assert page["next_commission_sequence"] == 2
+    assert page["complete"] is False
+
+
+def test_trade_history_rejects_out_of_prefix_cursor_before_rows(monkeypatch):
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
+                        {"prefix": _prefix()})
+    monkeypatch.setattr(review, "load_committed_execution_page",
+                        lambda *_a, **_k: pytest.fail("Read after invalid cursor"))
+    with pytest.raises(ValueError, match="exceeds the verified journal"):
+        review.load_v4_trade_history_page(
+            Client(), RUN, after_fill_sequence=3, cache=AuditedSessionCache())
+
+
+def test_trade_history_rejects_head_change_after_rows(monkeypatch):
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
+                        {"prefix": _prefix()})
+    monkeypatch.setattr(review, "load_committed_execution_page",
+                        lambda *_a, **_k: ())
+    monkeypatch.setattr(review, "load_committed_commission_page",
+                        lambda *_a, **_k: ())
+    monkeypatch.setattr(review, "_head_matches", lambda *_a: False)
+    with pytest.raises(RuntimeError, match="head changed"):
+        review.load_v4_trade_history_page(Client(), RUN)
+
+
+def test_order_history_reads_independent_verified_pages(monkeypatch):
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
+                        {"prefix": _prefix()})
+    monkeypatch.setattr(review, "load_committed_order_command_page", lambda *_a, **_k:
+                        ({"sequence": 1, "command_id": "command-1"},))
+    monkeypatch.setattr(review, "load_committed_order_transition_page", lambda *_a, **_k:
+                        ({"sequence": 2, "command_id": "command-1"},))
+    monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
+    page = review.load_v4_order_history_page(Client(), RUN, limit=1)
+    assert page["next_command_sequence"] == 1
+    assert page["next_transition_sequence"] == 2
+    assert page["complete"] is False
+
+
+def test_v4_performance_derives_net_trade_from_typed_fills_and_final_fees(monkeypatch):
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
+                        {"prefix": _prefix()})
+    base = {"account_id": "SIM-01-A", "conid": 10, "ticker": "ABC",
+            "currency": "USD", "exchange": "SIM", "broker_order_id": "",
+            "client_order_id": "", "strategy_id": "early-squeeze-strategy",
+            "strategy_revision": 1, "setup": "", "exit_reason": "",
+            "signal_price": None, "arrival_midpoint": None,
+            "planned_risk": None}
+    fills = (
+        {**base, "sequence": 1, "execution_id": "buy", "side": "B",
+         "quantity": "10", "price": "2", "source_event_time": "2026-08-18 08:00:00.000000000"},
+        {**base, "sequence": 3, "execution_id": "sell", "side": "S",
+         "quantity": "10", "price": "3", "source_event_time": "2026-08-18 08:01:00.000000000"},
+    )
+    fees = (
+        {"sequence": 2, "execution_id": "buy", "account_id": "SIM-01-A",
+         "commission": "1", "currency": "USD", "status": "final"},
+        {"sequence": 4, "execution_id": "sell", "account_id": "SIM-01-A",
+         "commission": "1", "currency": "USD", "status": "final"},
+    )
+    monkeypatch.setattr(review, "load_committed_execution_page", lambda *_a, **_k: fills)
+    monkeypatch.setattr(review, "load_committed_commission_page", lambda *_a, **_k: fees)
+    monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
+    result = review.load_v4_performance_report(Client(), RUN)
+    assert result["fill_count"] == result["fee_count"] == 2
+    assert float(result["report"]["summary"]["net_pnl"]) == 8.0
+    assert result["report"]["summary"]["episode_count"] == 1
+    assert result["report"]["execution"]["order_count"] is None
+
+
+def test_v4_performance_rejects_unfinalized_fee(monkeypatch):
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
+                        {"prefix": _prefix()})
+    monkeypatch.setattr(review, "load_committed_execution_page", lambda *_a, **_k:
+                        ({"sequence": 1, "execution_id": "buy"},))
+    monkeypatch.setattr(review, "load_committed_commission_page", lambda *_a, **_k: ())
+    with pytest.raises(RuntimeError, match="final fees"):
+        review.load_v4_performance_report(Client(), RUN)

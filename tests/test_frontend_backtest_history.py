@@ -5,6 +5,165 @@ import unittest
 
 @unittest.skipUnless(os.environ.get("BACKTEST_HISTORY_UI"), "opt-in managed frontend browser test")
 class BacktestHistoryTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("BACKTEST_REAL_V4_REVIEW"),
+                         "opt-in read-only saved-run integration check")
+    def test_real_saved_v4_review_opens_from_history(self):
+        from pathlib import Path
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 900, "height": 700})
+                errors = []
+                requests = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.on("request", lambda request: requests.append(request.url))
+                page.goto("http://127.0.0.1:5173/#backtest-trading")
+                table = page.get_by_role("region", name="Recent backtests table", exact=True)
+                table.wait_for(timeout=60_000)
+                table.locator("tbody tr").first.get_by_role(
+                    "button", name="Review backtest", exact=False).click()
+                review = page.locator(".backtest-v4-canvas-review")
+                review.get_by_text("Backtest Canvas · Strategy 1").wait_for(timeout=90_000)
+                self.assertIn("backtest_run=", page.url)
+                self.assertIn("verified records", review.inner_text())
+                self.assertIn("Trading Journal", review.inner_text())
+                self.assertIn("Execution Audit", review.inner_text())
+                self.assertEqual(page.locator(".backtest-v4-direct-review").count(), 0)
+                review.get_by_text("WFF", exact=True).first.wait_for(timeout=60_000)
+                review.get_by_text("10 episodes", exact=False).first.wait_for(timeout=60_000)
+                review.get_by_text("30 verified order commands", exact=False).first.wait_for(timeout=60_000)
+                self.assertNotIn("No frontend renderer is registered", review.inner_text())
+                self.assertNotIn("Chart unavailable", review.inner_text())
+                self.assertFalse(any("/canvas?" in url or "/journal/episodes/" in url
+                                     for url in requests))
+                if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
+                    evidence = Path(os.environ["BACKTEST_HISTORY_EVIDENCE"])
+                    evidence.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(evidence / "real-strategy-one-review.png"))
+                review.get_by_role("tab", name="Positions", exact=False).click()
+                review.get_by_placeholder("Search positions, symbols, setups, exits…").wait_for()
+                review.get_by_role("button", name="Expand row").first.click()
+                self.assertFalse(any("/journal/episodes/" in url for url in requests))
+                review.get_by_role("button", name="Canvas management").click()
+                library = review.get_by_role("region", name="Container library")
+                with page.expect_response(lambda response: "/v4-chart?" in response.url
+                                          and response.status == 200, timeout=60_000):
+                    library.locator("article").filter(has_text="Chart").first.get_by_role(
+                        "button", name="Add").click()
+                review.get_by_role("region", name="Saved WFF chart").wait_for(timeout=60_000)
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
+    @unittest.skipUnless(os.environ.get("BACKTEST_REAL_V4_REVIEW"),
+                         "opt-in read-only saved-run integration check")
+    def test_real_saved_v4_canvas_dark_wide(self):
+        from pathlib import Path
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1600, "height": 950})
+                page.add_init_script("localStorage.setItem('quant-research-workbench.theme', 'dark'); localStorage.setItem('quant-research-workbench.ui-scale', '1.25')")
+                page.goto("http://127.0.0.1:5173/#backtest-trading")
+                table = page.get_by_role("region", name="Recent backtests table", exact=True)
+                table.wait_for(timeout=60_000)
+                table.locator("tbody tr").first.get_by_role("button", name="Review backtest", exact=False).click()
+                review = page.locator(".backtest-v4-canvas-review")
+                review.get_by_text("10 episodes", exact=False).first.wait_for(timeout=90_000)
+                self.assertIn("Trading Journal", review.inner_text())
+                self.assertIn("Position Manager", review.inner_text())
+                if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
+                    evidence = Path(os.environ["BACKTEST_HISTORY_EVIDENCE"])
+                    evidence.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(evidence / "real-strategy-one-review-dark-wide.png"))
+            finally:
+                browser.close()
+
+    def test_numbered_v4_run_does_not_show_legacy_candidate_identity(self):
+        from pathlib import Path
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 900, "height": 700})
+                def handle(route):
+                    path = route.request.url.split("?", 1)[0]
+                    if path.endswith("/backtest/runs"):
+                        route.fulfill(json={"rows": [{
+                            "run_id": "strategy-one-run", "created_at": "2026-09-28T12:00:00Z",
+                            "status": "completed", "session_date": "2026-08-18",
+                            "journal_backend": "arte_typed_journal_v4",
+                            "strategy_revision": 1, "configuration_revision": 350,
+                            "configuration_label": "Legacy candidate label",
+                            "journal_sequence": 2216, "v4_review_available": True,
+                        }]})
+                    elif path.endswith("/configuration-options"):
+                        route.fulfill(json={"candidates": [], "available_run_plans": [],
+                                            "error": ""})
+                    elif path.endswith("/v4-terminal-page"):
+                        route.fulfill(json={
+                            "schema_version": "strategy-one-v4-terminal-review-page-v1",
+                            "run": {"run_id": "strategy-one-run"},
+                            "status": "completed", "verified_sequence": 2216,
+                            "market_cursor": {"session_date": "2026-08-18",
+                                              "boundary_ms": 19800000},
+                            "market_cursor_verified": True, "limitations": [],
+                            "financial_accounts": {}, "events": [],
+                            "next_sequence": 0, "complete": True,
+                        })
+                    elif path.endswith("/v4-trade-history"):
+                        route.fulfill(json={
+                            "schema_version": "strategy-one-v4-trade-history-page-v1",
+                            "fills": [], "commissions": [],
+                            "next_fill_sequence": 0, "next_commission_sequence": 0,
+                            "complete": True,
+                        })
+                    elif path.endswith("/v4-performance"):
+                        route.fulfill(json={
+                            "schema_version": "strategy-one-v4-performance-report-v1",
+                            "report": {"schema_version": 2, "episode_definition": "flat_to_flat_position_lifecycle",
+                                       "summary": {}, "episodes": [], "equity_curve": [],
+                                       "pnl_candles": {"30m": [], "1h": [], "1d": [], "1M": []},
+                                       "strategies": [], "execution": {}, "risk": {}, "scope": {}},
+                            "position_lifecycles": [], "fill_count": 0, "fee_count": 0,
+                        })
+                    elif path.endswith("/v4-order-history"):
+                        route.fulfill(json={
+                            "schema_version": "strategy-one-v4-order-history-page-v1",
+                            "commands": [], "transitions": [],
+                            "next_command_sequence": 0,
+                            "next_transition_sequence": 0, "complete": True,
+                        })
+                    else:
+                        route.fulfill(json={"items": [], "checks": []})
+                page.route("**/api/trading/**", handle)
+                page.goto("http://127.0.0.1:5173/#backtest-trading")
+                table = page.get_by_role("region", name="Recent backtests table", exact=True)
+                table.wait_for()
+                self.assertEqual(table.locator("thead th:nth-child(2)").inner_text(),
+                                 "Run / strategy")
+                identity = table.locator("tbody tr td:nth-child(2)")
+                self.assertEqual(identity.locator("small").all_text_contents(),
+                                 ["Strategy 1"])
+                self.assertNotIn("Candidate", table.inner_text())
+                if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
+                    evidence = Path(os.environ["BACKTEST_HISTORY_EVIDENCE"])
+                    evidence.mkdir(parents=True, exist_ok=True)
+                    table.scroll_into_view_if_needed()
+                    page.screenshot(path=str(evidence / "strategy-one-history.png"))
+                page.get_by_role("button", name="Review backtest strategy", exact=True).click()
+                page.get_by_text("Backtest Canvas · Strategy 1").wait_for()
+                self.assertIn("backtest_run=strategy-one-run", page.url)
+                self.assertEqual(page.locator(".backtest-v4-canvas-review").count(), 1)
+                self.assertEqual(page.locator(".backtest-v4-direct-review").count(), 0)
+            finally:
+                browser.close()
+
     def test_history_controls_work_while_setup_requests_are_pending(self):
         from pathlib import Path
         from playwright.sync_api import sync_playwright

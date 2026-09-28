@@ -5,6 +5,8 @@ controller or a resumable execution state. JSON is only the API transport.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from src.trading_runtime.arte_backtest_snapshot_anchor import (
@@ -14,7 +16,9 @@ from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 from src.trading_runtime.arte_journal_reader import load_typed_event_page
 from src.trading_runtime.arte_journal_writer import (
-    _CONTRACTS, _literal, _rows, load_typed_run_context,
+    _CONTRACTS, _literal, _rows, load_committed_commission_page,
+    load_committed_execution_page, load_committed_order_command_page,
+    load_committed_order_transition_page, load_typed_run_context,
 )
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.backend.backtest_terminal_v2_fence import _verify_rows
@@ -61,19 +65,9 @@ def _terminal_financial_accounts(client, prefix, account_ids: tuple[str, ...]) -
     } for row in verified}
 
 
-def load_v4_terminal_review_page(client, run_id: str, *,
-                                 after_sequence: int = 0,
-                                 limit: int = 250,
-                                 cache: AuditedSessionCache | None = None) -> dict:
-    """Cold-audit once; recheck the terminal head before each bounded page."""
-    try:
-        normalized = str(UUID(run_id))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Strategy 1 review requires a UUID run id") from exc
-    if (type(after_sequence) is not int or after_sequence < 0
-            or type(limit) is not int or not 1 <= limit <= 1000
-            or cache is not None and not isinstance(cache, AuditedSessionCache)):
-        raise ValueError("Strategy 1 review page bounds are invalid")
+def _terminal_attestation(client, normalized: str,
+                          cache: AuditedSessionCache | None) -> dict:
+    """Share one cold-audited V4 terminal head across bounded Canvas reads."""
     selected_cache = cache if cache is not None else _V4_CACHE
     context = load_typed_run_context(client, normalized)
     if (context["mode"] != "backtest"
@@ -121,6 +115,24 @@ def load_v4_terminal_review_page(client, run_id: str, *,
         }
         selected_cache.put(_cache_key(client, normalized, context, prefix),
                            attestation)
+    return attestation
+
+
+def load_v4_terminal_review_page(client, run_id: str, *,
+                                 after_sequence: int = 0,
+                                 limit: int = 250,
+                                 cache: AuditedSessionCache | None = None) -> dict:
+    """Cold-audit once; recheck the terminal head before each bounded page."""
+    try:
+        normalized = str(UUID(run_id))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Strategy 1 review requires a UUID run id") from exc
+    if (type(after_sequence) is not int or after_sequence < 0
+            or type(limit) is not int or not 1 <= limit <= 1000
+            or cache is not None and not isinstance(cache, AuditedSessionCache)):
+        raise ValueError("Strategy 1 review page bounds are invalid")
+    attestation = _terminal_attestation(client, normalized, cache)
+    context = attestation["context"]
     prefix = attestation["prefix"]
     cursor = attestation["cursor"]
     if after_sequence > prefix.last_sequence:
@@ -150,4 +162,203 @@ def load_v4_terminal_review_page(client, run_id: str, *,
         "next_sequence": next_sequence,
         "complete": next_sequence == prefix.last_sequence,
         "resume_supported": False,
+    }
+
+
+def load_v4_trade_history_page(client, run_id: str, *,
+                               after_fill_sequence: int = 0,
+                               after_commission_sequence: int = 0,
+                               limit: int = 250,
+                               cache: AuditedSessionCache | None = None) -> dict:
+    """Read real fills and fee revisions for the certified Canvas, never legacy state."""
+    try:
+        normalized = str(UUID(run_id))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Strategy 1 trade history requires a UUID run id") from exc
+    if (type(after_fill_sequence) is not int or after_fill_sequence < 0
+            or type(after_commission_sequence) is not int
+            or after_commission_sequence < 0
+            or type(limit) is not int or not 1 <= limit <= 1000
+            or cache is not None and not isinstance(cache, AuditedSessionCache)):
+        raise ValueError("Strategy 1 trade history page bounds are invalid")
+    attestation = _terminal_attestation(client, normalized, cache)
+    prefix = attestation["prefix"]
+    if max(after_fill_sequence, after_commission_sequence) > prefix.last_sequence:
+        raise ValueError("Trade history cursor exceeds the verified journal")
+    fills = load_committed_execution_page(
+        client, prefix, after_sequence=after_fill_sequence, limit=limit)
+    commissions = load_committed_commission_page(
+        client, prefix, after_sequence=after_commission_sequence, limit=limit)
+    if not _head_matches(client, normalized, prefix):
+        raise RuntimeError("Trade history terminal head changed during page read")
+    return {
+        "schema_version": "strategy-one-v4-trade-history-page-v1",
+        "run_id": normalized,
+        "status": prefix.status,
+        "verified_sequence": prefix.last_sequence,
+        "fills": fills,
+        "commissions": commissions,
+        "next_fill_sequence": (int(fills[-1]["sequence"])
+                               if fills else after_fill_sequence),
+        "next_commission_sequence": (int(commissions[-1]["sequence"])
+                                     if commissions else after_commission_sequence),
+        "complete": len(fills) < limit and len(commissions) < limit,
+    }
+
+
+def load_v4_order_history_page(client, run_id: str, *,
+                               after_command_sequence: int = 0,
+                               after_transition_sequence: int = 0,
+                               limit: int = 250,
+                               cache: AuditedSessionCache | None = None) -> dict:
+    """Read committed order commands and transitions without inventing state."""
+    try:
+        normalized = str(UUID(run_id))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Strategy 1 order history requires a UUID run id") from exc
+    if (type(after_command_sequence) is not int or after_command_sequence < 0
+            or type(after_transition_sequence) is not int
+            or after_transition_sequence < 0
+            or type(limit) is not int or not 1 <= limit <= 1000):
+        raise ValueError("Strategy 1 order history page bounds are invalid")
+    prefix = _terminal_attestation(client, normalized, cache)["prefix"]
+    if max(after_command_sequence, after_transition_sequence) > prefix.last_sequence:
+        raise ValueError("Order history cursor exceeds the verified journal")
+    commands = load_committed_order_command_page(
+        client, prefix, after_sequence=after_command_sequence, limit=limit)
+    transitions = load_committed_order_transition_page(
+        client, prefix, after_sequence=after_transition_sequence, limit=limit)
+    if not _head_matches(client, normalized, prefix):
+        raise RuntimeError("Order history terminal head changed during page read")
+    return {
+        "schema_version": "strategy-one-v4-order-history-page-v1",
+        "run_id": normalized,
+        "verified_sequence": prefix.last_sequence,
+        "commands": commands,
+        "transitions": transitions,
+        "next_command_sequence": (int(commands[-1]["sequence"])
+                                  if commands else after_command_sequence),
+        "next_transition_sequence": (int(transitions[-1]["sequence"])
+                                     if transitions else after_transition_sequence),
+        "complete": len(commands) < limit and len(transitions) < limit,
+    }
+
+
+def _utc_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace(" ", "T"))
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _complete_detail_rows(loader, client, prefix, *, maximum: int = 100_000) -> tuple[dict, ...]:
+    """Bound every read, and refuse to present a partial performance report."""
+    rows: list[dict] = []
+    after = 0
+    while True:
+        page = loader(client, prefix, after_sequence=after, limit=1000)
+        if len(rows) + len(page) > maximum:
+            raise RuntimeError("Saved Canvas performance exceeds the bounded read limit")
+        rows.extend(page)
+        if len(page) < 1000:
+            return tuple(rows)
+        next_after = int(page[-1]["sequence"])
+        if next_after <= after:
+            raise RuntimeError("Saved Canvas performance cursor did not advance")
+        after = next_after
+
+
+def load_v4_performance_report(client, run_id: str, *,
+                               cache: AuditedSessionCache | None = None) -> dict:
+    """Derive the existing flat-to-flat report from complete normalized facts.
+
+    This is a read-only presentation projection, not a journal or market writer.
+    Fees must be final for every fill before net P&L can be shown.
+    """
+    from src.trading_runtime.domain import Execution, InstrumentContract
+    from src.trading_runtime.performance import (
+        build_performance_report, derive_position_lifecycles,
+        derive_trade_episodes,
+    )
+
+    try:
+        normalized = str(UUID(run_id))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Strategy 1 performance requires a UUID run id") from exc
+    prefix = _terminal_attestation(client, normalized, cache)["prefix"]
+    fills = _complete_detail_rows(load_committed_execution_page, client, prefix)
+    fees = _complete_detail_rows(load_committed_commission_page, client, prefix)
+    fee_by_execution: dict[str, dict] = {}
+    for fee in fees:
+        identity = str(fee["execution_id"])
+        if identity not in fee_by_execution or int(fee["sequence"]) > int(fee_by_execution[identity]["sequence"]):
+            fee_by_execution[identity] = fee
+    executions = []
+    identities = set()
+    sides_at_boundary: dict[tuple[str, str, datetime], str] = {}
+    for fill in fills:
+        identity = str(fill["execution_id"])
+        if identity in identities:
+            raise RuntimeError("Saved Canvas performance repeats an execution identity")
+        identities.add(identity)
+        fee = fee_by_execution.get(identity)
+        if fee is None or str(fee["status"]).lower() != "final":
+            raise RuntimeError("Saved Canvas performance requires final fees for every fill")
+        if fee["account_id"] != fill["account_id"]:
+            raise RuntimeError("Saved Canvas fee account differs from its fill")
+        if fee["currency"] != fill["currency"]:
+            raise RuntimeError("Saved Canvas performance requires fee and fill currency parity")
+        side = {"B": "BUY", "S": "SELL", "BUY": "BUY", "SELL": "SELL"}.get(str(fill["side"]).upper())
+        if side is None:
+            raise RuntimeError("Saved Canvas fill has an unsupported side")
+        conid = int(fill["conid"])
+        if conid <= 0:
+            raise RuntimeError("Saved Canvas performance requires point-in-time conid on every fill")
+        symbol = str(fill["ticker"])
+        stamp = _utc_timestamp(fill["source_event_time"])
+        tie_key = (str(fill["account_id"]), f"conid:{conid}", stamp)
+        prior_side = sides_at_boundary.setdefault(tie_key, side)
+        if prior_side != side:
+            raise RuntimeError("Saved Canvas cannot order opposing fills at the same source timestamp")
+        executions.append(Execution(
+            execution_id=identity, account_id=str(fill["account_id"]),
+            instrument=InstrumentContract(
+                instrument_id=f"conid:{conid}",
+                conid=conid, symbol=symbol, security_type="STK",
+                currency=str(fill["currency"]), exchange=str(fill["exchange"]) or "SMART"),
+            side=side, quantity=Decimal(str(fill["quantity"])),
+            price=Decimal(str(fill["price"])),
+            source_event_time=stamp,
+            broker_order_id=str(fill["broker_order_id"]),
+            client_order_id=str(fill["client_order_id"]),
+            exchange=str(fill["exchange"]),
+            commission=Decimal(str(fee["commission"])),
+            commission_currency=str(fee["currency"]),
+            commission_status="final", strategy_id=str(fill["strategy_id"]),
+            strategy_revision=int(fill["strategy_revision"]),
+            run_id=normalized, setup=str(fill["setup"]),
+            exit_reason=str(fill["exit_reason"]),
+            signal_price=(Decimal(str(fill["signal_price"]))
+                          if fill["signal_price"] is not None else None),
+            arrival_midpoint=(Decimal(str(fill["arrival_midpoint"]))
+                              if fill["arrival_midpoint"] is not None else None),
+            planned_risk=(Decimal(str(fill["planned_risk"]))
+                          if fill["planned_risk"] is not None else None),
+        ))
+    if set(fee_by_execution) != identities:
+        raise RuntimeError("Saved Canvas contains a commission without a matching fill")
+    if not _head_matches(client, normalized, prefix):
+        raise RuntimeError("Saved Canvas terminal head changed during performance projection")
+    episodes = derive_trade_episodes(executions)
+    report = build_performance_report(episodes, executions, ())
+    # No order lifecycle projection has been asserted yet. Do not turn an
+    # absent order reader into a false zero order count or rejection count.
+    report["execution"]["order_count"] = None
+    report["execution"]["rejected_order_count"] = None
+    return {
+        "schema_version": "strategy-one-v4-performance-report-v1",
+        "run_id": normalized,
+        "verified_sequence": prefix.last_sequence,
+        "report": report,
+        "position_lifecycles": derive_position_lifecycles(executions, ()),
+        "fill_count": len(executions),
+        "fee_count": len(fee_by_execution),
     }

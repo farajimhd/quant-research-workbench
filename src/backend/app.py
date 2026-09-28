@@ -5930,6 +5930,91 @@ async def trading_backtest_v4_chart(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/backtest/runs/{run_id}/v4-trade-history")
+async def trading_backtest_v4_trade_history(
+    run_id: str,
+    after_fill_sequence: int = Query(default=0, ge=0),
+    after_commission_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=250, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Read bounded, cold-verified V4 fill and fee rows for the saved Canvas."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+
+    def read_page() -> dict[str, Any]:
+        from contextlib import closing
+        from src.backend.backtest_v4_saved_review import load_v4_trade_history_page
+        from src.trading_runtime.arte_journal_writer import (
+            backtest_v4_operator_client_from_env,
+        )
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            return load_v4_trade_history_page(
+                client, normalized, after_fill_sequence=after_fill_sequence,
+                after_commission_sequence=after_commission_sequence,
+                limit=limit)
+
+    try:
+        return await asyncio.to_thread(read_page)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/backtest/runs/{run_id}/v4-performance")
+async def trading_backtest_v4_performance(run_id: str) -> dict[str, Any]:
+    """Read-only, full-prefix Strategy 1 performance for the saved Canvas."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+
+    def read_report() -> dict[str, Any]:
+        from contextlib import closing
+        from src.backend.backtest_v4_saved_review import load_v4_performance_report
+        from src.trading_runtime.arte_journal_writer import (
+            backtest_v4_operator_client_from_env,
+        )
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            return load_v4_performance_report(client, normalized)
+
+    try:
+        return await asyncio.to_thread(read_report)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/backtest/runs/{run_id}/v4-order-history")
+async def trading_backtest_v4_order_history(
+    run_id: str,
+    after_command_sequence: int = Query(default=0, ge=0),
+    after_transition_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=250, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Read verified normalized order evidence for the saved Canvas."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+
+    def read_page() -> dict[str, Any]:
+        from contextlib import closing
+        from src.backend.backtest_v4_saved_review import load_v4_order_history_page
+        from src.trading_runtime.arte_journal_writer import (
+            backtest_v4_operator_client_from_env,
+        )
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            return load_v4_order_history_page(
+                client, normalized, after_command_sequence=after_command_sequence,
+                after_transition_sequence=after_transition_sequence,
+                limit=limit)
+
+    try:
+        return await asyncio.to_thread(read_page)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/backtest/runs/{run_id}/typed-running-page")
 async def trading_backtest_typed_running_page(
     run_id: str,

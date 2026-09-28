@@ -33,8 +33,8 @@ function pageBoundary(page: ChartPage): number | null {
   return Number.isFinite(boundary) && boundary > 0 ? boundary : null;
 }
 
-export function BacktestV4SavedChart({ runId, ticker, onClose }: {
-  runId: string; ticker: string; onClose: () => void;
+export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false }: {
+  runId: string; ticker: string; onClose?: () => void; embedded?: boolean;
 }) {
   const [symbol, setSymbol] = useState(ticker);
   const [draftSymbol, setDraftSymbol] = useState(ticker);
@@ -126,13 +126,13 @@ export function BacktestV4SavedChart({ runId, ticker, onClose }: {
 
   const older = page && pageBoundary(page);
   return <section className="backtest-v4-saved-chart" aria-label={`Saved ${symbol} chart`}>
-    <header><h4>Persisted market chart</h4><button className="button secondary compact" type="button" onClick={onClose}>Close chart</button></header>
-    <div className="backtest-v4-chart-controls">
+    {!embedded ? <header><h4>Persisted market chart</h4>{onClose ? <button className="button secondary compact" type="button" onClick={onClose}>Close chart</button> : null}</header> : null}
+    {!embedded ? <div className="backtest-v4-chart-controls">
       <form onSubmit={submitTicker}><label>Ticker <input aria-label="Chart ticker" value={draftSymbol} onChange={event => setDraftSymbol(event.target.value.toUpperCase())} maxLength={24} /></label><button className="button secondary compact" type="submit">Show</button></form>
       <label>Resolution <select aria-label="Chart resolution" value={frame} onChange={event => changeScope({ frame: event.target.value as (typeof FRAMES)[number] })}>{FRAMES.map(value => <option key={value}>{value}</option>)}</select></label>
       <label><input type="checkbox" checked={showMacd} onChange={event => changeScope({ macd: event.target.checked })} /> Closed MACD</label>
-    </div>
-    <p className="backtest-v4-chart-source">ARTE closed bars and indicators · {page ? `verified through ${page.verified_boundary_ms.toLocaleString()} ms from 04:00 ET` : "verifying saved run…"}</p>
+    </div> : null}
+    {!embedded ? <p className="backtest-v4-chart-source">ARTE closed bars and indicators · {page ? `verified through ${page.verified_boundary_ms.toLocaleString()} ms from 04:00 ET` : "verifying saved run…"}</p> : null}
     {page?.indicator_provenance.unavailable_columns.length ? <p role="note">Stale indicators: {page.indicator_provenance.unavailable_columns.join(", ")}</p> : null}
     {error ? <p role="alert">Chart unavailable: {error}</p> : null}
     <ChartPanel persistedOnly payload={payload} ticker={symbol} timeframe={frame} timeframes={[...FRAMES]}
