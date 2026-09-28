@@ -344,8 +344,15 @@ def main(argv: list[str] | None = None) -> int:
         frames = traceback.extract_tb(exc.__traceback__)
         stage = next((f"{frame.name}:{frame.lineno}" for frame in reversed(frames)
                       if frame.filename == __file__), "external_dependency")
+        # Internal preflight ValueErrors contain a contract name, not SQL or
+        # credentials. Keep external driver exception text private.
+        detail = (f" Contract: {exc}." if isinstance(exc, ValueError)
+                  and exc.__traceback__ is not None
+                  and any(frame.filename.endswith(("arte_journal_schema.py",
+                                                    "backtest_fixed_v3_preflight.py"))
+                          for frame in frames) else "")
         print(f"V3 provisioning stopped: {type(exc).__name__} at {stage}; "
-              "partial users or grants may exist. "
+              f"partial users or grants may exist.{detail} "
               "Review private operator diagnostics before retry.",
               file=sys.stderr)
         return 1
