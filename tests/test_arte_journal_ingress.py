@@ -343,11 +343,10 @@ def test_live_v4_entry_ingress_seals_proposal_off_actor_before_receipt():
     assert writer.batches[0].entry_evidence[0]["boundary_ms"] == 31_000
 
 
-def test_live_v4_protection_intent_requires_exact_completed_source():
+def test_live_v4_protection_intent_requires_exact_completed_source(monkeypatch):
     from test_strategy_one_protection_intent import financial, previous, transition
-    from src.trading_runtime.strategy_one_protection_intent import (
-        strategy_one_protection_intents,
-    )
+    from threading import current_thread
+    from src.trading_runtime import strategy_one_protection_intent as protection_subject
 
     class LiveWriter(Writer):
         journal_profile = "live_v4"
@@ -360,10 +359,19 @@ def test_live_v4_protection_intent_requires_exact_completed_source():
 
     config = {"strategy_id": "early-squeeze-strategy", "strategy_revision": 1}
     session = date(2026, 8, 18)
-    intent = strategy_one_protection_intents(
+    intent = protection_subject.strategy_one_protection_intents(
         previous(), transition(), financial(), session_date=session,
         bid=10., ask=10.01,
     )[0]
+    calculation_threads = []
+    original_calculation = protection_subject.strategy_one_protection_intents
+
+    def observe_calculation(*args, **kwargs):
+        calculation_threads.append(current_thread().name)
+        return original_calculation(*args, **kwargs)
+
+    monkeypatch.setattr(protection_subject, "strategy_one_protection_intents",
+                        observe_calculation)
     source = JournalRecord(
         str(uuid4()), "run-1", 1, intent.event_time, AT,
         "strategy", "strategy_intent", intent.intent_id, "DU1",
@@ -381,11 +389,19 @@ def test_live_v4_protection_intent_requires_exact_completed_source():
         source.entity_type, source.entity_id, source.account_id,
         {**source.payload, "profit_target_price": 12.},
     )
+    rejected = ingress.submit_strategy_one_protection_intent(
+        tampered, previous=previous(), transition=transition(),
+        financial=financial(), session_date=session, bid=10., ask=10.01,
+        source_cursor="boundary-31000")
+    with pytest.raises(RuntimeError, match="did not drain durably"):
+        ingress.close()
     with pytest.raises(ValueError, match="completed source"):
-        ingress.submit_strategy_one_protection_intent(
-            tampered, previous=previous(), transition=transition(),
-            financial=financial(), session_date=session, bid=10., ask=10.01,
-            source_cursor="boundary-31000")
+        rejected.result()
+    ingress = TypedJournalIngress(
+        writer, run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live", "expected_config": config},
+    )
     receipt = ingress.submit_strategy_one_protection_intent(
         source, previous=previous(), transition=transition(),
         financial=financial(), session_date=session, bid=10., ask=10.01,
@@ -393,6 +409,7 @@ def test_live_v4_protection_intent_requires_exact_completed_source():
     ingress.close()
     assert receipt.result() == writer.batches[0].batch_id
     assert writer.batches[0].intents[0]["intent_id"] == intent.intent_id
+    assert calculation_threads == ["arte-journal-ingress", "arte-journal-ingress"]
 
 
 def test_live_v5_broker_reply_ingress_uses_worker_and_snapshots_response():

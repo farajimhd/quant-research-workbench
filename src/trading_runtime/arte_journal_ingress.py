@@ -48,6 +48,16 @@ class _BrokerReplyV5Source:
     causation_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class _ProtectionIntentSource:
+    previous: Any
+    transition: Any
+    financial: Any
+    session_date: date
+    bid: float
+    ask: float
+
+
 def _settle(receipt: Future[str], *, result: str | None = None,
             error: BaseException | None = None) -> None:
     try:
@@ -94,7 +104,8 @@ class TypedJournalIngress:
         self._projector = projector
         self._queue: Queue[tuple[JournalRecord, str, Future[str],
                                  tuple[Any, date] | None, bool,
-                                 _BrokerReplyV5Source | None] | None] = Queue(capacity)
+                                 _BrokerReplyV5Source | None,
+                                 _ProtectionIntentSource | None] | None] = Queue(capacity)
         self._lock = Lock()
         self._error: BaseException | None = None
         self._closed = False
@@ -165,8 +176,6 @@ class TypedJournalIngress:
         recovery checkpoint. Those require their own committed typed evidence.
         """
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
-        from .strategy_one_protection_intent import strategy_one_protection_intents
-
         if (not self._live_v4 or not isinstance(record, JournalRecord)
                 or (record.category, record.entity_type) !=
                    ("strategy", "strategy_intent")
@@ -185,25 +194,16 @@ class TypedJournalIngress:
                 or record.payload.get("strategy_id") != STRATEGY_ID
                 or record.payload.get("strategy_revision") != STRATEGY_NUMBER):
             raise ValueError("Live Strategy 1 protection differs from pinned strategy")
-        intents = strategy_one_protection_intents(
-            previous, transition, financial, session_date=session_date,
-            bid=bid, ask=ask)
-        matching = [intent for intent in intents if intent.intent_id == record.entity_id]
-        payload = {key: value for key, value in record.payload.items()
-                   if key not in {"strategy_id", "strategy_revision",
-                                  "correlation_id", "causation_id"}}
-        if (len(matching) != 1
-                or record.account_id != financial.account_id
-                or record.event_time != matching[0].event_time
-                or canonical_json(payload) != canonical_json(matching[0].payload())):
-            raise ValueError("Live Strategy 1 protection differs from completed source")
         frozen = JournalRecord(
             record.record_id, record.run_id, record.sequence,
             record.event_time, record.recorded_at, record.category,
             record.entity_type, record.entity_id, record.account_id,
             deepcopy(record.payload),
         )
-        return self._enqueue(frozen, source_cursor, None, False, None)
+        source = _ProtectionIntentSource(
+            deepcopy(previous), deepcopy(transition), deepcopy(financial),
+            session_date, bid, ask)
+        return self._enqueue(frozen, source_cursor, None, False, None, source)
 
     def submit_protection_change(
         self, record: JournalRecord, *, source_cursor: str,
@@ -263,7 +263,8 @@ class TypedJournalIngress:
     def _enqueue(self, frozen: JournalRecord, source_cursor: str,
                  entry_source: tuple[Any, date] | None,
                  protection_change: bool,
-                 broker_reply: _BrokerReplyV5Source | None) -> Future[str]:
+                 broker_reply: _BrokerReplyV5Source | None,
+                 protection_intent: _ProtectionIntentSource | None = None) -> Future[str]:
         with self._lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("Typed journal ingress is unavailable") from self._error
@@ -273,7 +274,7 @@ class TypedJournalIngress:
             try:
                 self._queue.put_nowait((frozen, source_cursor, receipt,
                                        entry_source, protection_change,
-                                       broker_reply))
+                                       broker_reply, protection_intent))
             except Full as exc:
                 raise JournalIngressFull("Typed ingress is full; stop new admission") from exc
             self._next_sequence += 1
@@ -291,8 +292,31 @@ class TypedJournalIngress:
                 if item is None:
                     self._queue.task_done()
                     break
-                record, cursor, receipt, entry_source, protection_change, broker_reply = item
+                (record, cursor, receipt, entry_source, protection_change,
+                 broker_reply, protection_intent) = item
                 try:
+                    if protection_intent is not None:
+                        from .strategy_one_protection_intent import (
+                            strategy_one_protection_intents,
+                        )
+                        intents = strategy_one_protection_intents(
+                            protection_intent.previous,
+                            protection_intent.transition,
+                            protection_intent.financial,
+                            session_date=protection_intent.session_date,
+                            bid=protection_intent.bid, ask=protection_intent.ask)
+                        matching = [intent for intent in intents
+                                    if intent.intent_id == record.entity_id]
+                        payload = {key: value for key, value in record.payload.items()
+                                   if key not in {"strategy_id", "strategy_revision",
+                                                  "correlation_id", "causation_id"}}
+                        if (len(matching) != 1
+                                or record.account_id != protection_intent.financial.account_id
+                                or record.event_time != matching[0].event_time
+                                or canonical_json(payload) !=
+                                   canonical_json(matching[0].payload())):
+                            raise ValueError(
+                                "Live Strategy 1 protection differs from completed source")
                     batch_id = str(uuid5(
                         NAMESPACE_URL,
                         f"{self._run_id}:{self._attempt_id}:{record.sequence}:"
