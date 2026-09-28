@@ -172,12 +172,20 @@ def certify_v7_interval_plan(
             str(row["clock_hash"]), str(row["interval_hash"]))
     if set(coverage_by_ticker) != set(candidate_tickers):
         raise RuntimeError("Strategy 1 V7 coverage omits a candidate")
+    # Failed producer attempts can retain unsealed child rows. Push the exact
+    # sealed attempt pairs into ClickHouse so their accumulation cannot make
+    # Backtest load unbounded data or silently select a non-authoritative row.
+    attempt_pairs = ",".join(
+        f"({_literal(ticker)},toUUID({_literal(coverage_by_ticker[ticker].attempt_id)}))"
+        for ticker in candidate_tickers)
+    child_where = (where + " AND (ticker,derivation_attempt_id) IN ("
+                   + attempt_pairs + ")")
     clocks: dict[str, list[int]] = {ticker: [] for ticker in candidate_tickers}
     intervals: dict[str, list[V7LevelInterval]] = {
         ticker: [] for ticker in candidate_tickers}
     for ticker_col, attempt_col, boundary_col in _arrow_columns(client,
             f"SELECT ticker,toString(derivation_attempt_id) AS attempt_id,"
-            f"boundary_ms FROM {CLOCK_TABLE} WHERE {where} "
+            f"boundary_ms FROM {CLOCK_TABLE} WHERE {child_where} "
             "ORDER BY ticker,boundary_ms", ("ticker", "attempt_id", "boundary_ms")):
         for ticker, attempt, boundary in zip(ticker_col, attempt_col,
                                               boundary_col):
@@ -190,7 +198,7 @@ def certify_v7_interval_plan(
     query = (f"SELECT ticker,toString(derivation_attempt_id) AS attempt_id,"
              "level_id,ordinal,valid_from_ms,valid_to_ms,lower,upper,"
              "toString(role) AS role,toString(transition_from) AS transition_from,"
-             f"confirmed_at_ms,historical FROM {INTERVAL_TABLE} WHERE {where} "
+             f"confirmed_at_ms,historical FROM {INTERVAL_TABLE} WHERE {child_where} "
              "ORDER BY ticker,valid_from_ms,ordinal,level_id")
     for columns in _arrow_columns(client, query, names):
         for values in zip(*columns):
