@@ -287,6 +287,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     )
     client.typed_insert_dispatch = TypedInsertDispatch(keeper_session.client)
     client.typed_insert_strict = True
+    client.manager_keeper_session = keeper_session
     client.v4_batched_detail_readback = True
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = ClickHouseHttpClient(
@@ -3421,6 +3422,14 @@ class _TerminalBacktestUnit:
     broker_snapshots: Any | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _ManagerSnapshotUnit:
+    session_date: date
+    checkpoint_sequence: int
+    journal_batch_id: str
+    state: Any
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
@@ -3517,7 +3526,8 @@ class ArteJournalWriter:
                   | V4ProtectionChangeBatch
                   | V4ProtectionReconciliationBatch
                   | _DurabilityBarrier | _AdmissionUnit
-                  | _PortfolioSyncUnit | _TerminalBacktestUnit,
+                  | _PortfolioSyncUnit | _TerminalBacktestUnit
+                  | _ManagerSnapshotUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
@@ -4041,13 +4051,50 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_manager_snapshot(self, *, session_date: date,
+                                checkpoint_sequence: int,
+                                journal_batch_id: str,
+                                state: Any) -> Future[str]:
+        """Queue an immutable Strategy 1 capture; project and persist off-path."""
+        from src.backend.backtest_strategy_one_management import (
+            StrategyOneManagementRunner, StrategyOneManagementState,
+        )
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(session_date, date)
+                or type(checkpoint_sequence) is not int
+                or checkpoint_sequence < 1
+                or not isinstance(state, StrategyOneManagementState)):
+            raise ValueError("Manager snapshot needs a typed V4 Backtest boundary")
+        try:
+            if str(UUID(journal_batch_id)) != journal_batch_id:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Manager snapshot batch ID is invalid") from exc
+        StrategyOneManagementRunner._validate_capture(
+            state, max_pending_breaks=256)
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((
+                    _ManagerSnapshotUnit(session_date, checkpoint_sequence,
+                                         journal_batch_id, state), receipt))
+            except Full as exc:
+                raise JournalQueueFull("Manager snapshot queue is full") from exc
+            self._accepted_writes = True
+        return receipt
+
     def _run(self) -> None:
         from .arte_journal_compound_v4 import V4CompoundBatch
         from .arte_oms_tactic_projection import V4OmsTacticBatch
 
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-            | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit | _TerminalBacktestUnit,
+            | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
+            | _TerminalBacktestUnit | _ManagerSnapshotUnit,
             Future[str],
         ] | None = None
         while True:
@@ -4100,7 +4147,8 @@ class ArteJournalWriter:
                                             V4ProtectionReconciliationBatch,
                                             _DurabilityBarrier))
                         and not (self._journal_profile == "backtest_v4"
-                                 and isinstance(group[0][0], _TerminalBacktestUnit))):
+                                 and isinstance(group[0][0], (
+                                     _TerminalBacktestUnit, _ManagerSnapshotUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
                 if isinstance(group[0][0], V4CompoundBatch):
                     from .arte_journal_compound_v4 import publish_compound_v4
@@ -4269,6 +4317,22 @@ class ArteJournalWriter:
                             raise RuntimeError("Terminal Backtest event prefix is not committed")
                         publish_terminal_backtest_snapshots(
                             self._client, prefix, unit.captured)
+                elif isinstance(group[0][0], _ManagerSnapshotUnit):
+                    from src.trading_runtime.strategy_one_management_snapshot import (
+                        project_manager_snapshot, publish_manager_snapshot,
+                    )
+                    unit = group[0][0]
+                    if self._last_commit_id != unit.journal_batch_id:
+                        raise RuntimeError(
+                            "Manager snapshot has no preceding ordered V4 commit")
+                    rows = project_manager_snapshot(
+                        run_id=self._run_id, session_date=unit.session_date,
+                        checkpoint_sequence=unit.checkpoint_sequence,
+                        state=unit.state)
+                    publish_manager_snapshot(
+                        self._client, self._client.manager_keeper_session, rows,
+                        journal_batch_id=unit.journal_batch_id)
+                    committed_id = unit.journal_batch_id
                 else:
                     from src.trading_runtime.arte_portfolio_snapshot import (
                         CapturedPortfolioSnapshot, prepare_captured_portfolio_snapshot,

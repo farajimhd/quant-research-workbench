@@ -1,9 +1,10 @@
-"""Normalized Strategy 1 manager checkpoint rows; no publication gate yet.
+"""Normalized Strategy 1 manager checkpoint rows and fenced publication.
 
 The protection snapshot owns position geometry. This family adds only the
 submitted entry sources and unconfirmed break witnesses needed to restore the
-manager. A journal/Keeper publisher must write children and protection first,
-then this seal; Backtest execution never writes these tables directly.
+manager. The ordered journal worker writes children and protection first,
+then selects the verified seal in Keeper; Backtest execution never writes
+these tables directly.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.strategy_one_position import ResistanceBreak
 from src.trading_runtime.strategy_one_protection_snapshot import (
+    TABLES as PROTECTION_TABLES,
     ProtectionSnapshotRows, _digest, _price, project_protection_snapshot,
     restore_protection_snapshot, load_protection_snapshot_rows,
 )
@@ -354,3 +356,133 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
     if keeper.read_head(run_id=run_id) != first:
         raise RuntimeError("Strategy 1 manager Keeper head changed during cold read")
     return state
+
+
+def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
+                             rows: ManagerSnapshotRows, *,
+                             journal_batch_id: str) -> ManagerSnapshotHead:
+    """Journal-worker-only rows-first, head-last publication at a V4 cursor.
+
+    A lost INSERT response leaves a pending Keeper operation and stops this
+    writer. Neither orphan ClickHouse rows nor an unselected seal are a
+    recovery checkpoint. The market/strategy thread never calls this function.
+    """
+    from src.backend.backtest_market_data import assert_select_only
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+    from src.trading_runtime.arte_journal_writer import _insert, _literal, _wire_row
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    if (not isinstance(session, ManagedKeeperSession) or not session.writable
+            or getattr(client, "typed_insert_strict", False) is not True
+            or not isinstance(getattr(client, "typed_insert_dispatch", None),
+                              TypedInsertDispatch)
+            or client.typed_insert_dispatch.keeper is not session.client
+            or not isinstance(rows, ManagerSnapshotRows)):
+        raise RuntimeError("Strategy 1 manager publication lacks fenced writer")
+    restored = restore_manager_snapshot(rows)
+    seal = rows.snapshot
+    run_id, sequence = seal["run_id"], seal["checkpoint_sequence"]
+    try:
+        if str(UUID(journal_batch_id)) != journal_batch_id:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Manager snapshot batch ID is invalid") from exc
+    prefix = load_verified_v4_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != sequence
+            or prefix.last_batch_id != journal_batch_id):
+        raise RuntimeError("Manager snapshot lacks exact running V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict)
+            or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != sequence
+            or cursor.get("batch_id") != journal_batch_id
+            or cursor.get("boundary_ms") != seal["boundary_ms"]
+            or cursor.get("session_date") != seal["session_date"]):
+        raise RuntimeError("Manager snapshot cursor differs from captured state")
+    reader = ManagedManagerSnapshotHeadReader(session)
+    path = reader.path(run_id)
+    if session.client.exists(path) is None:
+        previous = None
+    else:
+        previous = reader.read_head(run_id=run_id)
+        if previous.checkpoint_sequence == sequence:
+            if (previous.journal_batch_id != journal_batch_id
+                    or previous.snapshot_hash != seal["content_hash"]):
+                raise RuntimeError("Manager snapshot head conflicts with same cursor")
+            if load_attested_manager_snapshot(
+                    client, reader, run_id=run_id,
+                    checkpoint_sequence=sequence) != restored:
+                raise RuntimeError("Manager snapshot repeat differs from selected state")
+            return previous
+        if previous.checkpoint_sequence > sequence:
+            raise RuntimeError("Manager snapshot would rewind Keeper head")
+
+    protection = rows.protection
+    families = (
+        (
+            ("trading_strategy_one_protection_state_v1", protection.states),
+            ("trading_strategy_one_protection_resistance_v1",
+             protection.resistances),
+            ("trading_strategy_one_protection_snapshot_v1",
+             (protection.snapshot,)),
+        ),
+        (
+            (SOURCE.name, rows.sources), (BREAK.name, rows.pending_breaks),
+            (PARENT.name, (seal,)),
+        ),
+    )
+    operations: list[tuple[str, str]] = []
+    selected_id = str(UUID(str(seal["snapshot_id"])))
+    for group in families:
+        for table, expected in group:
+            if not expected:
+                continue
+            token = f"manager-state:{run_id}:{sequence}:{seal['content_hash']}:{table}"
+            _insert(client, table, tuple(expected), token,
+                    dispatch_sequence=sequence,
+                    dispatch_batch_id=journal_batch_id,
+                    dispatch_manager_snapshot_hash=seal["content_hash"])
+            operations.append((table, token))
+
+    contracts = {table.name: table for table in (*TABLES, *PROTECTION_TABLES)}
+    expected_rows = {
+        "trading_strategy_one_protection_snapshot_v1": (protection.snapshot,),
+        "trading_strategy_one_protection_state_v1": protection.states,
+        "trading_strategy_one_protection_resistance_v1": protection.resistances,
+        PARENT.name: (seal,), SOURCE.name: rows.sources,
+        BREAK.name: rows.pending_breaks,
+    }
+    for table, expected in expected_rows.items():
+        contract = contracts[table]
+        projection = ",".join(
+            f"toString({name}) AS {name}" if "Decimal(" in kind else name
+            for name, kind in contract.columns)
+        sql = assert_select_only(
+            f"SELECT {projection} FROM arte.{table} "
+            f"WHERE snapshot_id=toUUID({_literal(selected_id)}) "
+            f"LIMIT {len(expected) + 1} FORMAT JSONEachRow")
+        observed = tuple(json.loads(line) for line in client.execute(sql).splitlines()
+                         if line.strip())
+        if (len(observed) != len(expected)
+                or sorted((_wire_row(table, row) for row in observed),
+                          key=lambda row: json.dumps(row, sort_keys=True))
+                != sorted((_wire_row(table, row) for row in expected),
+                          key=lambda row: json.dumps(row, sort_keys=True))):
+            raise RuntimeError(f"Manager snapshot readback differs: {table}")
+    for table, token in operations:
+        client.typed_insert_dispatch.seal_verified_operation(
+            run_id=run_id, table=table, token=token,
+            batch_id=journal_batch_id, batch_last_sequence=sequence,
+            manager_snapshot=True)
+    client.typed_insert_dispatch.compact_verified_manager_snapshot(
+        run_id=run_id, batch_id=journal_batch_id, last_sequence=sequence,
+        snapshot_hash=seal["content_hash"], operations=tuple(operations),
+        previous=previous)
+    selected = reader.read_head(run_id=run_id)
+    if (selected.checkpoint_sequence != sequence
+            or selected.journal_batch_id != journal_batch_id
+            or selected.snapshot_hash != seal["content_hash"]):
+        raise RuntimeError("Manager snapshot Keeper readback differs")
+    return selected

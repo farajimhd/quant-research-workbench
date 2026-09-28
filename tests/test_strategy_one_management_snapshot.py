@@ -9,7 +9,7 @@ from src.backend.backtest_strategy_one_management import StrategyOneManagementSt
 from src.trading_runtime import strategy_one_management_snapshot as subject
 from src.trading_runtime.strategy_one_management_snapshot import (
     TABLES, ManagerSnapshotHead, ManagedManagerSnapshotHeadReader,
-    project_manager_snapshot,
+    project_manager_snapshot, publish_manager_snapshot,
     restore_manager_snapshot, load_attested_manager_snapshot,
 )
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
@@ -142,3 +142,93 @@ def test_managed_keeper_head_is_exact_and_loses_authority_on_disconnect():
     session._on_state("SUSPENDED")
     with pytest.raises(RuntimeError, match="unavailable"):
         reader.read_head(run_id=rows.snapshot["run_id"])
+
+
+def test_manager_publication_is_rows_first_then_keeper_selected(monkeypatch):
+    from src.trading_runtime.arte_typed_insert_dispatch import (
+        TypedInsertDispatch, _Gate, _gate_path, _context_receipt_path,
+    )
+    from tests.test_arte_typed_insert_dispatch import Keeper, Stat
+    from src.trading_runtime import arte_journal_commit_v4, arte_journal_projection
+
+    rows = _rows()
+    run, sequence = rows.snapshot["run_id"], rows.snapshot["checkpoint_sequence"]
+    batch = "00000000-0000-0000-0000-000000000042"
+    prefix = V4CommittedPrefix(run, sequence, batch, "2026-08-18:31000",
+                               "running", (batch,))
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
+                        lambda _client, _run: prefix)
+    monkeypatch.setattr(arte_journal_projection, "load_latest_backtest_cursor",
+                        lambda _client, _prefix: {
+                            "run_id": run, "event_sequence": sequence,
+                            "batch_id": batch, "boundary_ms": 31_000,
+                            "session_date": "2026-08-18"})
+    keeper = Keeper()
+    keeper.add_listener = lambda _listener: None
+    keeper.connected = True
+    keeper.client_id = (101, b"secret")
+    keeper.exists = lambda path: keeper.rows.get(path)
+    session = ManagedKeeperSession(keeper)
+    session._on_state("CONNECTED")
+    dispatch = TypedInsertDispatch(keeper)
+    dispatch.initialize_new_run(run)
+    keeper.create(_context_receipt_path(run), b"1\n" + b"a" * 64)
+    gate, version = dispatch._read_gate(run)
+    keeper.rows[_gate_path(run)] = (
+        _Gate("open", 0, gate.epoch, 0, sequence, batch,
+              "a" * 64, "00000000-0000-0000-0000-000000000000").wire(),
+        Stat(version + 1))
+
+    class Client:
+        typed_insert_strict = True
+        typed_insert_dispatch = dispatch
+
+        def __init__(self):
+            self.tables = {}
+            self.manager_keeper_session = session
+
+        def close(self):
+            return None
+
+        def execute(self, sql, *, query_id=None):
+            table = sql.split("arte.", 1)[1].split(" ", 1)[0]
+            if sql.startswith("INSERT INTO "):
+                self.tables.setdefault(table, []).extend(
+                    json.loads(line) for line in sql.split("\n", 1)[1].splitlines())
+                return ""
+            assert sql.startswith("SELECT ")
+            return "\n".join(json.dumps(row) for row in self.tables.get(table, ()))
+
+    client = Client()
+    head = publish_manager_snapshot(client, session, rows,
+                                    journal_batch_id=batch)
+    assert head == ManagerSnapshotHead(
+        run, sequence, batch, rows.snapshot["content_hash"], 0)
+    assert dispatch._read_gate(run)[0].registered == 0
+    assert set(client.tables) == {
+        "trading_strategy_one_protection_snapshot_v1",
+        "trading_strategy_one_protection_state_v1",
+        subject.PARENT.name,
+        subject.SOURCE.name, subject.BREAK.name,
+    }
+    assert publish_manager_snapshot(client, session, rows,
+                                    journal_batch_id=batch) == head
+    assert all(len(stored) == 1 for stored in client.tables.values())
+
+    from src.trading_runtime import arte_journal_writer as writer_module
+    monkeypatch.setattr(writer_module, "_v4_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+    journal = writer_module.ArteJournalWriter(
+        client, run_id=run, journal_profile="backtest_v4",
+        coalesce_batches=False)
+    try:
+        journal._last_commit_id = batch  # The fixture's compacted predecessor.
+        assert journal.submit_manager_snapshot(
+            session_date=date(2026, 8, 18),
+            checkpoint_sequence=sequence, journal_batch_id=batch,
+            state=restore_manager_snapshot(rows)).result(timeout=5) == batch
+        assert journal.metrics()["publish_by_unit"]["_ManagerSnapshotUnit"]["units"] == 1
+    finally:
+        journal.close()
