@@ -30,6 +30,24 @@ SQLite-backed replacement. The app's visual layout is unchanged.
 
 ## Measured full-market premarket validation
 
+On the current Strategy 1 code hash
+`6760ec7e70322d34955c17acbd34b24e8b1b26a2597d8a70ec5cb3777fdcc565`,
+two independent workstation app-route runs of the entire Aug 18 04:00–09:30 ET
+premarket completed in 29.612s and 29.834s of execution after 23.559s and
+20.844s cold preflight. Runs `fa99ad4f-1a49-47f7-8d25-8a747997a1bf` and
+`ccdb626d-bece-4154-b7a0-3c5b216e5dba` each processed 7,381 persisted
+liquidity rows and drained 2,217 normalized journal events with zero failed
+units. Fresh read-only V4 verification found matching run/definition/code
+hashes, final account state, all 58 portfolio decisions and strategy intents,
+86 executions and commissions, and 30 order commands. The later run's
+29.834s profile spent 15.959s in the session phase and 7.358s in terminal
+durability fencing; sparse loading took 0.185s. Keeper connection-drop
+messages appeared during process shutdown after completed verification and
+remain a separate diagnostic. A comparison with older run
+`8f5bbb79-eecd-4e01-a59f-b01952b4d870` is not same-code equivalence:
+its recorded code hash differs, and its portfolio-decision rows differ even
+though its final account, fills, fees, intents, and commands match.
+
 On 2026-09-28, the workstation's certified ARTE build
 `1521ba7702a9ee0783916f706f4885a24a3f32a91630b04ff738a90e65bc9dd5`
 passed read-only preflight for all 6,100 Aug 19 tickers. With Strategy 1's
