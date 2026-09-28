@@ -4,13 +4,15 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import date
 import math
+import os
+import warnings
 
 import numpy as np
 import torch
 
 from research.rl_trading.v1.common import file_hash, bounds, digest
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS
-from src.market_engine.level_book_store import read
+from src.market_engine.level_book_store import read, write
 
 ARRAYS = ('features','volume_60s','execution','closeable','time_us','slots','rank','held_slots',
     'actions','action_mask','lots','lot_slots','account','reward','return_to_go','done')
@@ -66,6 +68,7 @@ class SessionShard:
                     raise ValueError('Training shard file hash changed: '+name)
         for name in names:
             self.arrays[name] = np.load(self.root/(name+'.npy'),mmap_mode='r',allow_pickle=False)
+        self.feature_cache = None
         rows = self.complete['rows']
         tickers = self.plan['tickers']
         if (self.arrays['features'].shape != (len(tickers),SECONDS,len(FEATURE_NAMES))
@@ -96,6 +99,69 @@ class SessionShard:
         self.arrays = remapped
         for array in previous.values():
             array._mmap.close()
+        if self.feature_cache is not None:
+            cached = self.feature_cache
+            self.feature_cache = np.load(Path(cached.filename),mmap_mode='r',allow_pickle=False)
+            cached._mmap.close()
+
+    def attach_feature_cache(self, cache_root: Path):
+        location = Path(cache_root)/self.plan['plan_hash']
+        certificate = read(location/'complete.json')
+        expected = dict(version='rl-trading-feature-cache-v1',
+            plan_hash=self.plan['plan_hash'],
+            source_feature_hash=self._source_feature_hash(),
+            shape=list(self.arrays['features'].shape),dtype='float16')
+        if any(certificate.get(key) != value for key,value in expected.items()):
+            raise ValueError('Feature cache source contract changed')
+        path = location/'features.npy'
+        if file_hash(path) != certificate.get('cache_hash'):
+            raise ValueError('Feature cache hash changed')
+        cached = np.load(path,mmap_mode='r',allow_pickle=False)
+        if cached.shape != self.arrays['features'].shape or cached.dtype != np.float16:
+            raise ValueError('Feature cache tensor contract changed')
+        if self.feature_cache is not None:
+            self.feature_cache._mmap.close()
+        self.feature_cache = cached
+        return certificate
+
+    def _source_feature_hash(self):
+        plan,complete = self.plan,self.complete
+        while 'features.npy' not in complete['files']:
+            base_root = plan.get('base_shard_root')
+            if not base_root:
+                raise ValueError('Feature cache has no certified source tensor')
+            plan = read(Path(base_root)/'plan.json')
+            complete = read(Path(base_root)/'complete.json')
+        return complete['files']['features.npy']
+
+    def build_feature_cache(self, cache_root: Path, *, chunk_tickers: int = 128):
+        if chunk_tickers < 1:
+            raise ValueError('Feature cache chunk must be positive')
+        location = Path(cache_root)/self.plan['plan_hash']
+        if (location/'complete.json').is_file():
+            return self.attach_feature_cache(cache_root)
+        location.mkdir(parents=True,exist_ok=True)
+        target = location/'features.npy'
+        temporary = location/f'features.{os.getpid()}.npy.tmp'
+        source = self.arrays['features']
+        output = np.lib.format.open_memmap(temporary,mode='w+',dtype=np.float16,
+            shape=source.shape)
+        try:
+            for start in range(0,source.shape[0],chunk_tickers):
+                chunk = np.asarray(source[start:start+chunk_tickers]).astype(np.float16)
+                if not np.isfinite(chunk).all():
+                    raise ValueError('Feature cache cannot represent source in float16')
+                output[start:start+len(chunk)] = chunk
+            output.flush()
+        finally:
+            del output
+        os.replace(temporary,target)
+        certificate = dict(version='rl-trading-feature-cache-v1',
+            plan_hash=self.plan['plan_hash'],source_feature_hash=self._source_feature_hash(),
+            shape=list(source.shape),dtype='float16',cache_hash=file_hash(target))
+        write(location/'complete.json',certificate)
+        self.attach_feature_cache(cache_root)
+        return certificate
 
     def to_gpu(self, device: torch.device, ticker_vocab: dict[str,int],
                *, reserve_fraction: float = .3):
@@ -122,6 +188,11 @@ class GpuSession:
         self.values = {}
         for name,value in source.arrays.items():
             if name in ('volume_60s','execution','closeable'):
+                continue
+            if name == 'features' and source.feature_cache is not None:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings('ignore',message='The given NumPy array is not writable')
+                    self.values[name] = torch.from_numpy(source.feature_cache).to(device)
                 continue
             host = np.asarray(value).astype(np.float16,copy=True) if name == 'features' else np.asarray(value).copy()
             if name == 'features' and not np.isfinite(host).all():

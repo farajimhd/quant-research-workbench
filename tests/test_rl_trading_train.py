@@ -76,6 +76,28 @@ def test_streamed_shard_releases_touched_maps_without_changing_values(tmp_path):
     assert float(shard.arrays['features'][0,0,0]) == expected
 
 
+def test_feature_cache_matches_certified_float16_values_and_rejects_mutation(tmp_path):
+    shard = SessionShard(_shard(tmp_path/'day',date(2026,8,20)))
+    cache_root = tmp_path/'runtime-cache'
+    certificate = shard.build_feature_cache(cache_root)
+    assert certificate['source_feature_hash'] == shard.complete['files']['features.npy']
+    assert shard.feature_cache.dtype == np.float16
+    assert np.array_equal(shard.feature_cache,
+        shard.arrays['features'].astype(np.float16))
+    old = shard.feature_cache
+    shard.release_mapped_pages()
+    assert old._mmap.closed
+    assert np.array_equal(shard.feature_cache,
+        shard.arrays['features'].astype(np.float16))
+    shard.attach_feature_cache(cache_root)
+    cached = cache_root/shard.plan['plan_hash']/'features.npy'
+    with cached.open('r+b') as handle:
+        handle.seek(-1,2)
+        handle.write(b'X')
+    with pytest.raises(ValueError,match='cache hash'):
+        shard.attach_feature_cache(cache_root)
+
+
 def test_warm_start_transfers_ticker_identity_by_name(tmp_path):
     source = tmp_path/'source'
     (source/'checkpoints').mkdir(parents=True)

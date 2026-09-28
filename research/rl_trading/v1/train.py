@@ -216,9 +216,18 @@ def run(args):
            (contract['top_n'],contract['history_seconds'],contract['max_lots'],
             contract['max_orders'],contract['feature_names']) for item in val_shards):
         raise ValueError('Validation feature or action contract differs')
+    cache_certificates = None
+    if args.feature_cache_root:
+        runtime = runtime_root().resolve()
+        if not runtime.is_dir() or not args.feature_cache_root.resolve().is_relative_to(runtime):
+            raise ValueError('Feature cache must stay inside the required runtime root')
+        cache_certificates = {str(shard.root):shard.attach_feature_cache(args.feature_cache_root)
+            for shard in train_shards+val_shards}
     config = dict(version=VERSION,train_shards=[str(x.root) for x in train_shards],
         val_shards=[str(x.root) for x in val_shards],
         source_hashes={str(x.root):x.plan['plan_hash'] for x in train_shards+val_shards},
+        feature_cache_root=str(args.feature_cache_root.resolve()) if args.feature_cache_root else None,
+        feature_cache_certificates=cache_certificates,
         feature_names=list(FEATURE_NAMES),ticker_vocabulary=vocab,
         model=dict(d_model=args.d_model,layers=args.layers,heads=args.heads),
         training=dict(epochs=args.epochs,batch_size=args.batch_size,learning_rate=args.learning_rate,
@@ -230,7 +239,7 @@ def run(args):
             init_checkpoint=str(args.init_checkpoint.resolve()) if args.init_checkpoint else None,
             init_checkpoint_hash=file_hash(args.init_checkpoint) if args.init_checkpoint else None),
         code_hashes={name:file_hash(Path(__file__).with_name(name)) for name in
-            ('train.py','data.py','model.py','objectives.py','features.py',
+            ('train.py','data.py','prepare_feature_cache.py','model.py','objectives.py','features.py',
              'replay.py','evaluate_replay.py','shard_labels.py','costs.py')})
     config['config_hash'] = digest(config)
     runtime = runtime_root().resolve()
@@ -506,6 +515,8 @@ def main(argv=None):
     parser.add_argument('--wandb-entity',default='')
     parser.add_argument('--data-mode',choices=('gpu_resident','session_stream'),
         default='gpu_resident',help='Stream one verified session at a time when the dataset exceeds GPU memory')
+    parser.add_argument('--feature-cache-root',type=Path,
+        help='Verified runtime float16 staging cache for the same certified feature values')
     parser.add_argument('--init-checkpoint',type=Path,
         help='Warm-start a new run from a finished validation-qualified checkpoint_best_replay.pt')
     parser.add_argument('--resume',action='store_true')
