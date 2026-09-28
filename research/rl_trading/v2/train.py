@@ -410,6 +410,7 @@ def _train_locked(args, config, root):
                         restored = TradingEnv(session,config)
                         restored.load_state_dict(active_state)
                         envs[0] = restored
+                        restored = session = None
                 score = float(np.mean([x['net_return'] for x in result['validation']]))
                 valid = all(x['valid_terminal'] for x in result['validation'])
                 improved = valid and score > best
