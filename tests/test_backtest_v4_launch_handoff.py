@@ -6,6 +6,8 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from src.backend import backtest_fixed_journal_bootstrap as bootstrap
 from src.backend import backtest_journal_clickhouse, backtest_fixed_v4_certification
 from src.backend.replay_run_service import ReplayRunController
@@ -14,6 +16,42 @@ from src.trading_runtime import (
     keeper_session,
 )
 from src.trading_runtime.runtime import RunMode
+from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+
+def test_v4_writer_consumes_only_a_fresh_same_client_preflight(monkeypatch):
+    audited = []
+    monkeypatch.setattr(arte_journal_writer, "storage_preflight",
+                        lambda client, **_kwargs: audited.append(("storage", client)))
+    monkeypatch.setattr(arte_journal_writer, "journal_permission_preflight",
+                        lambda client, **_kwargs: audited.append(("grants", client)))
+    monkeypatch.setattr(arte_journal_writer, "_verify_run_identity",
+                        lambda _client, _run_id: {
+                            "mode": "backtest", "account_ids": ("SIM-01",),
+                        })
+    client = SimpleNamespace(
+        typed_insert_strict=True, typed_insert_dispatch=TypedInsertDispatch(object()),
+        close=lambda: None,
+    )
+    seal = arte_journal_writer._v4_preflight(client)
+    assert [kind for kind, _ in audited] == ["storage", "grants"]
+    writer = arte_journal_writer.ArteJournalWriter(
+        client, run_id=str(uuid4()), journal_profile="backtest_v4",
+        coalesce_batches=False, v4_preflight_seal=seal)
+    writer.close()
+    assert len(audited) == 2
+    with pytest.raises(RuntimeError, match="fresh same-client"):
+        arte_journal_writer.ArteJournalWriter(
+            client, run_id=str(uuid4()), journal_profile="backtest_v4",
+            coalesce_batches=False, v4_preflight_seal=seal)
+    other = SimpleNamespace(
+        typed_insert_strict=True, typed_insert_dispatch=TypedInsertDispatch(object()),
+    )
+    fresh = arte_journal_writer._v4_preflight(client)
+    with pytest.raises(RuntimeError, match="fresh same-client"):
+        arte_journal_writer.ArteJournalWriter(
+            other, run_id=str(uuid4()), journal_profile="backtest_v4",
+            coalesce_batches=False, v4_preflight_seal=fresh)
 
 
 def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):

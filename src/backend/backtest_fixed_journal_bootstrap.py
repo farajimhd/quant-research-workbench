@@ -40,7 +40,7 @@ from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_journal_writer import (
-    ArteJournalWriter, _v4_preflight, load_typed_run_context,
+    ArteJournalWriter, _V4PreflightSeal, _v4_preflight, load_typed_run_context,
     v4_storage_contracts,
 )
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
@@ -366,6 +366,7 @@ def assemble_fixed_v4_journal(
     fixed_market_execution_plan: object, expected_market_start: datetime,
     writer_factory: Callable[..., ArteJournalWriter],
     batch_size: int = 1024, queue_capacity: int = 8,
+    v4_preflight_seal: _V4PreflightSeal | None = None,
 ) -> FixedJournalAssembly:
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
     if (not isinstance(token, FixedV4JournalPreflightToken)
@@ -391,13 +392,17 @@ def assemble_fixed_v4_journal(
     # grant audit before starting its thread. Keep the explicit audit for
     # injected factories, which may not enforce that constructor contract.
     if writer_factory is not ArteJournalWriter:
+        if v4_preflight_seal is not None:
+            raise ValueError("Injected V4 writer cannot consume a production preflight")
         _v4_preflight(writer_client)
     journal = BacktestMemoryJournal(run_id=token.run_id)
     try:
+        writer_kwargs = ({"v4_preflight_seal": v4_preflight_seal}
+                         if v4_preflight_seal is not None else {})
         writer = writer_factory(
             writer_client, run_id=token.run_id, capacity=queue_capacity,
             max_events_per_commit=batch_size, coalesce_batches=False,
-            journal_profile="backtest_v4")
+            journal_profile="backtest_v4", **writer_kwargs)
         publisher = BacktestTypedJournalPublisher(
             journal, writer, attempt_id=attempt_id, run_month=token.run_month,
             batch_size=batch_size, expected_config=expected_config,
@@ -462,7 +467,7 @@ def publish_and_assemble_fixed_v4_journal(
     fixed_backtest_v2_preflight(context_client)
     _v4_cold_reader_preflight(read_client)
     _v4_cold_reader_preflight(terminal_client)
-    _v4_preflight(writer_client)
+    writer_preflight_seal = _v4_preflight(writer_client)
     certificate = projection_certifier()
     if (not isinstance(certificate, str)
             or re.fullmatch(r"[0-9a-f]{64}", certificate) is None):
@@ -487,7 +492,9 @@ def publish_and_assemble_fixed_v4_journal(
         fixed_market_execution_plan=fixed_market_execution_plan,
         expected_market_start=expected_market_start,
         writer_factory=writer_factory, batch_size=batch_size,
-        queue_capacity=queue_capacity)
+        queue_capacity=queue_capacity,
+        v4_preflight_seal=(writer_preflight_seal
+                           if writer_factory is ArteJournalWriter else None))
 
 
 def _v4_cold_reader_preflight(client: Any) -> None:

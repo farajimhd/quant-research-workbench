@@ -1871,7 +1871,19 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     return tuple(by_name.values())
 
 
-def _v4_preflight(client: Any) -> None:
+_V4_PREFLIGHT_SECRET = object()
+
+
+class _V4PreflightSeal:
+    """One-use proof that this exact client passed the full V4 audit."""
+
+    __slots__ = ("client", "secret", "used")
+
+    def __init__(self, client: Any, secret: object) -> None:
+        self.client, self.secret, self.used = client, secret, False
+
+
+def _v4_preflight(client: Any) -> _V4PreflightSeal:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
     from src.trading_runtime.arte_backtest_definition import TABLES as definition_tables
 
@@ -1895,6 +1907,7 @@ def _v4_preflight(client: Any) -> None:
     readonly = frozenset(table.name for table in installed) - writable
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
+    return _V4PreflightSeal(client, _V4_PREFLIGHT_SECRET)
 
 
 def _v4_family_table(name: str) -> str:
@@ -3378,9 +3391,12 @@ class ArteJournalWriter:
     def __init__(self, client: Any, *, run_id: str, capacity: int = 8,
                  max_events_per_commit: int = 4096,
                  coalesce_batches: bool = True,
-                 journal_profile: str = "v1") -> None:
+                 journal_profile: str = "v1",
+                 v4_preflight_seal: _V4PreflightSeal | None = None) -> None:
         if capacity < 1 or max_events_per_commit < 1:
             raise ValueError("Journal queue capacity and commit bound must be positive")
+        if v4_preflight_seal is not None and journal_profile != "backtest_v4":
+            raise ValueError("V4 Backtest preflight cannot authorize another writer")
         # Startup/control-plane validation, before a publication thread exists.
         # Never attempt to create tables or repair misplaced parts here.
         if journal_profile == "v1":
@@ -3401,7 +3417,15 @@ class ArteJournalWriter:
                                       TypedInsertDispatch)):
                 raise RuntimeError("V4 writer requires a strict Keeper-fenced insert dispatch")
             if journal_profile == "backtest_v4":
-                _v4_preflight(client)
+                if v4_preflight_seal is None:
+                    _v4_preflight(client)
+                elif (not isinstance(v4_preflight_seal, _V4PreflightSeal)
+                      or v4_preflight_seal.client is not client
+                      or v4_preflight_seal.secret is not _V4_PREFLIGHT_SECRET
+                      or v4_preflight_seal.used):
+                    raise RuntimeError("V4 writer lacks a fresh same-client preflight")
+                else:
+                    v4_preflight_seal.used = True
             else:
                 from src.backend.live_strategy_one_v4_principal import live_v4_preflight
                 live_v4_preflight(client)
