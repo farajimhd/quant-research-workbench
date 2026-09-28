@@ -7037,10 +7037,14 @@ class ReplayRunController:
             raise RuntimeError('V4 terminal lacks its completed market clock')
         boundary_id, _ = backtest_cursor_record_fields(
             self._source_cursor, self._frame_cursor, completed_at=cursor_time)
+        phase_started = time.perf_counter()
         if publisher._source_cursor != boundary_id:
             await self._save_restart_checkpoint_responsive(
                 cursor_time, checkpoint_status='running')
+        self._record_stage_time('strategy_one_terminal_prior_commit', phase_started)
+        phase_started = time.perf_counter()
         await self._runtime.finish(status=status)
+        self._record_stage_time('strategy_one_terminal_runtime_finish', phase_started)
         self._runtime_finished = True
         records = self._journal.unfenced_records()
         terminal = records[-1] if records else None
@@ -7049,10 +7053,13 @@ class ReplayRunController:
                 or terminal.entity_id != self.run_id
                 or terminal.payload.get('status') != status):
             raise RuntimeError('V4 terminal lifecycle is not last')
+        phase_started = time.perf_counter()
         captures = tuple(self._runtime.portfolio.capture_recovery_snapshot(
             account_id, state_revision=terminal.sequence,
             snapshot_at=terminal.event_time)
             for account_id in sorted(self.account_ids))
+        self._record_stage_time('strategy_one_terminal_capture', phase_started)
+        phase_started = time.perf_counter()
         terminal_task = publisher.enqueue_terminal(captures)
         try:
             await asyncio.shield(terminal_task)
@@ -7061,6 +7068,8 @@ class ReplayRunController:
             # terminal batch and account anchors are still being published.
             await terminal_task
             raise
+        finally:
+            self._record_stage_time('strategy_one_terminal_receipt', phase_started)
 
     def _schedule_bar_gpt_scope(self, event_time: datetime) -> None:
         if self._bar_gpt_fields_required():
