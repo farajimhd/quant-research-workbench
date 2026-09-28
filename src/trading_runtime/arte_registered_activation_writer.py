@@ -11,7 +11,7 @@ from concurrent.futures import Future
 from datetime import date, datetime
 from queue import Queue
 from threading import Lock, Thread
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from src.trading_runtime.arte_activation_insert_dispatch import (
@@ -20,6 +20,7 @@ from src.trading_runtime.arte_activation_insert_dispatch import (
 from src.trading_runtime.arte_activation_projection import (
     ActivationProjection, strategy_one_activation_run_id,
 )
+from src.backend.live_strategy_one_v4_principal import live_v4_preflight
 
 
 _NEW_YORK = ZoneInfo("America/New_York")
@@ -39,14 +40,13 @@ class RegisteredActivationWriter:
 
     def __init__(self, client: Any, dispatch: ActivationInsertDispatch, *,
                  session_date: date, mode: str,
-                 run_plan_ids: Iterable[str], capacity: int = 128,
-                 preflight: Callable[[Any], None] | None = None) -> None:
+                 run_plan_ids: Iterable[str], capacity: int = 128) -> None:
         if type(session_date) is not date or mode not in {"paper", "live"}:
             raise ValueError("Registered activation session or mode is invalid")
         if type(capacity) is not int or capacity < 1:
             raise ValueError("Registered activation capacity is invalid")
         if (not isinstance(dispatch, ActivationInsertDispatch)
-                or not dispatch.strategy_one or not callable(preflight)):
+                or not dispatch.strategy_one):
             raise ValueError(
                 "Strategy 1 activation needs isolated dispatch and exact preflight")
         plans = tuple(run_plan_ids)
@@ -54,7 +54,7 @@ class RegisteredActivationWriter:
             raise ValueError("Registered activation plans are missing or duplicate")
         self._run_ids = {plan: strategy_one_activation_run_id(
             session_date, mode=mode, run_plan_id=plan) for plan in plans}
-        preflight(client)
+        live_v4_preflight(client)
         for run_id in self._run_ids.values():
             dispatch.assert_open(run_id)
         self._client = client

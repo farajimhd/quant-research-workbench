@@ -173,10 +173,12 @@ def test_registered_intent_activation_ack_chain_admits_after_both_receipts() -> 
         date(2026, 9, 24),
         mode="paper", run_plan_id="plan-1")
     activation_dispatch.initialize_new_run(activation_run, has_ch_rows=False)
-    activation_writer = RegisteredActivationWriter(
-        activation_client, activation_dispatch,
-        session_date=date(2026, 9, 24),
-        mode="paper", run_plan_ids=("plan-1",), preflight=lambda _: None)
+    from unittest.mock import patch
+    with patch("src.trading_runtime.arte_registered_activation_writer.live_v4_preflight"):
+        activation_writer = RegisteredActivationWriter(
+            activation_client, activation_dispatch,
+            session_date=date(2026, 9, 24),
+            mode="paper", run_plan_ids=("plan-1",))
     admitted: list[dict] = []
     lane = TypedActivationDispatchAdmission(
         activation_writer, cursor_writer, admitted.extend)

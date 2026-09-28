@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from concurrent.futures import Future
 from threading import Event
+from unittest.mock import patch
 
 import pytest
 
@@ -47,11 +48,25 @@ class _BlockingClient(_MemoryClient):
 def _writer(client: _BlockingClient, *, capacity: int = 1):
     dispatch = ActivationInsertDispatch(_Client(_Store(), 11), strategy_one=True)
     dispatch.initialize_new_run(RUN, has_ch_rows=False)
-    writer = RegisteredActivationWriter(
-        client, dispatch, session_date=SESSION, mode="paper",
-        run_plan_ids=("plan-1",), capacity=capacity,
-        preflight=lambda _: None)
+    with patch("src.trading_runtime.arte_registered_activation_writer.live_v4_preflight"):
+        writer = RegisteredActivationWriter(
+            client, dispatch, session_date=SESSION, mode="paper",
+            run_plan_ids=("plan-1",), capacity=capacity)
     return writer, dispatch
+
+
+def test_exact_live_principal_preflight_cannot_be_skipped(monkeypatch) -> None:
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11), strategy_one=True)
+    dispatch.initialize_new_run(RUN, has_ch_rows=False)
+    def denied(_client):
+        raise RuntimeError("exact live grants missing")
+    monkeypatch.setattr(
+        "src.trading_runtime.arte_registered_activation_writer.live_v4_preflight",
+        denied)
+    with pytest.raises(RuntimeError, match="exact live grants missing"):
+        RegisteredActivationWriter(
+            _BlockingClient(), dispatch, session_date=SESSION,
+            mode="paper", run_plan_ids=("plan-1",))
 
 
 def test_submission_is_nonblocking_and_receipt_waits_for_clickhouse() -> None:
