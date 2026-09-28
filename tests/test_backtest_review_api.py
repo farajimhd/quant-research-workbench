@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, Mock, patch
 from datetime import datetime, timezone
@@ -16,7 +17,10 @@ class BacktestReviewAPITests(IsolatedAsyncioTestCase):
     def test_run_chart_cannot_expand_past_backtest_boundary(self):
         from src.backend.app import trading_canvas_live_chart_history
         cutoff = datetime(2026, 8, 21, 8, tzinfo=timezone.utc)
-        controller = Mock(current_time=cutoff)
+        controller = Mock(
+            current_time=cutoff,
+            definition=SimpleNamespace(configuration_revision={"payload": {"strategy": {}}}),
+        )
         with (patch.object(backtest_run_service, 'get', return_value=controller),
               patch('src.backend.app._canvas_live_chart_history', return_value={}) as history):
             trading_canvas_live_chart_history(symbol='AAPL', run_id='saved', mode='backtest',
