@@ -26,14 +26,16 @@ from src.trading_runtime.strategy_one_configuration_tree import (
     NODE_TABLE, RELEASE_TABLE,
 )
 from src.backend.live_strategy_one_approval import TABLE as APPROVAL
+from src.backend.live_plan_membership import TABLES as PLAN_MEMBERSHIP_TABLES
 from src.backend.live_assignment_base_keeper import KeeperAssignmentHead
 from src.trading_runtime.keeper_session import ManagedKeeperSession
 
 
 PRINCIPAL = "strategy_one_live_v4_runner"
 MANAGED_URL = "http://DESKTOP-SAAI85T:18123"
-_CONFIG_READ = frozenset({NODE_TABLE.split(".", 1)[1],
-                          RELEASE_TABLE.split(".", 1)[1], APPROVAL.name})
+_CONFIG_READ = (frozenset({NODE_TABLE.split(".", 1)[1],
+                           RELEASE_TABLE.split(".", 1)[1], APPROVAL.name})
+                | frozenset(table.name for table in PLAN_MEMBERSHIP_TABLES))
 _LEGACY_COMMIT_READ = frozenset({"trading_commit_v1", "trading_commit_v2"})
 _EXCLUDED_FAMILY = frozenset({
     "trading_backtest_cursor_v1", "trading_backtest_market_authority_v1",
@@ -128,6 +130,7 @@ def live_v4_preflight(client: Any) -> None:
     contracts = {table.name: table for table in live_v4_storage_contracts()}
     names = plan.insert_arte | _POLICY_READ
     storage_preflight(client, tables=tuple(contracts[name] for name in sorted(names)))
+    storage_preflight(client, tables=PLAN_MEMBERSHIP_TABLES)
     # The configuration tree has its own exact schema verifier; the approval
     # contract is separately checked by journal_permission_preflight.
     journal_permission_preflight(

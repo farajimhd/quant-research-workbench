@@ -51,7 +51,13 @@ def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
     assert {"strategy_one_configuration_node_v1",
             "strategy_one_configuration_release_v1",
             "live_strategy_one_approval_v1",
+            "live_plan_membership_revision_typed_v1",
+            "live_plan_assignment_member_typed_v1",
+            "live_plan_activated_watch_typed_v1",
             "trading_commit_v1", "trading_commit_v2"} <= plan.select_arte
+    assert not {"live_plan_membership_revision_typed_v1",
+                "live_plan_assignment_member_typed_v1",
+                "live_plan_activated_watch_typed_v1"} & plan.insert_arte
     assert not {"trading_commit_v1", "trading_commit_v2"} & plan.insert_arte
     assert not plan.insert_arte.intersection({
         "bars_v1", "indicators_v1", "liquidity_100ms_v1"})
@@ -74,10 +80,11 @@ def test_preflight_uses_exact_plan_and_checks_principal(monkeypatch):
     live.live_v4_preflight(Client())
     plan = live.desired_plan()
     assert calls[0][1] == plan.insert_arte | live._POLICY_READ
-    assert calls[1][1]["journal_tables"] == plan.insert_arte
-    assert calls[1][1]["read_only_tables"] == (
+    assert calls[1][1] == {table.name for table in live.PLAN_MEMBERSHIP_TABLES}
+    assert calls[2][1]["journal_tables"] == plan.insert_arte
+    assert calls[2][1]["read_only_tables"] == (
         plan.select_arte - plan.insert_arte - live.MARKET_READ_TABLES)
-    assert calls[1][1]["reference_read_tables"] == plan.select_reference
+    assert calls[2][1]["reference_read_tables"] == plan.select_reference
     with pytest.raises(RuntimeError, match="another principal"):
         live.live_v4_preflight(Client("backtest_v4_runner"))
 
@@ -113,7 +120,7 @@ def test_live_v4_provisioner_grants_only_the_exact_plan(monkeypatch):
     assert sum(sql.startswith("CREATE USER ") for sql in admin.queries) == 1
     assert not any("INSERT INTO" in sql or "CREATE TABLE" in sql
                    for sql in admin.queries)
-    assert checked == ["storage", "configuration", "storage", "principal"]
+    assert checked == ["storage", "configuration", "storage", "storage", "principal"]
     assert writer.closed
 
 

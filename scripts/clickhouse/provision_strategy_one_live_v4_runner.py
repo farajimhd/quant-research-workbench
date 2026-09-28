@@ -34,6 +34,7 @@ from src.backend.live_strategy_one_v4_principal import (
     live_v4_storage_contracts,
 )
 from src.backend.live_strategy_one_approval import TABLE as APPROVAL
+from src.backend.live_plan_membership import TABLES as PLAN_MEMBERSHIP_TABLES
 from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES, storage_preflight
 from src.trading_runtime.strategy_one_configuration_tree import verify_tables
 
@@ -86,6 +87,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
     storage_preflight(admin, tables=tuple(contracts[name] for name in sorted(names)))
     verify_tables(admin)
     storage_preflight(admin, tables=(APPROVAL,))
+    storage_preflight(admin, tables=PLAN_MEMBERSHIP_TABLES)
     password = credential(account_exists=present == "1")
     if not isinstance(password, str) or len(password) < 40:
         raise RuntimeError("Live V4 needs a private credential of at least 40 characters")
