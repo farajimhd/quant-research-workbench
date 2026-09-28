@@ -123,3 +123,29 @@ def test_v4_apply_reconciles_exact_grants_before_runtime_preflight(monkeypatch):
     assert calls.index("v4-preflight") > max(
         index for index, sql in enumerate(calls) if sql.startswith("GRANT "))
     assert calls[-1] == "writer.close"
+
+
+def test_v4_retires_only_superseded_broker_grants():
+    calls = []
+
+    class Writer:
+        def execute(self, sql):
+            assert sql == "SHOW GRANTS FINAL"
+            return (
+                "GRANT SELECT, INSERT ON arte."
+                "trading_strategy_one_broker_match_ticker_v1 "
+                f"TO {provision.PRINCIPAL}\n"
+                "GRANT SELECT ON arte.bars_v1 "
+                f"TO {provision.PRINCIPAL}\n")
+
+    class Admin:
+        def execute(self, sql):
+            calls.append(sql)
+
+    provision._retire_broker_v1_grants(Admin(), Writer())
+    assert calls == [
+        "REVOKE INSERT ON arte.trading_strategy_one_broker_match_ticker_v1 "
+        f"FROM {provision.PRINCIPAL}",
+        "REVOKE SELECT ON arte.trading_strategy_one_broker_match_ticker_v1 "
+        f"FROM {provision.PRINCIPAL}",
+    ]
