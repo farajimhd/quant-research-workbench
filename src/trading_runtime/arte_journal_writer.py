@@ -25,6 +25,7 @@ from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, V4_COMMIT_TABLES,
+    V4_ORDER_COMMAND_LINEAGE,
     PORTFOLIO_SNAPSHOT_WRITE_TABLES,
     BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES,
     VERSIONED_JOURNAL_V2_TABLES, fixed_backtest_v2_contracts,
@@ -95,6 +96,7 @@ _CONTRACTS[V4_ALLOCATION.name] = V4_ALLOCATION
 _CONTRACTS.update({table.name: table for table in RISK_ACTION_TABLES})
 _CONTRACTS.update({table.name: table for table in PROTECTION_RECONCILIATION_TABLES})
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
+_CONTRACTS[V4_ORDER_COMMAND_LINEAGE.name] = V4_ORDER_COMMAND_LINEAGE
 _CONTRACTS.update({table.name: table for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES})
 _CONTRACTS.update({table.name: table for table in VERSIONED_JOURNAL_V2_TABLES})
 _CONTRACTS.update({table.name: table for table in (
@@ -390,6 +392,7 @@ class TypedJournalBatch:
     commissions: tuple[Mapping[str, Any], ...] = ()
     order_commands: tuple[Mapping[str, Any], ...] = ()
     order_contexts: tuple[Mapping[str, Any], ...] = ()
+    v4_command_lineages: tuple[Mapping[str, Any], ...] = ()
     intent_uses: tuple[Mapping[str, Any], ...] = ()
     order_transitions: tuple[Mapping[str, Any], ...] = ()
     oms_group_states: tuple[Mapping[str, Any], ...] = ()
@@ -426,6 +429,13 @@ class TypedJournalBatch:
                     raise ValueError(f"{family} contains mutable or opaque journal data")
                 snapshots.append(MappingProxyType(dict(row)))
             object.__setattr__(self, family, tuple(snapshots))
+        lineages = []
+        for row in self.v4_command_lineages:
+            if any(isinstance(value, (Mapping, list, tuple, set, bytearray, memoryview))
+                   for value in row.values()):
+                raise ValueError("V4 command lineage contains opaque journal data")
+            lineages.append(MappingProxyType(dict(row)))
+        object.__setattr__(self, "v4_command_lineages", tuple(lineages))
 
     def families(self) -> tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...]:
         return tuple((name, getattr(self, attribute)) for name, attribute, _, _ in _FAMILIES)
@@ -1192,12 +1202,17 @@ def _coalesce_unpublished(batches: tuple[TypedJournalBatch, ...]) -> TypedJourna
             str(UUID(str(row["intent_record_id"]))), row["intent_content_hash"])}
         for row in families["intent_uses"]
     )
+    lineages = tuple(
+        {**{key: value for key, value in row.items() if key != "content_hash"},
+         "batch_id": last.batch_id}
+        for batch in batches for row in batch.v4_command_lineages
+    )
     return TypedJournalBatch(
         batches[0].run_id, batches[0].run_month, batches[0].attempt_id,
         last.batch_id, batches[0].prior_batch_id,
         batches[0].first_sequence, last.last_sequence,
         last.source_cursor, last.status,
-        **families,
+        **families, v4_command_lineages=lineages,
     )
 
 
@@ -1909,7 +1924,8 @@ def v4_storage_contracts() -> tuple[Any, ...]:
         TABLES as broker_match_tables,
     )
     installed = fixed_backtest_v2_contracts()
-    contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
+    contracts = (*installed, *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
+                 ENTRY_EVIDENCE, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
                  *OMS_TACTIC_TABLES,
@@ -1930,6 +1946,7 @@ def v4_journal_write_tables() -> frozenset[str]:
 
     return (frozenset(_v4_family_table(table) for table, _, _, _ in _FAMILIES)
             | frozenset(table.name for table in V4_COMMIT_TABLES)
+            | frozenset({V4_ORDER_COMMAND_LINEAGE.name})
             | PORTFOLIO_SNAPSHOT_WRITE_TABLES
             | frozenset({
                 ENTRY_EVIDENCE.name, V4_ALLOCATION.name,

@@ -1149,6 +1149,22 @@ V4_COMMIT_TABLES = (
     ),
 )
 
+# One compact, typed authority per new Strategy 1 command. The source intent
+# remains in its existing normalized table; an OMS amendment references its
+# exact effective protection event rather than copying mutable metadata.
+V4_ORDER_COMMAND_LINEAGE = TableContract(
+    "trading_order_command_lineage_v1",
+    (("record_id", "UUID"), ("parent_record_id", "UUID"),
+     ("run_id", "String"), ("event_month", "Date"),
+     ("batch_id", "UUID"), ("account_id", "String"),
+     ("lineage_kind", "LowCardinality(String)"),
+     ("oms_group_record_id", "Nullable(UUID)"),
+     ("proof_record_id", "Nullable(UUID)"),
+     ("content_hash", "FixedString(64)")),
+    "toYYYYMM(event_month)",
+    "run_id, account_id, parent_record_id, record_id",
+)
+
 # Activation watch-set authority is normalized separately from execution
 # events, but belongs to the same operator-installed journal surface.
 ACTIVATION_TABLES = (

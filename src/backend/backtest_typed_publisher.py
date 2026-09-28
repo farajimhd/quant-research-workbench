@@ -130,6 +130,8 @@ class BacktestTypedJournalPublisher:
         # recovery authority. Cold resume must reload and verify ClickHouse.
         self._committed_strategy_intents: dict[str, tuple[TypedJournalBatch, object]] = {}
         self._committed_order_lineage: dict[str, tuple] = {}
+        self._committed_order_lineage_proofs: dict[str, str] = {}
+        self._committed_order_lineage_oms_records: dict[str, str] = {}
 
     @property
     def fenced_sequence(self) -> int:
@@ -181,6 +183,9 @@ class BacktestTypedJournalPublisher:
                 expected_market_start=self.expected_market_start,
                 published_sources=dict(self._committed_strategy_intents),
                 committed_order_lineage=dict(self._committed_order_lineage),
+                committed_order_lineage_proofs=dict(self._committed_order_lineage_proofs),
+                committed_order_lineage_oms_records=dict(
+                    self._committed_order_lineage_oms_records),
                 through_sequence=through_sequence)
             return _coalesce_v4_units(units, max_events=self.batch_size)
         if self.writer.journal_profile == "backtest_v3":
@@ -335,6 +340,17 @@ class BacktestTypedJournalPublisher:
                                             proof=protection_proof.get(f"target:{key}"))):
                                     raise RuntimeError("Committed OMS order lineage changed without typed amendment")
                                 self._committed_order_lineage[key] = lineage
+                                self._committed_order_lineage_oms_records[key] = str(UUID(
+                                    source_record.record_id))
+                                proof = protection_proof.get(f"target:{key}")
+                                if (lineage[0]["canonical_metadata"].get("reason") ==
+                                        "structural_profit_target_advanced"):
+                                    if proof is None:
+                                        raise RuntimeError("Committed amended OMS lineage lost its proof")
+                                    self._committed_order_lineage_proofs[key] = str(UUID(
+                                        proof.record_id))
+                                else:
+                                    self._committed_order_lineage_proofs.pop(key, None)
                     self.journal.mark_fenced(batch.last_sequence)
                     self._sequence = batch.last_sequence
                     self._batch_id = batch.batch_id

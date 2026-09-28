@@ -1545,6 +1545,9 @@ def order_command_batch(
     source_intent: StrategyIntent | None = None,
     source_intent_batch_id: str = "",
     approved_oms_lineage: tuple | None = None,
+    v4_lineage_proof_record_id: str | None = None,
+    v4_lineage_oms_record_id: str | None = None,
+    emit_v4_lineage: bool = False,
 ) -> TypedJournalBatch:
     """Capture one broker command losslessly before external dispatch.
 
@@ -1556,6 +1559,7 @@ def order_command_batch(
         raise ValueError("Strategy 1 command requires exact typed intent lineage")
     if request.strategyParameters:
         raise ValueError("Order command has unmodeled nested broker or strategy evidence")
+    amended_oms_lineage = False
     if request.raw:
         if (source_intent is None or source_intent.metadata
                 or not strategy_intent_record_id or not strategy_intent_content_hash
@@ -1586,6 +1590,7 @@ def order_command_batch(
         expected = canonical_runtime_order_raw(
             flat, source_intent, run_id=run_id,
             strategy_id=strategy_id, strategy_revision=strategy_revision)
+        amended_oms_lineage = request.raw != expected
         if request.raw != expected and (
                 approved_oms_lineage is None
                 or len(approved_oms_lineage) != 6
@@ -1617,6 +1622,19 @@ def order_command_batch(
             raise ValueError("Order command canonical lineage differs from typed intent: "
                              + ",".join(mismatched[:8]))
         request = flat
+    if emit_v4_lineage:
+        if (strategy_id, strategy_revision) != (STRATEGY_ONE_ID, STRATEGY_NUMBER):
+            raise ValueError("V4 command lineage applies only to Strategy 1")
+        if amended_oms_lineage and not v4_lineage_oms_record_id:
+            raise ValueError("V4 OMS command requires one exact group revision")
+        if v4_lineage_proof_record_id and not amended_oms_lineage:
+            raise ValueError("V4 protection proof cannot decorate an initial command")
+        if v4_lineage_proof_record_id:
+            UUID(v4_lineage_proof_record_id)
+        if v4_lineage_oms_record_id:
+            UUID(v4_lineage_oms_record_id)
+    elif v4_lineage_proof_record_id is not None or v4_lineage_oms_record_id is not None:
+        raise ValueError("V4 command lineage cannot be silently omitted")
     if (not command_id or not request.cOID or not run_id
             or created_at.tzinfo is None or recorded_at.tzinfo is None
             or strategy_revision < 0 or not event_category or not event_entity_type
@@ -1691,10 +1709,23 @@ def order_command_batch(
         "intent_record_id": str(UUID(strategy_intent_record_id)),
         "intent_content_hash": strategy_intent_content_hash,
     },) if strategy_intent_record_id else ()
+    v4_lineage = ({
+        "record_id": str(uuid5(NAMESPACE_URL, f"{record_id}:v4-lineage")),
+        "parent_record_id": record_id, "run_id": run_id,
+        "event_month": event_month, "batch_id": batch_id,
+        "account_id": request.acctId,
+        "lineage_kind": (
+            "oms_target_amendment" if v4_lineage_proof_record_id else
+            "oms_group" if amended_oms_lineage else "initial_intent"),
+        "oms_group_record_id": (v4_lineage_oms_record_id
+                                if amended_oms_lineage else None),
+        "proof_record_id": v4_lineage_proof_record_id,
+    },) if emit_v4_lineage else ()
     return TypedJournalBatch(
         run_id, run_month, attempt_id, batch_id, prior_batch_id,
         sequence, sequence, source_cursor, run_status, (event,),
         order_commands=(detail,), order_contexts=context, intent_uses=intent_use,
+        v4_command_lineages=v4_lineage,
     )
 
 

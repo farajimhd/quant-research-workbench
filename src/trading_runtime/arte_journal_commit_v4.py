@@ -895,6 +895,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         _sealed_families, _v4_family_table, _verify_commission_links, typed_row,
         _verify_exact_intent_uses, _verify_order_context_links,
     )
+    from src.trading_runtime.arte_journal_schema import V4_ORDER_COMMAND_LINEAGE
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 
     if (type(_prepare_only) is not bool
@@ -1184,6 +1185,31 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         v4_reconciliation_ids=tuple(row["record_id"] for row in reconciliation_rows),
         v4_snapshot_account_ids=tuple(row["record_id"] for row in snapshot_accounts),
         v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions))
+    command_rows = dict(base_families)["trading_order_command_v1"]
+    strategy_one_commands = {
+        str(UUID(str(row["record_id"]))) for row in command_rows
+        if (str(row["strategy_id"]), int(row["strategy_revision"])) ==
+           ("early-squeeze-strategy", 1)
+    }
+    lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)
+                         for row in batch.v4_command_lineages)
+    lineage_parents = {str(UUID(str(row["parent_record_id"])))
+                       for row in lineage_rows}
+    commands_by_id = {str(UUID(str(row["record_id"]))): row
+                      for row in command_rows}
+    if (len(lineage_parents) != len(lineage_rows)
+            or lineage_parents != strategy_one_commands
+            or any(str(row["run_id"]) != batch.run_id
+                   or str(UUID(str(row["batch_id"]))) != batch.batch_id
+                   or row["account_id"] != commands_by_id[str(row["parent_record_id"])]["account_id"]
+                   or row["event_month"] != commands_by_id[str(row["parent_record_id"])]["event_month"]
+                   or (row["lineage_kind"], bool(row["oms_group_record_id"]),
+                       bool(row["proof_record_id"]))
+                   not in {("initial_intent", False, False),
+                           ("oms_group", True, False),
+                           ("oms_target_amendment", True, True)}
+                   for row in lineage_rows)):
+        raise ValueError("V4 Strategy 1 commands need one typed lineage row each")
     entry_rows = _sealed_strategy_one_entry_rows(
         batch, base_families, strategy_one_entry_rows)
     tactic_states = ()
@@ -1217,6 +1243,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             run_id=batch.run_id, batch_id=batch.batch_id)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families)
+    if lineage_rows:
+        families += ((V4_ORDER_COMMAND_LINEAGE.name, lineage_rows),)
     if tactic_states:
         families += ((PARENT_TABLE, tactic_states),)
     if tactic_steps:

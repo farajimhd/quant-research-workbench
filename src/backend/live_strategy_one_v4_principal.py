@@ -50,6 +50,7 @@ _V4_LIVE_DETAIL = frozenset({
     "trading_order_cancel_activity_v4", "trading_order_reprice_v4",
     "trading_risk_action_v4", "trading_risk_action_reply_v4",
     "trading_oms_execution_tactic_v1", "trading_oms_execution_step_v1",
+    "trading_order_command_lineage_v1",
     "trading_protection_change_v3", "trading_protection_entry_order_v3",
     "trading_protection_reconciliation_v4",
     "trading_protection_reconciliation_action_v4",

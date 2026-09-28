@@ -33,7 +33,8 @@ from scripts.clickhouse.provision_trading_journal import (
     SECRET_ROOT, SYSTEM_READ_TABLES, _admin_client, _restrict_secret_file,
 )
 from src.trading_runtime.arte_journal_schema import (
-    MARKET_READ_TABLES, V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
+    MARKET_READ_TABLES, V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
+    fixed_backtest_v2_contracts,
     storage_preflight,
 )
 from src.trading_runtime.arte_journal_writer import (
@@ -103,6 +104,7 @@ def desired_plan() -> PrincipalPlan:
     return PrincipalPlan(
         "running", PRINCIPAL,
         frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
+                                          V4_ORDER_COMMAND_LINEAGE,
                                           ENTRY_EVIDENCE, V4_ALLOCATION,
                                           RESERVATION_REASON,
                                           ACKNOWLEDGEMENT, CANCEL,
@@ -157,6 +159,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
         raise RuntimeError("V4 principal inventory is inconsistent")
     storage_preflight(admin, tables=fixed_backtest_v2_contracts())
     storage_preflight(admin, tables=V4_COMMIT_TABLES)
+    storage_preflight(admin, tables=(V4_ORDER_COMMAND_LINEAGE,))
     storage_preflight(admin, tables=(ENTRY_EVIDENCE,))
     storage_preflight(admin, tables=OMS_TACTIC_TABLES)
     storage_preflight(admin, tables=BACKTEST_DEFINITION_TABLES)

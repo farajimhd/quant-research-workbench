@@ -137,7 +137,10 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
     from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
     from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
 
+    from src.trading_runtime.arte_journal_schema import V4_ORDER_COMMAND_LINEAGE
+
     assert plan.profile_contracts("commit-v4") == V4_COMMIT_TABLES + (
+        V4_ORDER_COMMAND_LINEAGE,
         ENTRY_EVIDENCE, V4_ALLOCATION, RESERVATION_REASON,
         ACKNOWLEDGEMENT, CANCEL, REPRICE,
         *RISK_ACTION_TABLES,
@@ -155,7 +158,8 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
                         lambda _client, *, tables: checked.extend(tables))
     missing, ddl = plan.plan_missing(Client(), profile="commit-v4")
     assert [table.name for table in checked] == [present]
-    assert missing == (V4_COMMIT_TABLES[1].name, ENTRY_EVIDENCE.name,
+    assert missing == (V4_COMMIT_TABLES[1].name,
+                       V4_ORDER_COMMAND_LINEAGE.name, ENTRY_EVIDENCE.name,
                            V4_ALLOCATION.name, RESERVATION_REASON.name,
                            ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
                            *(table.name for table in RISK_ACTION_TABLES),

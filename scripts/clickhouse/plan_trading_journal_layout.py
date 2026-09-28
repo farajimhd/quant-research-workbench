@@ -20,7 +20,8 @@ sys.dont_write_bytecode = True
 from dotenv import load_dotenv
 
 from src.trading_runtime.arte_journal_schema import (
-    V4_COMMIT_TABLES, fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
+    V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
+    fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
     storage_preflight,
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
@@ -57,7 +58,8 @@ def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
     if profile == "live-strategy-one-approval":
         return (STRATEGY_ONE_APPROVAL,)
     if profile == "commit-v4":
-        return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, V4_ALLOCATION,
+        return V4_COMMIT_TABLES + (V4_ORDER_COMMAND_LINEAGE,
+                                   ENTRY_EVIDENCE, V4_ALLOCATION,
                                    RESERVATION_REASON,
                                    ACKNOWLEDGEMENT, CANCEL, REPRICE,
                                    *RISK_ACTION_TABLES,

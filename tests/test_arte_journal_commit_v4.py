@@ -20,7 +20,8 @@ from src.trading_runtime.arte_journal_commit_v4 import (
     verify_commit_v4,
 )
 from src.trading_runtime.arte_journal_schema import (
-    TABLES, V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
+    TABLES, V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
+    fixed_backtest_v2_contracts,
 )
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_journal_writer import _sealed_families
@@ -1289,7 +1290,8 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     assert len(observed) == 2
     assert {table.name for table in observed[0]} == {
         table.name for table in (*fixed_backtest_v2_contracts(),
-                                 *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
+                                 *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
+                                 ENTRY_EVIDENCE, V4_ALLOCATION,
                                  RESERVATION_REASON,
                                      ACKNOWLEDGEMENT, CANCEL, REPRICE,
                                      *OMS_TACTIC_TABLES,
@@ -1303,7 +1305,8 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     from src.trading_runtime.arte_backtest_definition import TABLES as BACKTEST_DEFINITION_TABLES
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
-        frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
+            frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
+                V4_ORDER_COMMAND_LINEAGE.name,
             ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,

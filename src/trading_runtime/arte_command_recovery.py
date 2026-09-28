@@ -8,16 +8,136 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any, Protocol
 
 from src.trading_runtime.arte_journal_writer import (
     load_committed_order_command_page, load_committed_order_context_page,
     load_committed_order_transition_page, load_committed_prefix, VerifiedPrefix,
+    _CONTRACTS, _canonical_typed_content, _committed_batch_filter, _literal, _rows,
 )
 from src.trading_runtime.arte_intent_projection import load_committed_strategy_intent_page
 from src.trading_runtime.ibkr_schema import Execution, LiveOrder, OrderRequest
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.strategy_orders import canonical_runtime_order_raw
+from src.trading_runtime.journal_contract import canonical_json
+
+
+def _v4_command_lineage(client: Any, prefix: VerifiedPrefix,
+                        commands: tuple[dict[str, Any], ...],
+                        contexts: dict[str, dict[str, Any]]) -> dict[str, tuple[str, Any, Any, Any]]:
+    """Verify one compact lineage marker and any exact protection proof."""
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_commit_v4
+    from src.trading_runtime.arte_journal_reader import (
+        load_complete_typed_protection_history,
+    )
+    from src.trading_runtime.arte_journal_schema import V4_ORDER_COMMAND_LINEAGE
+
+    table = V4_ORDER_COMMAND_LINEAGE.name
+    for batch_id in {str(command["batch_id"]) for command in commands}:
+        _, families = load_verified_commit_v4(
+            client, run_id=prefix.run_id, batch_id=batch_id)
+        if not any(row["family_name"] == table for row in families):
+            raise RuntimeError("Strategy 1 command batch lacks sealed lineage markers")
+    ids = ",".join(f"toUUID({_literal(str(command['record_id']))})"
+                   for command in commands)
+    columns = ",".join(name for name, _ in _CONTRACTS[table].columns)
+    rows = _rows(client,
+        f"SELECT {columns} FROM arte.{table} "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND parent_record_id IN ({ids}) "
+        f"{_committed_batch_filter(prefix)}"
+        f"LIMIT {len(commands) + 1} FORMAT JSONEachRow")
+    if len(rows) != len(commands):
+        raise RuntimeError("Strategy 1 command has missing or excess lineage markers")
+    commands_by_id = {str(command["record_id"]): command for command in commands}
+    markers: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        parent_id = str(row["parent_record_id"])
+        command = commands_by_id.get(parent_id)
+        if command is None or parent_id in markers:
+            raise RuntimeError("Strategy 1 command has ambiguous lineage marker")
+        content = {key: value for key, value in row.items() if key != "content_hash"}
+        digest = sha256(canonical_json(_canonical_typed_content(
+            table, content, stored_utc=True)).encode("utf-8")).hexdigest()
+        if (digest != str(row["content_hash"])
+                or str(row["batch_id"]) != str(command["batch_id"])
+                or row["event_month"] != command["event_month"]
+                or row["account_id"] != command["account_id"]):
+            raise RuntimeError("Strategy 1 command lineage differs from its sealed row")
+        markers[parent_id] = row
+    wanted_oms = {str(marker["oms_group_record_id"]) for marker in markers.values()
+                  if marker["oms_group_record_id"] is not None}
+    history = (load_complete_typed_protection_history(client, prefix)
+               if wanted_oms else None)
+    proofs = ({record.record_id: record for record in history.records}
+              if history is not None else {})
+    if history is not None and len(proofs) != len(history.records):
+        raise RuntimeError("Strategy 1 protection history repeats a proof identity")
+    states = {}
+    if wanted_oms:
+        from src.trading_runtime.arte_oms_projection import (
+            load_committed_oms_group_state_page,
+        )
+        cursor = 0
+        scanned = 0
+        while wanted_oms - set(states):
+            page = load_committed_oms_group_state_page(
+                client, prefix, after_sequence=cursor, limit=200,
+                require_tactic=True)
+            if not page:
+                break
+            for state in page:
+                if state.sequence <= cursor:
+                    raise RuntimeError("Strategy 1 OMS lineage inventory did not advance")
+                identity = str(state.group["record_id"])
+                if identity in wanted_oms:
+                    if identity in states:
+                        raise RuntimeError("Strategy 1 OMS lineage repeated a group revision")
+                    states[identity] = state
+                scanned += 1
+                if scanned > 20_000:
+                    raise RuntimeError("Strategy 1 OMS lineage exceeds its cold scan bound")
+            cursor = page[-1].sequence
+        if set(states) != wanted_oms:
+            raise RuntimeError("Strategy 1 command lacks an exact OMS group revision")
+    result = {}
+    for parent_id, marker in markers.items():
+        command = commands_by_id[parent_id]
+        context = contexts[parent_id]
+        kind, proof_id = marker["lineage_kind"], marker["proof_record_id"]
+        oms_id = marker["oms_group_record_id"]
+        if kind == "initial_intent" and proof_id is None and oms_id is None:
+            result[parent_id] = (kind, None, None, history)
+            continue
+        if ((kind == "oms_group" and proof_id is None and oms_id is not None)
+                or (kind == "oms_target_amendment" and proof_id is not None
+                    and oms_id is not None)):
+            state = states[str(oms_id)]
+            if (state.sequence >= int(command["sequence"])
+                    or state.group["account_id"] != command["account_id"]
+                    or state.group["group_id"] != context["order_group_id"]
+                    or state.group["strategy_intent_id"] != context["strategy_intent_id"]):
+                raise RuntimeError("Strategy 1 command OMS lineage differs from its group")
+        else:
+            raise RuntimeError("Strategy 1 command lineage kind is invalid")
+        if kind == "oms_group":
+            result[parent_id] = (kind, None, state, history)
+            continue
+        proof = proofs.get(str(proof_id))
+        if (proof is None or proof.sequence >= int(command["sequence"])
+                or proof.account_id != command["account_id"]
+                or proof.payload.get("order_group_id") != context["order_group_id"]
+                or proof.payload.get("client_order_id") != command["client_order_id"]
+                or proof.payload.get("phase") != "effective"
+                or proof.payload.get("kind") != "target"
+                or proof.payload.get("action") != "replace_profit_target"
+                or command["limit_price"] is None
+                or proof.payload.get("price") != float(command["limit_price"])
+                or not proof.payload.get("intent_id")):
+            raise RuntimeError("Strategy 1 amended command lacks its exact proof")
+        result[parent_id] = (kind, proof, state, history)
+    return result
 
 
 class RecoveryBroker(Protocol):
@@ -66,36 +186,9 @@ def load_committed_strategy_one_command_page(
     contexts = load_committed_order_context_page(
         client, prefix, commands, include_source=True,
     )
-    # V4 commands may carry OMS-approved target amendments. The V1 context
-    # records only the source intent, so reconstructing such a command from
-    # that intent would silently substitute the wrong canonical metadata.
-    # Scan the complete committed protection history before claiming an
-    # original-intent lineage; a partial page cannot prove absence.
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
-    if isinstance(prefix, V4CommittedPrefix):
-        from src.trading_runtime.arte_journal_reader import (
-            load_complete_typed_protection_history,
-        )
-        history = load_complete_typed_protection_history(client, prefix)
-        effective_target_first: dict[tuple[str, str, str], int] = {}
-        for proof in history.records:
-            if (proof.payload.get("phase"), proof.payload.get("kind")) != (
-                    "effective", "target"):
-                continue
-            key = (proof.account_id, str(proof.payload.get("order_group_id")),
-                   str(proof.payload.get("client_order_id")))
-            effective_target_first[key] = min(
-                proof.sequence, effective_target_first.get(key, proof.sequence),
-            )
-        for command in commands:
-            context = contexts[str(command["record_id"])]
-            key = (str(command["account_id"]), str(context["order_group_id"]),
-                   str(command["client_order_id"]))
-            if effective_target_first.get(key, int(command["sequence"]) + 1) <= int(
-                    command["sequence"]):
-                raise RuntimeError(
-                    "Amended Strategy 1 command needs explicit typed OMS lineage"
-                )
+    lineages = (_v4_command_lineage(client, prefix, commands, contexts)
+                if isinstance(prefix, V4CommittedPrefix) else {})
     source_ids = tuple(sorted({context["source_intent_record_id"]
                                for context in contexts.values()}))
     sources = load_committed_strategy_intent_page(
@@ -141,6 +234,29 @@ def load_committed_strategy_one_command_page(
             flat, source.intent, run_id=prefix.run_id,
             strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
         )
+        kind, proof, state, history = lineages.get(
+            str(command["record_id"]), ("initial_intent", None, None, None))
+        if kind != "initial_intent":
+            from src.trading_runtime.arte_oms_projection import (
+                reconstruct_strategy_one_oms_lineage,
+            )
+            if state.intent_record_id != source.record_id:
+                raise RuntimeError("Strategy 1 command OMS source revision differs")
+            orders = reconstruct_strategy_one_oms_lineage(state, source, history)
+            matching = [order for order in orders if order.cOID == flat.cOID]
+            if (len(matching) != 1
+                    or matching[0].to_cpapi() != flat.to_cpapi()
+                    or matching[0].raw == raw):
+                raise RuntimeError("Strategy 1 command differs from exact OMS lineage")
+            raw = matching[0].raw
+            metadata = raw["canonical_metadata"]
+            if (kind == "oms_target_amendment") != (
+                    metadata.get("reason") == "structural_profit_target_advanced"):
+                raise RuntimeError("Strategy 1 command OMS amendment kind differs")
+            if proof is not None and (
+                    metadata.get("replacement_intent_id") != proof.payload["intent_id"]
+                    or metadata.get("target_price") != proof.payload["price"]):
+                raise RuntimeError("Strategy 1 command OMS proof differs")
         recovered.append(RecoveredStrategyOneCommand(
             int(command["sequence"]), str(command["command_id"]),
             replace(flat, raw=raw),

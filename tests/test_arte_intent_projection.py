@@ -437,33 +437,86 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
     assert cold[0].request == replace(flat, raw=raw)
     assert cold[0].request.raw == raw
     assert cold[0].request.to_cpapi() == flat.to_cpapi()
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        load_verified_v4_prefix, publish_base_typed_batch_v4,
+    )
+    v4_second = order_command_batch(
+        replace(flat, raw=raw), **{**args, "run_status": "running",
+                                   "emit_v4_lineage": True})
+    assert len(v4_second.v4_command_lineages) == 1
+    v4_client = attached_v4_client()
+    publish_base_typed_batch_v4(v4_client, first)
+    publish_base_typed_batch_v4(v4_client, v4_second)
+    committed_v4 = load_verified_v4_prefix(v4_client, run_id)
+    assert committed_v4 is not None
+    assert load_committed_strategy_one_command_page(
+        v4_client, committed_v4)[0].request.raw == raw
     from types import SimpleNamespace
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
-    from src.trading_runtime import arte_journal_reader
+    from src.trading_runtime import (
+        arte_journal_reader, arte_journal_commit_v4, arte_oms_projection,
+    )
+    from src.trading_runtime.arte_journal_writer import typed_row
 
     v4_prefix = V4CommittedPrefix(
         run_id, 2, command_batch_id, "command", "completed",
         (intent_batch_id, command_batch_id),
     )
-    proof = SimpleNamespace(
-        sequence=2, account_id="DU1",
-        payload={"order_group_id": "group-1", "client_order_id": "client-1",
-                 "phase": "effective", "kind": "target"},
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_commit_v4",
+                        lambda *_args, **_kwargs: ({}, ({"family_name":
+                            "trading_order_command_lineage_v1"},)))
+    lineage = typed_row("trading_order_command_lineage_v1", {
+        "record_id": str(uuid4()), "parent_record_id": second.order_commands[0]["record_id"],
+        "run_id": run_id, "event_month": "2026-08-01",
+        "batch_id": command_batch_id, "account_id": "DU1",
+        "lineage_kind": "initial_intent", "oms_group_record_id": None,
+        "proof_record_id": None,
+    })
+    client.tables.setdefault("trading_order_command_lineage_v1", []).append(lineage)
+    monkeypatch.setattr(
+        arte_journal_reader, "load_complete_typed_protection_history",
+        lambda *_args: SimpleNamespace(records=()),
     )
+    assert load_committed_strategy_one_command_page(client, v4_prefix)[0].request.raw == raw
+    proof = SimpleNamespace(
+        record_id=str(uuid4()), sequence=1, account_id="DU1",
+        payload={"order_group_id": "group-1", "client_order_id": "client-1",
+                 "phase": "effective", "kind": "target",
+                 "action": "replace_profit_target", "price": 12.5,
+                 "intent_id": "replacement-intent"},
+    )
+    oms_id = str(uuid4())
+    client.tables["trading_order_command_lineage_v1"][0] = typed_row(
+        "trading_order_command_lineage_v1", {
+            **{key: value for key, value in lineage.items() if key != "content_hash"},
+            "lineage_kind": "oms_target_amendment",
+            "oms_group_record_id": oms_id,
+            "proof_record_id": proof.record_id,
+        })
     monkeypatch.setattr(
         arte_journal_reader, "load_complete_typed_protection_history",
         lambda *_args: SimpleNamespace(records=(proof,)),
     )
-    with pytest.raises(RuntimeError, match="needs explicit typed OMS lineage"):
-        load_committed_strategy_one_command_page(client, v4_prefix)
-    monkeypatch.setattr(
-        arte_journal_reader, "load_complete_typed_protection_history",
-        lambda *_args: SimpleNamespace(records=(
-            SimpleNamespace(sequence=3, account_id=proof.account_id,
-                            payload=proof.payload),
-        )),
+    oms_state = SimpleNamespace(
+        sequence=1, intent_record_id=first.intents[0]["record_id"],
+        group={"record_id": oms_id, "account_id": "DU1",
+               "group_id": "group-1", "strategy_intent_id": source.intent_id},
     )
-    assert load_committed_strategy_one_command_page(client, v4_prefix)[0].request.raw == raw
+    monkeypatch.setattr(
+        arte_oms_projection, "load_committed_oms_group_state_page",
+        lambda *_args, **_kwargs: (oms_state,),
+    )
+    amended_raw = {**raw, "canonical_metadata": {
+        **raw["canonical_metadata"], "reason": "structural_profit_target_advanced",
+        "replacement_intent_id": "replacement-intent", "target_price": 12.5}}
+    monkeypatch.setattr(
+        arte_oms_projection, "reconstruct_strategy_one_oms_lineage",
+        lambda *_args: (replace(flat, raw=amended_raw),),
+    )
+    amended = load_committed_strategy_one_command_page(client, v4_prefix)[0].request.raw
+    assert amended["canonical_metadata"]["replacement_intent_id"] == "replacement-intent"
+    assert amended["canonical_metadata"]["target_price"] == 12.5
     assert load_committed_strategy_one_command_page(
         client, prefix, after_sequence=2) == ()
     command_row = client.tables["trading_order_command_v1"][0]
@@ -484,3 +537,82 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
     with pytest.raises(ValueError, match="unmodeled nested"):
         order_command_batch(replace(flat, raw=raw),
                             **{**args, "source_intent": replace(source, metadata={"extra": 1})})
+
+
+def test_v4_amended_command_requires_exact_oms_revision_even_with_proof():
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        load_verified_v4_prefix, publish_base_typed_batch_v4,
+        publish_protection_change_batch_v4,
+    )
+    from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+
+    run_id, attempt_id = "live:amended-lineage", str(uuid4())
+    first_id, proof_batch_id, command_batch_id = (str(uuid4()) for _ in range(3))
+    source = intent(metadata={})
+    first = strategy_intent_batch(
+        source, run_id=run_id, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=attempt_id, batch_id=first_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        sequence=1, source_cursor="intent", run_status="running",
+        recorded_at=source.event_time,
+    )
+    proof = JournalRecord(
+        str(uuid4()), run_id, 2, source.event_time, source.event_time,
+        "protection", "protection_change", "broker-target", "DU1",
+        {"schema_version": 1, "order_group_id": "group-1",
+         "entry_order_ids": [], "order_id": "broker-target",
+         "client_order_id": "target-1", "kind": "target",
+         "phase": "effective", "price": 12.5, "active": True,
+         "ticker": "TEST", "source_intent_id": source.intent_id,
+         "strategy_id": STRATEGY_ID, "strategy_revision": STRATEGY_NUMBER,
+         "action": "replace_profit_target", "intent_id": "amendment-1",
+         "correlation_id": "corr-1", "causation_id": "cause-1"},
+    )
+    proof_unit = protection_change_batch_v4(
+        proof, run_month=date(2026, 8, 1), attempt_id=attempt_id,
+        batch_id=proof_batch_id, prior_batch_id=first_id,
+        source_cursor="proof",
+    )
+    flat = OrderRequest(acctId="DU1", conid=123, cOID="target-1",
+                        ticker="TEST", orderType="LMT", side="SELL",
+                        quantity=5, price=12.5)
+    original = canonical_runtime_order_raw(
+        flat, source, run_id=run_id, strategy_id=STRATEGY_ID,
+        strategy_revision=STRATEGY_NUMBER)
+    metadata = {**original["canonical_metadata"],
+                "reason": "structural_profit_target_advanced",
+                "replacement_intent_id": "amendment-1", "target_price": 12.5}
+    amended = {**original, "canonical_metadata": metadata}
+    approved = ({"strategy_id": STRATEGY_ID,
+                 "canonical_strategy_revision": STRATEGY_NUMBER,
+                 "canonical_run_id": run_id, "canonical_metadata": metadata},
+                "DU1", "TEST", 123, "group-1", source.intent_id)
+    source_hash = dict(_sealed_families(first))["trading_strategy_intent_v1"][0][
+        "content_hash"]
+    command = order_command_batch(
+        replace(flat, raw=amended), run_id=run_id,
+        run_month=date(2026, 8, 1), attempt_id=attempt_id,
+        batch_id=command_batch_id, prior_batch_id=proof_batch_id,
+        sequence=3, source_cursor="command", run_status="running",
+        command_id="command-target", created_at=source.event_time,
+        recorded_at=source.event_time, strategy_id=STRATEGY_ID,
+        strategy_revision=STRATEGY_NUMBER, strategy_intent_id=source.intent_id,
+        order_group_id="group-1", policy_version="policy-1",
+        source_intent=source, source_intent_batch_id=first_id,
+        strategy_intent_record_id=first.intents[0]["record_id"],
+        strategy_intent_content_hash=source_hash,
+        approved_oms_lineage=approved,
+        v4_lineage_oms_record_id=str(uuid4()),
+        v4_lineage_proof_record_id=proof.record_id, emit_v4_lineage=True,
+    )
+    client = attached_v4_client()
+    publish_base_typed_batch_v4(client, first)
+    publish_protection_change_batch_v4(
+        client, proof_unit.base, change=proof_unit.change,
+        entry_orders=proof_unit.entry_orders)
+    publish_base_typed_batch_v4(client, command)
+    prefix = load_verified_v4_prefix(client, run_id)
+    assert prefix is not None
+    with pytest.raises(RuntimeError, match="lacks an exact OMS group revision"):
+        load_committed_strategy_one_command_page(client, prefix)

@@ -116,6 +116,8 @@ def project_pending_backtest_v4_prefix(
     expected_market_start: datetime | None = None,
     published_sources: Mapping[str, tuple[TypedJournalBatch, object]] | None = None,
     committed_order_lineage: Mapping[str, tuple] | None = None,
+    committed_order_lineage_proofs: Mapping[str, str] | None = None,
+    committed_order_lineage_oms_records: Mapping[str, str] | None = None,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
            | V4OmsTacticBatch
@@ -156,6 +158,8 @@ def project_pending_backtest_v4_prefix(
     ordinary: list[TypedJournalBatch] = []
     sources = dict(published_sources or {})
     order_lineage = dict(committed_order_lineage or {})
+    order_lineage_proofs = dict(committed_order_lineage_proofs or {})
+    order_lineage_oms_records = dict(committed_order_lineage_oms_records or {})
     cursor = source_cursor
     for sequence, record in enumerate(records, start=prior_sequence + 1):
         if record.run_id != journal.run_id or record.sequence != sequence:
@@ -211,6 +215,9 @@ def project_pending_backtest_v4_prefix(
                 strategy_intent_content_hash=sealed_source[0]["content_hash"],
                 source_intent=source[1], source_intent_batch_id=source[0].batch_id,
                 approved_oms_lineage=order_lineage.get(request.cOID),
+                v4_lineage_proof_record_id=order_lineage_proofs.get(request.cOID),
+                v4_lineage_oms_record_id=order_lineage_oms_records.get(request.cOID),
+                emit_v4_lineage=True,
                 record_id=record.record_id, event_category=record.category,
                 event_entity_type=record.entity_type,
                 correlation_id=str(payload.get("correlation_id") or ""),
@@ -321,6 +328,15 @@ def project_pending_backtest_v4_prefix(
                             proof=protection_proof.get(f"target:{client_order_id}"))):
                     raise RuntimeError("OMS changed committed order lineage without typed amendment")
                 order_lineage[client_order_id] = lineage
+                order_lineage_oms_records[client_order_id] = str(UUID(record.record_id))
+                proof = protection_proof.get(f"target:{client_order_id}")
+                if (lineage[0]["canonical_metadata"].get("reason") ==
+                        "structural_profit_target_advanced"):
+                    if proof is None:
+                        raise RuntimeError("Amended OMS lineage lacks its typed proof")
+                    order_lineage_proofs[client_order_id] = str(UUID(proof.record_id))
+                else:
+                    order_lineage_proofs.pop(client_order_id, None)
         elif kind == ("portfolio_management", "portfolio_allocation"):
             projected = project_portfolio_allocation_v3(
                 record, attempt_id=attempt, batch_id=batch_id)
