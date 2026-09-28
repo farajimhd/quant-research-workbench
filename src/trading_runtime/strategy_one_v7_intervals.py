@@ -8,7 +8,10 @@ No JSON checkpoint or per-100-ms level snapshot is part of this contract.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from hashlib import sha256
+import json
 from math import isfinite
+from struct import pack, unpack
 from typing import Mapping, Sequence
 
 from src.market_engine.derived_trade_policy import POLICY
@@ -31,6 +34,24 @@ class V7LevelInterval:
     transition_from: str
     confirmed_at_ms: int
     historical: bool
+
+
+def _bits(value: float) -> int:
+    return unpack("<Q", pack("<d", value))[0]
+
+
+def clock_hash(clocks: tuple[int, ...]) -> str:
+    return sha256(json.dumps(clocks, sort_keys=True, separators=(",", ":"),
+                             allow_nan=False).encode()).hexdigest()
+
+
+def interval_hash(intervals: tuple[V7LevelInterval, ...]) -> str:
+    values = tuple((row.level_id, row.ordinal, row.valid_from_ms,
+                    row.valid_to_ms, _bits(row.lower), _bits(row.upper),
+                    row.role, row.transition_from, row.confirmed_at_ms,
+                    row.historical) for row in intervals)
+    return sha256(json.dumps(values, sort_keys=True, separators=(",", ":"),
+                             allow_nan=False).encode()).hexdigest()
 
 
 def _geometry(row: Mapping) -> tuple[str, float, float, str, str, int, bool]:

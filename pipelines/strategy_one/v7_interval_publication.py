@@ -5,11 +5,9 @@ never certified; Backtest can see only a separately verified coverage row.
 """
 from __future__ import annotations
 
-from hashlib import sha256
 import json
 import re
 from math import isfinite
-from struct import pack, unpack
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -19,7 +17,9 @@ from src.trading_runtime.strategy_one_v7_interval_schema import (
     CLOCK_TABLE, COVERAGE_TABLE, INTERVAL_TABLE, PRODUCT_DIGEST,
     verify_tables,
 )
-from src.trading_runtime.strategy_one_v7_intervals import V7LevelInterval
+from src.trading_runtime.strategy_one_v7_intervals import (
+    V7LevelInterval, _bits, clock_hash, interval_hash,
+)
 from src.trading_runtime.strategy_one_v7_intervals import SESSION_MS
 from src.market_engine.derived_trade_policy import POLICY
 from src.trading_runtime.strategy_one_v7 import PROVISIONAL_SEED_POLICY
@@ -56,26 +56,6 @@ def _readback_mismatch(actual_clocks: tuple[int, ...],
             if left != right:
                 return f"interval index {index} field {field} differs"
     return None
-
-
-def _hash(value: object) -> str:
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                             allow_nan=False).encode()).hexdigest()
-
-
-def _bits(value: float) -> int:
-    return unpack("<Q", pack("<d", value))[0]
-
-
-def clock_hash(clocks: tuple[int, ...]) -> str:
-    return _hash(clocks)
-
-
-def interval_hash(intervals: tuple[V7LevelInterval, ...]) -> str:
-    return _hash(tuple((row.level_id, row.ordinal, row.valid_from_ms,
-                        row.valid_to_ms, _bits(row.lower), _bits(row.upper),
-                        row.role, row.transition_from, row.confirmed_at_ms,
-                        row.historical) for row in intervals))
 
 
 def _rows(client: Any, sql: str) -> list[dict[str, Any]]:
