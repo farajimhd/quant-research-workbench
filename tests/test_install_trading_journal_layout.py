@@ -143,6 +143,29 @@ def test_strategy_one_activation_install_has_four_exact_tables_and_no_rows(monke
     assert not any(sql.startswith("INSERT ") for sql in client.statements)
 
 
+def test_strategy_one_signal_install_is_operator_only_and_writes_no_rows(monkeypatch):
+    client = Client()
+    contracts = install.profile_contracts("live-strategy-one-signal")
+    monkeypatch.setattr(install, "plan_missing",
+                        lambda _, *, profile: (
+                            tuple(table.name for table in contracts), ())
+                        if profile == "live-strategy-one-signal"
+                        else pytest.fail("wrong profile"))
+    verified = []
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda _, *, tables: verified.append(
+                            tuple(table.name for table in tables)))
+    assert install.install_missing(
+        client, apply=False, profile="live-strategy-one-signal") == (0, 0)
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.install_missing(
+        client, apply=True, profile="live-strategy-one-signal") == (0, 13)
+    assert len(verified) == 3
+    assert verified[-1] == tuple(table.name for table in contracts)
+    assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == 13
+    assert not any(sql.startswith("INSERT ") for sql in client.statements)
+
+
 def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
     client = Client()
     monkeypatch.setattr(install.platform, "node", lambda: "DESKTOP-SAAI85T")

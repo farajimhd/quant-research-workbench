@@ -11,6 +11,7 @@ from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABL
 from src.trading_runtime.arte_strategy_one_activation_schema import (
     STRATEGY_ONE_ACTIVATION_TABLES,
 )
+from src.backend.strategy_one_live_signal_schema import STRATEGY_ONE_SIGNAL_TABLES
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES,
     ENTRY_REPRICE_REJECTED, PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
@@ -40,6 +41,21 @@ def test_strategy_one_activation_plan_is_four_isolated_normalized_tables(monkeyp
         Client(), profile="live-strategy-one-activation")
     assert missing == tuple(table.name for table in STRATEGY_ONE_ACTIVATION_TABLES)
     assert len(ddl) == 4
+    assert all("live_market_ssd" in sql and "JSON" not in sql for sql in ddl)
+
+
+def test_strategy_one_signal_plan_is_thirteen_isolated_normalized_tables(monkeypatch):
+    class Client:
+        def execute(self, sql):
+            assert sql.startswith("SELECT name FROM system.tables")
+            return ""
+
+    assert plan.profile_contracts("live-strategy-one-signal") == (
+        STRATEGY_ONE_SIGNAL_TABLES)
+    monkeypatch.setattr(plan, "storage_preflight", lambda *_args, **_kwargs: None)
+    missing, ddl = plan.plan_missing(Client(), profile="live-strategy-one-signal")
+    assert missing == tuple(table.name for table in STRATEGY_ONE_SIGNAL_TABLES)
+    assert len(ddl) == 13
     assert all("live_market_ssd" in sql and "JSON" not in sql for sql in ddl)
 
 

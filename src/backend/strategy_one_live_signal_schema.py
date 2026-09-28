@@ -10,7 +10,7 @@ This module declares schema only; neither Backtest nor live code creates it.
 from __future__ import annotations
 
 from src.backend.live_signal_journal_preflight import LIVE_SIGNAL_TABLES
-from src.backend.signal_stream_typed_cursor import TypedTable
+from src.trading_runtime.arte_journal_schema import TableContract
 
 
 LEGACY_TO_STRATEGY_ONE_SIGNAL = {
@@ -19,8 +19,8 @@ LEGACY_TO_STRATEGY_ONE_SIGNAL = {
 }
 
 STRATEGY_ONE_SIGNAL_TABLES = tuple(
-    TypedTable(LEGACY_TO_STRATEGY_ONE_SIGNAL[table.name],
-               table.columns, table.order)
+    TableContract(LEGACY_TO_STRATEGY_ONE_SIGNAL[table.name],
+                  table.columns, "toYYYYMM(session_key)", table.order)
     for table in LIVE_SIGNAL_TABLES
 )
 

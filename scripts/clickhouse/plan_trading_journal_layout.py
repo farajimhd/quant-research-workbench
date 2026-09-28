@@ -51,9 +51,12 @@ from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_AL
 from src.trading_runtime.arte_strategy_one_activation_schema import (
     STRATEGY_ONE_ACTIVATION_TABLES,
 )
+from src.backend.strategy_one_live_signal_schema import STRATEGY_ONE_SIGNAL_TABLES
 
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
+    if profile == "live-strategy-one-signal":
+        return STRATEGY_ONE_SIGNAL_TABLES
     if profile == "live-strategy-one-activation":
         return STRATEGY_ONE_ACTIVATION_TABLES
     if profile == "live-strategy-one-v5-ack":
@@ -123,6 +126,7 @@ def main() -> int:
     parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3", "commit-v4",
                                               "live-strategy-one-approval",
                                               "live-strategy-one-activation",
+                                              "live-strategy-one-signal",
                                               "live-strategy-one-v5-ack",
                                               "oms-execution-tactic"),
                         default="fixed-v2", help="exact journal table layout")

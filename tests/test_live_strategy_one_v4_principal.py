@@ -38,14 +38,16 @@ class Client:
 def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
     plan = live.desired_plan()
     activation = {table.name for table in live.STRATEGY_ONE_ACTIVATION_TABLES}
+    signal = {table.name for table in live.STRATEGY_ONE_SIGNAL_TABLES}
     assert plan.principal != backtest_plan().principal
     assert {"trading_commit_v4", "trading_commit_family_v4",
             "trading_broker_acknowledgement_v4",
             "trading_broker_acknowledgement_v5"} <= plan.insert_arte
     assert {table.name for table in live.live_v4_storage_contracts()} - {
         table.name for table in live.v4_storage_contracts()
-    } == {"trading_broker_acknowledgement_v5"} | activation
+    } == {"trading_broker_acknowledgement_v5"} | activation | signal
     assert activation <= plan.insert_arte
+    assert signal <= plan.insert_arte
     assert not activation & {table.name for table in live.v4_storage_contracts()}
     assert not any("backtest" in name for name in plan.insert_arte)
     assert plan.insert_arte != backtest_plan().insert_arte
