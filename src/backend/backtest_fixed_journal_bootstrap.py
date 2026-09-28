@@ -86,6 +86,14 @@ class FixedV4JournalPreflightToken:
     projection_certificate: str
 
 
+@dataclass(frozen=True, slots=True)
+class _V4PublishedContextSeal:
+    """One-launch receipt for the exact three clients already cold-verified."""
+
+    context: dict[str, Any]
+    client_ids: tuple[int, int, int]
+
+
 def fixed_journal_operator_check(client: Any) -> dict[str, Any]:
     """Read-only inventory; V2-only readiness cannot authorize fixed launch."""
     missing = list(missing_fixed_backtest_v2_tables(client))
@@ -367,6 +375,7 @@ def assemble_fixed_v4_journal(
     writer_factory: Callable[..., ArteJournalWriter],
     batch_size: int = 1024, queue_capacity: int = 8,
     v4_preflight_seal: _V4PreflightSeal | None = None,
+    published_context_seal: _V4PublishedContextSeal | None = None,
 ) -> FixedJournalAssembly:
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
     if (not isinstance(token, FixedV4JournalPreflightToken)
@@ -380,13 +389,23 @@ def assemble_fixed_v4_journal(
                               TypedInsertDispatch)):
         raise ValueError("V4 bootstrap lacks bounded strict certified inputs")
     UUID(attempt_id)
-    context = load_typed_run_context(read_client, token.run_id)
+    if published_context_seal is None:
+        context = load_typed_run_context(read_client, token.run_id)
+        same_context = (load_typed_run_context(writer_client, token.run_id) == context
+                        and load_typed_run_context(terminal_client, token.run_id) == context)
+    else:
+        if published_context_seal.client_ids != (
+                id(read_client), id(writer_client), id(terminal_client)):
+            raise RuntimeError("V4 published context seal belongs to different clients")
+        context = published_context_seal.context
+        if context.get("run_id") != token.run_id:
+            raise RuntimeError("V4 published context seal belongs to a different run")
+        same_context = True
     if (context["mode"] != "backtest"
             or tuple(context["account_ids"]) != token.account_ids
             or context["configuration_hash"] != token.configuration_hash
             or context["market_plan_token"] != token.market_plan_token
-            or load_typed_run_context(writer_client, token.run_id) != context
-            or load_typed_run_context(terminal_client, token.run_id) != context):
+            or not same_context):
         raise RuntimeError("V4 journal context changed before assembly")
     # The production writer constructor performs this exact V4 storage and
     # grant audit before starting its thread. Keep the explicit audit for
@@ -494,7 +513,10 @@ def publish_and_assemble_fixed_v4_journal(
         writer_factory=writer_factory, batch_size=batch_size,
         queue_capacity=queue_capacity,
         v4_preflight_seal=(writer_preflight_seal
-                           if writer_factory is ArteJournalWriter else None))
+                           if writer_factory is ArteJournalWriter else None),
+        published_context_seal=_V4PublishedContextSeal(
+            dict(published_context), (id(read_client), id(writer_client),
+                                      id(terminal_client))))
 
 
 def _v4_cold_reader_preflight(client: Any) -> None:

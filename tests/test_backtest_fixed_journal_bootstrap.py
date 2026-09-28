@@ -339,6 +339,46 @@ def test_v4_assembly_does_not_repeat_real_writer_constructor_preflight(monkeypat
     assembly.journal.close()
 
 
+def test_v4_assembly_reuses_only_the_published_three_client_context(monkeypatch):
+    context = {"run_id": RUN, "mode": "backtest", "account_ids": ("DU1",),
+               "run_month": "2026-08-01", "configuration_hash": "c" * 64,
+               "market_plan_token": "b" * 64}
+    dispatch = bootstrap.TypedInsertDispatch(object())
+    read, terminal = object(), object()
+    writer_client = SimpleNamespace(typed_insert_strict=True,
+                                    typed_insert_dispatch=dispatch)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_args: pytest.fail("published context was reread"))
+    monkeypatch.setattr(bootstrap, "_v4_preflight", lambda *_args: None)
+
+    class Writer:
+        run_id = RUN
+        run_mode = "backtest"
+        journal_profile = "backtest_v4"
+        coalesce_batches = False
+        max_events_per_commit = 1024
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def close(self):
+            pass
+
+    token = bootstrap.FixedV4JournalPreflightToken(
+        RUN, ("DU1",), date(2026, 8, 1), "c" * 64, "b" * 64, "a" * 64)
+    seal = bootstrap._V4PublishedContextSeal(
+        context, (id(read), id(writer_client), id(terminal)))
+    kwargs = dict(attempt_id=ATTEMPT, expected_config={"mode": "backtest"},
+                  fixed_market_parent_plan=object(),
+                  fixed_market_execution_plan=object(),
+                  expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+                  writer_factory=Writer, published_context_seal=seal)
+    assembly = bootstrap.assemble_fixed_v4_journal(
+        read, writer_client, terminal, token, **kwargs)
+    assembly.journal.close()
+    with pytest.raises(RuntimeError, match="different clients"):
+        bootstrap.assemble_fixed_v4_journal(
+            object(), writer_client, terminal, token, **kwargs)
+
+
 def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
     from src.backend import backtest_fixed_market_authority
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
