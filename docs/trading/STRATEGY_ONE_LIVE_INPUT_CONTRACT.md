@@ -88,6 +88,33 @@ acknowledged ingest prefix to persisted canonical rows and address late or
 omitted source delivery explicitly; do not treat a locally assigned arrival
 counter as an upstream completeness proof.
 
+The existing `q_live` coverage ledger is **not** this certificate. It groups
+by session/partition, has no contiguous per-ticker or global arrival prefix,
+and places source metadata in `metadata_json`. Strategy 1 must not parse that
+JSON as recovery state. The producer-owned successor must use typed scalar
+columns in new, explicitly SSD-placed tables, partitioned by session month and
+ordered for exact `(session_date, producer_epoch, ticker, through_sequence)`
+reads. At minimum, an acknowledged batch receipt identifies a unique producer
+epoch, global first/last locally assigned arrival sequence, exact event count,
+canonical-row digest, and completed ClickHouse INSERT attempt. A separate
+per-ticker head identifies its last canonical sort key, last included arrival
+sequence, count, and digest. The publisher advances a Keeper-selected committed
+global prefix only after **all** contributing INSERTs and receipts through that
+sequence are acknowledged; parallel writer completion cannot advance it past a
+gap. Cold recovery rechecks the exact persisted rows against those receipts,
+then projects per-ticker reducer state only within the verified prefix.
+
+Each process incarnation needs a fresh producer epoch in the canonical row and
+receipt identity. A delayed INSERT from an older incarnation must never be
+mistaken for the new epoch's source; reading `max(arrival_sequence)` from
+`q_live.events` alone does not provide this fence. The certificate proves what
+QMD accepted and durably published, **not** that the upstream provider
+delivered every market packet. If a crash leaves an uncertified tail and the
+provider cannot replay it with an authoritative continuity proof, Strategy 1
+must not resume order admission for that affected session. A local wall clock,
+silent bucket, provider `q` gap, or ClickHouse query returning no more rows is
+not a substitute for such a proof.
+
 The consumer joins this completed liquidity row with the closed indicator
 pairs by session, ticker, resolution, and completed boundary. A 100 ms
 decision is eligible only after all required input products for that boundary

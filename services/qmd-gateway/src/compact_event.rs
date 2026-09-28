@@ -1454,8 +1454,11 @@ impl CompactEventClickHouseWriter {
     }
 
     async fn run_merged(self, mut receiver: mpsc::Receiver<MarketEvent>) {
-        // Arrival sequence is a durable source identity. Never resume at zero
-        // when its authoritative ClickHouse high-water mark is unreadable.
+        // This high-water mark prevents an immediate counter reset for the
+        // ordinary QMD lane. It is NOT a Strategy 1 recovery certificate:
+        // an old in-flight INSERT may land after this SELECT, and no typed
+        // producer epoch or contiguous acknowledged prefix is sealed here.
+        // Never authorize live order admission from this value alone.
         let mut arrival_sequence = match self.latest_arrival_sequence().await {
             Ok(sequence) => sequence,
             Err(error) => {
