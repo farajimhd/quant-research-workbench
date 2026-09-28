@@ -9294,7 +9294,20 @@ class ReplayRunService:
             )
             with closing(backtest_v4_operator_client_from_env()) as client:
                 for durable in load_strategy_one_v4_history(client):
-                    rows.setdefault(durable["run_id"], durable)
+                    prior = rows.get(durable["run_id"])
+                    if prior is None:
+                        rows[durable["run_id"]] = durable
+                    elif (durable.get("v4_review_available")
+                          and prior.get("status") in TERMINAL_REPLAY_STATUSES):
+                        # A terminal in-memory controller is no longer the
+                        # saved-review authority. Route it through the sealed
+                        # V4 journal even before that controller is evicted.
+                        if (prior.get("mode") != RunMode.BACKTEST.value
+                                or prior.get("strategy_id") != durable.get("strategy_id")
+                                or prior.get("configuration_content_hash") !=
+                                   durable.get("configuration_content_hash")):
+                            raise RuntimeError("Resident Backtest conflicts with durable V4 run")
+                        rows[durable["run_id"]] = durable
         if include_durable and self.runtime_root.is_dir():
             for run_dir in self.runtime_root.iterdir():
                 if not run_dir.is_dir() or run_dir.name in rows:

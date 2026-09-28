@@ -102,3 +102,42 @@ def test_service_lists_v4_without_run_directory_or_sqlite(monkeypatch, tmp_path)
         include_durable=True) == [recorded]
     assert closed == [True]
     assert not (tmp_path / RUN).exists()
+
+
+def test_terminal_resident_v4_run_uses_durable_saved_review(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from src.backend import replay_run_service
+    from src.trading_runtime import arte_journal_writer
+
+    durable = {
+        "run_id": RUN, "status": "completed", "mode": "backtest",
+        "strategy_id": "early-squeeze-strategy",
+        "configuration_content_hash": "a" * 64,
+        "journal_backend": "arte_typed_journal_v4",
+        "v4_review_available": True,
+        "created_at": "2026-09-26T01:02:03+00:00",
+    }
+    resident = {**durable, "journal_backend": None,
+                "v4_review_available": False, "resident": True}
+
+    class Client:
+        def close(self):
+            pass
+
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "backtest_v4_runner")
+    monkeypatch.setattr(arte_journal_writer, "backtest_v4_operator_client_from_env",
+                        Client)
+    monkeypatch.setattr(history, "load_strategy_one_v4_history",
+                        lambda _client: [durable])
+    monkeypatch.setattr(replay_run_service, "_replay_run_list_projection",
+                        lambda *_a, **_k: resident)
+    monkeypatch.setattr(replay_run_service, "_run_selection_projection",
+                        lambda row, _revision: row)
+    monkeypatch.setattr(replay_run_service, "_completed_backtest_selection_projection",
+                        lambda *_a: pytest.fail("SQLite projection opened"))
+    service = replay_run_service.ReplayRunService(runtime_root=tmp_path)
+    service._runs[RUN] = SimpleNamespace(
+        run_id=RUN, definition=SimpleNamespace(configuration_revision=1),
+        stream_snapshot=lambda: {},
+    )
+    assert service.list(include_durable=True) == [durable]
