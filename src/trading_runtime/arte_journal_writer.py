@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 import json
+import logging
 import math
 import os
 import re
@@ -4594,6 +4595,13 @@ class ArteJournalWriter:
                         if not receipt.cancelled():
                             raise
             except BaseException as exc:
+                # The execution path receives this failure through its queued
+                # receipt. Record the original cause on the control-plane log;
+                # otherwise the run snapshot only exposes the wrapper and a
+                # failed remote INSERT cannot be diagnosed after shutdown.
+                logging.getLogger(__name__).exception(
+                    "Typed journal publication failed for run %s and unit %s",
+                    self._run_id, type(group[0][0]).__name__)
                 self._error = exc
                 with self._metrics_lock:
                     self._failed_units += len(group)
