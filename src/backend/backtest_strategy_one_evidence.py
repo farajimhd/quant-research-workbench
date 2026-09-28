@@ -63,6 +63,7 @@ class StrategyOneCausalEvidence:
                  hod_plan: CertifiedHodPlan,
                  session: date, client: Any,
                  interval_plan: CertifiedV7IntervalPlan | None = None,
+                 precomputed_entry_facts: bool = False,
                  stage_time: Callable[[str, float], None] | None = None) -> None:
         if (not isinstance(market_plan, CertifiedMarketDayPlan)
                 or not isinstance(seed_plan, CertifiedSeedPlan)
@@ -76,15 +77,20 @@ class StrategyOneCausalEvidence:
                 or pivot_plan.session_date != session.isoformat()
                 or market_plan.sessions != (session.isoformat(),)
                 or not set(ticker for ticker, _ in pivot_plan.intervals)
-                <= set(market_plan.tickers)):
+                <= set(market_plan.tickers)
+                or type(precomputed_entry_facts) is not bool
+                or precomputed_entry_facts and interval_plan is None):
             raise ValueError("Strategy 1 causal evidence plans disagree")
         self.session = session
+        self._precomputed_entry_facts = precomputed_entry_facts
         self.hod = hod_plan
         self.bos = StrategyOneBosCursor(pivot_plan)
         self.v7 = (FixedV7IntervalCache(
             market_plan=market_plan, interval_plan=interval_plan,
             session=session, client=client,
-            observe_completed_second=self.bos.observe_second)
+            precomputed_entry_facts=precomputed_entry_facts,
+            observe_completed_second=(None if precomputed_entry_facts
+                                      else self.bos.observe_second))
             if interval_plan is not None else FixedV7Cache(
                 market_plan=market_plan, seed_plan=seed_plan,
                 session=session, client=client,
@@ -253,6 +259,8 @@ class StrategyOneCausalEvidence:
 
     async def entry_evidence(self, candidate: StrategyOneDecisionCandidate, *,
                              tick: float) -> StrategyOneEntryEvidence:
+        if self._precomputed_entry_facts:
+            raise RuntimeError("Strategy 1 entry facts must come from certified arte product")
         if (not isinstance(candidate, StrategyOneDecisionCandidate)
                 or type(tick) not in (int, float) or not isfinite(tick)
                 or tick <= 0):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -77,3 +78,27 @@ def test_sealed_clock_disagreement_fails_closed(monkeypatch):
         client=Reader())
     with pytest.raises(RuntimeError, match="validity clock"):
         cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, 1000))
+
+
+def test_precomputed_entry_facts_load_only_exact_latest_completed_second(monkeypatch):
+    market, product = fixtures()
+    product = replace(product, valid_seconds=(("TEST", (1000, 5000)),))
+    calls = []
+    source = {"ticker": "TEST", "resolution_ms": 1000,
+              "bucket_index": 14_404, "price_valid": 1,
+              "extremes_valid": 1, "open_int": 100_000,
+              "close_int": 101_000}
+    def latest(*_args, **kwargs):
+        calls.append((kwargs["after_boundary_ms"], kwargs["through_boundary_ms"]))
+        return iter((source,))
+    monkeypatch.setattr(subject, "iter_persisted_v7_seconds", latest)
+    cache = subject.FixedV7IntervalCache(
+        market_plan=market, interval_plan=product, session=DAY,
+        client=Reader(), precomputed_entry_facts=True)
+    cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, 5100))
+    assert calls == [(4000, 5000)]
+    assert cache.last_completed_price_second("TEST")["boundary_ms"] == 5000
+    # A completed quote-only second must not carry the earlier price forward.
+    cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, 6100))
+    assert calls == [(4000, 5000)]
+    assert cache.last_completed_price_second("TEST") is None

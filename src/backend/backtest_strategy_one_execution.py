@@ -172,6 +172,7 @@ async def run_certified_strategy_one_session(
                 pivot_plan=pivots, hod_plan=hod,
                 session=date.fromisoformat(projected.sessions[0]), client=reader,
                 interval_plan=interval_plan,
+                precomputed_entry_facts=True,
                 stage_time=stage_time)
             if stage_time is not None:
                 stage_time("strategy_one_evidence_init", evidence_started)

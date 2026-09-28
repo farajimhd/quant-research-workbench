@@ -23,6 +23,7 @@ class FixedV7IntervalCache:
     def __init__(self, *, market_plan: CertifiedMarketDayPlan,
                  interval_plan: CertifiedV7IntervalPlan, session: date,
                  client: Any,
+                 precomputed_entry_facts: bool = False,
                  observe_completed_second: Callable[
                      [str, Mapping[str, Any], int], None] | None = None) -> None:
         if (not isinstance(market_plan, CertifiedMarketDayPlan)
@@ -34,6 +35,8 @@ class FixedV7IntervalCache:
                 or tuple(unit.ticker for unit in interval_plan.coverage)
                    != market_plan.tickers
                 or not callable(getattr(client, "iter_json_each_row", None))
+                or type(precomputed_entry_facts) is not bool
+                or precomputed_entry_facts and observe_completed_second is not None
                 or observe_completed_second is not None
                 and not callable(observe_completed_second)):
             raise ValueError("V7 interval cache needs one pinned certified session")
@@ -42,6 +45,7 @@ class FixedV7IntervalCache:
         self.session = session
         self.client = client
         self._observe_completed_second = observe_completed_second
+        self._precomputed_entry_facts = precomputed_entry_facts
         self._coverage = {row.ticker: row for row in interval_plan.coverage}
         self._clocks = {ticker: values for ticker, values in interval_plan.valid_seconds}
         self._last_loaded_ms: dict[str, int] = {}
@@ -117,6 +121,27 @@ class FixedV7IntervalCache:
             raise ValueError("V7 interval catch-up scope is invalid")
         after = self._last_loaded_ms.get(ticker, 0)
         if through_ms <= after:
+            return
+        if self._precomputed_entry_facts:
+            # Producer-certified entry/BOS facts replace historical BOS replay.
+            # Only the exact last completed second can initialize activation's
+            # prior-price observation. Financially active seconds still arrive
+            # in order from the separate pinned market tape.
+            clocks = self._clocks[ticker]
+            at = bisect_left(clocks, through_ms)
+            if at < len(clocks) and clocks[at] == through_ms:
+                rows = tuple(iter_persisted_v7_seconds(
+                    self.market_plan, session_date=self.session.isoformat(),
+                    ticker=ticker, after_boundary_ms=through_ms - 1_000,
+                    through_boundary_ms=through_ms, client=self.client))
+                if (len(rows) != 1 or type(rows[0].get("bucket_index")) is not int
+                        or (rows[0]["bucket_index"] + 1) * 1_000
+                           - SESSION_OPEN_OFFSET_MS != through_ms):
+                    raise RuntimeError("V7 last completed price second is missing or duplicate")
+                self._observe(ticker, rows[0], through_ms)
+            else:
+                self._last_completed_price.pop(ticker, None)
+            self._last_loaded_ms[ticker] = through_ms
             return
         observed_valid: list[int] = []
         for row in iter_persisted_v7_seconds(
