@@ -58,6 +58,7 @@ created run `75ad9d96-8a92-4eed-9b7b-de89c4b5a097`; it completed in
 32.233s from creation to terminal update, processing 7,381 liquidity rows.
 The writer drained 10 units and 2,217 event rows with zero failures. A fresh
 `v4-terminal-page` read verified sequence 2,217, its market cursor, and the
-terminal account state with no limitations. The test backend and SSH tunnel
+terminal account state with no limitations. The run created no directory under
+the workstation Backtest runtime root. The test backend and SSH tunnel
 were stopped afterward. This validates the app routes, not visual browser
 interaction or live trading.
