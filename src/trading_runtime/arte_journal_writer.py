@@ -3663,6 +3663,7 @@ class ArteJournalWriter:
         self._publish_by_unit: dict[str, dict[str, int]] = {}
         self._compound_prepare_ns_total = 0
         self._compound_publish_ns_total = 0
+        self._compound_publish_stages_ns: dict[str, int] = {}
         self._thread = Thread(target=self._run, name="arte-journal-writer", daemon=False)
         self._thread.start()
 
@@ -3706,6 +3707,7 @@ class ArteJournalWriter:
                                     in self._publish_by_unit.items()},
                 "compound_prepare_ns_total": self._compound_prepare_ns_total,
                 "compound_publish_ns_total": self._compound_publish_ns_total,
+                "compound_publish_stages_ns": dict(self._compound_publish_stages_ns),
                 "failed": self._error is not None,
             }
 
@@ -4569,6 +4571,11 @@ class ArteJournalWriter:
                         "prepare", 0)
                     self._compound_publish_ns_total += compound_timings_ns.get(
                         "publish", 0)
+                    for stage, duration in compound_timings_ns.items():
+                        if stage.startswith("stage_"):
+                            self._compound_publish_stages_ns[stage] = (
+                                self._compound_publish_stages_ns.get(stage, 0)
+                                + duration)
                     family = type(group[0][0]).__name__
                     by_unit = self._publish_by_unit.setdefault(
                         family, {"units": 0, "event_rows": 0, "publish_ns_total": 0,

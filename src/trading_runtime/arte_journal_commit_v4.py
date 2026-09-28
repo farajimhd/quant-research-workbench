@@ -13,6 +13,7 @@ from decimal import Decimal
 from hashlib import sha256
 import json
 import re
+from time import perf_counter_ns
 from typing import Mapping, Sequence
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -1472,13 +1473,23 @@ def _insert_detail_families_v4(client, batch, pending):
                 lane.close()
 
 
-def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
+def _publish_sealed_batch_v4(client, batch, base_families, families, *,
+                             timings_ns: dict[str, int] | None = None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _identity, _insert, _literal, _rows,
         _verify_commission_links, _verify_exact_intent_uses,
         _verify_order_context_links,
     )
+
+    stage_started = perf_counter_ns()
+
+    def mark_stage(name: str) -> None:
+        nonlocal stage_started
+        finished = perf_counter_ns()
+        if timings_ns is not None:
+            timings_ns[f"stage_{name}"] = finished - stage_started
+        stage_started = finished
 
     live_lease = getattr(client, "live_v4_lease", None)
     dispatch = client.typed_insert_dispatch
@@ -1527,8 +1538,10 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         prior_batch_id=batch.prior_batch_id,
         first_sequence=batch.first_sequence,
         last_sequence=batch.last_sequence)
+    mark_stage("prechecks")
 
     existing_identities = _existing_detail_identities_v4(client, batch, families)
+    mark_stage("detail_inventory")
     pending = []
     for name, rows in families:
         if not rows:
@@ -1540,11 +1553,13 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         if not identities:
             pending.append((name, rows))
     _insert_detail_families_v4(client, batch, pending)
+    mark_stage("detail_insert")
     actual_details = _load_verified_details_v4(
         client, run_id=batch.run_id, batch_id=batch.batch_id,
         family_rows=family_rows, max_rows_per_family=65_536,
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)))
     verify_commit_v4(commit, family_rows, actual_details)
+    mark_stage("detail_readback")
 
     family_columns = ",".join(name for name, _ in
                               _CONTRACTS["trading_commit_family_v4"].columns)
@@ -1582,6 +1597,7 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         f"{filters}LIMIT 257 FORMAT JSONEachRow")
     if sorted(verified_families, key=lambda row: row["family_name"]) != list(family_rows):
         raise RuntimeError("V4 family publication lacks complete readback")
+    mark_stage("family_set")
     if live_lease is not None:
         live_lease.assert_current()
     _insert(client, "trading_commit_v4", (commit,),
@@ -1609,4 +1625,5 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         dispatch, batch, families, family_rows, loaded)
     if live_lease is not None:
         live_lease.assert_current()
+    mark_stage("commit_fence")
     return batch.batch_id

@@ -277,7 +277,13 @@ def test_v4_preflight_audits_one_exact_storage_union(monkeypatch):
                         lambda client, *, tables: scans.append(tuple(tables)))
     monkeypatch.setattr(writer_module, "journal_permission_preflight",
                         lambda client, **kwargs: permissions.append(kwargs))
-    client = object()
+    class CatalogClient:
+        def execute(self, sql):
+            assert "FROM system.tables" in sql
+            assert "strategy_one_entry_context_v1" in sql
+            return '{"name":"strategy_one_entry_context_v1"}'
+
+    client = CatalogClient()
     writer_module._v4_preflight(client)
     assert len(scans) == len(permissions) == 1
     names = [table.name for table in scans[0]]
@@ -286,6 +292,7 @@ def test_v4_preflight_audits_one_exact_storage_union(monkeypatch):
                                     *V4_COMMIT_TABLES, ACKNOWLEDGEMENT,
                                     *PROTECTION_CHANGE_TABLES)} <= set(names)
     assert set(permissions[0]["journal_tables"]) <= set(names)
+    assert "strategy_one_entry_context_v1" in permissions[0]["read_only_tables"]
 
 
 def terminal_batch():
@@ -1390,7 +1397,8 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
             "trading_backtest_position_snapshot_v2",
             *(table.name for table in BACKTEST_DEFINITION_TABLES)}
     assert observed[1] == (
-        writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
+        writable, (frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
+        | frozenset({"strategy_one_entry_context_v1"}))
 
 
 def test_live_v4_writer_uses_same_typed_commit_without_backtest_authority(monkeypatch):

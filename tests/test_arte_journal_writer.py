@@ -616,6 +616,8 @@ class MemoryClient:
             return ""
         assert sql.startswith("SELECT ")
         self.selects.append(sql)
+        if "FROM system.tables" in sql and "strategy_one_entry_context_v1" in sql:
+            return json.dumps({"name": "strategy_one_entry_context_v1"})
         if "groupArray((toString(batch_id),toString(record_id)," in sql:
             ids = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)", sql))
             names = re.findall(r"FROM arte\.([a-z0-9_]+) WHERE batch_id IN", sql)

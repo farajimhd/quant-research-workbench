@@ -345,7 +345,8 @@ def publish_compound_v4(
     base_families, families = prepare_compound_v4_families(client, compound)
     prepared_ns = perf_counter_ns()
     committed_id = _publish_sealed_batch_v4(
-        client, compound.base, base_families, families)
+        client, compound.base, base_families, families,
+        timings_ns=timings_ns)
     if timings_ns is not None:
         timings_ns["prepare"] = prepared_ns - started_ns
         timings_ns["publish"] = perf_counter_ns() - prepared_ns

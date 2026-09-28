@@ -192,7 +192,14 @@ def test_compound_publishes_one_cold_verified_commit_for_two_events():
     second = replace(first, batch_id=second_id, prior_batch_id=first.batch_id,
                      first_sequence=2, last_sequence=2, events=(second_event,))
     client = attached_v4_client()
-    assert publish_compound_v4(client, coalesce_v4_units((first, second))) == second_id
+    timings_ns = {}
+    assert publish_compound_v4(client, coalesce_v4_units((first, second)),
+                               timings_ns=timings_ns) == second_id
+    assert timings_ns["prepare"] >= 0
+    assert timings_ns["publish"] >= 0
+    assert all(timings_ns[f"stage_{stage}"] >= 0 for stage in (
+        "prechecks", "detail_inventory", "detail_insert", "detail_readback",
+        "family_set", "commit_fence"))
     prefix = load_verified_v4_prefix(client, first.run_id)
     assert prefix.last_batch_id == second_id
     assert prefix.last_sequence == 2
