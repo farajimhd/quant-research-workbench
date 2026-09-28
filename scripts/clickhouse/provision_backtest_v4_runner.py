@@ -36,7 +36,7 @@ from src.trading_runtime.arte_journal_schema import (
     storage_preflight,
 )
 from src.trading_runtime.arte_journal_writer import (
-    _FAMILIES, _v4_family_table, _v4_preflight,
+    _FAMILIES, _v4_family_table, _v4_preflight, v4_journal_write_tables,
 )
 from src.trading_runtime.arte_journal_schema import PORTFOLIO_SNAPSHOT_WRITE_TABLES
 from src.trading_runtime.arte_backtest_definition import TABLES as BACKTEST_DEFINITION_TABLES
@@ -71,21 +71,7 @@ PASSWORD_KEY = "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD"
 
 
 def desired_plan() -> PrincipalPlan:
-    writable = frozenset(_v4_family_table(table) for table, _, _, _ in _FAMILIES) | frozenset(
-        table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
-            ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
-            ACKNOWLEDGEMENT.name, CANCEL.name,
-            REPRICE.name,
-            *(table.name for table in OMS_TACTIC_TABLES),
-            *(table.name for table in RISK_ACTION_TABLES),
-            *(table.name for table in PROTECTION_CHANGE_TABLES),
-            *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
-            "trading_backtest_account_snapshot_v2",
-            "trading_backtest_position_snapshot_v2",
-            *(table.name for table in MANAGER_SNAPSHOT_TABLES),
-            *(table.name for table in BROKER_MATCH_SNAPSHOT_TABLES),
-            *(table.name for table in PROTECTION_SNAPSHOT_TABLES),
-            *(table.name for table in BACKTEST_DEFINITION_TABLES)}
+    writable = v4_journal_write_tables()
     return PrincipalPlan(
         "running", PRINCIPAL,
         frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,

@@ -1,4 +1,5 @@
 from scripts.clickhouse import provision_backtest_v4_runner as provision
+from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_schema import (
     MARKET_READ_TABLES, PORTFOLIO_SNAPSHOT_WRITE_TABLES,
     V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
@@ -16,6 +17,7 @@ from src.trading_runtime.arte_protection_reconciliation_v4 import (
 
 def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
     plan = provision.desired_plan()
+    assert plan.insert_arte == writer_module.v4_journal_write_tables()
     assert plan.principal == "backtest_v4_runner"
     assert plan.insert_arte == frozenset(
         provision._v4_family_table(table)
@@ -58,6 +60,17 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                                  *DEFINITION_TABLES)) | MARKET_READ_TABLES
     assert all(" ON arte." in grant or " ON system." in grant
                for grant in plan.grants())
+
+
+def test_runtime_preflight_uses_the_same_write_grants_as_provisioning(monkeypatch):
+    observed = []
+    monkeypatch.setattr(writer_module, "storage_preflight",
+                        lambda _client, *, tables: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+                        lambda _client, *, journal_tables, read_only_tables:
+                        observed.append(journal_tables))
+    writer_module._v4_preflight(object())
+    assert observed == [provision.desired_plan().insert_arte]
 
 
 def test_v4_cli_dry_run_does_not_open_a_connection(capsys, monkeypatch):

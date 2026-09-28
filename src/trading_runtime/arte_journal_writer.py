@@ -1909,6 +1909,30 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     return tuple(by_name.values())
 
 
+def v4_journal_write_tables() -> frozenset[str]:
+    """Single grant authority shared by V4 provisioning and runtime audit."""
+    from src.trading_runtime.arte_backtest_definition import TABLES as definition_tables
+
+    return (frozenset(_v4_family_table(table) for table, _, _, _ in _FAMILIES)
+            | frozenset(table.name for table in V4_COMMIT_TABLES)
+            | PORTFOLIO_SNAPSHOT_WRITE_TABLES
+            | frozenset({
+                ENTRY_EVIDENCE.name, V4_ALLOCATION.name,
+                RESERVATION_REASON.name, ACKNOWLEDGEMENT.name,
+                CANCEL.name, REPRICE.name,
+                "trading_backtest_account_snapshot_v2",
+                "trading_backtest_position_snapshot_v2",
+                *(table.name for table in OMS_TACTIC_TABLES),
+                *(table.name for table in RISK_ACTION_TABLES),
+                *(table.name for table in PROTECTION_CHANGE_TABLES),
+                *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
+                *(table.name for table in PROTECTION_SNAPSHOT_TABLES),
+                *(table.name for table in MANAGER_SNAPSHOT_TABLES),
+                *(table.name for table in BROKER_MATCH_SNAPSHOT_TABLES),
+                *(table.name for table in definition_tables),
+            }))
+
+
 _V4_PREFLIGHT_SECRET = object()
 
 
@@ -1923,33 +1947,12 @@ class _V4PreflightSeal:
 
 def _v4_preflight(client: Any) -> _V4PreflightSeal:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
-    from src.trading_runtime.arte_backtest_definition import TABLES as definition_tables
-    from src.trading_runtime.strategy_one_management_snapshot import (
-        TABLES as manager_tables,
-    )
-    from src.trading_runtime.strategy_one_protection_snapshot import (
-        TABLES as protection_tables,
-    )
-
     installed = fixed_backtest_v2_contracts()
     # A storage_preflight scans active parts as well as schema. Audit the
     # union once: repeating that catalog scan for each family can dominate
     # Backtest startup on a workstation with large market-part catalogs.
     storage_preflight(client, tables=v4_storage_contracts())
-    writable = frozenset(
-        _v4_family_table(table) for table, _, _, _ in _FAMILIES
-    ) | frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
-        ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
-        ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
-        *(table.name for table in OMS_TACTIC_TABLES),
-        *(table.name for table in RISK_ACTION_TABLES),
-        *(table.name for table in PROTECTION_CHANGE_TABLES),
-        *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
-        "trading_backtest_account_snapshot_v2",
-        "trading_backtest_position_snapshot_v2",
-        *(table.name for table in protection_tables),
-        *(table.name for table in manager_tables),
-        *(table.name for table in definition_tables)}
+    writable = v4_journal_write_tables()
     readonly = frozenset(table.name for table in installed) - writable
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
