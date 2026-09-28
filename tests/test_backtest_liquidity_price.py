@@ -1,6 +1,7 @@
 """Fixed Backtest may certify eligible prices, but never build them."""
 import json
-from threading import Barrier
+import re
+from threading import Barrier, Lock
 
 import pytest
 
@@ -93,26 +94,31 @@ def test_certified_child_plan_pins_source_attempt_and_read_only_hash():
 
 def test_price_certification_uses_bounded_independent_readers(monkeypatch):
     monkeypatch.setattr(price_subject, "_CERTIFICATION_BATCH_SIZE", 1)
+    tickers = ("ABCD", "EFGH", "IJKL", "MNOP", "WXYZ")
     market = CertifiedMarketDayPlan(
         ExecutionInterval.fixed(100), "build", "definition",
-        ("2026-08-18",), ("ABCD", "WXYZ"),
-        (*_plan().units, MarketDayUnit(
-            "build", "2026-08-18", "WXYZ", "broker_100ms",
-            SOURCE, "source", 10, "hash")),
-        (100,), "two-ticker-market-token")
-    concurrent = Barrier(2, timeout=5)
+        ("2026-08-18",), tickers,
+        tuple(MarketDayUnit(
+            "build", "2026-08-18", ticker, "broker_100ms",
+            SOURCE, "source", 10, "hash") for ticker in tickers),
+        (100,), "five-ticker-market-token")
+    concurrent = Barrier(4, timeout=5)
     owned = []
+    factory_lock = Lock()
 
     class OwnedReader(Reader):
         def __init__(self):
             super().__init__()
             self.closed = False
+            self.first_coverage = True
 
         def execute(self, query):
-            if "FROM arte.liquidity_execution_price_coverage_v1" in query:
+            if ("FROM arte.liquidity_execution_price_coverage_v1" in query
+                    and self.first_coverage):
+                self.first_coverage = False
                 concurrent.wait()
-            ticker = "WXYZ" if "'WXYZ'" in query else "ABCD"
-            return super().execute(query.replace("WXYZ", "ABCD")).replace(
+            ticker = re.search(r"'([A-Z]{4})'", query).group(1)
+            return super().execute(query.replace(ticker, "ABCD")).replace(
                 "ABCD", ticker)
 
         def close(self):
@@ -120,13 +126,16 @@ def test_price_certification_uses_bounded_independent_readers(monkeypatch):
 
     def factory():
         reader = OwnedReader()
-        owned.append(reader)
+        with factory_lock:
+            owned.append(reader)
         return reader
 
     plan = certify_price_level_plan(
         market, Reader(), read_client_factory=factory)
-    assert tuple(unit.ticker for unit in plan.units) == ("ABCD", "WXYZ")
-    assert len(owned) == 2 and all(reader.closed for reader in owned)
+    assert tuple(unit.ticker for unit in plan.units) == tickers
+    assert len(owned) == 4 and all(reader.closed for reader in owned)
+    assert sorted(sum("FROM arte.liquidity_execution_price_coverage_v1" in query
+                      for query in reader.queries) for reader in owned) == [1, 1, 1, 2]
     assert all(query.startswith("SELECT") and "INSERT" not in query
                for reader in owned for query in reader.queries)
 

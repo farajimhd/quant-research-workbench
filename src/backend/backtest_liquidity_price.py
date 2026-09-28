@@ -220,18 +220,28 @@ def _certify_price_level_plan_uncached(
         if not callable(read_client_factory):
             raise TypeError("Price-level batch reader factory is invalid")
 
-        def scan_owned(batch):
+        workers = min(4, len(batches))
+        lanes = tuple(tuple((index, batch)
+                            for index, batch in enumerate(batches)
+                            if index % workers == lane)
+                      for lane in range(workers))
+
+        def scan_owned(lane):
             reader = read_client_factory()
             if reader is None or not callable(getattr(reader, "close", None)):
                 raise TypeError("Price-level batch reader must be closable")
             with closing(reader):
-                return scan_batch(batch, reader)
+                return tuple((index, scan_batch(batch, reader))
+                             for index, batch in lane)
 
-        # Independent sockets and ordered results retain the exact audit while
-        # bounding ClickHouse query pressure to four concurrent shards.
-        with ThreadPoolExecutor(max_workers=min(4, len(batches)),
+        # One socket per lane avoids repeated connection setup for every
+        # 256-ticker batch. Ordered reconstruction keeps the certified token
+        # byte-for-byte identical to the serial audit.
+        with ThreadPoolExecutor(max_workers=workers,
                                 thread_name_prefix="price-level-seals") as pool:
-            results = tuple(unit for batch in pool.map(scan_owned, batches)
+            completed = tuple(item for lane in pool.map(scan_owned, lanes)
+                              for item in lane)
+            results = tuple(unit for _, batch in sorted(completed)
                             for unit in batch)
     units = results
     return PriceLevelPlan(market.build_id, units, _token(market.build_id, units))
