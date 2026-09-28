@@ -35,7 +35,8 @@ def _wsl(*args: str) -> str:
 
 
 def _wsl_path(path: Path) -> str:
-    return _wsl("wslpath", "-a", str(path.resolve()))
+    # WSL's Windows-command transport consumes backslashes as escapes.
+    return _wsl("wslpath", "-a", str(path.resolve()).replace("\\", "/"))
 
 
 def _openssl() -> str:
@@ -95,17 +96,23 @@ def server_sign(workstation_ip: str) -> None:
         f"{WSL_SECRET}/{name}" for name in ("server.key", "server.csr", "server.crt"))
     # Never replace an existing CA or server identity. A partial state needs
     # operator inspection rather than an implicit rekey.
-    existing = _wsl("find", WSL_SECRET, "-maxdepth", "1", "-type", "f", "-printf", "%f\\n")
-    if existing:
-        raise RuntimeError("Keeper TLS identity already exists; refusing replacement")
-    _wsl("openssl", "req", "-x509", "-newkey", "rsa:3072", "-nodes",
-         "-days", "3650", "-keyout", ca_key, "-out", ca_cert,
-         "-subj", "/CN=Quant Workbench Keeper CA",
-         "-addext", "basicConstraints=critical,CA:TRUE",
-         "-addext", "keyUsage=critical,keyCertSign,cRLSign")
-    _wsl("openssl", "req", "-new", "-newkey", "rsa:3072", "-nodes",
-         "-keyout", server_key, "-out", server_csr,
-         "-subj", "/CN=DESKTOP-SAAI85T")
+    existing = set(_wsl("ls", "-1", WSL_SECRET).splitlines())
+    ca_files = {"ca.key", "ca.crt"}
+    initial = ca_files | {"server.key", "server.csr"}
+    server_signed = initial | {"ca.srl", "server.crt"}
+    signed = server_signed | {"client.crt"}
+    if existing not in (set(), ca_files, initial, server_signed, signed):
+        raise RuntimeError("Keeper TLS identity has an unexpected partial state")
+    if not existing:
+        _wsl("openssl", "req", "-x509", "-newkey", "rsa:3072", "-nodes",
+             "-days", "3650", "-keyout", ca_key, "-out", ca_cert,
+             "-subj", "/CN=Quant Workbench Keeper CA",
+             "-addext", "basicConstraints=critical,CA:TRUE",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+    if existing in (set(), ca_files):
+        _wsl("openssl", "req", "-new", "-newkey", "rsa:3072", "-nodes",
+             "-keyout", server_key, "-out", server_csr,
+             "-subj", "/CN=DESKTOP-SAAI85T")
     server_ext = RUNTIME / "server.ext"
     server_ext.write_text(
         f"basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n"
@@ -115,14 +122,16 @@ def server_sign(workstation_ip: str) -> None:
     client_ext.write_text(
         "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
         "extendedKeyUsage=clientAuth\n", encoding="ascii")
-    _wsl("openssl", "x509", "-req", "-in", server_csr, "-CA", ca_cert,
-         "-CAkey", ca_key, "-CAcreateserial", "-out", server_cert,
-         "-days", "825", "-sha256", "-extfile", _wsl_path(server_ext))
+    if existing in (set(), ca_files, initial):
+        _wsl("openssl", "x509", "-req", "-in", server_csr, "-CA", ca_cert,
+             "-CAkey", ca_key, "-CAcreateserial", "-out", server_cert,
+             "-days", "825", "-sha256", "-extfile", _wsl_path(server_ext))
     client_cert = f"{WSL_SECRET}/client.crt"
-    _wsl("openssl", "x509", "-req", "-in", _wsl_path(csr),
-         "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial",
-         "-out", client_cert, "-days", "825", "-sha256",
-         "-extfile", _wsl_path(client_ext))
+    if existing != signed:
+        _wsl("openssl", "x509", "-req", "-in", _wsl_path(csr),
+             "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial",
+             "-out", client_cert, "-days", "825", "-sha256",
+             "-extfile", _wsl_path(client_ext))
     _wsl("openssl", "verify", "-CAfile", ca_cert, server_cert, client_cert)
     _wsl("chown", "root:clickhouse", ca_cert, server_cert, server_key)
     _wsl("chmod", "640", ca_cert, server_cert, server_key)
