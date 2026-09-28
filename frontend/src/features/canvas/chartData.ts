@@ -243,6 +243,9 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       error: "",
       historyError: "",
       historyNotice: `Loading ${timeframe} chart…`,
+      // Keep the prior candles mounted for continuity, but their indicator
+      // authority belongs to the old projection and must not label this one.
+      indicatorProvenance: undefined,
       loading: true,
       loadingEarlier: false,
       pointInTime,
