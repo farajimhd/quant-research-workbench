@@ -14,7 +14,9 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from src.trading_runtime.arte_command_recovery import audit_committed_commands
-from src.trading_runtime.arte_journal_writer import TypedJournalBatch, V4OrderCancelBatch
+from src.trading_runtime.arte_journal_writer import (
+    TypedJournalBatch, V4OrderCancelBatch, V4OrderModifyCommandBatch,
+)
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
@@ -26,6 +28,9 @@ class _JournalWriter(Protocol):
     def submit(self, batch: TypedJournalBatch) -> ThreadFuture[str]: ...
     def submit_base_v4(self, batch: TypedJournalBatch) -> ThreadFuture[str]: ...
     def submit_order_cancel_v4(self, unit: V4OrderCancelBatch) -> ThreadFuture[str]: ...
+    def submit_order_modify_command_v4(
+        self, unit: V4OrderModifyCommandBatch,
+    ) -> ThreadFuture[str]: ...
 
 
 class _OrderBroker(Protocol):
@@ -34,6 +39,9 @@ class _OrderBroker(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def cancel_order(self, account_id: str, order_id: str) -> dict[str, Any]: ...
+    async def modify_order(
+        self, account_id: str, order_id: str, order: OrderRequest,
+    ) -> list[dict[str, Any]]: ...
 
 
 class CommandQueueFull(RuntimeError):
@@ -54,6 +62,15 @@ class _PendingCancel:
     account_id: str
     order_id: str
     result: asyncio.Future[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class _PendingModify:
+    unit: V4OrderModifyCommandBatch
+    account_id: str
+    order_id: str
+    request: OrderRequest
+    result: asyncio.Future[list[dict[str, Any]]]
 
 
 def _command_matches_order(row: Any, order: OrderRequest) -> bool:
@@ -114,14 +131,15 @@ class ArteCommandDispatcher:
         self._live_v4 = profile == "live_v4"
         if (self._live_v4
                 and (not callable(getattr(writer, "submit_base_v4", None))
-                     or not callable(getattr(writer, "submit_order_cancel_v4", None)))):
+                     or not callable(getattr(writer, "submit_order_cancel_v4", None))
+                     or not callable(getattr(writer, "submit_order_modify_command_v4", None)))):
             raise ValueError("Live V4 command lane requires its explicit family writer")
         self._live_lease = getattr(writer, "live_v4_lease", None) if self._live_v4 else None
         if self._live_v4 and not callable(getattr(self._live_lease, "assert_current", None)):
             raise ValueError("Live V4 command lane requires its pinned Keeper lease")
         self._writer = writer
         self._broker = broker
-        self._queue: asyncio.Queue[_PendingCommand | _PendingCancel | None] = asyncio.Queue(maxsize=capacity)
+        self._queue: asyncio.Queue[_PendingCommand | _PendingCancel | _PendingModify | None] = asyncio.Queue(maxsize=capacity)
         self._task: asyncio.Task[None] | None = None
         self._error: BaseException | None = None
         self._admission_error: CommandQueueFull | None = None
@@ -264,6 +282,49 @@ class ArteCommandDispatcher:
             raise self._admission_error from exc
         return result
 
+    def submit_modify(
+        self, unit: V4OrderModifyCommandBatch, account_id: str,
+        order_id: str, request: OrderRequest,
+    ) -> asyncio.Future[list[dict[str, Any]]]:
+        """Enqueue one exact live amendment; its typed receipt precedes broker I/O."""
+        if not self._live_v4 or self._task is None or self._closed:
+            raise RuntimeError("Live V4 modification lane is not accepting orders")
+        if self._error is not None:
+            raise RuntimeError("Command dispatcher requires broker reconciliation") from self._error
+        if self._admission_error is not None:
+            raise RuntimeError("Command admission stopped after queue saturation") from self._admission_error
+        if not isinstance(unit, V4OrderModifyCommandBatch):
+            raise TypeError("Modification needs its normalized V4 batch")
+        base, detail = unit.base, unit.modification
+        event = base.events[0]
+        if (base.run_id != self._audited_run_id or base.status != "running"
+                or (event["category"], event["entity_type"])
+                   != ("command", "order_modify")
+                or event["account_id"] != account_id
+                or event["entity_id"] != order_id
+                or detail["record_id"] != event["record_id"]
+                or detail["run_id"] != base.run_id
+                or detail["batch_id"] != base.batch_id
+                or detail["broker_order_id"] != order_id
+                or detail["order_group_id"] == ""
+                or detail["intent_id"] == ""
+                or event["causation_id"] != detail["intent_id"]
+                or self._placed_order_groups.get((account_id, order_id))
+                   != (detail["ticker"], detail["order_group_id"])
+                or (detail["strategy_id"], detail["strategy_revision"])
+                   != (STRATEGY_ID, STRATEGY_NUMBER)
+                or not _command_matches_order(detail, request)):
+            raise ValueError("Live V4 modification lacks exact Strategy 1 lineage")
+        result: asyncio.Future[list[dict[str, Any]]] = asyncio.get_running_loop().create_future()
+        try:
+            self._queue.put_nowait(_PendingModify(
+                unit, account_id, order_id, deepcopy(request), result))
+        except asyncio.QueueFull as exc:
+            self._admission_error = CommandQueueFull(
+                "Command queue is full; stop new order admission")
+            raise self._admission_error from exc
+        return result
+
     async def _run(self) -> None:
         while True:
             pending = await self._queue.get()
@@ -276,9 +337,12 @@ class ArteCommandDispatcher:
                     # A queued command may outlive its owner. Do not publish a
                     # new command under a Keeper lease already known to be lost.
                     await asyncio.to_thread(self._live_lease.assert_current)
-                batch = pending.unit.base if isinstance(pending, _PendingCancel) else pending.batch
+                batch = (pending.unit.base if isinstance(pending, (_PendingCancel, _PendingModify))
+                         else pending.batch)
                 receipt = (self._writer.submit_order_cancel_v4(pending.unit)
                            if isinstance(pending, _PendingCancel)
+                           else self._writer.submit_order_modify_command_v4(pending.unit)
+                           if isinstance(pending, _PendingModify)
                            else self._writer.submit_base_v4(batch)
                            if self._live_v4 else self._writer.submit(batch))
                 committed_id = await asyncio.wrap_future(receipt)
@@ -291,6 +355,9 @@ class ArteCommandDispatcher:
                 response = (await self._broker.cancel_order(
                     pending.account_id, pending.order_id)
                     if isinstance(pending, _PendingCancel)
+                    else await self._broker.modify_order(
+                        pending.account_id, pending.order_id, pending.request)
+                    if isinstance(pending, _PendingModify)
                     else await self._broker.place_orders(
                         pending.account_id, list(pending.orders)))
                 if self._live_v4 and isinstance(pending, _PendingCommand):
