@@ -185,3 +185,22 @@ wall time is not comparable to the unprofiled runtime. Neither run generated
 a run-local journal directory. The preflight profile separately measured
 34.340s with instrumentation, including exact `bars_v1` and
 `liquidity_100ms_v1` integrity reads; its plan-only mode created no run.
+
+After bounded 256-row active-ticker read-ahead removed a worker-thread hop at
+each in-memory 100 ms boundary, two full-market Aug 18 reruns took 26.354s and
+25.980s of unprofiled execution, after 19.753s and 19.985s cold preflight.
+Runs `3e682b11-be35-439c-b77b-454957da43a3` and
+`2c4502b4-e8f2-4b25-a5e4-a5c4a943ca05` each processed 7,381 persisted
+liquidity rows, with zero failed journal units or causal audit violations.
+The second run measured 13.060s in the session and 6.412s at the terminal
+durability fence; its scheduler took 1.370s over 7,498 boundaries. These
+times are observed workstation measurements, not a guaranteed speedup. Cold
+V4 comparison found identical final account, 58 portfolio decisions and
+intents, 86 executions and commissions, 30 order commands, and every journal
+event-kind count between the two optimized runs. Relative to the earlier
+`96c23b93-1de5-4ad2-8f3b-abb4860f8c80` run, all compared financial and
+order outcomes match. Its one additional event was a periodic
+`checkpoint/market_boundary`, not a strategy or broker action. The current
+larger costs are active-ticker first-row/reconciliation reads and the final
+ClickHouse durability fence; no source-table write or run-local journal was
+introduced by read-ahead.
