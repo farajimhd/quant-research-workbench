@@ -54,6 +54,9 @@ from src.trading_runtime.strategy_one_identity_schema import (
 from src.trading_runtime.strategy_one_v7_interval_schema import (
     TABLES as STRATEGY_ONE_V7_INTERVAL_TABLES,
 )
+from src.backend.live_strategy_one_approval import (
+    TABLE as STRATEGY_ONE_APPROVAL_TABLE,
+)
 from src.trading_runtime.strategy_one_configuration_tree import (
     NODE_TABLE as STRATEGY_ONE_CONFIG_NODE_TABLE,
     RELEASE_TABLE as STRATEGY_ONE_CONFIG_RELEASE_TABLE,
@@ -143,6 +146,7 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
                           *STRATEGY_ONE_V7_INTERVAL_TABLES,
                           STRATEGY_ONE_CONFIG_NODE_TABLE,
                           STRATEGY_ONE_CONFIG_RELEASE_TABLE,
+                          f"arte.{STRATEGY_ONE_APPROVAL_TABLE.name}",
                           V7_LINEAGE_TABLE)),
                       frozenset(), system,
                       frozenset({("q_live", "market_stock_split_v1")})),
