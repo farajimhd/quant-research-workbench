@@ -383,7 +383,7 @@ def test_command_context_uses_exact_intent_revision_when_id_repeats():
         )
 
 
-def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent():
+def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(monkeypatch):
     run_id, attempt_id = "live:strategy-one-lineage", str(uuid4())
     intent_batch_id, command_batch_id = str(uuid4()), str(uuid4())
     source = intent(ticker="TEST", metadata={})
@@ -437,6 +437,33 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
     assert cold[0].request == replace(flat, raw=raw)
     assert cold[0].request.raw == raw
     assert cold[0].request.to_cpapi() == flat.to_cpapi()
+    from types import SimpleNamespace
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime import arte_journal_reader
+
+    v4_prefix = V4CommittedPrefix(
+        run_id, 2, command_batch_id, "command", "completed",
+        (intent_batch_id, command_batch_id),
+    )
+    proof = SimpleNamespace(
+        sequence=2, account_id="DU1",
+        payload={"order_group_id": "group-1", "client_order_id": "client-1",
+                 "phase": "effective", "kind": "target"},
+    )
+    monkeypatch.setattr(
+        arte_journal_reader, "load_complete_typed_protection_history",
+        lambda *_args: SimpleNamespace(records=(proof,)),
+    )
+    with pytest.raises(RuntimeError, match="needs explicit typed OMS lineage"):
+        load_committed_strategy_one_command_page(client, v4_prefix)
+    monkeypatch.setattr(
+        arte_journal_reader, "load_complete_typed_protection_history",
+        lambda *_args: SimpleNamespace(records=(
+            SimpleNamespace(sequence=3, account_id=proof.account_id,
+                            payload=proof.payload),
+        )),
+    )
+    assert load_committed_strategy_one_command_page(client, v4_prefix)[0].request.raw == raw
     assert load_committed_strategy_one_command_page(
         client, prefix, after_sequence=2) == ()
     command_row = client.tables["trading_order_command_v1"][0]

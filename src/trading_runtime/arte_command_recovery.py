@@ -66,6 +66,36 @@ def load_committed_strategy_one_command_page(
     contexts = load_committed_order_context_page(
         client, prefix, commands, include_source=True,
     )
+    # V4 commands may carry OMS-approved target amendments. The V1 context
+    # records only the source intent, so reconstructing such a command from
+    # that intent would silently substitute the wrong canonical metadata.
+    # Scan the complete committed protection history before claiming an
+    # original-intent lineage; a partial page cannot prove absence.
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    if isinstance(prefix, V4CommittedPrefix):
+        from src.trading_runtime.arte_journal_reader import (
+            load_complete_typed_protection_history,
+        )
+        history = load_complete_typed_protection_history(client, prefix)
+        effective_target_first: dict[tuple[str, str, str], int] = {}
+        for proof in history.records:
+            if (proof.payload.get("phase"), proof.payload.get("kind")) != (
+                    "effective", "target"):
+                continue
+            key = (proof.account_id, str(proof.payload.get("order_group_id")),
+                   str(proof.payload.get("client_order_id")))
+            effective_target_first[key] = min(
+                proof.sequence, effective_target_first.get(key, proof.sequence),
+            )
+        for command in commands:
+            context = contexts[str(command["record_id"])]
+            key = (str(command["account_id"]), str(context["order_group_id"]),
+                   str(command["client_order_id"]))
+            if effective_target_first.get(key, int(command["sequence"]) + 1) <= int(
+                    command["sequence"]):
+                raise RuntimeError(
+                    "Amended Strategy 1 command needs explicit typed OMS lineage"
+                )
     source_ids = tuple(sorted({context["source_intent_record_id"]
                                for context in contexts.values()}))
     sources = load_committed_strategy_intent_page(
