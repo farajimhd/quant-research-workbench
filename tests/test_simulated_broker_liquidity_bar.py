@@ -126,6 +126,31 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(fill.order_ref, fill.size) for fill in fills],
                          [("first", 5.0), ("second", 1.0)])
 
+    async def test_completed_bucket_consumption_is_not_needed_in_next_bucket(self):
+        await self.order("MKT", quantity=10, oid="partial")
+        first = START + timedelta(milliseconds=100)
+        self.assertEqual(len(await self.broker.on_liquidity_bar(
+            bar(first, ask_size=4), at=first)), 1)
+        checkpoint = self.broker.checkpoint_state()
+        self.assertTrue(checkpoint["liquidity_consumed"])
+        # The bucket is complete and a resumed fixed run starts at its next
+        # boundary. Consumption is scoped by bucket identity, not carried
+        # capacity; persisting it would duplicate the fill journal.
+        compact = {**checkpoint, "liquidity_consumed": {}}
+        restored = SimulatedBrokerAdapter(
+            ["TEST"], self.broker.config, mode=RunMode.BACKTEST,
+            initial_time=START)
+        await restored.initialize()
+        restored.restore_checkpoint_state(compact)
+        second = first + timedelta(milliseconds=100)
+        next_row = bar(second, ask_size=3)
+        original_fills = await self.broker.on_liquidity_bar(next_row, at=second)
+        resumed_fills = await restored.on_liquidity_bar(next_row, at=second)
+        self.assertEqual(original_fills, resumed_fills)
+        self.assertEqual(self.broker._cash, restored._cash)
+        self.assertEqual(self.broker._positions, restored._positions)
+        self.assertEqual(self.broker._orders, restored._orders)
+
     async def test_ticker_quote_checkpoint_is_not_derivable_from_conid_index(self):
         observed = replace(quote(bid=9.99, ask=10.0),
                            raw={}, ingest_ts=START, ts=START)
