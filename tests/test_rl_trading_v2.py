@@ -439,7 +439,9 @@ def test_best_policy_migration_verifies_lineage_and_resets_account(tmp_path):
     parent = json.loads(json.dumps(current))
     parent['version'] = parent['config']['version'] = 'rl-trading-v2-ppo-single-account-sessions-3'
     parent['config']['liquidation_buffer_seconds'] = parent['arguments']['liquidation_buffer_seconds'] = 120
+    parent['arguments']['min_completed_episodes'] = 3
     parent['code']['files'].update(train.PRE_EARLY_EXIT_HASHES)
+    parent['code']['files'][str(train.Path('research/rl_trading/v2/train.py'))] = train.PILOT_TRAIN_HASH
     parent['contract_hash'] = digest(parent)
     root = tmp_path/'parent'
     (root/'metrics').mkdir(parents=True)
