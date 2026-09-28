@@ -232,15 +232,18 @@ identities, and proves each referenced intent is one earlier fence-certified
 strategy-intent event. The real two-batch integration run passed that read-only
 audit; missing or ambiguous links fail closed.
 
-Before a new mode uses this authority, verify: schema, SSD policy and actual
-parts; writer/reader grants; all runtime state families mapped without JSON;
-idempotent retries; interrupted multi-table publication; conflicting retries;
-live command acknowledgment before send; broker reconciliation; Backtest
-continuous/resumed equality; and cold restart after deletion of run-local
-files. Until those checks pass, the existing live runtime must not be switched
-to an incomplete journal and the fixed Backtest execution guard stays closed.
-Normal Backtest launch also checks the guard before creating a run directory,
-approved-configuration file, or manifest. This protects direct controller and
-service callers as well as UI preflight; it is removed only with a verified
-disk-free typed runtime cutover. Backtest Debug remains a separate legacy
-fixture path and is not evidence that normal Backtest is cut over.
+The numbered Strategy 1 fixed-interval Backtest now uses an in-memory execution
+journal and Keeper-fenced normalized ClickHouse V4 publication. Its preflight
+and launch require the certified ARTE products and exact read/write principals;
+the broker, management, and journal heads are independently cold-audited.
+Full-session all-ticker runs have completed on this path. This is not evidence
+of full Candidate 350 behavioral parity: re-entry is currently fail-closed
+pending a completed-bar confirmation contract and a strategy-version decision.
+
+The live runtime remains deliberately closed to Strategy 1. Before enabling it,
+verify all live state families without JSON or SQLite, exact SSD placement and
+grants, idempotent and interrupted publication recovery, broker reconciliation,
+command safety, and cold restart after loss of run-local files. The existing
+legacy live runtime must not be switched to an incomplete typed journal.
+Backtest Debug remains a separate legacy fixture path and is not evidence for
+either numbered Backtest or live cutover.
