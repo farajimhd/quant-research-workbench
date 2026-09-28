@@ -254,6 +254,22 @@ def test_v4_prepare_only_seals_typed_families_without_transport():
     assert client.typed_insert_dispatch.timeline == []
 
 
+@pytest.mark.parametrize("family", (
+    "backtest_cursors", "backtest_market_authorities", "backtest_progress",
+    "prepared_v7_leases",
+))
+def test_direct_live_v4_rejects_backtest_families_before_insert(family):
+    client = attached_v4_client()
+    item = batch()
+    client.live_v4_lease = SimpleNamespace(
+        run_id=item.run_id, assert_current=lambda: None)
+    rejected = replace(item, **{family: ({"record_id": str(UUID(int=1410))},)})
+    with pytest.raises(ValueError, match="Backtest-only"):
+        _publish_typed_batch_v4(client, rejected)
+    assert client.inserts == []
+    assert client.typed_insert_dispatch.timeline == []
+
+
 def test_v4_preflight_audits_one_exact_storage_union(monkeypatch):
     scans = []
     permissions = []

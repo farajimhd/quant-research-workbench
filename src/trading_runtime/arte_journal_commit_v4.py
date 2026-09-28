@@ -912,6 +912,11 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         if live_lease.run_id != batch.run_id:
             raise RuntimeError("Live V4 publication crossed its Keeper run")
         live_lease.assert_current()
+        if (any(getattr(batch, name) for name in (
+                "backtest_cursors", "backtest_market_authorities",
+                "backtest_progress", "prepared_v7_leases"))
+                or broker_snapshot_rows is not None):
+            raise ValueError("Live V4 cannot publish Backtest-only families")
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
             strategy_one_entry_rows, portfolio_allocation_row,
