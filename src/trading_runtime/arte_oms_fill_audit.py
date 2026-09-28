@@ -40,11 +40,17 @@ async def audit_strategy_one_recent_fills(
     client: Any, prefix: VerifiedPrefix, heads: tuple[Any, ...],
     broker: RecentTradeBroker, *, page_size: int = 500,
     max_committed_fills: int = 20_000,
+    allowed_accounts: frozenset[str] | None = None,
 ) -> RecentFillAudit:
     """Require every recent broker fill for a recovered order in ClickHouse."""
     if (not 1 <= page_size <= 999
-            or max_committed_fills < page_size):
+            or max_committed_fills < page_size
+            or allowed_accounts is not None and (
+                type(allowed_accounts) is not frozenset or not allowed_accounts
+                or any(type(account) is not str or not account
+                       for account in allowed_accounts))):
         raise ValueError("Recent fill audit bounds are invalid")
+    strategy_prefix = f"{STRATEGY_ID[:14]}-v{STRATEGY_NUMBER}-"
     by_client: set[tuple[str, str]] = set()
     by_broker: set[tuple[str, str]] = set()
     for head in heads:
@@ -64,8 +70,13 @@ async def audit_strategy_one_recent_fills(
     recent: dict[tuple[str, str], Execution] = {}
     execution_ids: set[str] = set()
     for trade in await broker.trades(days=7):
+        if allowed_accounts is not None and trade.account not in allowed_accounts:
+            continue
         client_key = (trade.account, trade.order_ref)
         broker_key = (trade.account, trade.order_id)
+        if (str(trade.order_ref or "").startswith(strategy_prefix)
+                and client_key not in by_client and broker_key not in by_broker):
+            raise RuntimeError("Strategy 1 broker fill lacks a recovered OMS binding")
         if client_key not in by_client and broker_key not in by_broker:
             continue
         key = (trade.account, trade.execution_id)

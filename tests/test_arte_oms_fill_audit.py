@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -74,3 +75,18 @@ def test_recent_strategy_one_fill_rejects_missing_or_drifted_row(monkeypatch, ch
     with pytest.raises(RuntimeError):
         asyncio.run(audit.audit_strategy_one_recent_fills(
             object(), _prefix(), (_head(),), _Broker([_trade()]), page_size=1))
+
+
+def test_fresh_run_rejects_unbound_strategy_one_fill() -> None:
+    trade = replace(_trade(), order_ref=(
+        f"{STRATEGY_ID[:14]}-v{STRATEGY_NUMBER}-prior-run-entry"))
+    with pytest.raises(RuntimeError, match="lacks a recovered OMS binding"):
+        asyncio.run(audit.audit_strategy_one_recent_fills(
+            object(), None, (), _Broker([trade]),
+            allowed_accounts=frozenset({"DU1"})))
+    assert asyncio.run(audit.audit_strategy_one_recent_fills(
+        object(), None, (), _Broker([trade]),
+        allowed_accounts=frozenset({"DU2"}))) == audit.RecentFillAudit(0, 0, 0)
+    assert asyncio.run(audit.audit_strategy_one_recent_fills(
+        object(), None, (), _Broker([replace(trade, order_ref="manual-order")]),
+        allowed_accounts=frozenset({"DU1"}))) == audit.RecentFillAudit(0, 0, 0)

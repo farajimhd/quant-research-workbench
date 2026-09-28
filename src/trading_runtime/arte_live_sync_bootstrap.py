@@ -473,9 +473,12 @@ async def audit_recovered_strategy_one_live_oms(
                    for head in heads)):
         raise ValueError("Broker OMS audit requires verified cold live heads")
     cold.barrier.assert_fenced(cold.run_id)
-    open_audit = await audit_strategy_one_open_oms_bindings(heads, broker)
+    open_audit = await audit_strategy_one_open_oms_bindings(
+        heads, broker,
+        allowed_accounts=frozenset(cold.context.get("account_ids") or ()))
     fill_audit = await audit_strategy_one_recent_fills(
-        read_client, cold.prefix, heads, broker)
+        read_client, cold.prefix, heads, broker,
+        allowed_accounts=frozenset(cold.context.get("account_ids") or ()))
     cold.barrier.assert_fenced(cold.run_id)
     return StrategyOneColdBrokerAudit(open_audit, fill_audit)
 

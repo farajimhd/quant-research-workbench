@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES, LiveOrder
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
 class OpenOrderBroker(Protocol):
@@ -44,9 +45,16 @@ def _broker_quantity_balances(order: LiveOrder) -> bool:
 
 
 async def audit_strategy_one_open_oms_bindings(
-    heads: tuple[Any, ...], broker: OpenOrderBroker,
+    heads: tuple[Any, ...], broker: OpenOrderBroker, *,
+    allowed_accounts: frozenset[str] | None = None,
 ) -> OmsOpenBindingAudit:
     """Fail closed if broker open orders differ from verified typed OMS heads."""
+    if (allowed_accounts is not None and
+            (type(allowed_accounts) is not frozenset or not allowed_accounts
+             or any(type(account) is not str or not account
+                    for account in allowed_accounts))):
+        raise ValueError("Broker OMS audit needs exact account membership")
+    strategy_prefix = f"{STRATEGY_ID[:14]}-v{STRATEGY_NUMBER}-"
     expected_by_broker: dict[tuple[str, str], tuple[Any, Any]] = {}
     expected_by_client: dict[tuple[str, str], Any] = {}
     for head in heads:
@@ -68,10 +76,16 @@ async def audit_strategy_one_open_oms_bindings(
 
     open_by_broker: dict[tuple[str, str], LiveOrder] = {}
     for order in await broker.live_orders():
+        if allowed_accounts is not None and order.account not in allowed_accounts:
+            continue
         key = (order.account, str(order.orderId))
         if not key[1] or key in open_by_broker:
             raise RuntimeError("Broker open-order identity is missing or duplicated")
         open_by_broker[key] = order
+        if ((str(order.cOID or "").startswith(strategy_prefix)
+             or str(order.parentId or "").startswith(strategy_prefix))
+                and key not in expected_by_broker):
+            raise RuntimeError("Strategy 1 broker order lacks a recovered OMS binding")
         client_key = (order.account, order.cOID)
         if client_key in expected_by_client and key not in expected_by_broker:
             raise RuntimeError("Strategy 1 broker order is absent from recovered OMS bindings")

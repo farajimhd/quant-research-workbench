@@ -802,7 +802,8 @@ def test_cold_oms_broker_audit_keeps_fence_across_snapshot(monkeypatch) -> None:
     group = SimpleNamespace(group={"account_id": "DU1"}, orders=(),
                             broker_bindings=())
     head = bootstrap.VerifiedStrategyOneOmsHead(group, object(), {}, {})
-    async def recent(_client, _prefix, _heads, _broker):
+    async def recent(_client, _prefix, _heads, _broker, **kwargs):
+        assert kwargs["allowed_accounts"] == frozenset({"DU1"})
         calls.append("fills")
         return fills.RecentFillAudit(0, 0, 0)
     monkeypatch.setattr(fills, "audit_strategy_one_recent_fills", recent)

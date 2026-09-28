@@ -10,6 +10,7 @@ from src.trading_runtime.arte_oms_broker_audit import (
     OmsOpenBindingAudit, audit_strategy_one_open_oms_bindings,
 )
 from src.trading_runtime.ibkr_schema import LiveOrder, OrderRequest, OrderStatus
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
 def _head(*, terminal: bool = False):
@@ -64,3 +65,24 @@ def test_terminal_oms_binding_requires_no_broker_open_order() -> None:
     audit = asyncio.run(audit_strategy_one_open_oms_bindings(
         (_head(terminal=True),), _Broker([])))
     assert audit == OmsOpenBindingAudit(1, 1, 0, 1)
+
+
+def test_fresh_live_run_rejects_unbound_strategy_one_broker_order() -> None:
+    prefix = f"{STRATEGY_ID[:14]}-v{STRATEGY_NUMBER}-"
+    for order in (
+        replace(_open_order(), cOID=prefix + "prior-run-entry"),
+        replace(_open_order(), cOID="", parentId=prefix + "prior-run-parent"),
+    ):
+        with pytest.raises(RuntimeError, match="lacks a recovered OMS binding"):
+            asyncio.run(audit_strategy_one_open_oms_bindings(
+                (), _Broker([order]), allowed_accounts=frozenset({"DU1"})))
+        # The same broker account must not make an unrelated run account fail.
+        assert asyncio.run(audit_strategy_one_open_oms_bindings(
+            (), _Broker([order]), allowed_accounts=frozenset({"DU2"}))) == (
+                OmsOpenBindingAudit(0, 0, 0, 0))
+
+
+def test_fresh_live_run_allows_unrelated_open_order_in_its_account() -> None:
+    assert asyncio.run(audit_strategy_one_open_oms_bindings(
+        (), _Broker([replace(_open_order(), cOID="manual-order")]),
+        allowed_accounts=frozenset({"DU1"}))) == OmsOpenBindingAudit(0, 0, 0, 0)
