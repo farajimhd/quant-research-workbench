@@ -61,6 +61,17 @@ def test_live_context_is_typed_and_bound_to_numbered_release():
         run, config, ("DU1",), _release()) == RUN
 
 
+def test_live_context_rejects_replayed_activation_before_publication():
+    run, config = _live_context()
+    release = _release()
+    replayed = replace(release, payload={**release.payload,
+        "run_plan": {"run_plan_id": "plan-1",
+                     "activation": {"event_policy": "latest_session_occurrence"}}})
+    with pytest.raises(ValueError, match="new-occurrence activation"):
+        bootstrap.validate_new_strategy_one_live_context(
+            run, config, ("DU1",), replayed)
+
+
 @pytest.mark.parametrize("run_change,config_change,accounts", [
     ({"mode": "backtest"}, {}, ("DU1",)),
     ({"evaluation_interval_ms": 200}, {}, ("DU1",)),

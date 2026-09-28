@@ -48,6 +48,18 @@ _EXISTING_TABLES = (
 )
 
 
+def _require_new_occurrence_activation(release: CertifiedStrategyOneConfiguration) -> None:
+    """Freeze the numbered release's live activation semantics before I/O."""
+    run_plan = (release.payload.get("run_plan")
+                if isinstance(release.payload, Mapping) else None)
+    activation = (run_plan.get("activation")
+                  if isinstance(run_plan, Mapping) else None)
+    if (not isinstance(activation, Mapping)
+            or activation.get("event_policy") != "new_occurrences"):
+        raise ValueError(
+            "Strategy 1 live requires new-occurrence activation")
+
+
 def _run_fact_tables(client: Any) -> tuple[str, ...]:
     """Inventory every installed ARTE family with run identity.
 
@@ -84,6 +96,7 @@ def validate_new_strategy_one_live_context(
             or set(run) != {name for name, _ in _CONTRACTS["trading_run_v1"].columns}
             or set(config) != _RUN_CONFIG_FIELDS):
         raise ValueError("Strategy 1 live context is not fully typed")
+    _require_new_occurrence_activation(release)
     strategy = release.payload.get("strategy")
     plan = release.payload.get("run_plan")
     if (not isinstance(strategy, Mapping) or not isinstance(plan, Mapping)
@@ -522,14 +535,7 @@ async def prepare_strategy_one_live_cold_start(
             or type(expected_code_hash) is not str
             or re.fullmatch(r"[0-9a-f]{64}", expected_code_hash) is None):
         raise ValueError("Strategy 1 cold start requires a typed approved release")
-    run_plan = (release.payload.get("run_plan")
-                if isinstance(release.payload, Mapping) else None)
-    activation = (run_plan.get("activation")
-                  if isinstance(run_plan, Mapping) else None)
-    if (not isinstance(activation, Mapping)
-            or activation.get("event_policy") != "new_occurrences"):
-        raise ValueError(
-            "Strategy 1 live cold start requires new-occurrence activation")
+    _require_new_occurrence_activation(release)
     cold = verify_live_sync_cold_start(
         run_id=run_id, read_client=read_client,
         core_dispatch=core_dispatch, sync_dispatch=sync_dispatch,
