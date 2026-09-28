@@ -10,6 +10,7 @@ from src.backend.signal_dispatch_clickhouse_storage import (
 from src.backend.signal_dispatch_typed_cursor import (
     ACK, ACK_COMMIT, INTENT, INTENT_COMMIT, read_committed_dispatch_prefix,
 )
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from tests.test_signal_dispatch_registered_writer import _packets
 
 
@@ -75,3 +76,22 @@ def test_empty_dispatch_prefix_requires_registered_gate_and_empty_all_table_inve
     with pytest.raises(ValueError, match="uncommitted rows"):
         read_committed_dispatch_prefix(
             storage, registered_dispatch=Gate(), **kwargs)
+
+
+def test_strategy_one_cold_reader_uses_only_isolated_dispatch_tables() -> None:
+    class Client:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql):
+            self.sql.append(sql)
+            return ""
+
+    client = Client()
+    storage = ClickHouseDispatchColdStorage(client, strategy_one=True)
+    assert not storage.has_any_dispatch_rows(session_key="2026-09-24")
+    assert len(client.sql) == 4
+    assert all("FROM arte.trading_strategy_one_signal_dispatch_" in sql
+               for sql in client.sql)
+    assert any(strategy_one_signal_table(ACK_COMMIT.name) in sql
+               for sql in client.sql)

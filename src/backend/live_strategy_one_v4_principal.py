@@ -256,6 +256,41 @@ class LiveV4WriterClient:
         self.live_v4_lease.assert_current()
         return self._raw.execute(sql, query_id=query_id)
 
+    def execute_registered_signal_insert(
+        self, sql: str, *, query_id: str, kind: str, dispatch: Any,
+        run_id: str, sequence: int, table: str, phase: str = "",
+    ) -> Any:
+        """Admit only a pending Strategy 1 source/dispatch Keeper operation."""
+        self.live_v4_lease.assert_current()
+        isolated = {item.name for item in STRATEGY_ONE_SIGNAL_TABLES}
+        prefixes = {"source": "arte_signal_source_", "dispatch": "arte_dispatch_"}
+        prefix = prefixes.get(kind)
+        if (prefix is None or table not in isolated
+                or not isinstance(query_id, str)
+                or re.fullmatch(re.escape(prefix) + r"[0-9a-f]{64}", query_id) is None
+                or not sql.startswith(f"INSERT INTO arte.{table} (")
+                or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
+                or getattr(dispatch, "strategy_one", False) is not True
+                or getattr(dispatch, "keeper", None)
+                is not self.live_v4_lease.owner._session.client):
+            raise RuntimeError("Live V4 signal INSERT lacks isolated registered authority")
+        gate, _ = dispatch._read(run_id)
+        digest = sha256(sql.encode()).hexdigest()
+        if kind == "source":
+            pending = (gate.mode == "open" and gate.active
+                       and gate.sequence == sequence and gate.status == "pending"
+                       and gate.table == table and gate.sql_hash == digest)
+        else:
+            tables = dispatch._tables[0 if phase == "intent" else 1] if phase in {
+                "intent", "ack"} else ()
+            pending = (table in tables and gate.mode == "open" and gate.active
+                       and gate.sequence == sequence and gate.phase == phase
+                       and gate.operations[tables.index(table)].status == "pending"
+                       and gate.operations[tables.index(table)].sql_hash == digest)
+        if not pending:
+            raise RuntimeError("Live V4 signal INSERT lacks a pending Keeper operation")
+        return self._raw.execute(sql, query_id=query_id)
+
     def close(self) -> None:
         self._raw.close()
 

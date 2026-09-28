@@ -7,7 +7,7 @@ provide a verifier for the exact Keeper-attested source commit being dispatched.
 from __future__ import annotations
 
 from concurrent.futures import Future
-from queue import Queue
+from queue import Full, Queue
 from threading import Lock, Thread
 from typing import Any, Callable, Mapping
 
@@ -39,11 +39,21 @@ class RegisteredDispatchCursorWriter:
         session_key: str, configuration_revision_id: str,
         source_commit_verifier: Callable[[Mapping[str, Any]], None],
         preflight: Callable[[Any], None] | None = None,
+        strategy_one: bool = False,
     ) -> None:
-        if not callable(source_commit_verifier):
+        if (not callable(source_commit_verifier)
+                or type(strategy_one) is not bool
+                or dispatch.strategy_one is not strategy_one
+                or (strategy_one and preflight is not None)):
             raise ValueError("Registered dispatch needs source commit authority")
-        self.run_id = dispatch_run_id(session_key, configuration_revision_id)
-        if preflight is None:
+        self.run_id = dispatch_run_id(
+            session_key, configuration_revision_id,
+            strategy_one=strategy_one)
+        self.strategy_one = strategy_one
+        if strategy_one:
+            from src.backend.live_strategy_one_v4_principal import live_v4_preflight
+            live_v4_preflight(client)
+        elif preflight is None:
             staged_live_signal_storage_preflight(client)
             fixed_backtest_v2_preflight(client)
         else:
@@ -57,7 +67,10 @@ class RegisteredDispatchCursorWriter:
         self._configuration_revision_id = configuration_revision_id
         self._source_commit_verifier = source_commit_verifier
         self._lock = Lock()
-        self._queue: Queue[tuple[str, Mapping[str, Any], Future[str]] | None] = Queue()
+        # The phase machine admits one work item; the second slot reserves
+        # room for the close sentinel even while that item is queued.
+        self._queue: Queue[tuple[str, Mapping[str, Any], Future[str]] | None] = Queue(
+            maxsize=2)
         self._phase = "intent"
         self._sequence = 1
         self._intents: Mapping[str, Any] | None = None
@@ -85,7 +98,11 @@ class RegisteredDispatchCursorWriter:
                 raise ValueError("Registered intent sequence differs")
             self._phase = "intent-pending"
             receipt: Future[str] = _Receipt()
-            self._queue.put_nowait(("intent", projected, receipt))
+            try:
+                self._queue.put_nowait(("intent", projected, receipt))
+            except Full as exc:
+                self._phase = "intent"
+                raise RuntimeError("Registered dispatch queue is full") from exc
             return receipt
 
     def submit_ack(self, projected: Mapping[str, Any]) -> Future[str]:
@@ -102,7 +119,11 @@ class RegisteredDispatchCursorWriter:
                 raise ValueError("Registered ACK lacks its committed intent predecessor")
             self._phase = "ack-pending"
             receipt: Future[str] = _Receipt()
-            self._queue.put_nowait(("ack", projected, receipt))
+            try:
+                self._queue.put_nowait(("ack", projected, receipt))
+            except Full as exc:
+                self._phase = "ack"
+                raise RuntimeError("Registered dispatch queue is full") from exc
             return receipt
 
     def _run(self) -> None:

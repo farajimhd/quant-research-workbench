@@ -9,6 +9,7 @@ from src.backend.signal_dispatch_insert_dispatch import (
 from src.backend.signal_dispatch_typed_cursor import (
     ACK, ACK_COMMIT, INTENT, INTENT_COMMIT,
 )
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 from test_keeper_ownership import _Client, _Store
 
@@ -110,3 +111,16 @@ def test_existing_unregistered_session_and_wrong_phase_are_rejected() -> None:
         INTENT.name: None, INTENT_COMMIT.name: INTENT_FAMILY})
     with pytest.raises(KeeperUnavailable, match="unresolved phase"):
         dispatch.close_for_cold(RUN)
+
+
+def test_strategy_one_dispatch_rejects_shared_run_and_table():
+    isolated = strategy_one_signal_table(INTENT_COMMIT.name)
+    run_id = dispatch_run_id("2026-08-21", "approved-1", strategy_one=True)
+    dispatch = SignalDispatchInsertDispatch(_Client(_Store(), 11), strategy_one=True)
+    with pytest.raises(ValueError, match="run differs"):
+        dispatch.initialize_new_session(RUN, has_ch_rows=False)
+    dispatch.initialize_new_session(run_id, has_ch_rows=False)
+    assert dispatch.physical(INTENT_COMMIT.name) == isolated
+    with pytest.raises(ValueError, match="family hashes"):
+        dispatch.reserve(run_id, sequence=1, phase="intent", row_hashes={
+            INTENT.name: None, INTENT_COMMIT.name: INTENT_FAMILY})

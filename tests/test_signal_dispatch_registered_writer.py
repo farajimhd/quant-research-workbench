@@ -14,6 +14,7 @@ from src.backend.signal_dispatch_registered_writer import (
 import src.backend.signal_dispatch_registered_writer as writer_module
 from src.backend.signal_dispatch_typed_cursor import project_dispatch_ack
 from src.backend.signal_dispatch_typed_cursor import project_dispatch_intents
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.backend.live_activation_dispatch_admission import (
     AdmissionBatch, TypedActivationDispatchAdmission,
 )
@@ -90,6 +91,43 @@ def test_default_registered_writer_preflight_uses_installed_v2_audit(
         source_commit_verifier=lambda _: None)
     try:
         assert checked == [("layout", client), ("v2", client)]
+    finally:
+        writer.close(timeout_seconds=5)
+
+
+def test_strategy_one_writer_requires_real_live_preflight_and_isolated_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend import live_strategy_one_v4_principal as principal
+
+    run_id = dispatch_run_id("2026-09-24", "approved-revision-1",
+                             strategy_one=True)
+    dispatch = SignalDispatchInsertDispatch(_Client(_Store(), 11), strategy_one=True)
+    dispatch.initialize_new_session(run_id, has_ch_rows=False)
+    client = _MemoryClient()
+    client.rows = {strategy_one_signal_table(name): [] for name in client.rows}
+    with pytest.raises(ValueError, match="source commit authority"):
+        RegisteredDispatchCursorWriter(
+            client, dispatch, session_key="2026-09-24",
+            configuration_revision_id="approved-revision-1",
+            source_commit_verifier=lambda _: None,
+            preflight=lambda _: None, strategy_one=True)
+    checked = []
+    monkeypatch.setattr(principal, "live_v4_preflight",
+                        lambda value: checked.append(value))
+    writer = RegisteredDispatchCursorWriter(
+        client, dispatch, session_key="2026-09-24",
+        configuration_revision_id="approved-revision-1",
+        source_commit_verifier=lambda _: None, strategy_one=True)
+    try:
+        intents, acks = _packets()
+        assert writer.submit_intents(intents).result(timeout=5) == (
+            intents["commit"]["content_hash"])
+        assert writer.submit_ack(acks).result(timeout=5) == (
+            acks["commit"]["content_hash"])
+        assert checked == [client]
+        assert len(client.rows) == 4
+        assert all(name.startswith("trading_strategy_one_") for name in client.rows)
     finally:
         writer.close(timeout_seconds=5)
 

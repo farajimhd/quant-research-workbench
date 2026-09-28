@@ -317,3 +317,67 @@ def test_keeper_live_run_owner_rejects_replacement_and_collision():
     assert replacement.epoch > lease.epoch
     assert lease.owner.path(lease.run_id).startswith(
         "/trading/strategy-one-live-v4/v1/")
+
+
+def test_live_signal_insert_requires_pending_isolated_keeper_operation():
+    from src.backend.signal_source_insert_dispatch import (
+        SignalSourceInsertDispatch, source_insert_run_id,
+    )
+    from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
+
+    lease = _lease()
+    raw = Client()
+    guarded = live.LiveV4WriterClient(raw, lease)
+    dispatch = SignalSourceInsertDispatch(
+        lease.owner._session.client, strategy_one=True)
+    run_id = source_insert_run_id("2026-09-27", "approved-1", strategy_one=True)
+    table = strategy_one_signal_table("signal_stream_python_occurrence_v1")
+    token = "source:1:isolated"
+    sql = (f"INSERT INTO arte.{table} (session_key) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+    query_id = "arte_signal_source_" + "a" * 64
+    dispatch.initialize_new_session(run_id, has_ch_rows=False)
+    with pytest.raises(RuntimeError, match="pending Keeper"):
+        guarded.execute_registered_signal_insert(
+            sql, query_id=query_id, kind="source", dispatch=dispatch,
+            run_id=run_id, sequence=1, table=table)
+    dispatch.begin_batch(run_id, sequence=1, previous_commit_hash="0" * 64)
+    dispatch.execute(guarded, run_id=run_id, sequence=1, table=table,
+                     token=token, row_hash="b" * 64, sql=sql)
+    assert len(raw.inserts) == 1
+    assert raw.inserts[0][0] == sql
+    with pytest.raises(RuntimeError, match="pending Keeper"):
+        guarded.execute_registered_signal_insert(
+            sql, query_id=query_id, kind="source", dispatch=dispatch,
+            run_id=run_id, sequence=1, table=table)
+    lease.release()
+
+
+def test_live_dispatch_insert_uses_pending_isolated_keeper_operation():
+    from src.backend.signal_dispatch_insert_dispatch import (
+        SignalDispatchInsertDispatch, dispatch_run_id,
+    )
+    from src.backend.signal_dispatch_typed_cursor import INTENT_COMMIT
+    from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
+
+    lease = _lease()
+    raw = Client()
+    guarded = live.LiveV4WriterClient(raw, lease)
+    dispatch = SignalDispatchInsertDispatch(
+        lease.owner._session.client, strategy_one=True)
+    run_id = dispatch_run_id("2026-09-27", "approved-1", strategy_one=True)
+    table = strategy_one_signal_table(INTENT_COMMIT.name)
+    digest = "b" * 64
+    dispatch.initialize_new_session(run_id, has_ch_rows=False)
+    dispatch.reserve(run_id, sequence=1, phase="intent", row_hashes={
+        strategy_one_signal_table("signal_dispatch_intent_typed_v1"): None,
+        table: digest})
+    token = f"dispatch:{run_id}:1:{table}:{digest}"
+    sql = (f"INSERT INTO arte.{table} (session_key) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+    dispatch.execute(guarded, run_id=run_id, sequence=1,
+                     phase="intent", table=table, row_hash=digest, sql=sql)
+    assert len(raw.inserts) == 1 and raw.inserts[0][0] == sql
+    lease.release()

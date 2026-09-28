@@ -25,10 +25,11 @@ def _literal(value: str) -> str:
 
 
 def _exact_rows(client: Any, table: TypedTable, *,
+                physical_name: str,
                 session_key: str, sequence: int,
                 maximum: int) -> list[dict[str, Any]]:
     columns = ",".join(name for name, _ in table.columns)
-    sql = (f"SELECT {columns} FROM arte.{table.name} "
+    sql = (f"SELECT {columns} FROM arte.{physical_name} "
            f"WHERE session_key={_literal(session_key)} "
            f"AND source_batch_sequence={sequence} "
            f"LIMIT {maximum + 1} FORMAT JSONEachRow")
@@ -47,22 +48,24 @@ def _publish_family(
     table: TypedTable, rows: list[Mapping[str, Any]], maximum: int,
 ) -> None:
     digest = dispatch_family_hash(tuple(row["content_hash"] for row in rows)) if rows else None
+    physical = dispatch.physical(table.name)
     if rows:
         columns = ",".join(name for name, _ in table.columns)
-        token = f"dispatch:{run_id}:{sequence}:{table.name}:{digest}"
-        sql = (f"INSERT INTO arte.{table.name} ({columns}) SETTINGS "
+        token = f"dispatch:{run_id}:{sequence}:{physical}:{digest}"
+        sql = (f"INSERT INTO arte.{physical} ({columns}) SETTINGS "
                "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
                f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n" +
                "\n".join(canonical_json(row) for row in rows))
         dispatch.execute(client, run_id=run_id, sequence=sequence,
-                         phase=phase, table=table.name, row_hash=digest, sql=sql)
-    readback = _exact_rows(client, table, session_key=session_key,
+                         phase=phase, table=physical, row_hash=digest, sql=sql)
+    readback = _exact_rows(client, table, physical_name=physical,
+                           session_key=session_key,
                            sequence=sequence, maximum=maximum)
     if readback != rows:
         raise ValueError(f"typed dispatch {table.name} readback differs")
     if digest is not None:
         dispatch.seal_readback(run_id=run_id, sequence=sequence,
-                               phase=phase, table=table.name, row_hash=digest)
+                               phase=phase, table=physical, row_hash=digest)
 
 
 def publish_registered_intents(
@@ -78,7 +81,7 @@ def publish_registered_intents(
     session_key, sequence = commit["session_key"], commit["source_batch_sequence"]
     families = ((INTENT, intents), (INTENT_COMMIT, [commit]))
     dispatch.reserve(run_id, sequence=sequence, phase="intent",
-                     row_hashes={table.name: dispatch_family_hash(tuple(
+                     row_hashes={dispatch.physical(table.name): dispatch_family_hash(tuple(
                          row["content_hash"] for row in rows)) if rows else None
                                  for table, rows in families})
     for table, rows in families:
@@ -106,14 +109,15 @@ def publish_registered_ack(
     session_key, sequence = commit["session_key"], commit["source_batch_sequence"]
     for table, expected in ((INTENT, intents["intents"]),
                             (INTENT_COMMIT, [intents["commit"]])):
-        if _exact_rows(client, table, session_key=session_key,
+        if _exact_rows(client, table, physical_name=dispatch.physical(table.name),
+                       session_key=session_key,
                        sequence=sequence,
                        maximum=256 if table == INTENT else 1) != expected:
             raise ValueError("typed dispatch intent predecessor differs")
     families = ((ACK, rows), (ACK_COMMIT, [commit]))
     dispatch.reserve(run_id, sequence=sequence, phase="ack",
                      intent_commit_hash=intents["commit"]["content_hash"],
-                     row_hashes={table.name: dispatch_family_hash(tuple(
+                     row_hashes={dispatch.physical(table.name): dispatch_family_hash(tuple(
                          row["content_hash"] for row in family)) if family else None
                                  for table, family in families})
     for table, family in families:

@@ -175,8 +175,14 @@ class SignalSourceInsertDispatch:
         else:
             raise KeeperUnavailable("Signal source INSERT registration CAS contended")
         # A lost response may mean the server still commits. Leave pending.
-        client.execute(sql, query_id="arte_signal_source_" + sha256(
-            f"{run_id}\x00{sequence}\x00{token}".encode()).hexdigest())
+        query_id = "arte_signal_source_" + sha256(
+            f"{run_id}\x00{sequence}\x00{token}".encode()).hexdigest()
+        registered = getattr(client, "execute_registered_signal_insert", None)
+        if self.strategy_one and callable(registered):
+            registered(sql, query_id=query_id, kind="source", dispatch=self,
+                       run_id=run_id, sequence=sequence, table=table)
+        else:
+            client.execute(sql, query_id=query_id)
         for _ in range(8):
             gate, version = self._read(run_id)
             if gate != pending:

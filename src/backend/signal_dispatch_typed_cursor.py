@@ -259,6 +259,11 @@ def read_committed_dispatch_prefix(
             or not configuration_revision_id):
         raise ValueError("dispatch cold scope is invalid")
     hashes = tuple(_hex(value) for value in source_commit_hashes)
+    strategy_one = getattr(registered_dispatch, "strategy_one", False)
+    if (registered_dispatch is not None
+            and (type(strategy_one) is not bool
+                 or getattr(storage, "strategy_one", False) is not strategy_one)):
+        raise ValueError("dispatch cold reader and Keeper table authority differ")
     if not hashes:
         inventory = getattr(storage, "has_any_dispatch_rows", None)
         if registered_dispatch is None or not callable(inventory):
@@ -269,7 +274,8 @@ def read_committed_dispatch_prefix(
             raise ValueError("dispatch empty prefix has uncommitted rows")
         from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
         registered_dispatch.assert_cold_receipts(
-            dispatch_run_id(session_key, configuration_revision_id), {})
+            dispatch_run_id(session_key, configuration_revision_id,
+                            strategy_one=strategy_one), {})
         return ()
     listed_intents = [canonical_row(INTENT_COMMIT, row) for row in
                       storage.list_dispatch_commits(INTENT_COMMIT.name, session_key=session_key)]
@@ -307,7 +313,8 @@ def read_committed_dispatch_prefix(
         recovered.append((intents, acks))
     if registered_dispatch is not None:
         from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
-        run_id = dispatch_run_id(session_key, configuration_revision_id)
+        run_id = dispatch_run_id(session_key, configuration_revision_id,
+                                 strategy_one=strategy_one)
         registered_dispatch.assert_cold_receipts(run_id, {
             sequence: (intents["commit"]["content_hash"],
                        acks["commit"]["content_hash"])

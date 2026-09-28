@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from src.backend.signal_dispatch_typed_cursor import (
     ACK, ACK_COMMIT, INTENT, INTENT_COMMIT,
 )
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.trading_runtime.keeper_ownership import (
     KeeperUnavailable, _committed, _identity, _path,
 )
@@ -23,15 +24,21 @@ from src.trading_runtime.journal_contract import canonical_json
 _ZERO = "0" * 64
 _TABLES = ((INTENT.name, INTENT_COMMIT.name),
            (ACK.name, ACK_COMMIT.name))
+_STRATEGY_ONE_TABLES = tuple(tuple(strategy_one_signal_table(name)
+                                    for name in phase) for phase in _TABLES)
 
 
-def dispatch_run_id(session_key: str, configuration_revision_id: str) -> str:
+def dispatch_run_id(session_key: str, configuration_revision_id: str, *,
+                    strategy_one: bool = False) -> str:
     from datetime import date
     if (not isinstance(session_key, str) or
             date.fromisoformat(session_key).isoformat() != session_key):
         raise ValueError("Dispatch session key is invalid")
     _identity(configuration_revision_id, "configuration revision")
-    return (f"dispatch:{session_key}:" +
+    if type(strategy_one) is not bool:
+        raise ValueError("Dispatch mode is invalid")
+    prefix = "strategy-one-dispatch" if strategy_one else "dispatch"
+    return (f"{prefix}:{session_key}:" +
             sha256(configuration_revision_id.encode()).hexdigest())
 
 
@@ -121,11 +128,27 @@ def _decode(wire: bytes) -> _Gate:
 class SignalDispatchInsertDispatch:
     """Serial session writer; all operations are registered before HTTP INSERT."""
 
-    def __init__(self, keeper: Any) -> None:
+    def __init__(self, keeper: Any, *, strategy_one: bool = False) -> None:
+        if type(strategy_one) is not bool:
+            raise ValueError("Dispatch mode is invalid")
         self.keeper = keeper
+        self.strategy_one = strategy_one
+        self._tables = _STRATEGY_ONE_TABLES if strategy_one else _TABLES
+
+    def _scope(self, run_id: str) -> None:
+        prefix = "strategy-one-dispatch:" if self.strategy_one else "dispatch:"
+        if not run_id.startswith(prefix):
+            raise ValueError("Dispatch run differs from table authority")
+
+    def physical(self, logical_name: str) -> str:
+        if logical_name not in _TABLES[0] + _TABLES[1]:
+            raise ValueError("Dispatch table is not registered")
+        return (strategy_one_signal_table(logical_name) if self.strategy_one
+                else logical_name)
 
     def initialize_new_session(self, run_id: str, *, has_ch_rows: bool) -> None:
         _identity(run_id, "dispatch run")
+        self._scope(run_id)
         if type(has_ch_rows) is not bool or has_ch_rows:
             raise KeeperUnavailable("Dispatch session has unregistered ClickHouse rows")
         self.keeper.ensure_path(_path("signal_dispatch_insert_gate"))
@@ -136,6 +159,7 @@ class SignalDispatchInsertDispatch:
             raise KeeperUnavailable("Dispatch session already exists") from exc
 
     def _read(self, run_id: str) -> tuple[_Gate, int]:
+        self._scope(run_id)
         try:
             value, stat = self.keeper.get(_gate_path(run_id))
         except Exception as exc:
@@ -153,7 +177,7 @@ class SignalDispatchInsertDispatch:
                 intent_commit_hash: str | None = None) -> None:
         if phase not in {"intent", "ack"}:
             raise ValueError("Dispatch phase is invalid")
-        tables = _TABLES[0 if phase == "intent" else 1]
+        tables = self._tables[0 if phase == "intent" else 1]
         if (set(row_hashes) != set(tables) or row_hashes[tables[1]] is None
                 or any(value is not None and
                        re.fullmatch(r"[0-9a-f]{64}", value) is None
@@ -178,7 +202,7 @@ class SignalDispatchInsertDispatch:
 
     def execute(self, client: Any, *, run_id: str, sequence: int,
                 phase: str, table: str, row_hash: str, sql: str) -> None:
-        tables = _TABLES[0 if phase == "intent" else 1] if phase in {"intent", "ack"} else ()
+        tables = self._tables[0 if phase == "intent" else 1] if phase in {"intent", "ack"} else ()
         token = f"dispatch:{run_id}:{sequence}:{table}:{row_hash}"
         if (table not in tables or re.fullmatch(r"[0-9a-f]{64}", row_hash) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")
@@ -204,7 +228,13 @@ class SignalDispatchInsertDispatch:
                 break
         else:
             raise KeeperUnavailable("Dispatch typed INSERT registration CAS contended")
-        client.execute(sql, query_id="arte_dispatch_" + sha256(token.encode()).hexdigest())
+        query_id = "arte_dispatch_" + sha256(token.encode()).hexdigest()
+        registered = getattr(client, "execute_registered_signal_insert", None)
+        if self.strategy_one and callable(registered):
+            registered(sql, query_id=query_id, kind="dispatch", dispatch=self,
+                       run_id=run_id, sequence=sequence, table=table, phase=phase)
+        else:
+            client.execute(sql, query_id=query_id)
         for _ in range(8):
             gate, version = self._read(run_id)
             if (gate.mode != "open" or gate.sequence != sequence
@@ -219,7 +249,7 @@ class SignalDispatchInsertDispatch:
 
     def seal_readback(self, *, run_id: str, sequence: int,
                       phase: str, table: str, row_hash: str) -> None:
-        tables = _TABLES[0 if phase == "intent" else 1] if phase in {"intent", "ack"} else ()
+        tables = self._tables[0 if phase == "intent" else 1] if phase in {"intent", "ack"} else ()
         if table not in tables:
             raise ValueError("Dispatch typed seal table is invalid")
         index = tables.index(table)

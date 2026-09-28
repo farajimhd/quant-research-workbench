@@ -15,6 +15,7 @@ from src.backend.signal_dispatch_typed_cursor import (
     ACK, ACK_COMMIT, INTENT, INTENT_COMMIT, project_dispatch_ack,
     read_committed_dispatch_prefix,
 )
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 from test_keeper_ownership import _Client, _Store
 from tests.test_signal_dispatch_typed_cursor import (
@@ -99,6 +100,53 @@ def test_intent_then_ack_publishes_exact_typed_rows_and_cold_receipt() -> None:
     assert {name: len(rows) for name, rows in client.rows.items()} == {
         INTENT.name: 1, INTENT_COMMIT.name: 1,
         ACK.name: 1, ACK_COMMIT.name: 1}
+
+
+def test_strategy_one_dispatch_publishes_and_recovers_only_isolated_tables() -> None:
+    _, delivery = _input()
+    intents = _intents([delivery])
+    acks = project_dispatch_ack(intents, [{
+        "delivery_id": delivery["delivery_id"],
+        "ack_kind": "activation_durable",
+        "activation_receipt_hash": ACTIVATION_HASH,
+    }], acknowledged_at="2026-09-24T14:00:01+00:00")
+    client = _MemoryClient()
+    client.rows = {strategy_one_signal_table(name): [] for name in client.rows}
+    run_id = dispatch_run_id("2026-09-24", "approved-revision-1",
+                             strategy_one=True)
+    dispatch = SignalDispatchInsertDispatch(_Client(_Store(), 11), strategy_one=True)
+    dispatch.initialize_new_session(run_id, has_ch_rows=False)
+    publish_registered_intents(client, dispatch, run_id=run_id, projected=intents)
+    publish_registered_ack(client, dispatch, run_id=run_id,
+                           intents=intents, projected=acks)
+    dispatch.close_for_cold(run_id)
+    dispatch.assert_cold_receipts(run_id, {1: (
+        intents["commit"]["content_hash"], acks["commit"]["content_hash"])})
+
+    class IsolatedReader:
+        strategy_one = True
+
+        def read_dispatch_rows(self, table_name, *, session_key,
+                               source_batch_sequence):
+            return [row for row in client.rows[strategy_one_signal_table(table_name)]
+                    if row["session_key"] == session_key
+                    and row["source_batch_sequence"] == source_batch_sequence]
+
+        def list_dispatch_commits(self, table_name, *, session_key):
+            return [row for row in client.rows[strategy_one_signal_table(table_name)]
+                    if row["session_key"] == session_key]
+
+    assert read_committed_dispatch_prefix(
+        IsolatedReader(), session_key="2026-09-24",
+        source_commit_hashes=("b" * 64,),
+        configuration_revision_id="approved-revision-1",
+        registered_dispatch=dispatch) == ((intents, acks),)
+    assert {name: len(rows) for name, rows in client.rows.items()} == {
+        strategy_one_signal_table(INTENT.name): 1,
+        strategy_one_signal_table(INTENT_COMMIT.name): 1,
+        strategy_one_signal_table(ACK.name): 1,
+        strategy_one_signal_table(ACK_COMMIT.name): 1,
+    }
 
 
 def test_visible_intent_row_after_lost_response_does_not_advance_phase() -> None:
