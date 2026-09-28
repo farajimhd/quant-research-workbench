@@ -252,6 +252,37 @@ pub fn prepare_receipts(
     Ok((batches, members))
 }
 
+/// Verify a complete, bounded cold read of one batch. Callers must query
+/// member and event inventories with `LIMIT event_count + 1` and reject the
+/// overflow row; this function never treats a partial page as complete.
+pub fn verify_batch_readback(
+    batch: &BatchReceipt,
+    members: &[MemberReceipt],
+    events: &[LiveCompactEvent],
+) -> Result<(), &'static str> {
+    if batch.event_count == 0
+        || batch.event_count > 100_000
+        || members.len() != batch.event_count as usize
+        || events.len() != batch.event_count as usize
+        || events.iter().any(|row| row.event_date != batch.source_date)
+    {
+        return Err("source batch readback has incomplete or foreign rows");
+    }
+    let (reconstructed, mut expected) = prepare_receipts(
+        &batch.producer_epoch, &batch.acknowledged_at, events,
+    )?;
+    if reconstructed.len() != 1 || &reconstructed[0] != batch {
+        return Err("source batch readback differs from the acknowledged batch");
+    }
+    let mut actual = members.to_vec();
+    actual.sort_unstable_by_key(|row| row.arrival_sequence);
+    expected.sort_unstable_by_key(|row| row.arrival_sequence);
+    if actual != expected {
+        return Err("source batch readback differs from exact member hashes");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +420,27 @@ mod tests {
         assert_eq!(canonical_row_hash(&first), canonical_row_hash(&second));
         second.price_primary_int += 1;
         assert_ne!(canonical_row_hash(&first), canonical_row_hash(&second));
+    }
+
+    #[test]
+    fn exact_cold_readback_rejects_missing_extra_and_mutated_arrivals() {
+        let epoch = "0123456789abcdef0123456789abcdef";
+        let source = [event("2026-08-18", "A", 3),
+                      event("2026-08-18", "B", 1)];
+        let (batches, members) = prepare_receipts(
+            epoch, "2026-08-18 12:00:00.000000", &source).unwrap();
+        let batch = &batches[0];
+        assert!(verify_batch_readback(batch, &members, &source).is_ok());
+        assert!(verify_batch_readback(batch, &members[..1], &source).is_err());
+        assert!(verify_batch_readback(batch, &members, &source[..1]).is_err());
+        let mut extra = source.to_vec();
+        extra.push(event("2026-08-18", "C", 4));
+        assert!(verify_batch_readback(batch, &members, &extra).is_err());
+        let mut mutated = source.to_vec();
+        mutated[0].price_primary_int += 1;
+        assert!(verify_batch_readback(batch, &members, &mutated).is_err());
+        let mut wrong_epoch = members.clone();
+        wrong_epoch[0].producer_epoch = "fedcba9876543210fedcba9876543210".into();
+        assert!(verify_batch_readback(batch, &wrong_epoch, &source).is_err());
     }
 }
