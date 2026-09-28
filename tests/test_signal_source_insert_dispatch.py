@@ -4,6 +4,7 @@ import pytest
 from src.backend.signal_source_insert_dispatch import (
     SignalSourceInsertDispatch, source_insert_run_id,
 )
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 from tests.test_arte_typed_insert_dispatch import Keeper, Client
 
@@ -75,3 +76,21 @@ def test_source_insert_rejects_unregistered_rows_and_foreign_table():
         dispatch.execute(Client(), run_id=RUN_ID, sequence=1,
                          table=TABLE, token="unsafe'token",
                          row_hash=ROW_HASH, sql=SQL)
+
+
+def test_strategy_one_source_dispatch_rejects_shared_tables_and_run_scope():
+    isolated = strategy_one_signal_table(TABLE)
+    run_id = source_insert_run_id("2026-08-18", "approved-1", strategy_one=True)
+    dispatch = SignalSourceInsertDispatch(Keeper(), strategy_one=True)
+    with pytest.raises(ValueError, match="run differs"):
+        dispatch.initialize_new_session(RUN_ID, has_ch_rows=False)
+    dispatch.initialize_new_session(run_id, has_ch_rows=False)
+    dispatch.begin_batch(run_id, sequence=1, previous_commit_hash="0" * 64)
+    with pytest.raises(ValueError, match="typed INSERT contract"):
+        dispatch.execute(Client(), run_id=run_id, sequence=1, table=TABLE,
+                         token=TOKEN, row_hash=ROW_HASH, sql=SQL)
+    client = Client()
+    dispatch.execute(client, run_id=run_id, sequence=1, table=isolated,
+                     token=TOKEN, row_hash=ROW_HASH,
+                     sql=SQL.replace(f"arte.{TABLE}", f"arte.{isolated}"))
+    assert len(client.calls) == 1

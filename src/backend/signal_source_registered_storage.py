@@ -16,6 +16,7 @@ from src.backend.signal_source_insert_dispatch import (
 from src.backend.signal_stream_typed_cursor import TABLES as CURSOR_TABLES
 from src.backend.signal_stream_typed_occurrence import TABLES as OCCURRENCE_TABLES
 from src.backend.signal_stream_typed_readback import CommittedCursorHead, canonical_row
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.trading_runtime.journal_contract import canonical_json
 
 
@@ -30,8 +31,15 @@ class RegisteredSignalSourceStorage:
 
     def __init__(self, read_storage: Any, insert_client: Any,
                  dispatch: SignalSourceInsertDispatch, *, session_key: str,
-                 configuration_revision: str) -> None:
-        self.run_id = source_insert_run_id(session_key, configuration_revision)
+                 configuration_revision: str,
+                 strategy_one: bool = False) -> None:
+        if (type(strategy_one) is not bool
+                or dispatch.strategy_one != strategy_one
+                or getattr(read_storage, "strategy_one", False) is not strategy_one):
+            raise ValueError("Registered source reader, dispatch and table mode differ")
+        self.run_id = source_insert_run_id(
+            session_key, configuration_revision, strategy_one=strategy_one)
+        self.strategy_one = strategy_one
         self._session_key = session_key
         self._configuration_revision = configuration_revision
         self._read_storage = read_storage
@@ -97,17 +105,19 @@ class RegisteredSignalSourceStorage:
                 raise ValueError("Registered cursor INSERT spans source batches")
             key = str(sequence)
         normalized = [canonical_row(table, row) for row in rows]
+        physical = (strategy_one_signal_table(table_name) if self.strategy_one
+                    else table_name)
         digest = sha256(canonical_json(tuple(
             row["content_hash"] for row in normalized)).encode()).hexdigest()
-        token = f"source:{sequence}:{table_name}:{sha256(key.encode()).hexdigest()[:16]}:{digest}"
+        token = f"source:{sequence}:{physical}:{sha256(key.encode()).hexdigest()[:16]}:{digest}"
         columns = ",".join(name for name, _ in table.columns)
-        sql = (f"INSERT INTO arte.{table_name} ({columns}) SETTINGS "
+        sql = (f"INSERT INTO arte.{physical} ({columns}) SETTINGS "
                "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
                f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n"
                + "\n".join(canonical_json(row) for row in normalized))
         self._dispatch.execute(
             self._client, run_id=self.run_id, sequence=sequence,
-            table=table_name, token=token, row_hash=digest, sql=sql)
+            table=physical, token=token, row_hash=digest, sql=sql)
         observed = (self.read_occurrence_rows(table_name, event_id=key)
                     if table_name in _OCCURRENCE else self.read_cursor_rows(
                         table_name, session_key=self._session_key,
@@ -118,7 +128,7 @@ class RegisteredSignalSourceStorage:
         if sorted(actual, key=order) != sorted(normalized, key=order):
             raise ValueError("Registered source INSERT readback differs")
         self._dispatch.seal_readback(
-            run_id=self.run_id, sequence=sequence, table=table_name,
+            run_id=self.run_id, sequence=sequence, table=physical,
             token=token, row_hash=digest)
         self._operations += 1
 

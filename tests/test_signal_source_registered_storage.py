@@ -8,6 +8,7 @@ from src.backend.signal_source_insert_dispatch import (
     SignalSourceInsertDispatch, source_insert_run_id,
 )
 from src.backend.signal_source_registered_storage import RegisteredSignalSourceStorage
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.backend.signal_stream_typed_publication import TypedSignalPublicationQueue
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 from tests.test_arte_typed_insert_dispatch import Keeper
@@ -109,3 +110,47 @@ def test_registered_source_new_session_checks_all_clickhouse_rows():
     raw.has_any_source_rows = lambda *, session_key: False
     storage.initialize_new_session()
     assert dispatch.acquire_cold_barrier(storage.run_id) == (0, "0" * 64)
+
+
+def test_strategy_one_registered_source_publishes_only_isolated_families():
+    batch = _batch()
+
+    class IsolatedStorage(FakeStorage):
+        strategy_one = True
+
+        def __init__(self):
+            super().__init__()
+            self.physical_writes = []
+
+        def insert_rows(self, table, rows):
+            assert table.startswith("trading_strategy_one_")
+            self.physical_writes.append(table)
+            return super().insert_rows(table.removeprefix("trading_strategy_one_"), rows)
+
+    raw = IsolatedStorage()
+    dispatch = SignalSourceInsertDispatch(Keeper(), strategy_one=True)
+    client = _InsertClient(raw)
+    with pytest.raises(ValueError, match="mode differ"):
+        RegisteredSignalSourceStorage(
+            raw, client, SignalSourceInsertDispatch(Keeper()),
+            session_key=batch.session_key,
+            configuration_revision=batch.configuration_revision,
+            strategy_one=True)
+    storage = RegisteredSignalSourceStorage(
+        raw, client, dispatch, session_key=batch.session_key,
+        configuration_revision=batch.configuration_revision,
+        strategy_one=True)
+    dispatch.initialize_new_session(storage.run_id, has_ch_rows=False)
+    publisher = TypedSignalPublicationQueue(storage, attestor=_Attestor())
+    try:
+        publisher.bootstrap_session(
+            session_key=batch.session_key,
+            configuration_revision=batch.configuration_revision,
+            source_revision=batch.source_revision, catalogs=batch.catalogs)
+        head = publisher.submit(batch).result(timeout=3)
+        assert raw.physical_writes
+        assert all(table == strategy_one_signal_table(logical)
+                   for table, logical in zip(raw.physical_writes, raw.writes))
+        assert dispatch.acquire_cold_barrier(storage.run_id) == (1, head)
+    finally:
+        publisher.close()

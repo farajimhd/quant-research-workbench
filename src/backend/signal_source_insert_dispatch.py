@@ -14,6 +14,9 @@ from typing import Any
 
 from src.backend.signal_stream_typed_cursor import TABLES as CURSOR_TABLES
 from src.backend.signal_stream_typed_occurrence import TABLES as OCCURRENCE_TABLES
+from src.backend.strategy_one_live_signal_schema import (
+    LEGACY_TO_STRATEGY_ONE_SIGNAL,
+)
 from src.trading_runtime.keeper_ownership import (
     KeeperUnavailable, _committed, _identity, _path,
 )
@@ -21,14 +24,19 @@ from src.trading_runtime.keeper_ownership import (
 
 _ZERO = "0" * 64
 _TABLES = frozenset(table.name for table in (*OCCURRENCE_TABLES, *CURSOR_TABLES))
+_STRATEGY_ONE_TABLES = frozenset(LEGACY_TO_STRATEGY_ONE_SIGNAL.values())
 
 
-def source_insert_run_id(session_key: str, configuration_revision: str) -> str:
+def source_insert_run_id(session_key: str, configuration_revision: str, *,
+                         strategy_one: bool = False) -> str:
     if (type(session_key) is not str
             or date.fromisoformat(session_key).isoformat() != session_key):
         raise ValueError("Signal source session key is invalid")
     _identity(configuration_revision, "configuration revision")
-    return (f"signal-source:{session_key}:"
+    if type(strategy_one) is not bool:
+        raise ValueError("Signal source mode is invalid")
+    prefix = "strategy-one-signal-source" if strategy_one else "signal-source"
+    return (f"{prefix}:{session_key}:"
             + sha256(configuration_revision.encode()).hexdigest())
 
 
@@ -69,7 +77,8 @@ def _decode(value: bytes) -> _Gate:
                 or gate.sequence < 1 or gate.count < 0
                 or gate.status not in {"empty", "pending", "ack"}
                 or (gate.status == "empty") != (gate.table == "")
-                or (gate.status != "empty" and gate.table not in _TABLES)
+                or (gate.status != "empty" and gate.table not in
+                    (_TABLES | _STRATEGY_ONE_TABLES))
                 or (not gate.active and (gate.status != "empty" or gate.count))
                 or (gate.mode == "closed" and gate.active)
                 or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None
@@ -88,11 +97,22 @@ def _decode(value: bytes) -> _Gate:
 class SignalSourceInsertDispatch:
     """One source-session writer; all transitions are control-plane I/O."""
 
-    def __init__(self, keeper: Any) -> None:
+    def __init__(self, keeper: Any, *, strategy_one: bool = False) -> None:
+        if type(strategy_one) is not bool:
+            raise ValueError("Signal source mode is invalid")
         self.keeper = keeper
+        self.strategy_one = strategy_one
+        self._tables = _STRATEGY_ONE_TABLES if strategy_one else _TABLES
+
+    def _scope(self, run_id: str) -> None:
+        prefix = ("strategy-one-signal-source:" if self.strategy_one
+                  else "signal-source:")
+        if not run_id.startswith(prefix):
+            raise ValueError("Signal source INSERT run differs from table authority")
 
     def initialize_new_session(self, run_id: str, *, has_ch_rows: bool) -> None:
         _identity(run_id, "source run")
+        self._scope(run_id)
         if type(has_ch_rows) is not bool or has_ch_rows:
             raise KeeperUnavailable("Signal source has unregistered ClickHouse rows")
         self.keeper.ensure_path(_path("signal_source_insert_gate"))
@@ -102,11 +122,15 @@ class SignalSourceInsertDispatch:
             raise KeeperUnavailable("Signal source INSERT session already exists") from exc
 
     def _read(self, run_id: str) -> tuple[_Gate, int]:
+        self._scope(run_id)
         try:
             value, stat = self.keeper.get(_gate_path(run_id))
         except Exception as exc:
             raise KeeperUnavailable("Signal source INSERT gate is absent") from exc
-        return _decode(value), stat.version
+        gate = _decode(value)
+        if gate.table and gate.table not in self._tables:
+            raise KeeperUnavailable("Signal source gate crossed table authority")
+        return gate, stat.version
 
     def _cas(self, run_id: str, version: int, gate: _Gate) -> bool:
         txn = self.keeper.transaction()
@@ -129,7 +153,7 @@ class SignalSourceInsertDispatch:
 
     def execute(self, client: Any, *, run_id: str, sequence: int,
                 table: str, token: str, row_hash: str, sql: str) -> None:
-        if (table not in _TABLES or not isinstance(token, str)
+        if (table not in self._tables or not isinstance(token, str)
                 or re.fullmatch(r"[A-Za-z0-9:._-]{1,256}", token) is None
                 or re.fullmatch(r"[0-9a-f]{64}", row_hash) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")

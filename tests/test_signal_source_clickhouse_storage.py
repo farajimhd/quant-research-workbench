@@ -5,6 +5,7 @@ import re
 import pytest
 
 from src.backend.signal_source_clickhouse_storage import ClickHouseSignalSourceReadStorage
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 from src.backend.signal_stream_typed_occurrence import project_typed_occurrence
 from tests.test_signal_stream_typed_publication import _batch
 
@@ -61,3 +62,14 @@ def test_source_reader_checks_every_family_before_new_gate():
                for sql in client.sql)
     with pytest.raises(ValueError, match="read session"):
         storage.has_any_source_rows(session_key="2026-09-24' OR 1=1")
+
+
+def test_strategy_one_source_reader_never_queries_shared_family():
+    client = _Client()
+    storage = ClickHouseSignalSourceReadStorage(client, {}, strategy_one=True)
+    assert storage.has_any_source_rows(session_key="2026-09-24") is False
+    assert len(client.sql) == 8
+    assert all("FROM arte.trading_strategy_one_signal_stream_" in sql
+               for sql in client.sql)
+    assert any(strategy_one_signal_table("signal_stream_cursor_commit_typed_v1") in sql
+               for sql in client.sql)
