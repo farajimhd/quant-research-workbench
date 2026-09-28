@@ -6,6 +6,7 @@ use crate::intraday_bars::{DurableCompactEvents, IntradayBarRouter};
 use crate::market_products::MarketProductEventRouter;
 use crate::metrics::{QueueFailureKind, SharedMetrics};
 use crate::strategy_one_liquidity::{CompletedLiquidityBucket, LiquidityReducer};
+use crate::strategy_one_source_prefix::AcknowledgedPrefix;
 use crate::strategy_one_source_receipt::{
     batch_readback_sql, batch_table_sql, event_readback_sql, event_table_sql,
     member_readback_sql, member_table_sql, prepare_receipts,
@@ -1304,6 +1305,7 @@ pub struct CompactEventClickHouseWriter {
     durability: DurableCompactEvents,
     coverage_windows: Arc<Mutex<HashMap<(String, String), CoverageWindow>>>,
     source_receipt_epoch: Arc<OnceLock<String>>,
+    source_acknowledged_prefix: Arc<OnceLock<Mutex<AcknowledgedPrefix>>>,
 }
 
 struct CompactPersistWork {
@@ -1313,8 +1315,26 @@ struct CompactPersistWork {
     source_events_inserted: bool,
     receipt_members_inserted: bool,
     receipt_batches_inserted: bool,
+    prefix_acknowledged: bool,
     prepared_receipts: Option<(Vec<BatchReceipt>, Vec<MemberReceipt>)>,
     coverage_sql: Option<String>,
+}
+
+fn acknowledge_source_work(
+    prefix: &mut AcknowledgedPrefix, work: &mut CompactPersistWork,
+) -> Result<u64, &'static str> {
+    if work.prefix_acknowledged {
+        return Ok(prefix.sealed_through());
+    }
+    if !work.events_inserted || !work.source_events_inserted
+        || !work.receipt_members_inserted || !work.receipt_batches_inserted {
+        return Err("source prefix cannot pass an unacknowledged INSERT");
+    }
+    let sequences = work.events.iter().map(|row| row.arrival_sequence)
+        .collect::<Vec<_>>();
+    let through = prefix.acknowledge(&sequences)?;
+    work.prefix_acknowledged = true;
+    Ok(through)
 }
 
 #[derive(Clone)]
@@ -1443,6 +1463,7 @@ impl CompactEventClickHouseWriter {
             durability,
             coverage_windows: Arc::new(Mutex::new(HashMap::new())),
             source_receipt_epoch: Arc::new(OnceLock::new()),
+            source_acknowledged_prefix: Arc::new(OnceLock::new()),
         }
     }
 
@@ -1525,6 +1546,24 @@ impl CompactEventClickHouseWriter {
                 return;
             }
         };
+        if self.config.persist_compact_events {
+            let capacity = self.config.compact_event_max_clickhouse_batch
+                .saturating_mul(8);
+            let prefix = match AcknowledgedPrefix::starting_after(
+                arrival_sequence, capacity,
+            ) {
+                Ok(prefix) => prefix,
+                Err(error) => {
+                    self.metrics.record_lane_failure("strategy_one_source_receipt", error);
+                    return;
+                }
+            };
+            if self.source_acknowledged_prefix.set(Mutex::new(prefix)).is_err() {
+                self.metrics.record_lane_failure(
+                    "strategy_one_source_receipt", "source prefix initialized twice");
+                return;
+            }
+        }
         const PERSIST_WORKER_COUNT: usize = 2;
         let (persist_sender, persist_receiver) = mpsc::channel::<CompactPersistWork>(4);
         let persist_receiver = Arc::new(Mutex::new(persist_receiver));
@@ -1748,6 +1787,7 @@ impl CompactEventClickHouseWriter {
             source_events_inserted: false,
             receipt_members_inserted: false,
             receipt_batches_inserted: false,
+            prefix_acknowledged: false,
             prepared_receipts: None,
             coverage_sql: None,
         };
@@ -1978,6 +2018,18 @@ impl CompactEventClickHouseWriter {
                 }
             }
         }
+        if !work.prefix_acknowledged {
+            let Some(prefix) = self.source_acknowledged_prefix.get() else {
+                self.metrics.record_lane_failure(
+                    "strategy_one_source_receipt", "source prefix is not initialized");
+                return;
+            };
+            let mut guard = prefix.lock().await;
+            if let Err(error) = acknowledge_source_work(&mut *guard, work) {
+                self.metrics.record_lane_failure("strategy_one_source_receipt", error);
+                return;
+            }
+        }
         if work.coverage_sql.is_none() {
             work.coverage_sql = Some(
                 self.live_event_coverage_sql("compact_persisted", &work.events, "", 0)
@@ -1998,6 +2050,7 @@ impl CompactEventClickHouseWriter {
                 work.source_events_inserted = false;
                 work.receipt_members_inserted = false;
                 work.receipt_batches_inserted = false;
+                work.prefix_acknowledged = false;
                 work.prepared_receipts = None;
                 work.coverage_sql = None;
                 self.metrics.record_lane_success(
@@ -2927,6 +2980,34 @@ mod tests {
         assert_eq!(
             crate::strategy_one_source_receipt::canonical_row_hash(&decoded),
             crate::strategy_one_source_receipt::canonical_row_hash(&event));
+    }
+
+    #[test]
+    fn source_prefix_advances_only_after_all_insert_receipts() {
+        let at = Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap();
+        let mut first = compact_quote_at(at, 1);
+        first.arrival_sequence = 92;
+        let mut third = compact_quote_at(at, 3);
+        third.arrival_sequence = 94;
+        let mut work = CompactPersistWork {
+            events: vec![third, first], issues: Vec::new(),
+            events_inserted: true, source_events_inserted: true,
+            receipt_members_inserted: true, receipt_batches_inserted: false,
+            prefix_acknowledged: false, prepared_receipts: None,
+            coverage_sql: None,
+        };
+        let mut prefix = AcknowledgedPrefix::starting_after(91, 3).unwrap();
+        assert!(acknowledge_source_work(&mut prefix, &mut work).is_err());
+        assert_eq!(prefix.sealed_through(), 91);
+        work.receipt_batches_inserted = true;
+        assert_eq!(acknowledge_source_work(&mut prefix, &mut work), Ok(92));
+        assert_eq!(acknowledge_source_work(&mut prefix, &mut work), Ok(92));
+        assert_eq!(prefix.pending_sequences(), 1);
+        let mut middle = compact_quote_at(at, 2);
+        middle.arrival_sequence = 93;
+        work.events = vec![middle];
+        work.prefix_acknowledged = false;
+        assert_eq!(acknowledge_source_work(&mut prefix, &mut work), Ok(94));
     }
 
     #[test]

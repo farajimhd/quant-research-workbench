@@ -108,7 +108,10 @@ in one ClickHouse batch. A receipt must therefore identify the exact member
 sequences (or an equivalent normalized membership relation), not merely its
 minimum, maximum, and count. The bounded in-memory acknowledgement tracker
 accepts sparse sets and advances only through individually acknowledged
-sequences; it is not connected to publication or live admission yet.
+sequences. QMD's two background workers now advance this per-process tracker
+only after the ordinary and versioned source INSERTs and both typed receipt
+INSERTs are acknowledged; coverage retries cannot acknowledge the same work
+twice. The tracker is not a Keeper publication or live admission authority.
 QMD defines typed `q_live.strategy_one_source_batch_v1` and
 `q_live.strategy_one_source_member_v1` contracts. A batch row carries its
 producer epoch, date, identity, exact member count, extrema, and acknowledgement
