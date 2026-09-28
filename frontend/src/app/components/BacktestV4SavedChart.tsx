@@ -86,7 +86,9 @@ export function BacktestV4SavedChart({ runId, ticker, onClose }: {
     const params = new URLSearchParams({ ticker: normalized, timeframe: frame,
       row_limit: "1000" });
     if (before !== null) params.set("before_boundary_ms", String(before));
-    if (showMacd) MACD.forEach(column => params.append("indicator_columns", column));
+    // The saved-chart API accepts one comma-separated projection parameter.
+    // Repeated keys would request only the last MACD column.
+    if (showMacd) params.set("indicator_columns", MACD.join(","));
     setLoading(true);
     setError("");
     void loadPage(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart?${params}`).then(value => {
