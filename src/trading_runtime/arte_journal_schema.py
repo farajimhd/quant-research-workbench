@@ -1873,7 +1873,15 @@ def journal_permission_preflight(
     if any(f"ON arte.{name} " in line for line in grant_lines
            for name in membership_names):
         storage_preflight(client, tables=live_membership_tables)
-        journal |= membership_names
+        # The producer owns membership INSERT. A dedicated live execution
+        # principal may consume the attested roster with SELECT-only grants;
+        # a mixed writable/read-only family is never an authority.
+        if membership_names <= read_only_tables:
+            pass
+        elif membership_names & read_only_tables:
+            raise ValueError("Plan membership read authority is partial")
+        else:
+            journal |= membership_names
     from .arte_oms_tactic_schema import TABLES as oms_tactic_tables
     tactic_names = {table.name for table in oms_tactic_tables}
     if any(f"ON arte.{name} " in line for line in grant_lines

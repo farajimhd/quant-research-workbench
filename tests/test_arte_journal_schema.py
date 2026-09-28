@@ -299,6 +299,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
         grant_line = ""
         staged = False
         membership = False
+        membership_read_only = False
         tactic = False
         strategy_read_grants: frozenset[str] = frozenset()
         reference = False
@@ -324,7 +325,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                 return "journal_writer\n"
             if sql == "SHOW GRANTS FINAL":
                 writable = (journal | (staged_journal if self.staged else set())
-                            | (membership_journal if self.membership else set())
+                            | (membership_journal if self.membership and not self.membership_read_only else set())
                             | (tactic_journal if self.tactic else set()))
                 grants = [*(f"GRANT SELECT, INSERT ON arte.{name} TO journal_writer"
                             for name in sorted(writable)),
@@ -332,6 +333,9 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                             for name in sorted(market)),
                           *(f"GRANT SELECT ON arte.{name} TO journal_writer"
                             for name in sorted(self.strategy_read_grants)),
+                          *(f"GRANT SELECT ON arte.{name} TO journal_writer"
+                            for name in sorted(membership_journal)
+                            if self.membership and self.membership_read_only),
                           *(f"GRANT SELECT ON system.{name} TO journal_writer"
                             for name in ("storage_policies", "tables", "columns", "parts",
                                          "data_skipping_indices"))]
@@ -348,9 +352,9 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                 if sql == self.extra_grant:
                     return "1\n"
                 writable = (journal | (staged_journal if self.staged else set())
-                            | (membership_journal if self.membership else set())
+                            | (membership_journal if self.membership and not self.membership_read_only else set())
                             | (tactic_journal if self.tactic else set()))
-                if privilege == "SELECT" and scope.removeprefix("arte.") in market | writable | self.strategy_read_grants:
+                if privilege == "SELECT" and scope.removeprefix("arte.") in market | writable | self.strategy_read_grants | (membership_journal if self.membership and self.membership_read_only else set()):
                     return "1\n"
                 if privilege == "INSERT" and scope.removeprefix("arte.") in writable:
                     return "1\n"
@@ -388,7 +392,18 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     client.membership = True
     journal_permission_preflight(client)
     assert checked_membership == [membership_tables]
+    client.membership_read_only = True
+    checked_membership.clear()
+    journal_permission_preflight(
+        client, read_only_tables=frozenset(membership_journal))
+    assert checked_membership == [membership_tables]
+    with pytest.raises(ValueError, match="incorrect insert authority"):
+        journal_permission_preflight(client)
+    with pytest.raises(ValueError, match="partial"):
+        journal_permission_preflight(
+            client, read_only_tables=frozenset({next(iter(membership_journal))}))
     client.membership = False
+    client.membership_read_only = False
     checked_membership.clear()
     client.tactic = True
     journal_permission_preflight(client)
