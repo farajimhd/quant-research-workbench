@@ -512,20 +512,28 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None, *,
         work = tuple((stage, table, day, batch)
                      for stage, table in stage_tables
                      for day, batch in _market_stage_batches(plan, expected, stage))
-        def scan(item):
-            stage, table, day, batch = item
-            if read_client_factory is None:
-                return _verify_market_batch(plan, stage, table, day, batch, active)
-            with closing(read_client_factory()) as reader:
-                return _verify_market_batch(plan, stage, table, day, batch, reader)
         if read_client_factory is None:
-            results = tuple(map(scan, work))
+            results = tuple(_verify_market_batch(plan, stage, table, day, batch, active)
+                            for stage, table, day, batch in work)
         else:
-            # One independent SELECT client per shard; no shared HTTP socket.
-            # Six total lanes bound ClickHouse concurrency and memory regardless
-            # of the number of sessions, tickers, or product families.
-            with ThreadPoolExecutor(max_workers=min(6, len(work))) as pool:
-                results = tuple(pool.map(scan, work))
+            # Each bounded lane owns and reuses one read-only connection. A
+            # connection is never shared across threads, and results retain
+            # stage/batch order for the exact indicator-to-bar key proof.
+            workers = min(6, len(work))
+            lanes = tuple(tuple((index, item) for index, item in enumerate(work)
+                                if index % workers == lane)
+                          for lane in range(workers))
+
+            def scan_lane(lane):
+                with closing(read_client_factory()) as reader:
+                    return tuple((index, _verify_market_batch(
+                        plan, item[0], item[1], item[2], item[3], reader))
+                        for index, item in lane)
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                completed = tuple(result for lane in pool.map(scan_lane, lanes)
+                                  for result in lane)
+            results = tuple(result for _, result in sorted(completed))
         indicator_keys = {key: value for result in results for key, value in result.items()}
         # A matching product hash alone does not prove that each indicator row
         # belongs to the corresponding completed price-bearing bar.

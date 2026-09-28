@@ -280,7 +280,7 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertTrue(all(reader.closed for reader in readers))
 
     def test_parallel_product_scan_shards_full_population_without_shared_clients(self) -> None:
-        tickers = tuple(f"T{index:04d}" for index in range(1025))
+        tickers = tuple(f"T{index:04d}" for index in range(2049))
         attempt = "00000000-0000-0000-0000-000000000001"
         units = tuple(MarketDayUnit(
             "build-1", "2026-08-18", ticker, stage, attempt,
@@ -315,10 +315,12 @@ class BacktestMarketDataTests(unittest.TestCase):
 
         verify_market_day_plan(plan, read_client_factory=Worker)
         self.assertEqual(len(readers), 6)
-        self.assertTrue(all(len(reader.queries) == 1 and reader.closed
-                            for reader in readers))
-        self.assertEqual(sorted(len(re.findall(r"'T[0-9]{4}'", reader.queries[0]))
-                                for reader in readers), [1, 1, 1, 1024, 1024, 1024])
+        self.assertEqual(sorted(len(reader.queries) for reader in readers),
+                         [1, 1, 1, 2, 2, 2])
+        self.assertTrue(all(reader.closed for reader in readers))
+        self.assertEqual(sorted(len(re.findall(r"'T[0-9]{4}'", query))
+                                for reader in readers for query in reader.queries),
+                         [1, 1, 1, 1024, 1024, 1024, 1024, 1024, 1024])
         self.assertTrue(all(query.startswith("SELECT ") for reader in readers
                             for query in reader.queries))
 
@@ -326,9 +328,9 @@ class BacktestMarketDataTests(unittest.TestCase):
             def execute(self, sql):
                 result = super().execute(sql)
                 return "" if ("arte.liquidity_100ms_v1" in sql
-                              and "'T1024'" in sql) else result
+                              and "'T2048'" in sql) else result
 
-        with self.assertRaisesRegex(ValueError, "integrity changed.*T1024"):
+        with self.assertRaisesRegex(ValueError, "integrity changed.*T2048"):
             verify_market_day_plan(plan, read_client_factory=MissingWorker)
 
     def test_liquidity_bucket_upper_bound_is_exact_completed_boundary(self) -> None:
