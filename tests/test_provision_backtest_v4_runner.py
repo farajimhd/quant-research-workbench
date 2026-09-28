@@ -29,6 +29,8 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                 *(table.name for table in provision.RISK_ACTION_TABLES),
                 *(table.name for table in PROTECTION_CHANGE_TABLES),
                 *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
+                *(table.name for table in provision.PROTECTION_SNAPSHOT_TABLES),
+                *(table.name for table in provision.MANAGER_SNAPSHOT_TABLES),
                 "trading_backtest_account_snapshot_v2",
                 "trading_backtest_position_snapshot_v2",
                 *(table.name for table in DEFINITION_TABLES)}
@@ -49,6 +51,8 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                                      *provision.RISK_ACTION_TABLES,
                                  *PROTECTION_CHANGE_TABLES,
                                  *PROTECTION_RECONCILIATION_TABLES,
+                                 *provision.PROTECTION_SNAPSHOT_TABLES,
+                                 *provision.MANAGER_SNAPSHOT_TABLES,
                                  *DEFINITION_TABLES)) | MARKET_READ_TABLES
     assert all(" ON arte." in grant or " ON system." in grant
                for grant in plan.grants())
@@ -92,7 +96,10 @@ def test_v4_apply_reconciles_exact_grants_before_runtime_preflight(monkeypatch):
     provision.apply_with_clients(
         admin=Admin(), credential=lambda *, account_exists: "x" * 48,
         client_factory=lambda user, password: Writer())
-    assert "preflight:72" in calls and "preflight:2" in calls
+    assert f"preflight:{len(fixed_backtest_v2_contracts())}" in calls
+    assert f"preflight:{len(provision.PROTECTION_SNAPSHOT_TABLES)}" in calls
+    assert f"preflight:{len(provision.MANAGER_SNAPSHOT_TABLES)}" in calls
+    assert "preflight:2" in calls
     assert "preflight:1" in calls
     assert sum(sql.startswith("CREATE USER ") for sql in calls) == 1
     assert sum(sql.startswith("GRANT ") for sql in calls) == len(

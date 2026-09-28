@@ -1856,13 +1856,20 @@ def _v3_preflight(client: Any) -> None:
 
 def v4_storage_contracts() -> tuple[Any, ...]:
     """One exact, deduplicated V4 catalog for every principal's storage audit."""
+    from src.trading_runtime.strategy_one_management_snapshot import (
+        TABLES as manager_tables,
+    )
+    from src.trading_runtime.strategy_one_protection_snapshot import (
+        TABLES as protection_tables,
+    )
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
                  *OMS_TACTIC_TABLES,
                  *PROTECTION_CHANGE_TABLES,
-                 *PROTECTION_RECONCILIATION_TABLES)
+                 *PROTECTION_RECONCILIATION_TABLES,
+                 *protection_tables, *manager_tables)
     by_name = {}
     for contract in contracts:
         previous = by_name.setdefault(contract.name, contract)
@@ -1886,6 +1893,12 @@ class _V4PreflightSeal:
 def _v4_preflight(client: Any) -> _V4PreflightSeal:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
     from src.trading_runtime.arte_backtest_definition import TABLES as definition_tables
+    from src.trading_runtime.strategy_one_management_snapshot import (
+        TABLES as manager_tables,
+    )
+    from src.trading_runtime.strategy_one_protection_snapshot import (
+        TABLES as protection_tables,
+    )
 
     installed = fixed_backtest_v2_contracts()
     # A storage_preflight scans active parts as well as schema. Audit the
@@ -1903,6 +1916,8 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
         *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
         "trading_backtest_account_snapshot_v2",
         "trading_backtest_position_snapshot_v2",
+        *(table.name for table in protection_tables),
+        *(table.name for table in manager_tables),
         *(table.name for table in definition_tables)}
     readonly = frozenset(table.name for table in installed) - writable
     journal_permission_preflight(

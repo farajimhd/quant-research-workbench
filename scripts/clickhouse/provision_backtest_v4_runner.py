@@ -52,6 +52,12 @@ from src.trading_runtime.arte_protection_reconciliation_v4 import (
     TABLES as PROTECTION_RECONCILIATION_TABLES,
 )
 from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
+from src.trading_runtime.strategy_one_management_snapshot import (
+    TABLES as MANAGER_SNAPSHOT_TABLES,
+)
+from src.trading_runtime.strategy_one_protection_snapshot import (
+    TABLES as PROTECTION_SNAPSHOT_TABLES,
+)
 
 
 PRINCIPAL = "backtest_v4_runner"
@@ -73,6 +79,8 @@ def desired_plan() -> PrincipalPlan:
             *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
             "trading_backtest_account_snapshot_v2",
             "trading_backtest_position_snapshot_v2",
+            *(table.name for table in MANAGER_SNAPSHOT_TABLES),
+            *(table.name for table in PROTECTION_SNAPSHOT_TABLES),
             *(table.name for table in BACKTEST_DEFINITION_TABLES)}
     return PrincipalPlan(
         "running", PRINCIPAL,
@@ -85,6 +93,8 @@ def desired_plan() -> PrincipalPlan:
                                           *RISK_ACTION_TABLES,
                                           *PROTECTION_CHANGE_TABLES,
                                           *PROTECTION_RECONCILIATION_TABLES,
+                                          *PROTECTION_SNAPSHOT_TABLES,
+                                          *MANAGER_SNAPSHOT_TABLES,
                                           *BACKTEST_DEFINITION_TABLES))
         | MARKET_READ_TABLES,
         writable, frozenset(SYSTEM_READ_TABLES),
@@ -131,6 +141,8 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
     storage_preflight(admin, tables=(ENTRY_EVIDENCE,))
     storage_preflight(admin, tables=OMS_TACTIC_TABLES)
     storage_preflight(admin, tables=BACKTEST_DEFINITION_TABLES)
+    storage_preflight(admin, tables=PROTECTION_SNAPSHOT_TABLES)
+    storage_preflight(admin, tables=MANAGER_SNAPSHOT_TABLES)
     password = credential(account_exists=present == "1")
     if not isinstance(password, str) or len(password) < 40:
         raise RuntimeError("V4 requires a private credential of at least 40 characters")
