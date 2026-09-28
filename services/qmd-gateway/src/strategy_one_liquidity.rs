@@ -210,7 +210,7 @@ impl LiquidityReducer {
         let bid_size = f64::from(event.size_secondary);
         let row = self.pending.as_mut().expect("pending liquidity bucket");
         row.quote_event_count = row.quote_event_count.saturating_add(1);
-        if bid == 0 || ask < bid || !ask_size.is_finite() || !bid_size.is_finite()
+        if bid == 0 || ask == 0 || ask < bid || !ask_size.is_finite() || !bid_size.is_finite()
             || ask_size < 0.0 || bid_size < 0.0 {
             self.project_quote();
             return;
@@ -439,6 +439,24 @@ mod tests {
         assert_eq!(row.execution_ineligible_trades, 1);
         assert_eq!(row.quote_valid, 1);
         assert_eq!(row.quote_timestamp_us, event(100, 1, false).sip_timestamp_us);
+    }
+
+    #[test]
+    fn zero_ask_quote_does_not_replace_prior_valid_quote() {
+        let (decoder, rules) = context();
+        let mut reducer = LiquidityReducer::default();
+        let valid = event(100, 1, false);
+        reducer.push(&valid, &decoder, &rules).unwrap();
+        let mut zero_ask = event(150, 2, false);
+        zero_ask.price_primary_int = 0;
+        zero_ask.price_secondary_int = 0;
+        reducer.push(&zero_ask, &decoder, &rules).unwrap();
+        let row = reducer.push(&event(200, 3, true), &decoder, &rules)
+            .unwrap().unwrap();
+        assert_eq!(row.quote_event_count, 2);
+        assert_eq!(row.quote_timestamp_us, valid.sip_timestamp_us);
+        assert_eq!(row.ask_int, 100_100);
+        assert_eq!(row.bid_int, 99_900);
     }
 
     #[test]
