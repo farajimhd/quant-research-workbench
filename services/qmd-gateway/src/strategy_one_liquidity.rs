@@ -116,7 +116,10 @@ impl LiquidityReducer {
         self.last_key = Some(key);
         let (date, local_us) = local_coordinates(event.sip_timestamp_us)?;
         if !(START_US..END_US).contains(&local_us) {
-            return Ok(None);
+            // An ordered later source event can close the final in-session
+            // bucket even though that event does not belong in the session.
+            // Silence or a wall-clock tick cannot make the same claim.
+            return Ok(self.take_completed_through(event.sip_timestamp_us));
         }
         let mut completed = None;
         if self.session_date.as_ref().is_some_and(|prior| prior != &date) {
@@ -392,5 +395,18 @@ mod tests {
         assert!(reducer.push(&legacy, &decoder, &rules).is_err());
         reducer.push(&event(200, 2, false), &decoder, &rules).unwrap();
         assert!(reducer.push(&event(100, 1, true), &decoder, &rules).is_err());
+    }
+
+    #[test]
+    fn ordered_after_hours_event_closes_last_session_bucket_without_joining_it() {
+        let (decoder, rules) = context();
+        let mut reducer = LiquidityReducer::default();
+        reducer.push(&event(100, 1, false), &decoder, &rules).unwrap();
+        let after_hours = event(16 * 3_600_000, 2, false);
+        let row = reducer.push(&after_hours, &decoder, &rules).unwrap().unwrap();
+        assert_eq!(row.event_count, 1);
+        assert_eq!(row.quote_event_count, 1);
+        assert_eq!(row.last_event_us, event(100, 1, false).sip_timestamp_us);
+        assert!(reducer.take_completed_through(after_hours.sip_timestamp_us).is_none());
     }
 }
