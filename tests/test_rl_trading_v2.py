@@ -369,6 +369,48 @@ def test_single_account_cycles_complete_sessions_before_checkpoint_selection(tmp
     assert read(run/'run_manifest.json')['arguments']['stream_sessions'] is True
 
 
+def test_completed_session_run_continues_exact_state_in_new_versioned_run(tmp_path,monkeypatch):
+    monkeypatch.setenv('QW_RUNTIME_ROOT',str(tmp_path))
+    days = ['2026-08-19','2026-08-20','2026-08-21']
+    training = [save_market(tmp_path/day,market(n=1,seconds=8,day=day)) for day in days]
+    validation = save_market(tmp_path/'validation',market(n=1,seconds=8,day='2026-08-24'))
+    common = ['--train-sessions',*[str(path) for path in training],
+        '--val-sessions',str(validation),'--allow-segment','--device','cpu',
+        '--width','16','--heads','2','--threads','1','--rollout-steps','5',
+        '--environments','1','--capital-multipliers','1','--session-order','cycle',
+        '--stream-sessions','--selection-min-episodes','1','--epochs','1',
+        '--batch-size','5','--history-seconds','4','--liquidation-buffer-seconds','2',
+        '--eval-every','2']
+    assert train.main(common+['--run-name','pilot','--min-completed-episodes','3',
+                              '--iterations','5']) == 0
+    pilot = tmp_path/'rl-trading/v2/train/pilot'
+    assert train.main(common+['--run-name','continued','--min-completed-episodes','6',
+                              '--iterations','10','--continue-from-run',str(pilot)]) == 0
+    assert train.main(common+['--run-name','continuous','--min-completed-episodes','6',
+                              '--iterations','10']) == 0
+    extended = tmp_path/'rl-trading/v2/train/continued'
+    child = torch.load(extended/'checkpoint_latest.pt',weights_only=False)
+    uninterrupted = torch.load(tmp_path/'rl-trading/v2/train/continuous/checkpoint_latest.pt',
+                               weights_only=False)
+    assert child['completed_episodes'] == uninterrupted['completed_episodes'] == 6
+    assert child['iteration'] == uninterrupted['iteration'] == 9
+    assert child['next_session_index'] == uninterrupted['next_session_index']
+    assert child['environments'][0]['t'] == uninterrupted['environments'][0]['t']
+    np.testing.assert_array_equal(child['environments'][0]['quantity'],
+                                  uninterrupted['environments'][0]['quantity'])
+    for key in child['policy']:
+        torch.testing.assert_close(child['policy'][key],uninterrupted['policy'][key],rtol=0,atol=0)
+    assert read(extended/'run_manifest.json')['lineage']['parent_iteration'] == 5
+    assert (extended/'checkpoint_best.pt').is_file()
+    with pytest.raises(ValueError,match='only increase'):
+        train.main(common+['--run-name','bad-target','--min-completed-episodes','3',
+                          '--iterations','10','--continue-from-run',str(pilot)])
+    with pytest.raises(ValueError,match='Continuation changes parent contract'):
+        train.main(common+['--run-name','bad-contract','--min-completed-episodes','6',
+                          '--iterations','10','--continue-from-run',str(pilot),
+                          '--extra-venue-fee-per-share','.02'])
+
+
 def test_arrival_band_cap_and_fees_are_applied_on_both_sides():
     prices = np.full((1,12),.9)
     prices[:,1:] = 1.1

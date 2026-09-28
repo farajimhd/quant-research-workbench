@@ -27,6 +27,11 @@ from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.wandb_utils import init_wandb
 
 
+# The frozen one-pass pilot predates explicit versioned continuation. Other
+# source bytes must still match exactly; this is its certified controller hash.
+PILOT_TRAIN_HASH = 'c814a0a450b7688f9561f922fa443eab7e5a1fbbe3cbe308fc0debd3046067ed'
+
+
 def config_arguments(p):
     for field in fields(Config):
         p.add_argument('--'+field.name.replace('_','-'),type=field.type,default=field.default)
@@ -61,6 +66,7 @@ def parser():
     p.add_argument('--selection-min-episodes',type=int,default=0)
     p.add_argument('--stream-sessions',action='store_true')
     p.add_argument('--resume',action='store_true')
+    p.add_argument('--continue-from-run',type=Path)
     p.add_argument('--allow-segment',action='store_true')
     p.add_argument('--wandb-mode',choices=('disabled','offline','online'),default='disabled')
     p.add_argument('--wandb-project',default='rl-trading-v2')
@@ -186,6 +192,52 @@ def _session_reference(path, *, allow_segment):
     return SimpleNamespace(root=root,plan=plan,seconds=plan['rows'])
 
 
+def _continuation(parent_root, manifest, *, run_root, device):
+    parent_root = Path(parent_root).resolve()
+    manifest = json.loads(json.dumps(manifest))
+    if parent_root == run_root.resolve():
+        raise ValueError('Continuation must use a new run directory')
+    parent = read(parent_root/'run_manifest.json')
+    status = read(parent_root/'status.json')
+    if parent.get('contract_hash') != digest({k:v for k,v in parent.items() if k != 'contract_hash'}):
+        raise ValueError('Parent run manifest integrity failure')
+    if status.get('status') not in ('complete','no_valid_checkpoint'):
+        raise ValueError('Continuation requires a completed parent run')
+    for key in ('version','job','config','model','feature_names','train','validation',
+                'teacher_supervision','torch_version','numpy_version','wandb'):
+        if parent.get(key) != manifest.get(key):
+            raise ValueError('Continuation changes parent contract: ' + key)
+    old_args, new_args = parent['arguments'], manifest['arguments']
+    if ({k:v for k,v in old_args.items() if k != 'min_completed_episodes'} !=
+            {k:v for k,v in new_args.items() if k != 'min_completed_episodes'} or
+            new_args['min_completed_episodes'] <= old_args['min_completed_episodes']):
+        raise ValueError('Continuation may only increase completed-session target')
+    changed = str(Path('research/rl_trading/v2/train.py'))
+    old_code, new_code = parent['code']['files'], manifest['code']['files']
+    if (set(old_code) != set(new_code) or
+            any(old_code[name] != new_code[name] for name in old_code if name != changed) or
+            (old_code[changed] != new_code[changed] and old_code[changed] != PILOT_TRAIN_HASH)):
+        raise ValueError('Continuation changed model, data, or execution source')
+    checkpoint = parent_root/'checkpoint_latest.pt'
+    saved = torch.load(checkpoint,map_location=device,weights_only=False)
+    if (saved.get('contract_hash') != parent.get('contract_hash') or
+            saved.get('completed_episodes') != status.get('completed_episodes') or
+            saved.get('iteration') != status.get('iteration')):
+        raise ValueError('Parent checkpoint and completed run disagree')
+    lineage = dict(parent_run=str(parent_root),parent_contract_hash=parent['contract_hash'],
+                   parent_checkpoint_hash=file_hash(checkpoint),
+                   parent_iteration=saved['iteration'],
+                   parent_completed_episodes=saved['completed_episodes'])
+    inherited_best = None
+    if saved['best'] > -float('inf'):
+        best_path = parent_root/'checkpoint_best.pt'
+        inherited_best = torch.load(best_path,map_location=device,weights_only=False)
+        if inherited_best.get('contract_hash') != parent['contract_hash']:
+            raise ValueError('Parent best checkpoint contract mismatch')
+        lineage['parent_best_checkpoint_hash'] = file_hash(best_path)
+    return lineage, saved, inherited_best
+
+
 def _train_locked(args, config, root):
     torch.set_num_threads(args.threads)
     random.seed(args.seed)
@@ -208,7 +260,7 @@ def _train_locked(args, config, root):
             for i in range(args.min_completed_episodes))
         if args.iterations*args.rollout_steps < required:
             raise ValueError(f'Iteration budget cannot complete {args.min_completed_episodes} sessions; require at least {required} steps')
-    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions')}
+    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run')}
     manifest = dict(version=VERSION,job='train',config=config.manifest(),arguments=contract_args,
         model=dict(features=len(sessions[0].plan['feature_names']),width=args.width,heads=args.heads),
         feature_names=sessions[0].plan['feature_names'],code=code_identity(),
@@ -217,6 +269,13 @@ def _train_locked(args, config, root):
         output_root=str(root),wandb=dict(mode=args.wandb_mode,project=args.wandb_project,
                                          entity=args.wandb_entity),teacher_supervision=False,
         torch_version=torch.__version__,numpy_version=np.__version__)
+    inherited = inherited_best = None
+    if args.continue_from_run:
+        lineage, inherited, inherited_best = _continuation(args.continue_from_run,manifest,
+                                                            run_root=root,device=args.device)
+        manifest['lineage'] = lineage
+        if inherited['iteration'] >= args.iterations:
+            raise ValueError('Continuation iteration budget must exceed parent checkpoint')
     manifest['contract_hash'] = digest(manifest)
     path = root/'run_manifest.json'
     if path.exists():
@@ -262,9 +321,9 @@ def _train_locked(args, config, root):
             session_indices=session_indices,next_session_index=next_session_index,
             environments=[env.state_dict() for env in envs])
 
-    if args.resume:
-        saved = torch.load(latest,map_location=args.device,weights_only=False)
-        if saved['contract_hash'] != manifest['contract_hash']:
+    if args.resume or inherited is not None:
+        saved = torch.load(latest,map_location=args.device,weights_only=False) if args.resume else inherited
+        if args.resume and saved['contract_hash'] != manifest['contract_hash']:
             raise ValueError('Checkpoint contract mismatch')
         policy.load_state_dict(saved['policy'])
         optimizer.load_state_dict(saved['optimizer'])
@@ -283,6 +342,11 @@ def _train_locked(args, config, root):
                        if args.stream_sessions else sessions[index])
             envs[slot] = TradingEnv(session,config)
             envs[slot].load_state_dict(saved['environments'][slot])
+        if inherited is not None and not args.resume:
+            _save(latest,snapshot(start))
+            if inherited_best is not None:
+                inherited_best['contract_hash'] = manifest['contract_hash']
+                _save(root/'checkpoint_best.pt',inherited_best)
     else:
         # Even interruption in the first rollout/validation has a restart point.
         _save(latest,snapshot(0))
@@ -301,7 +365,8 @@ def _train_locked(args, config, root):
         write(root/'wandb_run.json',dict(id=wandb_id,project=args.wandb_project,
             entity=args.wandb_entity,url=getattr(wandb_run,'url',None),mode=args.wandb_mode))
         synced_path = root/'wandb_synced.json'
-        synced = read(synced_path)['iteration'] if synced_path.exists() else 0
+        synced = (read(synced_path)['iteration'] if synced_path.exists() else
+                  manifest['lineage']['parent_iteration'] if inherited is not None else 0)
         if synced > start:
             raise ValueError('W&B sync cursor is ahead of the training checkpoint')
         for completed in range(synced+1,start+1):
