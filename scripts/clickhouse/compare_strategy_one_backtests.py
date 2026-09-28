@@ -89,6 +89,24 @@ def _rows_for(client, run_id: str, table: str, fields: tuple[str, ...]) -> list[
 
 def _explain_difference(client, left_id: str, right_id: str) -> None:
     """Print bounded scalar lineage and fill deltas, never source payloads."""
+    def event_counts(run_id: str) -> dict[tuple[str, str], int]:
+        rows = _rows(client,
+            "SELECT category,entity_type,count() AS n "
+            "FROM arte.trading_event_v1 "
+            f"WHERE run_id={_literal(run_id)} "
+            "GROUP BY category,entity_type LIMIT 101 FORMAT JSONEachRow")
+        if len(rows) > 100:
+            raise RuntimeError("Journal event summary exceeds 100 kinds")
+        return {(str(row["category"]), str(row["entity_type"])): int(row["n"])
+                for row in rows}
+
+    left_counts, right_counts = event_counts(left_id), event_counts(right_id)
+    count_changes = [(kind, left_counts.get(kind, 0), right_counts.get(kind, 0))
+                     for kind in sorted(left_counts.keys() | right_counts.keys())
+                     if left_counts.get(kind, 0) != right_counts.get(kind, 0)]
+    print(f"Journal event kinds differing: {len(count_changes)}", flush=True)
+    for kind, before, after in count_changes:
+        print(f"  {kind[0]}/{kind[1]}: left={before} right={after}", flush=True)
     for table, fields in (
         ("trading_run_v1", ("configuration_hash", "code_hash",
                             "market_plan_token", "evaluation_interval_ms")),
