@@ -330,8 +330,8 @@ pub fn event_readback_sql(batch: &BatchReceipt) -> Result<String, &'static str> 
          condition_token_1,condition_token_2,condition_token_3,\
          condition_token_4,condition_token_5,source_sequence,issue_flags \
          FROM {EVENT_TABLE} FINAL WHERE source_date='{day}' \
-         AND producer_epoch='{epoch}' AND (ticker,arrival_sequence) IN \
-         (SELECT ticker,arrival_sequence FROM {MEMBER_TABLE} \
+         AND producer_epoch='{epoch}' AND arrival_sequence IN \
+         (SELECT arrival_sequence FROM {MEMBER_TABLE} \
          WHERE source_date='{day}' AND producer_epoch='{epoch}' \
          AND batch_id='{batch_id}') \
          ORDER BY arrival_sequence LIMIT {limit} \
@@ -506,6 +506,9 @@ mod tests {
         let mut extra = source.to_vec();
         extra.push(event("2026-08-18", "C", 4));
         assert!(verify_batch_readback(batch, &members, &extra).is_err());
+        let mut colliding_ticker = source.to_vec();
+        colliding_ticker.push(event("2026-08-18", "C", 3));
+        assert!(verify_batch_readback(batch, &members, &colliding_ticker).is_err());
         let mut mutated = source.to_vec();
         mutated[0].price_primary_int += 1;
         assert!(verify_batch_readback(batch, &members, &mutated).is_err());
@@ -531,6 +534,10 @@ mod tests {
             assert!(sql.contains(&format!("producer_epoch='{epoch}'")));
         }
         assert!(source.contains("FROM strategy_one_source_event_v1 FINAL"));
+        // Arrival sequence is global within an epoch. Do not allow a member's
+        // ticker to hide a conflicting source row with the same sequence.
+        assert!(source.contains("AND arrival_sequence IN"));
+        assert!(!source.contains("(ticker,arrival_sequence) IN"));
         assert!(batch_readback_sql("2026-08-18' OR 1=1", epoch,
                                    &batch.batch_id).is_err());
         assert!(batch_readback_sql("2026-08-18", epoch,
