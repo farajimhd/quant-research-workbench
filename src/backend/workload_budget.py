@@ -38,6 +38,10 @@ def _env_limit(name: str, default: int) -> int:
 def workload_limits() -> dict[str, int]:
     return {
         "commands": _env_limit("BACKEND_COMMAND_CONCURRENCY", 8),
+        # A cold full-market certificate audit can take tens of seconds.
+        # Serialize it so rapid UI refreshes reuse the certified cache instead
+        # of multiplying identical audits and starving order/control commands.
+        "preflight": _env_limit("BACKEND_PREFLIGHT_CONCURRENCY", 1),
         "discovery": _env_limit("BACKEND_DISCOVERY_CONCURRENCY", 8),
         "discovery_state": _env_limit("BACKEND_DISCOVERY_STATE_CONCURRENCY", 8),
         "charts": _env_limit("BACKEND_CHART_CONCURRENCY", 12),
@@ -52,6 +56,9 @@ def classify_workload(method: str, path: str) -> str:
     normalized_method = method.strip().upper()
     normalized_path = "/" + path.strip().lower().lstrip("/")
     parts = normalized_path.strip("/").split("/")
+    if (normalized_method == "POST"
+            and normalized_path == "/api/trading/historical-preflight"):
+        return "preflight"
     if (normalized_method == "GET" and len(parts) == 5
             and parts[:2] == ["api", "trading"]
             and parts[2] in {"backtest", "replay"} and parts[3] == "runs"):
@@ -109,7 +116,10 @@ class WorkloadBudgetManager:
         state = self._lanes.get(lane) or self._lanes["general"]
         started = monotonic()
         try:
-            await asyncio.wait_for(state.semaphore.acquire(), timeout=self._wait_seconds)
+            await asyncio.wait_for(
+                state.semaphore.acquire(),
+                timeout=max(self._wait_seconds, 60.0) if lane == "preflight"
+                else self._wait_seconds)
         except TimeoutError as exc:
             state.rejected += 1
             raise WorkloadBudgetRejected(lane, state.limit) from exc

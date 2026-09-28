@@ -19,6 +19,14 @@ class WorkloadClassificationTests(unittest.TestCase):
             self.assertEqual(classify_workload("POST", path + "/review"), "simulation")
 
     def test_routes_are_assigned_to_isolated_lanes(self) -> None:
+        self.assertEqual(
+            classify_workload("POST", "/api/trading/historical-preflight"),
+            "preflight",
+        )
+        self.assertEqual(
+            classify_workload("GET", "/api/trading/historical-preflight"),
+            "general",
+        )
         self.assertEqual(classify_workload("POST", "/api/trading/replay/runs"), "simulation")
         self.assertEqual(classify_workload("GET", "/api/market-data/chart"), "charts")
         self.assertEqual(classify_workload("GET", "/api/market-discovery/scanner/history"), "discovery")
@@ -54,6 +62,34 @@ class WorkloadClassificationTests(unittest.TestCase):
 
 
 class WorkloadBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_preflight_waits_without_blocking_commands(self) -> None:
+        manager = WorkloadBudgetManager(
+            {"preflight": 1, "commands": 1, "general": 1}, wait_seconds=0.01
+        )
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_preflight() -> None:
+            async with manager.lease("preflight"):
+                entered.set()
+                await release.wait()
+
+        holder = asyncio.create_task(hold_preflight())
+        await entered.wait()
+
+        async def second_preflight() -> None:
+            async with manager.lease("preflight"):
+                pass
+
+        waiter = asyncio.create_task(second_preflight())
+        await asyncio.sleep(0.02)
+        self.assertFalse(waiter.done())
+        async with manager.lease("commands"):
+            self.assertEqual(manager.snapshot()["lanes"]["commands"]["active"], 1)
+        release.set()
+        await asyncio.gather(holder, waiter)
+        self.assertEqual(manager.snapshot()["lanes"]["preflight"]["completed"], 2)
+
     async def test_saturated_lane_rejects_without_consuming_another_lane(self) -> None:
         manager = WorkloadBudgetManager(
             {"charts": 1, "commands": 1, "general": 1}, wait_seconds=0.01
