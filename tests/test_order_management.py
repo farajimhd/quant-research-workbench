@@ -588,24 +588,29 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_body_trigger_rechecks_trade_and_expires_before_matching(self):
         from src.market_engine.events import TradeEvent
+        # This test exercises OMS body-trigger behavior, not the producer's
+        # 04:05 ET trade-eligibility cutoff. Pin an eligible market timestamp
+        # instead of depending on the workstation's current local time.
+        body_at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
         for expiry in (False, True):
             with tempfile.TemporaryDirectory() as directory:
                 broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
                 manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
                 try:
-                    base = intent(side_quote=(10, 10.02))
+                    base = replace(intent(side_quote=(10, 10.02)),
+                                   event_time=body_at)
                     request = replace(base, metadata={**base.metadata, 'entry_body_trigger': {
-                        'end': NOW.timestamp(), 'expires': NOW.timestamp()+1, 'threshold': 10.01}})
+                        'end': body_at.timestamp(), 'expires': body_at.timestamp()+1, 'threshold': 10.01}})
                     with self.assertRaisesRegex(ValueError, 'body breakout'):
                         await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=None)
-                    trade = TradeEvent(conditions=(), event_id='body', exchange=1, ingest_ts=NOW,
-                        participant_ts=None, price=10.03, ticker='TEST', ts=NOW)
+                    trade = TradeEvent(conditions=(), event_id='body', exchange=1, ingest_ts=body_at,
+                        participant_ts=None, price=10.03, ticker='TEST', ts=body_at)
                     manager.observe_entry_trade(trade)
                     await manager.submit_intent(portfolio_approved(journal, request), account_id='DU1', event=trade)
-                    at = NOW+timedelta(seconds=1 if expiry else .1)
+                    at = body_at+timedelta(seconds=1 if expiry else .1)
                     # Ineligible reports cannot invalidate the trigger.
                     manager.observe_entry_trade(replace(trade, ts=at, price=9, raw={'price_eligible': False}))
-                    assert manager._entry_body_valid(request, NOW+timedelta(milliseconds=50))
+                    assert manager._entry_body_valid(request, body_at+timedelta(milliseconds=50))
                     current = replace(trade, ts=at, price=10.03 if expiry else 10.01)
                     manager.observe_entry_trade(current)
                     await manager.enforce_entry_body_triggers(at)
