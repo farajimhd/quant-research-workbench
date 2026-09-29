@@ -519,3 +519,14 @@ work. The separate cold causal audit verified 58 intents, 3,682 linked
 actions, and zero backdated actions. This is another single-run measurement,
 not proof of a stable improvement. Keeper connection-drop/retry warnings
 still appeared at shutdown; interrupted-run resume remains disabled.
+
+A read-only repeated full-market preflight on the same workstation process
+measured 22.114s cold and 3.000s warm (Aug 18, $100,000, 100ms); it created
+no run or journal. A separate CPU-instrumented preflight took 33.493s cold
+and 3.862s warm. Its cold cumulative profile attributed 10.808s to
+certified market-plan discovery, including session-seal reads, and 4.826s
+to market-plan coverage verification; instrumentation and concurrent threads
+make those cumulative figures unsuitable for addition into wall time. The
+existing in-process validated-plan reuse is material; cold discovery is the
+next preflight optimization target, without skipping coverage or weakening
+the fail-closed launch gate.
