@@ -13,9 +13,16 @@ from research.rl_trading.v1.phase1_close_labels import targets, decision_values
 from research.rl_trading.v1.phase2_close_values import coefficients
 from research.rl_trading.v1.phase3_dynamic_teacher import Config,run,run_stream,future_first_scores,session_profit_report
 from research.rl_trading.v1.dynamic_supervision import order_labels
+from research.rl_trading.v1.publish_dynamic_split import TRAIN,DEVELOPMENT,TEST
 
 
 DAY=date(2026,8,18)
+
+
+def test_dynamic_supervision_forward_split_is_strict():
+    assert len(TRAIN)==17 and len(DEVELOPMENT)==2 and len(TEST)==1
+    assert max(TRAIN)<min(DEVELOPMENT)<max(DEVELOPMENT)<min(TEST)
+    assert len(set(TRAIN+DEVELOPMENT+TEST))==20
 
 
 def test_close_episode_ignores_intrabar_high_and_uses_pre_cross_dip():
