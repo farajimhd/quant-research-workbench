@@ -507,3 +507,15 @@ in 17 writer units with zero failures; cold review audited 58 intents,
 measurement suggests lower CPU preparation cost, but does not establish a
 stable end-to-end speedup. Session and terminal phases took 27.715s and
 19.889s. Keeper shutdown connection warnings remained.
+
+Commit `8225619b9` made the warm writer snapshot cache enforce the caller's
+commit-count bound. A fresh full-market Aug 18 04:00–09:30 ET app-route run
+at $100,000 cash (`aa37b71d-458a-446d-9236-9692cfe3e31b`) passed
+preflight in 24.100s with no blocked checks and completed execution in
+52.942s. It processed 7,584 strategy rows and committed 7,785 journal
+events in 17 writer units with zero failed units. Session evaluation took
+25.976s; terminal handling took 18.959s, of which 14.169s was prior-commit
+work. The separate cold causal audit verified 58 intents, 3,682 linked
+actions, and zero backdated actions. This is another single-run measurement,
+not proof of a stable improvement. Keeper connection-drop/retry warnings
+still appeared at shutdown; interrupted-run resume remains disabled.
