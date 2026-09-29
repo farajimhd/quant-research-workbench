@@ -54,6 +54,20 @@ The OMS image is still a diagnostic reconstruction, not an installed actor;
 interrupted-run resume remains disabled pending complete cross-domain
 restoration and continuation equivalence.
 
+The next cold portfolio audit found that historical fill allocations used the
+workstation wall clock. Commit `13788b4d2` changes allocations and related
+portfolio freshness timestamps to the injected completed-boundary clock; 197
+focused and replay tests plus eight subtests passed. On this code, a fresh
+unprofiled 2026-08-18 04:00–09:30 ET all-ticker run
+`10432d8a-3cb3-45e9-95b0-3ee1cacb1098` completed in 28.764s after a
+separate 23.238s preflight, processed 7,381 persisted rows, and committed
+2,216 normalized journal events with zero failed units and zero backdated
+actions. SELECT-only cold audits passed at checkpoint 1,046 (39 fills, four
+open orders) and checkpoint 2,214 (86 fills, zero open orders), including
+portfolio, manager, OMS, and broker reconstruction. These audit results do
+not yet prove actor installation or resumed-run equivalence; the resume gate
+remains closed.
+
 The laptop-managed app is running the current backend and frontend. A direct
 HTTP preflight for the entire 2026-08-18 04:00–09:30 ET session returned
 `strategy_run_ready=true`, `execution_interval=100ms`, and 18 ready required
