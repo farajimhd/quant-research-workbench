@@ -121,6 +121,8 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
         if (not isinstance(prefix, V4CommittedPrefix)
                 or prefix.run_id != run_id or type(digest) is not str):
             raise RuntimeError("V4 warm snapshot cache has a foreign authority")
+        if len(prefix.batch_ids) > max_commits:
+            raise RuntimeError("V4 warm snapshot exceeds bounded committed chain")
         if (prefix.last_sequence == gate.compacted_through
                 and prefix.last_batch_id == gate.compacted_batch_id
                 and digest == gate.compacted_commit_hash):

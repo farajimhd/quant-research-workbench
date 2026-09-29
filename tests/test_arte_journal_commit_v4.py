@@ -1633,6 +1633,8 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
     assert verified == [second]
     assert commit.load_writer_v4_snapshot_prefix(client, run) is prefix
     assert verified == [second]  # Same fenced head does not rehash details.
+    with pytest.raises(RuntimeError, match="exceeds bounded committed chain"):
+        commit.load_writer_v4_snapshot_prefix(client, run, max_commits=1)
     commits[-1]["source_cursor"] = "2026-08-18:201"
     with pytest.raises(RuntimeError, match="cache differs from commit"):
         commit.load_writer_v4_snapshot_prefix(client, run)
