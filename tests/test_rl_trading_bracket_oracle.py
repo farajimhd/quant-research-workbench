@@ -32,7 +32,8 @@ def test_hindsight_bracket_uses_sparse_path_and_fresh_observed_spread():
     assert result['label_available']
     # Certified ARTE extrema_valid is UInt8/Int64, not a Polars Boolean.
     stored = bars.with_columns(pl.col('extremes_valid').cast(pl.Int64))
-    assert labels(positions, stored, quotes, tick_size=.01).row(
+    stored_quotes = quotes.with_columns(pl.col('quote_valid').cast(pl.Int64))
+    assert labels(positions, stored, stored_quotes, tick_size=.01).row(
         0, named=True)['oracle_stop'] == result['oracle_stop']
 
 

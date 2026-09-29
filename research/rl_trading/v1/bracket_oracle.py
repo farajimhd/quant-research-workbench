@@ -47,8 +47,11 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame,
         raise ValueError('Duplicate or invalid bracket input identity and clocks')
     if (bars['extremes_valid'].null_count() or
             bars.filter(~pl.col('extremes_valid').cast(pl.Int8)
-                        .is_in([0, 1])).height):
-        raise ValueError('Bar extrema validity must be zero or one')
+                        .is_in([0, 1])).height or
+            quotes['quote_valid'].null_count() or
+            quotes.filter(~pl.col('quote_valid').cast(pl.Int8)
+                          .is_in([0, 1])).height):
+        raise ValueError('Certified bar/quote validity must be zero or one')
     valid_bars = bars.filter(
         (pl.col('extremes_valid') == 1) & pl.col('high').is_finite() &
         pl.col('low').is_finite() & (pl.col('low') > 0) &
@@ -75,7 +78,7 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame,
         (pl.col('entry_us') - pl.col('quote_timestamp_us'))
             .alias('quote_age_us'))
     quote = quote.with_columns((
-        pl.col('quote_valid') & (pl.col('bid_int') > 0) &
+        (pl.col('quote_valid') == 1) & (pl.col('bid_int') > 0) &
         (pl.col('ask_int') >= pl.col('bid_int')) &
         (pl.col('bid_size') > 0) & (pl.col('ask_size') > 0) &
         pl.col('quote_age_us').is_between(0, max_quote_age_us))
