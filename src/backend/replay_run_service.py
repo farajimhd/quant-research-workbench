@@ -2406,6 +2406,16 @@ class ReplayRunController:
                         event_time=event_time,
                         payload=boundary_payload,
                     )
+                portfolio_captures = ()
+                if publisher.writer.journal_profile == 'backtest_v4':
+                    if self._runtime is None or not self.account_ids:
+                        raise RuntimeError('Strategy 1 checkpoint lacks portfolio accounts')
+                    checkpoint_record = self._journal.unfenced_records()[-1]
+                    portfolio_captures = tuple(
+                        self._runtime.portfolio.capture_recovery_snapshot(
+                            account_id, state_revision=checkpoint_record.sequence,
+                            snapshot_at=checkpoint_record.event_time)
+                        for account_id in sorted(self.account_ids))
                 self._checkpoint_phase = 'checkpoint_persist'
                 started = time.perf_counter()
                 if nonblocking_fixed:
@@ -2413,7 +2423,8 @@ class ReplayRunController:
                     interval_at_enqueue = self._restart_checkpoint_interval_events()
                     receipt = publisher.enqueue_checkpoint(
                         boundary_id=boundary_id, status='running',
-                        manager_state=manager_state, broker_state=broker_state)
+                        manager_state=manager_state, broker_state=broker_state,
+                        portfolio_captures=portfolio_captures)
                     self._checkpoint_io_task = receipt
                     def completed(done):
                         try:
@@ -2438,6 +2449,7 @@ class ReplayRunController:
                     boundary_id=boundary_id, status='running',
                     manager_state=manager_state,
                     broker_state=broker_state,
+                    portfolio_captures=portfolio_captures,
                 ))
                 try:
                     await asyncio.shield(self._checkpoint_io_task)

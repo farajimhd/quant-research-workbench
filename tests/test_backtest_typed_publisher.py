@@ -679,6 +679,49 @@ def test_v4_checkpoint_waits_for_matching_broker_head_off_execution_path():
     asyncio.run(exercise())
 
 
+def test_v4_checkpoint_receipt_waits_for_account_snapshot():
+    class V4Writer(FakeWriter):
+        journal_profile = 'backtest_v4'
+
+        def __init__(self):
+            super().__init__()
+            self.snapshot_receipt = Future()
+            self.snapshot_capture = None
+
+        def submit_base_v4(self, batch):
+            return FakeWriter.submit(self, batch)
+
+        def submit_captured_portfolio_snapshot(self, capture):
+            self.snapshot_capture = capture
+            return self.snapshot_receipt
+
+    async def exercise():
+        journal = _journal()
+        writer = V4Writer()
+        publisher = _publisher(journal, writer)
+        capture = CapturedPortfolioSnapshot(
+            run_id=RUN, account_id='DU1', state_revision=2,
+            snapshot_at=AT, account_key='DU1', control_mode='enabled',
+            sync_state='entries_blocked', broker_snapshot_id='',
+            observed_at=None, stale_reason='', peak_net_liquidation=0.0,
+            realized_pnl_baseline=None, selected_policy=None,
+            disabled_strategies=(), commands=(), requests=(),
+            reservations=(), allocations=(), reconciliation=())
+        receipt = publisher.enqueue_checkpoint(
+            boundary_id=f'{DAY.isoformat()}:300000',
+            portfolio_captures=(capture,))
+        for _ in range(100):
+            if writer.snapshot_capture is not None:
+                break
+            await asyncio.sleep(0.001)
+        assert writer.snapshot_capture is capture
+        assert not receipt.done()
+        writer.snapshot_receipt.set_result('a' * 64)
+        assert (await receipt).last_sequence == 2
+
+    asyncio.run(exercise())
+
+
 def test_checkpoint_queues_behind_inflight_prefix_without_blocking_engine():
     async def exercise():
         journal = BacktestMemoryJournal(run_id=RUN)
@@ -934,7 +977,8 @@ def test_fixed_controller_queues_checkpoint_without_waiting_for_writer():
     controller._frame_cursor = {}
     controller._checkpoint_projection_cache = None
     controller._checkpoint_io_task = None
-    controller.stream_snapshot = lambda: pytest.fail("nonblocking checkpoint serialized UI snapshot")
+    snapshots = []
+    controller.stream_snapshot = lambda: snapshots.append({'progress': 0.5}) or snapshots[-1]
     controller._flush_passive_market_events = lambda: None
     controller._record_stage_time = lambda *_: None
     controller._restart_checkpoint_interval_events = lambda: None
@@ -942,6 +986,7 @@ def test_fixed_controller_queues_checkpoint_without_waiting_for_writer():
     async def exercise():
         await controller._save_restart_checkpoint_responsive(
             AT, nonblocking_fixed=True)
+        assert snapshots == [{'progress': 0.5}]
         assert controller._checkpoint_io_task is not None
         assert not controller._checkpoint_io_task.done()
         await _wait_for_submission(writer)
