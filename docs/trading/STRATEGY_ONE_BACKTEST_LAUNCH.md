@@ -26,6 +26,14 @@ market cursor with no limitations. Interrupted-run resume remains disabled:
 the running captures do not yet constitute a verified complete restore of
 controller, OMS, and portfolio state. Two earlier probes during this cutover
 failed and remain auditable; they are not successful performance samples.
+The cold recovery audit now joins normalized portfolio, manager, broker, and
+OMS evidence at one cursor and rejects open broker orders without exact OMS
+bindings. A separate SELECT-only broker quote loader uses the certified
+`liquidity_100ms_v1` build/attempt and completed bucket, not events or a
+current quote. On the completed probe, read-only workstation audits verified
+all six pinned quotes at running checkpoint sequence 1,046 (four broker orders
+open) and all ten at sequence 2,214. This proves the quote source readback;
+it does not restore simulator actors or authorize interrupted-run resume.
 
 The laptop-managed app is running the current backend and frontend. A direct
 HTTP preflight for the entire 2026-08-18 04:00–09:30 ET session returned
