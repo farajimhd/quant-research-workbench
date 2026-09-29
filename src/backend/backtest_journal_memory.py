@@ -564,6 +564,19 @@ class BacktestMemoryJournal:
             row = self._campaign_ownership.get((resource_id, session_key))
             return dict(row) if row is not None else None
 
+    def campaign_ownership_snapshot(self) -> tuple[dict[str, Any], ...]:
+        """Capture only active owner scalars for a normalized V4 checkpoint.
+
+        The mutation wall clock is deliberately excluded: campaign ownership
+        affects future admission through identity, state, and epoch, while the
+        checkpoint cursor supplies its causal completed-market boundary.
+        """
+        with self._lock:
+            self._require_open()
+            return tuple({name: row[name] for name in (
+                "resource_id", "session_key", "owner_id", "state", "epoch")}
+                for _, row in sorted(self._campaign_ownership.items()))
+
     def release_campaign_session_reservation(self, resource_id: str, *, session_key: str,
                                              owner_id: str) -> bool:
         key = (resource_id, session_key)
