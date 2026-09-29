@@ -455,3 +455,15 @@ benefit. The next performance target is normalized snapshot publication and
 readback, not a looser recovery cadence. All three runs completed despite
 Keeper connection-drop/retry messages during shutdown; those messages remain
 an operational issue, not a claimed clean bill of health.
+
+A later instrumented app-route run confirmed the same 7,785-event shape, but
+its global Python call profile could not isolate the journal worker from other
+threads, so its 118.344s wall time is **not** an optimization comparison.
+The misleading profiler was removed. Source inspection identifies a concrete
+repeated-work path: each manager, broker-match, and evidence publication calls
+`load_verified_v4_prefix`, a cold verifier that rereads and rehashes every
+committed batch and normalized detail row. Those snapshots are published
+three times in the $100,000 run. Any warm-path optimization must retain the
+Keeper-compacted prefix, exact current-batch row hashes, causal cursor, and
+cold reader verification; merely omitting the readback would weaken the
+journal contract.
