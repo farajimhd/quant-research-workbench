@@ -75,9 +75,15 @@ not booked as a fill. Future episode extrema never enter policy features.
 causal depthwise convolution to each listing's stored sequence once; serving
 updates a circular cache only for listings with a new completed candle.
 Focused tests prove the two paths agree when listing clocks have gaps. The
-five-action account/holding decoder and bracket price heads are still a
-separate required stage, so this encoder is not a trainable trading policy by
-itself.
+encoder alone is not a trainable trading policy. The decoder now has five
+action logits and conditional size and
+bracket-distance outputs. The account, holding, and OMS adapters must still
+bind those proposals to actual fills before training or replay.
+
+`allocation.certify_from_candidates` can derive the sparse first-eligible
+15-second reservation sidecar from an already certified candidate table.
+It verifies the source certificate and candidate hash without fetching market
+data or recomputing the candle bank.
 
 Production builders remain stopped while this contract is completed and a
 bounded one-day canary audits source identity, label/replay parity, throughput,

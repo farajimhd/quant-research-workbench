@@ -1,6 +1,6 @@
 import torch
 
-from research.rl_trading.v6.model import ActualCandleEncoder
+from research.rl_trading.v6.model import ActualCandleEncoder, BracketActionDecoder
 
 
 def test_actual_candle_training_serving_parity_with_clock_gaps():
@@ -33,3 +33,25 @@ def test_causal_sequence_ignores_future_candle():
     scalar[-1] *= 100
     after = model.encode_listing(scalar, levels)
     assert torch.equal(before[:2], after[:2])
+
+
+def test_five_action_decoder_masks_brackets_until_admissible():
+    torch.manual_seed(5)
+    decoder = BracketActionDecoder(width=8)
+    listings = torch.randn(3, 8)
+    account = torch.tensor([10_000., 10_000., 0., 0., 0.])
+    held_index = torch.tensor([1])
+    held_features = torch.zeros(1, 4)
+    logits, size, stop, target = decoder(
+        listings, account, held_index, held_features,
+        enter_allowed=torch.tensor([True, False, True]),
+        exit_allowed=torch.tensor([True]),
+        stop_allowed=torch.tensor([False]),
+        target_allowed=torch.tensor([True]))
+    # HOLD, three ENTER listings, one EXIT, one SET_STOP, one SET_TARGET.
+    assert logits.shape == (7,) and size.shape == (3,)
+    assert stop.shape == target.shape == (1,)
+    assert logits[2] == torch.finfo(logits.dtype).min
+    assert logits[5] == torch.finfo(logits.dtype).min
+    assert torch.isfinite(logits[[0, 1, 3, 4, 6]]).all()
+    assert ((size >= 0) & (size <= 1)).all()

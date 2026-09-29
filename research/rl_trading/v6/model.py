@@ -106,3 +106,73 @@ class ActualCandleEncoder(nn.Module):
         weighted = (ordered * self.lag[:, 0, :].T[None]).sum(dim=1)
         state.encoded[listing_index] = self.norm(F.gelu(weighted))
         return state
+
+
+class BracketActionDecoder(nn.Module):
+    """One order at a time: HOLD, ENTER, EXIT, SET_STOP, SET_TARGET.
+
+    The caller supplies causal account/holding state and admissibility masks.
+    A newly submitted entry is not a holding until a later confirmed fill;
+    consequently it cannot receive a child bracket order in the same step.
+    Decoder output is a proposal only. The OMS validates tick and quote rules.
+    """
+
+    def __init__(self, width: int = 128):
+        super().__init__()
+        if width < 1:
+            raise ValueError('Invalid action width')
+        self.width = width
+        self.account = nn.Linear(5, width)
+        self.holding = nn.Linear(width + 4, width)
+        self.hold_head = nn.Linear(width, 1)
+        self.enter_head = nn.Linear(width, 1)
+        self.exit_head = nn.Linear(width, 1)
+        self.stop_head = nn.Linear(width, 1)
+        self.target_head = nn.Linear(width, 1)
+        self.size_head = nn.Linear(width, 1)
+        self.stop_distance_head = nn.Linear(width, 1)
+        self.target_distance_head = nn.Linear(width, 1)
+
+    def forward(self, listings: torch.Tensor, account: torch.Tensor,
+                held_index: torch.Tensor, held_features: torch.Tensor,
+                *, enter_allowed: torch.Tensor, exit_allowed: torch.Tensor,
+                stop_allowed: torch.Tensor, target_allowed: torch.Tensor,
+                ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return logits [1+N+3H], size [N], distances [H] each.
+
+        `listings` is [N,D]. Account is [5] (cash, equity, realized P&L,
+        exposure, seconds since action). Held features [H,4] are quantity,
+        cost basis, age, and marked return. STOP/target distances are raw
+        learnable predictions; execution code applies quote/tick constraints.
+        """
+        if (listings.ndim != 2 or listings.shape[1] != self.width or
+                account.shape != (5,) or held_index.ndim != 1 or
+                held_index.dtype != torch.long or
+                held_features.shape != (len(held_index), 4) or
+                enter_allowed.shape != (len(listings),) or
+                any(mask.shape != (len(held_index),) for mask in
+                    (exit_allowed, stop_allowed, target_allowed)) or
+                (len(held_index) and
+                 (held_index.min() < 0 or held_index.max() >= len(listings)))):
+            raise ValueError('Invalid market action axes or holding identity')
+        if not all(mask.dtype == torch.bool for mask in
+                   (enter_allowed, exit_allowed, stop_allowed, target_allowed)):
+            raise ValueError('Action masks must be boolean')
+        # [D] pooled market state plus a causal account projection.
+        context = listings.mean(dim=0) + self.account(account)
+        listed = torch.tanh(listings + context[None])  # [N,D].
+        held = torch.tanh(self.holding(torch.cat(
+            (listings[held_index], held_features), dim=1)) + context[None])
+        logits = torch.cat((self.hold_head(context).view(1),
+            self.enter_head(listed).flatten(),
+            self.exit_head(held).flatten(),
+            self.stop_head(held).flatten(),
+            self.target_head(held).flatten()))
+        mask = torch.cat((torch.ones(1, dtype=torch.bool,
+                                      device=listings.device), enter_allowed,
+                          exit_allowed, stop_allowed, target_allowed))
+        logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
+        size = self.size_head(listed).flatten().sigmoid()
+        stop_distance = self.stop_distance_head(held).flatten()
+        target_distance = self.target_distance_head(held).flatten()
+        return logits, size, stop_distance, target_distance

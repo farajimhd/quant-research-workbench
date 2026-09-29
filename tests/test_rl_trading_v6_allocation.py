@@ -1,8 +1,11 @@
 import polars as pl
 import pytest
+from hashlib import sha256
+import json
 
 from research.rl_trading.v6.allocation import (first_eligible,
-                                              intended_budgets, window_scores)
+                                              intended_budgets, window_scores,
+                                              certify_from_candidates)
 
 
 def test_sparse_window_reserves_first_future_episode_once():
@@ -29,3 +32,21 @@ def test_empty_filtered_market_is_valid():
                          'score': [.009]})
     first = first_eligible(rows)
     assert first.is_empty() and window_scores(first).is_empty()
+
+
+def test_certified_sidecar_reuses_sparse_candidates(tmp_path):
+    source, output = tmp_path / 'source', tmp_path / 'sidecar'
+    source.mkdir()
+    rows = pl.DataFrame({'time_us': [0], 'ticker': ['A'],
+                         'listing_id': ['a'], 'episode_uid': ['e1'],
+                         'score': [.02]})
+    path = source / 'candidates.parquet'
+    rows.write_parquet(path)
+    (source / 'complete.json').write_text(json.dumps({
+        'status': 'complete', 'outputs': {'candidates': {
+            'rows': 1, 'sha256': sha256(path.read_bytes()).hexdigest()}}}))
+    report = certify_from_candidates(source, output)
+    assert report['rows'] == 1
+    assert certify_from_candidates(source, output) == report
+    assert (pl.read_parquet(output / 'intended_allocations.parquet')
+            ['desired_budget'][0] == 10_000)

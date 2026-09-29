@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import numpy as np
 import polars as pl
+from hashlib import sha256
+import json
+from pathlib import Path
 
 
 WINDOW_SECONDS = 15
@@ -89,3 +92,57 @@ def intended_budgets(first: pl.DataFrame, scores: pl.DataFrame,
         (pl.lit(initial_cash) * pl.col('future_score') /
          (pl.col('current_score') + pl.col('future_score')))
             .alias('future_reservation'))
+
+
+def certify_from_candidates(source: Path, output: Path) -> dict:
+    """Derive only the sparse allocation sidecar from an existing day cert.
+
+    This is used when the feature/opportunity bank was certified before the
+    allocation stage existed. It verifies the candidate hash and never
+    re-fetches ARTE data or rewrites the source certificate.
+    """
+    source, output = Path(source).resolve(), Path(output).resolve()
+    if output == source or output.is_relative_to(source):
+        raise ValueError('Allocation sidecar must be outside immutable source')
+    source_cert = source / 'complete.json'
+    source_bytes = source_cert.read_bytes()
+    certificate = json.loads(source_bytes)
+    if certificate.get('status') != 'complete':
+        raise ValueError('Source opportunity day is not certified')
+    candidate_meta = certificate['outputs']['candidates']
+    path = source / 'candidates.parquet'
+    if candidate_meta['rows']:
+        checksum = sha256(path.read_bytes()).hexdigest()
+        if checksum != candidate_meta['sha256']:
+            raise ValueError('Certified sparse candidate hash changed')
+        candidates = pl.read_parquet(path)
+        if candidates.height != candidate_meta['rows']:
+            raise ValueError('Certified sparse candidate count changed')
+        first = first_eligible(candidates)
+        planned = intended_budgets(first, window_scores(first))
+    else:
+        planned = pl.DataFrame()
+    source_hash = sha256(source_bytes).hexdigest()
+    if (output / 'complete.json').exists():
+        previous = json.loads((output / 'complete.json').read_text())
+        if previous['source_certificate_sha256'] != source_hash:
+            raise ValueError('Allocation sidecar belongs to another source')
+        return previous
+    if output.exists() and any(output.iterdir()):
+        raise ValueError('Uncertified allocation sidecar output exists')
+    output.mkdir(parents=True, exist_ok=True)
+    allocation_hash = None
+    if planned.height:
+        allocation_file = output / 'intended_allocations.parquet'
+        planned.write_parquet(allocation_file)
+        allocation_hash = sha256(allocation_file.read_bytes()).hexdigest()
+    report = {'version': 'rl-trading-sparse-allocation-v6',
+              'source_certificate_sha256': source_hash,
+              'source_candidate_sha256': candidate_meta['sha256'],
+              'rows': planned.height,
+              'intended_allocations_sha256': allocation_hash,
+              'status': 'planning_only_not_fills'}
+    tmp = output / 'complete.json.tmp'
+    tmp.write_text(json.dumps(report, sort_keys=True), encoding='utf-8')
+    tmp.replace(output / 'complete.json')
+    return report
