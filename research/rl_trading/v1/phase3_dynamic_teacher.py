@@ -14,7 +14,7 @@ import polars as pl
 from research.rl_trading.v1.costs import FixedOrderCosts
 
 
-VERSION = "hindsight-phase3-dynamic-close-v7"
+VERSION = "hindsight-phase3-dynamic-close-v8"
 
 
 def session_profit_report(trajectory: pl.DataFrame, positions: pl.DataFrame,
@@ -170,6 +170,7 @@ def run_stream(times, snapshots, future: dict[int,float],
         "entry_us":pl.Int64,"target_us":pl.Int64,"entry_price":pl.Float64,
         "quantity":pl.Float64,"entry_fee":pl.Float64})
     cash = float(config.initial_cash) if resume is None else float(resume['cash'])
+    profit_bank = 0. if resume is None else float(resume['profit_bank'])
     realized = 0. if resume is None else float(resume['realized'])
     histories = [] if resume is None else list(resume['histories'])
     trades = [] if resume is None else list(resume['trades'])
@@ -226,6 +227,13 @@ def run_stream(times, snapshots, future: dict[int,float],
                 pl.lit(terminal).alias("forced_terminal"))
                 .drop("close_price","can_close").to_dicts())
             held = held.filter(~pl.col("episode_uid").is_in(sold["episode_uid"].to_list()))
+            # Return the position's cost basis to the trading bankroll, but
+            # segregate realized gains. Losses shrink the bankroll permanently.
+            invested = float((held['quantity']*held['entry_price']+
+                              held['entry_fee']).sum()) if held.height else 0.
+            sweep = max(0.,cash+invested-config.initial_cash)
+            cash -= sweep
+            profit_bank += sweep
         bought = 0
         reserve = 0.
         if not terminal and cash > 0:
@@ -241,8 +249,11 @@ def run_stream(times, snapshots, future: dict[int,float],
             if candidates.height:
                 scores = candidates["open_value_per_dollar"].to_numpy()
                 ahead = future[now]
-                reserve = cash * ahead/(float(scores.sum())+ahead) if ahead > 0 else 0.
-                budget = (cash-reserve) * scores/scores.sum()
+                total_score = float(scores.sum())+ahead
+                reserve = min(cash,config.initial_cash*ahead/total_score) if ahead > 0 else 0.
+                desired = config.initial_cash*scores/total_score
+                available = max(0.,cash-reserve)
+                budget = desired*min(1.,available/float(desired.sum()))
                 price = candidates["entry_price"].to_numpy()
                 target = candidates["target_price"].to_numpy()
                 gross = candidates["open_value_per_share"].to_numpy()
@@ -265,13 +276,14 @@ def run_stream(times, snapshots, future: dict[int,float],
                     consumed.update(new['episode_uid'].to_list())
                     bought = new.height
         marked = held.join(prices,on="ticker",how="left",validate="m:1")
-        equity = cash + (float((marked["quantity"]*marked["close_price"]).sum())
+        equity = cash + profit_bank + (float((marked["quantity"]*marked["close_price"]).sum())
                          if marked.height else 0.)
-        histories.append(dict(time_us=now,cash=cash,equity=equity,
+        histories.append(dict(time_us=now,cash=cash,profit_bank=profit_bank,equity=equity,
             open_lots=held.height,bought=bought,sold=sold.height,
             reserved_for_future=reserve,realized_net_pnl=realized))
         if on_checkpoint is not None and (processed % 60 == 0 or processed == len(times)):
-            on_checkpoint(dict(processed=processed,cash=cash,realized=realized,
+            on_checkpoint(dict(processed=processed,cash=cash,profit_bank=profit_bank,
+                realized=realized,
                 held=held.to_dicts(),histories=histories,trades=trades,
                 consumed=sorted(consumed)))
     trajectory = pl.DataFrame(histories).with_columns(
@@ -279,14 +291,15 @@ def run_stream(times, snapshots, future: dict[int,float],
             .clip(lower_bound=config.initial_cash)-1).alias("drawdown"))
     positions = pl.DataFrame(trades) if trades else pl.DataFrame()
     report = dict(version=VERSION,optimality="approximate_normalized_window",
-        initial_cash=config.initial_cash,terminal_cash=cash,
-        net_profit=cash-config.initial_cash,
+        initial_cash=config.initial_cash,terminal_cash=cash+profit_bank,
+        trading_cash=cash,profit_bank=profit_bank,
+        net_profit=cash+profit_bank-config.initial_cash,
         max_drawdown=float(-trajectory["drawdown"].min()),
         buys=int(trajectory["bought"].sum()),sells=len(trades),
         max_open_lots=int(trajectory["open_lots"].max()),
         fee_model=model.plan(),min_net_return=config.min_net_return,
         window_seconds=config.window_seconds,min_hold_seconds=config.min_hold_seconds,
-        allocation_contract='score-normalized current and distinct future first-eligible episodes; desired cash weights only, not executable fills')
+        allocation_contract='fixed initial-cash sizing base with segregated realized gains; desired cash weights only, not executable fills')
     if held.height or abs(realized-report["net_profit"]) > 1e-5:
         raise ValueError("Teacher failed terminal liquidation or P&L reconciliation")
     if processed != len(times):

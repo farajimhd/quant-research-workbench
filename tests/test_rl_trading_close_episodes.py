@@ -115,7 +115,7 @@ def test_future_episode_reserves_cash_in_bounded_window():
     assert future[2_000_000]==pytest.approx(0.)
     trajectory,_,report=run(market,config)
     assert trajectory['reserved_for_future'][0]==pytest.approx(8_000.)
-    assert report['allocation_contract'].startswith('score-normalized')
+    assert report['allocation_contract'].startswith('fixed initial-cash')
     groups=market.partition_by('time_us',maintain_order=True)
     slim=((int(group['time_us'][0]),group.select('ticker','close_price','can_close'),
            group.filter(pl.col('can_open') &
@@ -126,6 +126,26 @@ def test_future_episode_reserves_cash_in_bounded_window():
     assert slim_trajectory.equals(trajectory)
     assert slim_positions.height==report['buys']
     assert slim_report==report
+
+
+def test_profitable_exit_does_not_increase_next_position_budget():
+    rows=[]
+    for second in range(8):
+        for ticker,first,target in [('A',0,3),('B',4,7)]:
+            rows.append(dict(time_us=second*1_000_000,ticker=ticker,
+                listing_id=ticker,side='long',episode_uid=ticker+'_1',
+                target_us=target*1_000_000,
+                close_price=11. if second>=target else 10.,can_close=True,
+                entry_price=10.,target_price=11.,can_open=second==first,
+                open_value_per_share=1. if second==first else None,
+                open_value_per_dollar=.08 if second==first else None))
+    trajectory,positions,report=run(pl.DataFrame(rows),Config(window_seconds=0))
+    assert report['buys']==2
+    assert report['profit_bank']>0
+    assert report['trading_cash']<=10_000.
+    assert positions['quantity'][1]<=positions['quantity'][0]+1e-8
+    assert report['net_profit']==pytest.approx(positions['net_pnl'].sum())
+    assert trajectory['profit_bank'][3]>0
 
 
 def test_two_second_episode_neither_opens_nor_reserves_cash():

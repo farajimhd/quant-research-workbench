@@ -58,8 +58,10 @@ def order_labels(trajectory: pl.DataFrame, positions: pl.DataFrame,
                        (pl.col("sold") != pl.col("n_sell"))).height or
             labels.filter(~pl.col("cash_amount").is_finite()).height or
             buy_labels.filter(~pl.col("allocation_weight").is_between(0.,1.+1e-8)).height or
-            abs(float(positions["net_pnl"].sum())-
-                (float(trajectory["cash"][-1])-initial_cash)) > 1e-5):
+                abs(float(positions["net_pnl"].sum())-
+                    (float(trajectory["cash"][-1])+
+                     (float(trajectory["profit_bank"][-1])
+                      if "profit_bank" in trajectory.columns else 0.)-initial_cash)) > 1e-5):
         raise ValueError("Order labels do not reconcile to the teacher account")
     weights = buy_labels.group_by("time_us").agg(pl.col("allocation_weight").sum())
     if weights.filter(pl.col("allocation_weight") > 1.+1e-7).height:

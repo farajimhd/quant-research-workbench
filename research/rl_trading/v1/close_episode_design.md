@@ -31,7 +31,7 @@ pretend to know the order size, so the $1 order minimum and 1% trade-value cap
 are evaluated in Phase 3 after sizing. A minimum two-second remaining target
 duration is enforced even when the discount-adjusted score is positive.
 
-## Phase 3 V7 allocation diagnostic
+## Phase 3 V8 allocation diagnostic
 
 At each second, eligible long rows with after-proxy score at least 1% and at
 least three seconds from entry decision to target compete
@@ -39,7 +39,11 @@ for available cash. A candidate is one episode, never one independent trade per
 label second. In a bounded 15-second lookahead, each future episode contributes
 its first eligible score once. Current and future scores are normalized together:
 future episodes' share of cash is reserved, while the remaining cash is
-allocated among current episodes in proportion to their scores. The quantity-aware Fixed fee is
+allocated among current episodes in proportion to their scores. V8 calculates
+each desired window allocation from the original session bankroll, never an
+account balance inflated by hindsight gains. Realized gains move into a
+separate non-tradable profit bank; losses reduce the remaining trading bankroll.
+Cash already committed to open positions also limits new entries. The quantity-aware Fixed fee is
 rechecked after sizing; candidates below 1% after actual modeled order fees
 are rejected. Open positions leave at the first closeable completed second at
 or after their episode target clock, or the segment terminal clock; terminal
