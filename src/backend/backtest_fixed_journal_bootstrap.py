@@ -303,6 +303,13 @@ def assemble_resumed_fixed_v4_journal(
         initial_sequence=anchor.journal_sequence,
         prior_batch_id=anchor.batch_id,
         source_cursor=anchor.source_cursor)
+    try:
+        assembly.journal.restore_verified_campaign_ownership(
+            recovery_evidence.campaign)
+    except BaseException:
+        assembly.writer.close()
+        assembly.journal.close()
+        raise
     return assembly, anchor
 
 

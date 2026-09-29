@@ -14,6 +14,78 @@ RUN = "00000000-0000-0000-0000-000000000a01"
 ATTEMPT = "00000000-0000-0000-0000-000000000a02"
 
 
+def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch):
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.strategy_one_campaign_snapshot import project_campaign_snapshot
+    from src.backend import backtest_fixed_running_anchor, backtest_v4_running_recovery
+
+    batch_id = "00000000-0000-0000-0000-000000000a03"
+    token = bootstrap.FixedV4JournalPreflightToken(
+        RUN, ("DU1",), date(2026, 8, 1), "c" * 64, "b" * 64, "a" * 64)
+    market = CertifiedMarketDayPlan(
+        ExecutionInterval.parse("100ms"), "build", "definition",
+        ("2026-08-18",), ("AAA",), (), (100,), token.market_plan_token)
+    lease = BacktestV4KeeperLease(
+        SimpleNamespace(is_current=lambda *_a, **_k: True), RUN, "owner", 1)
+    writer_client = SimpleNamespace(
+        backtest_v4_lease=lease, typed_insert_strict=True,
+        typed_insert_dispatch=TypedInsertDispatch(object()))
+    anchor = SimpleNamespace(journal_sequence=7, batch_id=batch_id,
+                             source_cursor="2026-08-18:100")
+    monkeypatch.setattr(backtest_fixed_running_anchor,
+                        "cold_verify_v4_resume_anchor", lambda *_a, **_k: anchor)
+    monkeypatch.setattr(backtest_v4_running_recovery,
+                        "verify_v4_recovery_at_anchor", lambda *_a: None)
+    context = dict(mode="backtest", account_ids=("DU1",),
+                   configuration_hash=token.configuration_hash,
+                   market_plan_token=token.market_plan_token, code_hash="d" * 64)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_a: context)
+    created = []
+
+    def assemble(*_args, **_kwargs):
+        writer = SimpleNamespace(close=lambda: created.append("writer_closed"))
+        journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=7)
+        result = SimpleNamespace(writer=writer, journal=journal)
+        created.append(result)
+        return result
+
+    monkeypatch.setattr(bootstrap, "_assemble_v4_writer_lane", assemble)
+    rows = project_campaign_snapshot(
+        run_id=RUN, session_date=date(2026, 8, 18),
+        checkpoint_sequence=7, boundary_ms=100,
+        journal_batch_id=batch_id,
+        ownership=({"resource_id": "book:AAA", "session_key": "2026-08-18",
+                    "owner_id": "owner", "state": "confirmed", "epoch": 2},))
+    assembly, returned = bootstrap.assemble_resumed_fixed_v4_journal(
+        object(), writer_client, object(), token, attempt_id=ATTEMPT,
+        expected_config={}, fixed_market_parent_plan=market,
+        fixed_market_execution_plan=market,
+        expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        code_hash="d" * 64, recovery_evidence=SimpleNamespace(campaign=rows),
+        writer_factory=bootstrap.ArteJournalWriter)
+    assert returned is anchor
+    assert assembly.journal.campaign_ownership_snapshot()[0]["epoch"] == 2
+    bad = SimpleNamespace(campaign=project_campaign_snapshot(
+        run_id="other", session_date=date(2026, 8, 18),
+        checkpoint_sequence=7, boundary_ms=100,
+        journal_batch_id=batch_id, ownership=()))
+    with pytest.raises(ValueError, match="another run"):
+        bootstrap.assemble_resumed_fixed_v4_journal(
+            object(), writer_client, object(), token, attempt_id=ATTEMPT,
+            expected_config={}, fixed_market_parent_plan=market,
+            fixed_market_execution_plan=market,
+            expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+            code_hash="d" * 64, recovery_evidence=bad,
+            writer_factory=bootstrap.ArteJournalWriter)
+    assert created[-1] == "writer_closed"
+    with pytest.raises(RuntimeError, match="closed"):
+        created[-2].journal.campaign_ownership_snapshot()
+
+
 def test_v4_writer_lane_seeds_exact_committed_prefix_without_disk():
     token = bootstrap.FixedV4JournalPreflightToken(
         RUN, ("DU1",), date(2026, 8, 1), "c" * 64,
