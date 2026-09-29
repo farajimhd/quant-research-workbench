@@ -236,6 +236,107 @@ def assemble_fixed_journal(
         raise
 
 
+def assemble_resumed_fixed_v4_journal(
+    read_client: Any, writer_client: Any, terminal_client: Any,
+    token: FixedV4JournalPreflightToken, *, attempt_id: str,
+    expected_config: dict[str, Any], fixed_market_parent_plan: object,
+    fixed_market_execution_plan: object, expected_market_start: datetime,
+    code_hash: str, writer_factory: Callable[..., ArteJournalWriter],
+    batch_size: int = 1024, queue_capacity: int = 8,
+) -> tuple[FixedJournalAssembly, Any]:
+    """Cold-seed a V4 lane from Keeper plus the exact committed market cursor.
+
+    No app controller calls this until all financial and causal actors have a
+    complete normalized restore. It never reads a run-local file or SQLite.
+    """
+    from src.backend.backtest_fixed_running_anchor import (
+        cold_verify_v4_resume_anchor,
+    )
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from src.backend.backtest_market_data import CertifiedMarketDayPlan
+
+    lease = getattr(writer_client, "backtest_v4_lease", None)
+    dispatch = getattr(writer_client, "typed_insert_dispatch", None)
+    if (not isinstance(token, FixedV4JournalPreflightToken)
+            or not isinstance(lease, BacktestV4KeeperLease)
+            or lease.run_id != token.run_id
+            or not isinstance(dispatch, TypedInsertDispatch)
+            or getattr(writer_client, "typed_insert_strict", False) is not True
+            or not isinstance(fixed_market_parent_plan, CertifiedMarketDayPlan)
+            or fixed_market_parent_plan.token != token.market_plan_token
+            or fixed_market_execution_plan is None
+            or len({id(read_client), id(writer_client), id(terminal_client)}) != 3
+            or not 1 <= batch_size <= MAX_V4_COMMIT_EVENTS
+            or not 1 <= queue_capacity <= 64
+            or expected_market_start.tzinfo is None):
+        raise ValueError("V4 cold journal lacks exact owner, plan, or bounds")
+    lease.assert_current()
+    UUID(attempt_id)
+    anchor = cold_verify_v4_resume_anchor(
+        read_client, dispatch=dispatch, lease=lease, run_id=token.run_id,
+        plan=fixed_market_parent_plan,
+        configuration_hash=token.configuration_hash,
+        account_ids=token.account_ids, code_hash=code_hash)
+    context = load_typed_run_context(writer_client, token.run_id)
+    if (context != load_typed_run_context(terminal_client, token.run_id)
+            or context.get("mode") != "backtest"
+            or tuple(context.get("account_ids") or ()) != token.account_ids
+            or context.get("configuration_hash") != token.configuration_hash
+            or context.get("market_plan_token") != token.market_plan_token
+            or context.get("code_hash") != code_hash):
+        raise RuntimeError("V4 resumed journal context differs across principals")
+    if writer_factory is not ArteJournalWriter:
+        _v4_preflight(writer_client)
+    assembly = _assemble_v4_writer_lane(
+        writer_client, token, attempt_id=attempt_id,
+        expected_config=expected_config,
+        fixed_market_parent_plan=fixed_market_parent_plan,
+        fixed_market_execution_plan=fixed_market_execution_plan,
+        expected_market_start=expected_market_start,
+        writer_factory=writer_factory, batch_size=batch_size,
+        queue_capacity=queue_capacity,
+        initial_sequence=anchor.journal_sequence,
+        prior_batch_id=anchor.batch_id,
+        source_cursor=anchor.source_cursor)
+    return assembly, anchor
+
+
+def _assemble_v4_writer_lane(
+    writer_client: Any, token: FixedV4JournalPreflightToken, *,
+    attempt_id: str, expected_config: dict[str, Any],
+    fixed_market_parent_plan: object, fixed_market_execution_plan: object,
+    expected_market_start: datetime, writer_factory: Callable[..., ArteJournalWriter],
+    batch_size: int, queue_capacity: int,
+    v4_preflight_seal: _V4PreflightSeal | None = None,
+    initial_sequence: int = 0,
+    prior_batch_id: str = "00000000-0000-0000-0000-000000000000",
+    source_cursor: str = "start",
+) -> FixedJournalAssembly:
+    journal = BacktestMemoryJournal(
+        run_id=token.run_id, initial_sequence=initial_sequence)
+    try:
+        writer_kwargs = ({"v4_preflight_seal": v4_preflight_seal}
+                         if v4_preflight_seal is not None else {})
+        writer = writer_factory(
+            writer_client, run_id=token.run_id, capacity=queue_capacity,
+            max_events_per_commit=batch_size, coalesce_batches=False,
+            journal_profile="backtest_v4", **writer_kwargs)
+        publisher = BacktestTypedJournalPublisher(
+            journal, writer, attempt_id=attempt_id, run_month=token.run_month,
+            batch_size=batch_size, expected_config=expected_config,
+            fixed_market_parent_plan=fixed_market_parent_plan,
+            fixed_market_execution_plan=fixed_market_execution_plan,
+            expected_market_start=expected_market_start,
+            initial_sequence=initial_sequence, prior_batch_id=prior_batch_id,
+            source_cursor=source_cursor)
+        return FixedJournalAssembly(token, journal, writer, publisher, None)
+    except BaseException:
+        if "writer" in locals():
+            writer.close()
+        journal.close()
+        raise
+
+
 def prepare_fixed_v3_journal_token(
     read_client: Any, writer_client: Any, terminal_client: Any,
     keeper: Any, *, run_id: str, account_ids: tuple[str, ...],
@@ -437,26 +538,14 @@ def assemble_fixed_v4_journal(
         if v4_preflight_seal is not None:
             raise ValueError("Injected V4 writer cannot consume a production preflight")
         _v4_preflight(writer_client)
-    journal = BacktestMemoryJournal(run_id=token.run_id)
-    try:
-        writer_kwargs = ({"v4_preflight_seal": v4_preflight_seal}
-                         if v4_preflight_seal is not None else {})
-        writer = writer_factory(
-            writer_client, run_id=token.run_id, capacity=queue_capacity,
-            max_events_per_commit=batch_size, coalesce_batches=False,
-            journal_profile="backtest_v4", **writer_kwargs)
-        publisher = BacktestTypedJournalPublisher(
-            journal, writer, attempt_id=attempt_id, run_month=token.run_month,
-            batch_size=batch_size, expected_config=expected_config,
-            fixed_market_parent_plan=fixed_market_parent_plan,
-            fixed_market_execution_plan=fixed_market_execution_plan,
-            expected_market_start=expected_market_start)
-        return FixedJournalAssembly(token, journal, writer, publisher, None)
-    except BaseException:
-        if "writer" in locals():
-            writer.close()
-        journal.close()
-        raise
+    return _assemble_v4_writer_lane(
+        writer_client, token, attempt_id=attempt_id,
+        expected_config=expected_config,
+        fixed_market_parent_plan=fixed_market_parent_plan,
+        fixed_market_execution_plan=fixed_market_execution_plan,
+        expected_market_start=expected_market_start,
+        writer_factory=writer_factory, batch_size=batch_size,
+        queue_capacity=queue_capacity, v4_preflight_seal=v4_preflight_seal)
 
 
 def publish_and_assemble_fixed_v4_journal(

@@ -14,6 +14,46 @@ RUN = "00000000-0000-0000-0000-000000000a01"
 ATTEMPT = "00000000-0000-0000-0000-000000000a02"
 
 
+def test_v4_writer_lane_seeds_exact_committed_prefix_without_disk():
+    token = bootstrap.FixedV4JournalPreflightToken(
+        RUN, ("DU1",), date(2026, 8, 1), "c" * 64,
+        "b" * 64, "a" * 64)
+    prior = "00000000-0000-0000-0000-000000000a03"
+    writer_args = []
+
+    class Writer:
+        run_id = RUN
+        run_mode = "backtest"
+        journal_profile = "backtest_v4"
+        coalesce_batches = False
+        max_events_per_commit = 64
+
+        def close(self):
+            pass
+
+    def writer_factory(client, **kwargs):
+        writer_args.append((client, kwargs))
+        return Writer()
+
+    assembly = bootstrap._assemble_v4_writer_lane(
+        object(), token, attempt_id=ATTEMPT,
+        expected_config={"mode": "backtest"},
+        fixed_market_parent_plan=object(),
+        fixed_market_execution_plan=object(),
+        expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        writer_factory=writer_factory, batch_size=64, queue_capacity=4,
+        initial_sequence=125, prior_batch_id=prior,
+        source_cursor="2026-08-18:boundary:123")
+    try:
+        assert assembly.journal.latest_sequence(RUN) == 125
+        assert assembly.publisher._sequence == 125
+        assert assembly.publisher._batch_id == prior
+        assert assembly.publisher._source_cursor == "2026-08-18:boundary:123"
+        assert writer_args[0][1]["journal_profile"] == "backtest_v4"
+    finally:
+        assembly.journal.close()
+
+
 def test_operator_check_names_missing_tables_without_any_write(monkeypatch):
     names = tuple(table.name for table in bootstrap.fixed_backtest_v2_contracts())
     calls = []
