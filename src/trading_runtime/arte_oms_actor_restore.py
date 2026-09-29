@@ -6,7 +6,7 @@ protection changes are a separate normalized family and must be complete.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from copy import deepcopy
 from datetime import datetime, timezone
 import re
@@ -19,6 +19,9 @@ from src.trading_runtime.order_management import (
 )
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     BrokerMatchSnapshotRows, verify_broker_match_snapshot,
+)
+from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+    OmsObservationSnapshotRows, verify_oms_observation_snapshot,
 )
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from src.trading_runtime.signals import StrategyIntent
@@ -34,6 +37,43 @@ class TypedOmsActorImage:
     group_by_broker_id: dict[str, str]
     protection_versions: dict[tuple[str, str, str, str, str], tuple[float, bool]]
     body_entry_group_ids: frozenset[str]
+
+
+def attach_typed_oms_observations(
+    image: TypedOmsActorImage, rows: OmsObservationSnapshotRows, *,
+    through_sequence: int,
+) -> TypedOmsActorImage:
+    """Restore only checkpoint-attested OMS observations, never broker-now state.
+
+    The caller must first attest this checkpoint's root against its Keeper
+    head and the completed global boundary. This pure function enforces the
+    matching run, sequence, group and broker identities before actor install.
+    """
+    verified = verify_oms_observation_snapshot(rows)
+    if (verified.root["run_id"] != image.run_id
+            or int(verified.root["checkpoint_sequence"]) != through_sequence):
+        raise RuntimeError("Typed OMS observation checkpoint differs from image")
+    if any(group.broker_order_state_fingerprints
+           for group in image.groups.values()):
+        raise RuntimeError("Typed OMS image already contains observed broker state")
+    groups = deepcopy(image.groups)
+    for row in verified.observations:
+        group_id = str(row["group_id"])
+        broker_id = str(row["broker_order_id"])
+        group = groups.get(group_id)
+        if (group is None or broker_id not in group.broker_order_ids
+                or image.group_by_broker_id.get(broker_id) != group_id
+                or broker_id in group.broker_order_state_fingerprints):
+            raise RuntimeError("Typed OMS observation has no unique broker binding")
+        group.broker_order_state_fingerprints[broker_id] = (
+            str(row["lifecycle_state"]), str(row["broker_status"]),
+            *(float(row[field]) for field in (
+                "filled_quantity", "remaining_quantity", "average_fill_price",
+                "limit_price", "stop_price")),
+            str(row["warning"]), str(row["rejection_code"]),
+            str(row["rejection_reason"]),
+        )
+    return replace(image, groups=groups)
 
 
 def install_typed_oms_actor_image(

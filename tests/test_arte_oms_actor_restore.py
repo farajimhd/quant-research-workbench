@@ -9,7 +9,8 @@ from src.trading_runtime.arte_intent_projection import RecoveredIntent
 from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
 from src.trading_runtime import arte_oms_actor_restore as restore
 from src.trading_runtime.arte_oms_actor_restore import (
-    install_typed_oms_actor_image, reconstruct_typed_oms_actor_image,
+    attach_typed_oms_observations, install_typed_oms_actor_image,
+    reconstruct_typed_oms_actor_image,
 )
 from src.trading_runtime.arte_oms_projection import (
     RecoveredOmsGroupState, RecoveredStrategyOneOmsLineage,
@@ -18,6 +19,9 @@ from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.order_management import OrderManagementEngine
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchSnapshotRows
+from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+    project_oms_observation_snapshot,
+)
 from tests.test_arte_intent_projection import intent
 
 
@@ -84,6 +88,32 @@ def test_typed_oms_actor_image_rebuilds_group_and_indexes():
     assert image.group_by_client_id == {"co-1": "group-1"}
     assert image.group_by_broker_id == {"broker-1": "group-1"}
     assert image.protection_versions == {}
+
+
+def test_typed_oms_observation_attachment_preserves_last_observed_state():
+    lineage, history = _source()
+    lineage = replace(lineage, approved_intent=replace(
+        lineage.source_intent.intent,
+        metadata={"assignment_id": "assignment-1"}, quantity=4))
+    image = reconstruct_typed_oms_actor_image(
+        (lineage,), history, run_id=RUN,
+        strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        through_sequence=7, cutoff_at=AT)
+    observed = ("working", "Submitted", 0.0, 5.0, 0.0, 10.0,
+                0.0, "", "", "")
+    rows = project_oms_observation_snapshot(
+        run_id=RUN, session_date=AT.date(), checkpoint_sequence=7,
+        boundary_ms=30_000,
+        groups={"group-1": type("Observed", (), {
+            "broker_order_ids": ["broker-1"],
+            "broker_order_state_fingerprints": {"broker-1": observed},
+        })()})
+    restored = attach_typed_oms_observations(image, rows, through_sequence=7)
+    assert restored.groups["group-1"].broker_order_state_fingerprints == {
+        "broker-1": observed}
+    assert image.groups["group-1"].broker_order_state_fingerprints == {}
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        attach_typed_oms_observations(image, rows, through_sequence=8)
     stored, history = _source(malformed={
         "created_at": "2026-08-18 08:05:00.000000000",
         "updated_at": "2026-08-18 08:05:00.000000000",
