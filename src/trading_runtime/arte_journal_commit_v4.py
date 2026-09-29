@@ -102,7 +102,7 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
                     client, run_id, max_commits=max_commits))
     dispatch = getattr(client, "typed_insert_dispatch", None)
     if (not isinstance(lease, BacktestV4KeeperLease)
-            or lease.run_id != run_id or lease.epoch != 1
+            or lease.run_id != run_id or lease.epoch < 1
             or getattr(client, "typed_insert_strict", False) is not True
             or not isinstance(dispatch, TypedInsertDispatch)
             or dispatch.keeper is not lease.owner._session.client
@@ -116,6 +116,27 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
         raise RuntimeError("V4 warm snapshot has an unsealed dispatch gate")
     columns = ",".join(name for name, _ in _CONTRACTS["trading_commit_v4"].columns)
     cached = getattr(client, "_v4_writer_snapshot_cache", None)
+    if cached is None and lease.epoch > 1:
+        # A replacement writer cannot inherit the first process's compacted
+        # proof. Verify the entire old chain once, then cache that head under
+        # this lease before permitting the ordinary warm-head shortcut.
+        prefix = load_verified_v4_prefix(client, run_id, max_commits=max_commits)
+        if (prefix is None or prefix.last_sequence != gate.compacted_through
+                or prefix.last_batch_id != gate.compacted_batch_id
+                or prefix.status != "running"):
+            raise RuntimeError("V4 resumed snapshot differs from Keeper compaction")
+        rows = _rows(client,
+            f"SELECT {columns} FROM arte.trading_commit_v4 "
+            f"WHERE run_id={_literal(run_id)} "
+            f"AND batch_id=toUUID({_literal(prefix.last_batch_id)}) "
+            "LIMIT 2 FORMAT JSONEachRow")
+        if (len(rows) != 1
+                or sha256(canonical_json(rows[0]).encode()).hexdigest()
+                != gate.compacted_commit_hash):
+            raise RuntimeError("V4 resumed snapshot head differs from Keeper")
+        lease.assert_current()
+        client._v4_writer_snapshot_cache = (prefix, gate.compacted_commit_hash)
+        return prefix
     if cached is not None:
         prefix, digest = cached
         if (not isinstance(prefix, V4CommittedPrefix)

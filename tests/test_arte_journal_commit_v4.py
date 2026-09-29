@@ -1658,3 +1658,19 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
     with pytest.raises(RuntimeError, match="exclusive writer"):
         commit.load_writer_v4_snapshot_prefix(client, run)
     lease.release()
+    resumed = BacktestV4KeeperLease.acquire(
+        session, run_id=run, owner_id="replacement")
+    assert resumed.epoch > 1
+    client.backtest_v4_lease = resumed
+    client.typed_insert_strict = True
+    client._v4_writer_snapshot_cache = None
+    cold_reads = []
+    cold_prefix = commit.V4CommittedPrefix(
+        run, 4, second, "2026-08-18:200", "running", (first, second))
+    monkeypatch.setattr(commit, "load_verified_v4_prefix",
+                        lambda *_a, **_k: cold_reads.append(1) or cold_prefix)
+    assert commit.load_writer_v4_snapshot_prefix(client, run) is cold_prefix
+    assert cold_reads == [1]
+    assert commit.load_writer_v4_snapshot_prefix(client, run) is cold_prefix
+    assert cold_reads == [1]
+    resumed.release()
