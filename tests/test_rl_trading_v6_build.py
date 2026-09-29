@@ -9,6 +9,7 @@ def test_sparse_fragments_are_bound_and_reconciled(tmp_path):
     episodes = pl.DataFrame({'ticker': ['ABC'], 'episode_id': [1],
                              'entry_hint_us': [5]})
     candidates = pl.DataFrame({'time_us': [5], 'ticker': ['ABC'],
+                               'listing_id': ['id-abc'], 'episode_uid': ['e1'],
                                'episode_id': [1], 'score': [.02]})
     report = {'ticker': 'ABC', 'candles': 10}
     _save_fragment(tmp_path, 'id-abc', episodes, candidates, report)
@@ -17,3 +18,6 @@ def test_sparse_fragments_are_bound_and_reconciled(tmp_path):
     assert combined['totals'] == {'candles': 10, 'episodes': 1,
                                    'candidates': 1, 'zero_candle_listings': 0}
     assert pl.read_parquet(tmp_path / 'candidates.parquet')['score'][0] == .02
+    assert combined['outputs']['intended_allocations']['rows'] == 1
+    assert (pl.read_parquet(tmp_path / 'intended_allocations.parquet')
+            ['desired_budget'][0] == 10_000)

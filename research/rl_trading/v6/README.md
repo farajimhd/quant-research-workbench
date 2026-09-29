@@ -57,6 +57,12 @@ in-flight tasks, and a 32 GiB host reserve plus 1 GiB per worker. The launcher
 fails if those bounds are unavailable. Per-listing progress and sparse
 fragments are restartable; final parquet files and hashes certify the day.
 This compiler does not build a dense all-listing holding grid.
+Its sparse candidate table feeds `allocation.py`, which keeps the first
+qualified row per episode, sums scores only at those first-eligible seconds,
+and uses a searchsorted prefix sum for the 15-second future reserve. It
+normalizes desired cash against the original $10,000 bankroll. This is a
+planning input, not an executable teacher trade: confirmed entries, account
+cash, bracket exits, and partial fills still require stateful replay.
 
 The bracket oracle and sparse 100 ms event kernel are versioned separately.
 The certified ARTE execution-price sidecar supplies per-price volume for

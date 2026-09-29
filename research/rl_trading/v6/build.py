@@ -32,6 +32,9 @@ from research.mlops.env import load_env_files
 from research.rl_trading.v1 import arte_source, reference_features
 from research.rl_trading.v1.common import digest, exclusive, file_hash
 from research.rl_trading.v6.bank import write_bank
+from research.rl_trading.v6.allocation import (first_eligible,
+                                               intended_budgets,
+                                               window_scores)
 from research.rl_trading.v6.census import one_second_counts
 from research.rl_trading.v6.config import worker_plan
 from research.rl_trading.v6.features import (CandleFeatures, LEVEL_NAMES,
@@ -168,6 +171,17 @@ def _combine_fragments(root: Path, identities: list[str]) -> dict:
             output[label] = {'rows': 0, 'sha256': None}
     if any(totals[label] != output[label]['rows'] for label in files):
         raise ValueError('Sparse output count failed reconciliation')
+    if output['candidates']['rows']:
+        eligible = first_eligible(pl.read_parquet(root / 'candidates.parquet'))
+        planned = intended_budgets(eligible, window_scores(eligible))
+        path = root / 'intended_allocations.parquet'
+        planned.write_parquet(path)
+        output['intended_allocations'] = {'rows': planned.height,
+                                          'sha256': file_hash(path),
+                                          'status': 'planning_only_not_fills'}
+    else:
+        output['intended_allocations'] = {'rows': 0, 'sha256': None,
+                                          'status': 'planning_only_not_fills'}
     return {'totals': totals, 'outputs': output}
 
 
