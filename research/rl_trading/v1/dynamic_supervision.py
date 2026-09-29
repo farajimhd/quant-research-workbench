@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import polars as pl
 
-VERSION = "rl-dynamic-order-supervision-v1"
+VERSION = "rl-dynamic-order-supervision-v2"
 
 
 def order_labels(trajectory: pl.DataFrame, positions: pl.DataFrame,
@@ -19,6 +19,7 @@ def order_labels(trajectory: pl.DataFrame, positions: pl.DataFrame,
     schema = {"time_us":pl.Int64,"ticker":pl.String,"episode_uid":pl.String,
         "action":pl.String,"quantity":pl.Float64,"price":pl.Float64,
         "fee":pl.Float64,"cash_amount":pl.Float64,"allocation_weight":pl.Float64,
+        "remaining_cash_weight":pl.Float64,"order_index":pl.UInt32,
         "net_pnl":pl.Float64,"forced_terminal":pl.Boolean}
     if positions.is_empty():
         if int(trajectory["bought"].sum()) or int(trajectory["sold"].sum()):
@@ -47,8 +48,26 @@ def order_labels(trajectory: pl.DataFrame, positions: pl.DataFrame,
         on="time_us",how="left",validate="m:1").with_columns(
         (pl.col("cash_amount")/pl.col("cash_before_buys"))
             .alias("allocation_weight")).drop("cash_before_buys")
-    sell_labels = sells.with_columns(pl.lit(None,dtype=pl.Float64).alias("allocation_weight"))
-    labels = pl.concat((buy_labels,sell_labels)).sort("time_us","action","ticker")
+    # Teacher executes sells before buys. A BUY weight normalized to the
+    # post-sell, pre-buy cash is useful for audits; the autoregressive policy
+    # instead learns its fraction of cash remaining after earlier BUY orders.
+    buy_labels = buy_labels.sort("time_us","ticker","episode_uid").with_columns(
+        (pl.col("cash_amount").cum_sum().over("time_us")-pl.col("cash_amount"))
+            .alias("prior_buy_debit"))
+    buy_labels = buy_labels.join(account.select("time_us","cash_before_buys"),
+        on="time_us",how="left",validate="m:1").with_columns(
+        (pl.col("cash_amount")/(pl.col("cash_before_buys")-
+                                  pl.col("prior_buy_debit")))
+            .alias("remaining_cash_weight")).drop("prior_buy_debit","cash_before_buys")
+    sell_labels = sells.with_columns(
+        pl.lit(None,dtype=pl.Float64).alias("allocation_weight"),
+        pl.lit(None,dtype=pl.Float64).alias("remaining_cash_weight"))
+    labels = pl.concat((sell_labels,buy_labels)).with_columns(
+        pl.when(pl.col("action")=="sell").then(0).otherwise(1)
+            .alias("action_priority")).sort(
+                "time_us","action_priority","ticker","episode_uid").with_columns(
+        (pl.col("action_priority").cum_count().over("time_us")-1)
+            .cast(pl.UInt32).alias("order_index")).drop("action_priority")
     counts = labels.group_by("time_us").agg(
         (pl.col("action")=="buy").sum().alias("n_buy"),
         (pl.col("action")=="sell").sum().alias("n_sell"))
@@ -58,6 +77,7 @@ def order_labels(trajectory: pl.DataFrame, positions: pl.DataFrame,
                        (pl.col("sold") != pl.col("n_sell"))).height or
             labels.filter(~pl.col("cash_amount").is_finite()).height or
             buy_labels.filter(~pl.col("allocation_weight").is_between(0.,1.+1e-8)).height or
+            buy_labels.filter(~pl.col("remaining_cash_weight").is_between(0.,1.+1e-8)).height or
                 abs(float(positions["net_pnl"].sum())-
                     (float(trajectory["cash"][-1])+
                      (float(trajectory["profit_bank"][-1])

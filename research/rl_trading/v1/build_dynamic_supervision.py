@@ -75,7 +75,8 @@ def main(argv=None):
         phase3_trajectory_hash=certified['files']['trajectory.parquet'],
         phase3_positions_hash=certified['files']['positions.parquet'],
         causal_feature_policy='reuse separately certified arte feature banks; do not expose Phase 2 hindsight scores as observations',
-        action_contract='sparse fractional buy and sell quantities, cash-normalized buy weights',
+        action_contract=('ordered sell-before-buy actions with fractional quantities, '
+            'pre-buy allocation weights and autoregressive remaining-cash weights'),
         code_hashes={name:file_hash(REPO/name) for name in (
             'research/rl_trading/v1/build_dynamic_supervision.py',
             'research/rl_trading/v1/dynamic_supervision.py')})
