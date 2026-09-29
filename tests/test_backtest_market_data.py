@@ -552,6 +552,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             self._plan(), session_date="2026-08-18", ticker="SUGP",
             boundary_ms=300, client=previous) == 101_000
         assert "bucket_index<144002" in previous.queries[0]
+        assert "price_valid=1" in previous.queries[0]
         assert "attempt_id=toUUID('00000000-0000-0000-0000-000000000001')" in previous.queries[0]
         empty = CloseClient([])
         assert load_previous_completed_100ms_close(

@@ -886,7 +886,7 @@ def load_previous_completed_100ms_close(
         f"AND session_date=toDate({_literal(session_date)}) "
         f"AND ticker={_literal(ticker)} "
         f"AND attempt_id=toUUID({_literal(unit.attempt_id)}) "
-        f"AND resolution_ms=100 AND bucket_index<{candidate_index} "
+        f"AND resolution_ms=100 AND price_valid=1 AND bucket_index<{candidate_index} "
         "ORDER BY bucket_index DESC LIMIT 1 FORMAT JSONEachRow"
     )
     rows = [json.loads(line) for line in client.execute(query).splitlines()
