@@ -6,6 +6,7 @@ import pytest
 from src.backend.backtest_v4_run_context import (
     fixed_v4_context_rows, historical_runtime_config,
     historical_simulated_account_ids,
+    historical_strategy_one_portfolio_profiles,
 )
 from src.trading_runtime.runtime import RunMode, typed_run_config_payload
 
@@ -86,3 +87,30 @@ def test_v4_resolves_published_accounts_before_runtime_initialization():
                 {"account_key": "A", "modes": ["backtest"]},
                 {"account_key": "A", "modes": ["backtest"]},
             ]}})
+
+
+def test_v4_portfolio_profiles_share_launch_and_recovery_identity():
+    configuration = {
+        "strategy": {"strategy_id": "early-squeeze-strategy"},
+        "accounts": {"bindings": [
+            {"account_key": "Main Alpha", "modes": ["backtest"],
+             "portfolio_policy_id": "cash", "account_class": "cash",
+             "strategy_allocation": 0.75},
+            {"account_key": "Disabled", "modes": ["backtest"],
+             "portfolio_policy_id": "cash", "enabled": False},
+        ]},
+        "portfolio": {"policies": [{"policy_id": "cash"}],
+                      "mandates": [{"account_key": "Main Alpha",
+                                    "maximum_position_fraction": 0.1}],
+                      "groups": [{"group_id": "default",
+                                  "account_keys": ["Main Alpha"],
+                                  "maximum_gross_exposure": 100_000,
+                                  "maximum_ticker_exposure": 10_000}]},
+    }
+    profiles, groups = historical_strategy_one_portfolio_profiles(configuration)
+    assert tuple(profile.account_id for profile in profiles) == (
+        "SIM-01-MAIN-ALPHA",)
+    assert profiles[0].strategy_allocations == {"early-squeeze-strategy": 0.75}
+    assert profiles[0].strategy_mandates["early-squeeze-strategy"][
+        "maximum_position_fraction"] == 0.1
+    assert groups[0].account_keys == ("Main Alpha",)

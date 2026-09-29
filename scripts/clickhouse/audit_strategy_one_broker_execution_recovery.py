@@ -22,7 +22,9 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
 from src.backend.backtest_market_data import _MarketCertificateReader, market_day_boundary
+from src.backend.backtest_strategy_one_configuration import selected_strategy_one_revision
 from src.backend.backtest_v3_clients import v3_client
+from src.backend.backtest_v4_run_context import historical_strategy_one_portfolio_profiles
 from src.backend.backtest_v4_broker_quote_restore import load_completed_broker_quotes
 from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
 from src.backend.backtest_v4_execution_restore import load_v4_broker_executions
@@ -43,9 +45,11 @@ from src.trading_runtime.arte_oms_actor_restore import (
 from src.trading_runtime.arte_oms_projection import (
     load_recovered_strategy_one_oms_lineage,
 )
+from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_engine_state
 from src.trading_runtime.domain import TradingMode
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+from src.trading_runtime.portfolio import PortfolioManagementEngine
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     load_unattested_broker_match_snapshot, project_broker_match_snapshot,
 )
@@ -83,6 +87,9 @@ def audit(*, run_id: str, build_id: str, session: date,
         if (context["mode"] != "backtest"
                 or context["market_plan_token"] != plan.token):
             raise RuntimeError("Broker audit differs from pinned Backtest market plan")
+        revision = selected_strategy_one_revision(client=market_http)
+        if revision["content_hash"] != context["configuration_hash"]:
+            raise RuntimeError("Cold portfolio configuration differs from V4 run")
         terminal_prefix = load_verified_v4_prefix(client, run_id)
         if terminal_prefix is None or checkpoint_sequence > terminal_prefix.last_sequence:
             raise RuntimeError("Broker execution audit lacks verified V4 prefix")
@@ -106,6 +113,24 @@ def audit(*, run_id: str, build_id: str, session: date,
         root = broker.snapshot
         boundary = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
         boundary += timedelta(milliseconds=int(root["boundary_ms"]))
+        profiles, groups = historical_strategy_one_portfolio_profiles(
+            revision["payload"])
+        if tuple(profile.account_id for profile in profiles) != tuple(
+                row["account_id"] for row in broker.accounts):
+            raise RuntimeError("Cold portfolio accounts differ from broker")
+        portfolio_recovery = recover_portfolio_engine_state(
+            client, run_id=run_id, profiles=profiles,
+            state_revisions={profile.account_id: checkpoint_sequence
+                             for profile in profiles}, cutoff_at=boundary)
+        portfolio = PortfolioManagementEngine(
+            profiles, journal=object(), run_id=run_id,
+            strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+            groups=groups, typed_recovery=portfolio_recovery,
+            event_clock=lambda: boundary)
+        if (set(portfolio.states) != {row["account_id"] for row in broker.accounts}
+                or portfolio.reservations != portfolio_recovery.reservations
+                or portfolio.allocations != portfolio_recovery.allocations):
+            raise RuntimeError("Cold portfolio actor differs from normalized state")
         manager_rows = load_unattested_manager_snapshot_rows(
             client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
         if (manager_rows.snapshot["session_date"] != session.isoformat()

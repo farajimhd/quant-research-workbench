@@ -13,6 +13,9 @@ from typing import Any, Mapping
 from src.backend.backtest_fixed_run_context import _validate_local_context
 from src.backend.backtest_market_data import ExecutionInterval
 from src.trading_runtime.runtime import RunConfig, RunMode, typed_run_config_payload
+from src.trading_runtime.portfolio import (
+    PortfolioAccountProfile, PortfolioGroupPolicy, portfolio_policy_from_payload,
+)
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
@@ -33,6 +36,45 @@ def historical_simulated_account_ids(
         raise ValueError("Historical simulated account keys are empty or repeated")
     return tuple(f"SIM-{index + 1:02d}-{_slug_account(key)}"
                  for index, key in enumerate(keys))
+
+
+def historical_strategy_one_portfolio_profiles(
+    configuration: Mapping[str, Any],
+) -> tuple[tuple[PortfolioAccountProfile, ...], tuple[PortfolioGroupPolicy, ...]]:
+    """Resolve the same immutable account policy for launch and cold recovery."""
+    if not isinstance(configuration, Mapping):
+        raise ValueError("Strategy 1 portfolio profiles need pinned configuration")
+    mode = RunMode.BACKTEST
+    bindings = [dict(row) for row in configuration["accounts"]["bindings"]
+                if bool(row.get("enabled", True))
+                and mode.value in list(row.get("modes") or [])]
+    account_ids = historical_simulated_account_ids(
+        mode=mode, configuration=configuration)
+    if len(bindings) != len(account_ids):
+        raise RuntimeError("Strategy 1 portfolio account population changed")
+    policies = {str(row["policy_id"]): portfolio_policy_from_payload(dict(row))
+                for row in configuration["portfolio"]["policies"]}
+    strategy_id = str(configuration["strategy"]["strategy_id"])
+    profiles = tuple(PortfolioAccountProfile(
+        account_key=str(binding["account_key"]), account_id=account_id,
+        mode=mode.value, account_class=str(binding.get("account_class") or "simulated"),
+        policy=policies[str(binding["portfolio_policy_id"])],
+        session_key=str(binding.get("session_key") or mode.value),
+        enabled=bool(binding.get("enabled", True)),
+        base_currency=str(binding.get("base_currency") or "USD"),
+        strategy_allocations={strategy_id: float(
+            binding.get("strategy_allocation", 1.0))},
+        strategy_mandates={strategy_id: next((dict(row)
+            for row in configuration["portfolio"].get("mandates") or []
+            if str(row.get("account_key")) == str(binding["account_key"])), {})},
+    ) for binding, account_id in zip(bindings, account_ids))
+    groups = tuple(PortfolioGroupPolicy(
+        group_id=str(row["group_id"]),
+        account_keys=tuple(str(value) for value in row.get("account_keys") or ()),
+        maximum_gross_exposure=float(row["maximum_gross_exposure"]),
+        maximum_ticker_exposure=float(row["maximum_ticker_exposure"]),
+    ) for row in configuration["portfolio"].get("groups") or ())
+    return profiles, groups
 
 
 def _slug_account(value: str) -> str:

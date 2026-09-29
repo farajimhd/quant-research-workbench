@@ -4472,47 +4472,55 @@ class ReplayRunController:
                 payload=deepcopy(self.definition.configuration_revision),
                 event_time=self.definition.requested_start,
             )
-        policies = {
-            str(row["policy_id"]): portfolio_policy_from_payload(dict(row))
-            for row in configuration["portfolio"]["policies"]
-        }
-        portfolio_profiles = [
-            PortfolioAccountProfile(
-                account_key=str(binding["account_key"]),
-                account_id=simulated_by_key[str(binding["account_key"])],
-                mode=self.definition.mode.value,
-                account_class=str(binding.get("account_class") or "simulated"),
-                policy=policies[str(binding["portfolio_policy_id"])],
-                session_key=str(binding.get("session_key") or self.definition.mode.value),
-                enabled=bool(binding.get("enabled", True)),
-                base_currency=str(binding.get("base_currency") or "USD"),
-                strategy_allocations={
-                    str(strategy_configuration.get("strategy_id") or "manual"): float(
-                        binding.get("strategy_allocation", 1.0)
-                    )
-                },
-                strategy_mandates={
-                    str(strategy_configuration.get("strategy_id") or "manual"): next(
-                        (
-                            dict(row)
-                            for row in configuration["portfolio"].get("mandates") or []
-                            if str(row.get("account_key")) == str(binding["account_key"])
-                        ),
-                        {},
-                    )
-                },
+        if (self.definition.mode == RunMode.BACKTEST
+                and strategy_configuration.get("strategy_number") == 1):
+            from src.backend.backtest_v4_run_context import (
+                historical_strategy_one_portfolio_profiles,
             )
-            for binding in bindings
-        ]
-        groups = [
-            PortfolioGroupPolicy(
-                group_id=str(row["group_id"]),
-                account_keys=tuple(str(value) for value in row.get("account_keys") or ()),
-                maximum_gross_exposure=float(row["maximum_gross_exposure"]),
-                maximum_ticker_exposure=float(row["maximum_ticker_exposure"]),
-            )
-            for row in configuration["portfolio"].get("groups") or ()
-        ]
+            portfolio_profiles, groups = historical_strategy_one_portfolio_profiles(
+                configuration)
+        else:
+            policies = {
+                str(row["policy_id"]): portfolio_policy_from_payload(dict(row))
+                for row in configuration["portfolio"]["policies"]
+            }
+            portfolio_profiles = [
+                PortfolioAccountProfile(
+                    account_key=str(binding["account_key"]),
+                    account_id=simulated_by_key[str(binding["account_key"])],
+                    mode=self.definition.mode.value,
+                    account_class=str(binding.get("account_class") or "simulated"),
+                    policy=policies[str(binding["portfolio_policy_id"])],
+                    session_key=str(binding.get("session_key") or self.definition.mode.value),
+                    enabled=bool(binding.get("enabled", True)),
+                    base_currency=str(binding.get("base_currency") or "USD"),
+                    strategy_allocations={
+                        str(strategy_configuration.get("strategy_id") or "manual"): float(
+                            binding.get("strategy_allocation", 1.0)
+                        )
+                    },
+                    strategy_mandates={
+                        str(strategy_configuration.get("strategy_id") or "manual"): next(
+                            (
+                                dict(row)
+                                for row in configuration["portfolio"].get("mandates") or []
+                                if str(row.get("account_key")) == str(binding["account_key"])
+                            ),
+                            {},
+                        )
+                    },
+                )
+                for binding in bindings
+            ]
+            groups = [
+                PortfolioGroupPolicy(
+                    group_id=str(row["group_id"]),
+                    account_keys=tuple(str(value) for value in row.get("account_keys") or ()),
+                    maximum_gross_exposure=float(row["maximum_gross_exposure"]),
+                    maximum_ticker_exposure=float(row["maximum_ticker_exposure"]),
+                )
+                for row in configuration["portfolio"].get("groups") or ()
+            ]
         portfolio = PortfolioManagementEngine(
             portfolio_profiles,
             journal=self._journal,
