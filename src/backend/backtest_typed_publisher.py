@@ -387,11 +387,12 @@ class BacktestTypedJournalPublisher:
                                             raise RuntimeError(
                                                 "Broker snapshot differs from committed checkpoint")
                                     for capture in portfolio_captures:
-                                        snapshot_receipt = self.writer.submit_captured_portfolio_snapshot(
-                                            capture)
-                                        if not await asyncio.wrap_future(snapshot_receipt):
+                                        snapshot_receipt = self.writer.submit_running_portfolio_snapshot(
+                                            journal_batch_id=self._batch_id,
+                                            captured=capture)
+                                        if await asyncio.wrap_future(snapshot_receipt) != self._batch_id:
                                             raise RuntimeError(
-                                                "Portfolio snapshot was not committed")
+                                                "Portfolio snapshot differs from committed checkpoint")
                                     waiter.set_result(current)
                         else:
                             remaining.append((sequence, cursor, session_date,

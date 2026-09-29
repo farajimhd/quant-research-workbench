@@ -691,8 +691,9 @@ def test_v4_checkpoint_receipt_waits_for_account_snapshot():
         def submit_base_v4(self, batch):
             return FakeWriter.submit(self, batch)
 
-        def submit_captured_portfolio_snapshot(self, capture):
-            self.snapshot_capture = capture
+        def submit_running_portfolio_snapshot(self, *, journal_batch_id, captured):
+            self.snapshot_capture = captured
+            self.snapshot_batch_id = journal_batch_id
             return self.snapshot_receipt
 
     async def exercise():
@@ -715,8 +716,9 @@ def test_v4_checkpoint_receipt_waits_for_account_snapshot():
                 break
             await asyncio.sleep(0.001)
         assert writer.snapshot_capture is capture
+        assert writer.snapshot_batch_id == writer.submitted[0].batch_id
         assert not receipt.done()
-        writer.snapshot_receipt.set_result('a' * 64)
+        writer.snapshot_receipt.set_result(writer.submitted[0].batch_id)
         assert (await receipt).last_sequence == 2
 
     asyncio.run(exercise())

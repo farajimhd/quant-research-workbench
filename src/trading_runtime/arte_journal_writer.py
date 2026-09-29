@@ -3546,6 +3546,12 @@ class _BrokerMatchSnapshotUnit:
     state: Any
 
 
+@dataclass(frozen=True, slots=True)
+class _RunningPortfolioSnapshotUnit:
+    journal_batch_id: str
+    captured: CapturedPortfolioSnapshot
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
@@ -3644,7 +3650,8 @@ class ArteJournalWriter:
                   | V4ProtectionReconciliationBatch
                   | _DurabilityBarrier | _AdmissionUnit
                   | _PortfolioSyncUnit | _TerminalBacktestUnit
-                  | _ManagerSnapshotUnit | _BrokerMatchSnapshotUnit,
+                  | _ManagerSnapshotUnit | _BrokerMatchSnapshotUnit
+                  | _RunningPortfolioSnapshotUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
@@ -4270,6 +4277,36 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_running_portfolio_snapshot(
+        self, *, journal_batch_id: str, captured: CapturedPortfolioSnapshot,
+    ) -> Future[str]:
+        """Queue an exact V4 running-prefix account image off the engine path."""
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(captured, CapturedPortfolioSnapshot)
+                or captured.run_id != self._run_id
+                or captured.account_id not in self._run_account_ids
+                or captured.state_revision < 1):
+            raise ValueError("Running portfolio image needs a pinned V4 account")
+        try:
+            if str(UUID(journal_batch_id)) != journal_batch_id:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Running portfolio batch ID is invalid") from exc
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((
+                    _RunningPortfolioSnapshotUnit(journal_batch_id, captured),
+                    receipt))
+            except Full as exc:
+                raise JournalQueueFull("Running portfolio snapshot queue is full") from exc
+            self._accepted_writes = True
+        return receipt
+
     def _run(self) -> None:
         from .arte_journal_compound_v4 import V4CompoundBatch
         from .arte_oms_tactic_projection import V4OmsTacticBatch
@@ -4278,7 +4315,7 @@ class ArteJournalWriter:
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
             | _TerminalBacktestUnit | _ManagerSnapshotUnit
-            | _BrokerMatchSnapshotUnit,
+            | _BrokerMatchSnapshotUnit | _RunningPortfolioSnapshotUnit,
             Future[str],
         ] | None = None
         while True:
@@ -4334,7 +4371,8 @@ class ArteJournalWriter:
                         and not (self._journal_profile == "backtest_v4"
                                  and isinstance(group[0][0], (
                                      _TerminalBacktestUnit, _ManagerSnapshotUnit,
-                                     _BrokerMatchSnapshotUnit)))):
+                                     _BrokerMatchSnapshotUnit,
+                                     _RunningPortfolioSnapshotUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
                 if isinstance(group[0][0], V4CompoundBatch):
                     from .arte_journal_compound_v4 import publish_compound_v4
@@ -4541,6 +4579,21 @@ class ArteJournalWriter:
                     publish_broker_match_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
                         journal_batch_id=unit.journal_batch_id)
+                    committed_id = unit.journal_batch_id
+                elif isinstance(group[0][0], _RunningPortfolioSnapshotUnit):
+                    from src.trading_runtime.arte_portfolio_snapshot import (
+                        prepare_captured_portfolio_snapshot,
+                        publish_prepared_portfolio_snapshot,
+                    )
+                    unit = group[0][0]
+                    if self._last_commit_id != unit.journal_batch_id:
+                        raise RuntimeError(
+                            "Portfolio image has no preceding ordered V4 commit")
+                    digest = publish_prepared_portfolio_snapshot(
+                        self._client,
+                        prepare_captured_portfolio_snapshot(unit.captured))
+                    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                        raise RuntimeError("Portfolio image lacks a verified state hash")
                     committed_id = unit.journal_batch_id
                 else:
                     from src.trading_runtime.arte_portfolio_snapshot import (
