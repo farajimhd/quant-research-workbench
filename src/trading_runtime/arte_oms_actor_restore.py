@@ -21,6 +21,7 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import (
     BrokerMatchSnapshotRows, verify_broker_match_snapshot,
 )
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
+from src.trading_runtime.signals import StrategyIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +154,12 @@ def reconstruct_typed_oms_actor_image(
     for lineage in lineages:
         state = lineage.state
         row = state.group
-        intent = lineage.source_intent.intent
+        # The source intent predates Portfolio approval and has no assignment
+        # or approved quantity. Active OMS recovery must install the verified
+        # admitted intent reconstructed from normalized reservation/decision.
+        if not isinstance(lineage.approved_intent, StrategyIntent):
+            raise RuntimeError("Typed OMS group lacks its verified approved intent")
+        intent = lineage.approved_intent
         orders = lineage.orders
         group_id = str(row["group_id"])
         if (lineage.through_sequence != through_sequence

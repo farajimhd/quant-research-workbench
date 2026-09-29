@@ -1,4 +1,5 @@
 """Typed OMS actor images must be complete and side-effect free."""
+from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -53,18 +54,30 @@ def _source(*, malformed=None):
         7, "record-1", row, (request,), (0,), ("",), (binding,), (), (),
         None, True)
     recovered = RecoveredIntent(6, "DU1", "record-1", "batch-1", source)
-    lineage = RecoveredStrategyOneOmsLineage(state, recovered, (request,), 7)
+    lineage = RecoveredStrategyOneOmsLineage(
+        state, recovered, (request,), 7,
+        replace(source, metadata={"assignment_id": "assignment-1"}))
     history = CompleteProtectionHistory(RUN, 7, ("batch-1",), ())
     return lineage, history
 
 
 def test_typed_oms_actor_image_rebuilds_group_and_indexes():
     lineage, history = _source()
+    approved = replace(lineage.source_intent.intent,
+                       metadata={"assignment_id": "assignment-1"}, quantity=4)
+    lineage = replace(lineage, approved_intent=approved)
     image = reconstruct_typed_oms_actor_image(
         (lineage,), history, run_id=RUN,
         strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
         through_sequence=7, cutoff_at=AT)
     group = image.groups["group-1"]
+    assert group.intent is approved
+    with pytest.raises(RuntimeError, match="verified approved intent"):
+        reconstruct_typed_oms_actor_image(
+            (replace(lineage, approved_intent=None),), history,
+            run_id=RUN, strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_NUMBER,
+            through_sequence=7, cutoff_at=AT)
     assert group.plan.orders == lineage.orders
     assert group.plan.broker_batches == (lineage.orders,)
     assert group.broker_order_request_indexes == {"broker-1": 0}

@@ -494,6 +494,73 @@ class RecoveredStrategyOneOmsLineage:
     source_intent: Any
     orders: tuple[OrderRequest, ...]
     through_sequence: int
+    approved_intent: StrategyIntent | None = None
+
+
+def _approved_strategy_one_oms_intent(
+    state: RecoveredOmsGroupState, source_intent: Any,
+    protection_history: Any,
+    admission_reservation: Mapping[str, Any] | None,
+    admission_decision: Mapping[str, Any] | None,
+) -> tuple[StrategyIntent, tuple[Any, ...]]:
+    """Restore the approved, amended group intent from normalized facts."""
+    if (admission_reservation is None) != (admission_decision is None):
+        raise ValueError("Strategy 1 OMS admission needs its decision and reservation")
+    approved_intent = source_intent.intent
+    account = state.group["account_id"]
+    if admission_reservation is not None:
+        from src.trading_runtime.portfolio import _intent_correlation
+
+        reservation, decision = admission_reservation, admission_decision
+        if (approved_intent.metadata
+                or reservation.get("account_id") != account
+                or reservation.get("intent_id") != approved_intent.intent_id
+                or reservation.get("decision_id") != decision.get("decision_id")
+                or reservation.get("reservation_id") != decision.get("reservation_id")
+                or reservation.get("account_key") != decision.get("account_key")
+                or not reservation.get("assignment_id")
+                or decision.get("status") not in {"approved", "resized"}
+                or not decision.get("policy_id")
+                or int(decision.get("policy_revision") or 0) < 1):
+            raise ValueError("Strategy 1 OMS admission differs from typed source")
+        metadata = {
+            "assignment_id": reservation["assignment_id"],
+            "portfolio_account_key": reservation["account_key"],
+            "portfolio_decision_id": decision["decision_id"],
+            "unprotected_backtest_authorized": False,
+            "portfolio_policy": f"{decision['policy_id']}@{decision['policy_revision']}",
+            "portfolio_reservation_id": reservation["reservation_id"],
+            "requested_quantity": float(decision["requested_quantity"]),
+            "portfolio_fx_to_base": 1.0,
+            "correlation_id": _intent_correlation(protection_history.run_id,
+                                                   approved_intent),
+            "causation_id": decision["decision_id"],
+        }
+        approved_intent = replace(
+            approved_intent, quantity=float(reservation["quantity"]),
+            metadata=metadata)
+    history = tuple(row for row in protection_history.records
+                    if row.account_id == account
+                    and row.payload.get("order_group_id") == state.group["group_id"]
+                    and row.sequence <= state.sequence)
+    if any(row.run_id != protection_history.run_id
+           or not 0 < row.sequence <= protection_history.through_sequence
+           or (row.category, row.entity_type) !=
+           ("protection", "protection_change") for row in history):
+        raise ValueError("Strategy 1 OMS protection history differs from its prefix")
+    for kind, field in (("stop", "invalidation_price"),
+                        ("target", "profit_target_price")):
+        effective = [row for row in history
+                     if row.payload.get("kind") == kind
+                     and row.payload.get("phase") == "effective"
+                     and row.payload.get("action") == (
+                         "replace_protective_stop" if kind == "stop"
+                         else "replace_profit_target")]
+        if effective:
+            latest = max(effective, key=lambda row: row.sequence)
+            approved_intent = replace(approved_intent,
+                                      **{field: latest.payload["price"]})
+    return approved_intent, history
 
 
 def reconstruct_strategy_one_oms_lineage(
@@ -545,65 +612,9 @@ def reconstruct_strategy_one_oms_lineage(
                 if row["request_index"] is not None}
     terminal = frozenset(str(row["broker_order_id"])
                          for row in state.broker_bindings if row["terminal"])
-    if (admission_reservation is None) != (admission_decision is None):
-        raise ValueError("Strategy 1 OMS admission needs its decision and reservation")
-    approved_intent = source_intent.intent
-    if admission_reservation is not None:
-        from src.trading_runtime.portfolio import _intent_correlation
-
-        reservation, decision = admission_reservation, admission_decision
-        if (approved_intent.metadata
-                or reservation.get("account_id") != account
-                or reservation.get("intent_id") != approved_intent.intent_id
-                or reservation.get("decision_id") != decision.get("decision_id")
-                or reservation.get("reservation_id") != decision.get("reservation_id")
-                or reservation.get("account_key") != decision.get("account_key")
-                or not reservation.get("assignment_id")
-                or decision.get("status") not in {"approved", "resized"}
-                or not decision.get("policy_id")
-                or int(decision.get("policy_revision") or 0) < 1):
-            raise ValueError("Strategy 1 OMS admission differs from typed source")
-        # Portfolio adds these ten scalar keys at approval. Eight are already
-        # normalized in the reservation/decision; the remaining two are
-        # deterministic here because the admitted source has no metadata:
-        # no unprotected contract and no non-base-currency FX override.
-        metadata = {
-            "assignment_id": reservation["assignment_id"],
-            "portfolio_account_key": reservation["account_key"],
-            "portfolio_decision_id": decision["decision_id"],
-            "unprotected_backtest_authorized": False,
-            "portfolio_policy": f"{decision['policy_id']}@{decision['policy_revision']}",
-            "portfolio_reservation_id": reservation["reservation_id"],
-            "requested_quantity": float(decision["requested_quantity"]),
-            "portfolio_fx_to_base": 1.0,
-            "correlation_id": _intent_correlation(protection_history.run_id,
-                                                   approved_intent),
-            "causation_id": decision["decision_id"],
-        }
-        approved_intent = replace(
-            approved_intent, quantity=float(reservation["quantity"]),
-            metadata=metadata)
-    history = tuple(row for row in protection_history.records
-                    if row.account_id == account
-                    and row.payload.get("order_group_id") == identity
-                    and row.sequence <= state.sequence)
-    if any(row.run_id != protection_history.run_id
-           or not 0 < row.sequence <= protection_history.through_sequence
-           or (row.category, row.entity_type) !=
-           ("protection", "protection_change") for row in history):
-        raise ValueError("Strategy 1 OMS protection history differs from its prefix")
-    for kind, field in (("stop", "invalidation_price"),
-                        ("target", "profit_target_price")):
-        effective = [row for row in history
-                     if row.payload.get("kind") == kind
-                     and row.payload.get("phase") == "effective"
-                     and row.payload.get("action") == (
-                         "replace_protective_stop" if kind == "stop"
-                         else "replace_profit_target")]
-        if effective:
-            latest = max(effective, key=lambda row: row.sequence)
-            approved_intent = replace(approved_intent,
-                                      **{field: latest.payload["price"]})
+    approved_intent, history = _approved_strategy_one_oms_intent(
+        state, source_intent, protection_history,
+        admission_reservation, admission_decision)
     view = _ColdLineageView(
         identity, account, approved_intent, state.orders, bindings, terminal)
     rebuilt = []
@@ -709,6 +720,9 @@ def load_recovered_strategy_one_oms_lineage(
             admission_reservation=admissions[group.sequence],
             admission_decision=decisions[group.sequence]),
         history.through_sequence,
+        _approved_strategy_one_oms_intent(
+            group, by_id[group.intent_record_id], history,
+            admissions[group.sequence], decisions[group.sequence])[0],
     ) for group in groups)
 
 

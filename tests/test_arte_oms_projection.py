@@ -140,6 +140,8 @@ def test_strategy_one_cold_join_uses_exact_intent_and_complete_history(
     assert requested == [(1, (record_id,))]
     assert joined[0].through_sequence == 2
     assert joined[0].orders[0].raw["canonical_run_id"] == run_id
+    assert joined[0].approved_intent.metadata["assignment_id"] == "assignment-1"
+    assert joined[0].approved_intent.quantity == 5
     monkeypatch.setattr(reader, "load_complete_typed_protection_history",
                         lambda *_a, **_k: replace(history, through_sequence=1))
     with pytest.raises(RuntimeError, match="history head differs"):
