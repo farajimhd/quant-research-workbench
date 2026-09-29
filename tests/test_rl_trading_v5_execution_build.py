@@ -5,6 +5,7 @@ import polars as pl
 
 from research.rl_trading.v1 import build_v5_execution as builder
 from research.rl_trading.v1.v5_feature_binding import FeatureBinding
+from research.rl_trading.v1.v5_policy_replay import load_execution_grid
 from src.market_engine.level_book_store import write
 
 
@@ -50,6 +51,9 @@ def test_execution_build_certifies_and_reuses_one_pinned_listing(tmp_path, monke
     root = builder.build(**kwargs)
     assert (root / 'complete.json').is_file()
     assert np.load(root / 'next_open.npy', mmap_mode='r')[0, 1] == 10.
+    loaded = load_execution_grid(root, binding)
+    assert loaded.next_open[0, 1] == 10.
+    assert loaded.tickers == ('ABC',)
     assert calls == ['verify', 'close']
     assert builder.build(**kwargs) == root
     assert calls == ['verify', 'close']
