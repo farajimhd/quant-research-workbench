@@ -142,7 +142,7 @@ REPLAY_RESTART_CHECKPOINT_INTERVAL_EVENTS = 25_000
 # Backtest-only recovery cadence. Every journal record remains queued for a
 # fenced ClickHouse commit; this bounds how far the latest *resumable state*
 # may lag. Live trading uses its own durability contract.
-FIXED_JOURNAL_FLUSH_RECORDS = 2_048
+FIXED_JOURNAL_FLUSH_RECORDS = 1_024
 DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
