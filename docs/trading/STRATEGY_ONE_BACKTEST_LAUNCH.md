@@ -7,6 +7,40 @@ it must not substitute an SSH-forwarded workstation API. ClickHouse is reachable
 from the laptop at the workstation HTTP port 18123. The app must never fall back
 to SQLite or to a general ClickHouse account.
 
+## Current verified status (2026-09-29)
+
+The laptop-managed app is running the current backend and frontend. A direct
+HTTP preflight for the entire 2026-08-18 04:00–09:30 ET session returned
+`strategy_run_ready=true`, `execution_interval=100ms`, and 18 ready required
+checks. A laptop HTTP launch created run
+`c206cc66-334b-44bd-9692-a08f3193db80`; polling remained available through
+asynchronous checkpoint persistence, then reported `completed` after about
+61 seconds from creation (7,584 processed persisted-market rows). Its typed
+ClickHouse journal cold-verified against workstation baseline
+`aee645c9-d9c9-4252-948c-a49280395044`: the terminal account, 58 strategy
+intents, 440 executions and commissions, and 30 order commands matched.
+The app lists the run as reviewable; its terminal page has a verified market
+cursor and no limitations. No run-local Backtest directory was created.
+
+The saved WFF chart endpoint returned persisted bars and indicators at 100 ms,
+1 s, 5 s, 10 s, and 30 s. Daily and monthly context reads succeeded, and a
+requested missing indicator appeared in `unavailable_columns`. These are API
+and data-contract checks, not approval of every Canvas visual state; the user
+will review the certified Canvas presentation separately. The laptop app's
+first preflight after restart took about 27 seconds and a warm repeat about
+5 seconds. A workstation in-process full-session execution at the same
+current contract took 50.141 seconds after preflight. These timings are
+observations, not a throughput guarantee; older measurements below belong to
+earlier market, broker, and journal contracts and must not be compared as a
+controlled speedup.
+
+Strategy 1 remains Backtest-only. Live admission is fail-closed until
+server-enforced prior-writer fencing and complete normalized cold recovery
+are implemented and validated. Interrupted Backtest resume is also disabled
+before any legacy SQLite read; do not describe a successful completed run as
+checkpoint-resume validation. Candidate 350 event-native re-entry remains
+outside Strategy 1's certified fixed-bar behavior.
+
 The managed local backend reads the dedicated V3 market reader, V4 runner,
 and journal credential files over the protected workstation share. It copies
 no credential into the repository or a laptop artifact. All three principals
