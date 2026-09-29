@@ -23,6 +23,10 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import (
     load_unattested_broker_match_snapshot,
 )
 from src.backend.backtest_market_data import market_day_boundary
+from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
+)
+from src.backend.backtest_v4_broker_quote_restore import load_completed_broker_quotes
 from tests.test_trading_runtime import quote, trade
 
 
@@ -198,6 +202,47 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows.open_orders[0]["filled"], 4.0)
         self.assertEqual(rows.tickers[0]["last_boundary_ms"], boundary_ms)
         self.assertEqual(verify_broker_match_snapshot(rows), rows)
+        class Reader:
+            def execute(self, sql):
+                assert sql.lstrip().startswith("SELECT ")
+                assert "arte.liquidity_100ms_v1" in sql
+                assert "toUUID('00000000-0000-0000-0000-000000000001')" in sql
+                return json.dumps({
+                    "session_date": day.isoformat(), "ticker": "AAPL",
+                    "bucket_index": bar(at)["bucket_index"],
+                    "event_count": 3, "last_event_us": bar(at)["last_event_us"],
+                    "quote_timestamp_us": bar(at)["quote_timestamp_us"],
+                    "quote_valid": 1, "bid_int": 99900, "ask_int": 100000,
+                    "bid_size": 100, "ask_size": 4,
+                })
+
+        plan = CertifiedMarketDayPlan(
+            ExecutionInterval.fixed(100), "a" * 64, "b" * 64,
+            (day.isoformat(),), ("AAPL",),
+            (MarketDayUnit("a" * 64, day.isoformat(), "AAPL",
+                           "broker_100ms",
+                           "00000000-0000-0000-0000-000000000001",
+                           "c" * 64, 1, "d" * 64),), (100,), "e" * 64)
+        quote = load_completed_broker_quotes(Reader(), plan=plan, broker=rows)
+        self.assertEqual(quote["AAPL"].ask, 10.0)
+        self.assertEqual(quote["AAPL"].quote_timestamp_us,
+                         rows.tickers[0]["quote_timestamp_us"])
+        class MissingReader(Reader):
+            def execute(self, sql):
+                super().execute(sql)
+                return ""
+
+        with self.assertRaisesRegex(RuntimeError, "lacks exact liquidity rows"):
+            load_completed_broker_quotes(MissingReader(), plan=plan, broker=rows)
+
+        class ChangedReader(Reader):
+            def execute(self, sql):
+                value = json.loads(super().execute(sql))
+                value["quote_timestamp_us"] -= 1
+                return json.dumps(value)
+
+        with self.assertRaisesRegex(RuntimeError, "differs from completed bucket"):
+            load_completed_broker_quotes(ChangedReader(), plan=plan, broker=rows)
         stored = replace(
             rows,
             snapshot={**rows.snapshot, "initial_time": rows.snapshot[

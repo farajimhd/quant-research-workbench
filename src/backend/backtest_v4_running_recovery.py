@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from src.backend.backtest_market_data import CertifiedMarketDayPlan
+from src.backend.backtest_v4_broker_quote_restore import (
+    CompletedBrokerQuote, load_completed_broker_quotes,
+)
 from src.backend.backtest_v4_running_portfolio import (
     load_v4_running_portfolio_images,
 )
@@ -33,11 +37,13 @@ class V4RunningRecoveryEvidence:
     manager: StrategyOneManagementState
     broker: BrokerMatchSnapshotRows
     oms: tuple[RecoveredStrategyOneOmsLineage, ...]
+    quotes: dict[str, CompletedBrokerQuote]
 
 
 def load_v4_running_recovery_evidence(
     client: Any, *, run_id: str, account_ids: tuple[str, ...],
     manager_keeper: Any, broker_keeper: Any,
+    market_client: Any, market_plan: CertifiedMarketDayPlan,
 ) -> V4RunningRecoveryEvidence:
     """Join every available recovery family at the same committed cursor."""
     prefix, portfolios = load_v4_running_portfolio_images(
@@ -94,6 +100,9 @@ def load_v4_running_recovery_evidence(
                 or request.ticker != order["ticker"]
                 or binding != (request.cOID, False)):
             raise RuntimeError("V4 broker open order lacks exact OMS lineage")
+    quotes = load_completed_broker_quotes(
+        market_client, plan=market_plan, broker=broker)
     if load_verified_v4_prefix(client, run_id) != prefix:
         raise RuntimeError("V4 recovery prefix moved across domain reads")
-    return V4RunningRecoveryEvidence(prefix, portfolios, manager, broker, oms)
+    return V4RunningRecoveryEvidence(prefix, portfolios, manager, broker, oms,
+                                     quotes)

@@ -28,6 +28,8 @@ def _install(monkeypatch, *, open_orders=(), oms=(), moved=False):
                         lambda *_a, **_k: broker)
     monkeypatch.setattr(subject, "load_recovered_strategy_one_oms_lineage",
                         lambda *_a, **_k: oms)
+    monkeypatch.setattr(subject, "load_completed_broker_quotes",
+                        lambda *_a, **_k: {})
     monkeypatch.setattr(subject, "load_verified_v4_prefix",
                         lambda *_a, **_k: None if moved else PREFIX)
 
@@ -36,7 +38,8 @@ def test_v4_running_recovery_joins_exact_empty_oms(monkeypatch):
     _install(monkeypatch)
     result = subject.load_v4_running_recovery_evidence(
         object(), run_id=RUN, account_ids=("DU1",),
-        manager_keeper=object(), broker_keeper=object())
+        manager_keeper=object(), broker_keeper=object(),
+        market_client=object(), market_plan=object())
     assert result.prefix == PREFIX
     assert result.manager.boundary_ms == 100
     assert result.oms == ()
@@ -48,7 +51,8 @@ def test_v4_running_recovery_rejects_orphan_broker_order(monkeypatch):
     with pytest.raises(RuntimeError, match="lacks exact OMS lineage"):
         subject.load_v4_running_recovery_evidence(
             object(), run_id=RUN, account_ids=("DU1",),
-            manager_keeper=object(), broker_keeper=object())
+            manager_keeper=object(), broker_keeper=object(),
+            market_client=object(), market_plan=object())
 
 
 def _open_order_lineage(*, terminal=0):
@@ -72,7 +76,8 @@ def test_v4_running_recovery_joins_open_order_to_oms(monkeypatch):
                                         "ticker": "WFF"},), oms=(lineage,))
     result = subject.load_v4_running_recovery_evidence(
         object(), run_id=RUN, account_ids=("DU1",),
-        manager_keeper=object(), broker_keeper=object())
+        manager_keeper=object(), broker_keeper=object(),
+        market_client=object(), market_plan=object())
     assert result.oms == (lineage,)
 
 
@@ -85,7 +90,8 @@ def test_v4_running_recovery_rejects_terminal_oms_binding(monkeypatch):
     with pytest.raises(RuntimeError, match="lacks exact OMS lineage"):
         subject.load_v4_running_recovery_evidence(
             object(), run_id=RUN, account_ids=("DU1",),
-            manager_keeper=object(), broker_keeper=object())
+            manager_keeper=object(), broker_keeper=object(),
+            market_client=object(), market_plan=object())
 
 
 def test_v4_running_recovery_rejects_moved_prefix(monkeypatch):
@@ -93,4 +99,5 @@ def test_v4_running_recovery_rejects_moved_prefix(monkeypatch):
     with pytest.raises(RuntimeError, match="prefix moved"):
         subject.load_v4_running_recovery_evidence(
             object(), run_id=RUN, account_ids=("DU1",),
-            manager_keeper=object(), broker_keeper=object())
+            manager_keeper=object(), broker_keeper=object(),
+            market_client=object(), market_plan=object())
