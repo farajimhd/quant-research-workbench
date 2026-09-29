@@ -605,3 +605,13 @@ with 15.156s terminal prior-commit wait, and did not improve on the earlier
 and synchronized to the workstation. Further optimization should target
 compound preparation/readback or snapshot publication directly, preserving
 the exact journal prefix and causal recovery anchor.
+
+Commit `f56cb7b42` removed a second typed-row seal during V4 compound
+child comparison while retaining the first full seal, exact scalar equality,
+and committed ClickHouse readback. It passed 143 focused journal tests and
+an unprofiled full-session Aug 18 run
+(`ea543ebe-e636-4371-b00c-65d7aa5612bf`): 20.613s preflight,
+45.844s execution, 7,584 processed rows, 7,785 events, 20 writer units,
+zero failed units, and zero backdated actions. Compound preparation took
+5.968s and publication 10.674s. This single run does not prove a wall-time
+speedup; network insertion and readback remain the larger measured cost.
