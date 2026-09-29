@@ -42,7 +42,7 @@ class FixedRunningPrefixAnchor:
 def cold_verify_v4_resume_anchor(
     client: Any, *, dispatch: Any, lease: Any, run_id: str,
     plan: CertifiedMarketDayPlan, configuration_hash: str,
-    account_ids: tuple[str, ...],
+    account_ids: tuple[str, ...], code_hash: str,
 ) -> FixedRunningPrefixAnchor:
     """Join one exclusive owner, quiescent dispatch gate, and exact V4 cursor.
 
@@ -54,10 +54,14 @@ def cold_verify_v4_resume_anchor(
 
     if (not isinstance(lease, BacktestV4KeeperLease)
             or lease.run_id != run_id
+            or lease.epoch < 2
             or not isinstance(dispatch, TypedInsertDispatch)
             or dispatch.keeper is not lease.owner._session.client):
-        raise ValueError("V4 cold resume lacks its exclusive same-Keeper owner")
+        raise ValueError("V4 cold resume lacks a prior fenced run owner")
     lease.assert_current()
+    lease.assert_genesis(
+        configuration_hash=configuration_hash,
+        market_plan_token=plan.token, code_hash=code_hash)
     if client.execute("SELECT getSetting('readonly')").strip() != "1":
         raise RuntimeError("V4 cold resume requires a server-enforced read-only client")
     barrier = dispatch.acquire_cold_barrier(run_id)

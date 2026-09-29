@@ -3262,6 +3262,10 @@ class ReplayRunController:
                         coordinator.release_portfolio_admission_lease(
                             resource_id, owner_id=definition_lease["owner_id"],
                             epoch=definition_lease["epoch"])
+                    lease.attest_genesis(
+                        configuration_hash=run["configuration_hash"],
+                        market_plan_token=run["market_plan_token"],
+                        code_hash=run["code_hash"])
                     bootstrap_timings["strategy_one_definition_publish"] = (
                         time.perf_counter() - bootstrap_phase)
                 return assembly, keeper, lease, bootstrap_timings

@@ -22,8 +22,48 @@ RUN = "backtest:fixed-anchor"
 BATCH = "00000000-0000-0000-0000-000000000a12"
 PLAN_TOKEN = "a" * 64
 CONFIG = "b" * 64
+CODE_HASH = "c" * 64
 DAY = "2026-08-18"
 V4_RUN = "62908518-9fd4-4a8e-8c90-2162ccb237e1"
+
+
+def test_cold_v4_resume_rejects_old_run_without_prior_owner_epoch():
+    keeper = FakeKazoo()
+    keeper.add_listener = lambda _listener: None
+    session = ManagedKeeperSession(keeper)
+    session._on_state("CONNECTED")
+    lease = BacktestV4KeeperLease.acquire(
+        session, run_id=V4_RUN, owner_id="first-after-the-fact")
+    try:
+        with pytest.raises(ValueError, match="prior fenced run owner"):
+            anchor_module.cold_verify_v4_resume_anchor(
+                SimpleNamespace(execute=lambda _sql: "1"),
+                dispatch=TypedInsertDispatch(keeper), lease=lease,
+                run_id=V4_RUN, plan=_plan(), configuration_hash=CONFIG,
+                account_ids=("DU1",), code_hash=CODE_HASH)
+    finally:
+        lease.release()
+
+
+def test_cold_v4_resume_rejects_prior_epoch_without_genesis():
+    keeper = FakeKazoo()
+    keeper.add_listener = lambda _listener: None
+    session = ManagedKeeperSession(keeper)
+    session._on_state("CONNECTED")
+    old = BacktestV4KeeperLease.acquire(
+        session, run_id=V4_RUN, owner_id="unfenced-old-writer")
+    assert old.release()
+    lease = BacktestV4KeeperLease.acquire(
+        session, run_id=V4_RUN, owner_id="candidate-reader")
+    try:
+        with pytest.raises(RuntimeError, match="genesis is absent"):
+            anchor_module.cold_verify_v4_resume_anchor(
+                SimpleNamespace(execute=lambda _sql: "1"),
+                dispatch=TypedInsertDispatch(keeper), lease=lease,
+                run_id=V4_RUN, plan=_plan(), configuration_hash=CONFIG,
+                account_ids=("DU1",), code_hash=CODE_HASH)
+    finally:
+        lease.release()
 
 
 @pytest.mark.parametrize("mismatch", [False, True])
@@ -32,6 +72,12 @@ def test_cold_v4_resume_joins_owner_dispatch_prefix_and_cursor(monkeypatch, mism
     keeper.add_listener = lambda _listener: None
     session = ManagedKeeperSession(keeper)
     session._on_state("CONNECTED")
+    original = BacktestV4KeeperLease.acquire(
+        session, run_id=V4_RUN, owner_id="original-writer")
+    original.attest_genesis(
+        configuration_hash=CONFIG, market_plan_token=PLAN_TOKEN,
+        code_hash=CODE_HASH)
+    assert original.release()
     lease = BacktestV4KeeperLease.acquire(
         session, run_id=V4_RUN, owner_id="cold-reader")
     calls = []
@@ -59,14 +105,14 @@ def test_cold_v4_resume_joins_owner_dispatch_prefix_and_cursor(monkeypatch, mism
                 anchor_module.cold_verify_v4_resume_anchor(
                     client, dispatch=dispatch, lease=lease, run_id=V4_RUN,
                     plan=_plan(), configuration_hash=CONFIG,
-                    account_ids=("DU1",))
+                    account_ids=("DU1",), code_hash=CODE_HASH)
             assert calls == ["barrier", "context", "backtest_v4", "anchor",
                              "released"]
         else:
             assert anchor_module.cold_verify_v4_resume_anchor(
                 client, dispatch=dispatch, lease=lease, run_id=V4_RUN,
                 plan=_plan(), configuration_hash=CONFIG,
-                account_ids=("DU1",)) == anchor
+                account_ids=("DU1",), code_hash=CODE_HASH) == anchor
             assert calls == ["barrier", "context", "backtest_v4", "anchor",
                              "fenced", "released"]
     finally:

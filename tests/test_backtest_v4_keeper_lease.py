@@ -22,6 +22,8 @@ def test_owner_is_exclusive_and_replacement_gets_higher_epoch():
     first = BacktestV4KeeperLease.acquire(
         session, run_id=RUN_ID, owner_id="worker-1")
     first.assert_current()
+    first.attest_genesis(configuration_hash="a" * 64,
+                         market_plan_token="b" * 64, code_hash="c" * 64)
     with pytest.raises(RuntimeError, match="held"):
         BacktestV4KeeperLease.acquire(
             session, run_id=RUN_ID, owner_id="worker-2")
@@ -32,6 +34,14 @@ def test_owner_is_exclusive_and_replacement_gets_higher_epoch():
         session, run_id=RUN_ID, owner_id="worker-2")
     assert second.epoch > first.epoch
     second.assert_current()
+    second.assert_genesis(configuration_hash="a" * 64,
+                          market_plan_token="b" * 64, code_hash="c" * 64)
+    with pytest.raises(RuntimeError, match="genesis differs"):
+        second.assert_genesis(configuration_hash="a" * 64,
+                              market_plan_token="b" * 64, code_hash="d" * 64)
+    with pytest.raises(RuntimeError, match="first owner epoch"):
+        second.attest_genesis(configuration_hash="a" * 64,
+                              market_plan_token="b" * 64, code_hash="c" * 64)
     assert first.owner.path(RUN_ID).startswith(
         "/trading/strategy-one-backtest-v4/v1/")
 
