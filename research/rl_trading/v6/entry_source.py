@@ -69,7 +69,54 @@ def attach_quotes(keys: pl.DataFrame, quotes: pl.DataFrame,
         (pl.col('bid_int') > 0) &
         (pl.col('ask_int') >= pl.col('bid_int')) &
         (pl.col('bid_size') > 0) & (pl.col('ask_size') > 0))
-    return joined.with_columns(available.fill_null(False).alias('quote_available'))
+    return joined.with_columns(
+        available.fill_null(False).alias('quote_available'),
+        pl.when(available.fill_null(False))
+          .then(pl.lit('arrival_bucket')).otherwise(pl.lit('unavailable'))
+          .alias('quote_source'))
+
+
+def with_decision_fallback(arrival: pl.DataFrame,
+                           prior: pl.DataFrame) -> pl.DataFrame:
+    """Use a causal decision-close quote only while still fresh at arrival.
+
+    A carried quote is a weaker fill scenario than an arrival-bucket quote.
+    It is tagged explicitly; invalid or stale quotes remain unavailable.
+    """
+    if arrival['episode_uid'].n_unique() != arrival.height:
+        raise ValueError('Duplicate arrival episode')
+    expected = {'ticker', 'entry_us', 'quote_timestamp_us', 'quote_valid',
+                'bid_int', 'ask_int', 'bid_size', 'ask_size'}
+    if not expected <= set(prior.columns) or (
+            prior.select('ticker', 'entry_us').n_unique() != prior.height):
+        raise ValueError('Invalid or duplicate causal prior quote')
+    renamed = prior.rename({'entry_us': 'time_us', **{
+        name: f'prior_{name}' for name in expected-{'ticker', 'entry_us'}}})
+    merged = arrival.join(renamed, on=['ticker', 'time_us'],
+                          how='left', validate='m:1')
+    fallback = (
+        ~pl.col('quote_available') &
+        (pl.col('prior_quote_valid') == 1) &
+        (pl.col('prior_quote_timestamp_us') > 0) &
+        (pl.col('prior_quote_timestamp_us') <= pl.col('time_us')) &
+        (pl.col('arrival_bucket_end_us')-
+         pl.col('prior_quote_timestamp_us') <= 1_000_000) &
+        (pl.col('prior_bid_int') > 0) &
+        (pl.col('prior_ask_int') >= pl.col('prior_bid_int')) &
+        (pl.col('prior_bid_size') > 0) &
+        (pl.col('prior_ask_size') > 0)).fill_null(False)
+    merged = merged.with_columns(fallback.alias('_fallback'))
+    for name in ('quote_timestamp_us', 'quote_valid', 'bid_int', 'ask_int',
+                 'bid_size', 'ask_size'):
+        merged = merged.with_columns(pl.when(pl.col('_fallback'))
+            .then(pl.col(f'prior_{name}')).otherwise(pl.col(name)).alias(name))
+    return (merged.with_columns(
+        (pl.col('quote_available') | pl.col('_fallback'))
+            .alias('quote_available'),
+        pl.when(pl.col('_fallback')).then(pl.lit('carried_decision_quote'))
+          .otherwise(pl.col('quote_source')).alias('quote_source'))
+        .drop('_fallback', *[f'prior_{name}' for name in
+                             expected-{'ticker', 'entry_us'}]))
 
 
 def arrival_quotes(reader, source: dict, ledger, day: date,

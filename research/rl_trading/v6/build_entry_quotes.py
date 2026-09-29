@@ -12,8 +12,9 @@ import polars as pl
 
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files
-from research.rl_trading.v1 import arte_source
-from research.rl_trading.v6.entry_source import arrival_quotes
+from research.rl_trading.v1 import arte_source, bracket_source
+from research.rl_trading.v6.entry_source import (arrival_quotes,
+                                                  with_decision_fallback)
 from research.rl_trading.v6.split import role
 
 
@@ -77,6 +78,16 @@ def main(argv=None) -> int:
     try:
         evidence = arrival_quotes(reader, source_build, args.ledger,
                                   args.date, proposals)
+        missing = (evidence.filter(~pl.col('quote_available'))
+                   .select('ticker', pl.col('time_us').alias('entry_us'))
+                   .unique())
+        if missing.height:
+            missing = missing.with_columns(
+                (pl.col('ticker') + ':' +
+                 pl.col('entry_us').cast(pl.String)).alias('episode_uid'))
+            prior = bracket_source.entry_quotes(
+                reader, source_build, args.ledger, args.date, missing)
+            evidence = with_decision_fallback(evidence, prior)
     finally:
         reader.close()
     if evidence.height != proposals.height or (
@@ -88,6 +99,10 @@ def main(argv=None) -> int:
     report = {'version': 'rl-trading-sparse-entry-quotes-v6',
               'day': str(args.date), 'rows': evidence.height,
               'fresh_quotes': int(evidence['quote_available'].sum()),
+              'arrival_bucket_quotes': int((evidence['quote_source'] ==
+                                            'arrival_bucket').sum()),
+              'carried_decision_quotes': int((evidence['quote_source'] ==
+                                             'carried_decision_quote').sum()),
               'missing_or_stale_quotes': int((~evidence['quote_available']).sum()),
               'source_certificate_sha256': _hash(source_cert),
               'allocation_certificate_sha256': _hash(allocation / 'complete.json'),
