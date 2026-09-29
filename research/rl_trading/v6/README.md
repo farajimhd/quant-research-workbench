@@ -85,6 +85,16 @@ bind those proposals to actual fills before training or replay.
 It verifies the source certificate and candidate hash without fetching market
 data or recomputing the candle bank.
 
+`build_entry_quotes.py` reads one pinned ARTE 100 ms broker-liquidity bucket
+after each first-qualified *long* decision and persists only the necessary
+quote fields and availability reason. It does not write a dense quote grid.
+`oms.py` uses fresh displayed bid/ask size as an optimistic fill cap and the
+existing price-based share caps, with modeled IBKR fees but no extra assumed
+half-spread. Target fills can only use certified price-level volume upper
+bounds. A same-bucket stop/target collision credits no target fill and queues
+a later stop-market attempt. The resulting account and position ledgers are
+scenario results, never evidence of broker fills.
+
 The old Phase 1/2 and Phase 3 builders remain stopped. The new bounded
 August 5 compiler benchmark certified 6,122 listings and 26.79 million actual
 candles in 1,128.46 seconds at 16 workers. It produced 40,184 qualified
