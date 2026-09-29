@@ -66,8 +66,8 @@ def test_typed_oms_actor_image_rebuilds_group_and_indexes():
     assert image.group_by_broker_id == {"broker-1": "group-1"}
     assert image.protection_versions == {}
     stored, history = _source(malformed={
-        "created_at": "2026-08-18 08:05:00.000000",
-        "updated_at": "2026-08-18 08:05:00.000000",
+        "created_at": "2026-08-18 08:05:00.000000000",
+        "updated_at": "2026-08-18 08:05:00.000000000",
         "submitted_at": "2026-08-18 08:05:00.000000"})
     recovered = reconstruct_typed_oms_actor_image(
         (stored,), history, run_id=RUN,

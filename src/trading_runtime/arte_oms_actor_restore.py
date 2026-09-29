@@ -33,7 +33,7 @@ def _time(value: Any, *, cutoff_at: datetime) -> datetime:
         # The verified ClickHouse DateTime64 wire format has no offset even
         # though the column contract is UTC. Only accept that exact format;
         # never reinterpret arbitrary naive application timestamps.
-        if re.fullmatch(r"\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d\.\d{6}", source) is None:
+        if re.fullmatch(r"\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d\.\d{6}(?:000)?", source) is None:
             raise RuntimeError("Typed OMS recovery timestamp lacks UTC authority")
         parsed = parsed.replace(tzinfo=timezone.utc)
     if parsed > cutoff_at:
