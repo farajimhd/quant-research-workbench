@@ -103,6 +103,16 @@ def test_cold_rows_require_one_root_and_exact_children(monkeypatch):
     assert len(queries) == 2
     assert all("LIMIT " in query and "FORMAT JSONEachRow" in query
                for query in queries)
+    decimal_fields = [name for name, kind in OBSERVATION.columns
+                      if "Decimal(" in kind]
+    compact = [{**row, **{name: str(float(row[name]))
+                           for name in decimal_fields}}
+               for row in rows.observations]
+    monkeypatch.setattr(arte_journal_writer, "_rows",
+                        lambda _client, sql:
+                        [rows.root] if ROOT.name in sql else compact)
+    assert load_unattested_oms_observation_snapshot(
+        object(), run_id="backtest:one", checkpoint_sequence=42) == rows
     monkeypatch.setattr(arte_journal_writer, "_rows",
                         lambda _client, sql: [] if ROOT.name in sql else list(rows.observations))
     with pytest.raises(RuntimeError, match="unique checkpoint root"):

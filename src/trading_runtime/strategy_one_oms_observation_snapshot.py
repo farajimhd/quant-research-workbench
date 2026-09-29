@@ -275,8 +275,15 @@ def load_unattested_oms_observation_snapshot(
         f"WHERE {predicate} AND snapshot_id=toUUID("
         f"{_literal(str(UUID(str(root['snapshot_id']))))}) "
         f"ORDER BY group_id,broker_order_id LIMIT {count + 1} FORMAT JSONEachRow"))
+    # ClickHouse 26.x toString(Decimal) omits trailing scale zeros. Restore
+    # the sealed Decimal(38, 18) representation before hashing readback rows.
+    decimal_fields = tuple(name for name, kind in OBSERVATION.columns
+                           if "Decimal(" in kind)
+    normalized = tuple({**row, **{
+        field: _number(Decimal(str(row[field]))) for field in decimal_fields}}
+                       for row in children)
     return verify_oms_observation_snapshot(
-        OmsObservationSnapshotRows(root, tuple(children)))
+        OmsObservationSnapshotRows(root, normalized))
 
 
 def load_attested_oms_observation_snapshot(
