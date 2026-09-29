@@ -54,11 +54,23 @@ def _read_held_extrema(reader, source: dict, day: date,
                               first, last))
     if not intervals:
         return pl.DataFrame(schema=BUCKET_SCHEMA)
+    # Many nearby episodes reuse the same three pre-entry seconds and held
+    # candles. Coalesce their source ranges before constructing SQL so each
+    # pinned candle is transferred at most once for a ticker.
+    intervals.sort()
+    merged = []
+    for ticker, attempt, first, last in intervals:
+        if (merged and merged[-1][0] == ticker and
+                merged[-1][1] == attempt and first <= merged[-1][3] + 1):
+            prior = merged[-1]
+            merged[-1] = (ticker, attempt, prior[2], max(prior[3], last))
+        else:
+            merged.append((ticker, attempt, first, last))
     parts = []
     boundary = (f'toInt64({arte_sql.bounds(day)})+'
                 f'(toInt64(bucket_index)+1)*{resolution_us}')
-    for start in range(0, len(intervals), 100):
-        scoped = intervals[start:start+100]
+    for start in range(0, len(merged), 100):
+        scoped = merged[start:start+100]
         predicate = ' OR '.join(
             f'(ticker={arte_sql.literal(ticker)} AND '
             f'attempt_id=toUUID({arte_sql.literal(attempt)}) AND '

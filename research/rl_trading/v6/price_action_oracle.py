@@ -15,35 +15,23 @@ VERSION = 'rl-trading-price-action-bracket-oracle-v6-2'
 MIN_HOLD_SECONDS = 3
 
 
-def labels(positions: pl.DataFrame, bars: pl.DataFrame,
-           tick_policy: pl.DataFrame, *, offset_ticks: int = 1
-           ) -> pl.DataFrame:
-    """Return oracle geometry from only the episode's one-second candles.
+def geometry(positions: pl.DataFrame, bars: pl.DataFrame) -> pl.DataFrame:
+    """Aggregate observed price-action extrema without execution assumptions.
 
     The hypothetical entry occurs at the completed candle close `entry_us`.
     Observed candles in the three prior clock seconds define the optional
     swing-low candidate. Active extrema run from the next observed completed
     candle through `exit_us`, inclusive. Missing trade candles are not
     forward-filled; their count remains visible for uncertainty review. The
-    caller supplies one certified tick size per listing, with no global
-    price-precision fallback.
+    This can be certified before a price-grid policy is chosen; it is not a
+    complete stop/target label or a teacher trajectory.
     """
     required_positions = {'ticker', 'episode_uid', 'entry_us', 'exit_us',
                           'entry_price'}
     required_bars = {'ticker', 'time_us', 'high', 'low', 'extremes_valid'}
     if (not required_positions <= set(positions.columns) or
-            not required_bars <= set(bars.columns) or
-            set(tick_policy.columns) != {'ticker', 'tick_size'} or
-            tick_policy['ticker'].n_unique() != tick_policy.height or
-            tick_policy['tick_size'].null_count() or
-            tick_policy.filter(~pl.col('tick_size').is_finite() |
-                               (pl.col('tick_size') <= 0)).height or
-            type(offset_ticks) is not int or offset_ticks < 1):
-        raise ValueError('Invalid price-action bracket source or tick policy')
-    if tick_policy.height != positions['ticker'].n_unique() or (
-            positions.select('ticker').unique().join(
-                tick_policy.select('ticker'), on='ticker', how='anti').height):
-        raise ValueError('Missing or extra per-listing tick authority')
+            not required_bars <= set(bars.columns)):
+        raise ValueError('Invalid price-action bracket source')
     if (positions['episode_uid'].n_unique() != positions.height or
             positions.select('ticker', 'entry_us').n_unique() != positions.height or
             bars.select('ticker', 'time_us').n_unique() != bars.height or
@@ -72,9 +60,8 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame,
         pl.col('low').min().alias('held_min_low'),
         pl.col('high').max().alias('held_max_high'),
         pl.len().alias('held_bars'))
-    result = (positions.select('ticker', 'episode_uid', 'entry_us',
-                               'exit_us', 'entry_price')
-        .join(tick_policy, on='ticker', how='left', validate='m:1')
+    return (positions.select('ticker', 'episode_uid', 'entry_us',
+                             'exit_us', 'entry_price')
         .join(swing, on='episode_uid', how='left', validate='1:1')
         .join(outcome, on='episode_uid', how='left', validate='1:1')
         .with_columns(((pl.col('exit_us')-pl.col('entry_us'))//1_000_000)
@@ -87,6 +74,25 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame,
         .with_columns((pl.col('expected_held_bars')-
                        pl.col('held_bars').fill_null(0))
                       .alias('unobserved_held_seconds')))
+
+
+def labels(positions: pl.DataFrame, bars: pl.DataFrame,
+           tick_policy: pl.DataFrame, *, offset_ticks: int = 1
+           ) -> pl.DataFrame:
+    """Return tick-rounded hypothetical brackets from one-second candles."""
+    if (set(tick_policy.columns) != {'ticker', 'tick_size'} or
+            tick_policy['ticker'].n_unique() != tick_policy.height or
+            tick_policy['tick_size'].null_count() or
+            tick_policy.filter(~pl.col('tick_size').is_finite() |
+                               (pl.col('tick_size') <= 0)).height or
+            type(offset_ticks) is not int or offset_ticks < 1):
+        raise ValueError('Invalid price-action bracket source or tick policy')
+    result = geometry(positions, bars)
+    if tick_policy.height != positions['ticker'].n_unique() or (
+            positions.select('ticker').unique().join(
+                tick_policy.select('ticker'), on='ticker', how='anti').height):
+        raise ValueError('Missing or extra per-listing tick authority')
+    result = result.join(tick_policy, on='ticker', how='left', validate='m:1')
     # Remove the tick offset in integer tick space. Subtracting two binary
     # floats before floor can spuriously move an on-grid low down two ticks.
     stop = ((pl.min_horizontal('swing_low_3s', 'held_min_low')/
