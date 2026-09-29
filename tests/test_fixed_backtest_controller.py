@@ -500,6 +500,31 @@ def test_strategy_one_saved_resume_reports_missing_normalized_recovery(
         asyncio.run(ReplayRunService(runtime_root=tmp_path).resume(RUN))
 
 
+@pytest.mark.parametrize("count,expected", [(0, None), (2, "ambiguous")])
+def test_cold_typed_definition_distinguishes_absent_from_duplicate_context(
+    monkeypatch, count, expected,
+):
+    from src.trading_runtime import arte_journal_writer
+
+    class ReadOnlyClient:
+        def execute(self, sql):
+            if sql == "SELECT getSetting('readonly')":
+                return "1"
+            assert "FROM arte.trading_run_v1" in sql
+            return str(count)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(arte_journal_writer,
+                        "backtest_v4_operator_client_from_env", ReadOnlyClient)
+    if expected is None:
+        assert ReplayRunService._load_typed_backtest_resume_definition(RUN) is None
+    else:
+        with pytest.raises(RuntimeError, match=expected):
+            ReplayRunService._load_typed_backtest_resume_definition(RUN)
+
+
 def test_future_fixed_manifest_names_typed_journal_without_legacy_identity(
     monkeypatch, tmp_path,
 ):

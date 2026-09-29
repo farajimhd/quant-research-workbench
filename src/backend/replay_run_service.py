@@ -9563,6 +9563,149 @@ class ReplayRunService:
         return reconstruct_backtest_definition_from_arte(
             saved, context, revision, preflight)
 
+    async def _prepare_typed_v4_resume(
+        self, run_id: str, definition: ReplayRunDefinition,
+    ) -> ReplayRunController:
+        """Cold-assemble a fenced Strategy 1 run without starting playback.
+
+        The public resume route remains gated until a real interrupted-run
+        equivalence test exercises this exact handoff. Any failed assembly
+        releases its writer, lease, and Keeper session before returning.
+        """
+        from src.backend.backtest_fixed_journal_bootstrap import (
+            assemble_resumed_fixed_v4_journal, prepare_fixed_v4_journal_token,
+        )
+        from src.backend.backtest_fixed_running_anchor import (
+            cold_verify_v4_resume_anchor,
+        )
+        from src.backend.backtest_fixed_v4_certification import (
+            certify_strategy_one_v4_projection,
+        )
+        from src.backend.backtest_journal_clickhouse import backtest_code_hash
+        from src.backend.backtest_v3_clients import v3_client
+        from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+        from src.backend.backtest_v4_run_context import (
+            historical_strategy_one_portfolio_profiles,
+        )
+        from src.backend.backtest_v4_running_recovery import (
+            load_v4_fixed_runtime_image, load_v4_running_recovery_evidence,
+        )
+        from src.trading_runtime.arte_journal_writer import (
+            ArteJournalWriter, backtest_v4_journal_client_from_env,
+            backtest_v4_operator_client_from_env,
+        )
+        from src.trading_runtime.keeper_session import open_workstation_keeper_session
+        from src.trading_runtime.strategy_one_broker_match_snapshot import (
+            ManagedBrokerMatchHeadReader,
+        )
+        from src.trading_runtime.strategy_one_campaign_snapshot import (
+            ManagedCampaignSnapshotHeadReader,
+        )
+        from src.trading_runtime.strategy_one_evidence_snapshot import (
+            ManagedEvidenceSnapshotHeadReader,
+        )
+        from src.trading_runtime.strategy_one_management_snapshot import (
+            ManagedManagerSnapshotHeadReader,
+        )
+
+        if (definition.mode != RunMode.BACKTEST
+                or _backtest_launch_blocker(definition)
+                or str(UUID(run_id)) != run_id):
+            raise ValueError("Typed V4 resume requires a pinned Strategy 1 Backtest")
+        controller = ReplayRunController(
+            definition, run_id=run_id, runtime_root=self.runtime_root)
+        plans = await controller._fixed_strategy_one_plans()
+        configuration = definition.configuration_revision["payload"]
+        profiles, _ = historical_strategy_one_portfolio_profiles(configuration)
+        account_ids = tuple(row.account_id for row in profiles)
+        configuration_hash = definition.configuration_revision["content_hash"]
+        code_hash = await asyncio.to_thread(
+            backtest_code_hash, Path(__file__).resolve().parents[2])
+
+        def assemble():
+            keeper = open_workstation_keeper_session()
+            lease = None
+            writer_client = None
+            assembly = None
+            try:
+                lease = BacktestV4KeeperLease.acquire(
+                    keeper, run_id=run_id, owner_id=f"backtest-resume-{uuid4()}")
+                with ExitStack() as control_clients:
+                    reader = control_clients.enter_context(closing(
+                        backtest_v4_operator_client_from_env()))
+                    terminal = control_clients.enter_context(closing(
+                        backtest_v4_operator_client_from_env()))
+                    market = control_clients.enter_context(closing(v3_client("read")))
+                    writer_client = backtest_v4_journal_client_from_env(
+                        keeper_session=keeper, lease=lease)
+                    anchor = cold_verify_v4_resume_anchor(
+                        reader, dispatch=writer_client.typed_insert_dispatch,
+                        lease=lease, run_id=run_id, plan=plans.market,
+                        configuration_hash=configuration_hash,
+                        account_ids=account_ids, code_hash=code_hash)
+                    recovery = load_v4_running_recovery_evidence(
+                        reader, run_id=run_id, account_ids=account_ids,
+                        manager_keeper=ManagedManagerSnapshotHeadReader(keeper),
+                        broker_keeper=ManagedBrokerMatchHeadReader(keeper),
+                        evidence_keeper=ManagedEvidenceSnapshotHeadReader(keeper),
+                        campaign_keeper=ManagedCampaignSnapshotHeadReader(keeper),
+                        market_client=market, market_plan=plans.market)
+                    image = load_v4_fixed_runtime_image(
+                        reader, recovery, anchor, profiles)
+                    token = prepare_fixed_v4_journal_token(
+                        reader, writer_client, terminal, run_id=run_id,
+                        account_ids=account_ids,
+                        configuration_hash=configuration_hash,
+                        market_plan_token=plans.market.token,
+                        projection_certifier=certify_strategy_one_v4_projection)
+                    assembly, journal_anchor = assemble_resumed_fixed_v4_journal(
+                        reader, writer_client, terminal, token,
+                        attempt_id=str(uuid4()), expected_config=configuration,
+                        fixed_market_parent_plan=plans.market,
+                        fixed_market_execution_plan=plans.execution_market,
+                        expected_market_start=definition.session_start,
+                        code_hash=code_hash, recovery_evidence=recovery,
+                        writer_factory=ArteJournalWriter, batch_size=4096)
+                    if journal_anchor != image.anchor:
+                        raise RuntimeError("V4 actor and writer anchors differ")
+                return image, assembly, keeper, lease
+            except BaseException:
+                try:
+                    if assembly is not None:
+                        assembly.writer.close()
+                        assembly.journal.close()
+                    elif writer_client is not None:
+                        writer_client.close()
+                finally:
+                    try:
+                        if lease is not None:
+                            lease.release()
+                    finally:
+                        keeper.close()
+                raise
+
+        image, assembly, keeper, lease = await asyncio.to_thread(assemble)
+        try:
+            resumed = ReplayRunController(
+                definition, run_id=run_id, runtime_root=self.runtime_root,
+                fixed_v4_runtime_image=image)
+            resumed._strategy_one_fixed_plans = plans
+            resumed._fixed_market_plan = controller._fixed_market_plan
+            resumed._fixed_price_plan = controller._fixed_price_plan
+            resumed._attach_resumed_fixed_v4_assembly(
+                assembly, keeper=keeper, lease=lease, anchor=image.anchor)
+            return resumed
+        except BaseException:
+            try:
+                await asyncio.to_thread(assembly.writer.close)
+                assembly.journal.close()
+            finally:
+                try:
+                    await asyncio.to_thread(lease.release)
+                finally:
+                    await asyncio.to_thread(keeper.close)
+            raise
+
     async def review_saved(self, run_id: str) -> ReplayRunController:
         normalized = str(run_id or "").strip()
         task = self._review_tasks.get(normalized)
