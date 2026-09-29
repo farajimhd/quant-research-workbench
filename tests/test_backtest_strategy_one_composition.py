@@ -13,6 +13,7 @@ from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidate
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
 from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
+from src.backend.backtest_strategy_one_management import StrategyOneManagementState
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 from src.backend.structural_v7_seed import CertifiedSeedPlan
@@ -89,8 +90,12 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
                         lambda **_kwargs: SimpleNamespace(
                             v7=SimpleNamespace(preload_seeds=preload_seeds),
                             restore_recovery_state=restore))
+    def restore_manager(state):
+        assert state.boundary_ms == 30_000
+        calls.append("manager_restored")
+
     monkeypatch.setattr(subject, "StrategyOneManagementRunner",
-                        lambda **_kwargs: SimpleNamespace())
+                        lambda **_kwargs: SimpleNamespace(restore_state=restore_manager))
 
     async def run(_scheduler, _entry, _evidence, _manager, *, static_gate,
                   **_kwargs):
@@ -115,6 +120,8 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
         start_after_boundary_ms=30_000 if resume else 0,
         resume_evidence_state=(StrategyOneEvidenceState(30_000, (), (), ())
                                if resume else None),
+        resume_manager_state=(StrategyOneManagementState(30_000, (), (), ())
+                              if resume else None),
         assignments=(StrategyAssignment(
             "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
             AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
@@ -123,7 +130,8 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
         finish_boundary=boundary))
     assert result == "complete"
     assert calls == ["scheduler_built", "seed_preloaded",
-                     *(("evidence_restored",) if resume else ()), "executed",
+                     *(("evidence_restored", "manager_restored") if resume else ()),
+                     "executed",
                      "scheduler_closed", "reader_closed"]
 
 

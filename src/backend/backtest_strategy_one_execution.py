@@ -37,7 +37,9 @@ from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.backtest_strategy_one_financial import read_strategy_one_financial_views
-from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
+from src.backend.backtest_strategy_one_management import (
+    StrategyOneManagementRunner, StrategyOneManagementState,
+)
 from src.backend.backtest_strategy_one_market import DEFAULT_SPARSE_READ_WORKERS
 from src.backend.backtest_strategy_one_scheduler import (
     StrategyOneBoundaryScheduler, StrategyOneBoundaryWork,
@@ -92,6 +94,7 @@ async def run_certified_strategy_one_session(
     interval_plan: CertifiedV7IntervalPlan | None = None,
     start_after_boundary_ms: int = 0,
     resume_evidence_state: StrategyOneEvidenceState | None = None,
+    resume_manager_state: StrategyOneManagementState | None = None,
 ) -> StrategyOneProposalCounts:
     """Compose the certified sparse route without legacy frames or events.
 
@@ -118,9 +121,13 @@ async def run_certified_strategy_one_session(
             or not 0 <= start_after_boundary_ms < through_boundary_ms
             or start_after_boundary_ms % 100
             or (start_after_boundary_ms == 0) != (resume_evidence_state is None)
+            or (start_after_boundary_ms == 0) != (resume_manager_state is None)
             or resume_evidence_state is not None and (
                 not isinstance(resume_evidence_state, StrategyOneEvidenceState)
                 or resume_evidence_state.boundary_ms != start_after_boundary_ms)
+            or resume_manager_state is not None and (
+                not isinstance(resume_manager_state, StrategyOneManagementState)
+                or resume_manager_state.boundary_ms != start_after_boundary_ms)
             or type(max_workers) is not int or not 1 <= max_workers <= 16
             or any(not callable(callback) for callback in (
                 client_factory, before_boundary, finish_boundary))
@@ -211,6 +218,8 @@ async def run_certified_strategy_one_session(
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)
+            if resume_manager_state is not None:
+                manager.restore_state(resume_manager_state)
             if manager_ready is not None:
                 manager_ready(manager)
             return await run_strategy_one_fixed_session(
