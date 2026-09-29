@@ -9595,7 +9595,7 @@ class ReplayRunService:
         )
         from src.trading_runtime.arte_journal_writer import (
             ArteJournalWriter, backtest_v4_journal_client_from_env,
-            backtest_v4_operator_client_from_env,
+            backtest_v4_operator_client_from_env, load_typed_run_context,
         )
         from src.trading_runtime.keeper_session import open_workstation_keeper_session
         from src.trading_runtime.strategy_one_broker_match_snapshot import (
