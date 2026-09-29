@@ -154,6 +154,11 @@ def test_position_slider_explicitly_focuses_its_selected_trade():
                   fiber = fiber.return;
                 }
               };
+              window.focusPricePlacement = (low, high) => {
+                const range = window.focusPriceRange();
+                return range ? {top: (range.to - high) / (range.to - range.from),
+                  bottom: (low - range.from) / (range.to - range.from)} : null;
+              };
             }""")
             slider = page.get_by_role("slider", name="Strategy position")
             slider.wait_for(timeout=10_000)
@@ -165,6 +170,9 @@ def test_position_slider_explicitly_focuses_its_selected_trade():
             page.wait_for_function("""() => window.__paintedTradeLabels?.includes('Target hit')""")
             page.wait_for_function("""() => { const range = window.focusPriceRange();
               return range && range.from < 3.6 && range.to > 5.2 && range.from > 3.3 && range.to < 5.5; }""")
+            placement = page.evaluate("focusPricePlacement(3.6, 5.2)")
+            assert 0 <= placement["top"] < 0.15
+            assert 0 <= placement["bottom"] < 0.15, placement
             assert page.evaluate("window.__paintedTradeLabels.some(t => t.startsWith('09:03:'))")
             page.evaluate("window.__paintedTradeLabels = []")
             slider.press("ArrowLeft")
