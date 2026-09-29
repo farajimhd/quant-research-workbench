@@ -415,40 +415,6 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
 async def _resume_interrupted(run_id: str) -> None:
     """Exercise the cold actor/writer handoff before opening the app route."""
     from src.backend.replay_run_service import ReplayRunService
-    from src.backend import backtest_v4_running_recovery as recovery_module
-
-    verify = recovery_module.verify_v4_recovery_at_anchor
-
-    def diagnostic_verify(recovery, anchor):
-        try:
-            return verify(recovery, anchor)
-        except RuntimeError:
-            checks = {
-                "run": recovery.prefix.run_id == anchor.run_id,
-                "sequence": recovery.prefix.last_sequence == anchor.journal_sequence,
-                "batch": recovery.prefix.last_batch_id == anchor.batch_id,
-                "cursor": recovery.prefix.source_cursor == anchor.source_cursor,
-                "status": recovery.prefix.status == "running",
-                "clock": datetime.fromisoformat(
-                    recovery.progress["controller_time"]).timestamp()
-                == anchor.completed_at.timestamp(),
-                "broker_day": recovery.broker.snapshot.get("session_date")
-                == anchor.session_date,
-                "broker_boundary": recovery.broker.snapshot.get("boundary_ms")
-                == anchor.boundary_ms,
-                "manager_boundary": recovery.manager.boundary_ms
-                == anchor.boundary_ms,
-                "evidence_boundary": recovery.evidence.boundary_ms
-                == anchor.boundary_ms,
-                "campaign_day": recovery.campaign.snapshot.get("session_date")
-                == anchor.session_date,
-                "campaign_boundary": recovery.campaign.snapshot.get("boundary_ms")
-                == anchor.boundary_ms,
-            }
-            print(f"Cold anchor checks: {checks}", flush=True)
-            raise
-
-    recovery_module.verify_v4_recovery_at_anchor = diagnostic_verify
 
     service = ReplayRunService(runtime_root=RUNTIME_ROOT)
     definition = await asyncio.to_thread(

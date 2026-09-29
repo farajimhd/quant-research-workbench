@@ -162,14 +162,21 @@ def verify_v4_recovery_at_anchor(
 ) -> None:
     """Reject a financial/causal image from any cursor other than the journal seed."""
     if (not isinstance(recovery, V4RunningRecoveryEvidence)
-            or not isinstance(anchor, FixedRunningPrefixAnchor)
-            or recovery.prefix.run_id != anchor.run_id
+            or not isinstance(anchor, FixedRunningPrefixAnchor)):
+        raise RuntimeError("V4 recovery image differs from cold journal anchor")
+    # ClickHouse DateTime64 JSON is a timezone-naive UTC string. Python's
+    # astimezone() would interpret it in the workstation's local timezone,
+    # falsely rejecting a valid durable checkpoint outside UTC hosts.
+    controller_at = datetime.fromisoformat(recovery.progress["controller_time"])
+    controller_at = (controller_at.replace(tzinfo=timezone.utc)
+                     if controller_at.tzinfo is None else
+                     controller_at.astimezone(timezone.utc))
+    if (recovery.prefix.run_id != anchor.run_id
             or recovery.prefix.last_sequence != anchor.journal_sequence
             or recovery.prefix.last_batch_id != anchor.batch_id
             or recovery.prefix.source_cursor != anchor.source_cursor
             or recovery.prefix.status != "running"
-            or datetime.fromisoformat(recovery.progress["controller_time"]).astimezone(
-                timezone.utc) != anchor.completed_at.astimezone(timezone.utc)
+            or controller_at != anchor.completed_at.astimezone(timezone.utc)
             or recovery.broker.snapshot.get("session_date") != anchor.session_date
             or recovery.broker.snapshot.get("boundary_ms") != anchor.boundary_ms
             or recovery.manager.boundary_ms != anchor.boundary_ms

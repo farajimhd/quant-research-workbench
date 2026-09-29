@@ -96,6 +96,11 @@ def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
         RUN, BATCH, 7, PREFIX.source_cursor, "2026-08-18", 100, 1,
         datetime(2026, 8, 18, tzinfo=timezone.utc), None)
     subject.verify_v4_recovery_at_anchor(recovery, anchor)
+    # ClickHouse DateTime64 JSON has no offset but is UTC, even when the
+    # workstation itself uses a non-UTC local timezone.
+    stored_utc = replace(recovery, progress={
+        **recovery.progress, "controller_time": "2026-08-18 00:00:00.000000000"})
+    subject.verify_v4_recovery_at_anchor(stored_utc, anchor)
     image = subject.reconstruct_v4_controller_image(recovery, anchor)
     assert image.source_cursor == {"session_date": "2026-08-18",
                                    "boundary_ms": 100, "sequence": 1}
