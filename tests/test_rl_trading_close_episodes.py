@@ -11,7 +11,7 @@ from research.rl_trading.v1.market_values import MarketValues
 from src.market_engine.level_book_store import write
 from research.rl_trading.v1.phase1_close_labels import targets, decision_values
 from research.rl_trading.v1.phase2_close_values import coefficients
-from research.rl_trading.v1.phase3_dynamic_teacher import Config,run,run_stream,future_first_scores
+from research.rl_trading.v1.phase3_dynamic_teacher import Config,run,run_stream,future_first_scores,session_profit_report
 
 
 DAY=date(2026,8,18)
@@ -171,3 +171,21 @@ def test_teacher_restart_reproduces_uninterrupted_result():
     resumed=run_stream(times,remaining.partition_by('time_us',maintain_order=True),
         future_first_scores(market,config),config,resume=saved[0])[2]
     assert resumed==complete
+
+
+def test_session_profit_marks_cross_boundary_hold_in_each_period():
+    left=bounds(DAY)[0]
+    offsets=[0,19_799,19_800,43_199,43_200,57_480]
+    trajectory=pl.DataFrame(dict(time_us=[left+s*1_000_000 for s in offsets],
+        equity=[100.,110.,108.,120.,115.,130.],
+        bought=[1,0,0,0,0,0],sold=[0,0,0,0,0,1]))
+    positions=pl.DataFrame(dict(entry_us=[left],exit_us=[left+57_480_000_000],
+        entry_fee=[1.],exit_fee=[1.],net_pnl=[30.]))
+    periods=session_profit_report(trajectory,positions,left,100.)
+    assert [p['period'] for p in periods]==['premarket','regular','after_hours']
+    assert [p['marked_net_profit'] for p in periods]==pytest.approx([10.,10.,10.])
+    assert sum(p['marked_net_profit'] for p in periods)==pytest.approx(30.)
+    assert [p['entry_fees'] for p in periods]==[1.,0.,0.]
+    assert [p['exit_fees'] for p in periods]==[0.,0.,1.]
+    assert [p['realized_net_pnl_on_exits'] for p in periods]==[0.,0.,30.]
+    assert periods[1]['max_drawdown']>0

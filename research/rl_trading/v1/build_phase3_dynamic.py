@@ -19,7 +19,7 @@ from research.rl_trading.v1.costs import FixedOrderCosts
 from research.rl_trading.v1.market_values import MarketValues
 from research.rl_trading.v1.phase2_close_values import VERSION as PHASE2_VERSION
 from research.rl_trading.v1.phase3_dynamic_teacher import (
-    VERSION,Config,future_first_scores,run_stream)
+    VERSION,Config,future_first_scores,run_stream,session_profit_report)
 from src.market_engine.level_book_store import read,write
 from src.runtime_paths import runtime_root
 
@@ -105,6 +105,8 @@ def main(argv=None):
                     state=state),immutable=False)
             trajectory,positions,report=run_stream(times,snapshots(),future,config,
                 resume=resume,on_checkpoint=checkpoint)
+        report['session_periods']=session_profit_report(
+            trajectory,positions,first,config.initial_cash)
         _parquet(root/'trajectory.parquet',trajectory)
         _parquet(root/'positions.parquet',positions)
         files={name:file_hash(root/name) for name in ('trajectory.parquet','positions.parquet')}

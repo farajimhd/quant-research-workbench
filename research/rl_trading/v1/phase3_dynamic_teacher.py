@@ -17,6 +17,60 @@ from research.rl_trading.v1.costs import FixedOrderCosts
 VERSION = "hindsight-phase3-dynamic-close-v4"
 
 
+def session_profit_report(trajectory: pl.DataFrame, positions: pl.DataFrame,
+                          session_start_us: int, initial_cash: float) -> list[dict]:
+    """Attribute marked-equity changes to NY premarket, regular, and after hours.
+
+    Cross-boundary holdings contribute mark-to-market changes on both sides of
+    the boundary. Realized P&L is separately assigned to the exit segment.
+    """
+    if trajectory.is_empty() or trajectory["time_us"].n_unique() != trajectory.height:
+        raise ValueError("A unique equity timeline is required")
+    second = ((pl.col("time_us") - session_start_us) // 1_000_000)
+    def period(offset):
+        return (pl.when(offset < 19_800).then(pl.lit("premarket"))
+                .when(offset < 43_200).then(pl.lit("regular"))
+                .otherwise(pl.lit("after_hours")))
+    marked = trajectory.with_columns(period(second).alias("session_period"))
+    orders = (positions.with_columns(
+                  period((pl.col("exit_us") - session_start_us) // 1_000_000)
+                      .alias("session_period"),
+                  period((pl.col("entry_us") - session_start_us) // 1_000_000)
+                      .alias("entry_period"))
+              if not positions.is_empty() else positions)
+    results = []
+    prior_equity = float(initial_cash)
+    for label, lo, hi in (("premarket", 0, 19_800),
+                          ("regular", 19_800, 43_200),
+                          ("after_hours", 43_200, 57_481)):
+        part = marked.filter(pl.col("session_period") == label)
+        if part.is_empty():
+            continue
+        exit_part = orders.filter(pl.col("session_period") == label) if not orders.is_empty() else orders
+        entry_part = orders.filter(pl.col("entry_period") == label) if not orders.is_empty() else orders
+        start_equity = prior_equity
+        end_equity = float(part["equity"][-1])
+        path = pl.concat((pl.Series([start_equity]), part["equity"])).to_numpy()
+        peak = np.maximum.accumulate(path)
+        results.append(dict(period=label, start_second=lo, end_second_exclusive=hi,
+            observed_start_us=int(part["time_us"][0]),observed_end_us=int(part["time_us"][-1]),
+            complete_period=int(part["time_us"][0]) == session_start_us+lo*1_000_000 and
+                int(part["time_us"][-1]) == session_start_us+(hi-1)*1_000_000,
+            starting_equity=start_equity, ending_equity=end_equity,
+            marked_net_profit=end_equity-start_equity,
+            marked_return=(end_equity/start_equity-1) if start_equity else None,
+            max_drawdown=float(np.max(1-path/peak)),
+            buys=int(part["bought"].sum()),sells=int(part["sold"].sum()),
+            realized_net_pnl_on_exits=float(exit_part["net_pnl"].sum()) if not exit_part.is_empty() else 0.,
+            entry_fees=float(entry_part["entry_fee"].sum()) if not entry_part.is_empty() else 0.,
+            exit_fees=float(exit_part["exit_fee"].sum()) if not exit_part.is_empty() else 0.))
+        prior_equity = end_equity
+    if abs(sum(item["marked_net_profit"] for item in results) -
+           (float(trajectory["equity"][-1])-initial_cash)) > 1e-5:
+        raise ValueError("Session P&L does not reconcile to full-session equity")
+    return results
+
+
 @dataclass(frozen=True)
 class Config:
     initial_cash: float = 10_000.

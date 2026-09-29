@@ -54,6 +54,15 @@ are vectorized. A full-day build checkpoints every 60 seconds and resumes at
 the last committed second. The full model campaign requires a separately
 certified V5/V7 dataset and diagnostic replay before training.
 
+The completion report splits marked-equity profit into America/New_York
+premarket [04:00, 09:30), regular [09:30, 16:00), and after-hours
+[16:00, 19:58]. The final interval ends at the configured 19:58 liquidation
+clock. Each period starts from the prior period's ending equity, so a holding
+that crosses a boundary contributes its change in marked value to both periods
+and the three profits sum to full-session net profit. Entry fees are assigned
+to the entry period; exit fees and realized closed-position P&L to the exit
+period. Closed-position P&L should not be summed with marked-equity profit.
+
 The completed-close price is a historical oracle reference, **not** a verified
 post-decision fill. Spread, routing, slippage, partial fills, and a live
 execution delay remain unobserved. Do not use hindsight stages or scores as
