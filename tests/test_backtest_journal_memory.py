@@ -291,6 +291,7 @@ def test_controller_checkpoint_requires_fence_and_rejects_terminal_status():
         def __init__(self, *, fail=False):
             self.fail = fail
             self.calls = []
+            self.writer = SimpleNamespace(journal_profile="backtest_v3")
 
         async def fence_checkpoint(self, **kwargs):
             assert journal.load_checkpoint(RUN_ID) is None
@@ -359,6 +360,8 @@ def test_controller_adds_boundary_after_other_pending_records():
     controller._restart_checkpoint_interval_events = lambda: 100
 
     class Publisher:
+        writer = SimpleNamespace(journal_profile="backtest_v3")
+
         async def fence_checkpoint(self, **_kwargs):
             assert [row.category for row in journal.unfenced_records()] == [
                 "warning", "checkpoint"]

@@ -10,6 +10,7 @@ import pytest
 
 from src.backend import backtest_fixed_journal_bootstrap as bootstrap
 from src.backend import backtest_journal_clickhouse, backtest_fixed_v4_certification
+from src.backend import backtest_v4_keeper_lease
 from src.backend.replay_run_service import ReplayRunController
 from src.trading_runtime import (
     arte_backtest_definition, arte_journal_writer, keeper_ownership,
@@ -103,12 +104,27 @@ def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
     session.client = object()
     monkeypatch.setattr(keeper_session, "open_workstation_keeper_session",
                         lambda: session)
+    class Lease:
+        def attest_genesis(self, **kwargs):
+            assert kwargs == {
+                "configuration_hash": "a" * 64,
+                "market_plan_token": "b" * 64,
+                "code_hash": "d" * 64,
+            }
+            calls.append("attest_genesis")
+
+        def release(self):
+            calls.append("release_run_lease")
+
+    lease = Lease()
+    monkeypatch.setattr(backtest_v4_keeper_lease.BacktestV4KeeperLease,
+                        "acquire", lambda found, **_kwargs: lease)
     monkeypatch.setattr(arte_journal_writer, "backtest_v4_context_client_from_env",
                         lambda *, keeper_session: Resource("context"))
     monkeypatch.setattr(arte_journal_writer, "backtest_v4_operator_client_from_env",
                         lambda: Resource("reader"))
     monkeypatch.setattr(arte_journal_writer, "backtest_v4_journal_client_from_env",
-                        lambda *, keeper_session: Resource("writer_client"))
+                        lambda *, keeper_session, lease: Resource("writer_client"))
     assembly = SimpleNamespace(writer=Resource("writer"), journal=Resource("journal"))
 
     def publish(context, reader, writer, terminal, **kwargs):
@@ -163,5 +179,6 @@ def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
     assert "close:context" in calls and "close:keeper" not in calls
     asyncio.run(controller._close_fixed_journal())
     assert calls[-1] == "close:keeper"
+    assert "release_run_lease" in calls
     assert controller._stage_timings["strategy_one_journal_writer_close"]["calls"] == 1
     assert controller._stage_timings["strategy_one_keeper_close"]["calls"] == 1
