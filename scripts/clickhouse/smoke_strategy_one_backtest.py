@@ -415,7 +415,27 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
 async def _resume_interrupted(run_id: str) -> None:
     """Exercise the cold actor/writer handoff before opening the app route."""
     from src.backend.replay_run_service import ReplayRunService
+    from src.backend import backtest_typed_projection
     from src.trading_runtime.runtime import TradingRuntime
+
+    project_record = backtest_typed_projection.project_journal_record
+
+    def trace_project_record(record, **kwargs):
+        try:
+            return project_record(record, **kwargs)
+        except ValueError:
+            if (record.category, record.entity_type) == ("strategy", "strategy_intent"):
+                payload = record.payload
+                expected = kwargs.get("expected_config") or {}
+                print("Cold intent projection mismatch: "
+                      f"sequence={record.sequence} action={payload.get('action')} "
+                      f"keys={sorted(payload)} "
+                      f"identity={(payload.get('strategy_id'), payload.get('strategy_revision'))} "
+                      f"expected={(expected.get('strategy_id'), expected.get('strategy_revision'))}",
+                      flush=True)
+            raise
+
+    backtest_typed_projection.project_journal_record = trace_project_record
 
     execute_intents = TradingRuntime._execute_intents
 
