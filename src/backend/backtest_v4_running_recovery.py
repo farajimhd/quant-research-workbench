@@ -64,6 +64,51 @@ class V4RunningRecoveryEvidence:
     campaign: CampaignSnapshotRows
 
 
+@dataclass(frozen=True, slots=True)
+class V4FixedControllerImage:
+    """Only the scalar controller state required to continue a fixed tape."""
+
+    current_time: datetime
+    source_cursor: dict[str, Any]
+    frame_cursor: dict[str, Any]
+    processed_events: int
+    warmup_events: int
+    processed_frames: int
+    runtime_processed_events: int
+    runtime_last_event_time: datetime | None
+
+
+def reconstruct_v4_controller_image(
+    recovery: V4RunningRecoveryEvidence,
+    anchor: FixedRunningPrefixAnchor,
+) -> V4FixedControllerImage:
+    """Rebuild the typed controller clock without a disk checkpoint."""
+    verify_v4_recovery_at_anchor(recovery, anchor)
+    progress = recovery.progress
+    last = progress["runtime_last_event_time"]
+    last_at = datetime.fromisoformat(last) if last else None
+    if last_at is not None:
+        last_at = (last_at.replace(tzinfo=timezone.utc) if last_at.tzinfo is None
+                   else last_at.astimezone(timezone.utc))
+    if last_at is not None and last_at > anchor.completed_at:
+        raise RuntimeError("V4 runtime clock exceeds its completed boundary")
+    frame = anchor.frame_cursor
+    return V4FixedControllerImage(
+        current_time=anchor.completed_at,
+        source_cursor={"session_date": anchor.session_date,
+                       "boundary_ms": anchor.boundary_ms,
+                       "sequence": anchor.market_sequence},
+        frame_cursor=({"as_of": frame[0].isoformat(), "ticker": frame[1],
+                       "timeframe": frame[2], "sequence": frame[3]}
+                      if frame is not None else {}),
+        processed_events=int(progress["controller_processed_events"]),
+        warmup_events=int(progress["controller_warmup_events"]),
+        processed_frames=int(progress["controller_processed_frames"]),
+        runtime_processed_events=int(progress["runtime_processed_events"]),
+        runtime_last_event_time=last_at,
+    )
+
+
 def verify_v4_recovery_at_anchor(
     recovery: V4RunningRecoveryEvidence,
     anchor: FixedRunningPrefixAnchor,

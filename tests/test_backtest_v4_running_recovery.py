@@ -1,4 +1,5 @@
 import pytest
+from dataclasses import replace
 from datetime import date, datetime, timezone
 
 from src.backend import backtest_v4_running_recovery as subject
@@ -30,7 +31,12 @@ def _install(monkeypatch, *, open_orders=(), oms=(), moved=False):
     monkeypatch.setattr(subject, "load_committed_backtest_progress",
                         lambda *_a, **_k: {"controller_time":
                                             "2026-08-18T00:00:00+00:00",
-                                            "controller_processed_events": 1})
+                                            "controller_processed_events": 1,
+                                            "controller_warmup_events": 0,
+                                            "controller_processed_frames": 3,
+                                            "runtime_processed_events": 2,
+                                            "runtime_last_event_time":
+                                            "2026-08-18T00:00:00+00:00"})
     monkeypatch.setattr(subject, "load_attested_manager_snapshot",
                         lambda *_a, **_k: StrategyOneManagementState(100, (), (), ()))
     monkeypatch.setattr(subject, "load_attested_evidence_snapshot",
@@ -88,7 +94,15 @@ def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
         RUN, BATCH, 7, PREFIX.source_cursor, "2026-08-18", 100, 1,
         datetime(2026, 8, 18, tzinfo=timezone.utc), None)
     subject.verify_v4_recovery_at_anchor(recovery, anchor)
-    from dataclasses import replace
+    image = subject.reconstruct_v4_controller_image(recovery, anchor)
+    assert image.source_cursor == {"session_date": "2026-08-18",
+                                   "boundary_ms": 100, "sequence": 1}
+    assert image.processed_frames == 3
+    with pytest.raises(RuntimeError, match="runtime clock exceeds"):
+        subject.reconstruct_v4_controller_image(
+            replace(recovery, progress={**recovery.progress,
+                                        "runtime_last_event_time":
+                                        "2026-08-18T00:00:01+00:00"}), anchor)
     with pytest.raises(RuntimeError, match="differs from cold journal anchor"):
         subject.verify_v4_recovery_at_anchor(
             recovery, replace(anchor, boundary_ms=200))
