@@ -35,6 +35,25 @@ all six pinned quotes at running checkpoint sequence 1,046 (four broker orders
 open) and all ten at sequence 2,214. This proves the quote source readback;
 it does not restore simulator actors or authorize interrupted-run resume.
 
+Subsequent cold restoration exposed a causal-clock defect in older V4 runs:
+three OMS submission paths stamped `submitted_at` with workstation wall time
+even in Backtest. The original `ae258af3-b339-49bb-bb3e-709269cd312c`
+run remains immutable and is not eligible for OMS actor recovery. Commit
+`1388716c7` uses the completed market clock in historical modes and preserves
+wall time in live mode. On that code, a new all-ticker 2026-08-18 04:00–09:30
+ET run `ff2acf5c-52c1-4c81-8b81-83b1921a9261` completed in 54.989s
+with cProfile enabled after a separate 27.597s preflight. A read-only cold
+audit restored normalized OMS group state and the complete broker image at
+running checkpoint 1,046 (39 fills, four open orders) and checkpoint 2,214
+(86 fills, zero open orders). An unprofiled repeat
+`eb9c0db5-b038-45ec-b551-abdeb1d6447e` completed in 33.790s after a
+separate 28.705s preflight, processing 7,381 persisted-market rows and
+committing 2,216 normalized events with zero failed writer units. These are
+two observations under different instrumentation, not a controlled speedup.
+The OMS image is still a diagnostic reconstruction, not an installed actor;
+interrupted-run resume remains disabled pending complete cross-domain
+restoration and continuation equivalence.
+
 The laptop-managed app is running the current backend and frontend. A direct
 HTTP preflight for the entire 2026-08-18 04:00–09:30 ET session returned
 `strategy_run_ready=true`, `execution_interval=100ms`, and 18 ready required
