@@ -99,7 +99,9 @@ def empty_stop_seconds(seconds: np.ndarray, trajectory: pl.DataFrame,
                 int(teacher['sold']) or len(held) != int(teacher['open_lots'])):
             raise ValueError('STOP second contains a trade or wrong holdings')
         features = feature_bank[:, second, :]
-        episodes = sorted(held)
+        # Replay holdings have listing identities, not hindsight episode IDs.
+        # Use the same ticker-ordered SELL axis in training and inference.
+        episodes = sorted(held, key=lambda uid: (held[uid]['ticker'], uid))
         slots = np.asarray([ticker_index[held[uid]['ticker']] for uid in episodes],
                            dtype=np.int64)
         marks = np.asarray([_marked_price(features, slot) for slot in slots])
@@ -207,7 +209,7 @@ def order_seconds(orders: pl.DataFrame, trajectory: pl.DataFrame,
         sizes = []
 
         def snapshot() -> tuple[np.ndarray, list[str], np.ndarray, np.ndarray]:
-            episodes = sorted(held)
+            episodes = sorted(held, key=lambda uid: (held[uid]['ticker'], uid))
             slots = np.asarray([index[held[uid]['ticker']] for uid in episodes],
                                dtype=np.int64)
             marks = np.asarray([_marked_price(features, slot) for slot in slots],

@@ -174,7 +174,9 @@ def test_v5_order_adapter_reconstructs_sells_sweep_buys_and_stop():
     positions = pl.DataFrame(dict(
         entry_us=[0, 1_000_000, 1_000_000],
         exit_us=[1_000_000, 2_000_000, 2_000_000],
-        ticker=['A', 'B', 'C'], episode_uid=['A:1', 'B:1', 'C:1'],
+        # Episode IDs deliberately sort opposite B/C ticker order. The SELL
+        # slot axis must match ticker-ordered live replay holdings.
+        ticker=['A', 'B', 'C'], episode_uid=['A:1', 'Z:2', 'A:2'],
         quantity=[5., 3., 2.], entry_price=[10., 10., 10.],
         exit_price=[12., 12., 11.], entry_fee=[0., 0., 0.],
         exit_fee=[0., 0., 0.], net_pnl=[10., 6., 2.],
