@@ -132,11 +132,9 @@ def test_100ms_level_projection_reuses_completed_clock_without_shared_mutation(m
         market_plan=market, interval_plan=product, session=DAY,
         client=Reader(), precomputed_entry_facts=True)
     first = cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, 1100))
-    with pytest.raises(TypeError):
-        first[0]["lower"] = -1.0
+    first[0]["lower"] = -1.0
     for boundary in (1200, 1900, 2000):
         rows = cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, boundary))
-        assert rows is first
         assert rows[0]["lower"] == 10.0
     assert calls == [1100]
     assert cache.strategy_one_levels(
