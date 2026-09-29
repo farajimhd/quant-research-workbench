@@ -6,7 +6,7 @@ commits their states without retaining the graph across the full session.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -21,8 +21,6 @@ from research.rl_trading.v6.model import ActualCandleEncoder
 class SparseCandleState:
     history: torch.Tensor  # [N,120,D], detached at chunk boundaries.
     encoded: torch.Tensor  # [N,D], most recent completed actual candle.
-    changed_history: dict[int, torch.Tensor] = field(default_factory=dict)
-    changed_encoded: dict[int, torch.Tensor] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, encoder: ActualCandleEncoder, listings: int, *,
@@ -39,9 +37,9 @@ class SparseCandleState:
                 levels: torch.Tensor) -> None:
         """Apply one close-clock event with K distinct observed listings.
 
-        This uses O(K*120*D) temporary history rather than copying the
-        O(N*120*D) market state at every second. The pending dictionaries
-        are bounded by the number of listings changed in one BPTT chunk.
+        A single indexed tensor update retains the bounded chunk's graph.
+        This avoids one Python operation and autograd node per changed
+        listing. The full state is detached at the chunk boundary.
         """
         if (listing_index.ndim != 1 or listing_index.dtype != torch.long or
                 listing_index.numel() != scalar.shape[0] or
@@ -52,43 +50,22 @@ class SparseCandleState:
             raise ValueError('Invalid sparse close event listing axis')
         if not listing_index.numel():
             return
-        ids = listing_index.tolist()
-        previous = torch.stack([self.changed_history.get(index,
-                                 self.history[index]) for index in ids])
+        previous = self.history.index_select(0, listing_index)
         projected = encoder.project(encoder._input(scalar, levels))
         updated = torch.cat((previous[:, 1:], projected[:, None]), dim=1)
         weighted = (updated * encoder.lag[:, 0, :].T[None]).sum(dim=1)
         encoded = encoder.norm(F.gelu(weighted))
-        for offset, index in enumerate(ids):
-            self.changed_history[index] = updated[offset]
-            self.changed_encoded[index] = encoded[offset]
+        self.history = self.history.index_copy(0, listing_index, updated)
+        self.encoded = self.encoded.index_copy(0, listing_index, encoded)
 
     def embeddings(self) -> torch.Tensor:
         """Return [N,D] newest causal embeddings at the current close."""
-        if not self.changed_encoded:
-            return self.encoded
-        ids = list(self.changed_encoded)
-        indexes = torch.tensor(ids, dtype=torch.long,
-                               device=self.encoded.device)
-        return self.encoded.index_copy(0, indexes,
-            torch.stack([self.changed_encoded[index] for index in ids]))
+        return self.encoded
 
     def detach(self) -> None:
         """Commit changed listings and sever all prior-chunk gradients."""
-        if not self.changed_history:
-            return
-        ids = list(self.changed_history)
-        indexes = torch.tensor(ids, dtype=torch.long,
-                               device=self.encoded.device)
-        with torch.no_grad():
-            self.history.index_copy_(0, indexes,
-                torch.stack([self.changed_history[index] for index in ids])
-                    .detach())
-            self.encoded.index_copy_(0, indexes,
-                torch.stack([self.changed_encoded[index] for index in ids])
-                    .detach())
-        self.changed_history.clear()
-        self.changed_encoded.clear()
+        self.history = self.history.detach()
+        self.encoded = self.encoded.detach()
 
 
 @torch.no_grad()
@@ -104,7 +81,8 @@ def seed_previous_session(state: SparseCandleState,
     bars. This function only initializes history; it never supplies labels.
     """
     if (len(listings) != state.history.shape[0] or batch_size < 1 or
-            state.changed_history or state.changed_encoded):
+            state.history.grad_fn is not None or
+            state.encoded.grad_fn is not None):
         raise ValueError('Invalid previous-session warm-up state')
     if previous is None:
         return

@@ -24,5 +24,21 @@ def test_sparse_training_state_matches_actual_candle_encoder_and_detaches():
     state.embeddings()[0].sum().backward()
     assert encoder.project.weight.grad is not None
     state.detach()
-    assert not state.changed_history and not state.changed_encoded
     assert not state.embeddings().requires_grad
+
+
+def test_batched_sparse_updates_preserve_independent_listing_histories():
+    torch.manual_seed(29)
+    encoder = ActualCandleEncoder(width=8)
+    state = SparseCandleState.empty(encoder, 3, device=torch.device('cpu'),
+                                   dtype=torch.float32)
+    scalar = torch.randn(5, 37)
+    levels = torch.randn(5, 2, 5, 11)
+    state.advance(encoder, torch.tensor([0, 2]), scalar[:2], levels[:2])
+    state.advance(encoder, torch.tensor([1, 2]), scalar[2:4], levels[2:4])
+    state.advance(encoder, torch.tensor([0]), scalar[4:], levels[4:])
+    for listing, rows in ((0, [0, 4]), (1, [2]), (2, [1, 3])):
+        expected = encoder.encode_listing(scalar[rows], levels[rows])[-1]
+        assert torch.allclose(state.embeddings()[listing], expected, atol=1e-5)
+    state.embeddings().sum().backward()
+    assert encoder.lag.grad is not None
