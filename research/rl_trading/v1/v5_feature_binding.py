@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import torch
 
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v1.dynamic_supervision import VERSION as SUPERVISION_VERSION
@@ -28,6 +29,32 @@ class FeatureBinding:
     orders: Path
     orders_hash: str
     supervision_plan_hash: str
+
+
+def feature_chunks(binding: FeatureBinding, *, seconds_per_chunk: int,
+                   device: torch.device):
+    """Yield (start_second, [1,T,N,F]) without overlapping history windows.
+
+    The memmap is read one chronological block at a time. V5 keeps its own
+    120-second state across these blocks, so no session-wide GPU residency or
+    repeatedly materialized [T,120,N,F] tensor is needed.
+    """
+    if seconds_per_chunk < 1:
+        raise ValueError('seconds_per_chunk must be positive')
+    bank = np.load(binding.features, mmap_mode='r', allow_pickle=False)
+    if bank.shape != (len(binding.tickers), SECONDS, len(FEATURE_NAMES)):
+        raise ValueError('Certified feature bank shape changed')
+    try:
+        for start in range(0, SECONDS, seconds_per_chunk):
+            stop = min(SECONDS, start + seconds_per_chunk)
+            contiguous = np.array(bank[:, start:stop, :].transpose(1, 0, 2),
+                                  copy=True, order='C')
+            # Copies away the read-only memmap before asynchronous GPU use.
+            chunk = torch.from_numpy(contiguous).unsqueeze(0).to(
+                device, non_blocking=True)
+            yield start, chunk
+    finally:
+        del bank
 
 
 def _certified(root: Path) -> tuple[dict, dict]:

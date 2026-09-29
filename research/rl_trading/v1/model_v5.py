@@ -51,7 +51,7 @@ class DynamicMarketPolicy(nn.Module):
         self.market_gate = nn.Linear(width, 1)
         self.market_mix = nn.Sequential(nn.Linear(2 * width, width), nn.GELU(),
                                         nn.Linear(width, width), nn.LayerNorm(width))
-        self.account = nn.Linear(4, width)
+        self.account = nn.Linear(5, width)
         self.holding = nn.Linear(4, width)
         self.order_state = nn.GRUCell(width, width)
         self.action_size = nn.Linear(1, width)
@@ -81,6 +81,27 @@ class DynamicMarketPolicy(nn.Module):
                            self.lag, groups=self.width)
         encoded = encoded.reshape(batch, listings, self.width, steps)
         return self.temporal_norm(F.gelu(encoded.permute(0, 3, 1, 2)))
+
+    def encode_chunk(self, seconds: torch.Tensor,
+                     state: PolicyState) -> tuple[torch.Tensor, PolicyState]:
+        """Encode [B,T,N,F] once and retain an exact 120-second stream cache.
+
+        Returns [B,T,N,D] and the state after the chunk. Chronological chunks
+        must keep a stable identity-ordered listing axis. The trainer detaches
+        the returned state at bounded optimization boundaries.
+        """
+        if (seconds.ndim != 4 or seconds.shape[0] != state.temporal.shape[0] or
+                seconds.shape[2] != state.temporal.shape[1]):
+            raise ValueError('Chunk listing axis differs from streaming state')
+        batch, steps, listings, _ = seconds.shape
+        projected = self.feature(seconds).permute(0, 2, 1, 3)
+        combined = torch.cat((state.temporal, projected), dim=2)
+        convolution = F.conv1d(
+            combined.permute(0, 1, 3, 2).reshape(batch * listings, self.width, -1),
+            self.lag, groups=self.width)[:, :, 1:]
+        encoded = convolution.reshape(batch, listings, self.width, steps)
+        encoded = self.temporal_norm(F.gelu(encoded.permute(0, 3, 1, 2)))
+        return encoded, PolicyState(combined[:, :, -self.history_seconds:], state.actions)
 
     def advance(self, second: torch.Tensor, state: PolicyState) -> tuple[torch.Tensor, PolicyState]:
         """Append [B,N,F] and return current [B,N,D] without a window copy."""
@@ -112,7 +133,8 @@ class DynamicMarketPolicy(nn.Module):
             summary.unsqueeze(1).expand_as(tokens)), dim=-1))
         listings = listings.masked_fill(~valid.unsqueeze(-1), 0)
         context = listings.sum(1) / valid.sum(1, keepdim=True).clamp_min(1)
-        # Account fields are cash, marked equity, realized P&L, and exposure.
+        # Account fields are cash, marked equity, realized P&L, exposure,
+        # and seconds since the last executed action.
         context = context + self.account(self._scaled_account(account))
         index = held_index.clamp(0, encoded.shape[1] - 1)
         held = torch.gather(listings, 1, index.unsqueeze(-1).expand(-1, -1, self.width))
@@ -123,7 +145,8 @@ class DynamicMarketPolicy(nn.Module):
     @staticmethod
     def _scaled_account(account: torch.Tensor) -> torch.Tensor:
         return torch.cat((torch.sign(account[:, :3]) * torch.log1p(account[:, :3].abs()),
-                          account[:, 3:4]), dim=1)
+                          account[:, 3:4],
+                          torch.log1p(account[:, 4:5].clamp_min(0)) / 10), dim=1)
 
     def order_outputs(self, listings: torch.Tensor, context: torch.Tensor,
                       held: torch.Tensor, history: torch.Tensor,
@@ -156,7 +179,10 @@ class DynamicMarketPolicy(nn.Module):
         sell_value = torch.gather(held, 1, sell_index[:, None, None].expand(-1, 1, width)).squeeze(1)
         selected = torch.where(buy[:, None], buy_value + self.action_size(size[:, None]),
                                torch.where(sell[:, None], sell_value, torch.zeros_like(buy_value)))
-        return self.order_state(selected, history)
+        updated = self.order_state(selected, history)
+        # STOP is a decision target, not a trade. Keeping state unchanged lets
+        # training skip empty seconds while preserving true action history.
+        return torch.where((token != 0)[:, None], updated, history)
 
     def teacher_forced_second(self, second: torch.Tensor, state: PolicyState, *,
                               ticker_id: torch.Tensor, valid: torch.Tensor,
@@ -170,7 +196,7 @@ class DynamicMarketPolicy(nn.Module):
                               ) -> tuple[torch.Tensor, torch.Tensor, PolicyState]:
         """Train one second using causal account snapshots and teacher orders.
 
-        Inputs are [B,N,F] second, [B,O,4] account, [B,O,1+N+H]
+        Inputs are [B,N,F] second, [B,O,5] account, [B,O,1+N+H]
         action mask, and [B,O] tokens/sizes/validity. STOP appears once;
         padding after STOP must have ``order_valid=False``. Returns action
         logits [B,O,1+N+H], BUY fraction logits [B,O,N], and next state.
@@ -183,7 +209,7 @@ class DynamicMarketPolicy(nn.Module):
         """
         encoded, advanced = self.advance(second, state)
         batch, orders = teacher_tokens.shape
-        if (account_by_order.shape != (batch, orders, 4) or
+        if (account_by_order.shape != (batch, orders, 5) or
                 teacher_sizes.shape != (batch, orders) or
                 order_valid.shape != (batch, orders) or
                 action_mask.shape[:2] != (batch, orders)):

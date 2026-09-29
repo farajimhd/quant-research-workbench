@@ -6,15 +6,17 @@ Phase 3 position ledger exported by `dynamic_supervision.py` V2.
 
 At each completed second the causal feature bank contributes one feature vector
 per stable listing identity. The temporal encoder projects that second once and
-retains the last 120 projected seconds. Chronological training chunks pass the
-cache and action state forward, detaching at bounded chunk boundaries; serving
-uses the same `advance` path. A chunk or service restart must restore the
+retains the last 120 projected seconds. `encode_chunk` processes chronological
+training blocks without rebuilding overlapping windows; serving uses the
+equivalent one-second `advance` path. Training passes the cache and action
+state forward, detaching at bounded chunk boundaries. A service restart must restore the
 identity-keyed temporal state, or warm it with the prior 120 certified causal
 seconds. Reset both temporal and action state at the session boundary. Neither
 Phase 2 scores nor episode IDs enter observations.
 
 The order decoder receives the current market summary, causally updated
-account state, padded active holdings, and action memory. It emits STOP, BUY of
+account state (including time since the last executed order), padded active
+holdings, and action memory. It emits STOP, BUY of
 one candidate listing, or SELL of one active holding. BUY also emits a fraction
 of *remaining* available cash. Teacher sales come before purchases within a
 second. `allocation_weight` in the ledger is for pre-buy cash auditing;
@@ -23,6 +25,8 @@ account snapshots must be updated after each order. The sparse order sequence
 contains one STOP and padding is masked. No four-lot portfolio cap is embedded
 in the network; the padded holding axis and action-step count are batch shapes,
 with observed maxima certified from the selected training split.
+STOP does not mutate action memory; empty seconds can be encoded in a block
+without invoking the order decoder for every second.
 
 `v5_feature_binding.py` verifies that a feature bank from a prior certified
 shard can be reused only when its

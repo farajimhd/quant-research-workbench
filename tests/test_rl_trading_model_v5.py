@@ -20,6 +20,12 @@ def test_streaming_120_second_context_matches_full_causal_sequence():
             streamed.append(encoded)
         streamed = torch.stack(streamed, 1)
         assert torch.allclose(full, streamed, atol=2e-6)
+        chunk_state = model.initial_state(1, 2, device=seconds.device, dtype=seconds.dtype)
+        chunks = []
+        for start, end in ((0, 17), (17, 120), (120, 125)):
+            part, chunk_state = model.encode_chunk(seconds[:, start:end], chunk_state)
+            chunks.append(part)
+        assert torch.allclose(full, torch.cat(chunks, 1), atol=2e-6)
         altered = seconds.clone()
         altered[:, 124] += 100
         assert torch.allclose(full[:, :124], model.encode_sequence(altered)[:, :124])
@@ -36,7 +42,7 @@ def test_teacher_order_and_size_are_remembered_across_seconds():
     common = dict(ticker_id=torch.tensor([[1, 2]]), valid=torch.tensor([[True, True]]),
                   held_index=torch.tensor([[0]]), held_valid=torch.tensor([[True]]),
                   held_features=torch.zeros(1, 1, 4),
-                  account_by_order=torch.ones(1, 2, 4),
+                  account_by_order=torch.ones(1, 2, 5),
                   action_mask=torch.ones(1, 2, 4, dtype=torch.bool),
                   teacher_tokens=torch.tensor([[1, 0]]),
                   order_valid=torch.tensor([[True, True]]))
@@ -53,6 +59,11 @@ def test_teacher_order_and_size_are_remembered_across_seconds():
         other_logits, _, _ = model.teacher_forced_second(
             torch.ones(1, 2, 2), other, teacher_sizes=torch.tensor([[.2, 0.]]), **common)
         assert not torch.allclose(next_logits, other_logits)
+        listings = torch.ones(1, 2, 16)
+        held = torch.ones(1, 1, 16)
+        unchanged = model.remember_action(state.actions, listings, held,
+                                          torch.tensor([0]), torch.tensor([0.]))
+        assert torch.equal(unchanged, state.actions)
 
 
 def test_dynamic_supervision_orders_sells_first_and_sizes_remaining_cash():
