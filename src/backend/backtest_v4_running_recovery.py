@@ -1,8 +1,8 @@
 """Read-only V4 checkpoint evidence across independent normalized families.
 
 This attests a common cursor; it does not install mutable actors or enable
-resume. The fixed-bar broker must still reconstruct quote and order state from
-certified liquidity plus OMS before continuation can be admitted.
+resume. A pure helper can reconstruct the fixed-bar broker image from pinned
+liquidity and OMS; execution history and admission remain separate gates.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from src.backend.backtest_market_data import CertifiedMarketDayPlan
 from src.backend.backtest_v4_broker_quote_restore import (
     CompletedBrokerQuote, load_completed_broker_quotes,
 )
+from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
 from src.backend.backtest_v4_running_portfolio import (
     load_v4_running_portfolio_images,
 )
@@ -38,6 +39,36 @@ class V4RunningRecoveryEvidence:
     broker: BrokerMatchSnapshotRows
     oms: tuple[RecoveredStrategyOneOmsLineage, ...]
     quotes: dict[str, CompletedBrokerQuote]
+
+
+def reconstruct_v4_broker_state(evidence: V4RunningRecoveryEvidence) -> dict:
+    """Build the exact open-order simulator image from joined cold evidence.
+
+    This is an offline integrity step, not authorization to resume execution.
+    Completed fills and execution history remain journal-owned.
+    """
+    if not isinstance(evidence, V4RunningRecoveryEvidence):
+        raise TypeError("V4 broker restoration requires joined recovery evidence")
+    requests = {}
+    for lineage in evidence.oms:
+        for binding in lineage.state.broker_bindings:
+            index = binding["request_index"]
+            if index is None or binding["terminal"]:
+                continue
+            if type(index) is not int or not 0 <= index < len(lineage.orders):
+                raise RuntimeError("V4 broker restoration has invalid OMS binding")
+            broker_id = binding["broker_order_id"]
+            if broker_id in requests:
+                raise RuntimeError("V4 broker restoration repeats OMS binding")
+            requests[broker_id] = lineage.orders[index]
+    open_ids = {row["broker_order_id"] for row in evidence.broker.open_orders}
+    if not open_ids.issubset(requests):
+        raise RuntimeError("V4 broker restoration lacks open OMS request")
+    return reconstruct_broker_match_state(
+        evidence.broker,
+        requests_by_broker_id={key: requests[key] for key in open_ids},
+        quotes=evidence.quotes,
+    )
 
 
 def load_v4_running_recovery_evidence(

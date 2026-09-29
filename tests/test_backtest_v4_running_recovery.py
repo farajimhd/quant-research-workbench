@@ -101,3 +101,39 @@ def test_v4_running_recovery_rejects_moved_prefix(monkeypatch):
             object(), run_id=RUN, account_ids=("DU1",),
             manager_keeper=object(), broker_keeper=object(),
             market_client=object(), market_plan=object())
+
+
+def test_v4_broker_state_uses_exact_open_oms_request(monkeypatch):
+    lineage = _open_order_lineage()
+    _install(monkeypatch, open_orders=({"broker_order_id": "broker-1",
+                                        "client_order_id": "co-1",
+                                        "account_id": "DU1", "conid": 123,
+                                        "ticker": "WFF"},),
+             oms=(lineage,))
+    evidence = subject.load_v4_running_recovery_evidence(
+        object(), run_id=RUN, account_ids=("DU1",),
+        manager_keeper=object(), broker_keeper=object(),
+        market_client=object(), market_plan=object())
+    expected = {"schema_version": 4}
+    def project(broker, *, requests_by_broker_id, quotes):
+        assert broker is evidence.broker
+        assert requests_by_broker_id == {"broker-1": lineage.orders[0]}
+        assert quotes == evidence.quotes
+        return expected
+    monkeypatch.setattr(subject, "reconstruct_broker_match_state", project)
+    assert subject.reconstruct_v4_broker_state(evidence) is expected
+
+
+def test_v4_broker_state_rejects_missing_open_oms_request(monkeypatch):
+    _install(monkeypatch)
+    evidence = subject.load_v4_running_recovery_evidence(
+        object(), run_id=RUN, account_ids=("DU1",),
+        manager_keeper=object(), broker_keeper=object(),
+        market_client=object(), market_plan=object())
+    orphan = subject.V4RunningRecoveryEvidence(
+        evidence.prefix, evidence.portfolio_images, evidence.manager,
+        BrokerMatchSnapshotRows(evidence.broker.snapshot, evidence.broker.accounts,
+                                (), ({"broker_order_id": "orphan"},), (), ()),
+        (), evidence.quotes)
+    with pytest.raises(RuntimeError, match="lacks open OMS request"):
+        subject.reconstruct_v4_broker_state(orphan)
