@@ -68,3 +68,27 @@ def test_held_extrema_read_only_exact_post_fill_buckets(monkeypatch):
     assert len(statements) == 1
     assert 'bucket_index BETWEEN 144011 AND 144012' in statements[0]
     assert 'resolution_ms=100' in statements[0]
+
+
+def test_oracle_extrema_scope_is_three_second_prefill_and_held_path(monkeypatch):
+    day = date(2026, 8, 3)
+    origin = bounds(day)[0]
+    source = {'build_id': 'build', 'units': {str(day): {'TEST': {
+        'bars': {'attempt_id': '11111111-1111-1111-1111-111111111111'}}}}}
+    positions = pl.DataFrame({'ticker': ['TEST'],
+        'entry_us': [origin + 4_100_000],
+        'exit_us': [origin + 8_100_000]})
+    statements = []
+
+    def fake_frame(reader, statement, schema):
+        arte_sql._approved(statement)
+        statements.append(statement)
+        return pl.DataFrame(schema=bracket_evidence.BUCKET_SCHEMA)
+
+    monkeypatch.setattr(bracket_evidence, 'frame', fake_frame)
+    result = bracket_evidence.read_oracle_one_second_extrema(
+        object(), source, day, positions)
+    assert result.is_empty()
+    assert len(statements) == 1
+    assert 'resolution_ms=1000' in statements[0]
+    assert 'bucket_index BETWEEN 14401 AND 14407' in statements[0]

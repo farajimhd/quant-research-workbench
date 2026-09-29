@@ -20,9 +20,10 @@ BUCKET_SCHEMA = {'ticker': pl.String, 'boundary_us': pl.Int64,
 NY = ZoneInfo('America/New_York')
 
 
-def read_held_bucket_extrema(reader, source: dict, day: date,
-                             positions: pl.DataFrame) -> pl.DataFrame:
-    """Project only 100 ms extrema within confirmed held intervals.
+def _read_held_extrema(reader, source: dict, day: date,
+                       positions: pl.DataFrame, *, resolution_us: int,
+                       lookback_us: int = 0) -> pl.DataFrame:
+    """Project pinned bars only inside requested held or pre-entry intervals.
 
     Future buckets may be fetched for historical simulation, but are never
     supplied to the policy before their completed boundary. The caller must
@@ -45,15 +46,17 @@ def read_held_bucket_extrema(reader, source: dict, day: date,
         if (ticker not in units or entry_us < midnight+14_400_000_000 or
                 exit_us > midnight+72_000_000_000):
             raise ValueError('Held interval is outside the certified day')
-        first = (int(entry_us)-midnight)//100_000
-        last = (int(exit_us)-midnight)//100_000-1
+        first = max(14_400_000_000//resolution_us,
+                    (int(entry_us)-lookback_us-midnight)//resolution_us)
+        last = (int(exit_us)-midnight)//resolution_us-1
         if first <= last:
             intervals.append((ticker, units[ticker]['bars']['attempt_id'],
                               first, last))
     if not intervals:
         return pl.DataFrame(schema=BUCKET_SCHEMA)
     parts = []
-    boundary = f'toInt64({arte_sql.bounds(day)})+(toInt64(bucket_index)+1)*100000'
+    boundary = (f'toInt64({arte_sql.bounds(day)})+'
+                f'(toInt64(bucket_index)+1)*{resolution_us}')
     for start in range(0, len(intervals), 100):
         scoped = intervals[start:start+100]
         predicate = ' OR '.join(
@@ -66,7 +69,7 @@ def read_held_bucket_extrema(reader, source: dict, day: date,
             'low_int/10000. AS low,extremes_valid FROM arte.bars_v1 '
             f'WHERE build_id={arte_sql.literal(source["build_id"])} AND '
             f'session_date=toDate({arte_sql.literal(day)}) AND '
-            f'resolution_ms=100 AND ({predicate}) '
+            f'resolution_ms={resolution_us//1000} AND ({predicate}) '
             'ORDER BY ticker,bucket_index')
         part = frame(reader, statement, BUCKET_SCHEMA)
         if part.height:
@@ -81,15 +84,30 @@ def read_held_bucket_extrema(reader, source: dict, day: date,
                 (pl.col('high_values') != 1) |
                 (pl.col('low_values') != 1) |
                 (pl.col('valid_values') != 1)).height:
-            raise ValueError('Pinned 100 ms bucket has conflicting values')
+            raise ValueError('Pinned extrema bucket has conflicting values')
         # Overlapping held intervals can request the same certified row twice.
         rows = rows.unique(['ticker', 'boundary_us']).sort(
             'ticker', 'boundary_us')
     if (rows.select('ticker', 'boundary_us').n_unique() != rows.height or
-            rows.filter((pl.col('boundary_us') % 100_000 != 0) |
+            rows.filter((pl.col('boundary_us') % resolution_us != 0) |
                 (pl.col('low') < 0) | (pl.col('high') < pl.col('low'))).height):
-        raise ValueError('Pinned held 100 ms extrema are malformed')
+        raise ValueError('Pinned held extrema are malformed')
     return rows
+
+
+def read_held_bucket_extrema(reader, source: dict, day: date,
+                             positions: pl.DataFrame) -> pl.DataFrame:
+    """Read only persisted post-fill 100 ms bars for bracket triggers."""
+    return _read_held_extrema(reader, source, day, positions,
+                              resolution_us=100_000)
+
+
+def read_oracle_one_second_extrema(reader, source: dict, day: date,
+                                   positions: pl.DataFrame) -> pl.DataFrame:
+    """Read 3 s pre-fill lows and held one-second highs/lows, label-side only."""
+    return _read_held_extrema(reader, source, day, positions,
+                              resolution_us=1_000_000,
+                              lookback_us=3_000_000)
 
 
 def read_touched_price_levels(reader, source: dict, ledger: str,
