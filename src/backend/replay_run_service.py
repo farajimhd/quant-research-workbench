@@ -12081,12 +12081,32 @@ def backtest_preflight(
             from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
             from src.backend.backtest_strategy_one_identity import certify_identity_plan
             from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
-            with closing(readonly_clickhouse_client(
-                    market_stream=True, v3_read_principal=True)) as reader:
-                identity_plan = certify_identity_plan(certified, client=reader)
-                precertified_candidate_plan = certify_candidate_plan(
-                    certified, candidate_rule_digest=RULE_DIGEST,
-                    through_boundary_ms=57_600_000, client=reader)
+            def certify_identity_independently():
+                started = time.perf_counter()
+                with closing(readonly_clickhouse_client(
+                        market_stream=True, v3_read_principal=True)) as reader:
+                    plan = certify_identity_plan(certified, client=reader)
+                return plan, time.perf_counter() - started
+
+            # Identity and the vectorized candidate product both depend on
+            # the pinned market plan, never on each other's rows. Separate
+            # read-only clients allow overlap without a shared connection.
+            with ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="strategy-one-identity-preflight") as identity_pool:
+                identity_future = identity_pool.submit(
+                    certify_identity_independently)
+                candidate_query_started = time.perf_counter()
+                with closing(readonly_clickhouse_client(
+                        market_stream=True, v3_read_principal=True)) as reader:
+                    precertified_candidate_plan = certify_candidate_plan(
+                        certified, candidate_rule_digest=RULE_DIGEST,
+                        through_boundary_ms=57_600_000, client=reader)
+                mark_preflight("candidate", candidate_query_started)
+                identity_wait_started = time.perf_counter()
+                identity_plan, identity_seconds = identity_future.result()
+            preflight_timings["identity"] = identity_seconds
+            mark_preflight("identity_wait", identity_wait_started)
             bar_signals = {"occurrences": (), "authority": {
                 "candidate_token": precertified_candidate_plan.token,
                 "identity_token": identity_plan.token,
