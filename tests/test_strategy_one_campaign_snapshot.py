@@ -83,6 +83,34 @@ def test_memory_capture_contains_only_active_owner_scalars():
     assert verify_campaign_snapshot(project(captured)).snapshot["owner_count"] == 1
 
 
+def test_verified_campaign_image_restores_exact_admission_state():
+    owners = ({
+        "resource_id": "book:AAA", "session_key": "2026-08-18",
+        "owner_id": "campaign-a", "state": "confirmed", "epoch": 2,
+    },)
+    rows = project(owners)
+    journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=42)
+    journal.restore_verified_campaign_ownership(rows)
+    assert journal.campaign_ownership_snapshot() == owners
+    assert journal.campaign_session_ownership(
+        "book:AAA", session_key="2026-08-18")["epoch"] == 2
+    assert journal.acquire_campaign_session_ownership(
+        "book:AAA", session_key="2026-08-18", owner_id="other",
+        state="reserved") is None
+    with pytest.raises(ValueError, match="clean fenced lane"):
+        journal.restore_verified_campaign_ownership(rows)
+
+
+def test_campaign_restore_rejects_wrong_run_or_unfenced_sequence():
+    rows = project()
+    wrong_run = BacktestMemoryJournal(run_id="another", initial_sequence=42)
+    with pytest.raises(ValueError, match="another run"):
+        wrong_run.restore_verified_campaign_ownership(rows)
+    unfenced = BacktestMemoryJournal(run_id=RUN, initial_sequence=41)
+    with pytest.raises(ValueError, match="clean fenced lane"):
+        unfenced.restore_verified_campaign_ownership(rows)
+
+
 def test_select_only_recovery_requires_exact_cursor_and_child_seal(monkeypatch):
     from src.trading_runtime import arte_journal_commit_v4, arte_journal_projection
 

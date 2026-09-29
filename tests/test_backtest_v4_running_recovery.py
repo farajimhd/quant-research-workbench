@@ -73,6 +73,11 @@ def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
     with pytest.raises(RuntimeError, match="differs from cold journal anchor"):
         subject.verify_v4_recovery_at_anchor(
             recovery, replace(anchor, boundary_ms=200))
+    corrupted = replace(recovery.campaign, snapshot={
+        **recovery.campaign.snapshot, "owner_hash": "0" * 64})
+    with pytest.raises(RuntimeError, match="committed seal"):
+        subject.verify_v4_recovery_at_anchor(
+            replace(recovery, campaign=corrupted), anchor)
 
 
 def test_v4_running_recovery_rejects_orphan_broker_order(monkeypatch):

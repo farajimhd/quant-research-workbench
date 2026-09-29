@@ -577,6 +577,41 @@ class BacktestMemoryJournal:
                 "resource_id", "session_key", "owner_id", "state", "epoch")}
                 for _, row in sorted(self._campaign_ownership.items()))
 
+    def restore_verified_campaign_ownership(self, rows: Any) -> None:
+        """Install one attested normalized owner image at its fenced cursor.
+
+        The caller must load this image from ClickHouse and verify its Keeper
+        head first. This adapter neither reads disk nor constructs missing
+        owners; installation is atomic and can happen only on a clean lane.
+        """
+        from src.backend.backtest_market_data import market_day_boundary
+        from src.trading_runtime.strategy_one_campaign_snapshot import (
+            CampaignSnapshotRows, verify_campaign_snapshot,
+        )
+
+        if not isinstance(rows, CampaignSnapshotRows):
+            raise TypeError("Campaign restore requires normalized rows")
+        verified = verify_campaign_snapshot(rows)
+        root = verified.snapshot
+        if root["run_id"] != self.run_id:
+            raise ValueError("Campaign restore belongs to another run")
+        completed_at = market_day_boundary(
+            root["session_date"], root["boundary_ms"]
+        ).astimezone(timezone.utc).isoformat()
+        restored = {
+            (row["resource_id"], row["session_key"]): {
+                name: row[name] for name in (
+                    "resource_id", "session_key", "owner_id", "state", "epoch")
+            } | {"updated_at": completed_at}
+            for row in verified.owners
+        }
+        with self._lock:
+            self._require_open()
+            if (self._fenced_sequence != root["checkpoint_sequence"]
+                    or self._records or self._campaign_ownership):
+                raise ValueError("Campaign restore requires a clean fenced lane")
+            self._campaign_ownership = restored
+
     def release_campaign_session_reservation(self, resource_id: str, *, session_key: str,
                                              owner_id: str) -> bool:
         key = (resource_id, session_key)

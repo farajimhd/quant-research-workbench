@@ -26,6 +26,7 @@ sys.dont_write_bytecode = True
 from src.backend.backtest_market_data import (
     _MarketCertificateReader, market_day_boundary, project_market_day_plan,
 )
+from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
 from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
 from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
@@ -70,6 +71,9 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import (
 from src.trading_runtime.strategy_one_evidence_snapshot import (
     ManagedEvidenceSnapshotHeadReader,
     load_unattested_evidence_snapshot_rows, restore_evidence_snapshot,
+)
+from src.trading_runtime.strategy_one_campaign_snapshot import (
+    ManagedCampaignSnapshotHeadReader, load_campaign_snapshot,
 )
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
@@ -133,6 +137,28 @@ def audit(*, run_id: str, build_id: str, session: date,
         root = broker.snapshot
         boundary = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
         boundary += timedelta(milliseconds=int(root["boundary_ms"]))
+        campaign = load_campaign_snapshot(
+            client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+        campaign_root = campaign.snapshot
+        if (campaign_root["session_date"] != session.isoformat()
+                or campaign_root["boundary_ms"] != root["boundary_ms"]
+                or campaign_root["journal_batch_id"] != prefix.last_batch_id):
+            raise RuntimeError("Cold campaign image differs from broker checkpoint")
+        campaign_head = ManagedCampaignSnapshotHeadReader(keeper_session).read_head(
+            run_id=run_id)
+        if (campaign_head.checkpoint_sequence < checkpoint_sequence
+                or (campaign_head.checkpoint_sequence == checkpoint_sequence
+                    and (campaign_head.journal_batch_id != prefix.last_batch_id
+                         or campaign_head.snapshot_hash != campaign_root["content_hash"]))):
+            raise RuntimeError("Cold campaign Keeper head differs from selected rows")
+        campaign_journal = BacktestMemoryJournal(
+            run_id=run_id, initial_sequence=checkpoint_sequence)
+        campaign_journal.restore_verified_campaign_ownership(campaign)
+        expected_owners = tuple({name: row[name] for name in (
+            "resource_id", "session_key", "owner_id", "state", "epoch")}
+            for row in campaign.owners)
+        if campaign_journal.campaign_ownership_snapshot() != expected_owners:
+            raise RuntimeError("Cold campaign actor differs after restoration")
         profiles, groups = historical_strategy_one_portfolio_profiles(
             revision["payload"])
         if tuple(profile.account_id for profile in profiles) != tuple(
@@ -270,13 +296,30 @@ def main() -> None:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--build-id", required=True)
     parser.add_argument("--session", required=True, type=date.fromisoformat)
-    parser.add_argument("--checkpoint-sequence", required=True, type=int)
+    parser.add_argument("--checkpoint-sequence", required=True,
+                        help="positive committed sequence, or latest campaign checkpoint")
     args = parser.parse_args()
+    if args.checkpoint_sequence == "latest":
+        credential = Path(r"D:\TradingML\secrets\backtest_v4_runner.env")
+        if platform.node().upper() != "DESKTOP-SAAI85T" or not credential.is_file():
+            raise RuntimeError("Latest checkpoint lookup needs the managed workstation")
+        os.environ["BACKTEST_V4_RUNNER_CREDENTIAL_FILE"] = str(credential)
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            selected = _rows(client,
+                "SELECT checkpoint_sequence FROM "
+                "arte.trading_strategy_one_campaign_snapshot_v1 "
+                f"WHERE run_id={_literal(args.run_id)} "
+                "ORDER BY checkpoint_sequence DESC LIMIT 1 FORMAT JSONEachRow")
+        if len(selected) != 1:
+            raise RuntimeError("Run has no unique latest campaign checkpoint")
+        checkpoint_sequence = int(selected[0]["checkpoint_sequence"])
+    else:
+        checkpoint_sequence = int(args.checkpoint_sequence)
     fills, orders = audit(run_id=args.run_id, build_id=args.build_id,
                           session=args.session,
-                          checkpoint_sequence=args.checkpoint_sequence)
+                          checkpoint_sequence=checkpoint_sequence)
     print(f"V4 cold broker image audit passed: fills={fills} "
-          f"open_orders={orders} writes=0")
+          f"open_orders={orders} checkpoint_sequence={checkpoint_sequence} writes=0")
 
 
 if __name__ == "__main__":

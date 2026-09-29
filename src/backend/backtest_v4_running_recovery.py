@@ -45,7 +45,7 @@ from src.trading_runtime.strategy_one_evidence_snapshot import (
     load_attested_evidence_snapshot,
 )
 from src.trading_runtime.strategy_one_campaign_snapshot import (
-    CampaignSnapshotRows, load_attested_campaign_snapshot,
+    CampaignSnapshotRows, load_attested_campaign_snapshot, verify_campaign_snapshot,
 )
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
@@ -86,6 +86,7 @@ def verify_v4_recovery_at_anchor(
             or root.get("session_date") != anchor.session_date
             or root.get("boundary_ms") != anchor.boundary_ms):
         raise RuntimeError("V4 campaign image differs from cold journal anchor")
+    verify_campaign_snapshot(recovery.campaign)
 
 
 def load_v4_running_oms_image(
