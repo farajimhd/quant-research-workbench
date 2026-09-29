@@ -7,7 +7,21 @@ it must not substitute an SSH-forwarded workstation API. ClickHouse is reachable
 from the laptop at the workstation HTTP port 18123. The app must never fall back
 to SQLite or to a general ClickHouse account.
 
-## Current verified status (2026-09-29)
+## Current verified status
+
+On the current paired evidence/manager restoration code (`8b4e38a4b`), a
+fresh workstation 2026-08-18 04:00–09:30 ET all-ticker integration run
+`62908518-9fd4-4a8e-8c90-2162ccb237e1` passed preflight in 22.840s and
+completed execution in 33.004s. It consumed 7,381 persisted market rows,
+committed 2,216 normalized journal events in 11 writer units with zero failed
+units, and its causal audit found 58 intents, 966 linked actions, and zero
+backdated actions. The measured session phase took 13.985s, including 5.164s
+for ten active-ticker first-row reads; terminal confirmation took 11.345s,
+including 9.508s waiting for the prior completed-market checkpoint. Sparse
+candidate loading took 0.330s. These overlapping stage sums are diagnostic,
+not additive wall time. Keeper emitted a connection-drop warning during probe
+teardown despite the successful completed run and audit; that warning has not
+been resolved. This was a fresh run, not a checkpoint-resume equivalence test.
 
 On the current V4 running-checkpoint contract, each completed checkpoint now
 fences the manager, broker matcher, and a normalized per-account portfolio
