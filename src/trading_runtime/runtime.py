@@ -175,6 +175,7 @@ class TradingRuntime:
         control_plane: TradingControlPlane | None = None,
         review_only: bool = False,
         typed_portfolio_sync_authority: Any | None = None,
+        typed_oms_image: Any | None = None,
     ) -> None:
         if strategy is not None and (
             config.strategy_id != strategy.strategy_id
@@ -272,6 +273,18 @@ class TradingRuntime:
             if intent_planner is not None
             else None
         )
+        recovered_backtest = getattr(self.portfolio, "_typed_backtest_recovery", False)
+        if typed_oms_image is not None:
+            from src.trading_runtime.arte_oms_actor_restore import (
+                install_typed_oms_actor_image,
+            )
+            if (not recovered_backtest or config.mode != RunMode.BACKTEST
+                    or self.order_manager is None):
+                raise RuntimeError("Typed OMS image requires a recovered Backtest actor")
+            install_typed_oms_actor_image(self.order_manager, typed_oms_image)
+        elif recovered_backtest and not review_only:
+            raise RuntimeError("Active recovered Backtest lacks its verified OMS image")
+        self._typed_oms_recovered = typed_oms_image is not None
         self.risk_supervisor = ContinuousRiskSupervisor(
             self.portfolio,
             journal=journal,
@@ -342,7 +355,8 @@ class TradingRuntime:
             await self.risk_supervisor.evaluate(account_id, reason="runtime_initialize")
         if self.order_manager is not None and not review_only:
             await self.order_manager.configure_broker_session()
-            await self.order_manager.recover()
+            if not self._typed_oms_recovered:
+                await self.order_manager.recover()
             if hasattr(self.broker, "stream_broker_messages"):
                 self._broker_stream_task = asyncio.create_task(self._consume_broker_stream())
                 self._risk_refresh_task = asyncio.create_task(self._refresh_live_risk())

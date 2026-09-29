@@ -6,6 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -340,6 +341,35 @@ def test_runtime_initializes_recovered_backtest_from_completed_canonical_snapsho
     assert portfolio.states["account-id"].sync_state == PortfolioSyncState.SYNCHRONIZED
     assert portfolio.states["account-id"].positions["AAA"].position == 2
     assert journal.unfenced_records() == []
+
+    from src.trading_runtime.arte_oms_actor_restore import TypedOmsActorImage
+    recovered_oms = TypedOmsActorImage(
+        "live-run", "strategy-a", 1, {}, {}, {}, {}, frozenset())
+    planner = SimpleNamespace(plan=lambda *_args, **_kwargs: None)
+    another_broker = SimulatedBrokerAdapter(
+        ["account-id"], mode=TradingMode.BACKTEST)
+    with pytest.raises(RuntimeError, match="verified OMS image"):
+        TradingRuntime(
+            RunConfig(RunMode.BACKTEST, "strategy-a", 1, ("account-id",),
+                      AT.date(), run_id="live-run"), another_broker, strategy,
+            journal, portfolio=portfolio, intent_planner=planner)
+    active = TradingRuntime(
+        RunConfig(RunMode.BACKTEST, "strategy-a", 1, ("account-id",),
+                  AT.date(), run_id="live-run"),
+        SimulatedBrokerAdapter(["account-id"], mode=TradingMode.BACKTEST),
+        strategy, journal, portfolio=portfolio, intent_planner=planner,
+        typed_oms_image=recovered_oms)
+    assert active._typed_oms_recovered
+    assert active.order_manager is not None
+    assert active.order_manager._groups == {}
+    active.last_event_time = AT
+    active.risk.prime = AsyncMock()
+    active.risk_supervisor.evaluate = AsyncMock()
+    active.order_manager.configure_broker_session = AsyncMock()
+    active.order_manager.recover = AsyncMock(
+        side_effect=AssertionError("typed OMS image must not read legacy journal"))
+    asyncio.run(active.initialize(record_lifecycle=False))
+    active.order_manager.recover.assert_not_awaited()
 
 
 def test_typed_admission_waits_for_receipt_and_poison_on_uncertain_commit(monkeypatch) -> None:

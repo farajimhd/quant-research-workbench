@@ -15,7 +15,6 @@ import platform
 import re
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,10 +52,8 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.arte_journal_reader import load_complete_typed_protection_history
 from src.trading_runtime.arte_oms_actor_restore import (
-    install_typed_oms_actor_image, reconstruct_typed_oms_actor_image,
-    verify_typed_oms_broker_open_orders,
+    reconstruct_typed_oms_actor_image, verify_typed_oms_broker_open_orders,
 )
-from src.trading_runtime.order_management import OrderManagementEngine
 from src.trading_runtime.arte_oms_projection import (
     load_recovered_strategy_one_oms_lineage,
 )
@@ -212,16 +209,6 @@ def audit(*, run_id: str, build_id: str, session: date,
             strategy_revision=STRATEGY_NUMBER,
             through_sequence=prefix.last_sequence, cutoff_at=boundary)
         verify_typed_oms_broker_open_orders(oms_image, broker)
-        oms_actor = OrderManagementEngine(
-            broker=MagicMock(), planner=MagicMock(), risk=MagicMock(),
-            journal=MagicMock(), run_id=run_id, strategy_id=STRATEGY_ID,
-            strategy_revision=STRATEGY_NUMBER)
-        install_typed_oms_actor_image(oms_actor, oms_image)
-        if (set(oms_actor._groups) != set(oms_image.groups)
-                or oms_actor._group_by_client_id != oms_image.group_by_client_id
-                or oms_actor._group_by_broker_id != oms_image.group_by_broker_id
-                or oms_actor._protection_versions != oms_image.protection_versions):
-            raise RuntimeError("Cold OMS actor differs after installation")
         requests = {}
         broker_ids = {}
         for lineage in lineages:
@@ -268,9 +255,17 @@ def audit(*, run_id: str, build_id: str, session: date,
             restored, SimpleNamespace(strategy_id=STRATEGY_ID,
                                       revision=STRATEGY_NUMBER,
                                       automatic=True),
-            campaign_journal, portfolio=portfolio, review_only=True)
+            campaign_journal, portfolio=portfolio, review_only=True,
+            intent_planner=SimpleNamespace(plan=lambda *_a, **_k: None),
+            typed_oms_image=oms_image)
         runtime.last_event_time = boundary
         asyncio.run(runtime.initialize(record_lifecycle=False, review_only=True))
+        oms_actor = runtime.order_manager
+        if (oms_actor is None or set(oms_actor._groups) != set(oms_image.groups)
+                or oms_actor._group_by_client_id != oms_image.group_by_client_id
+                or oms_actor._group_by_broker_id != oms_image.group_by_broker_id
+                or oms_actor._protection_versions != oms_image.protection_versions):
+            raise RuntimeError("Cold runtime OMS actor differs after installation")
         candidates = certify_candidate_plan(
             plan, candidate_rule_digest=RULE_DIGEST,
             through_boundary_ms=57_600_000, client=market_http)
