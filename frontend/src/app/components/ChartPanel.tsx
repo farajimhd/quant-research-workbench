@@ -1360,13 +1360,19 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const first = lowerBoundTimelineTime(timeline, trade.entryTime);
     const last = lowerBoundTimelineTime(timeline, trade.exitTime ?? trade.entryTime);
     const margin = Math.max(8, Math.ceil((last - first) * 0.6));
-    const endTime = trade.exitTime ?? trade.endTime ?? trade.entryTime;
+    const visibleFrom = Math.max(0, first - margin);
+    const visibleTo = Math.min(timeline.length - 1, Math.max(first + 1, last) + margin);
+    const firstVisibleTime = timeline[visibleFrom]?.time ?? trade.entryTime;
+    const lastVisibleTime = timeline[visibleTo]?.time ?? trade.exitTime ?? trade.entryTime;
     const prices = [trade.entryPrice, trade.exitPrice, trade.stopPrice, trade.highOfDayPrice,
       trade.triggerPrice, ...(trade.targetPrices ?? []), ...(trade.levelPrices ?? []),
       ...(trade.supportPrices ?? []), ...(trade.resistancePrices ?? []),
       ...(trade.protectionPath ?? []).filter(point => point.active).map(point => point.price),
       ...(trade.fills ?? []).map(fill => fill.price),
-      ...candles.filter(candle => candle.time >= trade.entryTime && candle.time <= endTime)
+      ...(trade.exitIntents ?? []).flatMap(intent => [intent.price, ...(intent.supportPrices ?? []), ...(intent.resistancePrices ?? [])]),
+      // The horizontal fit includes context on both sides of the position.
+      // Price-fit that same visible window so a context candle cannot clip.
+      ...candles.filter(candle => candle.time >= firstVisibleTime && candle.time <= lastVisibleTime)
         .flatMap(candle => [candle.low, candle.high])]
       .filter((price): price is number => typeof price === "number" && Number.isFinite(price));
     executeViewportCommand(() => {
@@ -1378,7 +1384,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           low = Math.min(low, price);
           high = Math.max(high, price);
         }
-        const padding = Math.max((high - low) * 0.06, Math.max(high, 1) * 0.002);
+        // Keep the outer guide/price evidence near the pane edges, with enough
+        // space for marker labels. Only this explicit position-fit changes it.
+        const padding = Math.max((high - low) * 0.035, Math.max(high, 1) * 0.002);
         candleRef.current.priceScale().setVisibleRange({ from: low - padding, to: high + padding });
       }
     }, false);
