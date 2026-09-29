@@ -358,7 +358,7 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
                         if controller.processed_events > 0:
                             print("Intentional crash after durable V4 checkpoint: "
                                   f"run={controller.run_id} "
-                                  f"sequence={durable.sequence}", flush=True)
+                                  f"sequence={durable.last_sequence}", flush=True)
                             os._exit(77)
 
                     receipt.add_done_callback(completed)
