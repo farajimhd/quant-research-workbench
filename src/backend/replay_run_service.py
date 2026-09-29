@@ -3052,7 +3052,7 @@ class ReplayRunController:
                 or assembly.publisher._sequence != anchor.journal_sequence
                 or assembly.publisher._batch_id != anchor.batch_id
                 or assembly.publisher._source_cursor != anchor.source_cursor
-                or assembly.writer.client.backtest_v4_lease is not lease):
+                or assembly.writer._client.backtest_v4_lease is not lease):
             raise RuntimeError('Resumed V4 journal differs from its cold actor cursor')
         lease.assert_current()
         self._fixed_v4_account_ids = assembly.token.account_ids

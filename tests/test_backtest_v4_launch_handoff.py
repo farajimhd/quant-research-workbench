@@ -89,7 +89,7 @@ def test_resumed_v4_controller_requires_exact_later_epoch_lane(monkeypatch):
     journal = BacktestMemoryJournal(run_id=run_id, initial_sequence=7)
     publisher = SimpleNamespace(_sequence=7, _batch_id=batch_id,
                                 _source_cursor=anchor.source_cursor)
-    writer = SimpleNamespace(client=SimpleNamespace(backtest_v4_lease=lease))
+    writer = SimpleNamespace(_client=SimpleNamespace(backtest_v4_lease=lease))
     token = FixedV4JournalPreflightToken(
         run_id, ("SIM-01",), date(2026, 8, 1), "a" * 64, "b" * 64, "c" * 64)
     assembly = FixedJournalAssembly(token, journal, writer, publisher, None)
