@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.trading_runtime import arte_portfolio_recovery as recovery
+from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_portfolio_admission import TypedPortfolioAdmissionAuthority
 from src.trading_runtime.arte_portfolio_sync import TypedPortfolioSyncAuthority
 from src.trading_runtime.arte_portfolio_snapshot import publish_portfolio_snapshot
@@ -142,6 +143,45 @@ def test_engine_typed_seam_skips_sqlite_and_blocks_admission(monkeypatch) -> Non
         PortfolioManagementEngine(
             (profile,), journal=NoSQLite(), run_id="different", strategy_id="strategy-a",
             strategy_revision=1, typed_recovery=recovered)
+
+
+def test_recovered_backtest_continues_into_memory_journal_without_sqlite(monkeypatch) -> None:
+    client, profile = _client(monkeypatch)
+    original = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+    backtest_profile = replace(profile, mode="backtest")
+    state = replace(original.states["account-id"], profile=backtest_profile,
+                    disabled_strategy_allocations={"paused-strategy"})
+    restored = recovery.PortfolioRecovery(
+        "backtest-run", original.revisions, {"account-id": state},
+        original.reservations, original.allocations, original.differences,
+        original.last_filled_by_reservation)
+    journal = BacktestMemoryJournal(run_id="backtest-run", initial_sequence=7)
+    engine = PortfolioManagementEngine(
+        (backtest_profile,), journal=journal, run_id="backtest-run",
+        strategy_id="strategy-a", strategy_revision=1,
+        typed_recovery=restored, event_clock=lambda: AT)
+    assert journal.portfolio_states()["account-id"]["disabled_strategy_allocations"] == [
+        "paused-strategy"]
+
+    async def exercise() -> None:
+        async with engine._admission_fence("account-id") as active:
+            assert active.disabled_strategy_allocations == {"paused-strategy"}
+        engine._record("portfolio_reconciliation", "account-key", "account-id",
+                       {"event": "recovered_continuation"})
+
+    asyncio.run(exercise())
+    records = journal.unfenced_records()
+    assert len(records) == 1
+    assert records[0].sequence == 8
+    assert records[0].payload["event"] == "recovered_continuation"
+    assert records[0].payload["correlation_id"] == "run:backtest-run"
+    with pytest.raises(ValueError, match="changed run or account mode"):
+        PortfolioManagementEngine(
+            (backtest_profile,), journal=BacktestMemoryJournal(run_id="foreign"),
+            run_id="backtest-run", strategy_id="strategy-a", strategy_revision=1,
+            typed_recovery=restored)
 
 
 def test_readonly_canonical_reconciliation_never_appends(monkeypatch) -> None:

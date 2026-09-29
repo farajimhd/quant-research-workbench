@@ -422,6 +422,14 @@ class PortfolioManagementEngine:
         self._typed_admission_stage: list[tuple[str, str, str, dict[str, Any]]] | None = None
         self._typed_admission_poisoned = False
         self._typed_recovery = typed_recovery is not None
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        self._typed_backtest_recovery = bool(
+            self._typed_recovery and isinstance(journal, BacktestMemoryJournal)
+            and journal.run_id == run_id
+            and all(profile.mode == "backtest" for profile in profiles))
+        if (self._typed_recovery and isinstance(journal, BacktestMemoryJournal)
+                and not self._typed_backtest_recovery):
+            raise ValueError("Typed Backtest portfolio recovery changed run or account mode")
         if typed_recovery is None:
             self._restore()
         else:
@@ -439,6 +447,11 @@ class PortfolioManagementEngine:
             self.allocations = dict(typed_recovery.allocations)
             self.differences = dict(typed_recovery.differences)
             self._last_filled_by_reservation = dict(typed_recovery.last_filled_by_reservation)
+            if self._typed_backtest_recovery:
+                # This adapter is memory-only. Its next ordered V4 journal
+                # prefix is published asynchronously by the Backtest writer.
+                for state in self.states.values():
+                    self._persist_state(state)
 
     def bind_control_plane(self, control_plane: TradingControlPlane) -> None:
         """Promote this engine's admission locks to shared account authorities."""
@@ -540,7 +553,8 @@ class PortfolioManagementEngine:
         """Commit broker reconciliation before exposing synchronized state."""
         from src.trading_runtime.arte_portfolio_sync import TypedPortfolioSyncAuthority
 
-        if (not self._typed_recovery or self._typed_admission_poisoned
+        if (not self._typed_recovery or self._typed_backtest_recovery
+                or self._typed_admission_poisoned
                 or not isinstance(authority, TypedPortfolioSyncAuthority)):
             raise RuntimeError("Typed broker synchronization requires verified recovery authority")
         state = self._state(account_id)
@@ -630,7 +644,8 @@ class PortfolioManagementEngine:
 
     async def synchronize_typed_broker(self, broker: BrokerAdapter, *, authority: Any) -> None:
         """Fetch broker authority, then commit each pinned account snapshot."""
-        if not self._typed_recovery or self._typed_admission_poisoned:
+        if (not self._typed_recovery or self._typed_backtest_recovery
+                or self._typed_admission_poisoned):
             raise RuntimeError("Typed broker synchronization requires recovered state")
         try:
             live_orders = await broker.live_orders()
@@ -848,7 +863,8 @@ class PortfolioManagementEngine:
         persistence. The authority owns Keeper renewal, event projection, and
         the writer's verified admission receipt.
         """
-        if (not self._typed_recovery or self._typed_admission_stage is not None
+        if (not self._typed_recovery or self._typed_backtest_recovery
+                or self._typed_admission_stage is not None
                 or self._typed_admission_poisoned):
             raise RuntimeError("Typed admission requires an idle recovered engine")
         from src.trading_runtime.arte_portfolio_admission import TypedPortfolioAdmissionAuthority
@@ -921,7 +937,7 @@ class PortfolioManagementEngine:
 
     @asynccontextmanager
     async def _admission_fence(self, account_id: str):
-        if self._typed_recovery:
+        if self._typed_recovery and not self._typed_backtest_recovery:
             raise RuntimeError("Typed portfolio recovery awaits a durable admission writer")
         state = self._state(account_id)
         self._refresh_operational_state(state)
@@ -2308,7 +2324,7 @@ class PortfolioManagementEngine:
         if self._typed_admission_stage is not None:
             self._typed_admission_stage.append((entity_type, entity_id, account_id, copy.deepcopy(payload)))
             return
-        if self._typed_recovery:
+        if self._typed_recovery and not self._typed_backtest_recovery:
             raise RuntimeError("Typed portfolio recovery cannot append to the SQLite journal")
         self.journal.append(
             run_id=self.run_id,
@@ -2329,7 +2345,7 @@ class PortfolioManagementEngine:
     def _persist_state(self, state: PortfolioAccountState) -> None:
         if self._typed_admission_stage is not None:
             return
-        if self._typed_recovery:
+        if self._typed_recovery and not self._typed_backtest_recovery:
             raise RuntimeError("Typed portfolio recovery cannot overwrite SQLite state")
         self.journal.save_portfolio_state(
             state.profile.account_id,
@@ -2451,7 +2467,7 @@ class PortfolioManagementEngine:
         return state.policy_override or state.profile.policy
 
     def _refresh_operational_state(self, state: PortfolioAccountState) -> None:
-        if self._typed_recovery:
+        if self._typed_recovery and not self._typed_backtest_recovery:
             raise RuntimeError("Typed portfolio recovery cannot read SQLite controls")
         payload = self.journal.portfolio_states().get(state.profile.account_id) or {}
         try:
