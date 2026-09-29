@@ -18,7 +18,7 @@ const BUCKET_US: u64 = 100_000;
 const START_US: u64 = 4 * 3_600_000_000;
 const END_US: u64 = 20 * 3_600_000_000;
 const PRE_0405_US: u64 = 4 * 3_600_000_000 + 5 * 60_000_000;
-const MAX_QUOTE_AGE_US: u64 = 1_000_000;
+const MAX_QUOTE_AGE_MS: u64 = 1_000;
 const MAX_BUCKET_SOURCE_EVENTS: usize = 100_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -246,7 +246,9 @@ impl LiquidityReducer {
         let volume_valid = usable && rule.update_volume;
         let execution_valid = volume_valid && self.quote.is_some_and(|quote| {
             event.sip_timestamp_us >= quote.timestamp_us
-                && event.sip_timestamp_us - quote.timestamp_us <= MAX_QUOTE_AGE_US
+                // ARTE's liquidity_100ms_v1 source SQL uses intDiv(age_us, 1000)
+                // <= 1000, rather than an exact microsecond cutoff.
+                && (event.sip_timestamp_us - quote.timestamp_us) / 1_000 <= MAX_QUOTE_AGE_MS
                 && (price as f64) + (price.max(quote.bid_int).max(quote.ask_int) as f64) * 1e-9 >= quote.bid_int as f64
                 && (price as f64) <= (quote.ask_int as f64) + (price.max(quote.bid_int).max(quote.ask_int) as f64) * 1e-9
         });
@@ -404,6 +406,24 @@ mod tests {
         assert_eq!(trade_only.bid_size, 60.0);
         assert_eq!(trade_only.ask_size, 50.0);
         assert_eq!(trade_only.execution_volume, 100.0);
+    }
+
+    #[test]
+    fn quote_age_uses_arte_whole_millisecond_boundary() {
+        let (decoder, rules) = context();
+        let mut reducer = LiquidityReducer::default();
+        reducer.push(&event(100, 1, false), &decoder, &rules).unwrap();
+        let mut eligible = event(1_100, 2, true);
+        eligible.sip_timestamp_us += 999;
+        let ineligible = event(1_101, 3, true);
+        assert!(reducer.push(&eligible, &decoder, &rules).unwrap().is_some());
+        assert!(reducer.push(&ineligible, &decoder, &rules).unwrap().is_none());
+        let trade_bucket = reducer.push(&event(1_200, 4, false), &decoder, &rules)
+            .unwrap().unwrap();
+        assert_eq!(trade_bucket.source_trade_count, 2);
+        assert_eq!(trade_bucket.volume, 200.0);
+        assert_eq!(trade_bucket.execution_volume, 100.0);
+        assert_eq!(trade_bucket.execution_ineligible_trades, 1);
     }
 
     #[test]
