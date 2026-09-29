@@ -2941,6 +2941,21 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    def test_fixed_snapshot_reports_certified_scanner_and_execution_population(self):
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 18), start_time=time(4),
+            configuration_revision=approved_configuration(), mode=RunMode.BACKTEST,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._data_authority["fixed_market_data"] = {
+                "scanner_ticker_count": 6100, "execution_ticker_count": 957,
+            }
+            scope = controller.snapshot(include_details=False)["execution_scope"]
+        self.assertEqual(scope["event_count_scope"], "candidate_boundaries")
+        self.assertEqual(scope["configured_ticker_count"], 6100)
+        self.assertEqual(scope["admitted_ticker_count"], 957)
+
     def test_unused_model_catalog_does_not_activate_bargpt_serving(self):
         activation = {"column_catalog": [{"source_id": "model.bargpt.prediction"}],
                       "data_fields": [{"source_id": "model.bargpt.prediction"}],

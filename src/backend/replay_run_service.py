@@ -1838,6 +1838,12 @@ class ReplayRunController:
     def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
         current = self.current_time or self.definition.session_start
         checkpoint = self._checkpoint_projection()
+        fixed_market_scope = self._data_authority.get("fixed_market_data", {})
+        fixed_strategy_scope = (
+            self.definition.mode == RunMode.BACKTEST
+            and isinstance(fixed_market_scope, dict)
+            and isinstance(fixed_market_scope.get("execution_ticker_count"), int)
+        )
         duration = max(
             1.0,
             (self.definition.session_end - self.definition.requested_start).total_seconds(),
@@ -1897,10 +1903,12 @@ class ReplayRunController:
             "transport_mode": self._transport_mode(),
             "processed_events": self.processed_events,
             "execution_scope": {
-                "event_count_scope": "admitted_tickers",
-                "configured_ticker_count": self._v7_coverage_report.get('requested_ticker_count'),
-                "admitted_ticker_count": (len(self._strategy_frame_requested_tickers)
-                                          if hasattr(self, '_strategy_frame_requested_tickers') else None),
+                "event_count_scope": "candidate_boundaries" if fixed_strategy_scope else "admitted_tickers",
+                "configured_ticker_count": (fixed_market_scope["scanner_ticker_count"]
+                    if fixed_strategy_scope else self._v7_coverage_report.get('requested_ticker_count')),
+                "admitted_ticker_count": (fixed_market_scope["execution_ticker_count"]
+                    if fixed_strategy_scope else (len(self._strategy_frame_requested_tickers)
+                    if hasattr(self, '_strategy_frame_requested_tickers') else None)),
                 "excluded_v7_coverage_count": len(self._v7_excluded_tickers),
                 "excluded_prior_close_count": len(getattr(self, '_prior_close_excluded_tickers', ())),
                 "excluded_persisted_book_count": len(getattr(self, '_missing_level_book_tickers', ())),
