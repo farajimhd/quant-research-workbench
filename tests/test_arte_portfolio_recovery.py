@@ -13,6 +13,7 @@ from src.trading_runtime import arte_portfolio_recovery as recovery
 from src.trading_runtime.arte_portfolio_admission import TypedPortfolioAdmissionAuthority
 from src.trading_runtime.arte_portfolio_sync import TypedPortfolioSyncAuthority
 from src.trading_runtime.arte_portfolio_snapshot import publish_portfolio_snapshot
+from src.trading_runtime.domain import BrokerProvider, TradingMode, TradingStateSnapshot
 from src.trading_runtime.portfolio import (
     PortfolioAllocationLot, PortfolioManagementEngine, PortfolioReservation, PortfolioSyncState,
     profiles_for_runtime,
@@ -177,6 +178,67 @@ def test_readonly_canonical_reconciliation_never_appends(monkeypatch) -> None:
     assert difference.broker_quantity == 0
     assert difference.attributed_quantity == 2
     assert engine.states["account-id"].sync_state == PortfolioSyncState.SYNCHRONIZED
+
+
+def test_recovered_backtest_portfolio_requires_exact_broker_positions(monkeypatch) -> None:
+    client, profile = _client(monkeypatch)
+    profile = replace(profile, mode="backtest")
+    recovered = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+
+    class NoJournal:
+        def __getattr__(self, name):
+            raise AssertionError(f"recovered Backtest wrote journal: {name}")
+
+    engine = PortfolioManagementEngine(
+        (profile,), journal=NoJournal(), run_id="live-run",
+        strategy_id="strategy-a", strategy_revision=1,
+        typed_recovery=recovered, event_clock=lambda: AT)
+    values = (SimpleNamespace(
+        account_id="account-id", key="NetLiquidation", segment="base",
+        monetary_value=1000, value=None, source_event_time=AT),)
+    ledgers = (SimpleNamespace(
+        account_id="account-id", is_base=True, currency="USD",
+        values={"cashbalance": 989.5, "netliquidationvalue": 1000},
+        source_event_time=AT),)
+    broker_position = SimpleNamespace(
+        account_id="account-id",
+        instrument=SimpleNamespace(conid=1, symbol="AAA", currency="USD",
+                                   security_type="STK"),
+        quantity=2, market_price=5.25, market_value=10.5,
+        average_cost=5.25, average_price=5.25, realized_pnl=0,
+        unrealized_pnl=0, raw={}, model="", snapshot_id="broker-snap",
+        source_event_time=AT)
+    snapshot = TradingStateSnapshot(
+        schema_version=1, mode=TradingMode.BACKTEST,
+        provider=BrokerProvider.SIMULATED, as_of=AT,
+        account_ids=("account-id",), complete=True, stale=False,
+        stale_reason="", accounts=(), account_values=values,
+        ledger=ledgers, positions=(broker_position,), orders=(), executions=())
+
+    engine.reconcile_recovered_backtest_canonical(snapshot, completed_at=AT)
+    state = engine.states["account-id"]
+    assert state.sync_state == PortfolioSyncState.SYNCHRONIZED
+    assert state.snapshot_id == "broker-1"
+    assert not engine.differences
+
+    divergent = replace(snapshot, positions=())
+    with pytest.raises(RuntimeError, match="differs from committed broker"):
+        engine.reconcile_recovered_backtest_canonical(divergent, completed_at=AT)
+    assert engine.states["account-id"].snapshot_id == "broker-1"
+    assert engine.states["account-id"].positions["AAA"].position == 2
+    assert not engine.differences
+    with pytest.raises(RuntimeError, match="exact completed broker snapshot"):
+        engine.reconcile_recovered_backtest_canonical(
+            replace(snapshot, as_of=AT + timedelta(milliseconds=100)), completed_at=AT)
+    with pytest.raises(RuntimeError, match="exact completed broker snapshot"):
+        engine.reconcile_recovered_backtest_canonical(
+            replace(snapshot, mode=TradingMode.REPLAY), completed_at=AT)
+    engine.states["account-id"].sync_state = PortfolioSyncState.FULLY_BLOCKED
+    with pytest.raises(RuntimeError, match="exact completed broker snapshot"):
+        engine.reconcile_recovered_backtest_canonical(snapshot, completed_at=AT)
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.FULLY_BLOCKED
 
 
 def test_typed_admission_waits_for_receipt_and_poison_on_uncertain_commit(monkeypatch) -> None:

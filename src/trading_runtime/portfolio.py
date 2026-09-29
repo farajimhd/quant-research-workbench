@@ -15,7 +15,7 @@ from src.request_context import causal_identity, normalize_request_identity
 
 from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.control_plane import TradingControlPlane
-from src.trading_runtime.domain import OrderState, TradingStateSnapshot
+from src.trading_runtime.domain import BrokerProvider, OrderState, TradingMode, TradingStateSnapshot
 from src.trading_runtime.execution_policies import AddProtectionPolicy, StopOrderType
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary, LiveOrder, PortfolioPosition
 from src.trading_runtime.journal import TradingJournal
@@ -768,6 +768,56 @@ class PortfolioManagementEngine:
             self._reconcile_account(state, record=persist)
             if persist:
                 self._persist_state(state)
+
+    def reconcile_recovered_backtest_canonical(
+        self, snapshot: TradingStateSnapshot, *, completed_at: datetime,
+    ) -> None:
+        """Rejoin an attested simulated broker without another journal event.
+
+        The caller must first restore the broker from the same committed V4
+        cursor. A saved synchronized flag is not sufficient: the restored
+        broker's positions must reproduce the saved allocation differences.
+        This method never creates a new portfolio snapshot or changes its ID.
+        """
+        if (not self._typed_recovery
+                or any(state.profile.mode != "backtest" for state in self.states.values())
+                or any(state.sync_state in {
+                    PortfolioSyncState.DISABLED, PortfolioSyncState.FULLY_BLOCKED,
+                } for state in self.states.values())
+                or not isinstance(snapshot, TradingStateSnapshot)
+                or snapshot.mode != TradingMode.BACKTEST
+                or snapshot.provider != BrokerProvider.SIMULATED
+                or not isinstance(completed_at, datetime)
+                or completed_at.tzinfo is None
+                or not isinstance(snapshot.as_of, datetime)
+                or snapshot.as_of.tzinfo is None
+                or snapshot.as_of > completed_at
+                or not snapshot.complete or snapshot.stale
+                or set(snapshot.account_ids) != set(self.states)
+                or len(snapshot.account_ids) != len(self.states)):
+            raise RuntimeError("Recovered Backtest lacks its exact completed broker snapshot")
+        saved_states = copy.deepcopy(self.states)
+        saved_differences = dict(self.differences)
+        try:
+            self.synchronize_canonical(snapshot, persist=False)
+            if (_reconciliation_signature(self.differences)
+                    != _reconciliation_signature(saved_differences)
+                    or any(state.sync_state != PortfolioSyncState.SYNCHRONIZED
+                           or state.summary is None or state.ledger is None
+                           or state.summary.timestamp > completed_at
+                           or state.ledger.timestamp > completed_at
+                           or state.peak_net_liquidation
+                           > saved_states[account_id].peak_net_liquidation + 1e-9
+                           for account_id, state in self.states.items())):
+                raise RuntimeError("Recovered Backtest portfolio differs from committed broker")
+            for account_id, state in self.states.items():
+                state.snapshot_id = saved_states[account_id].snapshot_id
+        except BaseException:
+            self.states = saved_states
+            self.by_key = {state.profile.account_key: state
+                           for state in saved_states.values()}
+            self.differences = saved_differences
+            raise
 
     async def approve(
         self,
