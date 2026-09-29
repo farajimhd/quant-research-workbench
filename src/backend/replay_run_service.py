@@ -9665,9 +9665,13 @@ class ReplayRunService:
                         configuration_hash=configuration_hash,
                         market_plan_token=plans.market.token,
                         projection_certifier=certify_strategy_one_v4_projection)
+                    # The projector consumes the committed flat RunConfig, not
+                    # the nested Strategy Studio revision payload. Reuse the
+                    # same fenced authority that the new-run writer consumed.
+                    journal_config = load_typed_run_context(reader, run_id)
                     assembly, journal_anchor = assemble_resumed_fixed_v4_journal(
                         reader, writer_client, terminal, token,
-                        attempt_id=str(uuid4()), expected_config=configuration,
+                        attempt_id=str(uuid4()), expected_config=journal_config,
                         fixed_market_parent_plan=plans.market,
                         fixed_market_execution_plan=plans.execution_market,
                         expected_market_start=definition.session_start,
