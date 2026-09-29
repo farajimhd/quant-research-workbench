@@ -5313,6 +5313,12 @@ button {
   padding: 8px;
 }
 
+/* Keep the saved chart's time ticks and crosshair time label off the bottom
+   canvas edge without changing the native chart's viewport or fit. */
+.backtest-v4-saved-chart .chart-canvas-stack {
+  padding-bottom: 16px;
+}
+
 .strategy-presentation-menu {
   width: min(720px, calc(var(--app-zoomed-viewport-width) - 16px));
   max-height: min(720px, calc(var(--app-zoomed-viewport-height) - 16px));
@@ -5438,6 +5444,20 @@ button {
 
 .strategy-presentation-element-list[data-disabled="true"] {
   opacity: 0.48;
+}
+
+.strategy-presentation-element-group {
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  margin-top: 8px;
+  padding: 2px 8px 4px;
+}
+
+.strategy-presentation-element-group h4 {
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 650;
+  margin: 6px 4px;
 }
 
 .strategy-presentation-element {

@@ -5932,6 +5932,47 @@ async def trading_backtest_v4_chart(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+class BacktestV4ChartOverlayRequest(BaseModel):
+    ticker: str
+    timeframe: str
+    bucket_indices: list[int]
+    indicator_columns: list[str] = []
+    include_structure: bool = False
+
+
+@app.post("/api/trading/backtest/runs/{run_id}/v4-chart-overlays")
+async def trading_backtest_v4_chart_overlays(
+    run_id: str, request: BacktestV4ChartOverlayRequest,
+) -> dict[str, Any]:
+    """SELECT-only overlays for already-loaded candle buckets."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+
+    def read_overlays() -> dict[str, Any]:
+        from contextlib import closing
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        from src.backend.backtest_v4_chart import cold_v4_chart_overlays
+        from src.trading_runtime.arte_journal_writer import (
+            backtest_v4_operator_client_from_env,
+        )
+        with closing(backtest_v4_operator_client_from_env()) as journal_client, \
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
+            return cold_v4_chart_overlays(
+                journal_client, market_client, run_id=normalized,
+                ticker=request.ticker, timeframe=request.timeframe,
+                bucket_indices=tuple(request.bucket_indices),
+                indicator_columns=tuple(request.indicator_columns),
+                include_structure=request.include_structure,
+            )
+
+    try:
+        return await asyncio.to_thread(read_overlays)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/backtest/runs/{run_id}/v4-chart-context")
 async def trading_backtest_v4_chart_context(
     run_id: str, ticker: str,
@@ -6018,6 +6059,28 @@ async def trading_backtest_v4_performance(
 
     try:
         return await asyncio.to_thread(read_report)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/backtest/runs/{run_id}/v4-chart-trades")
+async def trading_backtest_v4_chart_trades(run_id: str, ticker: str) -> dict[str, Any]:
+    """Verified, ticker-scoped trade and protection evidence for saved charts."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+
+    def read_chart_trades() -> dict[str, Any]:
+        from contextlib import closing
+        from src.backend.backtest_v4_saved_review import load_v4_chart_trades
+        from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
+
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            return load_v4_chart_trades(client, normalized, ticker)
+
+    try:
+        return await asyncio.to_thread(read_chart_trades)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

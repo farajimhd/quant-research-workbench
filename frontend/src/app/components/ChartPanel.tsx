@@ -49,6 +49,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleHelp,
+  Crosshair,
   Eye,
   EyeOff,
   Layers3,
@@ -1049,6 +1050,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const structuralDetectorPrimitiveRef = useRef<StructuralDetectorPrimitive | null>(null);
   useEffect(() => { drawCurrentRegions(); }, [structuralDetector.rows, structuralDetector.labelRows]);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
+  const [pendingPositionFocusId, setPendingPositionFocusId] = useState<string | null>(null);
   const strategyLifecycles = useMemo(() => [...(payload?.trade_annotations ?? [])]
     .sort((a, b) => a.entryTime - b.entryTime || a.id.localeCompare(b.id)), [payload?.trade_annotations]);
   const selectedStrategy = strategyLifecycles.find((trade) => trade.id === selectedStrategyId)
@@ -1127,6 +1129,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   displayedOscillatorSeries.push(...formingMacd.series);
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const oscillatorPaneTotalHeight = oscillatorPaneGroups.reduce((total, group) => total + defaultOscillatorPaneHeight(group), 0);
+  const savedPricePaneHeightRef = useRef<number | null>(null);
+  const savedPaneFitFrameRef = useRef<number | null>(null);
   const nativeChartHeight: CSSProperties["height"] = fullscreen
     ? `calc(100vh - 322px + ${oscillatorPaneTotalHeight}px)`
     : baseHeight + oscillatorPaneTotalHeight;
@@ -1338,7 +1342,24 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     window.requestAnimationFrame(scheduleOverlayRedrawBurst);
   }
 
+  function focusStrategyTrade(trade: TradeAnnotation) {
+    const chart = priceChartRef.current;
+    const candles = payloadRef.current?.candles ?? [];
+    if (!chart || !candles.length) return;
+    const timeline = chartTimelineData(candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
+    const first = lowerBoundTimelineTime(timeline, trade.entryTime);
+    const last = lowerBoundTimelineTime(timeline, trade.exitTime ?? trade.entryTime);
+    const margin = Math.max(8, Math.ceil((last - first) * 0.6));
+    executeViewportCommand(() => chart.timeScale().setVisibleLogicalRange({
+      from: first - margin, to: Math.max(first + 1, last) + margin,
+    }));
+  }
+
   function persistNativePaneLayout() {
+    // Saved charts keep their established price-pane geometry in memory.
+    // Generic pointer releases (including indicator-menu clicks) must not
+    // serialize transitional pane factors and then replay them as a resize.
+    if (persistedOnly) return;
     window.requestAnimationFrame(() => {
       const chart = priceChartRef.current;
       if (!chart) return;
@@ -1418,6 +1439,21 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     drawCurrentRegions();
   }, [selectedStrategy?.id, strategyPresentationEnabled]);
 
+  useEffect(() => {
+    if (!pendingPositionFocusId) return;
+    const trade = strategyLifecycles.find(item => item.id === pendingPositionFocusId);
+    const candles = payload?.candles ?? [];
+    if (!trade || !candles.length || candles[0].time > trade.entryTime
+        || candles.at(-1)!.time < trade.entryTime) return;
+    // The same render may be installing newly paged candles. Focus only after
+    // their native series has been synchronized; this is a user-requested fit.
+    const frame = window.requestAnimationFrame(() => {
+      focusStrategyTrade(trade);
+      setPendingPositionFocusId(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingPositionFocusId, payload?.candles, strategyLifecycles]);
+
   useEffect(() => { drawCurrentRegions(); }, [hindsight.positions]);
   useEffect(() => { drawCurrentRegions(); }, [hindsightActions.result]);
   useEffect(() => { drawCurrentRegions(); }, [swingStructure.segments, swingStructure.lineOpacity, swingStructure.bandOpacity]);
@@ -1446,6 +1482,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     const palette = readChartPalette();
     const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, true, alignLeftPriceScale, reserveRightPriceScale));
+    // Saved/certified pages never seize a viewport when more bars arrive.
+    priceChart.timeScale().applyOptions({ shiftVisibleRangeOnNewBar: !persistedOnly });
     priceChartRef.current = priceChart;
     if (labeling) setLabelingChart(priceChart);
     const candleSeries = priceChart.addSeries(CandlestickSeries, {
@@ -1566,7 +1604,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const removed = timeline.length ? previousTimeline.filter((bar) => bar.time < timeline[0].time).length : 0;
     // A user-owned range is stable across later bars, even if the user left
     // its right edge at the latest candle. Only an untouched chart may follow.
-    const followLatest = !userViewportClaimedRef.current && !labeling && currentRange
+    const followLatest = !persistedOnly && !userViewportClaimedRef.current && !labeling && currentRange
       && previousTimeline.length && currentRange.to >= previousTimeline.length - 1;
     previousTimelineRef.current = timeline;
     candleBoundsRef.current = candleValueBounds(payload.candles);
@@ -1664,11 +1702,21 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     updateOscillatorPanes(oscillatorPaneGroups);
   }, [payload, visibleColumnKey, timeframe, oscillatorThresholdSettings, emaCurvature, emaUnits, emaLength, formingMacd.series]);
 
+  useEffect(() => {
+    if (!persistedOnly || !payload?.candles.length || savedPricePaneHeightRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const height = priceChartRef.current?.panes()[0]?.getHeight() ?? 0;
+      if (height > 0 && !savedPricePaneHeightRef.current) savedPricePaneHeightRef.current = height;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [persistedOnly, payload?.candles.length]);
+
   function applyChartAppearance() {
     const palette = readChartPalette();
     const priceChart = priceChartRef.current;
     if (priceChart && priceRef.current) {
       priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, true, alignLeftPriceScale, reserveRightPriceScale));
+      priceChart.timeScale().applyOptions({ shiftVisibleRangeOnNewBar: !persistedOnly });
       candleRef.current?.applyOptions(candleSeriesOptions(chartSettingsRef.current));
       if (payloadRef.current && volumeRef.current) {
         syncRendererData(volumeRef.current, volumeDataForSettings(payloadRef.current, chartSettingsRef.current) as unknown as RendererDatum[], volumeStyleKey(chartSettingsRef.current));
@@ -1734,7 +1782,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       .sort((left, right) => left[1].paneIndex - right[1].paneIndex)
       .map(([key]) => key);
     const nextKeys = groups.map((group) => group.key);
-    if (currentKeys.join("|") !== nextKeys.join("|")) {
+    const paneSetChanged = currentKeys.join("|") !== nextKeys.join("|");
+    if (paneSetChanged) {
       Array.from(oscillatorPaneRuntimesRef.current.entries())
         .sort((left, right) => right[1].paneIndex - left[1].paneIndex)
         .forEach(([key]) => removeOscillatorPaneRuntime(key));
@@ -1766,7 +1815,20 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       });
       chart.panes()[runtime.paneIndex]?.setStretchFactor(paneStretchFactors[group.key] ?? 1);
     });
-    chart.panes()[0]?.setStretchFactor(paneStretchFactors.price ?? 3.25);
+    if (!persistedOnly || !savedPricePaneHeightRef.current) {
+      chart.panes()[0]?.setStretchFactor(paneStretchFactors.price ?? 3.25);
+    }
+    if (persistedOnly && paneSetChanged) {
+      // An added oscillator may grow the chart surface. Keep the established
+      // price pane at the same pixel height, so candles do not visually zoom
+      // when indicators are selected or removed.
+      const target = savedPricePaneHeightRef.current;
+      if (savedPaneFitFrameRef.current !== null) window.cancelAnimationFrame(savedPaneFitFrameRef.current);
+      savedPaneFitFrameRef.current = window.requestAnimationFrame(() => {
+        savedPaneFitFrameRef.current = null;
+        resizeCharts();
+      });
+    }
     layoutNativePaneOverlays();
   }
 
@@ -2131,10 +2193,29 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       priceChartRef.current.applyOptions({ width: price.clientWidth, height: Math.max(2, price.clientHeight) });
     }
-    priceChartRef.current?.panes()[0]?.setStretchFactor(paneStretchFactors.price ?? 3.25);
-    oscillatorPaneRuntimesRef.current.forEach((runtime, key) => {
-      priceChartRef.current?.panes()[runtime.paneIndex]?.setStretchFactor(paneStretchFactors[key] ?? 1);
-    });
+    if (persistedOnly && savedPricePaneHeightRef.current && priceChartRef.current) {
+      // Pane creation can change the chart's DOM height asynchronously. Read
+      // the settled plot height after applyOptions, then preserve the candle
+      // pane's pixel height rather than merely its price range.
+      const chart = priceChartRef.current;
+      const target = savedPricePaneHeightRef.current;
+      if (savedPaneFitFrameRef.current !== null) window.cancelAnimationFrame(savedPaneFitFrameRef.current);
+      savedPaneFitFrameRef.current = window.requestAnimationFrame(() => {
+        savedPaneFitFrameRef.current = null;
+        const panes = chart.panes();
+        const plotHeight = panes.reduce((total, pane) => total + pane.getHeight(), 0);
+        const oscillatorFactors = panes.slice(1).reduce((total, pane) => total + pane.getStretchFactor(), 0);
+        if (oscillatorFactors > 0 && plotHeight > target + 48) {
+          panes[0].setStretchFactor(target * oscillatorFactors / (plotHeight - target));
+          layoutNativePaneOverlays();
+        }
+      });
+    } else {
+      priceChartRef.current?.panes()[0]?.setStretchFactor(paneStretchFactors.price ?? 3.25);
+      oscillatorPaneRuntimesRef.current.forEach((runtime, key) => {
+        priceChartRef.current?.panes()[runtime.paneIndex]?.setStretchFactor(paneStretchFactors[key] ?? 1);
+      });
+    }
     layoutNativePaneOverlays();
     scheduleOverlayRedrawBurst();
   }
@@ -2301,10 +2382,17 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             annotationCount={payload?.trade_annotations?.length ?? 0}
             selectedIndex={selectedStrategyIndex}
             selectedTrade={selectedStrategy}
+            canFocus={Boolean(selectedStrategy && payload?.candles.length
+              && payload.candles[0].time <= selectedStrategy.entryTime
+              && payload.candles.at(-1)!.time >= selectedStrategy.entryTime)}
             onSelect={(index) => {
               const trade = strategyLifecycles[index];
               if (!trade) return;
               setSelectedStrategyId(trade.id);
+              setPendingPositionFocusId(trade.id);
+            }}
+            onFocus={() => {
+              if (selectedStrategy) setPendingPositionFocusId(selectedStrategy.id);
             }}
             onChange={updateStrategyPresentationSettings}
             onOpenChange={(value) => {
@@ -3603,7 +3691,9 @@ function StrategyPresentationSelect({
   annotationCount,
   selectedIndex,
   selectedTrade,
+  canFocus,
   onSelect,
+  onFocus,
   onChange,
   onOpenChange,
   onReset,
@@ -3613,7 +3703,9 @@ function StrategyPresentationSelect({
   annotationCount: number;
   selectedIndex: number;
   selectedTrade?: TradeAnnotation;
+  canFocus: boolean;
   onSelect: (index: number) => void;
+  onFocus: () => void;
   onChange: (settings: StrategyPresentationSettingsUpdate) => void;
   onOpenChange: (value: boolean) => void;
   onReset: () => void;
@@ -3646,12 +3738,15 @@ function StrategyPresentationSelect({
       <span>Strategy Presentation</span>
       <ChevronDown size={14} />
     </button>
-    {annotationCount > 1 ? <div className="strategy-presentation-navigation" role="group" aria-label="Strategy lifecycle navigation">
+    {annotationCount > 0 ? <div className="strategy-presentation-navigation" role="group" aria-label="Strategy lifecycle navigation">
       <button className="toolbar-button" aria-label="Previous strategy position" title="Previous position" disabled={selectedIndex <= 0} onClick={() => onSelect(selectedIndex - 1)} type="button"><ChevronLeft size={16} /></button>
       <span aria-live="polite" title={selectedTrade ? `${selectedTrade.positionSide ?? "Position"} - ${new Date(selectedTrade.entryTime * 1000).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false })} ET` : "No strategy positions in this chart"}>{selectedIndex + 1} / {annotationCount}</span>
       <input aria-label="Strategy position" aria-valuetext={selectedTrade ? `Position ${selectedIndex + 1} of ${annotationCount}` : "No positions"} disabled={annotationCount < 2} min={1} max={Math.max(1, annotationCount)} step={1} type="range" value={Math.max(1, selectedIndex + 1)} onChange={(event) => onSelect(Number(event.target.value) - 1)} />
       <button className="toolbar-button" aria-label="Next strategy position" title="Next position" disabled={selectedIndex < 0 || selectedIndex >= annotationCount - 1} onClick={() => onSelect(selectedIndex + 1)} type="button"><ChevronRight size={16} /></button>
     </div> : null}
+    {selectedTrade ? <button className="toolbar-button" type="button" onClick={onFocus}
+      disabled={!canFocus} aria-label="Focus selected position"
+      title={canFocus ? "Focus selected position" : "Loading position history"}><Crosshair size={16} /></button> : null}
     {open ? <ChartColumnMenuPortal anchor={triggerRef.current} className="strategy-presentation-menu">
       {selectedDefinition && styleElement ? <StrategyPresentationStylePage
         definition={selectedDefinition}
@@ -3686,7 +3781,9 @@ function StrategyPresentationSelect({
           <label><span><strong>Distant-marker connector</strong><small>Minimum vertical distance before a connector is drawn.</small></span><span className="chart-setting-inline"><input aria-label="Distant marker connector threshold" disabled={!settings.elements.connector.visible} max={48} min={8} onChange={(event) => onChange((current) => ({ ...current, connectorThreshold: Number(event.target.value) }))} type="range" value={settings.connectorThreshold} /><b>{settings.connectorThreshold}px</b></span></label>
         </section>
         <div className="strategy-presentation-element-list" data-disabled={!settings.visible || undefined}>
-          {strategyVisualElementDefinitions.map((definition) => {
+          {strategyVisualElementGroups.map((group) => <section className="strategy-presentation-element-group" key={group.title} aria-label={group.title}>
+            <h4>{group.title}</h4>
+            {strategyVisualElementDefinitions.filter(definition => group.keys.includes(definition.key)).map((definition) => {
             const element = settings.elements[definition.key];
             const fallbackColor = strategyVisualElementFallbackColor(definition.key, palette.text);
             return <div className="strategy-presentation-element" key={definition.key}>
@@ -3703,7 +3800,8 @@ function StrategyPresentationSelect({
               </span>
               <button aria-label={`Customize ${definition.title} style`} className="strategy-presentation-style-button" onClick={() => setStyleElement(definition.key)} title={`Customize ${definition.title} style`} type="button"><Paintbrush size={14} /></button>
             </div>;
-          })}
+            })}
+          </section>)}
         </div>
       </>}
     </ChartColumnMenuPortal> : null}
@@ -3739,6 +3837,16 @@ const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "adjustmentArrow", kind: "marker", title: "Position-change arrow", help: "Exact event time and revised price." },
   { key: "adjustmentLabel", kind: "label", title: "Position-change label", help: "Add, target, stop, trail, and repair detail." },
   { key: "connector", kind: "connector", title: "Distant-marker connector", help: "Dashed link from a distant event marker to its candle." },
+];
+
+// One shared presentation contract for all strategies. Strategies supply
+// semantic actions; only this chart-owned grouping and style map may render them.
+const strategyVisualElementGroups: Array<{ title: string; keys: StrategyVisualElementKey[] }> = [
+  { title: "Entry & fills", keys: ["entryLine", "entryArrow", "entryLabel", "entryFillArrow", "entryFillLabel"] },
+  { title: "Exit, cause & P&L", keys: ["exitLine", "exitArrow", "exitLabel", "exitFillArrow", "exitFillLabel"] },
+  { title: "Strategy references", keys: ["highOfDayLine", "highOfDayLabel", "entryResistanceLine", "entryResistanceLabel", "entryZoneLine", "entryZoneLabel", "levelLine", "levelLabel"] },
+  { title: "Protection & revisions", keys: ["stopLine", "stopLabel", "targetLine", "targetLabel", "adjustmentLine", "adjustmentArrow", "adjustmentLabel"] },
+  { title: "Connectors", keys: ["connector"] },
 ];
 
 type StrategyCompositeLabelKey = "entryLabel" | "entryFillLabel" | "exitLabel" | "exitFillLabel";
@@ -6320,7 +6428,9 @@ function drawSessionRegions(
   plotLayer.className = "session-plot-region";
   plotLayer.style.left = `${priceScaleWidth(chart, "left")}px`;
   plotLayer.style.right = `${priceScaleWidth(chart, "right")}px`;
-  plotLayer.style.bottom = `${chart.timeScale().height()}px`;
+  // The overlay is already clipped to the native pane (the time axis is not
+  // inside it). Subtracting the axis height left an unshaded strip at bottom.
+  plotLayer.style.bottom = "0px";
   layer.appendChild(plotLayer);
   const barWidth = estimateBarWidth(chart, candles);
   regions.forEach((region) => {

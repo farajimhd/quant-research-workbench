@@ -28,6 +28,20 @@ const INDICATOR_DISPLAY: ChartDisplayItem[] = [
   { id: "saved.structural_v7", title: "V7 structural bands · provisional", category: "Indicators", sourceColumns: [] },
 ];
 const pageCache = new Map<string, Promise<ChartPage>>();
+type OverlayPage = { schema_version: string; run_id: string; ticker: string; timeframe: string;
+  indicators: Indicator[]; structural_levels: NonNullable<ChartPage["structural_levels"]>;
+  structural_provenance: { reason: string }; bucket_indices: number[] };
+const overlayCache = new Map<string, Promise<OverlayPage>>();
+const INDICATOR_SELECTION_KEY = "backtest-v4-saved-chart.indicators-v1";
+
+function savedIndicatorSelection(initialShowMacd: boolean): string[] {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(INDICATOR_SELECTION_KEY) ?? "null");
+    if (Array.isArray(stored)) return [...new Set(stored.filter((value): value is string =>
+      typeof value === "string" && INDICATOR_DISPLAY.some(item => item.id === value)))];
+  } catch { /* Browser preference storage may be disabled; keep safe defaults. */ }
+  return initialShowMacd ? ["saved.closed_macd"] : [];
+}
 
 function loadPage(path: string): Promise<ChartPage> {
   const cached = pageCache.get(path);
@@ -59,12 +73,14 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   const [symbol, setSymbol] = useState(ticker);
   const [draftSymbol, setDraftSymbol] = useState(ticker);
   const [frame, setFrame] = useState<(typeof FRAMES)[number]>(initialFrame);
-  const [showMacd, setShowMacd] = useState(initialShowMacd);
-  const [selectedIndicators, setSelectedIndicators] = useState<string[]>(initialShowMacd ? ["saved.closed_macd"] : []);
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>(() => savedIndicatorSelection(initialShowMacd));
+  const showMacd = selectedIndicators.includes("saved.closed_macd");
   const [structureLoading, setStructureLoading] = useState(false);
   const [structureReason, setStructureReason] = useState("");
   const [page, setPage] = useState<ChartPage | null>(null);
+  const [latestPage, setLatestPage] = useState<ChartPage | null>(null);
   const [bars, setBars] = useState<Bar[]>([]);
+  const [barPages, setBarPages] = useState<Bar[][]>([]);
   const [indicators, setIndicators] = useState<Indicator[]>([]);
   const [levels, setLevels] = useState<NonNullable<ChartPage["structural_levels"]>>([]);
   const [loading, setLoading] = useState(false);
@@ -72,35 +88,47 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   const [before, setBefore] = useState<number | null>(null);
 
   useEffect(() => {
+    try { window.localStorage.setItem(INDICATOR_SELECTION_KEY, JSON.stringify(selectedIndicators)); }
+    catch { /* Keep chart usable when preference storage is unavailable. */ }
+  }, [selectedIndicators]);
+
+  useEffect(() => {
     setSymbol(ticker);
     setDraftSymbol(ticker);
     setBefore(null);
     setPage(null);
+    setLatestPage(null);
     setBars([]);
+    setBarPages([]);
     setIndicators([]);
     setLevels([]);
   }, [runId, ticker]);
 
   const canUsePrefetch = Boolean(prefetchedPage && symbol === ticker && frame === initialFrame
-    && before === null && selectedIndicators.length === 1 && selectedIndicators[0] === "saved.closed_macd");
+    && before === null);
   useEffect(() => {
     if (!prefetchedPage || !canUsePrefetch) return;
     setPage(prefetchedPage);
+    setLatestPage(prefetchedPage);
     setBars(prefetchedPage.bars);
+    setBarPages([prefetchedPage.bars]);
     setIndicators(prefetchedPage.indicators);
     setLevels(prefetchedPage.structural_levels ?? []);
   }, [prefetchedPage, canUsePrefetch]);
 
-  useEffect(() => { onQuoteChange?.(page?.quote); }, [onQuoteChange, page?.quote]);
+  useEffect(() => { onQuoteChange?.(latestPage?.quote); }, [onQuoteChange, latestPage?.quote]);
 
   function changeScope(next: { symbol?: string; frame?: (typeof FRAMES)[number]; macd?: boolean }) {
     if (next.symbol !== undefined) setSymbol(next.symbol);
     if (next.frame !== undefined) setFrame(next.frame);
-    if (next.macd !== undefined) { setShowMacd(next.macd); setSelectedIndicators(current => next.macd
+    if (next.macd !== undefined) { setSelectedIndicators(current => next.macd
       ? [...new Set([...current, "saved.closed_macd"])] : current.filter(value => value !== "saved.closed_macd")); }
+    if (next.symbol === undefined && next.frame === undefined) return;
     setBefore(null);
     setPage(null);
+    setLatestPage(null);
     setBars([]);
+    setBarPages([]);
     setIndicators([]);
     setLevels([]);
   }
@@ -126,44 +154,80 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     const params = new URLSearchParams({ ticker: normalized, timeframe: frame,
       row_limit: "1000" });
     if (before !== null) params.set("before_boundary_ms", String(before));
-    // One projected, comma-separated column set; never derive indicators locally.
-    const columns = new Set(INDICATOR_DISPLAY.filter(item => selectedIndicators.includes(item.id))
-      .flatMap(item => item.sourceColumns));
-    if (columns.size && frame !== "1d" && frame !== "1mo") params.set("indicator_columns", [...columns].join(","));
-    const wantsStructure = selectedIndicators.includes("saved.structural_v7");
+    // Stable candle projection: indicator selection must never change this URL.
+    if (frame !== "1d" && frame !== "1mo") params.set("indicator_columns", MACD.join(","));
     setLoading(true);
-    setStructureLoading(wantsStructure);
-    setStructureReason("");
     setError("");
     void loadPage(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart?${params}`).then(value => {
       if (cancelled) return;
       setPage(value);
+      if (before === null) setLatestPage(value);
       setBars(current => before === null ? value.bars : [...value.bars, ...current]);
+      setBarPages(current => before === null ? [value.bars] : [value.bars, ...current]);
       setIndicators(current => before === null ? value.indicators : [...value.indicators, ...current]);
-      if (wantsStructure) {
-        // The V7 certificate can be substantially slower cold than the bar
-        // projection. Keep the chart interactive while its overlay verifies.
-        const structureParams = new URLSearchParams(params);
-        structureParams.set("include_structure", "true");
-        void loadPage(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart?${structureParams}`).then(structurePage => {
-          if (cancelled) return;
-          setLevels(current => before === null ? structurePage.structural_levels ?? []
-            : [...(structurePage.structural_levels ?? []), ...current]);
-          setStructureReason(structurePage.structural_provenance?.reason ?? "");
-        }).catch(reason => {
-          if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-        }).finally(() => { if (!cancelled) setStructureLoading(false); });
-      } else { setLevels([]); setStructureReason(""); }
     }).catch(reason => {
       if (!cancelled) {
         setError(reason instanceof Error ? reason.message : String(reason));
-        setStructureLoading(false);
       }
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [enabled, canUsePrefetch, runId, ticker, symbol, frame, selectedIndicators, before]);
+  }, [enabled, canUsePrefetch, runId, ticker, symbol, frame, before]);
+
+  useEffect(() => {
+    if (!enabled || !barPages.length || frame === "1d" || frame === "1mo") return;
+    const columns = [...new Set(INDICATOR_DISPLAY.filter(item => selectedIndicators.includes(item.id))
+      .flatMap(item => item.sourceColumns))].filter(column => !MACD.includes(column as typeof MACD[number])).sort();
+    const includeStructure = selectedIndicators.includes("saved.structural_v7");
+    if (!columns.length && !includeStructure) return;
+    let cancelled = false;
+    const resolution = { "100ms": 100, "1s": 1000, "5s": 5000, "10s": 10000, "30s": 30000 }[frame];
+    if (!resolution || !page) return;
+    const origin = dateInTimeZone(page.session_date, "04:00", "America/New_York").getTime();
+    // A page retains its immutable bucket identity when older history is
+    // prepended, so cached overlays are not re-read or re-certified.
+    const chunks = barPages.flatMap(chunk => Array.from({ length: Math.ceil(chunk.length / 1000) },
+      (_, index) => chunk.slice(index * 1000, (index + 1) * 1000)));
+    setStructureLoading(includeStructure);
+    void Promise.all(chunks.map(chunk => {
+      const buckets = chunk.map(bar => Math.round((Date.parse(bar.bar_start) - origin + 14_400_000) / resolution));
+      const key = JSON.stringify([runId, symbol, frame, buckets, columns, includeStructure]);
+      let pending = overlayCache.get(key);
+      if (!pending) {
+        pending = api<OverlayPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart-overlays`, {
+          method: "POST", timeoutMs: 60_000,
+          body: JSON.stringify({ ticker: symbol, timeframe: frame, bucket_indices: buckets,
+            indicator_columns: columns, include_structure: includeStructure }),
+        }).then(value => {
+          if (value.schema_version !== "strategy-one-v4-chart-overlays-v1"
+              || value.run_id !== runId || value.ticker !== symbol || value.timeframe !== frame
+              || JSON.stringify(value.bucket_indices) !== JSON.stringify(buckets)) {
+            throw new Error("Saved chart overlay certificate mismatch");
+          }
+          return value;
+        }).catch(reason => { overlayCache.delete(key); throw reason; });
+        if (overlayCache.size >= 32) overlayCache.delete(overlayCache.keys().next().value!);
+        overlayCache.set(key, pending);
+      }
+      return pending;
+    })).then(values => {
+      if (cancelled) return;
+      setIndicators(current => {
+        const byStart = new Map(current.map(row => [row.bar_start, row]));
+        for (const value of values) for (const row of value.indicators) {
+          byStart.set(row.bar_start, { ...byStart.get(row.bar_start), ...row });
+        }
+        return [...byStart.values()].sort((left, right) => left.bar_start.localeCompare(right.bar_start));
+      });
+      if (includeStructure) {
+        setLevels(values.flatMap(value => value.structural_levels));
+        setStructureReason(values.map(value => value.structural_provenance.reason).find(Boolean) ?? "");
+      }
+    }).catch(reason => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
+      .finally(() => { if (!cancelled) setStructureLoading(false); });
+    return () => { cancelled = true; };
+  }, [enabled, barPages, frame, page, runId, symbol, selectedIndicators]);
 
   const payload = useMemo<ChartPayload>(() => {
     const series = (column: string, label: string, color: string, displayItemId = "saved.closed_macd", paneKey = "macd") => ({
@@ -172,6 +236,15 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       paneKey, data: indicators.filter(row => typeof row[column] === "number")
         .map(row => ({ time: Date.parse(row.bar_start) / 1000, value: Number(row[column]) })),
     });
+    const session = page?.session_date;
+    const regions = session ? [
+      { label: "Premarket", color: "var(--chart-premarket)",
+        start: dateInTimeZone(session, "04:00", "America/New_York").getTime() / 1000,
+        end: dateInTimeZone(session, "09:30", "America/New_York").getTime() / 1000 },
+      { label: "After hours", color: "var(--chart-after-hours)",
+        start: dateInTimeZone(session, "16:00", "America/New_York").getTime() / 1000,
+        end: dateInTimeZone(session, "20:00", "America/New_York").getTime() / 1000 },
+    ] : [];
     return { timeframe: frame, candles: bars.map(bar => ({
       time: Date.parse(bar.bar_start) / 1000,
       endTime: Date.parse(bar.bar_end) / 1000, isClosed: bar.is_closed !== false,
@@ -200,11 +273,21 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
           start: level.start, end: level.end, renderMode: "zone" as const,
           fillOpacity: 0.08,
         })) : [],
-      markers: [], regions: [], trade_annotations: tradeAnnotations,
+      markers: [], regions, trade_annotations: tradeAnnotations,
     };
-  }, [bars, indicators, levels, frame, showMacd, selectedIndicators, tradeAnnotations]);
+  }, [bars, indicators, levels, frame, showMacd, selectedIndicators, tradeAnnotations, page?.session_date]);
 
   const older = page && pageBoundary(page);
+  useEffect(() => {
+    // Saved position evidence can precede the most recent candle page. Fill
+    // that gap in the background; never move or refit the user's viewport.
+    if (!enabled || loading || !older || !bars.length || !tradeAnnotations.length
+        || frame === "1d" || frame === "1mo") return;
+    const earliest = Math.min(...tradeAnnotations.map(trade => trade.entryTime));
+    if (Number.isFinite(earliest) && Date.parse(bars[0].bar_start) / 1000 > earliest - 60) {
+      setBefore(older);
+    }
+  }, [enabled, loading, older, bars, tradeAnnotations, frame]);
   const compactContext = embedded && (frame === "1d" || frame === "1mo");
   return <section className="backtest-v4-saved-chart" aria-label={`Saved ${symbol} chart`}>
     {panelLabel ? <span className="backtest-v4-panel-label" title={compactContext && page
@@ -216,9 +299,9 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       <label>Resolution <select aria-label="Chart resolution" value={frame} onChange={event => changeScope({ frame: event.target.value as (typeof FRAMES)[number] })}>{FRAMES.map(value => <option key={value}>{value}</option>)}</select></label>
       {frame !== "1d" && frame !== "1mo" ? <label><input type="checkbox" checked={showMacd} onChange={event => changeScope({ macd: event.target.checked })} /> Closed MACD</label> : null}
     </div> : null}
-    {!embedded ? <p className="backtest-v4-chart-source">ARTE closed bars and indicators · {page ? `verified through ${page.verified_boundary_ms.toLocaleString()} ms from 04:00 ET` : "verifying saved run…"}</p> : null}
-    {page ? <div className="backtest-v4-quote" aria-label={`${symbol} saved bid and ask`}>
-      {page.quote ? <><span><small>Bid</small><strong>{page.quote.bid.toFixed(4)}</strong><em>{page.quote.bid_size.toLocaleString()} shares</em></span><span><small>Ask</small><strong>{page.quote.ask.toFixed(4)}</strong><em>{page.quote.ask_size.toLocaleString()} shares</em></span><span><small>Quote at saved boundary</small><strong>{page.quote.fresh ? "Fresh" : "Stale"}</strong><em>{page.quote.age_ms.toLocaleString()} ms old · pinned liquidity</em></span></>
+    {!embedded ? <p className="backtest-v4-chart-source">ARTE closed bars and indicators · {latestPage ? `verified through ${latestPage.verified_boundary_ms.toLocaleString()} ms from 04:00 ET` : "verifying saved run…"}</p> : null}
+    {latestPage ? <div className="backtest-v4-quote" aria-label={`${symbol} saved bid and ask`}>
+      {latestPage.quote ? <><span><small>Bid</small><strong>{latestPage.quote.bid.toFixed(4)}</strong><em>{latestPage.quote.bid_size.toLocaleString()} shares</em></span><span><small>Ask</small><strong>{latestPage.quote.ask.toFixed(4)}</strong><em>{latestPage.quote.ask_size.toLocaleString()} shares</em></span><span><small>Quote at saved boundary</small><strong>{latestPage.quote.fresh ? "Fresh" : "Stale"}</strong><em>{latestPage.quote.age_ms.toLocaleString()} ms old · pinned liquidity</em></span></>
         : <span><small>Quote at saved boundary</small><strong>Unavailable</strong><em>No certified quote in this window</em></span>}
     </div> : null}
     {!compactContext && page?.indicator_provenance.unavailable_columns.length ? <p role="note">Stale indicators: {page.indicator_provenance.unavailable_columns.join(", ")}</p> : null}
@@ -227,11 +310,11 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       ? <p role="note">V7 structure unavailable: {structureReason}</p> : null}
     {!compactContext && page?.history_limited ? <p role="note">ARTE history available from {page.history_first_session}; earlier {frame === "1mo" ? "months" : "sessions"} are unavailable.</p> : null}
     {error ? <p role="alert">Chart unavailable: {error}</p> : null}
-    <ChartPanel persistedOnly payload={payload} ticker={symbol} timeframe={frame} timeframes={[...allowedFrames]}
+    <ChartPanel persistedOnly settingsStorageKey="backtest-v4-strategy-one" payload={payload}
+      ticker={symbol} timeframe={frame} timeframes={[...allowedFrames]}
       featureOptions={[]} indicatorOptions={[]} displayItemOptions={frame === "1d" || frame === "1mo" ? [] : INDICATOR_DISPLAY}
       visibleColumns={selectedIndicators} onVisibleColumnsChange={values => {
-        setSelectedIndicators(values); setShowMacd(values.includes("saved.closed_macd"));
-        setBefore(null); setPage(null); setBars([]); setIndicators([]); setLevels([]);
+        setSelectedIndicators(values);
       }}
       onTickerChange={value => changeScope({ symbol: value })} onTimeframeChange={value => changeScope({ frame: value as (typeof FRAMES)[number] })}
       emptyMessage="No price-bearing bars in this verified run window." loading={loading && !page}

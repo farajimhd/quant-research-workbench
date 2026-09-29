@@ -1,6 +1,7 @@
 """A saved Strategy 1 chart may read only its reconstructed pinned market plan."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -141,6 +142,40 @@ def test_saved_daily_context_uses_arte_context_reader_not_intraday_reader(monkey
     assert result["timeframe"] == "1d"
     assert seen[0]["run_plan"] is plan
     assert seen[0]["boundary_ms"] == 19_500_000
+
+
+def test_overlay_reads_only_pinned_indicators_without_reloading_bars(monkeypatch):
+    plan = _fixtures(monkeypatch)
+    technical = MarketDayUnit(
+        "build", "2026-08-18", "SUGP", "technical",
+        "22222222-2222-4222-8222-222222222222", "f" * 64, 1, "e" * 64)
+    plan = replace(plan, units=(*plan.units, technical))
+    monkeypatch.setattr(subject, "chart_page", lambda **_kwargs: pytest.fail(
+        "overlay attempted to reload bars"))
+    class ReadClient:
+        def execute(self, query):
+            assert "FROM arte.indicators_v1" in query
+            assert "FROM arte.bars_v1" not in query
+            assert technical.attempt_id in query
+            return '{"bucket_index":14400,"ema_7":1.23}\n'
+    result = subject.cold_v4_chart_overlays(
+        object(), ReadClient(), run_id=RUN_ID, ticker="SUGP",
+        timeframe="1s", bucket_indices=(14400,),
+        indicator_columns=("ema_7",), plan_loader=lambda **_kwargs: plan)
+    assert result["indicators"][0]["ema_7"] == 1.23
+    assert result["indicators"][0]["bar_start"].endswith("04:00:00-04:00")
+
+
+def test_overlay_rejects_unverified_buckets_before_any_market_read(monkeypatch):
+    plan = _fixtures(monkeypatch)
+    class NoRead:
+        def execute(self, _query):
+            pytest.fail("invalid overlay reached market read")
+    with pytest.raises(ValueError, match="cursor"):
+        subject.cold_v4_chart_overlays(
+            object(), NoRead(), run_id=RUN_ID, ticker="SUGP",
+            timeframe="1s", bucket_indices=(164000,),
+            indicator_columns=("ema_7",), plan_loader=lambda **_kwargs: plan)
 
 
 def test_structural_chart_uses_completed_boundaries_and_compact_segments(monkeypatch):

@@ -8,11 +8,14 @@ selection can stand in for that proof.
 from __future__ import annotations
 
 import json
+import re
+from collections import OrderedDict
 from datetime import date, datetime
+from threading import Lock
 from typing import Any, Callable
 from uuid import UUID
 
-from src.backend.arte_chart_reader import _RESOLUTIONS, chart_page
+from src.backend.arte_chart_reader import _INDICATORS, _RESOLUTIONS, chart_page
 from src.backend.backtest_v4_chart_context import (
     context_chart_page, context_chart_pages,
 )
@@ -26,6 +29,14 @@ from src.backend.backtest_strategy_one_configuration import (
 from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page
 from src.trading_runtime.arte_backtest_definition import load_backtest_definition
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+
+# A terminal saved run and its market-plan token are immutable. Keep only a
+# bounded number of fully certified per-ticker V7 interval roots in memory so
+# chart paging clips them without re-reading the whole structural product.
+_v7_chart_cache: OrderedDict[tuple[str, str, str, str], tuple[Any, ...]] = OrderedDict()
+_v7_chart_cache_lock = Lock()
+_V7_CHART_CACHE_MAX = 16
 
 
 def _literal(value: str) -> str:
@@ -172,32 +183,46 @@ def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
     """
     if not bars or len(bars) > 1000:
         return [], "No completed bars in this chart page"
-    from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
-    from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
-    from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
-    from src.backend.structural_v7_seed import certified_seed_plan
-    from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+    cache_key = (run_id, plan.token, session.isoformat(), ticker)
+    with _v7_chart_cache_lock:
+        rows = _v7_chart_cache.get(cache_key)
+        if rows is not None:
+            _v7_chart_cache.move_to_end(cache_key)
+    if rows is None:
+        from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+        from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
+        from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
+        from src.backend.structural_v7_seed import certified_seed_plan
+        from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
-    definition = load_backtest_definition(
-        journal_client, run_id, run_context=run_context)
-    candidates = certify_candidate_plan(
-        plan, candidate_rule_digest=RULE_DIGEST,
-        through_boundary_ms=57_600_000, client=market_client)
-    selected = strategy_one_v7_tickers(candidates.prepared)
-    if ticker not in selected:
-        return [], "No certified V7 seed for this run ticker"
-    execution_plan = project_market_day_plan(plan, selected)
-    seeds = certified_seed_plan(execution_plan, market_client)
-    if seeds.token != definition["definition"]["causal_v7_plan_token"]:
-        raise RuntimeError("Saved chart V7 seed certificate differs from the run")
-    # The full saved seed token proves the run's selected population. The
-    # chart needs only this ticker's interval children; loading and hashing
-    # every other ticker's V7 clock/geometry adds seconds without increasing
-    # the authority of this ticker's projection.
-    ticker_plan = project_market_day_plan(plan, (ticker,))
-    intervals = certify_v7_interval_plan(
-        ticker_plan, seeds, session_date=session.isoformat(),
-        candidate_tickers=(ticker,), client=market_client)
+        definition = load_backtest_definition(
+            journal_client, run_id, run_context=run_context)
+        candidates = certify_candidate_plan(
+            plan, candidate_rule_digest=RULE_DIGEST,
+            through_boundary_ms=57_600_000, client=market_client)
+        selected = strategy_one_v7_tickers(candidates.prepared)
+        if ticker not in selected:
+            return [], "No certified V7 seed for this run ticker"
+        execution_plan = project_market_day_plan(plan, selected)
+        seeds = certified_seed_plan(execution_plan, market_client)
+        if seeds.token != definition["definition"]["causal_v7_plan_token"]:
+            raise RuntimeError("Saved chart V7 seed certificate differs from the run")
+        # The full saved seed token proves the run's selected population. The
+        # chart needs only this ticker's interval children.
+        ticker_plan = project_market_day_plan(plan, (ticker,))
+        intervals = certify_v7_interval_plan(
+            ticker_plan, seeds, session_date=session.isoformat(),
+            candidate_tickers=(ticker,), client=market_client)
+        selected_rows = next((values for symbol, values in intervals.intervals
+                              if symbol == ticker), None)
+        if selected_rows is None:
+            raise RuntimeError("Certified V7 interval plan omitted chart ticker")
+        rows = tuple(selected_rows)
+        with _v7_chart_cache_lock:
+            _v7_chart_cache[cache_key] = rows
+            _v7_chart_cache.move_to_end(cache_key)
+            if len(_v7_chart_cache) > _V7_CHART_CACHE_MAX:
+                _v7_chart_cache.popitem(last=False)
     first_ms = int((datetime.fromisoformat(bars[0]["bar_end"])
                     - market_day_boundary(session, 0)).total_seconds() * 1000)
     last_ms = int((datetime.fromisoformat(bars[-1]["bar_end"])
@@ -207,10 +232,6 @@ def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
     if not 0 <= first_ms <= last_ms <= 57_600_000 or resolution_ms <= 0:
         raise RuntimeError("Saved V7 chart has an invalid completed bar clock")
     origin = market_day_boundary(session, 0).timestamp()
-    rows = next((values for symbol, values in intervals.intervals
-                 if symbol == ticker), None)
-    if rows is None:
-        raise RuntimeError("Certified V7 interval plan omitted chart ticker")
     segments = [{"level_id": row.level_id, "role": row.role,
                  "lower": row.lower, "upper": row.upper,
                  "start": origin + max(first_ms, row.valid_from_ms) / 1000,
@@ -308,6 +329,88 @@ def cold_v4_chart_page(
                                   "reason": structure_reason},
         **page,
     }
+
+
+def cold_v4_chart_overlays(
+    journal_client: Any, market_client: Any, *, run_id: str,
+    ticker: str, timeframe: str, bucket_indices: tuple[int, ...],
+    indicator_columns: tuple[str, ...] = (), include_structure: bool = False,
+    plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,
+) -> dict[str, Any]:
+    """Read pinned overlays for client-held candles without selecting bars again."""
+    normalized = str(UUID(run_id))
+    symbol = ticker.strip().upper()
+    if (not re.fullmatch(r"[A-Z0-9.\-]{1,24}", symbol)
+            or timeframe not in _RESOLUTIONS
+            or not isinstance(bucket_indices, tuple)
+            or not 1 <= len(bucket_indices) <= 1000
+            or any(type(bucket) is not int or bucket < 0 for bucket in bucket_indices)
+            or any(left >= right for left, right in zip(bucket_indices, bucket_indices[1:]))
+            or not isinstance(indicator_columns, tuple)
+            or len(indicator_columns) > 32
+            or any(column not in (_INDICATORS | {"execution_vwap"}) or column == "bar_start"
+                   for column in indicator_columns)
+            or not isinstance(include_structure, bool)):
+        raise ValueError("Saved chart overlay request is invalid")
+    session, context, cursor, plan = certified_saved_run_plan(
+        journal_client, market_client, run_id=normalized, plan_loader=plan_loader)
+    resolution = _RESOLUTIONS[timeframe]
+    if symbol not in plan.tickers or resolution not in plan.required_resolutions_ms:
+        raise RuntimeError("Saved overlay is outside the certified market plan")
+    last_end_ms = (bucket_indices[-1] + 1) * resolution - SESSION_OPEN_OFFSET_MS
+    first_start_ms = bucket_indices[0] * resolution - SESSION_OPEN_OFFSET_MS
+    if not 0 <= first_start_ms < last_end_ms <= int(cursor["boundary_ms"]):
+        raise ValueError("Saved overlay exceeds the completed run cursor")
+    bars = [
+        {"bar_start": (market_day_boundary(session, bucket * resolution
+                                             - SESSION_OPEN_OFFSET_MS)).isoformat(),
+         "bar_end": (market_day_boundary(session, (bucket + 1) * resolution
+                                           - SESSION_OPEN_OFFSET_MS)).isoformat()}
+        for bucket in bucket_indices
+    ]
+    selected = sorted(set(indicator_columns) - {"execution_vwap"})
+    indicators: list[dict[str, Any]] = []
+    if selected:
+        matches = [unit for unit in plan.units if unit.session_date == session.isoformat()
+                   and unit.ticker == symbol and unit.stage == "technical"]
+        if len(matches) != 1:
+            raise RuntimeError("Saved overlay lacks a unique pinned technical attempt")
+        columns = ",".join(selected)
+        buckets = ",".join(str(bucket) for bucket in bucket_indices)
+        query = assert_select_only(
+            f"SELECT bucket_index,{columns} FROM arte.indicators_v1 "
+            f"WHERE build_id={_literal(plan.build_id)} "
+            f"AND session_date=toDate({_literal(session.isoformat())}) "
+            f"AND ticker={_literal(symbol)} "
+            f"AND attempt_id=toUUID({_literal(matches[0].attempt_id)}) "
+            f"AND resolution_ms={resolution} AND bucket_index IN ({buckets}) "
+            "ORDER BY bucket_index FORMAT JSONEachRow")
+        rows = [json.loads(line) for line in market_client.execute(query).splitlines()
+                if line.strip()]
+        # A missing row must not be disguised as an unavailable/stale overlay.
+        if ([int(row["bucket_index"]) for row in rows] != list(bucket_indices)
+                or any(row.get(column) is None for row in rows for column in selected)):
+            raise RuntimeError("Certified ARTE overlay has missing pinned indicator rows")
+        indicators = [{"bar_start": bars[index]["bar_start"],
+                       **{column: row[column] for column in selected}}
+                      for index, row in enumerate(rows)]
+    if "execution_vwap" in indicator_columns:
+        by_start = {row["bar_start"]: row for row in indicators}
+        for row in _pinned_execution_vwap(market_client, plan, session=session,
+                                          ticker=symbol, timeframe=timeframe,
+                                          bars=bars):
+            by_start.setdefault(row["bar_start"], {"bar_start": row["bar_start"]}).update(row)
+        indicators = [by_start[key] for key in sorted(by_start)]
+    structure, reason = (_causal_v7_chart_segments(
+        journal_client, market_client, run_id=normalized, run_context=context,
+        session=session, ticker=symbol, plan=plan, bars=bars)
+        if include_structure else ([], "Not requested"))
+    return {"schema_version": "strategy-one-v4-chart-overlays-v1",
+            "run_id": normalized, "ticker": symbol, "timeframe": timeframe,
+            "market_plan_token": plan.token, "bucket_indices": list(bucket_indices),
+            "indicators": indicators, "structural_levels": structure,
+            "structural_provenance": {"authority": "prior V7 seed + completed ARTE 1s bars",
+                                      "available": not reason, "reason": reason}}
 
 
 def cold_v4_chart_context_pair(

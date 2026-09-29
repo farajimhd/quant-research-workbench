@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+import re
 from uuid import UUID
 
 from src.trading_runtime.arte_backtest_snapshot_anchor import (
@@ -513,3 +514,49 @@ def load_cached_v4_performance_report(client, run_id: str, *,
         # A large but valid report remains readable without growing the cache.
         pass
     return report
+
+
+def load_v4_chart_trades(client, run_id: str, ticker: str) -> dict:
+    """Bounded ticker projection of the verified terminal performance report.
+
+    A chart needs only position markers and effective protection rails, not
+    every execution, fee, episode, and journal-derived diagnostic for the run.
+    Keep the full-prefix/head check in the shared report reader before pruning.
+    """
+    symbol = ticker.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9.-]{1,24}", symbol):
+        raise ValueError("Saved chart trade ticker is invalid")
+    page = load_cached_v4_performance_report(client, run_id)
+    lifecycles = []
+    for row in page["position_lifecycles"]:
+        instrument = row.get("instrument")
+        if not isinstance(instrument, dict) or not isinstance(instrument.get("symbol"), str):
+            raise RuntimeError("Saved chart lifecycle lacks an instrument identity")
+        if instrument["symbol"].upper() != symbol:
+            continue
+        required = ("episode_id", "opened_at", "entry_price", "side",
+                    "quantity", "status", "protection_timeline")
+        if any(key not in row for key in required):
+            raise RuntimeError("Saved chart lifecycle lacks position evidence")
+        rails = []
+        for event in row["protection_timeline"]:
+            if event.get("phase") != "effective" or event.get("kind") not in {"stop", "target"}:
+                continue
+            keys = ("event_time", "sequence", "order_id", "kind",
+                    "phase", "price", "active")
+            if any(key not in event for key in keys):
+                raise RuntimeError("Saved chart protection rail lacks typed evidence")
+            rails.append({key: event[key] for key in keys})
+        lifecycles.append({
+            "episode_id": row["episode_id"],
+            "instrument": {"symbol": instrument["symbol"]},
+            **{key: row.get(key) for key in (
+                "opened_at", "entry_price", "closed_at", "exit_price",
+                "side", "quantity", "status", "exit_reason",
+                "presentation_exit_reason", "net_pnl")},
+            "protection_timeline": rails,
+        })
+    return {"schema_version": "strategy-one-v4-chart-trades-v1",
+            "run_id": page["run_id"], "ticker": symbol,
+            "verified_sequence": page["verified_sequence"],
+            "position_lifecycles": lifecycles}

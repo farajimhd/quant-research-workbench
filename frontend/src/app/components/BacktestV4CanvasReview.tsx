@@ -34,6 +34,13 @@ type PerformancePage = {
   fill_count: number;
   fee_count: number;
 };
+type ChartTradesPage = {
+  schema_version: "strategy-one-v4-chart-trades-v1";
+  run_id: string;
+  ticker: string;
+  verified_sequence: number;
+  position_lifecycles: Array<Record<string, unknown>>;
+};
 type OrderPage = {
   schema_version: "strategy-one-v4-order-history-page-v1";
   commands: Array<Record<string, unknown>>;
@@ -418,11 +425,13 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
   const [contextError, setContextError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void api<PerformancePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-performance?include_entry_context=false`, {
+    void api<ChartTradesPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart-trades?ticker=${encodeURIComponent(ticker)}`, {
       signal: controller.signal, timeoutMs: 60_000,
     }).then(value => {
       if (controller.signal.aborted) return;
-      if (value.schema_version !== "strategy-one-v4-performance-report-v1") {
+      if (value.schema_version !== "strategy-one-v4-chart-trades-v1"
+          || value.run_id !== runId || value.ticker !== ticker.toUpperCase()
+          || !Number.isSafeInteger(value.verified_sequence) || value.verified_sequence < 1) {
         throw new Error("Saved position evidence contract mismatch");
       }
       // The saved chart uses the same lifecycle identity as the journal. Never

@@ -82,3 +82,41 @@ def test_performance_cache_rechecks_head_and_is_not_mutated_by_journal(monkeypat
     with pytest.raises(RuntimeError, match="head changed"):
         review.load_cached_v4_performance_report(object(), RUN_ID, cache=cache)
     assert current["projections"] == 2
+
+
+def test_chart_trades_prunes_other_tickers_and_non_effective_evidence(monkeypatch):
+    from src.backend import backtest_v4_saved_review as review
+
+    source = {
+        "run_id": RUN_ID, "verified_sequence": 12,
+        "report": {"episodes": [{"not_for_chart": "bulky"}]},
+        "position_lifecycles": [
+            {"episode_id": "one", "instrument": {"symbol": "SLE", "conid": 123},
+             "opened_at": "2026-08-18T13:00:00+00:00", "entry_price": "6.1",
+             "closed_at": "2026-08-18T13:01:00+00:00", "exit_price": "6.4",
+             "side": "LONG", "quantity": "100", "status": "closed",
+             "exit_reason": "", "presentation_exit_reason": "target_hit",
+             "net_pnl": "30", "unneeded_large_field": "omit",
+             "protection_timeline": [
+                 {"phase": "effective", "kind": "target", "event_time": "2026-08-18T13:00:01+00:00",
+                  "sequence": 4, "order_id": "order-1", "price": "6.4", "active": True,
+                  "unneeded_detail": "omit"},
+                 {"phase": "proposed", "kind": "stop", "event_time": "2026-08-18T13:00:02+00:00"}]},
+            {"episode_id": "two", "instrument": {"symbol": "OTHER"},
+             "opened_at": "2026-08-18T13:00:00+00:00", "entry_price": "1",
+             "side": "LONG", "quantity": "10", "status": "open",
+             "protection_timeline": []},
+        ],
+    }
+    monkeypatch.setattr(review, "load_cached_v4_performance_report", lambda *_: source)
+    result = review.load_v4_chart_trades(object(), RUN_ID, "sle")
+    assert result["schema_version"] == "strategy-one-v4-chart-trades-v1"
+    assert result["verified_sequence"] == 12
+    assert len(result["position_lifecycles"]) == 1
+    row = result["position_lifecycles"][0]
+    assert row["instrument"] == {"symbol": "SLE"}
+    assert row["presentation_exit_reason"] == "target_hit"
+    assert row["protection_timeline"] == [{
+        "phase": "effective", "kind": "target", "event_time": "2026-08-18T13:00:01+00:00",
+        "sequence": 4, "order_id": "order-1", "price": "6.4", "active": True}]
+    assert "report" not in result and "unneeded_large_field" not in row
