@@ -38,14 +38,20 @@ def _profile_v7_updates(enabled: bool):
         yield
         return
     from src.backend.fixed_v7_stream import FixedV7Cache, FixedV7Stream
+    from src.backend.fixed_v7_interval_cache import FixedV7IntervalCache
     from src.market_engine import reaction_band
 
     original = FixedV7Stream.update_second
     original_stream = FixedV7Cache._stream
+    original_interval_load = FixedV7IntervalCache._load_to
+    original_interval_levels = FixedV7IntervalCache.strategy_one_levels
+    original_interval_advance = FixedV7IntervalCache.advance_seconds
     original_fit = reaction_band.fit
     profiles: dict[int, cProfile.Profile] = {}
     fit_shapes: Counter[tuple[str, int]] = Counter()
     stream_calls: Counter[str] = Counter()
+    interval_calls: Counter[str] = Counter()
+    interval_seconds: Counter[str] = Counter()
     lock = Lock()
 
     def wrapped(self, row, **clock):
@@ -68,17 +74,40 @@ def _profile_v7_updates(enabled: bool):
             stream_calls[ticker] += 1
         return original_stream(self, ticker, as_of=as_of)
 
+    def timed_interval(label, original_method):
+        def call(self, *args, **kwargs):
+            started = perf_counter()
+            try:
+                return original_method(self, *args, **kwargs)
+            finally:
+                elapsed = perf_counter() - started
+                with lock:
+                    interval_calls[label] += 1
+                    interval_seconds[label] += elapsed
+        return call
+
     FixedV7Stream.update_second = wrapped
     FixedV7Cache._stream = counted_stream
+    FixedV7IntervalCache._load_to = timed_interval("load_to", original_interval_load)
+    FixedV7IntervalCache.strategy_one_levels = timed_interval(
+        "levels", original_interval_levels)
+    FixedV7IntervalCache.advance_seconds = timed_interval(
+        "advance_seconds", original_interval_advance)
     reaction_band.fit = counted_fit
     try:
         yield
     finally:
         FixedV7Stream.update_second = original
         FixedV7Cache._stream = original_stream
+        FixedV7IntervalCache._load_to = original_interval_load
+        FixedV7IntervalCache.strategy_one_levels = original_interval_levels
+        FixedV7IntervalCache.advance_seconds = original_interval_advance
         reaction_band.fit = original_fit
         print(f"V7 cache stream calls={sum(stream_calls.values())} "
               f"tickers={len(stream_calls)} update_threads={len(profiles)}", flush=True)
+        for label in ("load_to", "levels", "advance_seconds"):
+            print(f"V7 interval {label}: calls={interval_calls[label]} "
+                  f"wall_s={interval_seconds[label]:.3f}", flush=True)
         print("V7 fit observation shapes (length 20 means 20+): "
               + ", ".join(f"{shape}/{length}={count}"
                           for (shape, length), count in sorted(fit_shapes.items())),

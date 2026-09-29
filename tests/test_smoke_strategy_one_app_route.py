@@ -91,13 +91,21 @@ def test_seed_diagnostic_restores_wrapped_worker_functions(monkeypatch, capsys) 
 
 def test_v7_diagnostic_reports_cache_use_and_restores_methods(monkeypatch, capsys) -> None:
     from src.backend.fixed_v7_stream import FixedV7Cache, FixedV7Stream
+    from src.backend.fixed_v7_interval_cache import FixedV7IntervalCache
 
     stream = Mock(return_value="ready")
     update = Mock()
     monkeypatch.setattr(FixedV7Cache, "_stream", stream)
     monkeypatch.setattr(FixedV7Stream, "update_second", update)
+    interval = Mock(return_value=())
+    monkeypatch.setattr(FixedV7IntervalCache, "strategy_one_levels", interval)
     with probe._profile_v7_updates(True):
         assert FixedV7Cache._stream(object(), "TEST", as_of="clock") == "ready"
+        assert FixedV7IntervalCache.strategy_one_levels(
+            object(), "TEST", as_of="clock") == ()
     assert FixedV7Cache._stream is stream
     assert FixedV7Stream.update_second is update
-    assert "V7 cache stream calls=1 tickers=1 update_threads=0" in capsys.readouterr().out
+    assert FixedV7IntervalCache.strategy_one_levels is interval
+    output = capsys.readouterr().out
+    assert "V7 cache stream calls=1 tickers=1 update_threads=0" in output
+    assert "V7 interval levels: calls=1 wall_s=" in output
