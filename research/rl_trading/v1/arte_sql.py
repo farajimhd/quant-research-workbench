@@ -5,7 +5,8 @@ from pipelines.market_sip.events.trade_reporting_flags import DELAYED
 from research.mlops.clickhouse import (ClickHouseHttpClient, default_clickhouse_url,
     default_clickhouse_user, default_clickhouse_password)
 
-TABLES = frozenset({'bars_v1', 'indicators_v1', 'structural_levels_v7',
+TABLES = frozenset({'bars_v1', 'indicators_v1', 'liquidity_100ms_v1',
+                    'structural_levels_v7',
                     'structural_level_observations_v7', 'structural_level_coverage_v7'})
 POLICY = 'live_market_ssd'
 
