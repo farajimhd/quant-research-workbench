@@ -85,6 +85,15 @@ bind those proposals to actual fills before training or replay.
 It verifies the source certificate and candidate hash without fetching market
 data or recomputing the candle bank.
 
-Production builders remain stopped while this contract is completed and a
-bounded one-day canary audits source identity, label/replay parity, throughput,
-memory, and outcome counts. No V6 model is trained by these modules alone.
+The old Phase 1/2 and Phase 3 builders remain stopped. The new bounded
+August 5 compiler benchmark certified 6,122 listings and 26.79 million actual
+candles in 1,128.46 seconds at 16 workers. It produced 40,184 qualified
+candidates; their allocation sidecar has 7,336 first-eligible intents. These
+are not executable fills or a profit result. No V6 model is trained by these
+modules alone.
+
+`build_campaign.py` is a serial, restart-safe day controller for context,
+training, and development banks. It uses the exact previous trading day and
+the two certified market-day manifests, crossing the August 17/18 boundary
+explicitly. It stops at a missing certificate. August 26 is absent from its
+date list so the sealed holdout is not consumed during data preparation.
