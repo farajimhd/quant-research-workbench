@@ -61,9 +61,9 @@ from src.trading_runtime.arte_oms_projection import (
     load_recovered_strategy_one_oms_lineage,
 )
 from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_engine_state
-from src.trading_runtime.canonical_session import CanonicalBrokerSession
-from src.trading_runtime.domain import BrokerProvider, TradingMode
+from src.trading_runtime.domain import TradingMode
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
+from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 from src.trading_runtime.portfolio import PortfolioManagementEngine
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
@@ -261,12 +261,16 @@ def audit(*, run_id: str, build_id: str, session: date,
                 boundary_ms=int(broker.snapshot["boundary_ms"]),
                 state=restored.broker_match_snapshot_state()) != broker:
             raise RuntimeError("Restored broker differs from normalized checkpoint")
-        canonical = CanonicalBrokerSession(
-            restored, mode=TradingMode.BACKTEST,
-            provider=BrokerProvider.SIMULATED)
-        asyncio.run(canonical.bootstrap())
-        portfolio.reconcile_recovered_backtest_canonical(
-            canonical.projector.snapshot(), completed_at=boundary)
+        runtime = TradingRuntime(
+            RunConfig(RunMode.BACKTEST, STRATEGY_ID, STRATEGY_NUMBER,
+                      tuple(row["account_id"] for row in broker.accounts),
+                      session, run_id=run_id),
+            restored, SimpleNamespace(strategy_id=STRATEGY_ID,
+                                      revision=STRATEGY_NUMBER,
+                                      automatic=True),
+            campaign_journal, portfolio=portfolio, review_only=True)
+        runtime.last_event_time = boundary
+        asyncio.run(runtime.initialize(record_lifecycle=False, review_only=True))
         candidates = certify_candidate_plan(
             plan, candidate_rule_digest=RULE_DIGEST,
             through_boundary_ms=57_600_000, client=market_http)
