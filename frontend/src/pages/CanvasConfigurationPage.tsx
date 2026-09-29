@@ -403,7 +403,10 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [canvasId, overlayEpoch, replayRun?.execution_mode, requestedInstanceId, runtimeBase, transient, workspaceStorageKey]);
   const [registry, setRegistry] = useState<CanvasRegistry>(() => {
     const base = runtimeBase
-      ? transient && !replayRun ? runtimeBase : readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
+      // Saved V4 ticker drilldowns are isolated, transient focus canvases.
+      // Never let a persisted runtime overlay replace their certified
+      // Charts & Quotes-only profile with an older or single-chart layout.
+      ? transient && (!replayRun || savedV4Focus) ? runtimeBase : readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
       : readCanvasRegistry();
     return replayRun?.execution_mode === "strategy" && !transient
       ? strategyReplayRegistry(base, replayRun)
