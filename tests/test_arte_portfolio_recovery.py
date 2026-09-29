@@ -281,6 +281,67 @@ def test_recovered_backtest_portfolio_requires_exact_broker_positions(monkeypatc
     assert engine.states["account-id"].sync_state == PortfolioSyncState.FULLY_BLOCKED
 
 
+def test_runtime_initializes_recovered_backtest_from_completed_canonical_snapshot(monkeypatch) -> None:
+    from src.trading_runtime import runtime as runtime_module
+    from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
+    from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+
+    client, profile = _client(monkeypatch)
+    profile = replace(profile, mode="backtest")
+    restored = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+    journal = BacktestMemoryJournal(run_id="live-run", initial_sequence=7)
+    portfolio = PortfolioManagementEngine(
+        (profile,), journal=journal, run_id="live-run",
+        strategy_id="strategy-a", strategy_revision=1,
+        typed_recovery=restored, event_clock=lambda: AT)
+    values = (SimpleNamespace(
+        account_id="account-id", key="NetLiquidation", segment="base",
+        monetary_value=1000, value=None, source_event_time=AT),)
+    ledgers = (SimpleNamespace(
+        account_id="account-id", is_base=True, currency="USD",
+        values={"cashbalance": 989.5, "netliquidationvalue": 1000},
+        source_event_time=AT),)
+    position_row = SimpleNamespace(
+        account_id="account-id",
+        instrument=SimpleNamespace(conid=1, symbol="AAA", currency="USD",
+                                   security_type="STK"),
+        quantity=2, market_price=5.25, market_value=10.5,
+        average_cost=5.25, average_price=5.25, realized_pnl=0,
+        unrealized_pnl=0, raw={}, model="", snapshot_id="broker-snap",
+        source_event_time=AT)
+    snapshot = TradingStateSnapshot(
+        schema_version=1, mode=TradingMode.BACKTEST,
+        provider=BrokerProvider.SIMULATED, as_of=AT,
+        account_ids=("account-id",), complete=True, stale=False,
+        stale_reason="", accounts=(SimpleNamespace(
+            account_id="account-id", can_view=True, can_trade=True),),
+        account_values=values, ledger=ledgers, positions=(position_row,),
+        orders=(), executions=())
+
+    class Session:
+        def __init__(self, *_args, **_kwargs):
+            self.projector = SimpleNamespace(snapshot=lambda: snapshot)
+
+        async def bootstrap(self):
+            return None
+
+    monkeypatch.setattr(runtime_module, "CanonicalBrokerSession", Session)
+    broker = SimulatedBrokerAdapter(["account-id"], mode=TradingMode.BACKTEST)
+    strategy = SimpleNamespace(strategy_id="strategy-a", revision=1,
+                               automatic=True)
+    runtime = TradingRuntime(
+        RunConfig(RunMode.BACKTEST, "strategy-a", 1, ("account-id",),
+                  AT.date(), run_id="live-run"), broker, strategy, journal,
+        portfolio=portfolio, review_only=True)
+    runtime.last_event_time = AT
+    asyncio.run(runtime.initialize(record_lifecycle=False, review_only=True))
+    assert portfolio.states["account-id"].sync_state == PortfolioSyncState.SYNCHRONIZED
+    assert portfolio.states["account-id"].positions["AAA"].position == 2
+    assert journal.unfenced_records() == []
+
+
 def test_typed_admission_waits_for_receipt_and_poison_on_uncertain_commit(monkeypatch) -> None:
     client, profile = _client(monkeypatch)
     recovered = recovery.recover_portfolio_engine_state(

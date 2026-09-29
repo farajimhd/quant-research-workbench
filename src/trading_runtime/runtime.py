@@ -298,7 +298,10 @@ class TradingRuntime:
     ) -> None:
         self._review_only = review_only
         if hasattr(self.broker, "canonical_accounts"):
-            if getattr(self.portfolio, "_typed_recovery", False):
+            recovered_backtest = getattr(
+                self.portfolio, "_typed_backtest_recovery", False)
+            if (getattr(self.portfolio, "_typed_recovery", False)
+                    and not recovered_backtest):
                 raise RuntimeError("Typed portfolio canonical broker sync is not wired")
             self._canonical_session = CanonicalBrokerSession(
                 self.broker,  # type: ignore[arg-type]
@@ -316,10 +319,16 @@ class TradingRuntime:
                 for row in canonical_snapshot.accounts
                 if row.can_view or row.can_trade
             }
-            self.portfolio.synchronize_canonical(
-                canonical_snapshot,
-                persist=not review_only,
-            )
+            if recovered_backtest:
+                if self.last_event_time is None:
+                    raise RuntimeError("Recovered Backtest lacks its completed market clock")
+                self.portfolio.reconcile_recovered_backtest_canonical(
+                    canonical_snapshot, completed_at=self.last_event_time)
+            else:
+                self.portfolio.synchronize_canonical(
+                    canonical_snapshot,
+                    persist=not review_only,
+                )
         else:
             await self.broker.initialize()
             available = set(await self.broker.accounts())
