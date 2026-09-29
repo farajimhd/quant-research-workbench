@@ -14,10 +14,11 @@ from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 from math import isfinite
 from typing import Any, Mapping
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.keeper_session import ManagedKeeperSession
 
 
 ROOT = TableContract(
@@ -54,6 +55,56 @@ TABLES = (ROOT, OBSERVATION)
 class OmsObservationSnapshotRows:
     root: Mapping[str, Any]
     observations: tuple[Mapping[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OmsObservationHead:
+    run_id: str
+    checkpoint_sequence: int
+    journal_batch_id: str
+    snapshot_hash: str
+    keeper_version: int
+
+
+class ManagedOmsObservationHeadReader:
+    """Read only the Keeper-selected root; never adopt orphan SQL rows."""
+
+    def __init__(self, session: ManagedKeeperSession) -> None:
+        if not isinstance(session, ManagedKeeperSession):
+            raise TypeError("OMS observation head needs managed Keeper")
+        self._session = session
+
+    @staticmethod
+    def path(run_id: str) -> str:
+        if (type(run_id) is not str or not run_id
+                or any(char in run_id for char in "\r\n\x00")):
+            raise ValueError("OMS observation head run is invalid")
+        return ("/trading/strategy-one-oms-observation/v1/"
+                + sha256(run_id.encode()).hexdigest() + "/head")
+
+    def read_head(self, *, run_id: str) -> OmsObservationHead:
+        session, client = self._session, self._session.client
+        if not session.writable or client.client_id is None:
+            raise RuntimeError("OMS observation Keeper session is unavailable")
+        generation, client_id = session._generation, client.client_id
+        try:
+            raw, stat = client.get(self.path(run_id))
+            fields = raw.decode("utf-8").split("\n")
+            if (len(fields) != 5 or fields[:2] != ["1", run_id]
+                    or str(int(fields[2])) != fields[2] or int(fields[2]) < 1
+                    or str(UUID(fields[3])) != fields[3]
+                    or len(fields[4]) != 64
+                    or any(char not in "0123456789abcdef" for char in fields[4])
+                    or type(stat.version) is not int or stat.version < 0):
+                raise ValueError
+            head = OmsObservationHead(run_id, int(fields[2]), fields[3],
+                                      fields[4], stat.version)
+        except Exception as exc:
+            raise ValueError("OMS observation Keeper head missing or corrupt") from exc
+        if (not session.writable or session._generation != generation
+                or client.client_id != client_id):
+            raise RuntimeError("OMS observation Keeper session changed during read")
+        return head
 
 
 def _digest(value: Any) -> str:
@@ -168,4 +219,71 @@ def verify_oms_observation_snapshot(
     if (len(rows.observations) != int(root["observation_count"])
             or _digest(tuple(sorted(members))) != root["observation_hash"]):
         raise RuntimeError("OMS observation set differs from its root")
+    return rows
+
+
+def load_unattested_oms_observation_snapshot(
+    client: Any, *, run_id: str, checkpoint_sequence: int,
+) -> OmsObservationSnapshotRows:
+    """Read one exact root and its bounded children; this alone grants no resume."""
+    from src.backend.backtest_market_data import assert_select_only
+    from src.trading_runtime.arte_journal_writer import _literal, _rows
+
+    if (type(run_id) is not str or not run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1):
+        raise ValueError("OMS observation read needs one checkpoint identity")
+    predicate = (f"run_id={_literal(run_id)} "
+                 f"AND checkpoint_sequence={checkpoint_sequence}")
+    roots = _rows(client, assert_select_only(
+        f"SELECT {','.join(name for name, _ in ROOT.columns)} "
+        f"FROM arte.{ROOT.name} WHERE {predicate} "
+        "LIMIT 2 FORMAT JSONEachRow"))
+    if len(roots) != 1:
+        raise RuntimeError("OMS observation has no unique checkpoint root")
+    root = roots[0]
+    count = int(root["observation_count"])
+    if not 0 <= count <= 10_000:
+        raise RuntimeError("OMS observation exceeds checkpoint memory budget")
+    columns = ",".join(
+        f"toString({name}) AS {name}" if "Decimal(" in kind else name
+        for name, kind in OBSERVATION.columns)
+    children = _rows(client, assert_select_only(
+        f"SELECT {columns} FROM arte.{OBSERVATION.name} "
+        f"WHERE {predicate} AND snapshot_id=toUUID("
+        f"{_literal(str(UUID(str(root['snapshot_id']))))}) "
+        f"ORDER BY group_id,broker_order_id LIMIT {count + 1} FORMAT JSONEachRow"))
+    return verify_oms_observation_snapshot(
+        OmsObservationSnapshotRows(root, tuple(children)))
+
+
+def load_attested_oms_observation_snapshot(
+    client: Any, keeper: Any, *, run_id: str, checkpoint_sequence: int,
+) -> OmsObservationSnapshotRows:
+    """Join Keeper, V4 journal and completed market cursor before cold use."""
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+
+    prefix = load_verified_v4_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != checkpoint_sequence
+            or not callable(getattr(keeper, "read_head", None))):
+        raise RuntimeError("OMS observation lacks a running verified V4 cursor")
+    head = keeper.read_head(run_id=run_id)
+    if (not isinstance(head, OmsObservationHead)
+            or head.run_id != run_id
+            or head.checkpoint_sequence != checkpoint_sequence
+            or head.journal_batch_id != prefix.last_batch_id):
+        raise RuntimeError("OMS observation Keeper head differs from V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict) or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != checkpoint_sequence
+            or cursor.get("batch_id") != prefix.last_batch_id):
+        raise RuntimeError("OMS observation lacks a committed market cursor")
+    rows = load_unattested_oms_observation_snapshot(
+        client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+    if (rows.root["content_hash"] != head.snapshot_hash
+            or rows.root["boundary_ms"] != cursor.get("boundary_ms")
+            or rows.root["session_date"] != cursor.get("session_date")
+            or keeper.read_head(run_id=run_id) != head):
+        raise RuntimeError("OMS observation seal differs from selected cursor")
     return rows
