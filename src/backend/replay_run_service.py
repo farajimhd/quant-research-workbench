@@ -2355,6 +2355,10 @@ class ReplayRunController:
             manager = getattr(self, '_strategy_one_manager', None)
             manager_state = None
             broker_state = None
+            if publisher.writer.journal_profile == 'backtest_v4' and manager is None:
+                # A V4 checkpoint must include the causal strategy state;
+                # a market cursor alone cannot attest its decision boundary.
+                raise RuntimeError('Strategy 1 checkpoint lacks its manager state')
             if manager is not None:
                 boundary = dict(self._source_cursor).get('boundary_ms')
                 if type(boundary) is not int:

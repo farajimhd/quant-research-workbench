@@ -1126,6 +1126,7 @@ def test_nonblocking_fixed_checkpoint_keeps_a_bounded_polling_snapshot():
     controller.stream_snapshot = lambda: dict(polling)
     receipt = Future()
     controller._journal_publisher = SimpleNamespace(
+        writer=SimpleNamespace(journal_profile='backtest_v3'),
         enqueue_checkpoint=lambda **_kwargs: receipt)
     at = datetime(2026, 8, 18, 4, 0, 0, 100000, tzinfo=NY)
 
@@ -1134,6 +1135,23 @@ def test_nonblocking_fixed_checkpoint_keeps_a_bounded_polling_snapshot():
 
     assert controller._checkpoint_work_snapshot == polling
     assert controller._checkpoint_io_task is receipt
+
+
+def test_v4_checkpoint_rejects_missing_manager_before_publishing():
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller.run_id = RUN
+    controller.status = 'running'
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._strategy_one_manager = None
+    controller._journal_publisher = SimpleNamespace(
+        writer=SimpleNamespace(journal_profile='backtest_v4'),
+        enqueue_checkpoint=lambda **_kwargs: pytest.fail('cursor was published'))
+    at = datetime(2026, 8, 18, 4, 0, 0, 100000, tzinfo=NY)
+    with pytest.raises(RuntimeError, match='lacks its manager state'):
+        asyncio.run(controller._save_restart_checkpoint_responsive(
+            at, nonblocking_fixed=True))
+    assert controller._journal.latest_sequence(RUN) == 0
 
 
 def test_fixed_journal_close_retains_only_worker_metrics():
