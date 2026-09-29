@@ -370,7 +370,7 @@ def _policy_only_initialization(parent_root, manifest, *, run_root, device):
 
 
 def _hierarchical_initialization(parent_root, manifest, *, run_root, device):
-    """Transfer the exact certified V4 best policy into the V6 action hierarchy."""
+    """Transfer the exact certified V4 best policy into the V7 action hierarchy."""
     parent_root = Path(parent_root).resolve()
     manifest = json.loads(json.dumps(manifest))
     if parent_root == run_root.resolve():
@@ -379,8 +379,8 @@ def _hierarchical_initialization(parent_root, manifest, *, run_root, device):
     if parent.get('contract_hash') != digest({k:v for k,v in parent.items() if k != 'contract_hash'}):
         raise ValueError('Parent run manifest integrity failure')
     if (parent.get('version') != 'rl-trading-v2-ppo-single-account-sessions-4' or
-            manifest.get('version') != 'rl-trading-v2-ppo-hierarchical-actions-6'):
-        raise ValueError('Hierarchical-action initialization requires V4 to V6 migration')
+            manifest.get('version') != 'rl-trading-v2-ppo-hierarchical-actions-7'):
+        raise ValueError('Hierarchical-action initialization requires V4 to V7 migration')
     for key in ('job','model','feature_names','train','validation','teacher_supervision',
                 'torch_version','numpy_version','wandb'):
         if parent.get(key) != manifest.get(key):
@@ -414,7 +414,7 @@ def _hierarchical_initialization(parent_root, manifest, *, run_root, device):
                    parent_best_iteration=best['iteration'],parent_best_score=best['best'],
                    transferred=['policy'],optimizer_state='fresh',account_state='fresh',
                    session_cursor='first_training_date',random_state='fresh_seed',
-                   change='account-level action type then conditional listing; nine-rollout selection')
+                   change='V4-equivalent type prior plus learned residual; nine-rollout selection')
     return lineage,best
 
 

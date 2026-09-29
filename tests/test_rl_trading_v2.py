@@ -230,7 +230,7 @@ def test_policy_scheduler_selects_one_discretionary_action_or_passes():
     assert torch.count_nonzero(passed) == 0 and torch.isfinite(score).all()
 
 
-def test_scheduler_normalizes_action_type_mass_by_eligible_count():
+def test_scheduler_zero_type_residual_reproduces_flat_parent_policy():
     obs = TradingEnv(market(),config()).observe()
     obs['action_mask'][:] = False
     obs['action_mask'][:,0] = True
@@ -239,11 +239,12 @@ def test_scheduler_normalizes_action_type_mass_by_eligible_count():
     policy = PortfolioPolicy(3,width=16,heads=2)
     with torch.no_grad():
         policy.actor.weight.zero_()
-        policy.actor.bias.zero_()
-    _,_,_,_,choice = policy(collate([obs]),scheduler=True)
-    probabilities = choice.probs.reshape(1,3,3)[0]
-    for action_type in range(3):
-        torch.testing.assert_close(probabilities[:,action_type].sum(),torch.tensor(1/3))
+        policy.actor.bias.copy_(torch.tensor([0.,1.,2.,3.]))
+    batch = collate([obs])
+    _,_,_,_,choice = policy(batch,scheduler=True)
+    expected = torch.zeros((1,9))
+    expected[0,[0,1,2,3]] = torch.softmax(torch.tensor([1.,2.,3.,1.]),dim=0)
+    torch.testing.assert_close(choice.probs,expected)
 
 
 def test_scheduler_learns_action_type_separately_from_listing_choice():
@@ -553,7 +554,7 @@ def test_policy_only_best_initialization_verifies_contract_and_resets_optimizer(
 
 def test_hierarchical_policy_migration_is_policy_only_and_source_pinned(tmp_path):
     old_version = 'rl-trading-v2-ppo-single-account-sessions-4'
-    new_version = 'rl-trading-v2-ppo-hierarchical-actions-6'
+    new_version = 'rl-trading-v2-ppo-hierarchical-actions-7'
     parent = dict(version=old_version,job='train',config=dict(version=old_version,initial_cash=10000),
         arguments=dict(validation_rollouts=3,learning_rate=3e-5),
         model=dict(features=3,width=16,heads=2),feature_names=['a','b','c'],
