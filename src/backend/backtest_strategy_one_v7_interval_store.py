@@ -29,7 +29,7 @@ from src.trading_runtime.strategy_one_v7_interval_schema import (
     verify_tables,
 )
 from src.trading_runtime.strategy_one_v7_intervals import (
-    SESSION_MS, V7LevelInterval, clock_hash, interval_hash, levels_at,
+    SESSION_MS, V7LevelInterval, _levels_at, clock_hash, interval_hash, levels_at,
 )
 
 
@@ -71,6 +71,11 @@ class CertifiedV7IntervalPlan:
                 or tuple(row[0] for row in self.valid_seconds) != tickers
                 or tuple(row[0] for row in self.intervals) != tickers):
             raise ValueError("Strategy 1 V7 interval plan is not ticker-aligned")
+        for _, seconds in self.valid_seconds:
+            if (any(type(value) is not int or value <= 0 or value % 1_000
+                    for value in seconds)
+                    or any(left >= right for left, right in zip(seconds, seconds[1:]))):
+                raise ValueError("Strategy 1 V7 interval plan clock is not ordered")
         object.__setattr__(self, "_tickers", tickers)
 
     def levels(self, ticker: str, *, boundary_ms: int) -> tuple[dict[str, object], ...]:
@@ -78,11 +83,14 @@ class CertifiedV7IntervalPlan:
         index = bisect_left(self._tickers, ticker)
         if index == len(self._tickers) or self._tickers[index] != ticker:
             raise ValueError("Strategy 1 ticker lacks certified V7 intervals")
-        return levels_at(
+        # _validate_children certified the ordered clock at plan construction.
+        # Keep the public ad-hoc lookup strict, but do not rescan every clock
+        # for each 100ms strategy observation.
+        return _levels_at(
             boundary_ms=boundary_ms,
             seed_policy=self.coverage[index].seed_input_policy,
             valid_seconds=self.valid_seconds[index][1],
-            intervals=self.intervals[index][1])
+            intervals=self.intervals[index][1], clocks_certified=True)
 
 
 def _literal(value: str) -> str:

@@ -142,13 +142,24 @@ def levels_at(*, boundary_ms: int, seed_policy: str,
               valid_seconds: Sequence[int],
               intervals: Sequence[V7LevelInterval]) -> tuple[dict[str, object], ...]:
     """Read completed geometry at a 100ms boundary, without future access."""
+    return _levels_at(boundary_ms=boundary_ms, seed_policy=seed_policy,
+                      valid_seconds=valid_seconds, intervals=intervals,
+                      clocks_certified=False)
+
+
+def _levels_at(*, boundary_ms: int, seed_policy: str,
+               valid_seconds: Sequence[int],
+               intervals: Sequence[V7LevelInterval],
+               clocks_certified: bool) -> tuple[dict[str, object], ...]:
+    """Certified plans validate clocks once; ad-hoc callers validate here."""
     from bisect import bisect_right
 
     if (seed_policy not in {POLICY, PROVISIONAL_SEED_POLICY}
             or type(boundary_ms) is not int or not 0 <= boundary_ms <= SESSION_MS
             or boundary_ms % 100):
         raise ValueError("V7 derivative lookup needs a 100ms session boundary")
-    if (any(type(value) is not int or value <= 0 or value % 1_000
+    if not clocks_certified and (any(
+            type(value) is not int or value <= 0 or value % 1_000
             for value in valid_seconds)
             or any(left >= right for left, right in zip(valid_seconds,
                                                         valid_seconds[1:]))):
