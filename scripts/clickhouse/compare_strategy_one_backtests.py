@@ -116,6 +116,8 @@ def _explain_difference(client, left_id: str, right_id: str) -> None:
           "simulation_profile", "activation_delay_us")),
         ("trading_backtest_definition_commit_v1",
          ("ticker_count", "ticker_hash", "assignment_hash")),
+        ("trading_backtest_market_authority_v1",
+         ("execution_plan_token", "parent_market_plan_token")),
     ):
         snapshots = []
         for run_id in (left_id, right_id):
