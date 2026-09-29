@@ -31,31 +31,30 @@ pretend to know the order size, so the $1 order minimum and 1% trade-value cap
 are evaluated in Phase 3 after sizing. A minimum two-second remaining target
 duration is enforced even when the discount-adjusted score is positive.
 
-## Phase 3 V6
+## Phase 3 V7 allocation diagnostic
 
-At each second, eligible long rows with after-proxy score at least 1% compete
+At each second, eligible long rows with after-proxy score at least 1% and at
+least three seconds from entry decision to target compete
 for available cash. A candidate is one episode, never one independent trade per
-label second. A bounded 30-second lookahead of first-eligible episodes reserves
-cash when a stronger future episode is approaching. The remaining cash is
-allocated in proportion to current scores. The quantity-aware Fixed fee is
+label second. In a bounded 15-second lookahead, each future episode contributes
+its first eligible score once. Current and future scores are normalized together:
+future episodes' share of cash is reserved, while the remaining cash is
+allocated among current episodes in proportion to their scores. The quantity-aware Fixed fee is
 rechecked after sizing; candidates below 1% after actual modeled order fees
 are rejected. Open positions leave at the first closeable completed second at
 or after their episode target clock, or the segment terminal clock; terminal
 liquidation fails closed if no close is available. Sale proceeds become
 available for later seconds.
-There is no fixed open-lot limit. V6 additionally caps each entry quantity at
-1% of that listing's certified completed trailing-60-second share volume
-(configurable and recorded in the plan). Unused allocation remains cash. This
-prevents the cash-only rule from buying more shares than the observed market,
-but it remains a coarse participation proxy: it does not prove a same-second
-fill, account for cumulative participation across repeated trades, or model
-price impact. The output records cash, marked
+There is no fixed open-lot limit or arbitrary participation cap. This is a
+desired allocation diagnostic, not executable share sizing: score-normalized
+budgets can still imply more shares than the market can fill. The output records cash, marked
 equity, drawdown, order counts, position ledger, and cost assumptions.
 
-The 30-second normalized allocation is an **approximate heuristic**, not a
+The 15-second normalized allocation is an **approximate heuristic**, not a
 globally optimal portfolio. The sequential account transition is required by
 cash reuse; per-second candidate filtering, scores, fee inversion, and sizing
-are vectorized. A full-day build checkpoints every 60 seconds and resumes at
+are vectorized; future episode scores use a cumulative sum rather than a
+per-second lookahead loop. A full-day build checkpoints every 60 seconds and resumes at
 the last committed second. The full model campaign requires a separately
 certified V5/V7 dataset and diagnostic replay before training.
 
