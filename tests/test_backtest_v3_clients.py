@@ -97,13 +97,46 @@ def test_nonprivate_workstation_resolution_fails_closed(monkeypatch):
     from src.trading_runtime import clickhouse_transport
     monkeypatch.setattr(clickhouse_transport.platform, "node",
                         lambda: "DESKTOP-SAAI85T")
-    monkeypatch.setattr(clickhouse_transport.socket, "gethostbyname",
-                        lambda host: "8.8.8.8")
+    monkeypatch.setattr(clickhouse_transport.socket, "getaddrinfo",
+                        lambda *_args, **_kwargs: [(None, None, None, None,
+                                                     ("8.8.8.8", 18123))])
     env = _env()
     env["BACKTEST_V3_READ_CLICKHOUSE_URL"] = "http://DESKTOP-SAAI85T:18123"
     with pytest.raises(RuntimeError, match="outside the private LAN"):
         v3_client("read", environment=env,
                   client_factory=lambda *args, **kwargs: object())
+
+
+def test_workstation_transport_skips_unreachable_wsl_adapter(monkeypatch):
+    from src.trading_runtime import clickhouse_transport
+
+    monkeypatch.setattr(clickhouse_transport.platform, "node",
+                        lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(clickhouse_transport.socket, "getaddrinfo",
+                        lambda *_args, **_kwargs: [
+                            (None, None, None, None, (address, 18123))
+                            for address in ("172.25.144.1", "169.254.232.164",
+                                            "192.168.1.218")])
+    attempted = []
+
+    class Connected:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def connect(address, *, timeout):
+        attempted.append((address, timeout))
+        if address[0] == "172.25.144.1":
+            raise ConnectionRefusedError("WSL adapter has no listener")
+        return Connected()
+
+    monkeypatch.setattr(clickhouse_transport.socket, "create_connection", connect)
+    url = "http://DESKTOP-SAAI85T:18123"
+    assert clickhouse_transport.workstation_ipv4_transport(url) == (
+        "http://192.168.1.218:18123")
+    assert [item[0][0] for item in attempted] == ["172.25.144.1", "192.168.1.218"]
 
 
 def test_workstation_transport_never_rewrites_tls_or_other_endpoints(monkeypatch):
