@@ -458,8 +458,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     const terminal = ["completed", "stopped", "failed"].includes(run.status);
     const warming = !terminal && (run.status === "warming" || run.runtime_ready === false);
     const work = run.work_progress;
-    const checkpointing = Boolean(work?.active && (work.phase.startsWith('checkpoint_') || work.phase === 'finalizing'));
-    const waiting = work?.phase === 'waiting_for_data' && work.active;
+    const checkpointing = Boolean(!terminal && work?.active && (work.phase.startsWith('checkpoint_') || work.phase === 'finalizing'));
+    const waiting = Boolean(!terminal && work?.phase === 'waiting_for_data' && work.active);
     const workLabel = waiting ? 'Waiting for historical data' : checkpointing ? work?.phase === 'finalizing' ? 'Finalizing backtest' : work?.phase === 'checkpoint_capture' ? 'Capturing checkpoint' : 'Saving checkpoint' : warming ? 'Preparing backtest' : `Backtest ${run.status.replaceAll("_", " ")}`;
     const preparation = run.preparation_progress;
     const preparationVerb = run.preparation_stage === "level_book_coverage" ? "verified" : run.preparation_stage === "level_book_working_set" ? "loaded" : "prepared";
@@ -488,15 +488,15 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         {detailsOpen ? <Modal title="Backtest preparation" onClose={() => setDetailsOpen(false)} closeOnBackdrop className="backtest-preparation-modal">
           <div className="backtest-preparation-content">
             <dl><div><dt>Stage</dt><dd>{work?.phase.replaceAll('_', ' ') || run.preparation_stage?.replaceAll('_', ' ') || run.status}</dd></div>
-              <div><dt>Prepared streams</dt><dd>{run.preparation_progress?.completed.toLocaleString() ?? '—'} / {run.preparation_progress?.total.toLocaleString() ?? '—'}</dd></div>
-              <div><dt>V7 coverage eligible</dt><dd>{run.level_book_coverage?.eligible_ticker_count.toLocaleString() ?? '—'}</dd></div>
+              <div><dt>Prepared streams</dt><dd>{run.preparation_progress?.completed?.toLocaleString() ?? '—'} / {run.preparation_progress?.total?.toLocaleString() ?? '—'}</dd></div>
+              <div><dt>V7 coverage eligible</dt><dd>{run.level_book_coverage?.eligible_ticker_count?.toLocaleString() ?? '—'}</dd></div>
               <div><dt>Execution tickers</dt><dd>{run.execution_scope?.admitted_ticker_count?.toLocaleString() ?? '—'}</dd></div>
               <div><dt>Prior close excluded</dt><dd>{run.execution_scope?.excluded_prior_close_count?.toLocaleString() ?? '—'}</dd></div>
               <div><dt>Persisted book unavailable</dt><dd>{run.execution_scope?.excluded_persisted_book_count?.toLocaleString() ?? '—'}</dd></div></dl>
             {waiting ? <p role="status">{work?.dependencies?.map(item => `${item.path}: attempt ${item.attempt}/${item.max_attempts}. ${item.error}`).join("; ")}</p> : null}
             {preparation?.filtered_v7 ? <FilteredV7Preparation progress={preparation.filtered_v7} /> : null}
             <h3>Excluded tickers · {run.level_book_coverage?.excluded_ticker_count ?? 0}</h3>
-            {run.level_book_coverage?.excluded.length ? <div className="backtest-exclusion-table"><table><thead><tr><th>Ticker</th><th>Session</th><th>Reason</th></tr></thead><tbody>
+            {run.level_book_coverage?.excluded?.length ? <div className="backtest-exclusion-table"><table><thead><tr><th>Ticker</th><th>Session</th><th>Reason</th></tr></thead><tbody>
               {run.level_book_coverage.excluded.map(row => <tr key={`${row.ticker}:${row.session}`}><td>{row.ticker}</td><td>{row.session}</td><td>{row.reason}</td></tr>)}
             </tbody></table></div> : <p>No exclusions reported.</p>}
           </div>

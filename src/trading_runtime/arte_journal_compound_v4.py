@@ -30,7 +30,7 @@ from .arte_oms_tactic_projection import (
 
 _CHILD_KEYS = (
     "command_lineages",
-    "entry_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "reconciliation_actions",
@@ -38,7 +38,7 @@ _CHILD_KEYS = (
 )
 _EVENT_PARENT_KEYS = frozenset({
     "command_lineages",
-    "entry_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "oms_tactics",
@@ -77,7 +77,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
         return (("oms_tactics", unit.tactic_state),) + tuple(
             ("oms_tactic_steps", row) for row in unit.tactic_steps)
     if type(unit) is V4StrategyOneEntryBatch:
-        return tuple(("entry_evidence", row) for row in unit.entry_evidence)
+        return (tuple(("entry_evidence", row) for row in unit.entry_evidence)
+                + tuple(("add_evidence", row) for row in unit.add_evidence))
     if type(unit) is V4PortfolioAllocationBatch:
         return (("allocations", unit.allocation),)
     if type(unit) is V4ReservationReasonBatch:
@@ -176,7 +177,8 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
     if type(unit) is V4OmsTacticBatch:
         return {"oms_tactic_rows": (unit.tactic_state, unit.tactic_steps)}
     if type(unit) is V4StrategyOneEntryBatch:
-        return {"strategy_one_entry_rows": unit.entry_evidence}
+        return {"strategy_one_entry_rows": unit.entry_evidence,
+                "strategy_one_add_rows": unit.add_evidence}
     if type(unit) is V4PortfolioAllocationBatch:
         return {"portfolio_allocation_row": unit.allocation}
     if type(unit) is V4ReservationReasonBatch:
@@ -211,11 +213,12 @@ def prepare_compound_v4_families(
     every merged family before publishing a commit or advancing Keeper.
     """
     from .arte_journal_commit_v4 import (
-        ACKNOWLEDGEMENT, CANCEL, ENTRY_EVIDENCE, PROTECTION_CHANGE,
+        ACKNOWLEDGEMENT, ADD_EVIDENCE, CANCEL, ENTRY_EVIDENCE, PROTECTION_CHANGE,
         PROTECTION_ENTRY_ORDER, PROTECTION_RECONCILIATION,
         RECONCILIATION_ACTION, RECONCILIATION_REPLY, REPRICE,
         RESERVATION_REASON, RISK_ACTION, RISK_REPLY, V4_ALLOCATION,
-        _publish_typed_batch_v4, _sealed_strategy_one_entry_rows,
+        _publish_typed_batch_v4, _sealed_strategy_one_add_rows,
+        _sealed_strategy_one_entry_rows,
         seal_portfolio_allocation_v3, seal_protection_changes_v3,
         seal_protection_reconciliation_v4, seal_reservation_reason_family_v3,
         seal_risk_action_v4,
@@ -235,6 +238,7 @@ def prepare_compound_v4_families(
     table_for_key = {
         "command_lineages": V4_ORDER_COMMAND_LINEAGE.name,
         "entry_evidence": ENTRY_EVIDENCE.name,
+        "add_evidence": ADD_EVIDENCE.name,
         "allocations": V4_ALLOCATION.name,
         "reservation_reasons": RESERVATION_REASON.name,
         "acknowledgements": ACKNOWLEDGEMENT.name,
@@ -309,6 +313,11 @@ def prepare_compound_v4_families(
                 {key: value for key, value in row.items() if key != "content_hash"}
                 for row in extra[ENTRY_EVIDENCE.name])):
         raise ValueError("V4 compound entry evidence differs from its parent")
+    if tuple(extra[ADD_EVIDENCE.name]) != _sealed_strategy_one_add_rows(
+            compound.base, base_families, tuple(
+                {key: value for key, value in row.items() if key != "content_hash"}
+                for row in extra[ADD_EVIDENCE.name])):
+        raise ValueError("V4 compound add evidence differs from its parent")
     seal_portfolio_allocation_v3(
         extra[V4_ALLOCATION.name], compound.base.events,
         run_id=compound.base.run_id, batch_id=compound.base.batch_id)

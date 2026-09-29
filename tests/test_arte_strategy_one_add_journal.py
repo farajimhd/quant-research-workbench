@@ -10,6 +10,9 @@ from src.trading_runtime.arte_journal_commit_v4 import (
     _publish_typed_batch_v4, _sealed_strategy_one_add_rows,
     load_verified_commit_v4, publish_base_typed_batch_v4,
 )
+from src.trading_runtime.arte_journal_compound_v4 import (
+    coalesce_v4_units, prepare_compound_v4_families,
+)
 from src.trading_runtime.arte_journal_writer import (
     _CONTRACTS, _sealed_families, V4StrategyOneEntryBatch,
 )
@@ -83,3 +86,48 @@ def test_add_evidence_fences_and_cold_verifies_with_typed_intent():
     assert len(client.tables[ADD_EVIDENCE.name]) == 1
     unit = V4StrategyOneEntryBatch(item, (), (source,))
     assert unit.add_evidence[0]["resistance_id"] == "B1"
+
+
+def test_add_evidence_survives_compound_rekey_and_parent_seal():
+    proposal, intent, session = _source()
+    run_id, attempt_id = "run-add-compound", str(uuid4())
+    first_id, second_id = str(uuid4()), str(uuid4())
+    first = strategy_intent_batch(
+        intent, run_id=run_id, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=attempt_id, batch_id=first_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        sequence=1, source_cursor="boundary-31000", run_status="running",
+        recorded_at=datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc))
+    second_proposal = replace(proposal, boundary_ms=32_000,
+                              resistance_id="B2", purchase_ordinal=3)
+    second_intent = strategy_one_add_intent(second_proposal,
+                                             session_date=session)
+    second = strategy_intent_batch(
+        second_intent, run_id=run_id, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=attempt_id, batch_id=second_id,
+        prior_batch_id=first_id, sequence=2,
+        source_cursor="boundary-32000", run_status="running",
+        recorded_at=datetime(2026, 8, 18, 8, 0, 32, tzinfo=timezone.utc))
+    units = tuple(V4StrategyOneEntryBatch(item, (), (
+        project_strategy_one_add_evidence(
+            source_proposal, source_intent, session_date=session,
+            run_id=run_id, batch_id=item.batch_id,
+            parent_record_id=item.intents[0]["record_id"]),))
+        for item, source_proposal, source_intent in (
+            (first, proposal, intent),
+            (second, second_proposal, second_intent)))
+    compound = coalesce_v4_units(units)
+    client = attached_v4_client()
+    _, families = prepare_compound_v4_families(client, compound)
+    add_rows = dict(families)[ADD_EVIDENCE.name]
+    assert len(add_rows) == 2
+    assert {row["purchase_ordinal"] for row in add_rows} == {2, 3}
+    assert {row["batch_id"] for row in add_rows} == {second_id}
+    assert not client.inserts
+
+    altered = {key: tuple(dict(row) for row in rows)
+               for key, rows in compound.children.items()}
+    altered["add_evidence"][0]["resistance_id"] = "forged"
+    with pytest.raises(ValueError, match="lost normalized"):
+        prepare_compound_v4_families(
+            client, replace(compound, children=altered))
