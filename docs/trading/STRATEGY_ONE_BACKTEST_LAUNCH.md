@@ -9,6 +9,24 @@ to SQLite or to a general ClickHouse account.
 
 ## Current verified status (2026-09-29)
 
+On the current V4 running-checkpoint contract, each completed checkpoint now
+fences the manager, broker matcher, and a normalized per-account portfolio
+recovery snapshot before its asynchronous receipt resolves. The Strategy 1
+manager remains bound through the trailing empty market boundary and terminal
+cursor. A 2026-08-18 04:00–09:30 ET all-ticker workstation probe on commit
+`2fc4f9be9` completed in 27.211s after a 23.511s read-only preflight,
+processing 7,381 persisted-market rows. Its writer committed 2,216 normalized
+events in nine units, including two running portfolio snapshots, with zero
+failed units; the cold causal audit found 58 intents, 966 linked actions, and
+no backdated actions. The laptop app then selected that session using its
+**exclusive** 2026-08-19 anchor, passed preflight with no blocked checks, and
+completed run `b4ef310f-3ccf-47a8-887a-eae9e4f0b3df` about 39s after
+creation. The saved V4 terminal page cold-verified sequence 2,216 and its
+market cursor with no limitations. Interrupted-run resume remains disabled:
+the running captures do not yet constitute a verified complete restore of
+controller, OMS, and portfolio state. Two earlier probes during this cutover
+failed and remain auditable; they are not successful performance samples.
+
 The laptop-managed app is running the current backend and frontend. A direct
 HTTP preflight for the entire 2026-08-18 04:00–09:30 ET session returned
 `strategy_run_ready=true`, `execution_interval=100ms`, and 18 ready required
