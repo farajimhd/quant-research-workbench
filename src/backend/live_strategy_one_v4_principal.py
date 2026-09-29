@@ -300,6 +300,10 @@ class LiveV4WriterClient:
                        and gate.operations[tables.index(table)].sql_hash == digest)
         if not pending:
             raise RuntimeError("Live V4 signal INSERT lacks a pending Keeper operation")
+        # The Keeper read above can race lease replacement. Recheck immediately
+        # before handing SQL to ClickHouse; cold recovery still needs its own
+        # server-enforced old-writer drain and is not admitted by this guard.
+        self.live_v4_lease.assert_current()
         return self._raw.execute(sql, query_id=query_id)
 
     def close(self) -> None:

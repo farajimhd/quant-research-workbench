@@ -359,6 +359,38 @@ def test_live_signal_insert_requires_pending_isolated_keeper_operation():
     lease.release()
 
 
+def test_live_signal_insert_rechecks_lease_after_keeper_read():
+    from hashlib import sha256
+    from types import SimpleNamespace
+
+    from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
+
+    lease = _lease()
+    raw = Client()
+    guarded = live.LiveV4WriterClient(raw, lease)
+    table = strategy_one_signal_table("signal_stream_python_occurrence_v1")
+    sql = (f"INSERT INTO arte.{table} (session_key) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1 "
+           "FORMAT JSONEachRow\n{}")
+    gate = SimpleNamespace(mode="open", active=True, sequence=1,
+                           status="pending", table=table,
+                           sql_hash=sha256(sql.encode()).hexdigest())
+
+    def read_and_lose(_run_id):
+        assert lease.release()
+        return gate, None
+
+    dispatch = SimpleNamespace(strategy_one=True,
+                               keeper=lease.owner._session.client,
+                               _read=read_and_lose)
+    with pytest.raises(RuntimeError, match="lease lost"):
+        guarded.execute_registered_signal_insert(
+            sql, query_id="arte_signal_source_" + "a" * 64,
+            kind="source", dispatch=dispatch, run_id="signal-run",
+            sequence=1, table=table)
+    assert raw.inserts == []
+
+
 def test_live_dispatch_insert_uses_pending_isolated_keeper_operation():
     from src.backend.signal_dispatch_insert_dispatch import (
         SignalDispatchInsertDispatch, dispatch_run_id,
