@@ -519,7 +519,10 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None, *,
             # Each bounded lane owns and reuses one read-only connection. A
             # connection is never shared across threads, and results retain
             # stage/batch order for the exact indicator-to-bar key proof.
-            workers = min(6, len(work))
+            # Read-only ticker batches have independent source hashes. Keep
+            # verification bounded while testing whether more cold lanes
+            # shorten the all-ticker preflight without changing its proof.
+            workers = min(12, len(work))
             lanes = tuple(tuple((index, item) for index, item in enumerate(work)
                                 if index % workers == lane)
                           for lane in range(workers))
