@@ -32,6 +32,41 @@ from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 DAY = "2026-08-18"
 
 
+def test_restart_boundary_skips_committed_sources_and_reads_active_suffix():
+    requests = []
+
+    def source(ticker, after):
+        requests.append((ticker, after))
+        return iter(group(ticker, clock) for clock in (100, 200, 300)
+                    if clock > after)
+
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter(candidate("AAA", boundary)
+                            for boundary in (100, 200, 300)),
+        activation_rows=iter(StrategyOneActivation(boundary, "AAA", 100_000)
+                             for boundary in (100, 200, 300)),
+        active_source=source, start_after_boundary_ms=200)
+    clock.reconcile_financial_tickers(("BBB",))
+    work = clock.pop_next()
+    assert work.boundary_ms == 300
+    assert tuple(row.market_row["boundary_ms"] for row in work.candidate_rows) == (300,)
+    assert tuple(row.boundary_ms for row in work.activation_rows) == (300,)
+    assert tuple(ticker for ticker, _ in work.broker_rows) == ("AAA", "BBB")
+    assert requests == [("BBB", 200)]
+    assert clock.pop_next() is None
+    clock.close()
+
+
+@pytest.mark.parametrize("boundary", [-100, 50, 57_600_100, True, 1.0])
+def test_restart_boundary_rejects_invalid_clock(boundary):
+    with pytest.raises(ValueError, match="restart boundary"):
+        StrategyOneBoundaryScheduler(
+            session_date=DAY, candidate_rows=iter(()),
+            active_source=lambda _ticker, _after: iter(()),
+            start_after_boundary_ms=boundary)
+
+
 def test_active_market_read_ahead_refills_only_at_bounded_edges():
     fetched = []
     def rows():

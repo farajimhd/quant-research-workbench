@@ -205,9 +205,14 @@ class StrategyOneBoundaryScheduler:
     def __init__(self, *, session_date: str,
                  candidate_rows: Iterator[StrategyOneDecisionCandidate],
                  activation_rows: Iterator[StrategyOneActivation] | None = None,
-                 active_source: MarketSource) -> None:
+                 active_source: MarketSource,
+                 start_after_boundary_ms: int = 0) -> None:
         if not session_date or not callable(active_source):
             raise ValueError("Strategy 1 scheduler needs a session and active source")
+        if (type(start_after_boundary_ms) is not int
+                or not 0 <= start_after_boundary_ms <= 57_600_000
+                or start_after_boundary_ms % 100):
+            raise ValueError("Strategy 1 restart boundary must be a completed 100 ms boundary")
         self.session_date = session_date
         self._candidates = candidate_rows
         self._activations = activation_rows or iter(())
@@ -221,10 +226,18 @@ class StrategyOneBoundaryScheduler:
         self._generation: dict[str, int] = {}
         self._heads: list[tuple[int, str, int, Mapping[int, Mapping]]] = []
         self._exhausted: set[str] = set()
-        self._boundary_ms = 0
+        # A durable checkpoint commits the entire global boundary. Its source
+        # rows must never be delivered twice to the broker or strategy.
+        self._boundary_ms = start_after_boundary_ms
         self._closed = False
         self._advance_candidate()
         self._advance_activation()
+        while (self._candidate is not None
+               and self._candidate.market_row["boundary_ms"] <= start_after_boundary_ms):
+            self._advance_candidate()
+        while (self._activation is not None
+               and self._activation.boundary_ms <= start_after_boundary_ms):
+            self._advance_activation()
 
     def _advance_activation(self) -> None:
         row = next(self._activations, None)
