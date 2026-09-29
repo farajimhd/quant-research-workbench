@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -40,7 +41,10 @@ from src.trading_runtime.arte_oms_projection import (
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.execution_policies import ExecutionMarketSnapshot
-from src.trading_runtime.order_management import BrokerCommunicationPolicy, OrderManagementEngine
+from src.trading_runtime.order_management import (
+    BrokerCommunicationPolicy, OrderGroupSnapshot, OrderManagementEngine,
+    OrderManagementState,
+)
 from src.trading_runtime.portfolio import (
     PortfolioAccountProfile, PortfolioManagementEngine, PortfolioPolicy,
 )
@@ -257,9 +261,23 @@ def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():
         assert intent.metadata == {}
         decision, approved = await portfolio.approve(
             intent, account_id="DU1", assignment_id=proposal.assignment_id)
-        return decision, approved, journal.records(journal.run_id)
+        admission_records = tuple(journal.records(journal.run_id))
+        portfolio.on_order_group_update(OrderGroupSnapshot(
+            group_id="group-1", intent_id=intent.intent_id,
+            account_id="DU1", ticker="AAA", action="enter_long",
+            state=OrderManagementState.FILLED,
+            client_order_ids=("co-1",), broker_order_ids=("broker-1",),
+            submitted_at=at, updated_at=at,
+            filled_quantity=float(approved.quantity), remaining_quantity=0,
+            warning_message_ids=(), rejection_reason="",
+            decision_to_submit_ms=1.0, policy_version=1,
+            reentry_after_fill=False, assignment_id=proposal.assignment_id,
+        ))
+        allocation_at = next(iter(portfolio.allocations.values())).updated_at
+        return decision, approved, admission_records, allocation_at
 
-    decision, approved, records = asyncio.run(exercise())
+    decision, approved, records, allocation_at = asyncio.run(exercise())
+    assert allocation_at == at
     assert approved is not None, decision.reasons
     assert approved.quantity > 0
     assert approved.metadata["assignment_id"] == "assignment-1"
@@ -568,7 +586,10 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
             last_us = int(next_at.timestamp() * 1_000_000) - 1
             executions = await broker.on_liquidity_bar({
                 "ticker": "AAA", "resolution_ms": 100,
-                "bucket_index": 311, "event_count": 3,
+                "bucket_index": ((next_at.astimezone(ZoneInfo("America/New_York")).hour * 3600
+                                  + next_at.astimezone(ZoneInfo("America/New_York")).minute * 60
+                                  + next_at.astimezone(ZoneInfo("America/New_York")).second) * 10
+                                 + next_at.microsecond // 100_000 - 1), "event_count": 3,
                 "last_event_us": last_us, "quote_valid": 1,
                 "quote_timestamp_us": last_us - 10_000,
                 "bid_int": 99_900, "ask_int": 100_100,

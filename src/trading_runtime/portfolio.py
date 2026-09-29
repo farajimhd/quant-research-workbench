@@ -478,7 +478,7 @@ class PortfolioManagementEngine:
                         for order in live_orders
                         if order.account == account_id and not _terminal_order(order)
                     ]
-                    synchronized_at = datetime.now(timezone.utc)
+                    synchronized_at = self._event_clock()
                     state.component_watermarks = {
                         "summary": summary.timestamp.astimezone(timezone.utc),
                         "ledger": ledger.timestamp.astimezone(timezone.utc),
@@ -1627,7 +1627,7 @@ class PortfolioManagementEngine:
                     or state.control_mode != PortfolioControlMode.ENABLED
                     or self.allocation_identity in state.disabled_strategy_allocations
                     or state.sync_state != PortfolioSyncState.SYNCHRONIZED
-                    or self._snapshot_stale(state, datetime.now(timezone.utc))):
+                    or self._snapshot_stale(state, self._event_clock())):
                 return False
             fx = float(intent.metadata.get("portfolio_fx_to_base") or 1.0)
             policy = self._policy(state)
@@ -2132,7 +2132,7 @@ class PortfolioManagementEngine:
         for lot in self.allocations.values():
             if lot.account_id == state.profile.account_id and lot.source != "external":
                 attributed[lot.ticker] = attributed.get(lot.ticker, 0.0) + lot.quantity
-        observed_at = state.observed_at or datetime.now(timezone.utc)
+        observed_at = state.observed_at or self._event_clock()
         for ticker in sorted(set(state.positions) | set(attributed)):
             broker_quantity = float(state.positions[ticker].position) if ticker in state.positions else 0.0
             attributed_quantity = attributed.get(ticker, 0.0)
@@ -2229,7 +2229,9 @@ class PortfolioManagementEngine:
                 planned_risk=next_risk,
                 realized_pnl=current.realized_pnl if current else 0.0,
                 source="managed",
-                updated_at=datetime.now(timezone.utc),
+                # Fixed Backtest passes its completed-boundary clock. A fill
+                # allocation must not acquire the workstation wall time.
+                updated_at=self._event_clock(),
             )
         self._record(
             "portfolio_allocation",

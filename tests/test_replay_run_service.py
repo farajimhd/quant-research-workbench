@@ -1073,18 +1073,17 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             source.processed_events = 42
             source._source_cursor = {"market": {"ticker": "AAPL", "sequence": 42, "ts": source.current_time.isoformat()}}
             source._save_restart_checkpoint(source.current_time)
-            source._write_approved_configuration()
+            with self.assertRaisesRegex(RuntimeError, "cannot persist configuration on disk"):
+                source._write_approved_configuration()
             source._write_manifest()
             source._journal.close()
             manifest_path = source.run_dir / "manifest.json"
-            original_manifest = manifest_path.read_bytes()
+            self.assertFalse(manifest_path.exists())
             original_journal = (source.run_dir / "journal.sqlite3").read_bytes()
             service = ReplayRunService(runtime_root=root)
-            with patch("src.backend.backtest_market_data.readonly_clickhouse_client",
-                       side_effect=ValueError("ClickHouse authority unavailable")):
-                with self.assertRaisesRegex(ValueError, "ClickHouse authority unavailable"):
-                    await service.review_saved(source.run_id)
-            self.assertEqual(manifest_path.read_bytes(), original_manifest)
+            with self.assertRaises(KeyError):
+                await service.review_saved(source.run_id)
+            self.assertFalse(manifest_path.exists())
             self.assertEqual((source.run_dir / "journal.sqlite3").read_bytes(), original_journal)
 
     async def test_saved_review_coalesces_requests_and_survives_caller_cancellation(self) -> None:
@@ -2972,7 +2971,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             controller = SimpleNamespace(
                 _historical_core_signal_plans=[{"plan_hash": "signal-plan"}],
                 _journal=object(),
-                definition=SimpleNamespace(tickers=("SUGP",), configuration_revision={"payload": {
+                definition=SimpleNamespace(mode=RunMode.REPLAY, execution_interval="events", tickers=("SUGP",), configuration_revision={"payload": {
                     "strategy": {"parameters": {"structural_recovery_contract": structural}},
                 }}),
                 _compile_market_signal_events=MagicMock(return_value=[]),
