@@ -24,16 +24,12 @@ from httpx import ASGITransport, AsyncClient  # noqa: E402
 from scripts.clickhouse.smoke_strategy_one_backtest import (  # noqa: E402
     _load_private_credentials,
 )
-from src.backend.app import app  # noqa: E402
-from src.trading_runtime.arte_backtest_definition import (  # noqa: E402
-    load_backtest_definition,
-)
-from src.trading_runtime.arte_journal_writer import (  # noqa: E402
-    backtest_v4_operator_client_from_env, load_typed_run_context,
-)
-
-
 def _ticker(run_id: str) -> str:
+    from src.trading_runtime.arte_backtest_definition import load_backtest_definition
+    from src.trading_runtime.arte_journal_writer import (
+        backtest_v4_operator_client_from_env, load_typed_run_context,
+    )
+
     with closing(backtest_v4_operator_client_from_env()) as client:
         context = load_typed_run_context(client, run_id)
         definition = load_backtest_definition(client, run_id, run_context=context)
@@ -44,6 +40,8 @@ def _ticker(run_id: str) -> str:
 
 
 async def _probe(run_id: str, ticker: str) -> None:
+    from src.backend.app import app
+
     root = f"/api/trading/backtest/runs/{run_id}"
     async with AsyncClient(transport=ASGITransport(app=app),
                            base_url="http://backtest-probe",
