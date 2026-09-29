@@ -314,9 +314,9 @@ class BacktestMarketDataTests(unittest.TestCase):
                 self.closed = True
 
         verify_market_day_plan(plan, read_client_factory=Worker)
-        self.assertEqual(len(readers), 9)
+        self.assertEqual(len(readers), 6)
         self.assertEqual(sorted(len(reader.queries) for reader in readers),
-                         [1] * 9)
+                         [1, 1, 1, 2, 2, 2])
         self.assertTrue(all(reader.closed for reader in readers))
         self.assertEqual(sorted(len(re.findall(r"'T[0-9]{4}'", query))
                                 for reader in readers for query in reader.queries),
