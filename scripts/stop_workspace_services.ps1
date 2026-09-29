@@ -221,7 +221,13 @@ function Get-OwnedProcessIds {
         foreach ($entry in $Snapshot.GetEnumerator()) {
             $candidatePid = [int]$entry.Key
             $parentPid = [int]$entry.Value.ParentProcessId
-            if (-not $owned.Contains($candidatePid) -and $owned.Contains($parentPid)) {
+            # A surviving process may still carry a parent PID that Windows
+            # has since reused for this service host. It cannot be our child
+            # if it started before the currently owned parent process.
+            if (-not $owned.Contains($candidatePid) -and $owned.Contains($parentPid) -and
+                $Snapshot.ContainsKey($parentPid) -and
+                ([DateTime]$entry.Value.CreationDate) -ge
+                    ([DateTime]$Snapshot[$parentPid].CreationDate)) {
                 [void]$owned.Add($candidatePid)
                 $changed = $true
             }
