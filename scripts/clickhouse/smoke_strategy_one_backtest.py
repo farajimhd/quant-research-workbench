@@ -102,7 +102,10 @@ def _audit_causal_journal(run_id: str) -> None:
     from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page
     from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
 
+    from collections import Counter
+
     intents: dict[str, datetime] = {}
+    event_families: Counter[tuple[str, str, str]] = Counter()
     linked = sequence = 0
     with closing(backtest_v4_operator_client_from_env()) as client:
         while True:
@@ -119,6 +122,7 @@ def _audit_causal_journal(run_id: str) -> None:
                 sequence += 1
                 at = datetime.fromisoformat(event["event_time"])
                 family = row["detail_family"]
+                event_families[(event["category"], event["entity_type"], family)] += 1
                 if family == "trading_strategy_intent_v1":
                     identity = detail["intent_id"]
                     if identity in intents:
@@ -147,6 +151,10 @@ def _audit_causal_journal(run_id: str) -> None:
                 raise RuntimeError("Strategy 1 terminal page did not advance")
     print(f"Causal journal: events={sequence} intents={len(intents)} "
           f"linked_actions={linked} backdated=0", flush=True)
+    if sum(event_families.values()) != sequence:
+        raise RuntimeError("Strategy 1 journal family inventory is incomplete")
+    for (category, entity_type, family), count in event_families.most_common():
+        print(f"  event_family {category}/{entity_type}/{family}: {count}", flush=True)
 
 
 def _profile_preflight_call(call, **kwargs):
