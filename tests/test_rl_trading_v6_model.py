@@ -1,6 +1,7 @@
 import torch
 
-from research.rl_trading.v6.model import ActualCandleEncoder, BracketActionDecoder
+from research.rl_trading.v6.model import (ActualCandleEncoder,
+                                          BracketActionDecoder, BracketPolicy)
 
 
 def test_actual_candle_training_serving_parity_with_clock_gaps():
@@ -55,3 +56,37 @@ def test_five_action_decoder_masks_brackets_until_admissible():
     assert logits[5] == torch.finfo(logits.dtype).min
     assert torch.isfinite(logits[[0, 1, 3, 4, 6]]).all()
     assert ((size >= 0) & (size <= 1)).all()
+
+
+def test_v6_policy_remembers_actual_execution_and_resets_by_session():
+    torch.manual_seed(9)
+    policy = BracketPolicy(width=8)
+    state = policy.initial_action_state(device=torch.device('cpu'),
+                                        dtype=torch.float32)
+    listed = torch.randn(3, 8)
+    account = torch.tensor([10000., 10000., 0., 0., 0.])
+    held_index = torch.empty(0, dtype=torch.long)
+    held_features = torch.empty(0, 4)
+    masks = dict(enter_allowed=torch.tensor([True, True, False]),
+                 exit_allowed=torch.empty(0, dtype=torch.bool),
+                 stop_allowed=torch.empty(0, dtype=torch.bool),
+                 target_allowed=torch.empty(0, dtype=torch.bool))
+    before = policy.decide(listed, account, held_index, held_features,
+                           state, **masks)[0]
+    held = policy.remember_execution(state, listed[0], action=0,
+        requested_fraction=torch.tensor(0.),
+        filled_fraction=torch.tensor(0.),
+        realized_net_over_equity=torch.tensor(0.))
+    assert torch.equal(held.memory, state.memory)
+    changed = policy.remember_execution(state, listed[0], action=1,
+        requested_fraction=torch.tensor(.4),
+        filled_fraction=torch.tensor(.2),
+        realized_net_over_equity=torch.tensor(0.))
+    after = policy.decide(listed, account, held_index, held_features,
+                          changed, **masks)[0]
+    assert not torch.equal(before, after)
+    after[0].backward()
+    assert policy.action_gru.weight_ih.grad is not None
+    assert torch.equal(policy.initial_action_state(
+        device=torch.device('cpu'), dtype=torch.float32).memory,
+        state.memory)

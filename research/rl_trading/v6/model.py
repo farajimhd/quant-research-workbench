@@ -176,3 +176,81 @@ class BracketActionDecoder(nn.Module):
         stop_distance = self.stop_distance_head(held).flatten()
         target_distance = self.target_distance_head(held).flatten()
         return logits, size, stop_distance, target_distance
+
+
+@dataclass(frozen=True)
+class ExecutedActionState:
+    """Cross-second history of orders and their observed execution outcomes."""
+
+    memory: torch.Tensor  # [D], reset at each session boundary.
+
+    def detach(self) -> 'ExecutedActionState':
+        return ExecutedActionState(self.memory.detach())
+
+
+class BracketPolicy(nn.Module):
+    """Join the actual-candle encoder, five-action decoder, and action GRU.
+
+    The encoder changes only on persisted completed candles. The GRU changes
+    only when an order receives an execution outcome; proposals alone do not
+    manufacture a holding. Serving and teacher-forced training must use the
+    same ordered execution events and reset the GRU for each session.
+    """
+
+    ACTION_COUNT = 5  # HOLD, ENTER_LONG, EXIT_LONG, SET_STOP, SET_TARGET.
+
+    def __init__(self, width: int = 128):
+        super().__init__()
+        self.encoder = ActualCandleEncoder(width=width)
+        self.decoder = BracketActionDecoder(width=width)
+        self.action_type = nn.Embedding(self.ACTION_COUNT, width)
+        # Selected listing embedding, action embedding, requested cash
+        # fraction, filled fraction, and realized net P&L divided by equity.
+        self.action_gru = nn.GRUCell(2 * width + 3, width)
+
+    def initial_action_state(self, *, device: torch.device,
+                             dtype: torch.dtype) -> ExecutedActionState:
+        return ExecutedActionState(torch.zeros(self.encoder.width, device=device,
+                                               dtype=dtype))
+
+    def decide(self, listing_embeddings: torch.Tensor, account: torch.Tensor,
+               held_index: torch.Tensor, held_features: torch.Tensor,
+               action_state: ExecutedActionState, *,
+               enter_allowed: torch.Tensor, exit_allowed: torch.Tensor,
+               stop_allowed: torch.Tensor, target_allowed: torch.Tensor,
+               ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if action_state.memory.shape != (self.encoder.width,):
+            raise ValueError('Action memory width differs from V6 policy')
+        # Action memory augments the causal account state. It cannot change
+        # admissibility masks or create positions before a confirmed fill.
+        return self.decoder(
+            listing_embeddings + action_state.memory[None], account,
+            held_index, held_features, enter_allowed=enter_allowed,
+            exit_allowed=exit_allowed, stop_allowed=stop_allowed,
+            target_allowed=target_allowed)
+
+    def remember_execution(self, state: ExecutedActionState,
+                           listing_embedding: torch.Tensor, *, action: int,
+                           requested_fraction: torch.Tensor,
+                           filled_fraction: torch.Tensor,
+                           realized_net_over_equity: torch.Tensor,
+                           ) -> ExecutedActionState:
+        """Remember one observed order outcome, including an unfilled order.
+
+        HOLD is not an order and leaves memory unchanged. Fractions are
+        measured against the actual account, rather than teacher intentions.
+        """
+        if (action not in range(self.ACTION_COUNT) or
+                listing_embedding.shape != (self.encoder.width,) or
+                any(value.ndim != 0 for value in
+                    (requested_fraction, filled_fraction,
+                     realized_net_over_equity))):
+            raise ValueError('Invalid executed-action memory input')
+        if action == 0:
+            return state
+        token = self.action_type(torch.tensor(action,
+            dtype=torch.long, device=listing_embedding.device))
+        values = torch.stack((requested_fraction, filled_fraction,
+                              realized_net_over_equity))
+        update = torch.cat((listing_embedding, token, values))
+        return ExecutedActionState(self.action_gru(update, state.memory))

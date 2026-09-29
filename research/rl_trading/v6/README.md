@@ -120,3 +120,19 @@ the August 5 full-market benchmark, so its 26.79 million feature rows are
 not recomputed. The controller still asks the day builder to verify that the
 reused root's source plan matches before accepting it, and records the actual
 root for each date in a restart-safe `day-roots.json` runtime manifest.
+
+`session_data.py` opens the certified identity-packed bank with full hashes,
+checks the prior-session authority, and yields only observed close-clock
+events. `candle_stream.py` carries 119 actual prior-session candles and
+updates only listings with a new candle. Training retains gradients only for
+a bounded chronological chunk; unlabeled chunks advance state without an
+autograd graph. `model.BracketPolicy` adds execution-outcome action memory to
+the five-action decoder. `objective.py` scores the selected action, entry
+cash fraction, or label-only stop/target distance conditionally.
+
+`teacher_data.py` requires a separately audited V6 quote/bracket teacher
+certificate bound to the exact bank hash. Its sparse decisions contain causal
+pre-action account and holding snapshots; later execution outcomes reference
+their originating decisions. `training.py` is the teacher-forced session core.
+No V6 teacher certificate or complete campaign trainer/replay is available
+yet; these modules must not be presented as a trained V6 model.

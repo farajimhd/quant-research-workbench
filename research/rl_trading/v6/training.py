@@ -1,0 +1,240 @@
+"""Chronological V6 training core over packed actual-candle events.
+
+This core deliberately accepts certified, already reconstructed teacher
+snapshots. A separate teacher adapter must prove those snapshots from a
+quote-bound fill ledger before a production launcher can use them. It cannot
+consume old V5 clock-second orders or price-only execution grids.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from itertools import groupby, islice
+import math
+
+import numpy as np
+import torch
+
+from research.rl_trading.v6.candle_stream import (SparseCandleState,
+                                                   seed_previous_session)
+from research.rl_trading.v6.model import BracketPolicy
+from research.rl_trading.v6.objective import bracket_loss
+from research.rl_trading.v6.session_data import PackedSession
+
+
+@dataclass(frozen=True)
+class TeacherDecision:
+    """One action at a completed candle close; state is strictly pre-action."""
+
+    close_us: int
+    order_index: int
+    token: int  # 0 HOLD, 1..N enter, then H exit/stop/target slots.
+    account: np.ndarray  # [5] causal cash/equity/P&L/exposure/age.
+    held_index: np.ndarray  # [H] identity-ordered listing indices.
+    held_features: np.ndarray  # [H,4], causal quantity/basis/age/return.
+    enter_allowed: np.ndarray  # [N] causal fresh/listing/cash eligibility.
+    exit_allowed: np.ndarray  # [H].
+    stop_allowed: np.ndarray  # [H], false until confirmed entry fill.
+    target_allowed: np.ndarray  # [H], false until confirmed entry fill.
+    size_fraction: float | None = None
+    oracle_log_distance: float | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionOutcome:
+    """Later observed OMS result; never visible at the order decision."""
+
+    source_close_us: int
+    source_order_index: int
+    bucket_end_us: int
+    action: int  # 1 ENTER, 2 EXIT, 3 SET_STOP, 4 SET_TARGET.
+    listing_index: int
+    requested_fraction: float
+    filled_fraction: float
+    realized_net_over_equity: float
+
+
+@dataclass(frozen=True)
+class TrainingMetrics:
+    decisions: int
+    execution_outcomes: int
+    optimizer_steps: int
+    mean_loss: float
+    action_accuracy: float
+
+
+def _validate(decisions: tuple[TeacherDecision, ...],
+              outcomes: tuple[ExecutionOutcome, ...],
+              listings: int) -> None:
+    previous_key = None
+    by_key = {}
+    for item in decisions:
+        key = (item.close_us, item.order_index)
+        held = len(item.held_index)
+        if (previous_key is not None and key <= previous_key or
+                item.close_us <= 0 or item.order_index < 0 or
+                item.account.shape != (5,) or
+                item.held_index.shape != (held,) or
+                item.held_features.shape != (held, 4) or
+                item.enter_allowed.shape != (listings,) or
+                any(mask.shape != (held,) for mask in
+                    (item.exit_allowed, item.stop_allowed,
+                     item.target_allowed)) or
+                any(mask.dtype != np.bool_ for mask in
+                    (item.enter_allowed, item.exit_allowed,
+                     item.stop_allowed, item.target_allowed)) or
+                np.any(item.held_index < 0) or
+                np.any(item.held_index >= listings) or
+                len(np.unique(item.held_index)) != held or
+                not np.isfinite(item.account).all() or
+                not np.isfinite(item.held_features).all()):
+            raise ValueError('Malformed or unsorted causal teacher decision')
+        permitted = np.concatenate((np.ones(1, dtype=np.bool_),
+            item.enter_allowed, item.exit_allowed, item.stop_allowed,
+            item.target_allowed))
+        if not 0 <= item.token < len(permitted) or not permitted[item.token]:
+            raise ValueError('Teacher selected a masked bracket action')
+        enters = 1 <= item.token <= listings
+        bracket_base = 1 + listings + held
+        bracket_action = bracket_base <= item.token < bracket_base + 2*held
+        if (enters != (item.size_fraction is not None) or
+                bracket_action != (item.oracle_log_distance is not None)):
+            raise ValueError('Conditional label does not match teacher action')
+        previous_key = key
+        by_key[key] = item
+    previous_clock = 0
+    for item in outcomes:
+        source = by_key.get((item.source_close_us, item.source_order_index))
+        if source is None:
+            raise ValueError('Outcome has no earlier teacher decision')
+        held = len(source.held_index)
+        base = 1 + listings
+        expected_action = (1 if 1 <= source.token <= listings else
+                           2 if base <= source.token < base + held else
+                           3 if base + held <= source.token < base + 2*held else
+                           4 if base + 2*held <= source.token < base + 3*held
+                           else 0)
+        slot = (source.token - 1 if expected_action == 1 else
+                source.token - base - (expected_action - 2) * held
+                if expected_action else -1)
+        expected_listing = (slot if expected_action == 1 else
+                            int(source.held_index[slot]) if expected_action else -1)
+        if (item.bucket_end_us < previous_clock or
+                item.bucket_end_us < item.source_close_us or
+                (item.action in (1, 2) and
+                 item.bucket_end_us == item.source_close_us) or
+                item.action != expected_action or
+                item.listing_index != expected_listing or
+                not 0 <= item.listing_index < listings or
+                not all(math.isfinite(value) for value in
+                    (item.requested_fraction, item.filled_fraction,
+                     item.realized_net_over_equity)) or
+                not 0 <= item.requested_fraction <= 1 or
+                not 0 <= item.filled_fraction <= 1):
+            raise ValueError('Malformed or unsorted later execution outcome')
+        previous_clock = item.bucket_end_us
+
+
+def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
+                  session: PackedSession,
+                  decisions: tuple[TeacherDecision, ...],
+                  outcomes: tuple[ExecutionOutcome, ...], *,
+                  device: torch.device, clocks_per_chunk: int = 32,
+                  grad_clip: float = 1.) -> TrainingMetrics:
+    """Train with 120 actual-candle histories and bounded chronological BPTT.
+
+    Decisions use current completed candles and outcomes up to that close.
+    Outcomes after a decision are applied only on a later clock. The encoder
+    and action GRU state detach after each optimizer chunk, never mid-order.
+    """
+    if (session.role != 'train' or clocks_per_chunk < 1 or grad_clip <= 0 or
+            not decisions):
+        raise ValueError('V6 trainer requires a train session and labels')
+    listings = len(session.listings)
+    _validate(decisions, outcomes, listings)
+    state = SparseCandleState.empty(policy.encoder, listings, device=device,
+                                    dtype=torch.float32)
+    seed_previous_session(state, policy.encoder, session.listings,
+                          session.previous)
+    action_state = policy.initial_action_state(device=device,
+                                                dtype=torch.float32)
+    decision_groups = {clock:tuple(group) for clock, group in
+                       groupby(decisions, key=lambda item:item.close_us)}
+    next_outcome = 0
+    observed_decisions = 0
+    updates = 0
+    loss_sum = correct_sum = 0.
+    policy.train()
+    optimizer.zero_grad(set_to_none=True)
+    event_iter = iter(session.candle_events())
+    while chunk := tuple(islice(event_iter, clocks_per_chunk)):
+        labeled = any(event.close_us in decision_groups for event in chunk)
+        pending_losses = []
+        pending_correct = []
+        # Empty chunks still advance every observed candle and actual order
+        # outcome, but do not build a useless autograd graph.
+        with torch.set_grad_enabled(labeled):
+            for event in chunk:
+                # An execution bucket can close before this candle does.
+                # Apply it using the *previous* completed-candle state, even
+                # when its boundary equals this candle close.
+                while (next_outcome < len(outcomes) and
+                       outcomes[next_outcome].bucket_end_us <= event.close_us):
+                    outcome = outcomes[next_outcome]
+                    embedding = state.embeddings()[outcome.listing_index]
+                    action_state = policy.remember_execution(action_state,
+                        embedding, action=outcome.action,
+                        requested_fraction=embedding.new_tensor(
+                            outcome.requested_fraction),
+                        filled_fraction=embedding.new_tensor(
+                            outcome.filled_fraction),
+                        realized_net_over_equity=embedding.new_tensor(
+                            outcome.realized_net_over_equity))
+                    next_outcome += 1
+                index = torch.from_numpy(
+                    event.listing_index.astype(np.int64)).to(device)
+                rows = event.bank_row
+                scalar = torch.from_numpy(np.asarray(
+                    session.bank.scalar[rows]).copy()).to(device)
+                levels = torch.from_numpy(np.asarray(
+                    session.bank.levels[rows]).copy()).to(device)
+                state.advance(policy.encoder, index, scalar, levels)
+                for item in decision_groups.pop(event.close_us, ()):
+                    def tensor(values, dtype=None):
+                        return torch.as_tensor(values, dtype=dtype,
+                                               device=device)
+                    logits, sizes, stops, targets = policy.decide(
+                        state.embeddings(),
+                        tensor(item.account, torch.float32),
+                        tensor(item.held_index, torch.long),
+                        tensor(item.held_features, torch.float32),
+                        action_state,
+                        enter_allowed=tensor(item.enter_allowed, torch.bool),
+                        exit_allowed=tensor(item.exit_allowed, torch.bool),
+                        stop_allowed=tensor(item.stop_allowed, torch.bool),
+                        target_allowed=tensor(item.target_allowed, torch.bool))
+                    loss, metrics = bracket_loss(logits, sizes, stops,
+                        targets, token=item.token,
+                        size_fraction=item.size_fraction,
+                        oracle_log_distance=item.oracle_log_distance)
+                    pending_losses.append(loss)
+                    pending_correct.append(metrics['action_correct'])
+                    observed_decisions += 1
+        if pending_losses:
+            mean = torch.stack(pending_losses).mean()
+            mean.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            updates += 1
+            loss_sum += float(torch.stack([value.detach() for value in
+                                           pending_losses]).sum())
+            correct_sum += float(torch.stack(pending_correct).sum())
+        state.detach()
+        action_state = action_state.detach()
+    if decision_groups or observed_decisions != len(decisions):
+        raise ValueError('Teacher decision clock absent from certified candles')
+    if next_outcome != len(outcomes):
+        raise ValueError('Execution outcome occurs after last certified candle')
+    return TrainingMetrics(observed_decisions, next_outcome, updates,
+                           loss_sum / observed_decisions,
+                           correct_sum / observed_decisions)
