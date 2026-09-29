@@ -56,6 +56,10 @@ FIELDS = {
         "execution_policy_id", "execution_policy_revision",
         "protection_profile_id", "protection_profile_revision",
     ),
+    "trading_strategy_one_add_evidence_v1": (
+        "strategy_number", "assignment_id", "boundary_ms", "resistance_id",
+        "resistance_midpoint", "purchase_ordinal",
+    ),
     "trading_execution_v1": (
         "account_id", "ticker", "side", "quantity", "price", "exchange",
         "currency", "net_amount", "cumulative_quantity", "average_price",
