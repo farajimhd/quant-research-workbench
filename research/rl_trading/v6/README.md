@@ -134,5 +134,15 @@ cash fraction, or label-only stop/target distance conditionally.
 certificate bound to the exact bank hash. Its sparse decisions contain causal
 pre-action account and holding snapshots; later execution outcomes reference
 their originating decisions. `training.py` is the teacher-forced session core.
+Each held snapshot contains quantity, cost basis, age, marked return,
+distances to armed stop/target, two armed flags, and a stop-pending flag. The
+decoder scales dollars and share counts before projecting them so realistic
+account magnitudes do not saturate the action logits.
 No V6 teacher certificate or complete campaign trainer/replay is available
 yet; these modules must not be presented as a trained V6 model.
+`replay_metrics.py` separates realized P&L, unrealized marked P&L, fees,
+period-by-period marked P&L, drawdown, turnover, holding time, stale marks,
+and terminal open positions. `replay_artifacts.py` persists immutable order,
+closed-position, and equity ledgers bound to the checkpoint, bank and quote
+evidence. A sealed-test replay requires a prior development-selection
+certificate. The live quote/price-level policy rollout remains to be built.
