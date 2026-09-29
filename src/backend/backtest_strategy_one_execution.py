@@ -131,7 +131,7 @@ async def run_certified_strategy_one_session(
             or not 0 < through_boundary_ms <= 57_600_000
             or through_boundary_ms % 100
             or type(start_after_boundary_ms) is not int
-            or not 0 <= start_after_boundary_ms < through_boundary_ms
+            or not 0 <= start_after_boundary_ms <= through_boundary_ms
             or start_after_boundary_ms % 100
             or (start_after_boundary_ms == 0) != (resume_evidence_state is None)
             or (start_after_boundary_ms == 0) != (resume_manager_state is None)

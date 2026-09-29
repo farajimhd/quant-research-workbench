@@ -470,6 +470,28 @@ def test_certified_scheduler_factory_starts_strictly_after_committed_boundary(mo
     scheduler.close()
 
 
+def test_certified_scheduler_accepts_terminal_checkpoint_without_replaying_market(monkeypatch):
+    from src.backend import backtest_strategy_one_scheduler as subject
+    from tests.test_backtest_strategy_one_market import authority
+
+    prepared = PreparedStrategyOneTicker(
+        "AAA", 1_000, np.array([42]), np.array([31_000]),
+        np.array([30_000]), np.array([[31_000, 30_000, 30_000, 30_000]]),
+        np.array([30_000]), np.array([99_000]))
+    market, prices, candidates = authority((prepared,))
+    monkeypatch.setattr(subject, "load_sparse_candidate_market",
+                        lambda *_args, **_kwargs: pytest.fail("terminal restart read market"))
+    scheduler = subject.build_certified_strategy_one_scheduler(
+        market, candidates,
+        activations=CertifiedActivationPlan(
+            (StrategyOneActivation(30_000, "AAA", 100_000),), "a" * 64),
+        price_plan=prices, through_boundary_ms=60_000,
+        start_after_boundary_ms=60_000,
+        client_factory=lambda: pytest.fail("terminal restart opened active reader"))
+    assert scheduler.pop_next() is None
+    scheduler.close()
+
+
 def test_pruned_scheduler_preserves_activation_when_no_entry_survives(monkeypatch):
     from src.backend import backtest_strategy_one_scheduler as subject
     from tests.test_backtest_strategy_one_market import authority

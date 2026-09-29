@@ -15,7 +15,7 @@ type Account = {
 
 export type V4Page = {
   schema_version: "strategy-one-v4-terminal-review-page-v1";
-  run: { run_id: string; initial_cash: number; session_date?: string; strategy_id?: string; strategy_revision?: number };
+  run: { run_id: string; initial_cash?: number; session_date?: string; strategy_id?: string; strategy_revision?: number };
   status: string;
   verified_sequence: number;
   market_cursor: { session_date: string; boundary_ms: number } | null;

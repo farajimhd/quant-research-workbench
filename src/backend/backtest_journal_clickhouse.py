@@ -52,14 +52,16 @@ def journal_clickhouse_client() -> Any:
 
 
 def backtest_code_hash(root: Path) -> str:
-    """Fingerprint Python source independent of checkout newline convention.
+    """Fingerprint Backtest runtime source independent of newline convention.
 
     This uses source files rather than a Git checkout because workstation code
     synchronization does not require a ``.git`` directory at execution time.
+    Research experiments are not Backtest execution dependencies: changing an
+    RL notebook or model must not invalidate an interrupted trading run.
     """
     digest = sha256()
     count = 0
-    for directory in ("src", "research"):
+    for directory in ("src", "research/mlops", "research/reaction_levels"):
         source = root / directory
         if not source.is_dir():
             raise ValueError(f"Backtest code identity lacks {directory} source")

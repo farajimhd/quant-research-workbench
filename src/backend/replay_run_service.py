@@ -3586,7 +3586,10 @@ class ReplayRunController:
                        clock.source_cursor['sequence']
                     or clock.source_cursor['session_date'] != day
                     or clock.source_cursor['sequence'] < 1
-                    or not 0 < start_after < self._fixed_through_boundary_ms()
+                    # A durable checkpoint may already be at the requested
+                    # session end while its terminal V4 commit is still pending.
+                    # Recover that empty suffix and seal it without replaying a bar.
+                    or not 0 < start_after <= self._fixed_through_boundary_ms()
                     or fixed_restore.manager.boundary_ms != start_after
                     or fixed_restore.evidence.boundary_ms != start_after):
                 raise RuntimeError("Strategy 1 resumed cursor differs from its causal actors")

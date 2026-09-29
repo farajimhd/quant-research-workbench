@@ -31,15 +31,25 @@ ATTEMPT = "00000000-0000-0000-0000-000000000020"
 def test_source_identity_changes_with_deployed_python(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "research").mkdir()
+    (tmp_path / "research" / "mlops").mkdir()
+    (tmp_path / "research" / "reaction_levels").mkdir()
     source = tmp_path / "src" / "runtime.py"
     source.write_text("VERSION = 1\n", encoding="utf-8")
-    (tmp_path / "research" / "helper.py").write_text("x = 1\n", encoding="utf-8")
+    research_dependency = tmp_path / "research" / "mlops" / "clickhouse.py"
+    research_dependency.write_text("x = 1\n", encoding="utf-8")
+    unrelated_research = tmp_path / "research" / "rl_trading.py"
+    unrelated_research.write_text("x = 1\n", encoding="utf-8")
     first = backtest_code_hash(tmp_path)
+    assert first == backtest_code_hash(tmp_path)
+    unrelated_research.write_text("x = 2\n", encoding="utf-8")
     assert first == backtest_code_hash(tmp_path)
     source.write_bytes(b"VERSION = 1\r\n")
     assert first == backtest_code_hash(tmp_path)
     source.write_text("VERSION = 2\n", encoding="utf-8")
     assert first != backtest_code_hash(tmp_path)
+    changed_source = backtest_code_hash(tmp_path)
+    research_dependency.write_text("x = 2\n", encoding="utf-8")
+    assert changed_source != backtest_code_hash(tmp_path)
 
 
 def test_journal_insert_cannot_target_market_products():

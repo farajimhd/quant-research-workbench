@@ -100,7 +100,7 @@ def build_certified_strategy_one_scheduler(
             or not 0 < through_boundary_ms <= 57_600_000
             or through_boundary_ms % 100
             or type(start_after_boundary_ms) is not int
-            or not 0 <= start_after_boundary_ms < through_boundary_ms
+            or not 0 <= start_after_boundary_ms <= through_boundary_ms
             or start_after_boundary_ms % 100):
         raise ValueError("Strategy 1 scheduler needs one pinned 100ms session")
     source_candidates = activation_source_candidates or candidates
@@ -126,6 +126,14 @@ def build_certified_strategy_one_scheduler(
     if (expected_activations != actual_activations
             or len(actual_activations) != len(activations.rows)):
         raise ValueError("Strategy 1 activation schedule differs from candidates")
+    if start_after_boundary_ms == through_boundary_ms:
+        # The market suffix is empty. A checkpoint at the terminal boundary
+        # still needs journal finalization, but must not query market rows.
+        return StrategyOneBoundaryScheduler(
+            session_date=plan.sessions[0], candidate_rows=iter(()),
+            activation_rows=iter(()),
+            active_source=lambda _ticker, _after: iter(()),
+            start_after_boundary_ms=start_after_boundary_ms)
     rows = load_sparse_candidate_market(
         plan, candidates, price_plan=price_plan,
         client_factory=client_factory, max_workers=max_workers,

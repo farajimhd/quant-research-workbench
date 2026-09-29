@@ -120,13 +120,14 @@ export function SavedV4CanvasHeader({ initialPage, onClose, managementOpen, onMa
   ];
   const icons = [Clock3, MapPin, Globe2];
   const completed = initialPage.status === "completed";
+  const initialCash = initialPage.run.initial_cash;
   return <header className="canvas-config-toolbar">
     <div className="canvas-clock-control" aria-label="Verified saved-run clock"><div className="canvas-clock-zones" aria-label="Preview time zones">
       {clocks.map((clock, index) => { const Icon = icons[index]; return <span key={clock.label}><Icon aria-hidden="true" size={15} /><span><small>{clock.label}</small><strong>{clock.value}</strong><em>{clock.detail}</em></span></span>; })}
     </div></div>
     <MarketStatusBadge value={instant ? historicalMarketStatus(sessionDate, etTime) : { asOfEt: "", label: "Unavailable", source: "et-clock", status: "unavailable" }} />
     <div className="canvas-mode-context-slot"><div className="historical-canvas-run-state historical-backtest-progress saved-v4-focus-progress">
-      <div className="historical-backtest-progress-heading"><strong>{title} · {money(initialPage.run.initial_cash, "USD")} initial · {initialPage.run.run_id.slice(0, 8)} · {initialPage.status} · {initialPage.verified_sequence.toLocaleString()} verified records</strong><b>{completed ? "100%" : initialPage.status}</b></div>
+      <div className="historical-backtest-progress-heading"><strong>{title}{typeof initialCash === "number" && Number.isFinite(initialCash) ? ` · ${money(initialCash, "USD")} initial` : ""} · {initialPage.run.run_id.slice(0, 8)} · {initialPage.status} · {initialPage.verified_sequence.toLocaleString()} verified records</strong><b>{completed ? "100%" : initialPage.status}</b></div>
       <div aria-label="Backtest progress" aria-valuemax={100} aria-valuemin={0} aria-valuenow={completed ? 100 : undefined} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: completed ? "100%" : "0%" }} /></div>
       <div className="historical-backtest-progress-actions"><button className="button secondary compact" onClick={onClose} type="button">{backLabel}</button></div>
     </div></div>

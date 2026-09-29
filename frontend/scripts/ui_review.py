@@ -575,8 +575,13 @@ def build_scenarios(args: argparse.Namespace) -> list[dict[str, Any]]:
         ))
 
     if args.mode == "targeted":
+        # A saved Backtest run/ticker is a route-specific fixture. Defaulting
+        # to Live silently skips the chart assertions while reporting success.
+        default_pages = (("backtest-trading",)
+                         if args.historical_run_id or args.saved_v4_chart_ticker
+                         else ("real-live-trading",))
         return list(cartesian(
-            requested_pages or ("real-live-trading",),
+            requested_pages or default_pages,
             requested_themes or REPRESENTATIVE_THEMES,
             requested_scales or TARGETED_SCALES,
             viewports,
