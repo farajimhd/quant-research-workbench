@@ -645,3 +645,20 @@ performance improvement. Keeper emitted connection-drop warnings on close.
 Cold actor restoration and progress recovery are proven separately, but
 post-checkpoint continuation and equality with an uninterrupted run are not;
 the public resume gate remains closed.
+
+On September 29, the laptop-hosted app passed a fresh read-only August 18
+04:00–09:30 ET all-ticker preflight in 19.256s, with 6,100 configured tickers
+and no blocked checks. Its public Backtest create route then completed run
+`9f7a531d-0808-4d8a-b553-ba59f29a8136` in 65.915s from creation to final
+status, processing 7,584 candidate boundaries among 957 admitted tickers. The
+causal session stage took 26.743s and terminal handling 27.361s, including
+22.092s waiting for the prior checkpoint commit. The bounded normalized writer
+committed 7,784 events in 14 units with zero failed units; three compound
+units spent 7.223s in preparation and 15.674s in publication, including
+6.239s detail inserts, 4.561s detail readback, and 3.228s commit fencing.
+A separate cold read-only audit verified all 7,784 events, 58 strategy intents,
+3,682 linked actions, and zero backdated actions. This is one laptop-app run,
+not a workstation-controlled speed comparison. The largest measured remaining
+latency is durable journal publication/terminal waiting, not vectorized
+candidate evaluation (3.484s) or broker matching (6.628s). The live and
+interrupted-resume gates remain closed.
