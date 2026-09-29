@@ -629,3 +629,19 @@ The workstation audit verified 440 historical fills, zero open orders, and
 zero writes. Focused portfolio/runtime/OMS tests passed (154 tests plus nine
 subtests). This proves cold actor initialization, not continued execution or
 checkpoint-resumed equivalence; the public resume gate remains closed.
+
+Commit `13ff1f65b` adds a normalized `trading_backtest_progress_v1` row to
+each new V4 running checkpoint. The scalar counters are frozen with the
+market cursor in memory, projected through the same typed batch, and removed
+after its ClickHouse fence. Older runs do not acquire these rows retroactively.
+A fresh full-market August 18 run (`216793ae-bf7f-4c16-a839-c168c31ffa15`)
+completed after 27.380s preflight and 57.769s execution, processing 7,584
+rows and 7,786 normalized events with zero failed units or backdated actions.
+The read-only cold audit at checkpoint sequence 7,784 verified the progress
+row, 440 fills, zero open orders, and zero writes. Journal insertion and
+readback took 8.674s and 6.515s of client time; 20 portfolio reconciliations
+took 11.280s. This is one variable-latency measurement, not a demonstrated
+performance improvement. Keeper emitted connection-drop warnings on close.
+Cold actor restoration and progress recovery are proven separately, but
+post-checkpoint continuation and equality with an uninterrupted run are not;
+the public resume gate remains closed.
