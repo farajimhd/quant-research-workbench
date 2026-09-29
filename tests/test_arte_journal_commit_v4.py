@@ -1620,7 +1620,8 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
     client = SimpleNamespace(backtest_v4_lease=lease,
                              typed_insert_strict=True,
                              typed_insert_dispatch=dispatch)
-    monkeypatch.setattr(writer, "_rows", lambda _client, _sql: commits)
+    monkeypatch.setattr(writer, "_rows", lambda _client, sql:
+                        [commits[-1]] if "AND batch_id=" in sql else commits)
     verified = []
     monkeypatch.setattr(commit, "load_verified_commit_v4",
                         lambda _client, *, run_id, batch_id:
@@ -1630,6 +1631,12 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
     prefix = commit.load_writer_v4_snapshot_prefix(client, run)
     assert prefix.batch_ids == (first, second)
     assert verified == [second]
+    assert commit.load_writer_v4_snapshot_prefix(client, run) is prefix
+    assert verified == [second]  # Same fenced head does not rehash details.
+    commits[-1]["source_cursor"] = "2026-08-18:201"
+    with pytest.raises(RuntimeError, match="cache differs from commit"):
+        commit.load_writer_v4_snapshot_prefix(client, run)
+    commits[-1]["source_cursor"] = "2026-08-18:200"
     keeper.nodes[_gate_path(run)] = (
         _Gate("open", 0, gate.epoch, 0, 4, second, "a" * 64, zero).wire(), 2, 0)
     with pytest.raises(RuntimeError, match="Keeper compaction"):
@@ -1637,7 +1644,7 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
     keeper.nodes[_gate_path(run)] = (
         _Gate("open", 0, gate.epoch, 0, 4, second, digest, zero).wire(), 3, 0)
     commits[1]["prior_batch_id"] = zero
-    with pytest.raises(RuntimeError, match="forked or incomplete"):
+    with pytest.raises(RuntimeError, match="cache differs from commit"):
         commit.load_writer_v4_snapshot_prefix(client, run)
     commits[1]["prior_batch_id"] = first
     client.typed_insert_strict = False

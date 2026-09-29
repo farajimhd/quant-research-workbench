@@ -84,8 +84,10 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
     """Verify a writer-owned head without rehashing its older compacted batches.
 
     This shortcut is limited to the current exclusive Backtest writer session.
-    Every batch was detail-verified before Keeper compaction; the current batch
-    is detail-verified again here. Cold readers still scan the entire prefix.
+    Every batch was detail-verified before Keeper compaction. The first
+    snapshot at a head re-verifies its current details; later snapshots on
+    this same dedicated writer client may reuse that proof after rechecking
+    the Keeper head and immutable commit row. Cold readers scan the full prefix.
     """
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
@@ -113,6 +115,27 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
             or gate.active_batch_id != zero or gate.compacted_through < 1):
         raise RuntimeError("V4 warm snapshot has an unsealed dispatch gate")
     columns = ",".join(name for name, _ in _CONTRACTS["trading_commit_v4"].columns)
+    cached = getattr(client, "_v4_writer_snapshot_cache", None)
+    if cached is not None:
+        prefix, digest = cached
+        if (not isinstance(prefix, V4CommittedPrefix)
+                or prefix.run_id != run_id or type(digest) is not str):
+            raise RuntimeError("V4 warm snapshot cache has a foreign authority")
+        if (prefix.last_sequence == gate.compacted_through
+                and prefix.last_batch_id == gate.compacted_batch_id
+                and digest == gate.compacted_commit_hash):
+            rows = _rows(client,
+                f"SELECT {columns} FROM arte.trading_commit_v4 "
+                f"WHERE run_id={_literal(run_id)} "
+                f"AND batch_id=toUUID({_literal(prefix.last_batch_id)}) "
+                "LIMIT 2 FORMAT JSONEachRow")
+            if (len(rows) != 1
+                    or sha256(canonical_json(rows[0]).encode()).hexdigest() != digest
+                    or rows[0]["last_sequence"] != prefix.last_sequence
+                    or rows[0]["source_cursor"] != prefix.source_cursor):
+                raise RuntimeError("V4 warm snapshot cache differs from commit")
+            lease.assert_current()
+            return prefix
     commits = _rows(client,
         f"SELECT {columns} FROM arte.trading_commit_v4 "
         f"WHERE run_id={_literal(run_id)} ORDER BY first_sequence,batch_id "
@@ -146,8 +169,10 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
     if verified != latest:
         raise RuntimeError("V4 warm snapshot current detail differs from commit")
     lease.assert_current()
-    return V4CommittedPrefix(run_id, sequence, prior, latest["source_cursor"],
-                             "running", tuple(ids))
+    prefix = V4CommittedPrefix(run_id, sequence, prior, latest["source_cursor"],
+                               "running", tuple(ids))
+    client._v4_writer_snapshot_cache = (prefix, gate.compacted_commit_hash)
+    return prefix
 
 
 def load_verified_v4_prefix(client, run_id: str, *,
