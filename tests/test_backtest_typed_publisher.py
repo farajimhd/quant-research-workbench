@@ -679,6 +679,51 @@ def test_v4_checkpoint_waits_for_matching_broker_head_off_execution_path():
     asyncio.run(exercise())
 
 
+def test_v4_checkpoint_receipt_waits_for_campaign_snapshot():
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def __init__(self):
+            super().__init__()
+            self.campaign_receipt = Future()
+            self.campaign_args = None
+
+        def submit_base_v4(self, batch):
+            return FakeWriter.submit(self, batch)
+
+        def submit_broker_match_snapshot(self, **kwargs):
+            receipt = Future()
+            receipt.set_result(self.submitted[0].batch_id)
+            return receipt
+
+        def submit_campaign_snapshot(self, **kwargs):
+            self.campaign_args = kwargs
+            return self.campaign_receipt
+
+    async def exercise():
+        writer = V4Writer()
+        publisher = _publisher(_journal(), writer)
+        owners = ({"resource_id": "ticker:A", "session_key": "s",
+                   "owner_id": "run", "state": "confirmed", "epoch": 1},)
+        receipt = publisher.enqueue_checkpoint(
+            boundary_id=f"{DAY.isoformat()}:300000",
+            broker_state=(300_000, {}), campaign_ownership=owners)
+        for _ in range(100):
+            if writer.campaign_args is not None:
+                break
+            await asyncio.sleep(0.001)
+        if receipt.done():
+            receipt.result()
+        assert writer.campaign_args is not None
+        assert writer.campaign_args["ownership"] == owners
+        assert writer.campaign_args["checkpoint_sequence"] == 2
+        assert not receipt.done()
+        writer.campaign_receipt.set_result(writer.submitted[0].batch_id)
+        assert (await receipt).last_sequence == 2
+
+    asyncio.run(exercise())
+
+
 def test_v4_checkpoint_receipt_waits_for_account_snapshot():
     class V4Writer(FakeWriter):
         journal_profile = 'backtest_v4'

@@ -8,7 +8,8 @@ import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.strategy_one_campaign_snapshot import (
-    TABLES, CampaignSnapshotHead, load_attested_campaign_snapshot, load_campaign_snapshot,
+    TABLES, CampaignSnapshotHead, ManagedCampaignSnapshotHeadReader,
+    load_attested_campaign_snapshot, load_campaign_snapshot, publish_campaign_snapshot,
     project_campaign_snapshot, verify_campaign_snapshot,
 )
 
@@ -126,3 +127,70 @@ def test_select_only_recovery_requires_exact_cursor_and_child_seal(monkeypatch):
     with pytest.raises(RuntimeError, match="committed market cursor"):
         load_attested_campaign_snapshot(reader, run_id=RUN,
                                         checkpoint_sequence=42, keeper=keeper)
+
+
+def test_campaign_publication_is_children_first_and_keeper_selected(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4, arte_journal_projection
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime.arte_typed_insert_dispatch import (
+        TypedInsertDispatch, _Gate, _context_receipt_path, _gate_path,
+    )
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from tests.test_arte_typed_insert_dispatch import Keeper, Stat
+
+    rows = project((
+        {"resource_id": "book:AAA", "session_key": "2026-08-18",
+         "owner_id": "campaign-a", "state": "confirmed", "epoch": 2},
+    ))
+    prefix = V4CommittedPrefix(RUN, 42, BATCH, "2026-08-18:1200000",
+                               "running", (BATCH,))
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
+                        lambda _client, _run: prefix)
+    monkeypatch.setattr(arte_journal_projection, "load_latest_backtest_cursor",
+                        lambda _client, _prefix: {
+                            "run_id": RUN, "event_sequence": 42,
+                            "batch_id": BATCH, "boundary_ms": 1_200_000,
+                            "session_date": DAY.isoformat()})
+    keeper = Keeper()
+    keeper.add_listener = lambda _listener: None
+    keeper.connected = True
+    keeper.client_id = (101, b"secret")
+    keeper.exists = lambda path: keeper.rows.get(path)
+    session = ManagedKeeperSession(keeper)
+    session._on_state("CONNECTED")
+    dispatch = TypedInsertDispatch(keeper)
+    dispatch.initialize_new_run(RUN)
+    keeper.create(_context_receipt_path(RUN), b"1\n" + b"a" * 64)
+    gate, version = dispatch._read_gate(RUN)
+    keeper.rows[_gate_path(RUN)] = (
+        _Gate("open", 0, gate.epoch, 0, 42, BATCH,
+              "a" * 64, "00000000-0000-0000-0000-000000000000").wire(),
+        Stat(version + 1))
+
+    class Client:
+        typed_insert_strict = True
+        typed_insert_dispatch = dispatch
+
+        def __init__(self):
+            self.tables = {}
+            self.inserts = []
+
+        def execute(self, sql, *, query_id=None):
+            table = sql.split("arte.", 1)[1].split(" ", 1)[0]
+            if sql.startswith("INSERT INTO "):
+                self.inserts.append(table)
+                self.tables.setdefault(table, []).extend(
+                    json.loads(line) for line in sql.split("\n", 1)[1].splitlines())
+                return ""
+            assert sql.startswith("SELECT ")
+            return "\n".join(json.dumps(row) for row in self.tables.get(table, ()))
+
+    client = Client()
+    head = publish_campaign_snapshot(client, session, rows)
+    assert head == CampaignSnapshotHead(RUN, 42, BATCH,
+                                        rows.snapshot["content_hash"], 0)
+    assert client.inserts == [TABLES[1].name, TABLES[0].name]
+    assert dispatch._read_gate(RUN)[0].registered == 0
+    assert ManagedCampaignSnapshotHeadReader(session).read_head(run_id=RUN) == head
+    assert publish_campaign_snapshot(client, session, rows) == head
+    assert len(client.inserts) == 2

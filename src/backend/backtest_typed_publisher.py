@@ -125,6 +125,7 @@ class BacktestTypedJournalPublisher:
         self._checkpoint_waiters: list[tuple[
             int, str, date, object | None, object | None, object | None,
             tuple[CapturedPortfolioSnapshot, ...],
+            tuple[dict[str, object], ...] | None,
             asyncio.Future[TypedBacktestReceipt],
         ]] = []
         # This is a performance index of already fenced source revisions, not
@@ -359,7 +360,7 @@ class BacktestTypedJournalPublisher:
                     current = TypedBacktestReceipt(self._sequence, self._batch_id,
                                                    self._source_cursor)
                     remaining = []
-                    for sequence, cursor, session_date, manager_state, broker_state, evidence_state, portfolio_captures, waiter in self._checkpoint_waiters:
+                    for sequence, cursor, session_date, manager_state, broker_state, evidence_state, portfolio_captures, campaign_ownership, waiter in self._checkpoint_waiters:
                         if sequence <= self._sequence:
                             if not waiter.done():
                                 if (sequence != self._sequence
@@ -402,17 +403,27 @@ class BacktestTypedJournalPublisher:
                                         if await asyncio.wrap_future(snapshot_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "Portfolio snapshot differs from committed checkpoint")
+                                    if campaign_ownership is not None:
+                                        campaign_receipt = self.writer.submit_campaign_snapshot(
+                                            session_date=session_date,
+                                            checkpoint_sequence=sequence,
+                                            boundary_ms=broker_state[0],
+                                            journal_batch_id=self._batch_id,
+                                            ownership=campaign_ownership)
+                                        if await asyncio.wrap_future(campaign_receipt) != self._batch_id:
+                                            raise RuntimeError(
+                                                "Campaign snapshot differs from committed checkpoint")
                                     waiter.set_result(current)
                         else:
                             remaining.append((sequence, cursor, session_date,
                                               manager_state, broker_state, evidence_state,
-                                              portfolio_captures, waiter))
+                                              portfolio_captures, campaign_ownership, waiter))
                     self._checkpoint_waiters = remaining
             return TypedBacktestReceipt(self._sequence, self._batch_id,
                                         self._source_cursor)
         except BaseException as exc:
             self._error = exc
-            for _, _, _, _, _, _, _, waiter in self._checkpoint_waiters:
+            for _, _, _, _, _, _, _, _, waiter in self._checkpoint_waiters:
                 if not waiter.done():
                     waiter.set_exception(exc)
             self._checkpoint_waiters.clear()
@@ -442,6 +453,7 @@ class BacktestTypedJournalPublisher:
                            broker_state: object | None = None,
                            evidence_state: object | None = None,
                            portfolio_captures: tuple[CapturedPortfolioSnapshot, ...] = (),
+                           campaign_ownership: tuple[dict[str, object], ...] | None = None,
                            ) -> asyncio.Future[TypedBacktestReceipt]:
         """Return immediately; resolve only after this exact cursor is durable."""
         if status != "running":
@@ -488,12 +500,17 @@ class BacktestTypedJournalPublisher:
                 or len({capture.account_id for capture in portfolio_captures})
                    != len(portfolio_captures)):
             raise ValueError("Portfolio captures differ from checkpoint boundary")
+        if campaign_ownership is not None:
+            if (broker_state is None or self.writer.journal_profile != "backtest_v4"
+                    or not isinstance(campaign_ownership, tuple)
+                    or any(not isinstance(owner, dict) for owner in campaign_ownership)):
+                raise ValueError("Campaign capture needs a V4 broker boundary")
         session_date = date.fromisoformat(pending[-1].payload["session_date"])
         waiter: asyncio.Future[TypedBacktestReceipt] = asyncio.get_running_loop().create_future()
         self._checkpoint_waiters.append((pending[-1].sequence, boundary_id,
                                          session_date, manager_state,
                                          broker_state, evidence_state,
-                                         portfolio_captures, waiter))
+                                         portfolio_captures, campaign_ownership, waiter))
         try:
             if active is None:
                 self.enqueue_pending()
@@ -520,6 +537,7 @@ class BacktestTypedJournalPublisher:
         broker_state: object | None = None,
         evidence_state: object | None = None,
         portfolio_captures: tuple[CapturedPortfolioSnapshot, ...] = (),
+        campaign_ownership: tuple[dict[str, object], ...] | None = None,
     ) -> TypedBacktestReceipt:
         """Fence one normalized completed cursor, never an opaque state map.
 
@@ -531,7 +549,8 @@ class BacktestTypedJournalPublisher:
             boundary_id=boundary_id, status=status,
             manager_state=manager_state, broker_state=broker_state,
             evidence_state=evidence_state,
-            portfolio_captures=portfolio_captures))
+            portfolio_captures=portfolio_captures,
+            campaign_ownership=campaign_ownership))
 
     def enqueue_terminal(
         self, captures: tuple[CapturedPortfolioSnapshot, ...],

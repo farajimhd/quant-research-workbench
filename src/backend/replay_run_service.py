@@ -2360,6 +2360,7 @@ class ReplayRunController:
             manager_state = None
             broker_state = None
             evidence_state = None
+            campaign_ownership = None
             if publisher.writer.journal_profile == 'backtest_v4' and manager is None:
                 # A V4 checkpoint must include the causal strategy state;
                 # a market cursor alone cannot attest its decision boundary.
@@ -2377,6 +2378,7 @@ class ReplayRunController:
                 if capture_broker is None:
                     raise RuntimeError('Strategy 1 broker cannot capture match state')
                 broker_state = (boundary, capture_broker())
+                campaign_ownership = self._journal.campaign_ownership_snapshot()
             # The writer remains asynchronous, but UI readers still require a
             # complete bounded status snapshot while the receipt is pending.
             # An empty placeholder makes both run listing and polling fail.
@@ -2433,7 +2435,8 @@ class ReplayRunController:
                         boundary_id=boundary_id, status='running',
                         manager_state=manager_state, broker_state=broker_state,
                         evidence_state=evidence_state,
-                        portfolio_captures=portfolio_captures)
+                        portfolio_captures=portfolio_captures,
+                        campaign_ownership=campaign_ownership)
                     self._checkpoint_io_task = receipt
                     def completed(done):
                         try:
@@ -2460,6 +2463,7 @@ class ReplayRunController:
                     broker_state=broker_state,
                     evidence_state=evidence_state,
                     portfolio_captures=portfolio_captures,
+                    campaign_ownership=campaign_ownership,
                 ))
                 try:
                     await asyncio.shield(self._checkpoint_io_task)

@@ -230,3 +230,79 @@ def load_attested_campaign_snapshot(client: Any, keeper: CampaignSnapshotHeadRea
             or keeper.read_head(run_id=run_id) != selected):
         raise RuntimeError("Campaign checkpoint differs from committed market cursor")
     return rows
+
+
+def publish_campaign_snapshot(
+    client: Any, session: ManagedKeeperSession, rows: CampaignSnapshotRows,
+) -> CampaignSnapshotHead:
+    """Background-writer-only children-first publication and Keeper selection."""
+    from src.trading_runtime.arte_journal_commit_v4 import load_writer_v4_snapshot_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+    from src.trading_runtime.arte_journal_writer import _insert
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    if (not isinstance(session, ManagedKeeperSession) or not session.writable
+            or getattr(client, "typed_insert_strict", False) is not True
+            or not isinstance(getattr(client, "typed_insert_dispatch", None),
+                              TypedInsertDispatch)
+            or client.typed_insert_dispatch.keeper is not session.client):
+        raise RuntimeError("Campaign publication lacks a fenced journal writer")
+    expected = verify_campaign_snapshot(rows)
+    root = expected.snapshot
+    run_id, sequence, batch_id = (
+        root["run_id"], root["checkpoint_sequence"], root["journal_batch_id"])
+    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != sequence
+            or prefix.last_batch_id != batch_id):
+        raise RuntimeError("Campaign publication lacks its exact V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict)
+            or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != sequence
+            or cursor.get("batch_id") != batch_id
+            or cursor.get("session_date") != root["session_date"]
+            or cursor.get("boundary_ms") != root["boundary_ms"]):
+        raise RuntimeError("Campaign publication differs from completed market cursor")
+    reader = ManagedCampaignSnapshotHeadReader(session)
+    if session.client.exists(reader.path(run_id)) is None:
+        previous = None
+    else:
+        previous = reader.read_head(run_id=run_id)
+        if previous.checkpoint_sequence == sequence:
+            if (previous.journal_batch_id != batch_id
+                    or previous.snapshot_hash != root["content_hash"]
+                    or load_attested_campaign_snapshot(
+                        client, reader, run_id=run_id,
+                        checkpoint_sequence=sequence) != expected):
+                raise RuntimeError("Campaign repeat differs from selected snapshot")
+            return previous
+        if previous.checkpoint_sequence > sequence:
+            raise RuntimeError("Campaign publication would rewind Keeper head")
+    operations = []
+    for table, family in ((OWNER, expected.owners), (ROOT, (root,))):
+        if not family:
+            continue
+        token = (f"campaign-state:{run_id}:{sequence}:"
+                 f"{root['content_hash']}:{table.name}")
+        _insert(client, table.name, family, token,
+                dispatch_sequence=sequence, dispatch_batch_id=batch_id,
+                dispatch_campaign_snapshot_hash=root["content_hash"])
+        operations.append((table.name, token))
+    if load_campaign_snapshot(
+            client, run_id=run_id, checkpoint_sequence=sequence) != expected:
+        raise RuntimeError("Campaign readback differs from captured state")
+    for table, token in operations:
+        client.typed_insert_dispatch.seal_verified_operation(
+            run_id=run_id, table=table, token=token, batch_id=batch_id,
+            batch_last_sequence=sequence, campaign_snapshot=True)
+    client.typed_insert_dispatch.compact_verified_campaign_snapshot(
+        run_id=run_id, batch_id=batch_id, last_sequence=sequence,
+        snapshot_hash=root["content_hash"], operations=tuple(operations),
+        previous=previous)
+    selected = reader.read_head(run_id=run_id)
+    if (selected.checkpoint_sequence != sequence
+            or selected.journal_batch_id != batch_id
+            or selected.snapshot_hash != root["content_hash"]):
+        raise RuntimeError("Campaign Keeper readback differs from captured state")
+    return selected

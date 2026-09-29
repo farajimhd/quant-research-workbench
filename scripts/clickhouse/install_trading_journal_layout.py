@@ -51,6 +51,9 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import (
 from src.trading_runtime.strategy_one_evidence_snapshot import (
     TABLES as STRATEGY_ONE_EVIDENCE_TABLES,
 )
+from src.trading_runtime.strategy_one_campaign_snapshot import (
+    TABLES as STRATEGY_ONE_CAMPAIGN_TABLES,
+)
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES as STRATEGY_ONE_PROTECTION_TABLES,
 )
@@ -424,6 +427,12 @@ def install_strategy_one_evidence_snapshot(client: object, *, apply: bool) -> st
     """Install normalized causal evidence rows; publish no checkpoint data."""
     return _install_strategy_one_checkpoint_tables(
         client, contracts=STRATEGY_ONE_EVIDENCE_TABLES, apply=apply)
+
+
+def install_strategy_one_campaign_snapshot(client: object, *, apply: bool) -> str:
+    """Install normalized campaign ownership checkpoints; publish no rows."""
+    return _install_strategy_one_checkpoint_tables(
+        client, contracts=STRATEGY_ONE_CAMPAIGN_TABLES, apply=apply)
 
 
 def _install_strategy_one_checkpoint_tables(
@@ -967,6 +976,8 @@ def main() -> int:
                         help="verify or install normalized Strategy 1 broker match checkpoint tables")
     parser.add_argument("--install-strategy-one-evidence-snapshot", action="store_true",
                         help="verify or install normalized Strategy 1 causal evidence tables")
+    parser.add_argument("--install-strategy-one-campaign-snapshot", action="store_true",
+                        help="verify or install normalized Strategy 1 campaign owner tables")
     parser.add_argument("--install-live-signal", action="store_true",
                         help="verify or install normalized live signal tables")
     args = parser.parse_args()
@@ -999,6 +1010,7 @@ def main() -> int:
                     args.install_strategy_one_manager_snapshot,
                     args.install_strategy_one_broker_match_snapshot,
                     args.install_strategy_one_evidence_snapshot,
+                    args.install_strategy_one_campaign_snapshot,
                     args.install_live_signal)) > 1:
                 parser.error("Select only one layout upgrade at a time")
             if args.install_live_signal:
@@ -1016,6 +1028,9 @@ def main() -> int:
             elif args.install_strategy_one_evidence_snapshot:
                 result = install_strategy_one_evidence_snapshot(client, apply=args.apply)
                 print(f"Strategy 1 evidence checkpoint layout: {result}; no rows inserted")
+            elif args.install_strategy_one_campaign_snapshot:
+                result = install_strategy_one_campaign_snapshot(client, apply=args.apply)
+                print(f"Strategy 1 campaign checkpoint layout: {result}; no rows inserted")
             elif args.upgrade_v3_portfolio_allocation_fill:
                 result = upgrade_v3_portfolio_allocation_fill(client, apply=args.apply)
                 print(f"V3 portfolio-allocation layout: {result}; no rows inserted")

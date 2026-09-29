@@ -352,6 +352,44 @@ def test_strategy_one_evidence_layout_is_exact_ssd_only_and_has_no_rows(monkeypa
     assert set(verified) == client.installed
 
 
+def test_strategy_one_campaign_layout_is_normalized_ssd_only(monkeypatch):
+    class CampaignClient(Client):
+        def __init__(self):
+            super().__init__()
+            self.installed = set()
+
+        def execute(self, sql):
+            self.statements.append(sql)
+            if sql.startswith("SELECT name FROM system.tables"):
+                return "\n".join(json.dumps({"name": name})
+                                 for name in sorted(self.installed))
+            if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
+                self.installed.add(sql.split("arte.", 1)[1].split(" ", 1)[0])
+                return ""
+            if sql.startswith("SELECT disks FROM system.storage_policies"):
+                return json.dumps({"disks": ["live_market_ssd"]})
+            if sql.startswith("SELECT count() FROM system.databases"):
+                return "1"
+            raise AssertionError(sql)
+
+    client = CampaignClient()
+    verified = []
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda _, *, tables: verified.extend(t.name for t in tables))
+    install_campaign = install.install_strategy_one_campaign_snapshot
+    assert install_campaign(client, apply=False) == "planned"
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install_campaign(client, apply=True) == "upgraded"
+    assert client.installed == {
+        table.name for table in install.STRATEGY_ONE_CAMPAIGN_TABLES}
+    creates = [sql for sql in client.statements if sql.startswith("CREATE TABLE")]
+    assert len(creates) == 2
+    assert all("storage_policy = 'live_market_ssd'" in sql for sql in creates)
+    assert all("JSON" not in sql and "Blob" not in sql for sql in creates)
+    assert install_campaign(client, apply=False) == "verified"
+    assert set(verified) == client.installed
+
+
 class V3UpgradeClient:
     def __init__(self, *, state="old", child=False, rows=0):
         self.state = state
