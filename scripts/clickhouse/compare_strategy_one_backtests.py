@@ -209,10 +209,11 @@ def _explain_difference(client, left_id: str, right_id: str,
                 f"SELECT {','.join(fields)} FROM arte.trading_strategy_intent_v1 "
                 f"WHERE run_id={_literal(run_id)} AND ticker={_literal(ticker)} "
                 "ORDER BY intent_id LIMIT 11 FORMAT JSONEachRow")
-            if len(rows) > 10 or any(set(row) != set(fields) for row in rows):
-                raise RuntimeError("Ticker intent comparison exceeds its typed bound")
-            print(f"{label} {ticker} intents ({len(rows)}):", flush=True)
-            for row in rows:
+            if any(set(row) != set(fields) for row in rows):
+                raise RuntimeError("Ticker intent comparison returned malformed rows")
+            print(f"{label} {ticker} intents (first {min(len(rows), 10)}"
+                  f"{'+' if len(rows) > 10 else ''}):", flush=True)
+            for row in rows[:10]:
                 print("  " + " ".join(f"{field}={row[field]}" for field in fields),
                       flush=True)
 
