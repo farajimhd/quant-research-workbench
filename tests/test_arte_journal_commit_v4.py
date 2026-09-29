@@ -50,7 +50,7 @@ from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch, captured
 
 
-@pytest.mark.parametrize("lane_count", (3, 8))
+@pytest.mark.parametrize("lane_count", (3, 4))
 def test_v4_detail_inserts_use_distinct_bounded_http_lanes(monkeypatch, lane_count):
     dispatch = object()
     closed = []

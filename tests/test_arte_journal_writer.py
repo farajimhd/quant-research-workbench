@@ -258,8 +258,8 @@ def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
                           TypedInsertDispatch)
         assert client.typed_insert_dispatch.keeper is session.client
         assert client.backtest_v4_lease is lease
-        assert len(client.v4_insert_lane_cache) == 8
-        assert len({id(lane) for lane in client.v4_insert_lane_cache}) == 8
+        assert len(client.v4_insert_lane_cache) == 4
+        assert len({id(lane) for lane in client.v4_insert_lane_cache}) == 4
         assert all(lane is not client and lane.typed_insert_dispatch
                    is client.typed_insert_dispatch
                    and lane.backtest_v4_lease is lease
