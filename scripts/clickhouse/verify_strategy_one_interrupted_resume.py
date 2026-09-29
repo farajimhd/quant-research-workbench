@@ -29,33 +29,29 @@ from scripts.clickhouse.smoke_strategy_one_backtest import (  # noqa: E402
 
 async def _launch_and_pause(
     channel, session: date, cash: float, pause_boundary_ms: int,
+    continue_run_id: str = "",
 ) -> None:
     from src.backend.app import (
-        BacktestRunCreateRequest, HistoricalPreflightRequest,
-        _trading_historical_preflight_payload, backtest_run_service,
-        trading_backtest_run_create,
+        BacktestRunCreateRequest, backtest_run_service, trading_backtest_run_create,
     )
 
-    preflight = await asyncio.to_thread(
-        _trading_historical_preflight_payload,
-        HistoricalPreflightRequest(
-            mode="backtest", anchor_date=session + timedelta(days=1),
-            session_count=1, initial_cash=cash, start_time="04:00:00",
-            end_time="09:30:00", tickers=[],
-        ),
-    )
-    blockers = tuple(row["id"] for row in preflight["checks"]
-                     if row.get("required", True) and row["status"] != "ready")
-    if blockers or not preflight["strategy_run_ready"] or preflight["execution_interval"] != "100ms":
-        raise RuntimeError(f"Strategy 1 preflight blocked: {blockers}")
-    response = await trading_backtest_run_create(BacktestRunCreateRequest(
-        anchor_date=session + timedelta(days=1), session_count=1,
-        initial_cash=cash, configuration_revision_id=preflight["configuration_revision_id"],
-        run_plan_id=preflight["run_plan_id"], start_time="04:00:00",
-        end_time="09:30:00", tickers=[],
-        experimental_structure_book="level-book-v7",
-    ))
-    controller = backtest_run_service.get(response["run_id"])
+    if continue_run_id:
+        from src.backend.replay_run_service import (
+            ReplayRunService, backtest_runtime_root,
+        )
+        service = ReplayRunService(
+            runtime_root=backtest_runtime_root(), allow_typed_backtest_resume=True)
+        controller = await service.resume(continue_run_id)
+    else:
+        preflight = await _preflight(session, cash)
+        response = await trading_backtest_run_create(BacktestRunCreateRequest(
+            anchor_date=session + timedelta(days=1), session_count=1,
+            initial_cash=cash, configuration_revision_id=preflight["configuration_revision_id"],
+            run_plan_id=preflight["run_plan_id"], start_time="04:00:00",
+            end_time="20:00:00", tickers=[],
+            experimental_structure_book="level-book-v7",
+        ))
+        controller = backtest_run_service.get(response["run_id"])
     channel.send(("created", controller.run_id))
     pause_requested = False
     checkpoint_before_pause = None
@@ -84,10 +80,34 @@ async def _launch_and_pause(
     raise RuntimeError(f"Run became terminal before a pausable checkpoint: {controller.status}")
 
 
-def _child(channel, session: date, cash: float, pause_boundary_ms: int) -> None:
+async def _preflight(session: date, cash: float) -> dict:
+    from src.backend.app import (
+        HistoricalPreflightRequest, _trading_historical_preflight_payload,
+    )
+
+    preflight = await asyncio.to_thread(
+        _trading_historical_preflight_payload,
+        HistoricalPreflightRequest(
+            mode="backtest", anchor_date=session + timedelta(days=1),
+            session_count=1, initial_cash=cash, start_time="04:00:00",
+            end_time="20:00:00", tickers=[],
+        ),
+    )
+    blockers = tuple(row["id"] for row in preflight["checks"]
+                     if row.get("required", True) and row["status"] != "ready")
+    print(f"Full-session preflight: session={session} scope=all-tickers "
+          f"interval={preflight['execution_interval']} blocked={blockers}", flush=True)
+    if blockers or not preflight["strategy_run_ready"] or preflight["execution_interval"] != "100ms":
+        raise RuntimeError(f"Strategy 1 preflight blocked: {blockers}")
+    return preflight
+
+
+def _child(channel, session: date, cash: float, pause_boundary_ms: int,
+           continue_run_id: str = "") -> None:
     try:
         _load_private_credentials()
-        asyncio.run(_launch_and_pause(channel, session, cash, pause_boundary_ms))
+        asyncio.run(_launch_and_pause(
+            channel, session, cash, pause_boundary_ms, continue_run_id))
     except BaseException as exc:
         channel.send(("error", type(exc).__name__, str(exc)[:500]))
         raise
@@ -119,31 +139,43 @@ def main() -> None:
     parser.add_argument("--session", type=date.fromisoformat,
                         default=date(2026, 8, 18))
     parser.add_argument("--cash", type=float, default=10_000)
-    parser.add_argument("--pause-after-minutes", type=int, default=315,
-                        help="completed market minutes after 04:00 ET; default 09:15")
-    parser.add_argument("--timeout-seconds", type=int, default=300)
+    parser.add_argument("--pause-after-minutes", type=int, default=945,
+                        help="completed market minutes after 04:00 ET; default 19:45")
+    parser.add_argument("--timeout-seconds", type=int, default=1800,
+                        help="maximum time to reach the late after-hours checkpoint")
+    parser.add_argument("--apply", action="store_true",
+                        help="create, interrupt, and resume one normalized Backtest")
     parser.add_argument("--resume-run-id", type=lambda value: str(UUID(value)),
                         help="retry cold assembly of an already interrupted diagnostic run")
+    parser.add_argument("--continue-run-id", type=lambda value: str(UUID(value)),
+                        help="cold-continue an existing interrupted run to the late checkpoint")
     args = parser.parse_args()
-    if (not 1 <= args.pause_after_minutes < 330
+    if (not 1 <= args.pause_after_minutes < 960
             or not 1_000 <= args.cash <= 1_000_000_000
             or args.cash != args.cash
-            or not 60 <= args.timeout_seconds <= 900):
+            or not 60 <= args.timeout_seconds <= 3600):
         parser.error("invalid cash, interruption boundary, or timeout")
     _load_private_credentials()
+    if args.resume_run_id and args.continue_run_id:
+        parser.error("choose either --resume-run-id or --continue-run-id")
     if args.resume_run_id:
         asyncio.run(_resume(args.resume_run_id))
+        return
+    if not args.apply:
+        asyncio.run(_preflight(args.session, args.cash))
+        print("Plan only: no Backtest run or journal was created", flush=True)
         return
     context = get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
         target=_child,
-        args=(sender, args.session, args.cash, args.pause_after_minutes * 60_000),
+        args=(sender, args.session, args.cash, args.pause_after_minutes * 60_000,
+              args.continue_run_id or ""),
         name="strategy-one-interruption-probe",
     )
     process.start()
     sender.close()
-    run_id = ""
+    run_id = args.continue_run_id or ""
     fenced = False
     deadline = monotonic() + args.timeout_seconds
     try:

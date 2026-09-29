@@ -9,7 +9,14 @@ import pytest
 from research.mlops.clickhouse import ClickHouseHttpClient
 
 
-def test_reconnects_one_plain_select_after_idle_close(monkeypatch):
+@pytest.mark.parametrize("failure", [
+    http.client.RemoteDisconnected("idle socket closed"),
+    ConnectionAbortedError(10053, "host aborted connection"),
+    ConnectionResetError(10054, "connection reset"),
+    BrokenPipeError(32, "broken pipe"),
+    TimeoutError("read timed out"),
+])
+def test_reconnects_one_plain_select_after_transport_close(monkeypatch, failure):
     client = ClickHouseHttpClient("http://localhost:8123", "reader", "secret",
                                   persistent=True)
     calls = []
@@ -17,7 +24,7 @@ def test_reconnects_one_plain_select_after_idle_close(monkeypatch):
     def execute(sql, params):
         calls.append(sql)
         if len(calls) == 1:
-            raise http.client.RemoteDisconnected("idle socket closed")
+            raise failure
         return "ok"
 
     monkeypatch.setattr(client, "_execute_persistent", execute)
@@ -28,17 +35,21 @@ def test_reconnects_one_plain_select_after_idle_close(monkeypatch):
 @pytest.mark.parametrize("sql", ["INSERT INTO arte.x VALUES (1)",
                                        "ALTER TABLE arte.x DELETE WHERE 1",
                                        "WITH 1 AS x SELECT x"])
-def test_never_replays_ambiguous_non_select(monkeypatch, sql):
+@pytest.mark.parametrize("failure", [
+    http.client.RemoteDisconnected("no response"),
+    ConnectionAbortedError(10053, "host aborted connection"),
+])
+def test_never_replays_ambiguous_non_select(monkeypatch, sql, failure):
     client = ClickHouseHttpClient("http://localhost:8123", "writer", "secret",
                                   persistent=True)
     calls = []
 
     def execute(statement, params):
         calls.append(statement)
-        raise http.client.RemoteDisconnected("no response")
+        raise failure
 
     monkeypatch.setattr(client, "_execute_persistent", execute)
-    with pytest.raises(http.client.RemoteDisconnected):
+    with pytest.raises(type(failure)):
         client.execute(sql)
     assert calls == [sql]
 

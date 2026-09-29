@@ -282,11 +282,13 @@ class ClickHouseHttpClient:
         if self.persistent:
             try:
                 return self._execute_persistent(sql, params)
-            except http.client.RemoteDisconnected:
-                # A long preflight can leave a keep-alive socket idle beyond
-                # the server timeout. Only a plain SELECT is safe to replay:
-                # an INSERT with no response has ambiguous commit status and
-                # must be resolved by its caller's typed/Keeper authority.
+            except (http.client.RemoteDisconnected, ConnectionAbortedError,
+                    ConnectionResetError, BrokenPipeError, TimeoutError):
+                # The host or server can abort a persistent socket before a
+                # SELECT response, even when it was not idle. A plain SELECT
+                # is safe to replay once on the fresh socket. An INSERT with
+                # no response has ambiguous commit status and must instead
+                # be resolved by its caller's typed/Keeper authority.
                 if re.match(r"\s*SELECT\b", sql, re.IGNORECASE) is None:
                     raise
                 return self._execute_persistent(sql, params)
