@@ -45,12 +45,12 @@ _MANAGER_TABLES = frozenset({
     "trading_strategy_one_manager_pending_break_v1",
 })
 _BROKER_MATCH_TABLES = frozenset({
-    "trading_strategy_one_broker_match_snapshot_v2",
-    "trading_strategy_one_broker_match_account_v2",
-    "trading_strategy_one_broker_match_position_v2",
-    "trading_strategy_one_broker_match_open_order_v2",
-    "trading_strategy_one_broker_match_ticker_v2",
-    "trading_strategy_one_broker_match_performance_mark_v2",
+    "trading_strategy_one_broker_match_snapshot_v3",
+    "trading_strategy_one_broker_match_account_v3",
+    "trading_strategy_one_broker_match_position_v3",
+    "trading_strategy_one_broker_match_open_order_v3",
+    "trading_strategy_one_broker_match_ticker_v3",
+    "trading_strategy_one_broker_match_performance_mark_v3",
 })
 _EVIDENCE_TABLES = frozenset({
     "trading_strategy_one_evidence_snapshot_v1",
@@ -1187,7 +1187,7 @@ class TypedInsertDispatch:
             snapshot_hash=snapshot_hash, operations=operations,
             previous=previous, head_type=BrokerMatchHead,
             head_path=_broker_match_head_path(run_id), tables=_BROKER_MATCH_TABLES,
-            root_table="trading_strategy_one_broker_match_snapshot_v2",
+            root_table="trading_strategy_one_broker_match_snapshot_v3",
             token_factory=_broker_match_token, label="Broker match")
 
     def compact_verified_campaign_snapshot(

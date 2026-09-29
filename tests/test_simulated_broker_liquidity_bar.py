@@ -291,6 +291,21 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await restored.trades(), await self.broker.trades())
         self.assertEqual(restored.broker_match_snapshot_state(),
                          self.broker.broker_match_snapshot_state())
+        # OCA partial fills can shrink the broker's resting sibling without
+        # changing the OMS request. Recovery must honor the broker quantity.
+        reduced_state = self.broker.broker_match_snapshot_state()
+        reduced_state["orders"][0]["request"]["quantity"] = 8.0
+        reduced_rows = project_broker_match_snapshot(
+            run_id="backtest:one", session_date=day,
+            checkpoint_sequence=43, boundary_ms=boundary_ms,
+            state=reduced_state)
+        reduced = reconstruct_broker_match_state(
+            reduced_rows,
+            requests_by_broker_id={
+                order.order_id: order.request for order in self.broker._orders.values()
+                if order.status.value == rows.open_orders[0]["status"]},
+            quotes=quote)
+        self.assertEqual(reduced["orders"][0]["request"]["quantity"], 8.0)
         next_at = at + timedelta(milliseconds=100)
         next_row = bar(next_at, ask_size=20)
         original_fills = await self.broker.on_liquidity_bar(next_row, at=next_at)

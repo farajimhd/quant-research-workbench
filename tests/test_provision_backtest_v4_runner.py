@@ -153,7 +153,7 @@ def test_v4_retires_only_superseded_broker_grants():
         def execute(self, sql):
             calls.append(sql)
 
-    provision._retire_broker_v1_grants(Admin(), Writer())
+    provision._retire_broker_snapshot_grants(Admin(), Writer())
     assert calls == [
         "REVOKE INSERT ON arte.trading_strategy_one_broker_match_ticker_v1 "
         f"FROM {provision.PRINCIPAL}",

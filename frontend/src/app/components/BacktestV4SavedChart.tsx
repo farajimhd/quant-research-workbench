@@ -355,7 +355,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     }
   }, [enabled, loading, older, bars, tradeAnnotations, frame]);
   const compactContext = embedded && (frame === "1d" || frame === "1mo");
-  return <section className="backtest-v4-saved-chart" aria-label={`Saved ${symbol} chart`}>
+  return <section className="backtest-v4-saved-chart" aria-label={`Saved ${symbol} chart`} aria-busy={structureLoading || (loading && !page)}>
     {panelLabel ? <span className="backtest-v4-panel-label" title={compactContext && page
       ? `Certified ARTE history from ${page.history_first_session}; daily/monthly indicators are not persisted.`
       : undefined}>{panelLabel}{compactContext ? " · indicators stale" : ""}</span> : null}
@@ -371,7 +371,6 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
         : <span><small>Quote at saved boundary</small><strong>Unavailable</strong><em>No certified quote in this window</em></span>}
     </div> : null}
     {!compactContext && page?.indicator_provenance.unavailable_columns.length ? <p role="note">Stale indicators: {page.indicator_provenance.unavailable_columns.join(", ")}</p> : null}
-    {structureLoading ? <p role="status">Verifying V7 structural levels…</p> : null}
     {selectedIndicators.includes("saved.structural_v7") && structureReason
       ? <p role="note">V7 structure unavailable: {structureReason}</p> : null}
     {!compactContext && page?.history_limited ? <p role="note">ARTE history available from {page.history_first_session}; earlier {frame === "1mo" ? "months" : "sessions"} are unavailable.</p> : null}

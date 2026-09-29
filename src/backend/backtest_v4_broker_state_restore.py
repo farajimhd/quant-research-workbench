@@ -6,6 +6,7 @@ market events, access disk, or grant checkpoint resume authority.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from dataclasses import replace
 from typing import Mapping
 
 from src.backend.backtest_market_data import market_day_boundary
@@ -14,6 +15,7 @@ from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     BrokerMatchSnapshotRows, verify_broker_match_snapshot,
 )
+from src.trading_runtime.strategy_one_protection_snapshot import _digest
 
 
 def reconstruct_broker_match_state(
@@ -23,7 +25,9 @@ def reconstruct_broker_match_state(
 ) -> dict:
     """Reconstruct a simulator schema-4 payload at one completed boundary.
 
-    OMS must supply the exact canonical request for each open broker order.
+    OMS supplies the canonical request identity and metadata. The broker's
+    effective quantity is separately persisted because OCA partial fills can
+    resize a resting sibling without amending the OMS-requested quantity.
     The caller must separately verify V4 prefix, OMS lineage, and pinned ARTE
     liquidity rows before using this result. Historical executions are not
     reconstructed here, so this function alone cannot authorize resume.
@@ -74,9 +78,18 @@ def reconstruct_broker_match_state(
                 or request.conid != row["conid"]
                 or request.ticker != row["ticker"]):
             raise RuntimeError("Broker restoration OMS request differs")
+        request = replace(
+            request,
+            quantity=(float(row["effective_quantity"])
+                      if row["effective_quantity"] is not None else None),
+            cashQty=(float(row["effective_cash_quantity"])
+                     if row["effective_cash_quantity"] is not None else None),
+        )
         request_payload = request.to_cpapi()
         request_payload.update({key: value for key, value in request.raw.items()
                                 if key.startswith("canonical_")})
+        if _digest(request_payload) != row["effective_request_hash"]:
+            raise RuntimeError("Broker restoration effective request differs")
         orders.append(dict(
             request=request_payload, order_id=row["broker_order_id"],
             status=row["status"], submitted_at=row["submitted_at"],

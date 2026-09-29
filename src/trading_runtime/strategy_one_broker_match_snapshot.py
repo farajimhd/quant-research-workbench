@@ -25,7 +25,7 @@ from src.trading_runtime.strategy_one_protection_snapshot import _digest
 
 
 ROOT = TableContract(
-    "trading_strategy_one_broker_match_snapshot_v2",
+    "trading_strategy_one_broker_match_snapshot_v3",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("session_date", "Date"),
      ("checkpoint_sequence", "UInt64"), ("boundary_ms", "UInt32"),
@@ -45,7 +45,7 @@ ROOT = TableContract(
     "toYYYYMM(snapshot_month)", "run_id, checkpoint_sequence, snapshot_id",
 )
 ACCOUNT = TableContract(
-    "trading_strategy_one_broker_match_account_v2",
+    "trading_strategy_one_broker_match_account_v3",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("account_id", "String"), ("cash", "Decimal(38, 18)"),
@@ -54,7 +54,7 @@ ACCOUNT = TableContract(
     "run_id, checkpoint_sequence, account_id",
 )
 POSITION = TableContract(
-    "trading_strategy_one_broker_match_position_v2",
+    "trading_strategy_one_broker_match_position_v3",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("account_id", "String"), ("conid", "UInt64"),
@@ -65,7 +65,7 @@ POSITION = TableContract(
     "run_id, checkpoint_sequence, account_id, conid",
 )
 OPEN_ORDER = TableContract(
-    "trading_strategy_one_broker_match_open_order_v2",
+    "trading_strategy_one_broker_match_open_order_v3",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("broker_order_id", "String"), ("account_id", "String"),
@@ -73,6 +73,9 @@ OPEN_ORDER = TableContract(
      ("ticker", "LowCardinality(String)"), ("status", "String"),
      ("submitted_at", "DateTime64(6, 'UTC')"),
      ("oca_group", "String"), ("filled", "Decimal(38, 18)"),
+     ("effective_quantity", "Nullable(Decimal(38, 10))"),
+     ("effective_cash_quantity", "Nullable(Decimal(38, 10))"),
+     ("effective_request_hash", "FixedString(64)"),
      ("avg_price", "Decimal(38, 18)"), ("commission_paid", "Decimal(38, 18)"),
      ("stop_triggered", "UInt8"), ("trailing_reference", "Decimal(38, 18)"),
      ("status_description", "String"),
@@ -81,7 +84,7 @@ OPEN_ORDER = TableContract(
     "run_id, checkpoint_sequence, broker_order_id",
 )
 TICKER = TableContract(
-    "trading_strategy_one_broker_match_ticker_v2",
+    "trading_strategy_one_broker_match_ticker_v3",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("ticker", "LowCardinality(String)"), ("last_boundary_ms", "UInt32"),
@@ -92,7 +95,7 @@ TICKER = TableContract(
     "run_id, checkpoint_sequence, ticker",
 )
 MARK = TableContract(
-    "trading_strategy_one_broker_match_performance_mark_v2",
+    "trading_strategy_one_broker_match_performance_mark_v3",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("conid", "UInt64"), ("mark", "Decimal(38, 18)"),
@@ -141,7 +144,7 @@ class ManagedBrokerMatchHeadReader:
         if (type(run_id) is not str or not run_id
                 or any(char in run_id for char in "\r\n\x00")):
             raise ValueError("Broker match head run is invalid")
-        return ("/trading/strategy-one-broker-match/v2/"
+        return ("/trading/strategy-one-broker-match/v3/"
                 + sha256(run_id.encode()).hexdigest() + "/head")
 
     def read_head(self, *, run_id: str) -> BrokerMatchHead:
@@ -231,7 +234,7 @@ def project_broker_match_snapshot(
     if initial.timestamp() > global_at:
         raise ValueError("Broker initial time is after checkpoint")
     snapshot_id = str(uuid5(NAMESPACE_URL,
-                            f"strategy-one-broker-match-v2:{run_id}:{checkpoint_sequence}"))
+                            f"strategy-one-broker-match-v3:{run_id}:{checkpoint_sequence}"))
     common = dict(snapshot_id=snapshot_id, run_id=run_id,
                   snapshot_month=session_date.replace(day=1).isoformat(),
                   checkpoint_sequence=checkpoint_sequence)
@@ -269,6 +272,11 @@ def project_broker_match_snapshot(
         if status not in OPEN_ORDER_STATUSES:
             continue
         request = dict(order["request"])
+        # Normalize the decimal-grid fields before sealing so a typed
+        # ClickHouse round-trip and OrderRequest reconstruction hash alike.
+        for key in ("quantity", "cashQty"):
+            if request.get(key) is not None:
+                request[key] = _float(request[key], key)
         order_id = str(order["order_id"])
         if (not order_id or order_id in seen_orders
                 or request.get("acctId") not in cash
@@ -288,6 +296,11 @@ def project_broker_match_snapshot(
             submitted_at=_utc_text(submitted, "order submission"),
             oca_group=str(order.get("oca_group") or ""),
             filled=_float(order["filled"], "filled quantity"),
+            effective_quantity=(_float(request["quantity"], "effective quantity")
+                                if request.get("quantity") is not None else None),
+            effective_cash_quantity=(_float(request["cashQty"], "effective cash quantity")
+                                     if request.get("cashQty") is not None else None),
+            effective_request_hash=_digest(request),
             avg_price=_float(order["avg_price"], "fill average"),
             commission_paid=_float(order["commission_paid"], "commission"),
             stop_triggered=int(bool(order["stop_triggered"])),
@@ -370,12 +383,13 @@ def _canonical_row(contract: TableContract, value: Mapping[str, Any]) -> dict[st
             row[name] = None
         elif "DateTime64(" in kind:
             row[name] = _utc_text(item, name, from_clickhouse=True)
-        elif kind == "Decimal(38, 18)":
+        elif kind in ("Decimal(38, 18)", "Nullable(Decimal(38, 10))"):
             try:
                 exact = Decimal(str(item))
             except InvalidOperation as exc:
                 raise ValueError("Broker match decimal is invalid") from exc
-            if not exact.is_finite() or exact.as_tuple().exponent < -18:
+            scale = 10 if kind.startswith("Nullable(") else 18
+            if not exact.is_finite() or exact.as_tuple().exponent < -scale:
                 raise ValueError("Broker match decimal exceeds exact scale")
             row[name] = _float(float(exact), name)
         elif kind == "Float64":
@@ -433,7 +447,7 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
             or not 0 < root["boundary_ms"] <= 57_600_000
             or root["boundary_ms"] % 100
             or root["snapshot_id"] != str(uuid5(
-                NAMESPACE_URL, f"strategy-one-broker-match-v2:"
+                NAMESPACE_URL, f"strategy-one-broker-match-v3:"
                 f"{root['run_id']}:{root['checkpoint_sequence']}"))
             or root["snapshot_month"] != root["session_date"][:7] + "-01"
             or root["next_order_id"] < 1 or root["next_execution_id"] < 1
@@ -462,6 +476,16 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
                 or row["commission_paid"] < 0
                 or _time(row["submitted_at"], "order time") > cutoff):
             raise ValueError("Broker match open order is invalid")
+        effective_qty = row["effective_quantity"]
+        effective_cash = row["effective_cash_quantity"]
+        request_hash = row["effective_request_hash"]
+        if ((effective_qty is None) == (effective_cash is None)
+                or effective_qty is not None and effective_qty <= 0
+                or effective_cash is not None and effective_cash <= 0
+                or effective_qty is not None and effective_qty < row["filled"]
+                or len(request_hash) != 64
+                or any(char not in "0123456789abcdef" for char in request_hash)):
+            raise ValueError("Broker match effective request is invalid")
     for row in tickers:
         if (not row["ticker"] or not 0 < row["last_boundary_ms"] <= root["boundary_ms"]
                 or row["last_boundary_ms"] % 100
