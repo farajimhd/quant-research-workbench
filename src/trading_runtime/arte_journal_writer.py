@@ -4281,6 +4281,8 @@ class ArteJournalWriter:
         self, *, journal_batch_id: str, captured: CapturedPortfolioSnapshot,
     ) -> Future[str]:
         """Queue an exact V4 running-prefix account image off the engine path."""
+        from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+
         if (self._journal_profile != "backtest_v4"
                 or not isinstance(captured, CapturedPortfolioSnapshot)
                 or captured.run_id != self._run_id
