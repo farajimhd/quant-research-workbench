@@ -530,3 +530,15 @@ make those cumulative figures unsuitable for addition into wall time. The
 existing in-process validated-plan reuse is material; cold discovery is the
 next preflight optimization target, without skipping coverage or weakening
 the fail-closed launch gate.
+
+After the reusable completed-MACD rule began rejecting lossy clocks in
+`a1c243f1e`, a fresh full-market Aug 18 app-route Backtest
+(`19b07c08-d021-4fc4-b9a0-d405455c88ca`) passed preflight in 23.878s
+and completed execution in 44.980s at $100,000 cash. It processed 7,584
+strategy rows and committed 7,785 normalized events in 17 writer units,
+with zero failed units. A separate cold causal audit matched the prior
+58 intents and 3,682 linked actions with zero backdated actions. The session
+took 22.917s and terminal handling 14.935s, including 11.014s waiting for
+the prior commit. This is one faster measurement under variable service
+latency, not evidence that the clock guard itself accelerated execution.
+Keeper shutdown connection warnings remain.
