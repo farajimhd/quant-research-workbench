@@ -48,6 +48,9 @@ from src.trading_runtime.strategy_one_management_snapshot import (
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     TABLES as STRATEGY_ONE_BROKER_MATCH_TABLES,
 )
+from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+    TABLES as STRATEGY_ONE_OMS_OBSERVATION_TABLES,
+)
 from src.trading_runtime.strategy_one_evidence_snapshot import (
     TABLES as STRATEGY_ONE_EVIDENCE_TABLES,
 )
@@ -421,6 +424,12 @@ def install_strategy_one_broker_match_snapshot(client: object, *, apply: bool) -
     """Install only normalized broker recovery rows, never market products."""
     return _install_strategy_one_checkpoint_tables(
         client, contracts=STRATEGY_ONE_BROKER_MATCH_TABLES, apply=apply)
+
+
+def install_strategy_one_oms_observation_snapshot(client: object, *, apply: bool) -> str:
+    """Install typed OMS-observed order state; publish no checkpoint rows."""
+    return _install_strategy_one_checkpoint_tables(
+        client, contracts=STRATEGY_ONE_OMS_OBSERVATION_TABLES, apply=apply)
 
 
 def install_strategy_one_evidence_snapshot(client: object, *, apply: bool) -> str:
@@ -974,6 +983,8 @@ def main() -> int:
                         help="verify or install typed Strategy 1 manager checkpoint tables")
     parser.add_argument("--install-strategy-one-broker-match-snapshot", action="store_true",
                         help="verify or install normalized Strategy 1 broker match checkpoint tables")
+    parser.add_argument("--install-strategy-one-oms-observation-snapshot", action="store_true",
+                        help="verify or install normalized Strategy 1 OMS observation checkpoint tables")
     parser.add_argument("--install-strategy-one-evidence-snapshot", action="store_true",
                         help="verify or install normalized Strategy 1 causal evidence tables")
     parser.add_argument("--install-strategy-one-campaign-snapshot", action="store_true",
@@ -1009,6 +1020,7 @@ def main() -> int:
                     args.install_live_plan_membership,
                     args.install_strategy_one_manager_snapshot,
                     args.install_strategy_one_broker_match_snapshot,
+                    args.install_strategy_one_oms_observation_snapshot,
                     args.install_strategy_one_evidence_snapshot,
                     args.install_strategy_one_campaign_snapshot,
                     args.install_live_signal)) > 1:
@@ -1025,6 +1037,9 @@ def main() -> int:
             elif args.install_strategy_one_broker_match_snapshot:
                 result = install_strategy_one_broker_match_snapshot(client, apply=args.apply)
                 print(f"Strategy 1 broker match checkpoint layout: {result}; no rows inserted")
+            elif args.install_strategy_one_oms_observation_snapshot:
+                result = install_strategy_one_oms_observation_snapshot(client, apply=args.apply)
+                print(f"Strategy 1 OMS observation checkpoint layout: {result}; no rows inserted")
             elif args.install_strategy_one_evidence_snapshot:
                 result = install_strategy_one_evidence_snapshot(client, apply=args.apply)
                 print(f"Strategy 1 evidence checkpoint layout: {result}; no rows inserted")

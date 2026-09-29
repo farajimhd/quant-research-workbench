@@ -270,11 +270,11 @@ def test_strategy_one_manager_layout_is_exact_restart_safe_and_has_no_rows(monke
     contracts = (*install.STRATEGY_ONE_PROTECTION_TABLES,
                  *install.STRATEGY_ONE_MANAGER_TABLES)
     assert client.installed == {table.name for table in contracts}
-    assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == 6
+    assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == len(contracts)
     assert all("storage_policy = 'live_market_ssd'" in sql
                for sql in client.statements if sql.startswith("CREATE TABLE"))
     assert install.install_strategy_one_manager_snapshot(client, apply=False) == "verified"
-    assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == 6
+    assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == len(contracts)
     assert set(verified) == client.installed
 
 
@@ -313,6 +313,36 @@ def test_strategy_one_broker_match_layout_is_exact_ssd_only_and_has_no_rows(monk
                for sql in client.statements if sql.startswith("CREATE TABLE"))
     assert install_broker(client, apply=False) == "verified"
     assert set(verified) == client.installed
+
+
+def test_strategy_one_oms_observation_layout_is_exact_ssd_only(monkeypatch):
+    class SnapshotClient(Client):
+        def __init__(self):
+            super().__init__()
+            self.installed = set()
+
+        def execute(self, sql):
+            self.statements.append(sql)
+            if sql.startswith("SELECT name FROM system.tables"):
+                return "\n".join(json.dumps({"name": name})
+                                 for name in sorted(self.installed))
+            if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
+                self.installed.add(sql.split("arte.", 1)[1].split(" ", 1)[0])
+                return ""
+            return super().execute(sql)
+
+    client = SnapshotClient()
+    monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)
+    install_oms = install.install_strategy_one_oms_observation_snapshot
+    assert install_oms(client, apply=False) == "planned"
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install_oms(client, apply=True) == "upgraded"
+    assert client.installed == {
+        table.name for table in install.STRATEGY_ONE_OMS_OBSERVATION_TABLES}
+    assert len(client.installed) == 2
+    assert all("storage_policy = 'live_market_ssd'" in sql
+               for sql in client.statements if sql.startswith("CREATE TABLE"))
+    assert install_oms(client, apply=False) == "verified"
 
 
 def test_strategy_one_evidence_layout_is_exact_ssd_only_and_has_no_rows(monkeypatch):
