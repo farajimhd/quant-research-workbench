@@ -9,7 +9,8 @@ import pytest
 from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
 from src.trading_runtime.strategy_one_activation_state import FrozenActivation
 from src.trading_runtime.strategy_one_evidence_snapshot import (
-    TABLES, EvidenceSnapshotRows, ManagedEvidenceSnapshotHeadReader,
+    TABLES, EvidenceSnapshotRows, EvidenceSnapshotHead,
+    ManagedEvidenceSnapshotHeadReader,
     project_evidence_snapshot,
     restore_evidence_snapshot,
 )
@@ -85,3 +86,31 @@ def test_evidence_keeper_head_is_run_scoped_and_requires_exact_wire():
     client.wire = b"not-a-head"
     with pytest.raises(ValueError, match="missing or corrupt"):
         reader.read_head(run_id=RUN)
+
+
+def test_cold_evidence_read_requires_matching_keeper_and_market_cursor(monkeypatch):
+    from src.trading_runtime import strategy_one_evidence_snapshot as subject
+    from src.trading_runtime import arte_journal_commit_v4 as commit
+    from src.trading_runtime import arte_journal_projection as projection
+
+    state, rows = _rows()
+    batch = str(UUID(int=20))
+    head = EvidenceSnapshotHead(
+        RUN, 1046, batch, rows.snapshot["content_hash"], 2)
+    prefix = commit.V4CommittedPrefix(
+        RUN, 1046, batch, "2026-08-18:330000", "running", (batch,))
+    cursor = {"run_id": RUN, "event_sequence": 1046, "batch_id": batch,
+              "boundary_ms": 330_000, "session_date": DAY.isoformat()}
+    keeper = SimpleNamespace(read_head=lambda **_kw: head)
+    client = SimpleNamespace(execute=lambda *_a: "")
+    monkeypatch.setattr(commit, "load_verified_v4_prefix", lambda *_a: prefix)
+    monkeypatch.setattr(projection, "load_latest_backtest_cursor",
+                        lambda *_a: cursor)
+    monkeypatch.setattr(subject, "load_unattested_evidence_snapshot_rows",
+                        lambda *_a, **_kw: rows)
+    assert subject.load_attested_evidence_snapshot(
+        client, keeper, run_id=RUN, checkpoint_sequence=1046) == state
+    cursor["boundary_ms"] += 100
+    with pytest.raises(RuntimeError, match="seal differs"):
+        subject.load_attested_evidence_snapshot(
+            client, keeper, run_id=RUN, checkpoint_sequence=1046)

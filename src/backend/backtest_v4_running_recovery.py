@@ -17,6 +17,7 @@ from src.backend.backtest_v4_broker_quote_restore import (
 )
 from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
 from src.backend.backtest_v4_execution_restore import load_v4_broker_executions
+from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
 from src.backend.backtest_v4_running_portfolio import (
     load_v4_running_portfolio_images,
 )
@@ -32,6 +33,9 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import (
 from src.trading_runtime.strategy_one_management_snapshot import (
     StrategyOneManagementState, load_attested_manager_snapshot,
 )
+from src.trading_runtime.strategy_one_evidence_snapshot import (
+    load_attested_evidence_snapshot,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +43,7 @@ class V4RunningRecoveryEvidence:
     prefix: V4CommittedPrefix
     portfolio_images: dict[str, dict[str, Any]]
     manager: StrategyOneManagementState
+    evidence: StrategyOneEvidenceState
     broker: BrokerMatchSnapshotRows
     oms: tuple[RecoveredStrategyOneOmsLineage, ...]
     quotes: dict[str, CompletedBrokerQuote]
@@ -118,7 +123,7 @@ def load_v4_running_broker_image(client: Any,
 
 def load_v4_running_recovery_evidence(
     client: Any, *, run_id: str, account_ids: tuple[str, ...],
-    manager_keeper: Any, broker_keeper: Any,
+    manager_keeper: Any, broker_keeper: Any, evidence_keeper: Any,
     market_client: Any, market_plan: CertifiedMarketDayPlan,
 ) -> V4RunningRecoveryEvidence:
     """Join every available recovery family at the same committed cursor."""
@@ -127,15 +132,20 @@ def load_v4_running_recovery_evidence(
     manager = load_attested_manager_snapshot(
         client, manager_keeper, run_id=run_id,
         checkpoint_sequence=prefix.last_sequence)
+    evidence = load_attested_evidence_snapshot(
+        client, evidence_keeper, run_id=run_id,
+        checkpoint_sequence=prefix.last_sequence)
     broker = load_attested_broker_match_snapshot(
         client, broker_keeper, run_id=run_id,
         checkpoint_sequence=prefix.last_sequence)
     if (not isinstance(manager, StrategyOneManagementState)
+            or not isinstance(evidence, StrategyOneEvidenceState)
             or not isinstance(broker, BrokerMatchSnapshotRows)
             or broker.snapshot.get("checkpoint_sequence") != prefix.last_sequence
             or {row["account_id"] for row in broker.accounts} != set(account_ids)
             or len(broker.accounts) != len(account_ids)
             or manager.boundary_ms != broker.snapshot.get("boundary_ms")
+            or evidence.boundary_ms != manager.boundary_ms
             or any(key[0] not in portfolios
                    for family in (manager.submitted, manager.positions,
                                   manager.pending_breaks)
@@ -180,5 +190,5 @@ def load_v4_running_recovery_evidence(
         market_client, plan=market_plan, broker=broker)
     if load_verified_v4_prefix(client, run_id) != prefix:
         raise RuntimeError("V4 recovery prefix moved across domain reads")
-    return V4RunningRecoveryEvidence(prefix, portfolios, manager, broker, oms,
+    return V4RunningRecoveryEvidence(prefix, portfolios, manager, evidence, broker, oms,
                                      quotes)

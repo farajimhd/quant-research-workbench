@@ -355,6 +355,53 @@ def load_unattested_evidence_snapshot_rows(
     return _canonical(rows)
 
 
+def load_attested_evidence_snapshot(
+    client: Any, keeper: EvidenceSnapshotHeadReader, *, run_id: str,
+    checkpoint_sequence: int,
+) -> StrategyOneEvidenceState:
+    """Cold-read only Keeper-selected evidence at its committed V4 cursor."""
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+
+    if (type(run_id) is not str or not run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or not callable(getattr(client, "execute", None))
+            or not callable(getattr(keeper, "read_head", None))):
+        raise ValueError("Strategy 1 evidence cold read lacks exact authorities")
+    prefix = load_verified_v4_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != checkpoint_sequence
+            or not prefix.batch_ids
+            or prefix.last_batch_id != prefix.batch_ids[-1]):
+        raise RuntimeError("Strategy 1 evidence lacks a running verified V4 cursor")
+    first = keeper.read_head(run_id=run_id)
+    if (not isinstance(first, EvidenceSnapshotHead)
+            or first.run_id != run_id
+            or first.checkpoint_sequence != checkpoint_sequence
+            or first.journal_batch_id != prefix.last_batch_id
+            or type(first.keeper_version) is not int or first.keeper_version < 0
+            or type(first.snapshot_hash) is not str
+            or len(first.snapshot_hash) != 64
+            or any(char not in "0123456789abcdef" for char in first.snapshot_hash)):
+        raise RuntimeError("Strategy 1 evidence Keeper head differs from V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict)
+            or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != checkpoint_sequence
+            or cursor.get("batch_id") != prefix.last_batch_id):
+        raise RuntimeError("Strategy 1 evidence lacks a committed market cursor")
+    rows = load_unattested_evidence_snapshot_rows(
+        client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+    if (rows.snapshot["content_hash"] != first.snapshot_hash
+            or rows.snapshot["boundary_ms"] != cursor.get("boundary_ms")
+            or rows.snapshot["session_date"] != cursor.get("session_date")):
+        raise RuntimeError("Strategy 1 evidence seal differs from selected cursor")
+    state = restore_evidence_snapshot(rows)
+    if keeper.read_head(run_id=run_id) != first:
+        raise RuntimeError("Strategy 1 evidence Keeper head changed during cold read")
+    return state
+
+
 def publish_evidence_snapshot(
     client: Any, session: ManagedKeeperSession,
     rows: EvidenceSnapshotRows, *, journal_batch_id: str,

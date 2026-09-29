@@ -2,6 +2,7 @@ import pytest
 
 from src.backend import backtest_v4_running_recovery as subject
 from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.arte_oms_projection import (
     RecoveredOmsGroupState, RecoveredStrategyOneOmsLineage,
@@ -25,6 +26,8 @@ def _install(monkeypatch, *, open_orders=(), oms=(), moved=False):
                         lambda *_a, **_k: (PREFIX, {"DU1": {"state_hash": "a" * 64}}))
     monkeypatch.setattr(subject, "load_attested_manager_snapshot",
                         lambda *_a, **_k: StrategyOneManagementState(100, (), (), ()))
+    monkeypatch.setattr(subject, "load_attested_evidence_snapshot",
+                        lambda *_a, **_k: StrategyOneEvidenceState(100, (), (), ()))
     monkeypatch.setattr(subject, "load_attested_broker_match_snapshot",
                         lambda *_a, **_k: broker)
     monkeypatch.setattr(subject, "load_recovered_strategy_one_oms_lineage",
@@ -39,7 +42,7 @@ def test_v4_running_recovery_joins_exact_empty_oms(monkeypatch):
     _install(monkeypatch)
     result = subject.load_v4_running_recovery_evidence(
         object(), run_id=RUN, account_ids=("DU1",),
-        manager_keeper=object(), broker_keeper=object(),
+        manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
         market_client=object(), market_plan=object())
     assert result.prefix == PREFIX
     assert result.manager.boundary_ms == 100
@@ -52,7 +55,7 @@ def test_v4_running_recovery_rejects_orphan_broker_order(monkeypatch):
     with pytest.raises(RuntimeError, match="lacks exact OMS lineage"):
         subject.load_v4_running_recovery_evidence(
             object(), run_id=RUN, account_ids=("DU1",),
-            manager_keeper=object(), broker_keeper=object(),
+            manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
             market_client=object(), market_plan=object())
 
 
@@ -77,7 +80,7 @@ def test_v4_running_recovery_joins_open_order_to_oms(monkeypatch):
                                         "ticker": "WFF"},), oms=(lineage,))
     result = subject.load_v4_running_recovery_evidence(
         object(), run_id=RUN, account_ids=("DU1",),
-        manager_keeper=object(), broker_keeper=object(),
+        manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
         market_client=object(), market_plan=object())
     assert result.oms == (lineage,)
 
@@ -91,7 +94,7 @@ def test_v4_running_recovery_rejects_terminal_oms_binding(monkeypatch):
     with pytest.raises(RuntimeError, match="lacks exact OMS lineage"):
         subject.load_v4_running_recovery_evidence(
             object(), run_id=RUN, account_ids=("DU1",),
-            manager_keeper=object(), broker_keeper=object(),
+            manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
             market_client=object(), market_plan=object())
 
 
@@ -100,7 +103,18 @@ def test_v4_running_recovery_rejects_moved_prefix(monkeypatch):
     with pytest.raises(RuntimeError, match="prefix moved"):
         subject.load_v4_running_recovery_evidence(
             object(), run_id=RUN, account_ids=("DU1",),
-            manager_keeper=object(), broker_keeper=object(),
+            manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
+            market_client=object(), market_plan=object())
+
+
+def test_v4_running_recovery_rejects_mismatched_evidence_boundary(monkeypatch):
+    _install(monkeypatch)
+    monkeypatch.setattr(subject, "load_attested_evidence_snapshot",
+                        lambda *_a, **_k: StrategyOneEvidenceState(200, (), (), ()))
+    with pytest.raises(RuntimeError, match="differ from pinned accounts or cursor"):
+        subject.load_v4_running_recovery_evidence(
+            object(), run_id=RUN, account_ids=("DU1",),
+            manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
             market_client=object(), market_plan=object())
 
 
@@ -113,7 +127,7 @@ def test_v4_broker_state_uses_exact_open_oms_request(monkeypatch):
              oms=(lineage,))
     evidence = subject.load_v4_running_recovery_evidence(
         object(), run_id=RUN, account_ids=("DU1",),
-        manager_keeper=object(), broker_keeper=object(),
+        manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
         market_client=object(), market_plan=object())
     expected = {"schema_version": 4}
     def project(broker, *, requests_by_broker_id, quotes):
@@ -129,10 +143,10 @@ def test_v4_broker_state_rejects_missing_open_oms_request(monkeypatch):
     _install(monkeypatch)
     evidence = subject.load_v4_running_recovery_evidence(
         object(), run_id=RUN, account_ids=("DU1",),
-        manager_keeper=object(), broker_keeper=object(),
+        manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
         market_client=object(), market_plan=object())
     orphan = subject.V4RunningRecoveryEvidence(
-        evidence.prefix, evidence.portfolio_images, evidence.manager,
+        evidence.prefix, evidence.portfolio_images, evidence.manager, evidence.evidence,
         BrokerMatchSnapshotRows(evidence.broker.snapshot, evidence.broker.accounts,
                                 (), ({"broker_order_id": "orphan"},), (), ()),
         (), evidence.quotes)
@@ -145,7 +159,7 @@ def test_v4_broker_image_joins_committed_trades_and_rechecks_prefix(monkeypatch)
     _install(monkeypatch, oms=(lineage,))
     evidence = subject.load_v4_running_recovery_evidence(
         object(), run_id=RUN, account_ids=("DU1",),
-        manager_keeper=object(), broker_keeper=object(),
+        manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
         market_client=object(), market_plan=object())
     monkeypatch.setattr(subject, "reconstruct_v4_broker_state",
                         lambda _evidence: {"next_execution_id": 2})
