@@ -54,6 +54,22 @@ The OMS image is still a diagnostic reconstruction, not an installed actor;
 interrupted-run resume remains disabled pending complete cross-domain
 restoration and continuation equivalence.
 
+Normalized causal evidence now has six scalar app-owned ClickHouse tables on
+`live_market_ssd`, exact V4 runner grants, and a distinct Keeper-selected
+checkpoint head. A first post-cutover run
+`7f716f69-59a0-43c3-b550-d2c89701df82` failed closed because the trailing
+09:30 scheduler-only boundary advanced the controller but not the evidence
+clock; it is not a performance sample. Commit `94a428e73` advances that
+explicit empty boundary without creating a bar, quote, or event. A fresh
+2026-08-18 04:00–09:30 ET all-ticker run
+`7fb329b2-8b46-4fa1-b106-e106233d1e8e` completed in 32.061s after
+25.374s preflight, with 7,381 market rows, 2,216 normalized journal events,
+zero failed writer units, and no backdated actions. The writer published two
+evidence snapshots; SELECT-only cold audits read and verified their normalized
+children at sequences 1,046 and 2,214, including the selected Keeper head
+at the latter checkpoint. Actor-level evidence restore and resumed-run
+equivalence remain unverified, so interrupted-run resume stays disabled.
+
 The next cold portfolio audit found that historical fill allocations used the
 workstation wall clock. Commit `13788b4d2` changes allocations and related
 portfolio freshness timestamps to the injected completed-boundary clock; 197
