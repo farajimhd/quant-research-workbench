@@ -14,7 +14,7 @@ from src.backend.backtest_market_data import (
 )
 from src.backend.backtest_strategy_one_activation import StrategyOneActivation
 from src.backend.backtest_strategy_one_evidence import (
-    StrategyOneCausalEvidence, StrategyOneEvidenceState,
+    StrategyOneCausalEvidence, StrategyOneEmptyEvidence, StrategyOneEvidenceState,
 )
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
@@ -30,6 +30,24 @@ from src.trading_runtime.strategy_one_activation_state import (
     ActivationCatalog, FrozenActivation,
 )
 from src.trading_runtime.strategy_one_resistance import ResistanceObservation
+
+
+def test_empty_evidence_has_only_a_causal_typed_clock():
+    evidence = StrategyOneEmptyEvidence()
+    with pytest.raises(RuntimeError, match="completed boundary"):
+        evidence.capture_recovery_state()
+    evidence.advance_empty_boundary(60_000)
+    state = evidence.capture_recovery_state()
+    assert state == StrategyOneEvidenceState(60_000, (), (), ())
+    with pytest.raises(ValueError, match="not causal"):
+        evidence.advance_empty_boundary(60_000)
+    restored = StrategyOneEmptyEvidence()
+    restored.restore_recovery_state(state)
+    restored.advance_empty_boundary(60_100)
+    assert restored.capture_recovery_state().boundary_ms == 60_100
+    with pytest.raises(ValueError, match="nonempty recovered state"):
+        StrategyOneEmptyEvidence().restore_recovery_state(
+            StrategyOneEvidenceState(60_000, (("AAA", object()),), (), ()))
 
 
 def test_typed_evidence_capture_and_restore_primes_only_active_v7():

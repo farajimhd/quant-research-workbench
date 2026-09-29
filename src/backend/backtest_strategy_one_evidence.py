@@ -65,6 +65,42 @@ class StrategyOneEvidenceState:
     completed_30s_lows: tuple[tuple[str, int, int], ...]
 
 
+class StrategyOneEmptyEvidence:
+    """Typed clock state for a certified prefix with no candidate or position.
+
+    An empty sparse prefix still needs a recoverable terminal boundary. It
+    cannot read V7 or market rows, and no management callback may use it.
+    """
+
+    def __init__(self) -> None:
+        self._boundary_ms = 0
+
+    async def management_evidence(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("Empty Strategy 1 prefix has no position to manage")
+
+    def advance_empty_boundary(self, boundary_ms: int) -> None:
+        if (type(boundary_ms) is not int or boundary_ms <= self._boundary_ms
+                or boundary_ms > 57_600_000 or boundary_ms % 100):
+            raise ValueError("Strategy 1 empty boundary is not causal")
+        self._boundary_ms = boundary_ms
+
+    def capture_recovery_state(self) -> StrategyOneEvidenceState:
+        if self._boundary_ms <= 0:
+            raise RuntimeError("Empty Strategy 1 evidence lacks a completed boundary")
+        return StrategyOneEvidenceState(self._boundary_ms, (), (), ())
+
+    def restore_recovery_state(self, state: StrategyOneEvidenceState) -> None:
+        if (not isinstance(state, StrategyOneEvidenceState)
+                or self._boundary_ms != 0
+                or type(state.boundary_ms) is not int
+                or not 0 < state.boundary_ms <= 57_600_000
+                or state.boundary_ms % 100
+                or state.resistance or state.activations
+                or state.completed_30s_lows):
+            raise ValueError("Empty Strategy 1 evidence has nonempty recovered state")
+        self._boundary_ms = state.boundary_ms
+
+
 class StrategyOneCausalEvidence:
     """One sequential, read-only V7/BOS lane per candidate ticker."""
 

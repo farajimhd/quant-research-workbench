@@ -144,8 +144,11 @@ def test_empty_causal_horizon_never_reads_market_or_invents_boundary(monkeypatch
         "build", "r" * 64, "s" * 64, (), (), "c" * 64)
     monkeypatch.setattr(subject, "project_candidate_plan",
                         lambda *_args, **_kwargs: candidates)
-    runtime = SimpleNamespace(broker=SimpleNamespace(
-        financially_active_tickers=lambda: active))
+    runtime = SimpleNamespace(
+        broker=SimpleNamespace(financially_active_tickers=lambda: active),
+        submit_strategy_one_proposal=lambda *_args: None,
+        submit_strategy_one_protection=lambda *_args: None)
+    managers = []
 
     async def boundary(_work):
         pytest.fail("Empty candidate horizon fabricated a market boundary")
@@ -164,10 +167,15 @@ def test_empty_causal_horizon_never_reads_market_or_invents_boundary(monkeypatch
             AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
             {"execution": {"tick_size": .01}}),),
         client_factory=lambda: pytest.fail("Empty horizon opened a market reader"),
-        before_boundary=boundary, finish_boundary=boundary)
+        before_boundary=boundary, finish_boundary=boundary,
+        manager_ready=managers.append)
     if active:
         with pytest.raises(RuntimeError, match="active broker state"):
             asyncio.run(subject.run_certified_strategy_one_session(**args))
     else:
         result = asyncio.run(subject.run_certified_strategy_one_session(**args))
         assert result == subject.StrategyOneProposalCounts(0, 0, 0, 0)
+        assert len(managers) == 1
+        managers[0].evidence.advance_empty_boundary(60_000)
+        assert managers[0].evidence.capture_recovery_state() == (
+            StrategyOneEvidenceState(60_000, (), (), ()))

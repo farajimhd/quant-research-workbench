@@ -31,7 +31,7 @@ from src.backend.backtest_strategy_one_coordinator import (
 )
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
 from src.backend.backtest_strategy_one_evidence import (
-    StrategyOneCausalEvidence, StrategyOneEvidenceState,
+    StrategyOneCausalEvidence, StrategyOneEmptyEvidence, StrategyOneEvidenceState,
 )
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
@@ -146,6 +146,19 @@ async def run_certified_strategy_one_session(
         if not callable(active) or active() != ():
             raise RuntimeError(
                 "Strategy 1 empty candidate horizon has active broker state")
+        evidence = StrategyOneEmptyEvidence()
+        if resume_evidence_state is not None:
+            evidence.restore_recovery_state(resume_evidence_state)
+        manager = StrategyOneManagementRunner(
+            runtime=runtime, evidence=evidence,
+            tick_for_ticker=ticks.__getitem__)
+        if resume_manager_state is not None:
+            if (resume_manager_state.submitted or resume_manager_state.positions
+                    or resume_manager_state.pending_breaks):
+                raise RuntimeError("Empty Strategy 1 prefix has recovered financial state")
+            manager.restore_state(resume_manager_state)
+        if manager_ready is not None:
+            manager_ready(manager)
         return StrategyOneProposalCounts(0, 0, 0, 0)
     visible_activations = project_activation_plan(
         activations, candidates, through_boundary_ms=through_boundary_ms)
