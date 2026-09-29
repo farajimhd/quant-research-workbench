@@ -17,6 +17,7 @@ def _context():
         "started_at": "2026-09-26 01:02:03.123456",
         "configuration_hash": "a" * 64,
         "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+        "initial_cash": "100000.0000000000",
     }
 
 
@@ -39,6 +40,7 @@ def test_history_lists_normalized_record_without_claiming_review(monkeypatch):
     assert len(queries) == 2
     assert all("FORMAT JSONEachRow" in query for query in queries)
     assert "LIMIT 33" in queries[0]
+    assert "trading_backtest_definition_commit_v1" in queries[0]
     assert "LIMIT 2 BY run_id" in queries[1]
     assert "INSERT" not in " ".join(queries)
     assert result == [{
@@ -52,6 +54,7 @@ def test_history_lists_normalized_record_without_claiming_review(monkeypatch):
         "configuration_label": "Strategy 1",
         "strategy_id": "early-squeeze-strategy",
         "strategy_name": "Strategy 1", "strategy_revision": 1,
+        "initial_cash": 100000.0,
         "configuration_revision": 1, "resident": False,
         "journal_backend": "arte_typed_journal_v4",
         "journal_verification": "inventory_only", "journal_sequence": 7782,

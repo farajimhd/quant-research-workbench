@@ -8,6 +8,7 @@ type RunRow = Pick<CanvasReplayRun, "run_id" | "created_at" | "status" | "sessio
   configuration_revision?: number;
   configuration_label?: string;
   strategy_revision?: number;
+  initial_cash?: number;
   resident?: boolean;
   journal_backend?: string;
   journal_sequence?: number;
@@ -84,7 +85,7 @@ export function BacktestRunHistory({ onReview, onResumed }: {
             : row.configuration_revision ? `Candidate ${row.configuration_revision}` : "Candidate unavailable";
           return <tr key={row.run_id}>
             <td><time dateTime={row.created_at}>{dateTime(row.created_at)}</time></td>
-            <td><strong title={row.run_id}>{row.run_id.slice(0, 8)}</strong><small>{identity}</small>{!recordedV4 && row.configuration_label ? <small>{row.configuration_label}</small> : null}</td>
+            <td><strong title={row.run_id}>{row.run_id.slice(0, 8)}</strong><small>{identity}</small>{row.initial_cash != null && Number.isFinite(row.initial_cash) ? <small>Initial cash {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(row.initial_cash)}</small> : null}{!recordedV4 && row.configuration_label ? <small>{row.configuration_label}</small> : null}</td>
             <td>{row.tickers?.length ? row.tickers.join(", ") : "Configured universe"}<small>{row.session_date || "—"}</small></td>
             <td>{row.status.replaceAll("_", " ")}{recordedV4 ? <small>{row.status === "running" && row.resident === false ? "Saved journal · no app runner attached" : "ClickHouse record · verified when opened"}</small> : row.resident === false && !["completed", "stopped", "failed"].includes(row.status) ? <small>Saved status · not active</small> : null}</td>
             <td>{recordedV4 ? `${(row.journal_sequence ?? 0).toLocaleString()} journal records` : `${(row.processed_events ?? 0).toLocaleString()} events`}{!recordedV4 ? <small>Through {dateTime(row.current_time ?? "")}</small> : null}</td>

@@ -27,12 +27,18 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
         SELECT r.run_id AS run_id,r.run_month AS run_month,
                r.session_date AS session_date,r.started_at AS started_at,
                r.configuration_hash AS configuration_hash,
-               c.strategy_id AS strategy_id,c.strategy_revision AS strategy_revision
+               c.strategy_id AS strategy_id,c.strategy_revision AS strategy_revision,
+               d.initial_cash AS initial_cash
         FROM arte.trading_run_v1 AS r
         INNER JOIN arte.trading_runtime_config_v1 AS c
           ON r.run_id=c.run_id AND r.run_month=c.run_month
         INNER JOIN arte.trading_run_context_commit_v1 AS f
           ON r.run_id=f.run_id AND r.run_month=f.run_month
+        INNER JOIN arte.trading_backtest_definition_v1 AS d
+          ON r.run_id=d.run_id AND r.run_month=d.run_month
+        INNER JOIN arte.trading_backtest_definition_commit_v1 AS df
+          ON d.run_id=df.run_id AND d.run_month=df.run_month
+          AND d.content_hash=df.definition_hash
         WHERE r.mode='backtest' AND r.evaluation_interval_ms=100
           AND c.strategy_id={strategy_id} AND c.strategy_revision={revision}
         ORDER BY r.started_at DESC,r.run_id DESC
@@ -46,7 +52,8 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
         run_id = str(UUID(str(row["run_id"])))
         if (run_id in ids or str(row["strategy_id"]) != STRATEGY_ID
                 or int(row["strategy_revision"]) != STRATEGY_NUMBER
-                or not str(row["session_date"])):
+                or not str(row["session_date"])
+                or float(row["initial_cash"]) <= 0):
             raise RuntimeError("V4 Backtest history has duplicate or invalid run context")
         ids.append(run_id)
     if not ids:
@@ -90,6 +97,7 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
             "strategy_id": STRATEGY_ID,
             "strategy_name": "Strategy 1",
             "strategy_revision": STRATEGY_NUMBER,
+            "initial_cash": float(row["initial_cash"]),
             "configuration_revision": STRATEGY_NUMBER,
             "resident": False,
             "journal_backend": "arte_typed_journal_v4",
