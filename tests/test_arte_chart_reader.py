@@ -319,6 +319,22 @@ class ArteChartReaderTests(unittest.TestCase):
         self.assertEqual(payload["indicator_provenance"]["unavailable_columns"], ["vwap"])
         self.assertNotIn("i.vwap", client.sql)
 
+    def test_empty_page_still_marks_requested_unavailable_indicator(self):
+        with patch("src.backend.arte_chart_reader.certified_chart_plan",
+                   return_value=_plan()):
+            payload = chart_page(
+                session=DAY, ticker="SUGP", timeframe="1s",
+                page_start=datetime(2026, 8, 18, 4, 5, tzinfo=NY),
+                page_end=datetime(2026, 8, 18, 4, 5, tzinfo=NY),
+                row_limit=10, stage="bars",
+                indicator_columns=["bar_start", "session_relative_volume"],
+                include_market_signals=False, include_structure=False,
+                allow_persisted_bars=True, mode="backtest",
+            )
+        self.assertEqual(payload["bars"], [])
+        self.assertEqual(payload["indicator_provenance"]["unavailable_columns"],
+                         ["session_relative_volume"])
+
     def test_backtest_rvol_uses_persisted_bars_and_is_stale(self):
         client = _Client([{
             "bucket_index": 14700, "open_int": 10000, "high_int": 11000,

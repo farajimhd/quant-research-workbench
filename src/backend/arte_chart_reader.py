@@ -230,16 +230,17 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
     origin = market_day_boundary(session, 0)
     start_ms = max(0, int((page_start.astimezone(_NY) - origin).total_seconds() * 1_000))
     end_ms = min(57_600_000, int((page_end.astimezone(_NY) - origin).total_seconds() * 1_000))
+    # Provenance describes the requested fields even when this page has no bars.
+    requested = set(indicator_columns or ()).difference({"bar_start"})
+    unavailable = sorted(requested.difference(_INDICATORS))
     if end_ms <= start_ms:
         return {"bars": [], "indicators": [], "has_more": False,
                 "next_before": "", "source": "arte.market-day-core-v5", "token": plan.token,
                 "indicator_provenance": {"authority": "arte.indicators_v1",
                                          "build_id": plan.build_id, "token": plan.token,
-                                         "unavailable_columns": []}}
+                                         "unavailable_columns": unavailable}}
     # Bars-first requests may name optional QMD-only indicators. Never place
     # those names in ARTE SQL or infer them from bars; report unavailability.
-    requested = set(indicator_columns or ()).difference({"bar_start"})
-    unavailable = sorted(requested.difference(_INDICATORS))
     projected = sorted(requested.intersection(_INDICATORS))
     projection = ("i.attempt_id AS indicator_attempt_id," + ",".join(
         f"i.{column} AS {column}" for column in projected)) if projected else ""
