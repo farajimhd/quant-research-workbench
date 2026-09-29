@@ -97,6 +97,9 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
             "journal_sequence": int(head["last_sequence"]) if head else 0,
             "review_available": False,
             "v4_review_available": status in {"completed", "stopped", "failed"},
+            # Inventory cannot certify a restart anchor. Offer only a
+            # verification attempt; the resume endpoint must cold-verify it.
+            "resume_attempt_available": status == "running" and head is not None,
             "checkpoint": {"resume_supported": False},
             "tickers": [],
             "processed_events": None,

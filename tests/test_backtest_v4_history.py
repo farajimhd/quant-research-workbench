@@ -57,9 +57,20 @@ def test_history_lists_normalized_record_without_claiming_review(monkeypatch):
         "journal_verification": "inventory_only", "journal_sequence": 7782,
         "review_available": False,
         "v4_review_available": True,
+        "resume_attempt_available": False,
         "checkpoint": {"resume_supported": False},
         "tickers": [], "processed_events": None,
     }]
+
+
+def test_running_history_offers_only_a_verified_on_click_resume_attempt(monkeypatch):
+    monkeypatch.setattr(history, "_rows", lambda _client, sql:
+                        [_context()] if "trading_run_v1 AS r" in sql
+                        else [{**_head(), "status": "running"}])
+    row, = history.load_strategy_one_v4_history(object())
+    assert row["status"] == "running"
+    assert row["resume_attempt_available"] is True
+    assert row["checkpoint"] == {"resume_supported": False}
 
 
 def test_history_rejects_ambiguous_commit_heads(monkeypatch):
