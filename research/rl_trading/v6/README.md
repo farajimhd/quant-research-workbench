@@ -129,6 +129,9 @@ a bounded chronological chunk; unlabeled chunks advance state without an
 autograd graph. `model.BracketPolicy` adds execution-outcome action memory to
 the five-action decoder. `objective.py` scores the selected action, entry
 cash fraction, or label-only stop/target distance conditionally.
+`build_identity_map.py` projects only listing ID and ticker from the pinned
+pre-open population into a small hash-bound sidecar. Replay uses this mapping
+to address the OMS; it never guesses a ticker from the packed row order.
 
 `teacher_data.py` requires a separately audited V6 quote/bracket teacher
 certificate bound to the exact bank hash. Its sparse decisions contain causal
