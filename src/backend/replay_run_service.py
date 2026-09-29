@@ -9544,7 +9544,8 @@ class ReplayRunService:
             load_backtest_definition, reconstruct_backtest_definition_from_arte,
         )
         from src.trading_runtime.arte_journal_writer import (
-            backtest_v4_operator_client_from_env, load_typed_run_context,
+            _rows, backtest_v4_operator_client_from_env,
+            load_typed_run_context,
         )
 
         def local_clock(milliseconds: int) -> clock_time:
@@ -9568,6 +9569,13 @@ class ReplayRunService:
                 return None
             if count != 1:
                 raise RuntimeError("Typed Backtest run context is ambiguous")
+            terminal = _rows(journal,
+                "SELECT status FROM arte.trading_backtest_terminal_commit_v2 "
+                f"WHERE run_id='{canonical}' LIMIT 2 FORMAT JSONEachRow")
+            if terminal:
+                # Presence of even an invalid terminal row must fail closed;
+                # recovery never appends to a run that might be finished.
+                raise ValueError("Terminal Backtest cannot be resumed")
             context = load_typed_run_context(journal, run_id)
             saved = load_backtest_definition(journal, run_id, run_context=context)
         parent = saved["definition"]

@@ -561,6 +561,29 @@ def test_cold_typed_definition_distinguishes_absent_from_duplicate_context(
             ReplayRunService._load_typed_backtest_resume_definition(RUN)
 
 
+def test_completed_typed_backtest_resume_rejects_before_expensive_preflight(monkeypatch):
+    from src.trading_runtime import arte_journal_writer
+
+    class ReadOnlyClient:
+        def execute(self, sql):
+            if sql == "SELECT getSetting('readonly')":
+                return "1"
+            if "SELECT count() FROM arte.trading_run_v1" in sql:
+                return "1"
+            assert "FROM arte.trading_backtest_terminal_commit_v2" in sql
+            return '{"status":"completed"}'
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(arte_journal_writer,
+                        "backtest_v4_operator_client_from_env", ReadOnlyClient)
+    monkeypatch.setattr(arte_journal_writer, "load_typed_run_context",
+                        lambda *_a: pytest.fail("Terminal run entered preflight"))
+    with pytest.raises(ValueError, match="Terminal Backtest cannot be resumed"):
+        ReplayRunService._load_typed_backtest_resume_definition(RUN)
+
+
 def test_future_fixed_manifest_names_typed_journal_without_legacy_identity(
     monkeypatch, tmp_path,
 ):
