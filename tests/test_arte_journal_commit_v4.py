@@ -50,13 +50,14 @@ from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch, captured
 
 
-def test_v4_detail_inserts_use_distinct_bounded_http_lanes(monkeypatch):
+@pytest.mark.parametrize("lane_count", (3, 8))
+def test_v4_detail_inserts_use_distinct_bounded_http_lanes(monkeypatch, lane_count):
     dispatch = object()
     closed = []
     lanes = []
     identities = set()
     lock = Lock()
-    barrier = Barrier(3, timeout=5)
+    barrier = Barrier(lane_count, timeout=5)
 
     def factory():
         lane = SimpleNamespace(typed_insert_strict=True,
@@ -73,16 +74,14 @@ def test_v4_detail_inserts_use_distinct_bounded_http_lanes(monkeypatch):
     monkeypatch.setattr(writer_module, "_insert", insert)
     client = SimpleNamespace(typed_insert_dispatch=dispatch,
                              v4_insert_lane_factory=factory,
-                             v4_insert_lane_limit=3)
+                             v4_insert_lane_limit=lane_count)
     batch_row = SimpleNamespace(batch_id="batch-1", last_sequence=8)
-    _insert_detail_families_v4(client, batch_row, (
-        ("table_a", ({"record_id": "a"},)),
-        ("table_b", ({"record_id": "b"},)),
-        ("table_c", ({"record_id": "c"},)),
-    ))
-    assert len(lanes) == len(closed) == len(identities) == 3
+    pending = tuple((f"table_{index}", ({"record_id": str(index)},))
+                    for index in range(lane_count))
+    _insert_detail_families_v4(client, batch_row, pending)
+    assert len(lanes) == len(closed) == len(identities) == lane_count
     assert {item[0] for item in identities} == {id(lane) for lane in lanes}
-    assert {item[2] for item in identities} == {"table_a", "table_b", "table_c"}
+    assert {item[2] for item in identities} == {name for name, _ in pending}
 
 
 def test_v4_detail_inserts_borrow_persistent_lanes_across_batches(monkeypatch):

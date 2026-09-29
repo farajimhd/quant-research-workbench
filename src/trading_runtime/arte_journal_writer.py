@@ -307,8 +307,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
         lane.typed_insert_strict = True
         return lane
     client.v4_insert_lane_factory = new_detail_lane
-    client.v4_insert_lane_limit = 4
-    client.v4_insert_lane_cache = tuple(new_detail_lane() for _ in range(4))
+    client.v4_insert_lane_limit = 8
+    client.v4_insert_lane_cache = tuple(new_detail_lane() for _ in range(8))
     return client
 
 
