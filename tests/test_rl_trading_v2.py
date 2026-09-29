@@ -498,6 +498,7 @@ def test_balanced_policy_migration_is_policy_only_and_source_pinned(tmp_path):
         teacher_supervision=False,torch_version=torch.__version__,numpy_version=np.__version__,
         wandb=dict(mode='disabled'),
         code=dict(files={**train.BALANCED_ACTION_PARENT_HASHES,'other.py':'same'}))
+    parent['config']['share_caps'] = [[1,35000], [None,15000]]
     parent['contract_hash'] = digest(parent)
     root = tmp_path/'parent'
     (root/'metrics').mkdir(parents=True)
@@ -511,6 +512,7 @@ def test_balanced_policy_migration_is_policy_only_and_source_pinned(tmp_path):
     current['version'] = current['config']['version'] = new_version
     current['arguments']['validation_rollouts'] = 9
     current['arguments']['selection_mode'] = 'robust_q25'
+    current['config']['share_caps'] = ((1,35000), (None,15000))
     for name in train.BALANCED_ACTION_PARENT_HASHES:
         current['code']['files'][name] = 'new-'+name
     lineage,best = train._balanced_initialization(root,current,run_root=tmp_path/'child',device='cpu')
