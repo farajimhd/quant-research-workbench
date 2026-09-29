@@ -52,6 +52,23 @@ def test_certified_sparse_teacher_loader_rejects_old_contract(tmp_path):
     import pytest
     with pytest.raises(ValueError, match='unaudited'):
         load_teacher(root, session, runtime_root=tmp_path)
+    certificate['version'] = VERSION
+    certificate['execution_evidence'] = 'none'
+    original = {name: pl.read_parquet(root / f'{name}.parquet')
+                for name in ('decisions', 'outcomes')}
+    for name, field in [('decisions', 'quote_spread'),
+                        ('outcomes', 'quote_fill_price')]:
+        for reset_name, frame in original.items():
+            frame.write_parquet(root / f'{reset_name}.parquet')
+            certificate[f'{reset_name}_sha256'] = digest(
+                root / f'{reset_name}.parquet')
+        path = root / f'{name}.parquet'
+        frame = original[name].with_columns(pl.lit(0.01).alias(field))
+        frame.write_parquet(path)
+        certificate[f'{name}_sha256'] = digest(path)
+        (root / 'complete.json').write_text(json.dumps(certificate))
+        with pytest.raises(ValueError, match='price-action-only'):
+            load_teacher(root, session, runtime_root=tmp_path)
     certificate['execution_evidence'] = 'none'
     certificate['version'] = 'old-v5-orders'
     (root / 'complete.json').write_text(json.dumps(certificate))

@@ -69,9 +69,12 @@ def load_teacher(root: Path, session: PackedSession, *,
         raise ValueError('Teacher action or outcome hash differs from audit')
     rows = pl.read_parquet(decision_path)
     fills = pl.read_parquet(outcome_path)
-    if (not DECISION_COLUMNS <= set(rows.columns) or
-            not OUTCOME_COLUMNS <= set(fills.columns)):
-        raise ValueError('Certified teacher lacks causal bracket fields')
+    # A hash proves immutability, not provenance. Extra columns can carry
+    # quote-derived fills or future information into an otherwise valid file.
+    # This contract is deliberately closed: a new field needs a new version.
+    if (set(rows.columns) != DECISION_COLUMNS or
+            set(fills.columns) != OUTCOME_COLUMNS):
+        raise ValueError('Teacher schema is not price-action-only V6')
     listings = len(session.listings)
     decisions = []
     for row in rows.iter_rows(named=True):
