@@ -70,11 +70,18 @@ def closed_macd_candidate_mask(lines, signals, sample_boundaries_ms,
 
     line = np.asarray(lines, dtype=np.float64)
     signal = np.asarray(signals, dtype=np.float64)
-    source = np.asarray(sample_boundaries_ms, dtype=np.int64)
-    boundary = np.asarray(evaluation_boundaries_ms, dtype=np.int64)
+    source = np.asarray(sample_boundaries_ms)
+    boundary = np.asarray(evaluation_boundaries_ms)
     if (line.ndim != 2 or line.shape[1] != 4 or signal.shape != line.shape
-            or source.shape != line.shape or boundary.shape != (line.shape[0],)):
+            or source.shape != line.shape or boundary.shape != (line.shape[0],)
+            or source.dtype.kind not in "iu" or boundary.dtype.kind not in "iu"
+            or (source.size and (np.any(source < np.iinfo(np.int64).min)
+                                    or np.any(source > np.iinfo(np.int64).max)))
+            or (boundary.size and (np.any(boundary < np.iinfo(np.int64).min)
+                                      or np.any(boundary > np.iinfo(np.int64).max)))):
         raise ValueError("Strategy 1 completed MACD needs aligned N x 4 arrays")
+    source = source.astype(np.int64, copy=False)
+    boundary = boundary.astype(np.int64, copy=False)
     age = boundary[:, None] - source
     resolution = np.array([1_000, 5_000, 10_000, 30_000], dtype=np.int64)
     return np.all(np.isfinite(line) & np.isfinite(signal)

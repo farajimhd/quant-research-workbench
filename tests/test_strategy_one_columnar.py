@@ -8,6 +8,7 @@ from src.trading_runtime.strategy_one_columnar import (
     REJECT_STOP_BAR, prepare_strategy_one_entries,
     schedule_strategy_one_entries,
 )
+from src.trading_runtime.strategy_one_contract import closed_macd_candidate_mask
 
 
 def inputs():
@@ -80,6 +81,22 @@ def test_missing_macd_and_misaligned_source_fail_closed():
     data["macd"][30_000] = CompletedMacd([30_100], [.2], [.1])
     with pytest.raises(ValueError, match="completed boundaries"):
         prepare_strategy_one_entries(**data)
+
+
+@pytest.mark.parametrize("source,boundary", [
+    ([[30_000.5] * 4], [30_000]),
+    ([[30_000] * 4], [30_000.5]),
+])
+def test_reusable_closed_macd_rule_rejects_fractional_clocks(source, boundary):
+    with pytest.raises(ValueError, match="aligned N x 4 arrays"):
+        closed_macd_candidate_mask([[.2] * 4], [[.1] * 4], source, boundary)
+
+
+def test_reusable_closed_macd_rule_rejects_unsigned_clock_overflow():
+    source = np.full((1, 4), np.iinfo(np.uint64).max, dtype=np.uint64)
+    with pytest.raises(ValueError, match="aligned N x 4 arrays"):
+        closed_macd_candidate_mask([[.2] * 4], [[.1] * 4], source,
+                                   np.array([30_000], dtype=np.int64))
 
 
 @pytest.mark.parametrize("field,value", [
