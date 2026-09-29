@@ -45,6 +45,12 @@ processing all 7,584 rows with an empty error field. The saved V4 terminal
 page returned `market_cursor_verified=true` and no limitations. Managed
 backend and frontend status were both `ready` after the run. This verifies
 the app API path, not a new browser-visual certification or interrupted resume.
+On `89b170d60`, the read-only cold actor audit of this app run's latest
+running checkpoint (sequence 7,783) restored campaign ownership together
+with the existing broker, OMS, portfolio, manager, and causal-evidence images.
+It verified 440 historical fills, zero open broker orders, and zero writes.
+The audit is diagnostic: it does not install a resumed controller or certify
+post-checkpoint continuation equivalence, so the resume gate remains closed.
 
 New V4 Backtest launches now hold a distinct lifetime Keeper run-owner claim
 (`36b2a73f4`) in addition to per-INSERT dispatch fences. The V4 runner and
