@@ -24,6 +24,7 @@ from src.market_engine.level_book_store import read
 class FeatureBinding:
     date: str
     tickers: tuple[str, ...]
+    decision_seconds: int
     features: Path
     features_hash: str
     orders: Path
@@ -45,8 +46,8 @@ def feature_chunks(binding: FeatureBinding, *, seconds_per_chunk: int,
     if bank.shape != (len(binding.tickers), SECONDS, len(FEATURE_NAMES)):
         raise ValueError('Certified feature bank shape changed')
     try:
-        for start in range(0, SECONDS, seconds_per_chunk):
-            stop = min(SECONDS, start + seconds_per_chunk)
+        for start in range(0, binding.decision_seconds, seconds_per_chunk):
+            stop = min(binding.decision_seconds, start + seconds_per_chunk)
             contiguous = np.array(bank[:, start:stop, :].transpose(1, 0, 2),
                                   copy=True, order='C')
             # Copies away the read-only memmap before asynchronous GPU use.
@@ -119,8 +120,8 @@ def bind_existing_features(supervision_root: Path, shard_root: Path,
             list(shard['tickers']) != expected_tickers or
             len(set(shard['tickers'])) != len(shard['tickers']) or
             teacher['date'] != shard['date'] or new_phase2['date'] != shard['date'] or
-            shard_done.get('rows') != SECONDS or
-            teacher_done.get('trajectory_rows') != SECONDS):
+            shard_done.get('rows') != teacher_done.get('trajectory_rows') or
+            not 1 <= int(teacher_done.get('trajectory_rows', 0)) <= SECONDS):
         raise ValueError('Causal feature bank does not match the dynamic teacher population')
     features = shard_root / 'features.npy'
     orders = supervision_root / 'orders.parquet'
@@ -137,5 +138,6 @@ def bind_existing_features(supervision_root: Path, shard_root: Path,
     missing = set(label_tickers) - set(expected_tickers)
     if missing:
         raise ValueError(f'{len(missing)} teacher listings are absent from causal features')
-    return FeatureBinding(shard['date'], tuple(expected_tickers), features,
+    return FeatureBinding(shard['date'], tuple(expected_tickers),
+                          int(teacher_done['trajectory_rows']), features,
                           features_hash, orders, orders_hash, supervision['plan_hash'])
