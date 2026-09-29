@@ -7,7 +7,8 @@ import src.trading_runtime.arte_journal_writer as journal_writer
 
 from src.backend.replay_run_service import ReplayRunDefinition, RunMode
 from src.trading_runtime.arte_backtest_definition import (
-    TABLES, load_backtest_definition, prepare_backtest_definition,
+    TABLES, load_backtest_definition, load_committed_initial_cash,
+    prepare_backtest_definition,
     publish_backtest_definition, reconstruct_backtest_definition_from_arte,
     verify_backtest_definition_rows,
 )
@@ -286,6 +287,30 @@ def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
     ):
         with pytest.raises(RuntimeError, match="shared run authority"):
             load_backtest_definition(client, "run-1", run_context=invalid_context)
+
+
+def test_saved_cash_projection_reads_only_hashed_parent_and_matching_commit():
+    prepared = prepare_backtest_definition("run-1", _definition(), run_month=RUN_MONTH)
+    rows = {"trading_backtest_definition_v1": prepared["definition"],
+            "trading_backtest_definition_commit_v1": prepared["commit"]}
+
+    class Client:
+        queries = []
+        def execute(self, sql):
+            self.queries.append(sql)
+            table = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
+            return json.dumps(rows[table])
+
+    client = Client()
+    context = {"run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
+               "mode": "backtest"}
+    assert load_committed_initial_cash(client, "run-1", run_context=context) == 100000.0
+    assert len(client.queries) == 2
+    assert all("LIMIT 2" in query for query in client.queries)
+    rows["trading_backtest_definition_v1"] = {
+        **prepared["definition"], "initial_cash": "10000.0000000000"}
+    with pytest.raises(RuntimeError, match="committed run definition"):
+        load_committed_initial_cash(client, "run-1", run_context=context)
 
 
 def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkeypatch):

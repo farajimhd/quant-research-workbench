@@ -349,6 +349,44 @@ def load_backtest_definition(
     return verified
 
 
+def load_committed_initial_cash(
+    client: Any, run_id: str, *, run_context: Mapping[str, Any],
+) -> float:
+    """Read the saved run's cash scalar without loading its ticker membership.
+
+    This is a review projection, not a substitute for full definition recovery.
+    Verify the parent hash and matching commit before displaying the amount.
+    """
+    from src.trading_runtime.arte_journal_writer import _literal, _rows
+
+    if (not isinstance(run_id, str) or not run_id
+            or run_context.get("run_id") != run_id
+            or run_context.get("mode") != "backtest"):
+        raise ValueError("Saved initial cash needs a verified backtest run context")
+
+    def read_one(table: TableContract) -> dict[str, Any]:
+        columns = ",".join(name for name, _ in table.columns)
+        rows = _rows(client,
+            f"SELECT {columns} FROM arte.{table.name} "
+            f"WHERE run_id={_literal(run_id)} LIMIT 2 FORMAT JSONEachRow")
+        if len(rows) != 1:
+            raise RuntimeError(f"Saved {table.name} must have exactly one row")
+        return _canonical_stored_row(table, rows[0])
+
+    parent = read_one(DEFINITION)
+    commit = read_one(COMMIT)
+    if (parent["run_id"] != run_id
+            or parent["run_month"] != str(run_context.get("run_month"))
+            or commit["run_id"] != run_id
+            or commit["run_month"] != parent["run_month"]
+            or commit["definition_hash"] != parent["content_hash"]
+            or _digest({key: value for key, value in parent.items()
+                        if key != "content_hash"}) != parent["content_hash"]
+            or not Decimal("1000") <= Decimal(parent["initial_cash"]) <= Decimal("1000000000")):
+        raise RuntimeError("Saved initial cash differs from committed run definition")
+    return float(parent["initial_cash"])
+
+
 def reconstruct_backtest_definition_from_arte(
     verified: Mapping[str, Any], run_context: Mapping[str, Any],
     configuration_revision: Mapping[str, Any], preflight: Mapping[str, Any],

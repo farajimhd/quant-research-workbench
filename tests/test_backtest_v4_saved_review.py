@@ -67,6 +67,8 @@ def test_terminal_page_requires_verified_context_prefix_and_snapshot(monkeypatch
                                 detail=None),)
 
     monkeypatch.setattr(review, "load_typed_run_context", context)
+    monkeypatch.setattr(review, "load_committed_initial_cash",
+                        lambda *_a, **_k: order.append("initial_cash") or 10000.0)
     monkeypatch.setattr(review, "load_verified_v4_prefix", prefix)
     monkeypatch.setattr(review, "load_terminal_backtest_snapshot", snapshot)
     monkeypatch.setattr(review, "load_latest_backtest_cursor", cursor)
@@ -75,7 +77,8 @@ def test_terminal_page_requires_verified_context_prefix_and_snapshot(monkeypatch
                         {"SIM-01-A": {"net_liquidation": 100000.0}})
     monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
     page = _read(after_sequence=1)
-    assert order == ["context", "prefix", "snapshot", "cursor", "events"]
+    assert order == ["context", "prefix", "snapshot", "cursor", "initial_cash", "events"]
+    assert page["run"]["initial_cash"] == 10000.0
     assert page["verified_sequence"] == 2
     assert page["complete"] is True
     assert page["resume_supported"] is False
@@ -104,6 +107,8 @@ def test_terminal_page_rejects_non_strategy_one(monkeypatch):
 
 def test_archived_v4_without_cursor_discloses_missing_clock(monkeypatch):
     monkeypatch.setattr(review, "load_typed_run_context", lambda *_a: _context())
+    monkeypatch.setattr(review, "load_committed_initial_cash",
+                        lambda *_a, **_k: 10000.0)
     monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_a:
                         V4CommittedPrefix(RUN, 2, BATCH, "start", "completed", (BATCH,)))
     monkeypatch.setattr(review, "load_terminal_backtest_snapshot", lambda *_a, **_k:
@@ -123,6 +128,8 @@ def test_archived_v4_without_cursor_discloses_missing_clock(monkeypatch):
 def test_subsequent_page_reuses_audited_prefix_but_rechecks_head(monkeypatch):
     calls = {"audit": 0, "snapshot": 0, "head": 0, "events": 0}
     monkeypatch.setattr(review, "load_typed_run_context", lambda *_a: _context())
+    monkeypatch.setattr(review, "load_committed_initial_cash",
+                        lambda *_a, **_k: 10000.0)
 
     def audited(*_a):
         calls["audit"] += 1

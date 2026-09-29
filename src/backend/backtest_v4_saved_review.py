@@ -13,6 +13,7 @@ from uuid import UUID
 from src.trading_runtime.arte_backtest_snapshot_anchor import (
     load_terminal_backtest_snapshot,
 )
+from src.trading_runtime.arte_backtest_definition import load_committed_initial_cash
 from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 from src.trading_runtime.arte_journal_reader import load_typed_event_page
@@ -83,7 +84,8 @@ def _terminal_attestation(client, normalized: str,
     attestation = None
     for key in selected_cache.candidate_keys(_client_scope(client), normalized):
         candidate = selected_cache.get(key)
-        if (candidate is not None and candidate["context"] == context
+        if (candidate is not None and "initial_cash" in candidate
+                and candidate["context"] == context
                 and _head_matches(client, normalized, candidate["prefix"])):
             attestation = candidate
             break
@@ -107,6 +109,8 @@ def _terminal_attestation(client, normalized: str,
             raise RuntimeError("Saved review terminal head changed during audit")
         attestation = {
             "context": context, "prefix": prefix, "cursor": cursor,
+            "initial_cash": load_committed_initial_cash(
+                client, normalized, run_context=context),
             "financial_accounts": _terminal_financial_accounts(
                 client, prefix, tuple(context["account_ids"])),
             "accounts": {
@@ -149,7 +153,7 @@ def load_v4_terminal_review_page(client, run_id: str, *,
     next_sequence = int(page[-1].event["sequence"]) if page else after_sequence
     return {
         "schema_version": "strategy-one-v4-terminal-review-page-v1",
-        "run": context,
+        "run": {**context, "initial_cash": attestation["initial_cash"]},
         "status": prefix.status,
         "verified_sequence": prefix.last_sequence,
         "market_cursor": cursor,

@@ -22,6 +22,7 @@ def _actual_records():
     portfolio.journal = journal
     portfolio.run_id = RUN
     portfolio.strategy_revision = 7
+    portfolio._event_clock = lambda: AT
     portfolio._typed_admission_stage = None
     portfolio._typed_recovery = False
     portfolio.allocations = {}
