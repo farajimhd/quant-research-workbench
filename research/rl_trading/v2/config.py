@@ -2,7 +2,7 @@
 from dataclasses import asdict, dataclass
 import math
 
-VERSION = 'rl-trading-v2-ppo-balanced-actions-5'
+VERSION = 'rl-trading-v2-ppo-hierarchical-actions-6'
 # Upper bounds are inclusive, except the first band which excludes $1.
 SHARE_CAPS = ((1., 40000), (5., 35000), (10., 30000), (20., 25000),
               (50., 20000), (None, 15000))

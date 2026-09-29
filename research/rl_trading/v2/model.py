@@ -37,6 +37,12 @@ class PortfolioPolicy(nn.Module):
         layer = nn.TransformerEncoderLayer(width,heads,width*2,dropout=0.,batch_first=True)
         self.market = nn.TransformerEncoder(layer,1,enable_nested_tensor=False)
         self.actor = nn.Linear(width,4)
+        # Choose buy/reduce/close at the account level before choosing a
+        # listing. This keeps a large eligible entry universe from setting
+        # the prior probability of a portfolio exit.
+        self.action_type = nn.Linear(width,3)
+        nn.init.zeros_(self.action_type.weight)
+        nn.init.zeros_(self.action_type.bias)
         self.trade_gate = nn.Linear(width,1)
         nn.init.zeros_(self.trade_gate.weight)
         nn.init.constant_(self.trade_gate.bias,-5.)
@@ -61,11 +67,19 @@ class PortfolioPolicy(nn.Module):
             return category,sizing,value
         eligible = batch['action_mask'][...,1:].any(dim=(1,2))
         gate_logits = self.trade_gate(context[:,0]).squeeze(-1).masked_fill(~eligible,-1e9)
-        # Normalize each action type by its eligible population. Otherwise
-        # hundreds of buy candidates overwhelm a few held-position exits.
-        type_counts = batch['action_mask'][...,1:].sum(dim=1).clamp_min(1)
-        choice_logits = (logits[...,1:] - type_counts.log().unsqueeze(1)).reshape(b,-1)
-        return category,sizing,value,Bernoulli(logits=gate_logits),Categorical(logits=choice_logits)
+        type_mask = batch['action_mask'][...,1:].any(dim=1)
+        type_logits = self.action_type(context[:,0]).masked_fill(~type_mask,-1e9)
+        type_probability = torch.softmax(type_logits,dim=-1).masked_fill(~type_mask,0.)
+        # [batch, 3 action types, N listings] is normalized within each type.
+        # The resulting [batch, N*3] choice matches the existing action index.
+        listing_logits = logits[...,1:].transpose(1,2)
+        listing_mask = batch['action_mask'][...,1:].transpose(1,2)
+        listing_probability = torch.softmax(listing_logits,dim=-1).masked_fill(~listing_mask,0.)
+        joint = (type_probability.unsqueeze(-1)*listing_probability).transpose(1,2).reshape(b,-1)
+        fallback = torch.nn.functional.one_hot(torch.zeros(b,dtype=torch.long,device=x.device),
+                                                num_classes=n*3).to(joint.dtype)
+        joint = torch.where(eligible.unsqueeze(-1),joint,fallback)
+        return category,sizing,value,Bernoulli(logits=gate_logits),Categorical(probs=joint)
 
     def action(self, batch, modes=None, sizes=None, *, deterministic=False):
         _,sizing,value,gate,choice = self(batch,scheduler=True)
