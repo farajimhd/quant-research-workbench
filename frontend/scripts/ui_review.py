@@ -2604,12 +2604,28 @@ def capture(args: argparse.Namespace) -> int:
                             ticker_button.first.click(timeout=args.timeout_ms)
                         focus = opened.value
                         try:
+                            canvas = focus.get_by_role("region", name=f"{args.saved_v4_chart_ticker} charts and quotes")
+                            canvas.wait_for(timeout=args.timeout_ms)
+                            if focus.locator('.workspace-window').count() != 1:
+                                raise RuntimeError("Saved ticker drilldown did not open one certified focus Canvas container")
                             saved_chart = focus.get_by_role("region", name=f"Saved {args.saved_v4_chart_ticker} chart")
-                            saved_chart.get_by_label(f"{args.saved_v4_chart_ticker} saved bid and ask").wait_for(timeout=args.timeout_ms)
                             saved_chart.locator(".chart-shell canvas").first.wait_for(timeout=args.timeout_ms)
+                            focus.wait_for_timeout(1000)
+                            saved_chart.get_by_text('Loading chart data').wait_for(state='hidden', timeout=60_000)
+                            if canvas.locator('.charts-quotes-body').get_attribute('data-main-chart-maximized') != 'true':
+                                raise RuntimeError("Saved Charts & Quotes did not initially hide supporting panels")
+                            focus.get_by_role('button', name='Restore chart panels').click(timeout=args.timeout_ms)
+                            if canvas.locator('.charts-quotes-body').get_attribute('data-main-chart-maximized') != 'false':
+                                raise RuntimeError("Saved Charts & Quotes could not restore supporting panels")
+                            if not canvas.get_by_role('separator', name='Resize monthly chart and reserved workspace').count():
+                                raise RuntimeError("Saved Charts & Quotes lost its resize controls")
+                            canvas.get_by_text('Loading certified monthly context').wait_for(state='hidden', timeout=60_000)
+                            canvas.get_by_text('Loading certified daily context').wait_for(state='hidden', timeout=60_000)
+                            focus.screenshot(path=str(output_dir / f"saved-charts-quotes__{scenario['theme']}__s{slug_scale(scenario['scale'])}__{scenario['viewport_name']}.png"))
                             if saved_chart.get_by_label("Show 1s Supertrend").count():
                                 raise RuntimeError("Saved ARTE chart exposed an unpersisted indicator")
                         finally:
+                            focus.screenshot(path=str(output_dir / f"saved-charts-quotes-debug__{scenario['theme']}__s{slug_scale(scenario['scale'])}__{scenario['viewport_name']}.png"))
                             focus.close()
                     if args.hindsight_action_chart:
                         from action_values_review import mount_action_chart

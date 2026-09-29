@@ -358,8 +358,8 @@ function ReplayFocusTransportStatus({ run }: { run: CanvasReplayRun }) {
   return <div aria-label={`Replay ${label} at ${speed}`} className="replay-focus-transport" data-status={run.status} role="status"><Icon aria-hidden="true" size={13} /><span><strong>{label}</strong><small>{speed}</small></span></div>;
 }
 
-export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, savedV4Focus, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; savedV4Focus?: { ticker: string; page: V4Page }; transient?: boolean }) {
-  const runtimeMode: CanvasRuntimeMode = replayRun?.mode === "backtest" || replayRun?.mode === "backtest_debug" ? replayRun.mode : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
+export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, savedV4Focus, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; savedV4Focus?: { runId: string; ticker: string; page: V4Page; profile: CanvasRegistry }; transient?: boolean }) {
+  const runtimeMode: CanvasRuntimeMode = savedV4Focus ? "backtest" : replayRun?.mode === "backtest" || replayRun?.mode === "backtest_debug" ? replayRun.mode : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
   const liveMode = runtimeMode === "live" || runtimeMode === "paper";
   const labelerCanvas = canvasId === LABELER_CANVAS_ID;
   const durableTerminalReview = Boolean(
@@ -371,7 +371,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const focusRuntimeMode = runtimeMode === "live" || runtimeMode === "paper" ? runtimeMode : undefined;
   const resolvedAccountKeys = readOnly ? [] : accountKeys?.length ? accountKeys : readLiveAccountKeys();
   const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
-  const runtimeBase = replayRun?.canvas_profile ?? approvedCanvas?.profile;
+  const runtimeBase = savedV4Focus?.profile ?? replayRun?.canvas_profile ?? approvedCanvas?.profile;
   const runtimeRevision = replayRun?.configuration_content_hash || replayRun?.canvas_revision || approvedCanvas?.content_hash || approvedCanvas?.canvas_revision || "draft";
   const durableHistoricalWorkspace = Boolean(replayRun && !transient && ["backtest", "backtest_debug", "replay"].includes(runtimeMode));
   const runtimeScope = replayRun
@@ -412,12 +412,14 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       ? strategyReplayRegistry(base, replayRun)
       : base;
   });
-  const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : liveMode ? currentLivePreviewContext() : readPreviewContext());
+  const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => savedV4Focus
+    ? savedV4PreviewContext(savedV4Focus.page)
+    : replayRun ? replayPreviewContext(replayRun) : liveMode ? currentLivePreviewContext() : readPreviewContext());
   const liveClockInstant = useWallClock(1_000, liveMode);
   const livePreviewRefreshMs = useWallClock(15_000, liveMode);
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
   const loadedPreviewRevisionRef = useRef("");
-  const [contextReady, setContextReady] = useState(Boolean(replayRun || liveMode));
+  const [contextReady, setContextReady] = useState(Boolean(savedV4Focus || replayRun || liveMode));
   const [contextError, setContextError] = useState("");
   const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
   const [loading, setLoading] = useState(true);
@@ -559,9 +561,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [canvasId, registry, runtimeBase, runtimeRebase, runtimeRevision, runtimeScope, transient, workspaceState]);
 
   useEffect(() => {
-    if (replayRun || liveMode) return;
+    if (savedV4Focus || replayRun || liveMode) return;
     window.localStorage.setItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY, JSON.stringify(previewContext));
-  }, [liveMode, previewContext, replayRun]);
+  }, [liveMode, previewContext, replayRun, savedV4Focus]);
 
   useEffect(() => {
     if (!liveMode) return;
@@ -655,7 +657,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [runtimeBase, runtimeRegistryStorageKey, transient]);
 
   useEffect(() => {
-    if (replayRun || liveMode) return;
+    if (savedV4Focus || replayRun || liveMode) return;
     let cancelled = false;
     let retryAttempt = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -685,7 +687,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     };
     loadContext();
     return () => { cancelled = true; if (retryTimer) window.clearTimeout(retryTimer); };
-  }, [liveMode, replayRun]);
+  }, [liveMode, replayRun, savedV4Focus]);
 
   usePollingTask({
     enabled: Boolean(!savedV4Focus && contextReady && replayRun && replayRuntimeReady && previewContainerKey),
@@ -1184,11 +1186,11 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
           if (savedV4Focus && definition.id === "charts_quotes") return <BacktestV4ChartsQuotesContent
-            initialPage={savedV4Focus.page} key={`${replayRun?.run_id}:${savedV4Focus.ticker}`}
+            initialPage={savedV4Focus.page} key={`${savedV4Focus.runId}:${savedV4Focus.ticker}`}
             layout={settings.charts_quotes.layout} mainFrame={settings.charts_quotes.main.timeframe}
             onLayoutChange={layout => updateInstanceSettings(instanceId, current => ({
               ...current, charts_quotes: { ...current.charts_quotes, layout },
-            }))} runId={replayRun!.run_id} ticker={savedV4Focus.ticker} />;
+            }))} runId={savedV4Focus.runId} ticker={savedV4Focus.ticker} />;
           const linkable = containerSupportsCanvasLink(definition.id);
           const group = linkable ? registry.linkAssignments[instanceId] ?? "none" : "none";
           const linkContext = group === "none" ? { symbol: settings.chart.symbol } : registry.linkContexts[group];
@@ -1460,24 +1462,20 @@ function BacktestUnavailableContextChart({ label }: { label: string }) {
 
 export function SavedBacktestChartFocus({ runId, ticker }: { runId: string; ticker: string }) {
   const [page, setPage] = useState<V4Page | null>(null);
-  const [run, setRun] = useState<CanvasReplayRun | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.all([
-      api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=0&limit=100`, {
-        signal: controller.signal, timeoutMs: 60_000,
-      }),
-      recoverBacktest<CanvasReplayRun>(runId, controller.signal),
-    ]).then(([value, snapshot]) => {
+    void api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=0&limit=100`, {
+      signal: controller.signal, timeoutMs: 60_000,
+    }).then(value => {
       if (controller.signal.aborted) return;
       if (value.schema_version !== "strategy-one-v4-terminal-review-page-v1"
-          || value.run.run_id !== runId || snapshot.run_id !== runId
-          || snapshot.journal_backend !== "arte_typed_journal_v4") {
+          || value.run.run_id !== runId || !value.market_cursor_verified
+          || !value.market_cursor || !/^\d{4}-\d\d-\d\d$/.test(value.market_cursor.session_date)
+          || !Number.isFinite(value.market_cursor.boundary_ms) || value.market_cursor.boundary_ms < 0) {
         throw new Error("Saved Backtest chart identity differs from the selected run.");
       }
       setPage(value);
-      setRun(snapshot);
     }).catch(reason => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
     });
@@ -1490,20 +1488,19 @@ export function SavedBacktestChartFocus({ runId, ticker }: { runId: string; tick
     window.location.assign(url.toString());
   };
   if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error" role="alert">Chart unavailable: {error}</div><button onClick={returnToJournal} type="button">Return to journal</button></div>;
-  if (!page || !run) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading saved Charts & Quotes" /></div>;
-  const base = run.canvas_profile?.instanceSettings ? run.canvas_profile : readCanvasRegistry();
+  if (!page) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading saved Charts & Quotes" /></div>;
+  const base = readCanvasRegistry();
   const { profile } = chartsQuotesFocusProfile(base, null, ticker, true);
-  const progress = run.status === "completed" ? 100
-    : Math.round(Math.max(0, Math.min(1, run.progress || 0)) * 100);
+  const progress = page.status === "completed" ? 100 : 0;
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false}
     modeControls={<div className="historical-canvas-run-state historical-backtest-progress saved-v4-focus-progress">
-      <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{progress}%</b></div>
-      <div aria-label="Backtest progress" aria-valuemax={100} aria-valuemin={0} aria-valuenow={progress}
+      <div className="historical-backtest-progress-heading"><strong>Backtest {page.status.replaceAll("_", " ")}</strong><b>{page.status === "completed" ? `${progress}%` : page.status}</b></div>
+      <div aria-label="Backtest progress" aria-valuemax={100} aria-valuemin={0} aria-valuenow={page.status === "completed" ? progress : undefined}
         className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progress}%` }} /></div>
       <div className="historical-backtest-progress-actions"><button className="button secondary compact" onClick={returnToJournal} type="button">Return to journal</button></div>
     </div>}
-    readOnly replayRun={{ ...run, canvas_profile: profile }} runtimeWorkspaceId={`${runId}.charts`}
-    savedV4Focus={{ ticker, page }} transient />;
+    readOnly runtimeWorkspaceId={`${runId}.charts`}
+    savedV4Focus={{ runId, ticker, page, profile }} transient />;
 }
 
 function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
@@ -1705,6 +1702,16 @@ function replayPreviewContext(run: CanvasReplayRun): CanvasPreviewContext {
     timeZone: "America/New_York",
   }).format(current);
   return { previewTime, sessionDate: run.session_date };
+}
+function savedV4PreviewContext(page: V4Page): CanvasPreviewContext {
+  // SavedBacktestChartFocus verifies the committed cursor before mounting.
+  const sessionDate = page.market_cursor!.session_date;
+  const boundaryMs = Number(page.market_cursor!.boundary_ms);
+  const instant = new Date(dateInTimeZone(sessionDate, "04:00", "America/New_York").getTime() + boundaryMs);
+  const previewTime = new Intl.DateTimeFormat("en-CA", {
+    hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", timeZone: "America/New_York",
+  }).format(instant);
+  return { previewTime, sessionDate };
 }
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
 export function previewClockReadings(context: CanvasPreviewContext, liveInstant?: Date) {
