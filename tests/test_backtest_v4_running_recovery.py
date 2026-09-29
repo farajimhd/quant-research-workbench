@@ -1,6 +1,7 @@
 import pytest
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 from src.backend import backtest_v4_running_recovery as subject
 from src.backend.backtest_strategy_one_management import StrategyOneManagementState
@@ -13,6 +14,7 @@ from src.trading_runtime.arte_oms_projection import (
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchSnapshotRows
 from src.trading_runtime.strategy_one_campaign_snapshot import project_campaign_snapshot
+from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
 
 
 RUN = "00000000-0000-0000-0000-000000000a01"
@@ -116,6 +118,37 @@ def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
     with pytest.raises(RuntimeError, match="committed seal"):
         subject.verify_v4_recovery_at_anchor(
             replace(recovery, campaign=corrupted), anchor)
+
+
+def test_v4_runtime_image_reads_one_fenced_actor_set(monkeypatch):
+    _install(monkeypatch)
+    recovery = subject.load_v4_running_recovery_evidence(
+        object(), run_id=RUN, account_ids=("DU1",),
+        manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
+        market_client=object(), market_plan=object())
+    anchor = FixedRunningPrefixAnchor(
+        RUN, BATCH, 7, PREFIX.source_cursor, "2026-08-18", 100, 1,
+        datetime(2026, 8, 18, tzinfo=timezone.utc), None)
+    profile = SimpleNamespace(account_id="DU1")
+    expected_portfolio = PortfolioRecovery(RUN, {"DU1": 7}, {}, {}, {}, {}, {})
+    expected_broker = {"executions": []}
+    expected_oms = object()
+    def recover(_client, **kwargs):
+        assert kwargs["state_revisions"] == {"DU1": 7}
+        assert kwargs["cutoff_at"] == anchor.completed_at
+        return expected_portfolio
+    monkeypatch.setattr(subject, "recover_portfolio_engine_state", recover)
+    monkeypatch.setattr(subject, "load_v4_running_broker_image",
+                        lambda *_a: expected_broker)
+    monkeypatch.setattr(subject, "load_v4_running_oms_image",
+                        lambda *_a: expected_oms)
+    image = subject.load_v4_fixed_runtime_image(
+        object(), recovery, anchor, (profile,))
+    assert image.portfolio is expected_portfolio
+    assert image.broker is expected_broker
+    assert image.oms is expected_oms
+    with pytest.raises(RuntimeError, match="portfolio accounts differ"):
+        subject.load_v4_fixed_runtime_image(object(), recovery, anchor, ())
 
 
 def test_v4_running_recovery_rejects_orphan_broker_order(monkeypatch):

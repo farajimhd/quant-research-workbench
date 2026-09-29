@@ -1152,9 +1152,17 @@ class ReplayRunController:
         runtime_root: Path | None = None,
         resume_state: dict[str, Any] | None = None,
         resume_journal_prefix: dict[str, Any] | None = None,
+        fixed_v4_runtime_image: object | None = None,
     ) -> None:
         self.definition = definition
         self.run_id = run_id or str(uuid4())
+        if fixed_v4_runtime_image is not None:
+            from src.backend.backtest_v4_running_recovery import V4FixedRuntimeImage
+            if (definition.mode != RunMode.BACKTEST or resume_state is not None
+                    or not isinstance(fixed_v4_runtime_image, V4FixedRuntimeImage)
+                    or fixed_v4_runtime_image.portfolio.run_id != self.run_id):
+                raise ValueError("Typed V4 runtime image differs from Backtest run")
+        self._fixed_v4_runtime_image = fixed_v4_runtime_image
         self.runtime_root = (runtime_root or replay_runtime_root()).resolve()
         self.run_dir = (self.runtime_root / self.run_id).resolve()
         if self.runtime_root != self.run_dir and self.runtime_root not in self.run_dir.parents:
@@ -1351,6 +1359,11 @@ class ReplayRunController:
     async def start(self) -> None:
         if self.definition.archived_review_only:
             raise ValueError('Archived runs are read-only; create a new V7 run')
+        if getattr(self, '_fixed_v4_runtime_image', None) is not None:
+            # A cold actor image alone cannot grant a writer lease. The
+            # resumed V4 journal must be attached under its later Keeper epoch
+            # before the public controller can start playback.
+            raise RuntimeError('Typed V4 actor restore lacks resumed journal admission')
         if self._task is not None:
             return
         if self.definition.mode == RunMode.BACKTEST:
@@ -4408,6 +4421,21 @@ class ReplayRunController:
         review_only: bool = False,
     ) -> None:
         configuration = self.definition.configuration_revision["payload"]
+        fixed_restore = getattr(self, "_fixed_v4_runtime_image", None)
+        if fixed_restore is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            if (self.definition.mode != RunMode.BACKTEST or review_only
+                    or record_lifecycle or self._resume_state is not None
+                    or not isinstance(self._journal, BacktestMemoryJournal)
+                    or self._journal.run_id != self.run_id):
+                raise RuntimeError("Typed V4 runtime restoration lacks a fenced journal")
+            clock = fixed_restore.controller
+            self.current_time = clock.current_time
+            self.processed_events = clock.processed_events
+            self.warmup_events = clock.warmup_events
+            self._processed_frames = clock.processed_frames
+            self._source_cursor = dict(clock.source_cursor)
+            self._frame_cursor = dict(clock.frame_cursor)
         strategy_configuration = dict(configuration.get("strategy") or {})
         strategy_enabled = self.definition.execution_mode == "strategy"
         bindings = [
@@ -4589,6 +4617,7 @@ class ReplayRunController:
             strategy_revision=int(strategy_configuration.get("revision") or 0),
             groups=groups,
             event_clock=lambda: self.current_time or self.definition.session_start,
+            typed_recovery=(fixed_restore.portfolio if fixed_restore is not None else None),
         )
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),
@@ -4596,7 +4625,9 @@ class ReplayRunController:
             mode=TradingMode(self.definition.mode.value),
             initial_time=self.definition.session_start,
         )
-        if self._resume_state is not None:
+        if fixed_restore is not None:
+            broker.restore_checkpoint_state(fixed_restore.broker)
+        elif self._resume_state is not None:
             broker_state = self._resume_state.get("broker")
             if not isinstance(broker_state, dict):
                 raise ValueError("Restart checkpoint omitted simulated broker state")
@@ -4613,7 +4644,10 @@ class ReplayRunController:
             intent_planner=self._planner,
             portfolio=portfolio,
             review_only=review_only,
+            typed_oms_image=(fixed_restore.oms if fixed_restore is not None else None),
         )
+        # Canonical recovery first checks broker state at the completed
+        # boundary, then restores the exact runtime event clock for playback.
         self._runtime.last_event_time = self.current_time or self.definition.session_start
         await self._runtime.initialize(
             record_lifecycle=record_lifecycle,
@@ -4621,6 +4655,11 @@ class ReplayRunController:
         )
         if self._resume_state is not None:
             self._restore_restart_checkpoint(review_only=review_only)
+        if fixed_restore is not None:
+            self._runtime.processed_events = fixed_restore.controller.runtime_processed_events
+            self._runtime.last_event_time = (
+                fixed_restore.controller.runtime_last_event_time
+                or fixed_restore.controller.current_time)
         if not review_only:
             self._runtime.persist_strategy_assignments(
                 self.current_time or self.definition.requested_start,

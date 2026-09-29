@@ -36,6 +36,10 @@ from src.trading_runtime.arte_oms_actor_restore import (
 from src.trading_runtime.arte_oms_projection import (
     RecoveredStrategyOneOmsLineage, load_recovered_strategy_one_oms_lineage,
 )
+from src.trading_runtime.arte_portfolio_recovery import (
+    PortfolioRecovery, recover_portfolio_engine_state,
+)
+from src.trading_runtime.portfolio import PortfolioAccountProfile
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     BrokerMatchSnapshotRows, load_attested_broker_match_snapshot,
 )
@@ -76,6 +80,42 @@ class V4FixedControllerImage:
     processed_frames: int
     runtime_processed_events: int
     runtime_last_event_time: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class V4FixedRuntimeImage:
+    """One cold, read-only actor installation packet at a fenced V4 cursor."""
+
+    controller: V4FixedControllerImage
+    portfolio: PortfolioRecovery
+    broker: dict[str, Any]
+    oms: TypedOmsActorImage
+
+
+def load_v4_fixed_runtime_image(
+    client: Any, recovery: V4RunningRecoveryEvidence,
+    anchor: FixedRunningPrefixAnchor,
+    profiles: tuple[PortfolioAccountProfile, ...],
+) -> V4FixedRuntimeImage:
+    """Read all mutable actor families at one verified checkpoint, no writes."""
+    controller = reconstruct_v4_controller_image(recovery, anchor)
+    if (not profiles or len({row.account_id for row in profiles}) != len(profiles)
+            or set(recovery.portfolio_images) != {row.account_id for row in profiles}):
+        raise RuntimeError("V4 runtime portfolio accounts differ from pinned cursor")
+    portfolio = recover_portfolio_engine_state(
+        client, run_id=anchor.run_id, profiles=profiles,
+        state_revisions={row.account_id: anchor.journal_sequence for row in profiles},
+        cutoff_at=anchor.completed_at)
+    if (portfolio.run_id != anchor.run_id
+            or set(portfolio.revisions) != set(recovery.portfolio_images)
+            or any(revision != anchor.journal_sequence
+                   for revision in portfolio.revisions.values())):
+        raise RuntimeError("V4 runtime portfolio image differs from pinned cursor")
+    broker = load_v4_running_broker_image(client, recovery)
+    oms = load_v4_running_oms_image(client, recovery)
+    if load_verified_v4_prefix(client, anchor.run_id) != recovery.prefix:
+        raise RuntimeError("V4 runtime image prefix moved during actor reads")
+    return V4FixedRuntimeImage(controller, portfolio, broker, oms)
 
 
 def reconstruct_v4_controller_image(

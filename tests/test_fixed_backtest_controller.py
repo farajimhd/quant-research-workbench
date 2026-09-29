@@ -130,6 +130,83 @@ def test_admitted_backtest_start_creates_no_local_authority(tmp_path, monkeypatc
     assert not controller.run_dir.exists()
 
 
+def test_fixed_v4_runtime_installs_typed_images_without_legacy_recovery(monkeypatch):
+    from src.backend.backtest_v4_running_recovery import (
+        V4FixedControllerImage, V4FixedRuntimeImage,
+    )
+    from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
+    from src.trading_runtime.arte_oms_actor_restore import TypedOmsActorImage
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+    from tests.test_replay_run_service import approved_configuration
+
+    configuration = approved_configuration()
+    configuration["payload"]["strategy"].update(
+        strategy_id=STRATEGY_ID, revision=1, strategy_number=1,
+        execution_interval="100ms", parameters={"execution": {"tick_size": .01}})
+    boundary = datetime(2026, 8, 18, 8, 0, 0, 100_000, tzinfo=timezone.utc)
+    account = "SIM-01-PRIMARY"
+    portfolio_image = PortfolioRecovery(RUN, {account: 7}, {}, {}, {}, {}, {})
+    oms_image = TypedOmsActorImage(RUN, STRATEGY_ID, 1, {}, {}, {}, {}, frozenset())
+    restore = V4FixedRuntimeImage(
+        V4FixedControllerImage(
+            boundary, {"session_date": DAY, "boundary_ms": 100,
+                       "sequence": 1}, {}, 4, 0, 0, 2, boundary),
+        portfolio_image, {"schema_version": 4}, oms_image)
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, execution_mode="strategy",
+        session_date=date(2026, 8, 18), session_start=boundary,
+        requested_start=boundary, initial_cash=100_000,
+        simulation_profile="baseline", new_order_activation_delay_ms=0,
+        configuration_revision=configuration)
+    controller._fixed_v4_runtime_image = restore
+    controller._fixed_v4_account_ids = (account,)
+    controller._resume_state = None
+    controller._journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=7)
+    controller._task = None
+    controller.run_dir = None
+    controller.definition.archived_review_only = False
+    with pytest.raises(RuntimeError, match="lacks resumed journal admission"):
+        asyncio.run(controller.start())
+    controller._selected_assignments = lambda: [{
+        "assignment_id": "A1", "account_key": "primary", "ticker": "AAA",
+        "conid": 123, "status": "watching", "permissions": {"enter": True},
+        "resolved_parameters": {"execution": {"tick_size": .01}},
+    }]
+    seen = {}
+    class Portfolio:
+        def __init__(self, *_args, **kwargs):
+            seen["portfolio"] = kwargs["typed_recovery"]
+    class Broker:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def restore_checkpoint_state(self, state):
+            seen["broker"] = state
+    class Runtime:
+        def __init__(self, *_args, **kwargs):
+            seen["oms"] = kwargs["typed_oms_image"]
+            self.last_event_time = None
+            self.processed_events = 0
+        async def initialize(self, **kwargs):
+            seen["initialize"] = kwargs
+        def persist_strategy_assignments(self, *_args, **_kwargs):
+            seen["assignments"] = True
+    monkeypatch.setattr(replay_service, "PortfolioManagementEngine", Portfolio)
+    monkeypatch.setattr(replay_service, "SimulatedBrokerAdapter", Broker)
+    monkeypatch.setattr(replay_service, "TradingRuntime", Runtime)
+    asyncio.run(controller._initialize_runtime(record_lifecycle=False))
+    assert seen == {"portfolio": portfolio_image, "broker": restore.broker,
+                    "oms": oms_image,
+                    "initialize": {"record_lifecycle": False,
+                                   "review_only": False},
+                    "assignments": True}
+    assert controller._runtime.processed_events == 2
+    assert controller._runtime.last_event_time == boundary
+    assert controller._source_cursor["boundary_ms"] == 100
+    assert controller.processed_events == 4
+
+
 @pytest.mark.parametrize("stop_requested", [False, True])
 def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     monkeypatch, stop_requested,
