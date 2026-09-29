@@ -56,6 +56,10 @@ from src.trading_runtime.portfolio import PortfolioManagementEngine
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     load_unattested_broker_match_snapshot, project_broker_match_snapshot,
 )
+from src.trading_runtime.strategy_one_evidence_snapshot import (
+    ManagedEvidenceSnapshotHeadReader,
+    load_unattested_evidence_snapshot_rows, restore_evidence_snapshot,
+)
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.strategy_one_management_snapshot import (
     load_unattested_manager_snapshot_rows, restore_manager_snapshot,
@@ -149,6 +153,18 @@ def audit(*, run_id: str, build_id: str, session: date,
         manager.restore_state(manager_state)
         if manager.capture_state(boundary_ms=int(root["boundary_ms"])) != manager_state:
             raise RuntimeError("Cold manager actor differs after restoration")
+        evidence_rows = load_unattested_evidence_snapshot_rows(
+            client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+        evidence_state = restore_evidence_snapshot(evidence_rows)
+        if (evidence_rows.snapshot["session_date"] != session.isoformat()
+                or evidence_state.boundary_ms != root["boundary_ms"]):
+            raise RuntimeError("Cold evidence state differs from broker boundary")
+        evidence_head = ManagedEvidenceSnapshotHeadReader(keeper_session).read_head(
+            run_id=run_id)
+        if evidence_head.checkpoint_sequence == checkpoint_sequence and (
+                evidence_head.journal_batch_id != prefix.last_batch_id
+                or evidence_head.snapshot_hash != evidence_rows.snapshot["content_hash"]):
+            raise RuntimeError("Cold evidence Keeper head differs from selected rows")
         protection = load_complete_typed_protection_history(client, prefix)
         oms_image = reconstruct_typed_oms_actor_image(
             lineages, protection, run_id=run_id, strategy_id=STRATEGY_ID,
