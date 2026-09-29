@@ -5901,6 +5901,7 @@ async def trading_backtest_v4_chart(
     before_boundary_ms: int | None = Query(default=None, ge=1, le=57_600_000),
     row_limit: int = Query(default=1000, ge=1, le=5000),
     indicator_columns: str = "",
+    include_structure: bool = False,
 ) -> dict[str, Any]:
     """Cold, pinned, SELECT-only bars and indicators for a completed V4 run."""
     try:
@@ -5922,7 +5923,7 @@ async def trading_backtest_v4_chart(
                 journal_client, market_client, run_id=normalized,
                 ticker=ticker, timeframe=timeframe,
                 before_boundary_ms=before_boundary_ms, row_limit=row_limit,
-                indicator_columns=columns,
+                indicator_columns=columns, include_structure=include_structure,
             )
 
     try:

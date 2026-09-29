@@ -8,7 +8,7 @@ selection can stand in for that proof.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Callable
 from uuid import UUID
 
@@ -18,7 +18,7 @@ from src.backend.backtest_v4_chart_context import (
 )
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS, assert_select_only,
-    certified_market_plan_from_arte, market_day_boundary,
+    certified_market_plan_from_arte, market_day_boundary, project_market_day_plan,
 )
 from src.backend.backtest_strategy_one_configuration import (
     certify_strategy_one_configuration,
@@ -67,6 +67,63 @@ def _pinned_quote(client: Any, plan: CertifiedMarketDayPlan, *, session: date,
             "fresh": age_us <= 1_000_000}
 
 
+def _pinned_execution_vwap(client: Any, plan: CertifiedMarketDayPlan, *,
+                           session: date, ticker: str, timeframe: str,
+                           bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project the persisted causal session VWAP at each completed bar end.
+
+    A sparse quote/trade bucket may not update VWAP. Carry only the last
+    already-persisted value; never calculate a second VWAP from chart bars.
+    """
+    if not bars:
+        return []
+    matches = [unit for unit in plan.units if unit.session_date == session.isoformat()
+               and unit.ticker == ticker and unit.stage == "broker_100ms"]
+    if len(matches) != 1:
+        raise RuntimeError("Saved VWAP has no unique pinned liquidity attempt")
+    resolution = _RESOLUTIONS[timeframe]
+    first_start = int((datetime.fromisoformat(bars[0]["bar_start"])
+                       - market_day_boundary(session, 0)).total_seconds() * 1000)
+    last_end = int((datetime.fromisoformat(bars[-1]["bar_end"])
+                    - market_day_boundary(session, 0)).total_seconds() * 1000)
+    first_bucket = (first_start + SESSION_OPEN_OFFSET_MS) // 100
+    last_bucket = (last_end + SESSION_OPEN_OFFSET_MS) // 100 - 1
+    if not 0 <= first_start < last_end <= 57_600_000 or last_bucket < first_bucket:
+        raise RuntimeError("Saved VWAP has an invalid completed bar clock")
+    scope = (" FROM arte.liquidity_100ms_v1 "
+             f"WHERE build_id={_literal(plan.build_id)} "
+             f"AND session_date=toDate({_literal(session.isoformat())}) "
+             f"AND ticker={_literal(ticker)} "
+             f"AND attempt_id=toUUID({_literal(matches[0].attempt_id)}) "
+             "AND execution_vwap>0 ")
+    anchor_sql = assert_select_only(
+        "SELECT bucket_index,execution_vwap" + scope
+        + f"AND bucket_index<{first_bucket} "
+        "ORDER BY bucket_index DESC LIMIT 1 FORMAT JSONEachRow")
+    anchor = [json.loads(line) for line in client.execute(anchor_sql).splitlines()
+              if line.strip()]
+    factor = resolution // 100
+    page_sql = assert_select_only(
+        f"SELECT intDiv(bucket_index,{factor}) AS bar_bucket,"
+        "argMax(execution_vwap,bucket_index) AS vwap_value"
+        + scope + f"AND bucket_index>={first_bucket} "
+        f"AND bucket_index<={last_bucket} GROUP BY bar_bucket "
+        "ORDER BY bar_bucket FORMAT JSONEachRow")
+    updates = {int(row["bar_bucket"]): float(row["vwap_value"])
+               for line in client.execute(page_sql).splitlines() if line.strip()
+               for row in (json.loads(line),)}
+    value = float(anchor[0]["execution_vwap"]) if anchor else 0.0
+    result = []
+    for bar in bars:
+        start = int((datetime.fromisoformat(bar["bar_start"])
+                     - market_day_boundary(session, 0)).total_seconds() * 1000)
+        bucket = (start + SESSION_OPEN_OFFSET_MS) // resolution
+        value = updates.get(bucket, value)
+        if value > 0:
+            result.append({"bar_start": bar["bar_start"], "execution_vwap": value})
+    return result
+
+
 def certified_saved_run_plan(
     journal_client: Any, market_client: Any, *, run_id: str,
     plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,
@@ -102,10 +159,74 @@ def certified_saved_run_plan(
     return session, context, cursor, plan
 
 
+def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
+                              run_id: str, run_context: dict[str, Any],
+                              session: date, ticker: str,
+                              plan: CertifiedMarketDayPlan,
+                              bars: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+    """Project the certified scalar V7 stream derivative into this chart page.
+
+    The producer made these intervals once from prior ARTE checkpoints and
+    completed 1s bars. Chart and Backtest only SELECT the coverage-last product;
+    retrospective structural_levels_v7 is never used as an intraday shortcut.
+    """
+    if not bars or len(bars) > 1000:
+        return [], "No completed bars in this chart page"
+    from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+    from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
+    from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
+    from src.backend.structural_v7_seed import certified_seed_plan
+    from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+
+    definition = load_backtest_definition(
+        journal_client, run_id, run_context=run_context)
+    candidates = certify_candidate_plan(
+        plan, candidate_rule_digest=RULE_DIGEST,
+        through_boundary_ms=57_600_000, client=market_client)
+    selected = strategy_one_v7_tickers(candidates.prepared)
+    if ticker not in selected:
+        return [], "No certified V7 seed for this run ticker"
+    execution_plan = project_market_day_plan(plan, selected)
+    seeds = certified_seed_plan(execution_plan, market_client)
+    if seeds.token != definition["definition"]["causal_v7_plan_token"]:
+        raise RuntimeError("Saved chart V7 seed certificate differs from the run")
+    # The full saved seed token proves the run's selected population. The
+    # chart needs only this ticker's interval children; loading and hashing
+    # every other ticker's V7 clock/geometry adds seconds without increasing
+    # the authority of this ticker's projection.
+    ticker_plan = project_market_day_plan(plan, (ticker,))
+    intervals = certify_v7_interval_plan(
+        ticker_plan, seeds, session_date=session.isoformat(),
+        candidate_tickers=(ticker,), client=market_client)
+    first_ms = int((datetime.fromisoformat(bars[0]["bar_end"])
+                    - market_day_boundary(session, 0)).total_seconds() * 1000)
+    last_ms = int((datetime.fromisoformat(bars[-1]["bar_end"])
+                   - market_day_boundary(session, 0)).total_seconds() * 1000)
+    resolution_ms = int((datetime.fromisoformat(bars[-1]["bar_end"])
+                         - datetime.fromisoformat(bars[-1]["bar_start"])).total_seconds() * 1000)
+    if not 0 <= first_ms <= last_ms <= 57_600_000 or resolution_ms <= 0:
+        raise RuntimeError("Saved V7 chart has an invalid completed bar clock")
+    origin = market_day_boundary(session, 0).timestamp()
+    rows = next((values for symbol, values in intervals.intervals
+                 if symbol == ticker), None)
+    if rows is None:
+        raise RuntimeError("Certified V7 interval plan omitted chart ticker")
+    segments = [{"level_id": row.level_id, "role": row.role,
+                 "lower": row.lower, "upper": row.upper,
+                 "start": origin + max(first_ms, row.valid_from_ms) / 1000,
+                 "end": origin + min(last_ms + resolution_ms,
+                                       row.valid_to_ms) / 1000}
+                for row in rows
+                if row.valid_from_ms < last_ms + resolution_ms
+                and row.valid_to_ms > first_ms]
+    return [row for row in segments if row["end"] > row["start"]], ""
+
+
 def cold_v4_chart_page(
     journal_client: Any, market_client: Any, *, run_id: str,
     ticker: str, timeframe: str, before_boundary_ms: int | None = None,
     row_limit: int = 1000, indicator_columns: tuple[str, ...] = (),
+    include_structure: bool = False,
     plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,
 ) -> dict[str, Any]:
     """Read a page only after terminal, definition, release, and plan parity."""
@@ -120,6 +241,8 @@ def cold_v4_chart_page(
                 or context_frame
                 or before_boundary_ms % _RESOLUTIONS[timeframe]
             )
+            or not isinstance(include_structure, bool)
+            or include_structure and (row_limit > 1000 or context_frame)
             or not isinstance(indicator_columns, tuple)
             or len(indicator_columns) > 32
             or any(not isinstance(column, str) or not column.isidentifier()
@@ -144,7 +267,7 @@ def cold_v4_chart_page(
             boundary_ms=end_ms, timeframe=timeframe, run_plan=plan,
             configuration=release.payload, plan_loader=plan_loader)
     else:
-        selected = sorted(set(indicator_columns))
+        selected = sorted(set(indicator_columns) - {"execution_vwap"})
         page = chart_page(
             session=session, ticker=symbol, timeframe=timeframe,
             page_start=market_day_boundary(session, 0),
@@ -156,8 +279,21 @@ def cold_v4_chart_page(
         )
     if page is None:
         raise RuntimeError("Certified saved chart has no persisted ARTE page")
+    if "execution_vwap" in indicator_columns and not context_frame:
+        vwap = _pinned_execution_vwap(
+            market_client, plan, session=session, ticker=symbol,
+            timeframe=timeframe, bars=page["bars"])
+        by_start = {row["bar_start"]: row for row in page["indicators"]}
+        for row in vwap:
+            by_start.setdefault(row["bar_start"], {"bar_start": row["bar_start"]}).update(row)
+        page["indicators"] = [by_start[key] for key in sorted(by_start)]
     quote = _pinned_quote(market_client, plan, session=session, ticker=symbol,
                           boundary_ms=end_ms)
+    structure, structure_reason = (_causal_v7_chart_segments(
+        journal_client, market_client, run_id=normalized, run_context=run_context,
+        session=session,
+        ticker=symbol, plan=plan, bars=page["bars"])
+        if include_structure else ([], "Not requested"))
     return {
         "schema_version": "strategy-one-v4-chart-page-v1",
         "run_id": normalized, "session_date": session.isoformat(),
@@ -166,6 +302,10 @@ def cold_v4_chart_page(
         "verified_boundary_ms": cursor_ms,
         "through_boundary_ms": end_ms,
         "quote": quote,
+        "structural_levels": structure,
+        "structural_provenance": {"authority": "prior V7 seed + completed ARTE 1s bars",
+                                  "available": not structure_reason,
+                                  "reason": structure_reason},
         **page,
     }
 

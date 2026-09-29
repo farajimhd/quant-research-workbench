@@ -5361,7 +5361,10 @@ function priceZonePresentationColors(
   const confidence = typeof zone.confidence === "number" && Number.isFinite(zone.confidence)
     ? clampNumber(zone.confidence, 0, 1, 0)
     : null;
-  const configuredToneColor = zone.v6Category ? settings?.v6Colors[zone.v6Category] : zone.tone === "buy"
+  // Saved V7 intervals carry a causal role, including neutral transitions.
+  // Their explicit role color must not be replaced by the generic legend blue.
+  const configuredToneColor = zone.displayItemId === "saved.structural_v7" ? zone.color
+    : zone.v6Category ? settings?.v6Colors[zone.v6Category] : zone.tone === "buy"
     ? settings?.upColor
     : zone.tone === "sell"
       ? settings?.downColor
@@ -6631,10 +6634,11 @@ function drawPriceZonePrimitiveGeometry(
       if (Number.isFinite(zone.levelPrice)) {
         const priceY = priceSeries.priceToCoordinate(Number(zone.levelPrice));
         context.save();
-        context.fillStyle = rgbaFromHex(fillColor, settings.bandOpacity);
+        context.fillStyle = rgbaFromHex(fillColor, zone.displayItemId === "saved.structural_v7" ? 0.13 : settings.bandOpacity);
         context.fillRect(span.left, Math.min(upper, lower), span.width, Math.abs(lower - upper));
-        if (priceY !== null && settings.priceOpacity > 0) {
-          context.strokeStyle = rgbaFromHex(borderColor, settings.priceOpacity);
+        const priceOpacity = zone.displayItemId === "saved.structural_v7" ? 0.9 : settings.priceOpacity;
+        if (priceY !== null && priceOpacity > 0) {
+          context.strokeStyle = rgbaFromHex(borderColor, priceOpacity);
           context.lineWidth = settings.lineWidth;
           context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
           context.beginPath();

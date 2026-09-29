@@ -141,3 +141,65 @@ def test_saved_daily_context_uses_arte_context_reader_not_intraday_reader(monkey
     assert result["timeframe"] == "1d"
     assert seen[0]["run_plan"] is plan
     assert seen[0]["boundary_ms"] == 19_500_000
+
+
+def test_structural_chart_uses_completed_boundaries_and_compact_segments(monkeypatch):
+    from src.backend import backtest_strategy_one_candidate_store as candidates
+    from src.backend import backtest_strategy_one_preparation as preparation
+    from src.backend import backtest_strategy_one_v7_interval_store as interval_store
+    from src.backend import structural_v7_seed
+    from src.trading_runtime.strategy_one_v7_intervals import V7LevelInterval
+
+    plan = _fixtures(monkeypatch)
+    seed_token = "7" * 64
+    monkeypatch.setattr(subject, "load_backtest_definition", lambda *a, **kw: {
+        "definition": {"causal_v7_plan_token": seed_token}})
+    monkeypatch.setattr(candidates, "certify_candidate_plan", lambda *a, **kw:
+                        type("Candidates", (), {"prepared": object()})())
+    monkeypatch.setattr(preparation, "strategy_one_v7_tickers", lambda prepared: ("SUGP",))
+    monkeypatch.setattr(subject, "project_market_day_plan", lambda *a, **kw: plan)
+    monkeypatch.setattr(structural_v7_seed, "certified_seed_plan", lambda *a, **kw:
+                        structural_v7_seed.CertifiedSeedPlan(
+                            "build", "8" * 64, ({"ticker": "SUGP"},), seed_token, True))
+    clocks = [subject.market_day_boundary(date(2026, 8, 18), step * 1000)
+              for step in range(3)]
+    bars = [{"bar_start": clocks[index].isoformat(),
+             "bar_end": clocks[index + 1].isoformat(), "close": 6.0}
+            for index in range(2)]
+    intervals = (
+        V7LevelInterval("first", 0, 1000, 2000, 4.9, 5.1,
+                        "support", "", 1, False),
+        V7LevelInterval("second", 0, 2000, 57_600_001, 4.9, 5.1,
+                        "support", "", 2, False))
+    monkeypatch.setattr(interval_store, "certify_v7_interval_plan", lambda *a, **kw:
+                        type("Intervals", (), {"intervals": (("SUGP", intervals),)})())
+    segments, reason = subject._causal_v7_chart_segments(
+        object(), object(), run_id=RUN_ID,
+        run_context={"run_id": RUN_ID}, session=date(2026, 8, 18),
+        ticker="SUGP", plan=plan, bars=bars)
+    assert reason == ""
+    assert [(row["level_id"], row["start"], row["end"]) for row in segments] == [
+        ("first", clocks[1].timestamp(), clocks[2].timestamp()),
+        ("second", clocks[2].timestamp(), clocks[2].timestamp() + 1),
+    ]
+
+
+def test_pinned_vwap_carries_only_persisted_prior_value(monkeypatch):
+    plan = _fixtures(monkeypatch)
+    origin = subject.market_day_boundary(date(2026, 8, 18), 0)
+    from datetime import timedelta
+    bars = [{"bar_start": (origin + timedelta(seconds=index)).isoformat(),
+             "bar_end": (origin + timedelta(seconds=index + 1)).isoformat()}
+            for index in range(3)]
+    class ReadClient:
+        def execute(self, query):
+            assert "arte.liquidity_100ms_v1" in query
+            assert "attempt_id=toUUID(" in query
+            if "ORDER BY bucket_index DESC LIMIT 1" in query:
+                return '{"bucket_index":143999,"execution_vwap":6.1}\n'
+            assert "argMax(execution_vwap,bucket_index)" in query
+            return '{"bar_bucket":14401,"vwap_value":6.2}\n'
+    result = subject._pinned_execution_vwap(
+        ReadClient(), plan, session=date(2026, 8, 18),
+        ticker="SUGP", timeframe="1s", bars=bars)
+    assert [row["execution_vwap"] for row in result] == [6.1, 6.2, 6.2]

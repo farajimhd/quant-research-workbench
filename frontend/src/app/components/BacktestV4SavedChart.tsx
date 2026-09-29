@@ -7,6 +7,9 @@ type Bar = { bar_start: string; bar_end: string; open: number; high: number;
   low: number; close: number; volume: number; is_closed?: boolean };
 type Indicator = { bar_start: string; [column: string]: string | number | undefined };
 export type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolean;
+  structural_levels?: Array<{ level_id: string; role: string;
+    lower: number; upper: number; start: number; end: number }>;
+  structural_provenance?: { authority: string; available: boolean; reason: string };
   next_before: string; session_date: string; ticker: string; timeframe: string;
   verified_boundary_ms: number; indicator_provenance: { unavailable_columns: string[] };
   history_limited?: boolean; history_first_session?: string;
@@ -21,6 +24,8 @@ const INDICATOR_DISPLAY: ChartDisplayItem[] = [
   ...EMA.map(column => ({ id: `saved.${column}`, title: `EMA ${column.slice(4)}`, category: "Indicators", sourceColumns: [column] })),
   { id: "saved.rsi_14", title: "RSI 14", category: "Indicators", sourceColumns: ["rsi_14"] },
   { id: "saved.atr_14", title: "ATR 14", category: "Indicators", sourceColumns: ["atr_14"] },
+  { id: "saved.execution_vwap", title: "VWAP · execution", category: "Indicators", sourceColumns: ["execution_vwap"] },
+  { id: "saved.structural_v7", title: "V7 structural bands · provisional", category: "Indicators", sourceColumns: [] },
 ];
 const pageCache = new Map<string, Promise<ChartPage>>();
 
@@ -56,9 +61,12 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   const [frame, setFrame] = useState<(typeof FRAMES)[number]>(initialFrame);
   const [showMacd, setShowMacd] = useState(initialShowMacd);
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(initialShowMacd ? ["saved.closed_macd"] : []);
+  const [structureLoading, setStructureLoading] = useState(false);
+  const [structureReason, setStructureReason] = useState("");
   const [page, setPage] = useState<ChartPage | null>(null);
   const [bars, setBars] = useState<Bar[]>([]);
   const [indicators, setIndicators] = useState<Indicator[]>([]);
+  const [levels, setLevels] = useState<NonNullable<ChartPage["structural_levels"]>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [before, setBefore] = useState<number | null>(null);
@@ -70,6 +78,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     setPage(null);
     setBars([]);
     setIndicators([]);
+    setLevels([]);
   }, [runId, ticker]);
 
   const canUsePrefetch = Boolean(prefetchedPage && symbol === ticker && frame === initialFrame
@@ -79,6 +88,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     setPage(prefetchedPage);
     setBars(prefetchedPage.bars);
     setIndicators(prefetchedPage.indicators);
+    setLevels(prefetchedPage.structural_levels ?? []);
   }, [prefetchedPage, canUsePrefetch]);
 
   useEffect(() => { onQuoteChange?.(page?.quote); }, [onQuoteChange, page?.quote]);
@@ -92,6 +102,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     setPage(null);
     setBars([]);
     setIndicators([]);
+    setLevels([]);
   }
 
   function submitTicker(event: FormEvent<HTMLFormElement>) {
@@ -119,15 +130,35 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     const columns = new Set(INDICATOR_DISPLAY.filter(item => selectedIndicators.includes(item.id))
       .flatMap(item => item.sourceColumns));
     if (columns.size && frame !== "1d" && frame !== "1mo") params.set("indicator_columns", [...columns].join(","));
+    const wantsStructure = selectedIndicators.includes("saved.structural_v7");
     setLoading(true);
+    setStructureLoading(wantsStructure);
+    setStructureReason("");
     setError("");
     void loadPage(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart?${params}`).then(value => {
       if (cancelled) return;
       setPage(value);
       setBars(current => before === null ? value.bars : [...value.bars, ...current]);
       setIndicators(current => before === null ? value.indicators : [...value.indicators, ...current]);
+      if (wantsStructure) {
+        // The V7 certificate can be substantially slower cold than the bar
+        // projection. Keep the chart interactive while its overlay verifies.
+        const structureParams = new URLSearchParams(params);
+        structureParams.set("include_structure", "true");
+        void loadPage(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart?${structureParams}`).then(structurePage => {
+          if (cancelled) return;
+          setLevels(current => before === null ? structurePage.structural_levels ?? []
+            : [...(structurePage.structural_levels ?? []), ...current]);
+          setStructureReason(structurePage.structural_provenance?.reason ?? "");
+        }).catch(reason => {
+          if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        }).finally(() => { if (!cancelled) setStructureLoading(false); });
+      } else { setLevels([]); setStructureReason(""); }
     }).catch(reason => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      if (!cancelled) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+        setStructureLoading(false);
+      }
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
@@ -147,17 +178,31 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       open: bar.open, high: bar.high, low: bar.low, close: bar.close,
     })), volume: bars.map(bar => ({ time: Date.parse(bar.bar_start) / 1000,
       value: bar.volume, color: bar.close >= bar.open ? "var(--success)" : "var(--danger)" })),
-      overlay_series: EMA.filter(column => selectedIndicators.includes(`saved.${column}`))
+      overlay_series: [...EMA.filter(column => selectedIndicators.includes(`saved.${column}`))
         .map(column => series(column, `EMA ${column.slice(4)}`, "var(--info)", `saved.${column}`, "price")),
+        ...(selectedIndicators.includes("saved.execution_vwap")
+          ? [series("execution_vwap", "VWAP", "var(--warning)", "saved.execution_vwap", "price")] : [])],
       oscillator_series: [...(showMacd ? [
         series("macd_line", "MACD", "var(--primary)"),
         series("macd_signal", "Signal", "var(--warning)"),
         series("macd_histogram", "Histogram", "var(--info)"),
       ] : []), ...(selectedIndicators.includes("saved.rsi_14") ? [series("rsi_14", "RSI 14", "var(--info)", "saved.rsi_14", "rsi")] : []),
       ...(selectedIndicators.includes("saved.atr_14") ? [series("atr_14", "ATR 14", "var(--warning)", "saved.atr_14", "atr")] : [])],
+      price_zones: selectedIndicators.includes("saved.structural_v7")
+        ? levels.map(level => ({
+          annotationKind: "unified-structure-level" as const,
+          displayItemId: "saved.structural_v7", label: level.role === "support" ? "V7 S" : level.role === "resistance" ? "V7 R" : "V7 T",
+          color: level.role === "support" ? "var(--success)" : level.role === "resistance" ? "var(--danger)" : "var(--muted-foreground)",
+          lower: level.lower, upper: level.upper,
+          // The compact interval product stores lower/upper geometry. Its
+          // midpoint is the available band reference, not a new V7 fit.
+          levelPrice: (level.lower + level.upper) / 2,
+          start: level.start, end: level.end, renderMode: "zone" as const,
+          fillOpacity: 0.08,
+        })) : [],
       markers: [], regions: [], trade_annotations: tradeAnnotations,
     };
-  }, [bars, indicators, frame, showMacd, selectedIndicators, tradeAnnotations]);
+  }, [bars, indicators, levels, frame, showMacd, selectedIndicators, tradeAnnotations]);
 
   const older = page && pageBoundary(page);
   const compactContext = embedded && (frame === "1d" || frame === "1mo");
@@ -177,13 +222,16 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
         : <span><small>Quote at saved boundary</small><strong>Unavailable</strong><em>No certified quote in this window</em></span>}
     </div> : null}
     {!compactContext && page?.indicator_provenance.unavailable_columns.length ? <p role="note">Stale indicators: {page.indicator_provenance.unavailable_columns.join(", ")}</p> : null}
+    {structureLoading ? <p role="status">Verifying V7 structural levels…</p> : null}
+    {selectedIndicators.includes("saved.structural_v7") && structureReason
+      ? <p role="note">V7 structure unavailable: {structureReason}</p> : null}
     {!compactContext && page?.history_limited ? <p role="note">ARTE history available from {page.history_first_session}; earlier {frame === "1mo" ? "months" : "sessions"} are unavailable.</p> : null}
     {error ? <p role="alert">Chart unavailable: {error}</p> : null}
     <ChartPanel persistedOnly payload={payload} ticker={symbol} timeframe={frame} timeframes={[...allowedFrames]}
       featureOptions={[]} indicatorOptions={[]} displayItemOptions={frame === "1d" || frame === "1mo" ? [] : INDICATOR_DISPLAY}
       visibleColumns={selectedIndicators} onVisibleColumnsChange={values => {
         setSelectedIndicators(values); setShowMacd(values.includes("saved.closed_macd"));
-        setBefore(null); setPage(null); setBars([]); setIndicators([]);
+        setBefore(null); setPage(null); setBars([]); setIndicators([]); setLevels([]);
       }}
       onTickerChange={value => changeScope({ symbol: value })} onTimeframeChange={value => changeScope({ frame: value as (typeof FRAMES)[number] })}
       emptyMessage="No price-bearing bars in this verified run window." loading={loading && !page}
