@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-09-28 - BarGPT August evaluation and serving-capacity diagnosis](docs/codex/chat-summaries/2026/CHAT-20260928-UNKNOWN-bargpt-august-evaluation.md)
+
+TASK-0217 / TASK-0197. Four checkpoints produced 11,696 reconciled predictions on selected August windows, with mixed accuracy and calibration. Extended-hours samples had no eligible origins. BF16 batch parity failed; FP32 passed 16-symbol parity but missed 24/120 paced deadlines (p95 1.341 seconds). GC stacks identified repeated full-cache sorting as the pause trigger; the incremental-ordering fix remains unimplemented. User stopped evaluation; follow-up paused, no evaluation-owned workers remain, production unchanged and acceptance sealed. 100 symbols/second remains unverified. Resume only on a new request.
+
 ### [2026-09-18 - Early Squeeze 323-328 and reusable V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
 
 328 / release 11 is active: below-lower-band breakout reset and one original
