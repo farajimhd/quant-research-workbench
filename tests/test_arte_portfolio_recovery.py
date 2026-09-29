@@ -370,6 +370,8 @@ def test_runtime_initializes_recovered_backtest_from_completed_canonical_snapsho
         side_effect=AssertionError("typed OMS image must not read legacy journal"))
     asyncio.run(active.initialize(record_lifecycle=False))
     active.order_manager.recover.assert_not_awaited()
+    active.risk_supervisor.evaluate.assert_awaited_once_with(
+        "account-id", reason="runtime_initialize", now=AT, persist=False)
 
 
 def test_typed_admission_waits_for_receipt_and_poison_on_uncertain_commit(monkeypatch) -> None:

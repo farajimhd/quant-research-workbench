@@ -352,7 +352,14 @@ class TradingRuntime:
         if not review_only:
             await self.risk.prime(self.broker, self.config.account_ids)
         for account_id in self.config.account_ids if not review_only else ():
-            await self.risk_supervisor.evaluate(account_id, reason="runtime_initialize")
+            await self.risk_supervisor.evaluate(
+                account_id, reason="runtime_initialize",
+                now=(self.last_event_time if recovered_backtest else None),
+                # Resume reconstructs the identical checkpoint account state.
+                # Re-evaluate controls locally, but do not append a wall-time
+                # risk transition before the next causal market boundary.
+                persist=not recovered_backtest,
+            )
         if self.order_manager is not None and not review_only:
             await self.order_manager.configure_broker_session()
             if not self._typed_oms_recovered:

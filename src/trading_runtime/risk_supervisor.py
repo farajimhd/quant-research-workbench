@@ -83,6 +83,7 @@ class ContinuousRiskSupervisor:
         internal_reaction_ms: float | None = None,
         allow_operator_resume: bool = False,
         now: datetime | None = None,
+        persist: bool = True,
     ) -> RiskEvaluation:
         observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         account = self.portfolio.account_payload(account_id)
@@ -97,15 +98,16 @@ class ContinuousRiskSupervisor:
                 observed_at=observed_at,
             )
             self.states[account_id] = evaluation
-            self.journal.append(
-                run_id=self.run_id,
-                category="risk",
-                entity_type="continuous_risk_state",
-                entity_id=account_id,
-                account_id=account_id,
-                event_time=observed_at,
-                payload={**asdict(evaluation), "enforced": False, "mode": self.mode},
-            )
+            if persist:
+                self.journal.append(
+                    run_id=self.run_id,
+                    category="risk",
+                    entity_type="continuous_risk_state",
+                    entity_id=account_id,
+                    account_id=account_id,
+                    event_time=observed_at,
+                    payload={**asdict(evaluation), "enforced": False, "mode": self.mode},
+                )
             return evaluation
         portfolio_state = self.portfolio.states[account_id]
         policy = portfolio_state.policy_override or portfolio_state.profile.policy
@@ -171,15 +173,16 @@ class ContinuousRiskSupervisor:
         )
         self.states[account_id] = evaluation
         self._apply_control(evaluation)
-        self.journal.append(
-            run_id=self.run_id,
-            category="risk",
-            entity_type="continuous_risk_state",
-            entity_id=account_id,
-            account_id=account_id,
-            event_time=observed_at,
-            payload=asdict(evaluation),
-        )
+        if persist:
+            self.journal.append(
+                run_id=self.run_id,
+                category="risk",
+                entity_type="continuous_risk_state",
+                entity_id=account_id,
+                account_id=account_id,
+                event_time=observed_at,
+                payload=asdict(evaluation),
+            )
         if target == AccountRiskState.EMERGENCY_EXIT and self.emergency_callback is not None:
             await self.emergency_callback(evaluation)
         return evaluation
