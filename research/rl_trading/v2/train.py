@@ -372,6 +372,7 @@ def _policy_only_initialization(parent_root, manifest, *, run_root, device):
 def _balanced_initialization(parent_root, manifest, *, run_root, device):
     """Transfer only policy weights from the exact certified V4 best checkpoint."""
     parent_root = Path(parent_root).resolve()
+    manifest = json.loads(json.dumps(manifest))
     if parent_root == run_root.resolve():
         raise ValueError('Balanced-action initialization requires a new run directory')
     parent = read(parent_root/'run_manifest.json')
