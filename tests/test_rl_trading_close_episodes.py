@@ -12,6 +12,7 @@ from src.market_engine.level_book_store import write
 from research.rl_trading.v1.phase1_close_labels import targets, decision_values
 from research.rl_trading.v1.phase2_close_values import coefficients
 from research.rl_trading.v1.phase3_dynamic_teacher import Config,run,run_stream,future_first_scores,session_profit_report
+from research.rl_trading.v1.dynamic_supervision import order_labels
 
 
 DAY=date(2026,8,18)
@@ -82,6 +83,11 @@ def test_dynamic_teacher_has_no_four_lot_cap_and_reconciles_fees():
     assert (positions['entry_fee']>=1.).all()
     assert (positions['exit_fee']>=1.).all()
     assert trajectory['open_lots'][-1]==0
+    orders=order_labels(trajectory,positions,10_000.)
+    buys=orders.filter(pl.col('action')=='buy')
+    assert orders.height==12
+    assert buys['allocation_weight'].sum()==pytest.approx(1.)
+    assert buys['quantity'].min()>0
 
 
 def test_future_episode_reserves_cash_in_bounded_window():

@@ -70,3 +70,20 @@ student observations, and do not promote this teacher on simulated profit
 alone. Compare the one-second close candidate policy against next-second-fill
 replay, fees, holding times, and sealed forward sessions before training or
 deployment.
+
+## Dynamic supervision export
+
+`build_dynamic_supervision.py` converts each certified full-session Phase 3
+position ledger to sparse, quantity-bearing buy and sell targets. Buy targets
+carry the fraction of cash available after same-second sales and before buys;
+the generated order labels reconcile to the teacher's per-second account and
+terminal net profit. The export references the certified Phase 2 market tensor
+and Phase 3 trajectory by hash rather than copying or recomputing them. The
+fixed-lot V4 model shard format is not reused: its action tokens and top-100
+slots cannot represent the uncapped fractional teacher. A new model input
+format and causal feature binding are required before model training.
+
+The pinned chronological split is July 30 through August 21 for training,
+August 24–25 for development, and August 26 as a sealed test session. Generating
+test supervision is allowed; its profits and order details must stay out of
+model and rule selection until the model is frozen.
