@@ -349,6 +349,77 @@ def load_backtest_definition(
     return verified
 
 
+def reconstruct_backtest_definition_from_arte(
+    verified: Mapping[str, Any], run_context: Mapping[str, Any],
+    configuration_revision: Mapping[str, Any], preflight: Mapping[str, Any],
+) -> Any:
+    """Rebuild one Strategy 1 run from named rows, never a saved manifest.
+
+    Re-running read-only preflight supplies the full certified source plan;
+    the recomputed normalized definition must exactly equal the saved rows.
+    """
+    from src.backend.replay_run_service import ReplayRunDefinition, RunMode
+
+    parent = dict(verified.get("definition") or {})
+    session = date.fromisoformat(str(run_context.get("session_date")))
+    month = date.fromisoformat(str(run_context.get("run_month")))
+    interval_ms = run_context.get("evaluation_interval_ms")
+    market = dict(preflight.get("market_data_plan") or {})
+    v7 = dict(preflight.get("causal_v7_plan") or {})
+    checks = tuple(preflight.get("checks") or ())
+    if (run_context.get("mode") != "backtest"
+            or parent.get("run_id") != run_context.get("run_id")
+            or parent.get("run_month") != month.isoformat()
+            or parent.get("configuration_revision_id") !=
+               configuration_revision.get("revision_id")
+            or run_context.get("configuration_hash") !=
+               configuration_revision.get("content_hash")
+            or type(interval_ms) is not int or interval_ms != 100
+            or preflight.get("ready") is not True
+            or preflight.get("strategy_run_ready") is not True
+            or not checks or any(row.get("status") != "ready"
+                                 for row in checks if row.get("required", True))
+            or tuple(dict(preflight.get("window") or {}).get("sessions") or ())
+               != (session.isoformat(),)
+            or market.get("token") != run_context.get("market_plan_token")
+            or v7.get("token") != parent.get("causal_v7_plan_token")):
+        raise RuntimeError("Backtest cold definition differs from certified authority")
+
+    def local_time(milliseconds: int) -> time:
+        if type(milliseconds) is not int or not 0 <= milliseconds < 86_400_000:
+            raise ValueError("Backtest saved local time is invalid")
+        hours, remainder = divmod(milliseconds, 3_600_000)
+        minutes, remainder = divmod(remainder, 60_000)
+        seconds, remainder = divmod(remainder, 1_000)
+        return time(hours, minutes, seconds, remainder * 1_000)
+
+    definition = ReplayRunDefinition(
+        session_date=session,
+        final_session_date=date.fromisoformat(parent["final_session_date"]),
+        start_time=local_time(parent["start_local_ms"]),
+        end_time=local_time(parent["end_local_ms"]),
+        initial_cash=float(parent["initial_cash"]),
+        assignment_ids=tuple(row["assignment_id"]
+                             for row in verified["assignments"]),
+        tickers=tuple(row["ticker"] for row in verified["tickers"]),
+        configuration_revision=dict(configuration_revision),
+        execution_interval=f"{interval_ms}ms",
+        market_data_plan=market, causal_v7_plan=v7,
+        mode=RunMode.BACKTEST,
+        simulation_profile=parent["simulation_profile"],
+        new_order_activation_delay_ms=parent["activation_delay_us"] / 1_000,
+        minimum_p_norm=float(parent["minimum_p_norm"]),
+        experimental_structure_book=parent["structure_book"],
+        experimental_structure_fingerprint=(
+            "" if parent["structure_fingerprint"] == _ZERO
+            else parent["structure_fingerprint"]),
+    )
+    if prepare_backtest_definition(
+            run_context["run_id"], definition, run_month=month) != verified:
+        raise RuntimeError("Backtest cold definition does not round-trip normalized rows")
+    return definition
+
+
 def publish_backtest_definition(client: Any, run_id: str,
                                 definition: Any, *, keeper: Any,
                                 lease: Mapping[str, Any]) -> str:

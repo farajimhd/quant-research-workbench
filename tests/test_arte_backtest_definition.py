@@ -8,7 +8,7 @@ import src.trading_runtime.arte_journal_writer as journal_writer
 from src.backend.replay_run_service import ReplayRunDefinition, RunMode
 from src.trading_runtime.arte_backtest_definition import (
     TABLES, load_backtest_definition, prepare_backtest_definition,
-    publish_backtest_definition,
+    publish_backtest_definition, reconstruct_backtest_definition_from_arte,
     verify_backtest_definition_rows,
 )
 from src.trading_runtime.arte_journal_schema import (
@@ -110,6 +110,8 @@ def test_fixed_definition_is_typed_ordered_and_contains_no_json_or_blob():
     assert parent["activation_delay_us"] == 500
     assert parent["initial_cash"] == "100000.0000000000"
     assert parent["configuration_revision_id"] == "revision-1"
+
+
     assert parent["causal_v7_plan_token"] == "causal-plan"
     assert parent["structure_book"] == "level-book-v7"
     assert parent["structure_fingerprint"] == "b" * 64
@@ -145,6 +147,37 @@ def test_fixed_definition_is_typed_ordered_and_contains_no_json_or_blob():
                for family in prepared.values()
                for row in ((family,) if isinstance(family, dict) else family)
                for value in row.values())
+
+
+def test_cold_definition_reconstructs_only_exact_certified_rows():
+    original = _definition()
+    saved = prepare_backtest_definition("run-1", original, run_month=RUN_MONTH)
+    context = {"run_id": "run-1", "mode": "backtest",
+               "run_month": RUN_MONTH.isoformat(),
+               "session_date": "2026-08-18", "evaluation_interval_ms": 100,
+               "configuration_hash": "a" * 64,
+               "market_plan_token": "c" * 64}
+    preflight = {"ready": True, "strategy_run_ready": True,
+                 "checks": [{"status": "ready", "required": True}],
+                 "window": {"sessions": ["2026-08-18"]},
+                 "market_data_plan": original.market_data_plan,
+                 "causal_v7_plan": original.causal_v7_plan}
+    recovered = reconstruct_backtest_definition_from_arte(
+        saved, context, original.configuration_revision, preflight)
+    assert recovered.final_session_date == original.session_date
+    assert prepare_backtest_definition("run-1", recovered,
+                                       run_month=RUN_MONTH) == saved
+    with pytest.raises(RuntimeError, match="certified authority"):
+        reconstruct_backtest_definition_from_arte(
+            saved, context, original.configuration_revision,
+            {**preflight, "market_data_plan": {
+                **original.market_data_plan, "token": "0" * 64}})
+    with pytest.raises(RuntimeError, match="normalized rows"):
+        reconstruct_backtest_definition_from_arte(
+            saved, context, original.configuration_revision,
+            {**preflight, "market_data_plan": {
+                **original.market_data_plan,
+                "price_level_plan_token": "0" * 64}})
 
 
 def test_definition_rejects_missing_identity_and_imprecise_scalars():
