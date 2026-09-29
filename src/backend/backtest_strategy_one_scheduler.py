@@ -85,6 +85,7 @@ def build_certified_strategy_one_scheduler(
     max_candidate_rows: int = 250_000,
     activation_source_candidates: CertifiedCandidatePlan | None = None,
     stage_time: Callable[[str, float], None] | None = None,
+    start_after_boundary_ms: int = 0,
 ) -> StrategyOneBoundaryScheduler:
     """Build the sparse causal tape solely from certified arte products."""
     if (len(plan.sessions) != 1 or plan.execution_interval.kind != "fixed"
@@ -94,7 +95,10 @@ def build_certified_strategy_one_scheduler(
             or len(activations.token) != 64
             or type(through_boundary_ms) is not int
             or not 0 < through_boundary_ms <= 57_600_000
-            or through_boundary_ms % 100):
+            or through_boundary_ms % 100
+            or type(start_after_boundary_ms) is not int
+            or not 0 <= start_after_boundary_ms < through_boundary_ms
+            or start_after_boundary_ms % 100):
         raise ValueError("Strategy 1 scheduler needs one pinned 100ms session")
     source_candidates = activation_source_candidates or candidates
     if (source_candidates.source_build_id != candidates.source_build_id
@@ -130,7 +134,8 @@ def build_certified_strategy_one_scheduler(
         client_factory=client_factory, stage_time=stage_time)
     return StrategyOneBoundaryScheduler(
         session_date=plan.sessions[0], candidate_rows=iter(paired),
-        activation_rows=iter(activations.rows), active_source=source)
+        activation_rows=iter(activations.rows), active_source=source,
+        start_after_boundary_ms=start_after_boundary_ms)
 
 # Both SELECT-only paths use the same full 100 ms projection. Compare the
 # complete row when they overlap: the broker also consumes size, high,
