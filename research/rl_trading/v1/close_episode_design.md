@@ -31,7 +31,7 @@ pretend to know the order size, so the $1 order minimum and 1% trade-value cap
 are evaluated in Phase 3 after sizing. A minimum two-second remaining target
 duration is enforced even when the discount-adjusted score is positive.
 
-## Phase 3 V5
+## Phase 3 V6
 
 At each second, eligible long rows with after-proxy score at least 1% compete
 for available cash. A candidate is one episode, never one independent trade per
@@ -43,8 +43,13 @@ are rejected. Open positions leave at the first closeable completed second at
 or after their episode target clock, or the segment terminal clock; terminal
 liquidation fails closed if no close is available. Sale proceeds become
 available for later seconds.
-There is no fixed open-lot limit. Position count is bounded only by cash,
-positive quantity, and the order economics. The output records cash, marked
+There is no fixed open-lot limit. V6 additionally caps each entry quantity at
+1% of that listing's certified completed trailing-60-second share volume
+(configurable and recorded in the plan). Unused allocation remains cash. This
+prevents the cash-only rule from buying more shares than the observed market,
+but it remains a coarse participation proxy: it does not prove a same-second
+fill, account for cumulative participation across repeated trades, or model
+price impact. The output records cash, marked
 equity, drawdown, order counts, position ledger, and cost assumptions.
 
 The 30-second normalized allocation is an **approximate heuristic**, not a
@@ -71,7 +76,7 @@ alone. Compare the one-second close candidate policy against next-second-fill
 replay, fees, holding times, and sealed forward sessions before training or
 deployment.
 
-Full-session Phase 3 V5 keeps the same dynamic cash algorithm but restricts its
+Full-session Phase 3 V6 keeps the same dynamic cash algorithm but restricts its
 candidate and market snapshots to the nonempty prior-V7 population certified
 by the corresponding immutable V3 teacher. This is a feature-availability
 contract, not a max-position limit. The old teacher's Phase 2 listing identity

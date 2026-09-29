@@ -14,7 +14,7 @@ import polars as pl
 from research.rl_trading.v1.costs import FixedOrderCosts
 
 
-VERSION = "hindsight-phase3-dynamic-close-v5"
+VERSION = "hindsight-phase3-dynamic-close-v6"
 
 
 def session_profit_report(trajectory: pl.DataFrame, positions: pl.DataFrame,
@@ -76,11 +76,14 @@ class Config:
     initial_cash: float = 10_000.
     min_net_return: float = .01
     window_seconds: int = 30
+    max_fraction_of_trailing_60s_volume: float = .01
 
     def validate(self):
         if (not np.isfinite(self.initial_cash) or self.initial_cash <= 0 or
                 not np.isfinite(self.min_net_return) or self.min_net_return < 0 or
-                type(self.window_seconds) is not int or not 0 <= self.window_seconds <= 300):
+                type(self.window_seconds) is not int or not 0 <= self.window_seconds <= 300 or
+                not np.isfinite(self.max_fraction_of_trailing_60s_volume) or
+                not 0 < self.max_fraction_of_trailing_60s_volume <= .1):
             raise ValueError("Invalid dynamic teacher configuration")
 
 
@@ -125,7 +128,7 @@ def run(rows: pl.DataFrame, config: Config = Config()) -> tuple[pl.DataFrame, pl
     config.validate()
     needed = {"time_us","ticker","listing_id","side","episode_uid","target_us",
               "close_price","can_close","entry_price","target_price","can_open",
-              "open_value_per_share","open_value_per_dollar"}
+              "open_value_per_share","open_value_per_dollar","volume_60s"}
     if not needed <= set(rows.columns):
         raise ValueError(f"Missing Phase 2 V7 fields: {sorted(needed-set(rows.columns))}")
     long = rows.filter(pl.col("side") == "long").sort("time_us","ticker")
@@ -157,7 +160,7 @@ def run_stream(times, snapshots, future: dict[int,float],
     model = FixedOrderCosts()
     held = pl.DataFrame(schema={"ticker":pl.String,"episode_uid":pl.String,
         "entry_us":pl.Int64,"target_us":pl.Int64,"entry_price":pl.Float64,
-        "quantity":pl.Float64,"entry_fee":pl.Float64})
+        "quantity":pl.Float64,"entry_fee":pl.Float64,"entry_volume_60s":pl.Float64})
     cash = float(config.initial_cash) if resume is None else float(resume['cash'])
     realized = 0. if resume is None else float(resume['realized'])
     histories = [] if resume is None else list(resume['histories'])
@@ -214,6 +217,7 @@ def run_stream(times, snapshots, future: dict[int,float],
                 (pl.col("open_value_per_dollar") >= config.min_net_return) &
                 (pl.col("target_us") >= now + 2_000_000) &
                 (pl.col("entry_price") > 0) & (pl.col("target_price") > 0) &
+                pl.col("volume_60s").is_finite() & (pl.col("volume_60s") > 0) &
                 ~pl.col("ticker").is_in(held["ticker"].to_list()) &
                 ~pl.col("episode_uid").is_in(held["episode_uid"].to_list()) &
                 ~pl.col("episode_uid").is_in(list(consumed)))
@@ -225,7 +229,15 @@ def run_stream(times, snapshots, future: dict[int,float],
                 price = candidates["entry_price"].to_numpy()
                 target = candidates["target_price"].to_numpy()
                 gross = candidates["open_value_per_share"].to_numpy()
-                quantity, buy_fee = _buy_for_budgets(price,budget,model)
+                budget_quantity, _ = _buy_for_budgets(price,budget,model)
+                # The old cash-only rule could buy more shares than the entire
+                # observed market. This cap is per entry, based solely on the
+                # completed trailing-minute volume visible at decision time.
+                # It does not assert that the shares would fill at the close.
+                capacity = (candidates["volume_60s"].to_numpy() *
+                    config.max_fraction_of_trailing_60s_volume)
+                quantity = np.minimum(budget_quantity,capacity)
+                buy_fee = _fees(quantity,price,model)
                 sell_fee = _fees(quantity,target,model)
                 expected = np.divide(quantity*gross-buy_fee-sell_fee,
                     quantity*price+buy_fee,out=np.full_like(quantity,-np.inf),
@@ -239,7 +251,9 @@ def run_stream(times, snapshots, future: dict[int,float],
                         pl.lit(now).alias("entry_us"),
                         pl.Series("entry_price",price[accept]),
                         pl.Series("quantity",quantity[accept]),
-                        pl.Series("entry_fee",buy_fee[accept]))
+                        pl.Series("entry_fee",buy_fee[accept]),
+                        pl.Series("entry_volume_60s",
+                                  chosen["volume_60s"].to_numpy()))
                     held = pl.concat((held,new.select(held.columns).cast(held.schema)))
                     consumed.update(new['episode_uid'].to_list())
                     bought = new.height
@@ -257,6 +271,10 @@ def run_stream(times, snapshots, future: dict[int,float],
         (pl.col("equity")/pl.col("equity").cum_max()
             .clip(lower_bound=config.initial_cash)-1).alias("drawdown"))
     positions = pl.DataFrame(trades) if trades else pl.DataFrame()
+    max_participation = (float((positions["quantity"]/
+        positions["entry_volume_60s"]).max()) if positions.height else 0.)
+    if max_participation > config.max_fraction_of_trailing_60s_volume+1e-10:
+        raise ValueError("Entry exceeded certified trailing-volume participation cap")
     report = dict(version=VERSION,optimality="approximate_normalized_window",
         initial_cash=config.initial_cash,terminal_cash=cash,
         net_profit=cash-config.initial_cash,
@@ -264,7 +282,10 @@ def run_stream(times, snapshots, future: dict[int,float],
         buys=int(trajectory["bought"].sum()),sells=len(trades),
         max_open_lots=int(trajectory["open_lots"].max()),
         fee_model=model.plan(),min_net_return=config.min_net_return,
-        window_seconds=config.window_seconds)
+        window_seconds=config.window_seconds,
+        max_fraction_of_trailing_60s_volume=config.max_fraction_of_trailing_60s_volume,
+        realized_max_entry_fraction_of_trailing_60s_volume=max_participation,
+        execution_capacity_assumption='entry quantity at most configured fraction of causal completed trailing 60s volume; fills and impact unobserved')
     if held.height or abs(realized-report["net_profit"]) > 1e-5:
         raise ValueError("Teacher failed terminal liquidation or P&L reconciliation")
     if processed != len(times):

@@ -39,10 +39,12 @@ def main(argv=None):
     parser.add_argument('--initial-cash',type=float,default=10_000.)
     parser.add_argument('--min-net-return',type=float,default=.01)
     parser.add_argument('--window-seconds',type=int,default=30)
+    parser.add_argument('--max-fraction-of-trailing-60s-volume',type=float,default=.01)
     parser.add_argument('--v7-population-phase3',type=Path,
         help='Previously certified V3 teacher for the same market day and listing population')
     args=parser.parse_args(argv)
-    config=Config(args.initial_cash,args.min_net_return,args.window_seconds)
+    config=Config(args.initial_cash,args.min_net_return,args.window_seconds,
+                  args.max_fraction_of_trailing_60s_volume)
     config.validate()
     if not 0 <= args.start_second <= args.end_second <= 57_480:
         parser.error('Require a segment within 04:00-19:58 ET')
@@ -109,6 +111,7 @@ def main(argv=None):
         included_count=len(population['included']) if population else None,
         initial_cash=config.initial_cash,
         min_net_return=config.min_net_return,window_seconds=config.window_seconds,
+        max_fraction_of_trailing_60s_volume=config.max_fraction_of_trailing_60s_volume,
         fee_model=FixedOrderCosts().plan(),
         optimality='approximate_normalized_window',
         code_hashes={p:sha256((REPO/p).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()

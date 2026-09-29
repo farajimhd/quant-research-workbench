@@ -78,7 +78,7 @@ def test_dynamic_teacher_has_no_four_lot_cap_and_reconciles_fees():
             rows.append(dict(time_us=second*1_000_000,ticker=f'T{index}',
                 listing_id=f'L{index}',side='long',episode_uid=f'L{index}:1',
                 target_us=2_000_000,close_price=10.+(1. if second>=2 else 0.),can_close=True,
-                entry_price=10.,target_price=11.,can_open=second==0,
+                entry_price=10.,target_price=11.,can_open=second==0,volume_60s=1_000_000.,
                 open_value_per_share=.8 if second==0 else None,
                 open_value_per_dollar=.08 if second==0 else None))
     trajectory,positions,report=run(pl.DataFrame(rows),
@@ -97,6 +97,20 @@ def test_dynamic_teacher_has_no_four_lot_cap_and_reconciles_fees():
     assert buys['quantity'].min()>0
 
 
+def test_dynamic_teacher_caps_entry_by_causal_trailing_volume():
+    rows=[dict(time_us=second*1_000_000,ticker='X',listing_id='L',side='long',
+        episode_uid='L:1',target_us=2_000_000,close_price=20. if second==2 else 10.,
+        can_close=True,entry_price=10.,target_price=20.,can_open=second==0,
+        open_value_per_share=10. if second==0 else None,
+        open_value_per_dollar=1. if second==0 else None,
+        volume_60s=100.) for second in range(3)]
+    trajectory,positions,report=run(pl.DataFrame(rows),Config(window_seconds=0))
+    assert positions.height == 1
+    assert positions['quantity'][0] == pytest.approx(1.)
+    assert trajectory['cash'][0] > 9_900.
+    assert report['max_fraction_of_trailing_60s_volume'] == .01
+
+
 def test_future_episode_reserves_cash_in_bounded_window():
     rows=[]
     for second in range(5):
@@ -104,7 +118,7 @@ def test_future_episode_reserves_cash_in_bounded_window():
             rows.append(dict(time_us=second*1_000_000,ticker=ticker,
                 listing_id=ticker,side='long',episode_uid=ticker+'_1',
                 target_us=target*1_000_000,close_price=10.,can_close=True,entry_price=10.,
-                target_price=11.,can_open=second==first,
+                target_price=11.,can_open=second==first,volume_60s=1_000_000.,
                 open_value_per_share=1. if second==first else None,
                 open_value_per_dollar=score if second==first else None))
     trajectory,_,_=run(pl.DataFrame(rows),Config(window_seconds=2))
@@ -179,7 +193,7 @@ def test_teacher_restart_reproduces_uninterrupted_result():
         rows.append(dict(time_us=second*1_000_000,ticker='X',listing_id='L',
             side='long',episode_uid='L:1',target_us=62_000_000,
             close_price=11. if second>=62 else 10.,can_close=True,entry_price=10.,
-            target_price=11.,can_open=second==0,
+            target_price=11.,can_open=second==0,volume_60s=1_000_000.,
             open_value_per_share=.8 if second==0 else None,
             open_value_per_dollar=.08 if second==0 else None))
     market=pl.DataFrame(rows)
