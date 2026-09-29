@@ -7,6 +7,7 @@ families and Keeper head together. This does not enable the typed producer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from src.backend.live_activation_cold_bootstrap import _BoundedSourceCommits
@@ -36,14 +37,23 @@ def cold_attested_signal_source_cursor(
     configuration_revision: str, source_revision: str,
     catalogs: Mapping[str, Any], max_batches: int = 100_000,
     strategy_one: bool = False,
+    required_through_at: datetime | None = None,
 ) -> AttestedSignalSourceCursorProof:
     """Verify an exact bounded typed prefix under a stable Keeper head.
 
-    This control-plane read cannot run on the realtime delivery path. A caller
-    must call ``assert_current`` again immediately before consuming the proof.
+    This control-plane read cannot run on the realtime delivery path. Numbered
+    Strategy 1 must name the as-of cutoff it needs; a valid but shorter Keeper
+    prefix is not sufficient. The caller must call ``assert_current`` again
+    immediately before consuming the proof.
     """
     if type(max_batches) is not int or not 1 <= max_batches <= 100_000:
         raise ValueError("Signal Stream source cursor batch bound is invalid")
+    if (required_through_at is not None
+            and (not isinstance(required_through_at, datetime)
+                 or required_through_at.tzinfo is None)):
+        raise ValueError("Signal Stream source proof needs a timezone-aware cutoff")
+    if strategy_one and required_through_at is None:
+        raise ValueError("Strategy 1 source proof needs a timezone-aware required cutoff")
     if (type(strategy_one) is not bool
             or getattr(storage, "strategy_one", False) is not strategy_one
             or getattr(keeper, "strategy_one", False) is not strategy_one):
@@ -63,6 +73,13 @@ def cold_attested_signal_source_cursor(
     if (recovered.sequence != first.batch_sequence
             or recovered.content_hash != first.cursor_commit_hash):
         raise ValueError("Signal Stream typed cursor differs from Keeper head")
+    if required_through_at is not None:
+        if not recovered.cutoff_at:
+            raise ValueError("Signal Stream source proof lacks a completed cutoff")
+        cutoff = datetime.fromisoformat(recovered.cutoff_at)
+        if cutoff.tzinfo is None or cutoff.astimezone(timezone.utc) < (
+                required_through_at.astimezone(timezone.utc)):
+            raise ValueError("Signal Stream source prefix ends before the required cutoff")
     proof = AttestedSignalSourceCursorProof(
         session_key, recovered.content_hash, configuration_revision,
         source_revision, recovered.sequence, keeper, first)

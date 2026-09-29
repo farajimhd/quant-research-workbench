@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 
 import pytest
@@ -31,7 +32,8 @@ class Client:
         return "\n".join(json.dumps(row) for row in self.rows)
 
 
-def _recover(monkeypatch, *, hash=HASH, sequence=1, after=None):
+def _recover(monkeypatch, *, hash=HASH, sequence=1, after=None,
+             cutoff="2026-09-24T14:00:00+00:00"):
     def recover(storage, **kwargs):
         assert kwargs["session_key"] == SESSION
         assert kwargs["configuration_revision"] == "config-1"
@@ -39,7 +41,7 @@ def _recover(monkeypatch, *, hash=HASH, sequence=1, after=None):
         assert storage.list_cursor_commits(session_key=SESSION) == []
         if after:
             after()
-        return CommittedCursorHead(SESSION, sequence, hash, {}, {}, 0)
+        return CommittedCursorHead(SESSION, sequence, hash, {}, {}, 0, cutoff)
     monkeypatch.setattr(
         "src.backend.live_signal_source_cursor_proof.recover_committed_head", recover)
 
@@ -99,11 +101,31 @@ def test_strategy_one_source_proof_requires_isolated_storage_and_keeper(monkeypa
     proof = cold_attested_signal_source_cursor(
         storage, client, keeper, session_key=SESSION,
         configuration_revision="config-1", source_revision="source-1",
-        catalogs={}, max_batches=2, strategy_one=True)
+        catalogs={}, max_batches=2, strategy_one=True,
+        required_through_at=datetime(2026, 9, 24, 14, tzinfo=timezone.utc))
     assert proof.content_hash == HASH
     assert "arte.trading_strategy_one_" in client.queries[0]
     with pytest.raises(ValueError, match="scope differ"):
         cold_attested_signal_source_cursor(
             object(), Client(), keeper, session_key=SESSION,
+            configuration_revision="config-1", source_revision="source-1",
+            catalogs={}, strategy_one=True,
+            required_through_at=datetime(2026, 9, 24, 14, tzinfo=timezone.utc))
+
+
+def test_numbered_source_proof_rejects_partial_cutoff(monkeypatch):
+    keeper, client = Keeper(), Client()
+    keeper.strategy_one = True
+    storage = type("IsolatedStorage", (), {"strategy_one": True})()
+    _recover(monkeypatch, cutoff="2026-09-24T13:59:59.999999+00:00")
+    required = datetime(2026, 9, 24, 14, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="before the required cutoff"):
+        cold_attested_signal_source_cursor(
+            storage, client, keeper, session_key=SESSION,
+            configuration_revision="config-1", source_revision="source-1",
+            catalogs={}, strategy_one=True, required_through_at=required)
+    with pytest.raises(ValueError, match="required cutoff"):
+        cold_attested_signal_source_cursor(
+            storage, client, keeper, session_key=SESSION,
             configuration_revision="config-1", source_revision="source-1",
             catalogs={}, strategy_one=True)

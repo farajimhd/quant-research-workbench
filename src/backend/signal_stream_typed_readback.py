@@ -135,6 +135,7 @@ class CommittedCursorHead:
     states: dict[str, Any]
     admissions: dict[str, Any]
     occurrence_count: int
+    cutoff_at: str | None = None
 
 
 def recover_committed_head(
@@ -184,4 +185,5 @@ def recover_committed_head(
             raise ValueError("duplicate typed occurrence across committed batches")
         seen.update(ids)
     return CommittedCursorHead(session_key, len(listed), head,
-                               states, admissions, len(seen))
+                               states, admissions, len(seen),
+                               listed[-1]["cutoff_at"] if listed else None)

@@ -6,6 +6,7 @@ receipt/assignment/broker admission gates remain separate.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Mapping
 
 from src.backend.live_plan_membership import (
@@ -88,7 +89,8 @@ def cold_strategy_one_plan_membership_authority(
     configuration_client: Any, approval_reader: ApprovalHeadReader,
     source_storage: SignalColdStorage, source_commit_client: Any,
     source_keeper: SignalSessionHeadKeeper, session_key: str, source_revision: str,
-    catalogs: Mapping[str, Any], mode: str, max_batches: int = 100_000,
+    catalogs: Mapping[str, Any], mode: str, required_through_at: datetime,
+    max_batches: int = 100_000,
 ) -> ProvenPlanMembershipAuthority:
     """Join three typed read authorities without granting live admission.
 
@@ -103,7 +105,8 @@ def cold_strategy_one_plan_membership_authority(
         session_key=session_key,
         configuration_revision=approved.identity,
         source_revision=source_revision, catalogs=catalogs,
-        max_batches=max_batches, strategy_one=True)
+        max_batches=max_batches, strategy_one=True,
+        required_through_at=required_through_at)
     return ProvenPlanMembershipAuthority(
         rows, keeper, approved=approved, source=source,
         configuration_revision_id=approved.identity, session_key=session_key)

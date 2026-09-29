@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from src.backend.live_proven_plan_membership import (
@@ -96,10 +97,13 @@ def test_numbered_cold_factory_binds_approved_revision_to_isolated_source():
             configuration_client=object(), approval_reader=object(),
             source_storage=object(), source_commit_client=object(),
             source_keeper=object(), session_key=SESSION,
-            source_revision="source-1", catalogs={}, mode="live")
+            source_revision="source-1", catalogs={}, mode="live",
+            required_through_at=datetime(2026, 9, 24, 14, tzinfo=timezone.utc))
     assert approved_reader.call_args.kwargs["mode"] == "live"
     assert source_reader.call_args.kwargs["configuration_revision"] == CONFIG
     assert source_reader.call_args.kwargs["strategy_one"] is True
+    assert source_reader.call_args.kwargs["required_through_at"] == datetime(
+        2026, 9, 24, 14, tzinfo=timezone.utc)
     assert len(authority.read_attested_plan(
         configuration_revision_id=CONFIG, run_plan_id="plan-1").assignments) == 2
     source.current = False

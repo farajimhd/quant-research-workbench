@@ -65,6 +65,8 @@ def test_driver_forms_publish_and_cold_head() -> None:
         source_revision=batch.source_revision, catalogs=batch.catalogs)
     assert (recovered.sequence, recovered.content_hash, recovered.states,
             recovered.occurrence_count) == (1, head, batch.after_states, 1)
+    assert recovered.cutoff_at == canonical_row(
+        COMMIT, storage.rows[COMMIT.name][0])["cutoff_at"]
     restarted = TypedSignalPublicationQueue(storage)
     try:
         restarted.bootstrap_session(session_key=batch.session_key,
