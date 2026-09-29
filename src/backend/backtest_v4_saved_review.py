@@ -527,6 +527,37 @@ def load_v4_chart_trades(client, run_id: str, ticker: str) -> dict:
     if not re.fullmatch(r"[A-Z0-9.-]{1,24}", symbol):
         raise ValueError("Saved chart trade ticker is invalid")
     page = load_cached_v4_performance_report(client, run_id)
+    from src.trading_runtime.arte_intent_projection import (
+        load_committed_strategy_intent_page,
+    )
+    attestation = _terminal_attestation(client, str(UUID(run_id)), None)
+    prefix = attestation["prefix"]
+    if int(page["verified_sequence"]) != prefix.last_sequence:
+        raise RuntimeError("Saved chart intent head differs from performance report")
+    intents = []
+    after_sequence = 0
+    while True:
+        batch = load_committed_strategy_intent_page(
+            client, prefix, after_sequence=after_sequence, limit=500)
+        if not batch:
+            break
+        for recovered in batch:
+            intent = recovered.intent
+            if intent.ticker.upper() != symbol or intent.action not in {
+                    "enter_long", "enter_short", "exit", "reduce_long",
+                    "reduce_short", "take_profit", "cover"}:
+                continue
+            intents.append({
+                "sequence": recovered.sequence,
+                "account_id": recovered.account_id,
+                "action": intent.action,
+                "event_time": intent.event_time.isoformat(),
+                "reference_price": intent.reference_price,
+                "reason": intent.reason,
+            })
+        after_sequence = batch[-1].sequence
+        if len(batch) < 500:
+            break
     lifecycles = []
     for row in page["position_lifecycles"]:
         instrument = row.get("instrument")
@@ -551,12 +582,14 @@ def load_v4_chart_trades(client, run_id: str, ticker: str) -> dict:
             "episode_id": row["episode_id"],
             "instrument": {"symbol": instrument["symbol"]},
             **{key: row.get(key) for key in (
-                "opened_at", "entry_price", "closed_at", "exit_price",
+                "account_id", "requested_at", "opened_at", "entry_price", "closed_at", "exit_price",
                 "side", "quantity", "status", "exit_reason",
                 "presentation_exit_reason", "net_pnl")},
             "protection_timeline": rails,
         })
+    if not _head_matches(client, str(UUID(run_id)), prefix):
+        raise RuntimeError("Saved chart journal head changed during intent read")
     return {"schema_version": "strategy-one-v4-chart-trades-v1",
             "run_id": page["run_id"], "ticker": symbol,
             "verified_sequence": page["verified_sequence"],
-            "position_lifecycles": lifecycles}
+            "position_lifecycles": lifecycles, "issued_intents": intents}

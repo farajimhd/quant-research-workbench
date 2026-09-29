@@ -40,6 +40,7 @@ type ChartTradesPage = {
   ticker: string;
   verified_sequence: number;
   position_lifecycles: Array<Record<string, unknown>>;
+  issued_intents: Array<Record<string, unknown>>;
 };
 type OrderPage = {
   schema_version: "strategy-one-v4-order-history-page-v1";
@@ -431,12 +432,23 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
       if (controller.signal.aborted) return;
       if (value.schema_version !== "strategy-one-v4-chart-trades-v1"
           || value.run_id !== runId || value.ticker !== ticker.toUpperCase()
+          || !Array.isArray(value.issued_intents)
           || !Number.isSafeInteger(value.verified_sequence) || value.verified_sequence < 1) {
         throw new Error("Saved position evidence contract mismatch");
       }
       // The saved chart uses the same lifecycle identity as the journal. Never
       // infer a trade from candles or synthesize fills at bar boundaries.
       const annotations: NonNullable<ChartPayload["trade_annotations"]> = [];
+      const issued = value.issued_intents.map(intent => ({
+        accountId: String(intent.account_id ?? ""),
+        action: String(intent.action ?? ""),
+        reason: String(intent.reason ?? ""),
+        time: Date.parse(String(intent.event_time ?? "")) / 1000,
+        price: Number(intent.reference_price),
+        sequence: Number(intent.sequence),
+      })).filter(intent => intent.accountId && Number.isFinite(intent.time)
+        && Number.isFinite(intent.price) && intent.price > 0
+        && Number.isSafeInteger(intent.sequence));
       for (const row of value.position_lifecycles) {
         const instrument = row.instrument as { symbol?: string } | undefined;
         if (instrument?.symbol?.toUpperCase() !== ticker.toUpperCase()) continue;
@@ -447,8 +459,35 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
         const exitPrice = row.exit_price == null ? undefined : Number(row.exit_price);
         const side = row.side === "SHORT" ? "SHORT" : "LONG";
         const quantity = Number(row.quantity);
+        const accountId = String(row.account_id ?? "");
+        const requestedTime = Date.parse(String(row.requested_at ?? "")) / 1000;
+        const previousClose = Math.max(Number.NEGATIVE_INFINITY,
+          ...value.position_lifecycles.filter(other => other !== row
+            && String(other.account_id ?? "") === accountId)
+            .map(other => Date.parse(String(other.closed_at ?? "")) / 1000)
+            .filter(time => Number.isFinite(time) && time <= entryTime));
+        const entryIntent = issued.filter(intent => intent.accountId === accountId
+          && intent.action === (side === "SHORT" ? "enter_short" : "enter_long")
+          && intent.time <= entryTime && intent.time > previousClose
+          && (!Number.isFinite(requestedTime) || intent.time <= requestedTime))
+          .sort((left, right) => right.time - left.time || right.sequence - left.sequence)[0];
+        const exitIntents = issued.filter(intent => intent.accountId === accountId
+          && (side === "SHORT" ? ["exit", "reduce_short", "cover"] : ["exit", "reduce_long", "take_profit"]).includes(intent.action)
+          && intent.time >= entryTime && intent.time <= (exitTime ?? Number.POSITIVE_INFINITY))
+          .map(intent => ({ kind: "exit_intent" as "exit_intent" | "exit_trigger", time: intent.time,
+            price: intent.price, side: side === "SHORT" ? "BUY" as const : "SELL" as const,
+            labelParts: strategyActionLabel({ kind: "exit", side, reason: intent.reason }) }));
         const reasonCode = String(row.exit_reason || row.presentation_exit_reason || "");
         const exitReason = strategyExitReason(reasonCode);
+        // Broker-held stops and targets have no later strategy exit intent.
+        // Their verified trigger/fill boundary is the only causal exit marker;
+        // never manufacture an earlier decision from the resting order.
+        if (!exitIntents.length && exitTime !== undefined && Number.isFinite(exitTime)
+            && exitPrice !== undefined && Number.isFinite(exitPrice) && exitReason) {
+          exitIntents.push({ kind: "exit_trigger" as const, time: exitTime,
+            price: exitPrice, side: side === "SHORT" ? "BUY" as const : "SELL" as const,
+            labelParts: strategyActionLabel({ kind: "exit", side, reason: reasonCode }) });
+        }
         const pnl = row.net_pnl == null ? undefined : Number(row.net_pnl);
         const protectionPath = Array.isArray(row.protection_timeline)
           ? (row.protection_timeline as Array<Record<string, unknown>>)
@@ -460,7 +499,10 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
             .sort((a, b) => a.time - b.time || a.sequence - b.sequence)
           : [];
         annotations.push({ id: String(row.lifecycle_id ?? row.episode_id), color: "var(--chart-strategy-entry)",
-          entryTime, entryPrice, entryLabelParts: strategyActionLabel({ kind: "entry", side, quantity, price: entryPrice }),
+          entryTime, entryPrice,
+          entryIntentTime: entryIntent?.time, entryIntentPrice: entryIntent?.price,
+          entryLabelParts: entryIntent ? strategyActionLabel({ kind: "entry", side, quantity, price: entryIntent.price }) : [],
+          exitIntents,
           positionSide: side,
           protectionPath,
           status: row.status === "closed" ? "closed" : "open",
@@ -469,8 +511,8 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
               time: exitTime, price: exitPrice, side: side === "SHORT" ? "BUY" as const : "SELL" as const,
               // A missing cause must not suppress verified fill price or P&L.
               // The shared presenter omits an unverified reason on its own.
-              labelParts: strategyActionLabel({ kind: "exit", side,
-                reason: exitReason ? reasonCode : undefined, quantity, price: exitPrice,
+              labelParts: strategyActionLabel({ kind: "exit_fill", side,
+                quantity, price: exitPrice,
                 pnl: pnl !== undefined && Number.isFinite(pnl) ? pnl : undefined }) }] } : {}),
           pnl: pnl !== undefined && Number.isFinite(pnl) ? pnl : undefined });
       }

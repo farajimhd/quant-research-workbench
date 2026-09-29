@@ -12,6 +12,13 @@ not supply CSS, colors, label prose, marker geometry, or presentation settings.
 - A decision marker means an instruction was issued. A fill marker means an
   execution occurred. A requested stop/target change is distinct from an
   effective broker protection change. Do not render one as another.
+- Saved-chart entry decisions use the committed strategy-intent timestamp and
+  reference price, not the later opening fill. A new exit-intent marker is
+  allowed only for a committed exit intent. When a resting broker stop/target
+  closes a position without a new strategy intent, its verified cause is
+  anchored to the trigger/fill boundary as an exit-trigger marker, never
+  presented as a newly issued strategy decision. The fill price and P&L remain
+  a separate fill annotation.
 - The marker and rail already convey entry/exit direction. Labels contain only
   useful additional evidence: direction where needed, quantity, price, P&L,
   and a **verified** cause such as `Stop hit` or `Target hit`.

@@ -104,7 +104,7 @@ type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = StrategyLabelPart;
 type TradeLabelPartSettings = Partial<Record<NonNullable<TradeLabelPart["tone"]>, StrategyPresentationStyleSettings>>;
 type TradeFillAnnotation = {
-  kind?: "add" | "entry_fill" | "exit_fill" | "exit_intent" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change" | "protection_repair" | "entry_freeze";
+  kind?: "add" | "entry_fill" | "exit_fill" | "exit_intent" | "exit_trigger" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change" | "protection_repair" | "entry_freeze";
   label?: string;
   labelParts?: TradeLabelPart[];
   orderId?: string;
@@ -8264,6 +8264,7 @@ function drawCanvasPositionAdjustment(
       entry_fill: "",
       exit_fill: "",
       exit_intent: "",
+      exit_trigger: "",
       profit_target: "Target",
       protective_stop: "Stop",
       trailing_stop: "Trail",

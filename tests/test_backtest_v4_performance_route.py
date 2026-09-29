@@ -109,6 +109,18 @@ def test_chart_trades_prunes_other_tickers_and_non_effective_evidence(monkeypatc
         ],
     }
     monkeypatch.setattr(review, "load_cached_v4_performance_report", lambda *_: source)
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    prefix = SimpleNamespace(last_sequence=12)
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_: {"prefix": prefix})
+    monkeypatch.setattr(review, "_head_matches", lambda *_: True)
+    intent = SimpleNamespace(ticker="SLE", action="enter_long",
+        event_time=datetime(2026, 8, 18, 12, 59, tzinfo=timezone.utc),
+        reference_price=6.05, reason="strategy_one_entry")
+    monkeypatch.setattr(
+        "src.trading_runtime.arte_intent_projection.load_committed_strategy_intent_page",
+        lambda *_args, **_kwargs: (SimpleNamespace(
+            sequence=3, account_id="SIM-01-REPLAY", intent=intent),))
     result = review.load_v4_chart_trades(object(), RUN_ID, "sle")
     assert result["schema_version"] == "strategy-one-v4-chart-trades-v1"
     assert result["verified_sequence"] == 12
@@ -116,6 +128,7 @@ def test_chart_trades_prunes_other_tickers_and_non_effective_evidence(monkeypatc
     row = result["position_lifecycles"][0]
     assert row["instrument"] == {"symbol": "SLE"}
     assert row["presentation_exit_reason"] == "target_hit"
+    assert result["issued_intents"][0]["event_time"] == "2026-08-18T12:59:00+00:00"
     assert row["protection_timeline"] == [{
         "phase": "effective", "kind": "target", "event_time": "2026-08-18T13:00:01+00:00",
         "sequence": 4, "order_id": "order-1", "price": "6.4", "active": True}]
