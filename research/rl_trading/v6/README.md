@@ -71,6 +71,14 @@ The certified ARTE execution-price sidecar supplies per-price volume for
 possible target fills. It does not reveal queue position; a touch alone is
 not booked as a fill. Future episode extrema never enter policy features.
 
+`model.py` now implements the 120-actual-candle encoder. Training applies a
+causal depthwise convolution to each listing's stored sequence once; serving
+updates a circular cache only for listings with a new completed candle.
+Focused tests prove the two paths agree when listing clocks have gaps. The
+five-action account/holding decoder and bracket price heads are still a
+separate required stage, so this encoder is not a trainable trading policy by
+itself.
+
 Production builders remain stopped while this contract is completed and a
 bounded one-day canary audits source identity, label/replay parity, throughput,
 memory, and outcome counts. No V6 model is trained by these modules alone.
