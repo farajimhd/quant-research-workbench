@@ -12197,45 +12197,59 @@ def backtest_preflight(
                         seed_plan = certified_seed_plan(projected, reader)
                 causal_v7_plan = seed_plan.payload()
                 if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
-                    interval_started = time.perf_counter()
                     from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
                     from src.trading_runtime.strategy_one_v7_interval_schema import (
                         PRODUCT_DIGEST as V7_INTERVAL_DIGEST,
                     )
-                    with closing(readonly_clickhouse_client(
-                            market_stream=True, v3_read_principal=True)) as interval_reader:
-                        interval_plan = certify_v7_interval_plan(
-                            projected, seed_plan,
-                            session_date=certified.sessions[0],
-                            candidate_tickers=projection_tickers,
-                            client=interval_reader)
+                    def certify_intervals_independently():
+                        started = time.perf_counter()
+                        with closing(readonly_clickhouse_client(
+                                market_stream=True, v3_read_principal=True)) as reader:
+                            plan = certify_v7_interval_plan(
+                                projected, seed_plan,
+                                session_date=certified.sessions[0],
+                                candidate_tickers=projection_tickers,
+                                client=reader)
+                        return plan, time.perf_counter() - started
+
+                    # Both branches read immutable, seed-pinned products on
+                    # separate clients. Every certificate is awaited before
+                    # preflight can authorize a run; no builder or fallback.
+                    with ThreadPoolExecutor(
+                            max_workers=1,
+                            thread_name_prefix="strategy-one-interval-preflight") as interval_pool:
+                        interval_future = interval_pool.submit(
+                            certify_intervals_independently)
+                        hod_started = time.perf_counter()
+                        from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
+                        from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
+                        with closing(readonly_clickhouse_client(
+                                market_stream=True, v3_read_principal=True)) as hod_reader:
+                            hod_plan = certify_hod_plan(
+                                certified, candidate_plan, seed_plan, client=hod_reader)
+                        market_data_plan["strategy_one_hod_token"] = hod_plan.token
+                        market_data_plan["strategy_one_hod_digest"] = HOD_DIGEST
+                        mark_preflight("hod", hod_started)
+                        entry_started = time.perf_counter()
+                        from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
+                        from src.trading_runtime.strategy_one_entry_evidence_schema import (
+                            PRODUCT_DIGEST as ENTRY_DIGEST,
+                        )
+                        with closing(readonly_clickhouse_client(
+                                market_stream=True, v3_read_principal=True)) as entry_reader:
+                            entry_plan = certify_entry_evidence_plan(
+                                certified, candidate_plan, activation_plan,
+                                pivot_plan, hod_plan, seed_plan,
+                                client=entry_reader)
+                        market_data_plan["strategy_one_entry_token"] = entry_plan.token
+                        market_data_plan["strategy_one_entry_digest"] = ENTRY_DIGEST
+                        mark_preflight("entry_evidence", entry_started)
+                        interval_wait_started = time.perf_counter()
+                        interval_plan, interval_seconds = interval_future.result()
+                    preflight_timings["v7_intervals"] = interval_seconds
+                    mark_preflight("v7_interval_wait", interval_wait_started)
                     market_data_plan["strategy_one_v7_interval_token"] = interval_plan.token
                     market_data_plan["strategy_one_v7_interval_digest"] = V7_INTERVAL_DIGEST
-                    mark_preflight("v7_intervals", interval_started)
-                    hod_started = time.perf_counter()
-                    from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
-                    from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
-                    with closing(readonly_clickhouse_client(
-                            market_stream=True, v3_read_principal=True)) as hod_reader:
-                        hod_plan = certify_hod_plan(
-                            certified, candidate_plan, seed_plan, client=hod_reader)
-                    market_data_plan["strategy_one_hod_token"] = hod_plan.token
-                    market_data_plan["strategy_one_hod_digest"] = HOD_DIGEST
-                    mark_preflight("hod", hod_started)
-                    entry_started = time.perf_counter()
-                    from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
-                    from src.trading_runtime.strategy_one_entry_evidence_schema import (
-                        PRODUCT_DIGEST as ENTRY_DIGEST,
-                    )
-                    with closing(readonly_clickhouse_client(
-                            market_stream=True, v3_read_principal=True)) as entry_reader:
-                        entry_plan = certify_entry_evidence_plan(
-                            certified, candidate_plan, activation_plan,
-                            pivot_plan, hod_plan, seed_plan,
-                            client=entry_reader)
-                    market_data_plan["strategy_one_entry_token"] = entry_plan.token
-                    market_data_plan["strategy_one_entry_digest"] = ENTRY_DIGEST
-                    mark_preflight("entry_evidence", entry_started)
                 causal_v7_plan["market_projection_token"] = projected.token
                 causal_v7_plan["parent_market_plan_token"] = certified.token
                 causal_v7_error = ""
