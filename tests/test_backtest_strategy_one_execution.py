@@ -2,12 +2,14 @@
 import asyncio
 from datetime import date
 from types import SimpleNamespace
+import threading
 import numpy as np
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
 from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
 from src.backend.backtest_strategy_one_execution import run_strategy_one_fixed_session
+from src.backend import backtest_strategy_one_execution as execution
 from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
 from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryScheduler
 from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
@@ -117,3 +119,66 @@ def test_fixed_adapter_clears_position_after_broker_exit_on_same_boundary():
         ("seconds", 31_100), ("finish", 31_100)]
     assert manager._submitted == {}
     assert manager._positions == {}
+
+
+def test_reentry_prior_close_reuses_one_readonly_client_and_closes_it(monkeypatch):
+    actions = []
+    runtime = _Runtime(actions)
+    evidence = _Evidence(actions)
+    manager = StrategyOneManagementRunner(
+        runtime=runtime, evidence=evidence, tick_for_ticker=lambda _: .01)
+    assignment = StrategyAssignment(
+        "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
+        AssignmentStatus.MANAGING, StrategyPermissions(enter=True), {})
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date="2026-08-18", candidate_rows=iter(()),
+        active_source=lambda *_: iter(()))
+    entry = CertifiedEntryEvidencePlan(
+        "b" * 16, "2026-08-18", (), (), (), "e" * 64)
+    prior = SimpleNamespace(closed_boundary_ms=30_000,
+                            entry_resistance_id="R1", high_int=120_000)
+    monkeypatch.setattr(manager, "last_closed_position", lambda _: prior)
+    worker_ids = []
+    clients = []
+
+    class Client:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            worker_ids.append(threading.get_ident())
+            self.closed = True
+
+    def client_factory():
+        worker_ids.append(threading.get_ident())
+        client = Client()
+        clients.append(client)
+        return client
+
+    def previous(_plan, *, ticker, boundary_ms, client, **_kwargs):
+        assert ticker == "AAA" and client is clients[0]
+        worker_ids.append(threading.get_ident())
+        return 100_000 + boundary_ms
+
+    async def proposals(_scheduler, _entry, **callbacks):
+        financial = SimpleNamespace(ticker="AAA")
+        for boundary in (31_000, 31_100):
+            candidate = SimpleNamespace(
+                market_row={"ticker": "AAA", "close_int": 120_000},
+                evidence=SimpleNamespace(boundary_ms=boundary))
+            witness = await callbacks["reentry_witness"](financial, candidate)
+            assert witness is not None
+        return SimpleNamespace(completed_boundaries=2)
+
+    monkeypatch.setattr(execution, "load_previous_completed_100ms_close", previous)
+    monkeypatch.setattr(execution, "run_strategy_one_proposals", proposals)
+    asyncio.run(run_strategy_one_fixed_session(
+        scheduler, entry, evidence, manager, runtime=runtime,
+        static_gate=StrategyOneStaticGate(
+            (), np.array([], dtype=np.uint8), np.array([], dtype=np.int64)),
+        assignments=(assignment,), market_plan=object(),
+        client_factory=client_factory,
+        before_boundary=lambda _: asyncio.sleep(0),
+        finish_boundary=lambda _: asyncio.sleep(0)))
+    assert len(clients) == 1 and clients[0].closed
+    assert len(worker_ids) == 4 and len(set(worker_ids)) == 1

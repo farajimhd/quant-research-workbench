@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date
 from math import isfinite
@@ -333,6 +334,24 @@ async def run_strategy_one_fixed_session(
             tuple(selected), broker, order_manager)
 
     prior_close_cache: dict[tuple[str, int], int | None] = {}
+    # Stateful re-entry is rare but each exact prior-bar lookup used to open a
+    # new HTTP client. A single worker owns one read-only connection for the
+    # session; no market rows or mutable financial state cross this thread.
+    prior_close_pool = ThreadPoolExecutor(max_workers=1,
+                                          thread_name_prefix="s1-prior-close")
+    prior_close_reader: Any | None = None
+
+    def read_previous(ticker: str, boundary_ms: int) -> int | None:
+        nonlocal prior_close_reader
+        if prior_close_reader is None:
+            prior_close_reader = client_factory()
+            if prior_close_reader is None or not callable(
+                    getattr(prior_close_reader, "close", None)):
+                raise TypeError("Strategy 1 prior-close reader must be closable")
+        return load_previous_completed_100ms_close(
+            market_plan, session_date=scheduler.session_date,
+            ticker=ticker, boundary_ms=boundary_ms,
+            client=prior_close_reader)
 
     async def reentry_witness(financial, candidate):
         prior = manager.last_closed_position(financial)
@@ -347,14 +366,8 @@ async def run_strategy_one_fixed_session(
         if key not in prior_close_cache:
             began = perf_counter() if stage_time is not None else 0.0
 
-            def read_previous():
-                with closing(client_factory()) as client:
-                    return load_previous_completed_100ms_close(
-                        market_plan, session_date=scheduler.session_date,
-                        ticker=financial.ticker, boundary_ms=key[1],
-                        client=client)
-
-            prior_close_cache[key] = await asyncio.to_thread(read_previous)
+            prior_close_cache[key] = await asyncio.get_running_loop().run_in_executor(
+                prior_close_pool, read_previous, financial.ticker, key[1])
             if stage_time is not None:
                 stage_time("strategy_one_reentry_previous_close", began)
         previous_close = prior_close_cache[key]
@@ -371,16 +384,24 @@ async def run_strategy_one_fixed_session(
             raise RuntimeError("Strategy 1 broker owns an unassigned active ticker")
         return tickers
 
-    return await run_strategy_one_proposals(
-        scheduler, entry, process_broker_boundary=process_broker,
-        before_boundary=before_boundary,
-        financial_views=financial_views,
-        on_entry_proposal=manager.on_entry_proposal,
-        on_management=manager.on_management,
-        reentry_witness=reentry_witness,
-        position_source_owned=manager.owns_position_source,
-        financially_active_tickers=financially_active_tickers,
-        finish_boundary=finish_boundary,
-        observe_activation=evidence.observe_activation,
-        observe_completed_seconds=evidence.observe_completed_seconds,
-        static_gate=static_gate, stage_time=stage_time)
+    try:
+        return await run_strategy_one_proposals(
+            scheduler, entry, process_broker_boundary=process_broker,
+            before_boundary=before_boundary,
+            financial_views=financial_views,
+            on_entry_proposal=manager.on_entry_proposal,
+            on_management=manager.on_management,
+            reentry_witness=reentry_witness,
+            position_source_owned=manager.owns_position_source,
+            financially_active_tickers=financially_active_tickers,
+            finish_boundary=finish_boundary,
+            observe_activation=evidence.observe_activation,
+            observe_completed_seconds=evidence.observe_completed_seconds,
+            static_gate=static_gate, stage_time=stage_time)
+    finally:
+        try:
+            if prior_close_reader is not None:
+                await asyncio.get_running_loop().run_in_executor(
+                    prior_close_pool, prior_close_reader.close)
+        finally:
+            prior_close_pool.shutdown(wait=True)
