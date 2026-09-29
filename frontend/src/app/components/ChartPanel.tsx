@@ -223,6 +223,13 @@ type PriceZone = {
   eventTime?: number;
   fillColor?: string;
   fillOpacity?: number;
+  savedBandColor?: string;
+  savedBandOpacity?: number;
+  savedBandVisible?: boolean;
+  savedLineColor?: string;
+  savedLineOpacity?: number;
+  savedLineVisible?: boolean;
+  savedSourceVisible?: boolean;
   historicalLabelsDefault?: boolean;
   historyBarsDefault?: number;
   historyTimeframeSeconds?: number;
@@ -315,6 +322,8 @@ export type ChartCatalogItem = {
 };
 export type ChartDisplayItem = ChartCatalogItem & {
   artifactGroups?: string[];
+  customEditor?: ReactNode;
+  customReset?: () => void;
   featureGroups?: string[];
   sourceColumns?: string[];
   presetOptions?: Array<{ description?: string; label: string; value: ChartPreset }>;
@@ -1002,6 +1011,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const loadingEarlierRef = useRef(loadingEarlier);
   const onLoadEarlierRef = useRef(onLoadEarlier);
   const suppressEarlierLoadUntilRef = useRef(0);
+  const earlierLoadRetryRef = useRef<number | null>(null);
   const fittedChartKeyRef = useRef("");
   const viewportIdentityRef = useRef("");
   const userViewportClaimedRef = useRef(false);
@@ -1331,14 +1341,14 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
   }
 
-  function executeViewportCommand(command: () => void) {
+  function executeViewportCommand(command: () => void, fitPrice = true) {
     // Toolbar and imperative viewport commands are explicit ownership choices.
     // Later data enrichment or history paging must preserve their result too.
     userViewportClaimedRef.current = true;
     cancelPendingInitialFit();
     suppressEarlierLoad();
     command();
-    fitTradeAnnotationPriceScale();
+    if (fitPrice) fitTradeAnnotationPriceScale();
     window.requestAnimationFrame(scheduleOverlayRedrawBurst);
   }
 
@@ -1350,9 +1360,28 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const first = lowerBoundTimelineTime(timeline, trade.entryTime);
     const last = lowerBoundTimelineTime(timeline, trade.exitTime ?? trade.entryTime);
     const margin = Math.max(8, Math.ceil((last - first) * 0.6));
-    executeViewportCommand(() => chart.timeScale().setVisibleLogicalRange({
-      from: first - margin, to: Math.max(first + 1, last) + margin,
-    }));
+    const endTime = trade.exitTime ?? trade.endTime ?? trade.entryTime;
+    const prices = [trade.entryPrice, trade.exitPrice, trade.stopPrice, trade.highOfDayPrice,
+      trade.triggerPrice, ...(trade.targetPrices ?? []), ...(trade.levelPrices ?? []),
+      ...(trade.supportPrices ?? []), ...(trade.resistancePrices ?? []),
+      ...(trade.protectionPath ?? []).filter(point => point.active).map(point => point.price),
+      ...(trade.fills ?? []).map(fill => fill.price),
+      ...candles.filter(candle => candle.time >= trade.entryTime && candle.time <= endTime)
+        .flatMap(candle => [candle.low, candle.high])]
+      .filter((price): price is number => typeof price === "number" && Number.isFinite(price));
+    executeViewportCommand(() => {
+      chart.timeScale().setVisibleLogicalRange({ from: first - margin, to: Math.max(first + 1, last) + margin });
+      if (prices.length && candleRef.current) {
+        let low = Number.POSITIVE_INFINITY;
+        let high = Number.NEGATIVE_INFINITY;
+        for (const price of prices) {
+          low = Math.min(low, price);
+          high = Math.max(high, price);
+        }
+        const padding = Math.max((high - low) * 0.06, Math.max(high, 1) * 0.002);
+        candleRef.current.priceScale().setVisibleRange({ from: low - padding, to: high + padding });
+      }
+    }, false);
   }
 
   function persistNativePaneLayout() {
@@ -1540,14 +1569,18 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     volumeRef.current = volume;
     const draw = (range: LogicalRange | null) => {
       scheduleOverlayRedraw();
-      if (
-        range
-        && range.from <= 10
-        && canLoadEarlierRef.current
-        && !loadingEarlierRef.current
-        && Date.now() >= suppressEarlierLoadUntilRef.current
-      ) {
-        onLoadEarlierRef.current?.();
+      if (range && range.from <= 10 && canLoadEarlierRef.current && !loadingEarlierRef.current) {
+        const remaining = suppressEarlierLoadUntilRef.current - Date.now();
+        if (remaining > 0) {
+          // Prepending bars briefly suppresses recursive range notifications.
+          // Recheck when suppression ends even if the user stops panning.
+          if (earlierLoadRetryRef.current === null) earlierLoadRetryRef.current = window.setTimeout(() => {
+            earlierLoadRetryRef.current = null;
+            draw(priceChart.timeScale().getVisibleLogicalRange());
+          }, remaining + 1);
+        } else {
+          onLoadEarlierRef.current?.();
+        }
       }
     };
     regionDrawRef.current = draw;
@@ -1591,7 +1624,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       && nextCandleWindow
       && nextCandleWindow.first < candleWindowRef.current.first
     );
-    const shouldAutoFit = payload.candles.length > 0 && fitKey !== fittedChartKeyRef.current && !userViewportClaimedRef.current;
+    const shouldAutoFit = payload.candles.length > 0 && fitKey !== fittedChartKeyRef.current
+      && !userViewportClaimedRef.current && (!persistedOnly || !fittedChartKeyRef.current);
     const autoFitDeferred = shouldAutoFit && deferInitialFitUntilLoaded && loading;
     const preserveViewport = !shouldAutoFit || autoFitDeferred;
     const currentRange = preserveViewport ? priceChartRef.current.timeScale().getVisibleLogicalRange() : null;
@@ -2100,6 +2134,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   function cleanupChartRuntime() {
+    if (earlierLoadRetryRef.current !== null) {
+      window.clearTimeout(earlierLoadRetryRef.current);
+      earlierLoadRetryRef.current = null;
+    }
     if (initialFitTimerRef.current !== null) {
       window.clearTimeout(initialFitTimerRef.current);
       initialFitTimerRef.current = null;
@@ -2799,6 +2837,7 @@ type LegendItem = {
   emaLength?: number;
   accelerationUnits?: AccelerationUnit;
   customEditor?: ReactNode;
+  customReset?: () => void;
   status?: string;
   priorStatus?: string;
   v6Hidden?: V6Category[];
@@ -2977,7 +3016,7 @@ function ChartLegend({
                 setEditingKey(null);
                 setEditorAnchor(null);
               }}
-              onReset={() => onReset(editingItem.key)}
+              onReset={() => editingItem.customReset ? editingItem.customReset() : onReset(editingItem.key)}
               onThresholdReset={onThresholdReset}
               onThresholdUpdate={onThresholdUpdate}
               onUpdate={(patch) => onUpdate(editingItem.key, patch)}
@@ -4862,6 +4901,8 @@ function buildPriceZoneLegendItems(
       : undefined;
     return {
       v6Hidden: settings.v6Hidden,
+      customEditor: displayItem?.customEditor,
+      customReset: displayItem?.customReset,
       v6Colors: itemZones.some(zone => zone.v6Category) ? settings.v6Colors : undefined,
       color: settings.color,
       configurable: true,
@@ -6636,7 +6677,8 @@ function drawPriceZonePrimitiveGeometry(
   historicalBySettings.forEach((itemZones, id) => {
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
     if (!settings.visible) return;
-    const historyStart = priceZoneHistoryStart(candles, itemZones, settings.historyBars);
+    const historyStart = id === "saved.structural_v7" ? Number.NEGATIVE_INFINITY
+      : priceZoneHistoryStart(candles, itemZones, settings.historyBars);
     const selectedZones = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset);
     if (selectedZones.some((zone) => zone.annotationKind === "level-footprint")) {
       drawLevelFootprintProfile(
@@ -6683,6 +6725,7 @@ function drawPriceZonePrimitiveGeometry(
       return;
     }
     selectedZones.forEach((zone) => {
+      if (zone.displayItemId === "saved.structural_v7" && zone.savedSourceVisible === false) return;
       if (!priceZoneWithinHistory(zone, historyStart)) return;
       if (
         zone.currentLevelSide
@@ -6744,11 +6787,17 @@ function drawPriceZonePrimitiveGeometry(
       if (Number.isFinite(zone.levelPrice)) {
         const priceY = priceSeries.priceToCoordinate(Number(zone.levelPrice));
         context.save();
-        context.fillStyle = rgbaFromHex(fillColor, zone.displayItemId === "saved.structural_v7" ? 0.13 : settings.bandOpacity);
-        context.fillRect(span.left, Math.min(upper, lower), span.width, Math.abs(lower - upper));
-        const priceOpacity = zone.displayItemId === "saved.structural_v7" ? 0.9 : settings.priceOpacity;
+        const savedV7 = zone.displayItemId === "saved.structural_v7";
+        const bandOpacity = savedV7 ? zone.savedBandVisible === false ? 0 : zone.savedBandOpacity ?? 0.13
+          : settings.bandOpacity;
+        if (bandOpacity > 0) {
+          context.fillStyle = rgbaFromHex(savedV7 ? resolveChartColor(zone.savedBandColor ?? zone.color) : fillColor, bandOpacity);
+          context.fillRect(span.left, Math.min(upper, lower), span.width, Math.abs(lower - upper));
+        }
+        const priceOpacity = savedV7 ? zone.savedLineVisible === false ? 0 : zone.savedLineOpacity ?? 0.9
+          : settings.priceOpacity;
         if (priceY !== null && priceOpacity > 0) {
-          context.strokeStyle = rgbaFromHex(borderColor, priceOpacity);
+          context.strokeStyle = rgbaFromHex(savedV7 ? resolveChartColor(zone.savedLineColor ?? zone.color) : borderColor, priceOpacity);
           context.lineWidth = settings.lineWidth;
           context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
           context.beginPath();
@@ -7192,8 +7241,10 @@ function drawPriceZonePrimitiveLabels(
     if (itemZones.some((zone) =>
       zone.annotationKind === "level-footprint"
       || zone.annotationKind === "swing-footprint")) return;
-    const historyStart = priceZoneHistoryStart(candles, itemZones, settings.historyBars);
+    const historyStart = id === "saved.structural_v7" ? Number.NEGATIVE_INFINITY
+      : priceZoneHistoryStart(candles, itemZones, settings.historyBars);
     const eligibleZones = itemZones.filter((zone) => {
+      if (zone.displayItemId === "saved.structural_v7" && zone.savedSourceVisible === false) return false;
       if (zone.preset && zone.preset !== settings.preset) return false;
       if (!priceZoneWithinHistory(zone, historyStart)) return false;
       if (!zone.currentLevelSide) return true;

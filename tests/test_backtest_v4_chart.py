@@ -217,6 +217,7 @@ def test_structural_chart_uses_completed_boundaries_and_compact_segments(monkeyp
         ("first", clocks[1].timestamp(), clocks[2].timestamp()),
         ("second", clocks[2].timestamp(), clocks[2].timestamp() + 1),
     ]
+    assert [row["historical"] for row in segments] == [False, False]
 
 
 def test_pinned_vwap_carries_only_persisted_prior_value(monkeypatch):

@@ -8,7 +8,7 @@ type Bar = { bar_start: string; bar_end: string; open: number; high: number;
 type Indicator = { bar_start: string; [column: string]: string | number | undefined };
 export type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolean;
   structural_levels?: Array<{ level_id: string; role: string;
-    lower: number; upper: number; start: number; end: number }>;
+    historical: boolean; lower: number; upper: number; start: number; end: number }>;
   structural_provenance?: { authority: string; available: boolean; reason: string };
   next_before: string; session_date: string; ticker: string; timeframe: string;
   verified_boundary_ms: number; indicator_provenance: { unavailable_columns: string[] };
@@ -33,6 +33,32 @@ type OverlayPage = { schema_version: string; run_id: string; ticker: string; tim
   structural_provenance: { reason: string }; bucket_indices: number[] };
 const overlayCache = new Map<string, Promise<OverlayPage>>();
 const INDICATOR_SELECTION_KEY = "backtest-v4-saved-chart.indicators-v1";
+const V7_STYLE_KEY = "backtest-v4-saved-chart.v7-style-v1";
+type V7Role = "resistance" | "support" | "transition";
+type V7Style = { source: "both" | "historical" | "streaming";
+  roles: Record<V7Role, { line: { visible: boolean; color: string; opacity: number };
+    band: { visible: boolean; color: string; opacity: number } }> };
+const DEFAULT_V7_STYLE: V7Style = { source: "both", roles: {
+  resistance: { line: { visible: true, color: "#dc3545", opacity: 0.9 }, band: { visible: true, color: "#dc3545", opacity: 0.13 } },
+  support: { line: { visible: true, color: "#18a957", opacity: 0.9 }, band: { visible: true, color: "#18a957", opacity: 0.13 } },
+  transition: { line: { visible: true, color: "#858b96", opacity: 0.9 }, band: { visible: true, color: "#858b96", opacity: 0.13 } },
+} };
+function savedV7Style(): V7Style {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(V7_STYLE_KEY) ?? "null");
+    if (!stored || typeof stored !== "object") return DEFAULT_V7_STYLE;
+    const source = ["both", "historical", "streaming"].includes(stored.source) ? stored.source : "both";
+    const roles = Object.fromEntries((Object.keys(DEFAULT_V7_STYLE.roles) as V7Role[]).map(role =>
+      [role, Object.fromEntries((["line", "band"] as const).map(part => {
+        const value = stored.roles?.[role]?.[part];
+        const fallback = DEFAULT_V7_STYLE.roles[role][part];
+        return [part, { visible: typeof value?.visible === "boolean" ? value.visible : fallback.visible,
+          color: typeof value?.color === "string" && /^#[0-9a-fA-F]{6}$/.test(value.color) ? value.color : fallback.color,
+          opacity: typeof value?.opacity === "number" && value.opacity >= 0 && value.opacity <= 1 ? value.opacity : fallback.opacity }];
+      }))]));
+    return { source, roles } as V7Style;
+  } catch { return DEFAULT_V7_STYLE; }
+}
 
 function savedIndicatorSelection(initialShowMacd: boolean): string[] {
   try {
@@ -74,6 +100,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   const [draftSymbol, setDraftSymbol] = useState(ticker);
   const [frame, setFrame] = useState<(typeof FRAMES)[number]>(initialFrame);
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(() => savedIndicatorSelection(initialShowMacd));
+  const [v7Style, setV7Style] = useState<V7Style>(savedV7Style);
   const showMacd = selectedIndicators.includes("saved.closed_macd");
   const [structureLoading, setStructureLoading] = useState(false);
   const [structureReason, setStructureReason] = useState("");
@@ -91,6 +118,37 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     try { window.localStorage.setItem(INDICATOR_SELECTION_KEY, JSON.stringify(selectedIndicators)); }
     catch { /* Keep chart usable when preference storage is unavailable. */ }
   }, [selectedIndicators]);
+  useEffect(() => {
+    try { window.localStorage.setItem(V7_STYLE_KEY, JSON.stringify(v7Style)); }
+    catch { /* Presentation remains in memory when preference storage is unavailable. */ }
+  }, [v7Style]);
+
+  const v7Editor = <div className="saved-v7-editor">
+    <label>Source <select aria-label="V7 source" value={v7Style.source} onChange={event =>
+      setV7Style(current => ({ ...current, source: event.target.value as V7Style["source"] }))}>
+      <option value="both">Both</option><option value="historical">Prior checkpoint</option><option value="streaming">Intraday stream</option>
+    </select></label>
+    {(Object.keys(v7Style.roles) as V7Role[]).map(role => <fieldset key={role}>
+      <legend>{role === "transition" ? "Transitioning" : role[0].toUpperCase() + role.slice(1)}</legend>
+      {(["line", "band"] as const).map(part => {
+        const value = v7Style.roles[role][part];
+        const update = (change: Partial<typeof value>) => setV7Style(current => ({ ...current,
+          roles: { ...current.roles, [role]: { ...current.roles[role], [part]: { ...current.roles[role][part], ...change } } },
+        }));
+        return <div className="saved-v7-editor-row" key={part}>
+          <label><input type="checkbox" aria-label={`Show ${role} ${part}`} checked={value.visible}
+            onChange={event => update({ visible: event.target.checked })} />{part === "line" ? "Level" : "Band"}</label>
+          <input type="color" aria-label={`${role} ${part} color`} value={value.color}
+            onChange={event => update({ color: event.target.value })} />
+          <label>Opacity <input type="range" aria-label={`${role} ${part} opacity`} min={0} max={100}
+            value={Math.round(value.opacity * 100)} onChange={event => update({ opacity: Number(event.target.value) / 100 })} />
+            <output>{Math.round(value.opacity * 100)}%</output></label>
+        </div>;
+      })}
+    </fieldset>)}
+  </div>;
+  const displayItems = INDICATOR_DISPLAY.map(item => item.id === "saved.structural_v7"
+    ? { ...item, customEditor: v7Editor, customReset: () => setV7Style(DEFAULT_V7_STYLE) } : item);
 
   useEffect(() => {
     setSymbol(ticker);
@@ -265,7 +323,15 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
         ? levels.map(level => ({
           annotationKind: "unified-structure-level" as const,
           displayItemId: "saved.structural_v7", label: level.role === "support" ? "V7 S" : level.role === "resistance" ? "V7 R" : "V7 T",
-          color: level.role === "support" ? "var(--success)" : level.role === "resistance" ? "var(--danger)" : "var(--muted-foreground)",
+          savedSourceVisible: v7Style.source === "both"
+            || (v7Style.source === "historical" ? level.historical === true : level.historical === false),
+          color: v7Style.roles[(level.role in v7Style.roles ? level.role : "transition") as V7Role].line.color,
+          savedLineColor: v7Style.roles[(level.role in v7Style.roles ? level.role : "transition") as V7Role].line.color,
+          savedLineOpacity: v7Style.roles[(level.role in v7Style.roles ? level.role : "transition") as V7Role].line.opacity,
+          savedLineVisible: v7Style.roles[(level.role in v7Style.roles ? level.role : "transition") as V7Role].line.visible,
+          savedBandColor: v7Style.roles[(level.role in v7Style.roles ? level.role : "transition") as V7Role].band.color,
+          savedBandOpacity: v7Style.roles[(level.role in v7Style.roles ? level.role : "transition") as V7Role].band.opacity,
+          savedBandVisible: v7Style.roles[(level.role in v7Style.roles ? level.role : "transition") as V7Role].band.visible,
           lower: level.lower, upper: level.upper,
           // The compact interval product stores lower/upper geometry. Its
           // midpoint is the available band reference, not a new V7 fit.
@@ -275,7 +341,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
         })) : [],
       markers: [], regions, trade_annotations: tradeAnnotations,
     };
-  }, [bars, indicators, levels, frame, showMacd, selectedIndicators, tradeAnnotations, page?.session_date]);
+  }, [bars, indicators, levels, frame, showMacd, selectedIndicators, v7Style, tradeAnnotations, page?.session_date]);
 
   const older = page && pageBoundary(page);
   useEffect(() => {
@@ -312,7 +378,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     {error ? <p role="alert">Chart unavailable: {error}</p> : null}
     <ChartPanel persistedOnly settingsStorageKey="backtest-v4-strategy-one" payload={payload}
       ticker={symbol} timeframe={frame} timeframes={[...allowedFrames]}
-      featureOptions={[]} indicatorOptions={[]} displayItemOptions={frame === "1d" || frame === "1mo" ? [] : INDICATOR_DISPLAY}
+      featureOptions={[]} indicatorOptions={[]} displayItemOptions={frame === "1d" || frame === "1mo" ? [] : displayItems}
       visibleColumns={selectedIndicators} onVisibleColumnsChange={values => {
         setSelectedIndicators(values);
       }}

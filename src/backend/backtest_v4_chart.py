@@ -233,6 +233,7 @@ def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
         raise RuntimeError("Saved V7 chart has an invalid completed bar clock")
     origin = market_day_boundary(session, 0).timestamp()
     segments = [{"level_id": row.level_id, "role": row.role,
+                 "historical": row.historical,
                  "lower": row.lower, "upper": row.upper,
                  "start": origin + max(first_ms, row.valid_from_ms) / 1000,
                  "end": origin + min(last_ms + resolution_ms,
