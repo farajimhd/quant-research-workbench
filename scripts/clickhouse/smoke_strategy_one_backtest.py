@@ -282,7 +282,8 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
                initial_cash: int = 10_000,
                profile_preflight: bool = False,
                profile_execution: bool = False,
-               preflight_repeats: int = 1) -> None:
+               preflight_repeats: int = 1,
+               crash_after_checkpoint: bool = False) -> None:
     from src.backend.replay_run_service import (
         ReplayRunController, ReplayRunDefinition, backtest_preflight,
     )
@@ -342,7 +343,28 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
 
     async def traced_open_journal():
         try:
-            return await open_journal()
+            await open_journal()
+            if crash_after_checkpoint:
+                publisher = controller._journal_publisher
+                if publisher is None:
+                    raise RuntimeError("Crash probe has no typed journal publisher")
+                enqueue = publisher.enqueue_checkpoint
+
+                def crash_after_durable_receipt(**kwargs):
+                    receipt = enqueue(**kwargs)
+
+                    def completed(done):
+                        durable = done.result()
+                        if controller.processed_events > 0:
+                            print("Intentional crash after durable V4 checkpoint: "
+                                  f"run={controller.run_id} "
+                                  f"sequence={durable.sequence}", flush=True)
+                            os._exit(77)
+
+                    receipt.add_done_callback(completed)
+                    return receipt
+
+                publisher.enqueue_checkpoint = crash_after_durable_receipt
         except Exception:
             # This probe runs only on the managed workstation. Emit a Python
             # stack, never SQL, request headers, credential values, or files.
@@ -350,6 +372,8 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
             raise
 
     controller._open_fixed_journal = traced_open_journal
+    if crash_after_checkpoint:
+        print(f"Crash probe run_id={controller.run_id}; expected_exit=77", flush=True)
     began = perf_counter()
     sql_profile = _SqlCallProfile()
     execution_profile = cProfile.Profile() if profile_execution else None
@@ -388,6 +412,35 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
     sql_profile.print_summary()
 
 
+async def _resume_interrupted(run_id: str) -> None:
+    """Exercise the cold actor/writer handoff before opening the app route."""
+    from src.backend.replay_run_service import ReplayRunService
+
+    service = ReplayRunService(runtime_root=RUNTIME_ROOT)
+    definition = await asyncio.to_thread(
+        service._load_typed_backtest_resume_definition, run_id)
+    if definition is None:
+        raise RuntimeError("Interrupted V4 Backtest definition is absent")
+    controller = await service._prepare_typed_v4_resume(run_id, definition)
+    began = perf_counter()
+    try:
+        await controller.start()
+        if controller._task is None:
+            raise RuntimeError("Recovered Backtest did not schedule execution")
+        await controller._task
+    finally:
+        if controller._task is None:
+            await controller._close_fixed_journal()
+    elapsed = perf_counter() - began
+    print(f"Strategy 1 cold resume run_id={run_id} status={controller.status} "
+          f"execution_s={elapsed:.3f} processed_rows={controller.processed_events} "
+          f"error={controller.error[:300]}", flush=True)
+    if controller.status != "completed" or controller.run_dir.exists():
+        raise RuntimeError("Cold V4 Backtest did not complete without a disk run")
+    _print_completed_profile(controller)
+    _audit_causal_journal(run_id)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", type=date.fromisoformat,
@@ -401,13 +454,23 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--audit-run-id", default="",
                         help="read-only causal audit of a completed Strategy 1 run")
+    parser.add_argument("--resume-run-id", default="",
+                        help="integration-only cold resume of an interrupted V4 run")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="show the slowest preflight calls; does not create market data")
     parser.add_argument("--preflight-repeats", type=int, choices=(1, 2), default=1,
                         help="repeat read-only preflight in one process to measure cache reuse")
     parser.add_argument("--profile-execution", action="store_true",
                         help="show main event-loop calls; profile overhead affects wall time")
+    parser.add_argument("--crash-after-checkpoint", action="store_true",
+                        help="integration-only: exit 77 after a durable running cursor")
     args = parser.parse_args()
+    if args.resume_run_id:
+        if args.apply or args.audit_run_id or args.crash_after_checkpoint:
+            parser.error("Cold resume is exclusive of launch, audit, and crash modes")
+        _load_private_credentials()
+        asyncio.run(_resume_interrupted(args.resume_run_id))
+        return
     if args.audit_run_id:
         if args.apply or args.profile_preflight or args.profile_execution:
             parser.error("Saved-run audit is read-only and cannot start a probe")
@@ -416,6 +479,8 @@ def main() -> None:
         return
     if args.apply and args.preflight_repeats != 1:
         parser.error("Repeated preflight is read-only; omit --apply")
+    if args.crash_after_checkpoint and not args.apply:
+        parser.error("Intentional crash requires an explicit --apply test run")
     if args.ticker and (not args.ticker.isascii() or not args.ticker.isalnum()):
         raise ValueError("Integration ticker must be an ASCII market symbol")
     if not 1 <= args.minutes <= 330:
@@ -427,7 +492,8 @@ def main() -> None:
                      minutes=args.minutes, initial_cash=args.initial_cash,
                      profile_preflight=args.profile_preflight,
                      profile_execution=args.profile_execution,
-                     preflight_repeats=args.preflight_repeats))
+                     preflight_repeats=args.preflight_repeats,
+                     crash_after_checkpoint=args.crash_after_checkpoint))
 
 
 if __name__ == "__main__":
