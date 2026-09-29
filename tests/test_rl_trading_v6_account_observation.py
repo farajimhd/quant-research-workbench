@@ -60,3 +60,18 @@ def test_pending_entry_is_visible_without_fabricating_a_holding():
     assert snapshot.held_index.size == 0
     assert snapshot.account.shape == (7,)
     assert snapshot.account[-2:].tolist() == [1_000., 1.]
+
+
+def test_pending_exit_masks_duplicate_exit_and_child_orders():
+    account = BracketAccount()
+    queue = CausalOrderQueue(account)
+    account.enter_long('ABC', decision_us=1_000_000, decision_close=10.,
+        budget=1_000.,
+        quote=Quote(1_100_000, 1_090_000, 9.99, 10., 100., 100., True))
+    assert not queue.submit_exit('ABC', decision_us=2_000_000,
+                                 order_index=0, quotes=iter(()))
+    snapshot = observe_account(account, ('ABC',),
+        {'ABC': (10., 2_000_000)}, close_us=2_000_000, queue=queue)
+    assert not snapshot.exit_allowed.any()
+    assert not snapshot.stop_allowed.any()
+    assert not snapshot.target_allowed.any()

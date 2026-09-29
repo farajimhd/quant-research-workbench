@@ -8,33 +8,42 @@ the output reports that clock gap rather than inventing a high or low.
 """
 from __future__ import annotations
 
-import math
-
 import polars as pl
 
 
-VERSION = 'rl-trading-price-action-bracket-oracle-v6-1'
+VERSION = 'rl-trading-price-action-bracket-oracle-v6-2'
 MIN_HOLD_SECONDS = 3
 
 
-def labels(positions: pl.DataFrame, bars: pl.DataFrame, *,
-           tick_size: float, offset_ticks: int = 1) -> pl.DataFrame:
+def labels(positions: pl.DataFrame, bars: pl.DataFrame,
+           tick_policy: pl.DataFrame, *, offset_ticks: int = 1
+           ) -> pl.DataFrame:
     """Return oracle geometry from only the episode's one-second candles.
 
     The hypothetical entry occurs at the completed candle close `entry_us`.
     Observed candles in the three prior clock seconds define the optional
     swing-low candidate. Active extrema run from the next observed completed
     candle through `exit_us`, inclusive. Missing trade candles are not
-    forward-filled; their count remains visible for uncertainty review.
+    forward-filled; their count remains visible for uncertainty review. The
+    caller supplies one certified tick size per listing, with no global
+    price-precision fallback.
     """
     required_positions = {'ticker', 'episode_uid', 'entry_us', 'exit_us',
                           'entry_price'}
     required_bars = {'ticker', 'time_us', 'high', 'low', 'extremes_valid'}
     if (not required_positions <= set(positions.columns) or
             not required_bars <= set(bars.columns) or
-            not math.isfinite(tick_size) or tick_size <= 0 or
+            set(tick_policy.columns) != {'ticker', 'tick_size'} or
+            tick_policy['ticker'].n_unique() != tick_policy.height or
+            tick_policy['tick_size'].null_count() or
+            tick_policy.filter(~pl.col('tick_size').is_finite() |
+                               (pl.col('tick_size') <= 0)).height or
             type(offset_ticks) is not int or offset_ticks < 1):
         raise ValueError('Invalid price-action bracket source or tick policy')
+    if tick_policy.height != positions['ticker'].n_unique() or (
+            positions.select('ticker').unique().join(
+                tick_policy.select('ticker'), on='ticker', how='anti').height):
+        raise ValueError('Missing or extra per-listing tick authority')
     if (positions['episode_uid'].n_unique() != positions.height or
             positions.select('ticker', 'entry_us').n_unique() != positions.height or
             bars.select('ticker', 'time_us').n_unique() != bars.height or
@@ -65,6 +74,7 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame, *,
         pl.len().alias('held_bars'))
     result = (positions.select('ticker', 'episode_uid', 'entry_us',
                                'exit_us', 'entry_price')
+        .join(tick_policy, on='ticker', how='left', validate='m:1')
         .join(swing, on='episode_uid', how='left', validate='1:1')
         .join(outcome, on='episode_uid', how='left', validate='1:1')
         .with_columns(((pl.col('exit_us')-pl.col('entry_us'))//1_000_000)
@@ -80,8 +90,8 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame, *,
     # Remove the tick offset in integer tick space. Subtracting two binary
     # floats before floor can spuriously move an on-grid low down two ticks.
     stop = ((pl.min_horizontal('swing_low_3s', 'held_min_low')/
-             tick_size + 1e-9).floor() - offset_ticks)*tick_size
-    target = (pl.col('held_max_high')/tick_size + 1e-9).floor()*tick_size
+             pl.col('tick_size') + 1e-9).floor() - offset_ticks)*pl.col('tick_size')
+    target = (pl.col('held_max_high')/pl.col('tick_size') + 1e-9).floor()*pl.col('tick_size')
     result = result.with_columns(
         pl.when(pl.col('held_bars').is_not_null()).then(stop)
           .alias('oracle_stop'),

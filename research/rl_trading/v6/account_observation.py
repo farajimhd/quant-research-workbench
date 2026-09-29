@@ -68,6 +68,7 @@ def observe_account(account: BracketAccount, tickers: tuple[str, ...],
     for row, ticker in enumerate(held):
         position = account.positions[ticker]
         price = mark_prices[ticker]
+        exit_pending = ticker in queue.pending_exits
         features[row] = (position.shares, position.entry_price,
             (close_us-position.entry_us)/1_000_000,
             (price-position.entry_price)/position.entry_price,
@@ -76,11 +77,11 @@ def observe_account(account: BracketAccount, tickers: tuple[str, ...],
             float(position.stop is not None),
             float(position.target is not None),
             float(position.stop_pending))
-        exit_mask[row] = not position.stop_pending
+        exit_mask[row] = not position.stop_pending and not exit_pending
         stop_mask[row] = (position.stop is None and
-                          not position.stop_pending)
+                          not position.stop_pending and not exit_pending)
         target_mask[row] = (position.target is None and
-                            not position.stop_pending)
+                            not position.stop_pending and not exit_pending)
     if not np.isfinite(state).all() or not np.isfinite(features).all():
         raise ValueError('Nonfinite causal account observation')
     return AccountObservation(state,
