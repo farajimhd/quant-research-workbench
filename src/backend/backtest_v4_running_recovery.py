@@ -7,13 +7,16 @@ liquidity and OMS; execution history and admission remain separate gates.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan
+from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_v4_broker_quote_restore import (
     CompletedBrokerQuote, load_completed_broker_quotes,
 )
 from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
+from src.backend.backtest_v4_execution_restore import load_v4_broker_executions
 from src.backend.backtest_v4_running_portfolio import (
     load_v4_running_portfolio_images,
 )
@@ -69,6 +72,48 @@ def reconstruct_v4_broker_state(evidence: V4RunningRecoveryEvidence) -> dict:
         requests_by_broker_id={key: requests[key] for key in open_ids},
         quotes=evidence.quotes,
     )
+
+
+def load_v4_running_broker_image(client: Any,
+                                 evidence: V4RunningRecoveryEvidence) -> dict:
+    """Cold-join broker matching and full trade history at one V4 prefix.
+
+    The result is an in-memory candidate only. No execution actor is installed
+    and no resume admission is granted by this read-only projection.
+    """
+    state = reconstruct_v4_broker_state(evidence)
+    requests_by_coid = {}
+    coid_by_broker_id = {}
+    for lineage in evidence.oms:
+        for request in lineage.orders:
+            if request.cOID in requests_by_coid:
+                raise RuntimeError("V4 broker image repeats OMS client order")
+            requests_by_coid[request.cOID] = request
+        for binding in lineage.state.broker_bindings:
+            index = binding["request_index"]
+            if index is None:
+                continue
+            if type(index) is not int or not 0 <= index < len(lineage.orders):
+                raise RuntimeError("V4 broker image has invalid OMS binding")
+            broker_id = binding["broker_order_id"]
+            if broker_id in coid_by_broker_id:
+                raise RuntimeError("V4 broker image repeats broker order")
+            coid_by_broker_id[broker_id] = lineage.orders[index].cOID
+    state["executions"] = load_v4_broker_executions(
+        client, evidence.prefix, requests_by_coid=requests_by_coid,
+        coid_by_broker_id=coid_by_broker_id,
+        next_execution_id=state["next_execution_id"],
+    )
+    root = evidence.broker.snapshot
+    boundary = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
+    boundary += timedelta(milliseconds=int(root["boundary_ms"]))
+    for execution in state["executions"]:
+        at = datetime.fromisoformat(execution["trade_time"])
+        if at.tzinfo is None or at.astimezone(timezone.utc) > boundary:
+            raise RuntimeError("V4 broker execution exceeds completed boundary")
+    if load_verified_v4_prefix(client, evidence.prefix.run_id) != evidence.prefix:
+        raise RuntimeError("V4 broker image prefix moved across trade reads")
+    return state
 
 
 def load_v4_running_recovery_evidence(

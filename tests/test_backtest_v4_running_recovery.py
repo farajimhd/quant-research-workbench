@@ -18,7 +18,8 @@ PREFIX = V4CommittedPrefix(RUN, 7, BATCH, "2026-08-18:100",
 
 def _install(monkeypatch, *, open_orders=(), oms=(), moved=False):
     broker = BrokerMatchSnapshotRows(
-        {"checkpoint_sequence": 7, "boundary_ms": 100},
+        {"checkpoint_sequence": 7, "boundary_ms": 100,
+         "session_date": "2026-08-18"},
         ({"account_id": "DU1"},), (), tuple(open_orders), (), ())
     monkeypatch.setattr(subject, "load_v4_running_portfolio_images",
                         lambda *_a, **_k: (PREFIX, {"DU1": {"state_hash": "a" * 64}}))
@@ -137,3 +138,29 @@ def test_v4_broker_state_rejects_missing_open_oms_request(monkeypatch):
         (), evidence.quotes)
     with pytest.raises(RuntimeError, match="lacks open OMS request"):
         subject.reconstruct_v4_broker_state(orphan)
+
+
+def test_v4_broker_image_joins_committed_trades_and_rechecks_prefix(monkeypatch):
+    lineage = _open_order_lineage()
+    _install(monkeypatch, oms=(lineage,))
+    evidence = subject.load_v4_running_recovery_evidence(
+        object(), run_id=RUN, account_ids=("DU1",),
+        manager_keeper=object(), broker_keeper=object(),
+        market_client=object(), market_plan=object())
+    monkeypatch.setattr(subject, "reconstruct_v4_broker_state",
+                        lambda _evidence: {"next_execution_id": 2})
+    expected = [{"execution_id": "SIM-1",
+                 "trade_time": "2026-08-18T08:00:00.100000+00:00"}]
+    def load(client, prefix, *, requests_by_coid, coid_by_broker_id,
+             next_execution_id):
+        assert prefix == PREFIX
+        assert requests_by_coid == {"co-1": lineage.orders[0]}
+        assert coid_by_broker_id == {"broker-1": "co-1"}
+        assert next_execution_id == 2
+        return expected
+    monkeypatch.setattr(subject, "load_v4_broker_executions", load)
+    assert subject.load_v4_running_broker_image(object(), evidence) == {
+        "next_execution_id": 2, "executions": expected}
+    monkeypatch.setattr(subject, "load_verified_v4_prefix", lambda *_a: None)
+    with pytest.raises(RuntimeError, match="prefix moved"):
+        subject.load_v4_running_broker_image(object(), evidence)

@@ -28,6 +28,7 @@ from src.backend.backtest_market_data import (
 )
 from src.backend.backtest_v4_broker_quote_restore import load_completed_broker_quotes
 from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
+from src.backend.backtest_v4_execution_restore import reconstruct_broker_executions
 from tests.test_trading_runtime import quote, trade
 
 
@@ -234,11 +235,30 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
                 for order in self.broker._orders.values()
                 if order.status.value == rows.open_orders[0]["status"]},
             quotes=quote)
+        original_execution = (await self.broker.trades())[0]
+        original_request = self.broker._orders[original_execution.order_id].request
+        recovered_state["executions"] = reconstruct_broker_executions(
+            (dict(sequence=7, execution_id=original_execution.execution_id,
+                  account_id=original_execution.account,
+                  client_order_id=original_execution.order_ref,
+                  broker_order_id=original_execution.order_id,
+                  conid=original_execution.conid, ticker=original_execution.symbol,
+                  side=original_execution.side, quantity=original_execution.size,
+                  price=original_execution.price, currency=original_execution.currency,
+                  source_event_time=original_execution.trade_time.isoformat()),),
+            (dict(sequence=8, execution_id=original_execution.execution_id,
+                  account_id=original_execution.account,
+                  commission=original_execution.commission,
+                  currency=original_execution.currency, status="final"),),
+            requests_by_coid={original_request.cOID: original_request},
+            coid_by_broker_id={original_execution.order_id: original_request.cOID},
+            next_execution_id=recovered_state["next_execution_id"])
         restored = SimulatedBrokerAdapter(
             ["TEST"], self.broker.config, mode=RunMode.BACKTEST,
             initial_time=START)
         await restored.initialize()
         restored.restore_checkpoint_state(recovered_state)
+        self.assertEqual(await restored.trades(), await self.broker.trades())
         self.assertEqual(restored.broker_match_snapshot_state(),
                          self.broker.broker_match_snapshot_state())
         next_at = at + timedelta(milliseconds=100)
