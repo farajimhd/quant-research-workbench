@@ -1054,3 +1054,33 @@ def test_broker_match_lost_insert_response_remains_pending():
             run_id="run-1", batch_id=BATCH_ID, last_sequence=1,
             snapshot_hash=MANAGER_HASH, operations=((table, token),),
             previous=None)
+
+
+def test_evidence_rows_require_exact_compacted_cursor_and_selected_head():
+    from src.trading_runtime.strategy_one_evidence_snapshot import (
+        ManagedEvidenceSnapshotHeadReader,
+    )
+
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    compact_running_prefix(authority)
+    table = "trading_strategy_one_evidence_snapshot_v1"
+    token = f"evidence-state:run-1:1:{MANAGER_HASH}:{table}"
+    sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+    authority.execute_typed_insert(
+        Client(authority), run_id="run-1", table=table, token=token,
+        sql=sql, batch_id=BATCH_ID, batch_last_sequence=1,
+        evidence_snapshot_hash=MANAGER_HASH)
+    authority.seal_verified_operation(
+        run_id="run-1", table=table, token=token,
+        batch_id=BATCH_ID, batch_last_sequence=1,
+        evidence_snapshot=True)
+    authority.compact_verified_evidence_snapshot(
+        run_id="run-1", batch_id=BATCH_ID, last_sequence=1,
+        snapshot_hash=MANAGER_HASH, operations=((table, token),),
+        previous=None)
+    raw, _ = authority.keeper.get(ManagedEvidenceSnapshotHeadReader.path("run-1"))
+    assert raw == f"1\nrun-1\n1\n{BATCH_ID}\n{MANAGER_HASH}".encode()
+    assert authority._read_gate("run-1")[0].registered == 0
