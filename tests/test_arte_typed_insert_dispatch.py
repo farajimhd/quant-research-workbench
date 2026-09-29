@@ -1138,3 +1138,34 @@ def test_campaign_lost_insert_response_never_selects_head():
     assert ManagedCampaignSnapshotHeadReader.path("run-1") not in authority.keeper.rows
     with pytest.raises(KeeperUnavailable, match="pending or ambiguous"):
         authority.acquire_cold_barrier("run-1")
+
+
+def test_oms_observation_rows_require_exact_compacted_cursor_and_selected_head():
+    from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+        ManagedOmsObservationHeadReader,
+    )
+
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    compact_running_prefix(authority)
+    table = "trading_strategy_one_oms_observation_snapshot_v1"
+    token = f"oms-observation:run-1:1:{MANAGER_HASH}:{table}"
+    sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+           f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+    authority.execute_typed_insert(
+        Client(authority), run_id="run-1", table=table, token=token,
+        sql=sql, batch_id=BATCH_ID, batch_last_sequence=1,
+        oms_observation_snapshot_hash=MANAGER_HASH)
+    authority.seal_verified_operation(
+        run_id="run-1", table=table, token=token,
+        batch_id=BATCH_ID, batch_last_sequence=1,
+        oms_observation_snapshot=True)
+    authority.compact_verified_oms_observation_snapshot(
+        run_id="run-1", batch_id=BATCH_ID, last_sequence=1,
+        snapshot_hash=MANAGER_HASH, operations=((table, token),),
+        previous=None)
+    raw, _ = authority.keeper.get(
+        ManagedOmsObservationHeadReader.path("run-1"))
+    assert raw == f"1\nrun-1\n1\n{BATCH_ID}\n{MANAGER_HASH}".encode()
+    assert authority._read_gate("run-1")[0].registered == 0

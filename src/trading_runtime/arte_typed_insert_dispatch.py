@@ -66,6 +66,10 @@ _CAMPAIGN_TABLES = frozenset({
     "trading_strategy_one_campaign_snapshot_v1",
     "trading_strategy_one_campaign_owner_v1",
 })
+_OMS_OBSERVATION_TABLES = frozenset({
+    "trading_strategy_one_oms_observation_snapshot_v1",
+    "trading_strategy_one_oms_observation_v1",
+})
 
 
 def _gate_path(run_id: str) -> str:
@@ -116,6 +120,13 @@ def _campaign_head_path(run_id: str) -> str:
     return ManagedCampaignSnapshotHeadReader.path(run_id)
 
 
+def _oms_observation_head_path(run_id: str) -> str:
+    from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+        ManagedOmsObservationHeadReader,
+    )
+    return ManagedOmsObservationHeadReader.path(run_id)
+
+
 def _manager_token(run_id: str, sequence: int, digest: str,
                    table: str) -> str:
     return f"manager-state:{run_id}:{sequence}:{digest}:{table}"
@@ -134,6 +145,11 @@ def _evidence_token(run_id: str, sequence: int, digest: str,
 def _campaign_token(run_id: str, sequence: int, digest: str,
                     table: str) -> str:
     return f"campaign-state:{run_id}:{sequence}:{digest}:{table}"
+
+
+def _oms_observation_token(run_id: str, sequence: int, digest: str,
+                           table: str) -> str:
+    return f"oms-observation:{run_id}:{sequence}:{digest}:{table}"
 
 
 def _policy_gate_path(policy_hash: str) -> str:
@@ -535,7 +551,8 @@ class TypedInsertDispatch:
                              manager_snapshot_hash: str | None = None,
                              broker_snapshot_hash: str | None = None,
                              evidence_snapshot_hash: str | None = None,
-                             campaign_snapshot_hash: str | None = None) -> None:
+                             campaign_snapshot_hash: str | None = None,
+                             oms_observation_snapshot_hash: str | None = None) -> None:
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1"
@@ -547,28 +564,33 @@ class TypedInsertDispatch:
                 or (snapshot_account_id is None and manager_snapshot_hash is None
                     and broker_snapshot_hash is None
                     and evidence_snapshot_hash is None
-                    and campaign_snapshot_hash is None and
+                    and campaign_snapshot_hash is None
+                    and oms_observation_snapshot_hash is None and
                     (batch_last_sequence == 0) != (batch_id == _ZERO_BATCH))
                 or (snapshot_account_id is not None and batch_id != _ZERO_BATCH)):
             raise KeeperUnavailable("Strict typed dispatch lacks batch sequence authority")
         if sum(value is not None for value in (
                 terminal_account_id, snapshot_account_id,
                 manager_snapshot_hash, broker_snapshot_hash,
-                evidence_snapshot_hash, campaign_snapshot_hash)) > 1:
+                evidence_snapshot_hash, campaign_snapshot_hash,
+                oms_observation_snapshot_hash)) > 1:
             raise ValueError("Typed INSERT has multiple parent families")
         scalar_hash = next((value for value in (
             manager_snapshot_hash, broker_snapshot_hash,
-            evidence_snapshot_hash, campaign_snapshot_hash)
+            evidence_snapshot_hash, campaign_snapshot_hash,
+            oms_observation_snapshot_hash)
             if value is not None), None)
         if scalar_hash is not None:
             tables = (_MANAGER_TABLES if manager_snapshot_hash is not None
                       else _BROKER_MATCH_TABLES if broker_snapshot_hash is not None
                       else _EVIDENCE_TABLES if evidence_snapshot_hash is not None
-                      else _CAMPAIGN_TABLES)
+                      else _CAMPAIGN_TABLES if campaign_snapshot_hash is not None
+                      else _OMS_OBSERVATION_TABLES)
             expected_token = (_manager_token if manager_snapshot_hash is not None
                               else _broker_match_token if broker_snapshot_hash is not None
                               else _evidence_token if evidence_snapshot_hash is not None
-                              else _campaign_token)
+                              else _campaign_token if campaign_snapshot_hash is not None
+                              else _oms_observation_token)
             if (table not in tables or batch_last_sequence < 1
                     or re.fullmatch(r"[0-9a-f]{64}", scalar_hash) is None
                     or token != expected_token(
@@ -714,7 +736,8 @@ class TypedInsertDispatch:
                                 manager_snapshot: bool = False,
                                 broker_snapshot: bool = False,
                                 evidence_snapshot: bool = False,
-                                campaign_snapshot: bool = False) -> None:
+                                campaign_snapshot: bool = False,
+                                oms_observation_snapshot: bool = False) -> None:
         """Caller must invoke only after exact parent late-fence readback.
 
         Unwired parent publishers leave acknowledged operations in-flight,
@@ -729,7 +752,7 @@ class TypedInsertDispatch:
                 raise KeeperUnavailable("Typed dispatch cannot seal outside open parent")
             if (not terminal and not snapshot and not manager_snapshot
                     and not broker_snapshot and not evidence_snapshot
-                    and not campaign_snapshot
+                    and not campaign_snapshot and not oms_observation_snapshot
                     and type(batch_last_sequence) is int and batch_last_sequence > 0
                     and batch_last_sequence <= gate.compacted_through):
                 return
@@ -1208,6 +1231,24 @@ class TypedInsertDispatch:
             head_path=_campaign_head_path(run_id), tables=_CAMPAIGN_TABLES,
             root_table="trading_strategy_one_campaign_snapshot_v1",
             token_factory=_campaign_token, label="Campaign snapshot")
+
+    def compact_verified_oms_observation_snapshot(
+        self, *, run_id: str, batch_id: str, last_sequence: int,
+        snapshot_hash: str, operations: tuple[tuple[str, str], ...],
+        previous: Any | None,
+    ) -> None:
+        """Select only exact read-back-verified OMS-observed order rows."""
+        from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+            OmsObservationHead,
+        )
+        self._compact_verified_checkpoint_family(
+            run_id=run_id, batch_id=batch_id, last_sequence=last_sequence,
+            snapshot_hash=snapshot_hash, operations=operations,
+            previous=previous, head_type=OmsObservationHead,
+            head_path=_oms_observation_head_path(run_id),
+            tables=_OMS_OBSERVATION_TABLES,
+            root_table="trading_strategy_one_oms_observation_snapshot_v1",
+            token_factory=_oms_observation_token, label="OMS observation")
 
     def assert_snapshot_head(self, *, run_id: str, account_id: str,
                              revision: int, fence_hash: str) -> None:

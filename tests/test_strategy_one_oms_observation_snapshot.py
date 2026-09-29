@@ -52,6 +52,14 @@ def test_snapshot_rejects_tampered_child_and_missing_row():
         verify_oms_observation_snapshot(OmsObservationSnapshotRows(rows.root, ()))
 
 
+def test_oms_observation_rows_cannot_use_unfenced_journal_insert():
+    from src.trading_runtime.arte_journal_writer import _insert
+
+    rows = _snapshot()
+    with pytest.raises(RuntimeError, match="typed snapshot fence"):
+        _insert(object(), ROOT.name, (rows.root,), "unfenced")
+
+
 def test_cold_rows_require_one_root_and_exact_children(monkeypatch):
     from src.trading_runtime import arte_journal_writer
 

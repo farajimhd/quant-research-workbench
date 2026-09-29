@@ -80,6 +80,9 @@ from src.trading_runtime.strategy_one_evidence_snapshot import (
 from src.trading_runtime.strategy_one_campaign_snapshot import (
     TABLES as CAMPAIGN_SNAPSHOT_TABLES,
 )
+from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+    TABLES as OMS_OBSERVATION_SNAPSHOT_TABLES,
+)
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES as PROTECTION_SNAPSHOT_TABLES,
 )
@@ -95,6 +98,7 @@ _CONTRACTS.update({table.name: table for table in (
     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
     *BROKER_MATCH_SNAPSHOT_TABLES, *EVIDENCE_SNAPSHOT_TABLES,
     *CAMPAIGN_SNAPSHOT_TABLES,
+    *OMS_OBSERVATION_SNAPSHOT_TABLES,
 )})
 _CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
@@ -1522,6 +1526,7 @@ def _insert(
     dispatch_broker_snapshot_hash: str | None = None,
     dispatch_evidence_snapshot_hash: str | None = None,
     dispatch_campaign_snapshot_hash: str | None = None,
+    dispatch_oms_observation_snapshot_hash: str | None = None,
     dispatch_policy_hash: str | None = None,
     dispatch_sync_account_id: str | None = None,
     dispatch_sync_revision: int | None = None,
@@ -1554,6 +1559,7 @@ def _insert(
                     dispatch_snapshot_account_id, dispatch_manager_snapshot_hash,
                     dispatch_broker_snapshot_hash, dispatch_evidence_snapshot_hash,
                     dispatch_campaign_snapshot_hash, dispatch_policy_hash)) or
+                dispatch_oms_observation_snapshot_hash is not None or
                 dispatch_run_context):
             raise RuntimeError("Portfolio sync INSERT lacks strict dispatch identity")
         sync_dispatch.execute(client, run_id=rows[0]["run_id"],
@@ -1576,6 +1582,8 @@ def _insert(
         raise RuntimeError("Evidence snapshot INSERT lacks durable dispatch authority")
     if dispatch_campaign_snapshot_hash is not None and dispatch is None:
         raise RuntimeError("Campaign snapshot INSERT lacks durable dispatch authority")
+    if dispatch_oms_observation_snapshot_hash is not None and dispatch is None:
+        raise RuntimeError("OMS observation INSERT lacks durable dispatch authority")
     if (name in {table.name for table in BROKER_MATCH_SNAPSHOT_TABLES}
             and dispatch_broker_snapshot_hash is None):
         raise RuntimeError("Broker snapshot INSERT lacks its typed snapshot fence")
@@ -1585,6 +1593,9 @@ def _insert(
     if (name in {table.name for table in CAMPAIGN_SNAPSHOT_TABLES}
             and dispatch_campaign_snapshot_hash is None):
         raise RuntimeError("Campaign snapshot INSERT lacks its typed snapshot fence")
+    if (name in {table.name for table in OMS_OBSERVATION_SNAPSHOT_TABLES}
+            and dispatch_oms_observation_snapshot_hash is None):
+        raise RuntimeError("OMS observation INSERT lacks its typed snapshot fence")
     if dispatch is not None:
         if dispatch_policy_hash is not None:
             policy_tables = {"trading_portfolio_policy_v1",
@@ -1600,6 +1611,7 @@ def _insert(
                         dispatch_broker_snapshot_hash,
                         dispatch_evidence_snapshot_hash,
                         dispatch_campaign_snapshot_hash))
+                    or dispatch_oms_observation_snapshot_hash is not None
                     or dispatch_run_context):
                 raise ValueError("Policy dispatch identity differs from typed rows")
             dispatch.execute_policy_insert(
@@ -1640,6 +1652,12 @@ def _insert(
                        or row.get("snapshot_id") != rows[0].get("snapshot_id")
                        for row in rows)):
             raise ValueError("Campaign snapshot dispatch identity differs from typed rows")
+        if dispatch_oms_observation_snapshot_hash is not None and (
+                name not in {table.name for table in OMS_OBSERVATION_SNAPSHOT_TABLES}
+                or any(row.get("checkpoint_sequence") != dispatch_sequence
+                       or row.get("snapshot_id") != rows[0].get("snapshot_id")
+                       for row in rows)):
+            raise ValueError("OMS observation dispatch identity differs from typed rows")
         run_ids = {row.get("run_id") for row in rows}
         if len(run_ids) != 1 or not isinstance(next(iter(run_ids)), str) or not next(iter(run_ids)):
             raise RuntimeError("Durable typed INSERT lacks one run identity")
@@ -1653,7 +1671,8 @@ def _insert(
             manager_snapshot_hash=dispatch_manager_snapshot_hash,
             broker_snapshot_hash=dispatch_broker_snapshot_hash,
             evidence_snapshot_hash=dispatch_evidence_snapshot_hash,
-            campaign_snapshot_hash=dispatch_campaign_snapshot_hash)
+            campaign_snapshot_hash=dispatch_campaign_snapshot_hash,
+            oms_observation_snapshot_hash=dispatch_oms_observation_snapshot_hash)
     else:
         client.execute(sql)
     return sql
