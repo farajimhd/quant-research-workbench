@@ -124,9 +124,14 @@ root for each date in a restart-safe `day-roots.json` runtime manifest.
 `session_data.py` opens the certified identity-packed bank with full hashes,
 checks the prior-session authority, and yields only observed close-clock
 events. `candle_stream.py` carries 119 actual prior-session candles and
-updates only listings with a new candle. Training retains gradients only for
-a bounded chronological chunk; unlabeled chunks advance state without an
-autograd graph. `model.BracketPolicy` adds execution-outcome action memory to
+updates only listings with a new candle. Its indexed tensor update avoids
+per-listing Python/autograd operations; the full state is detached at each
+bounded chronological chunk. A workstation August 5 smoke with 32 observed
+clocks, width 128, and 1,007–4,828 changed listings per clock measured 28.34 s
+and 4.39 GiB peak GPU allocation, versus 45.66 s and 6.88 GiB for the prior
+dictionary implementation (including the same 20 s bank load and 5 s context
+seed). This is a local smoke, not a full-epoch throughput claim. Unlabeled
+chunks advance state without an autograd graph. `model.BracketPolicy` adds execution-outcome action memory to
 the five-action decoder. `objective.py` scores the selected action, entry
 cash fraction, or label-only stop/target distance conditionally.
 `build_identity_map.py` projects only listing ID and ticker from the pinned
