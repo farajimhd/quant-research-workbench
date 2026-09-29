@@ -19,6 +19,7 @@ from .execution_policies import (
 )
 from .signals import CapitalRequest, StrategyIntent
 from .strategy_one_stateful import StrategyOneEntryProposal
+from .strategy_one_add import StrategyOneAddProposal
 
 
 _NEW_YORK = ZoneInfo("America/New_York")
@@ -34,7 +35,7 @@ def require_no_replacement_capital(intents: tuple[StrategyIntent, ...]) -> None:
 def require_strategy_one_actions(intents: tuple[StrategyIntent, ...]) -> None:
     """Strategy 1 exits only through its broker-held full stop and target."""
     if any(intent.action not in {
-            "enter_long", "replace_protective_stop", "replace_profit_target"}
+            "enter_long", "add_long", "replace_protective_stop", "replace_profit_target"}
            for intent in intents):
         raise ValueError("Strategy 1 cannot submit a legacy managed exit")
 
@@ -102,4 +103,69 @@ def strategy_one_entry_intent(
         or boundary.time() >= time(16),
         reason="strategy_one_entry",
         metadata={},
+    )
+
+
+def strategy_one_add_intent(
+    proposal: StrategyOneAddProposal, *, session_date: date,
+) -> StrategyIntent:
+    """Fund one distinct causal resistance add through shared Portfolio/OMS.
+
+    Strategy never reserves cash or chooses a broker order. The active
+    protection bracket is explicit and the resistance source is journaled in
+    a separate normalized child, not hidden in metadata or the reason.
+    """
+    if (not isinstance(proposal, StrategyOneAddProposal)
+            or not isinstance(session_date, date)
+            or isinstance(session_date, datetime)
+            or proposal.strategy_number != 1
+            or proposal.purchase_ordinal not in (2, 3)
+            or type(proposal.boundary_ms) is not int
+            or not 0 < proposal.boundary_ms <= 57_600_000
+            or proposal.boundary_ms % 1_000
+            or not proposal.account_id or not proposal.assignment_id
+            or not proposal.ticker or proposal.ticker != proposal.ticker.upper()
+            or not proposal.resistance_id
+            or any(type(value) is not float or not isfinite(value)
+                   for value in (proposal.resistance_midpoint,
+                                 proposal.reference_ask, proposal.working_stop,
+                                 proposal.working_target))
+            or not 0 < proposal.working_stop < proposal.reference_ask
+            < proposal.working_target):
+        raise ValueError("Strategy 1 add needs an exact completed-bar proposal")
+    boundary = (datetime.combine(session_date, time(4), tzinfo=_NEW_YORK)
+                + timedelta(milliseconds=proposal.boundary_ms))
+    identity = (
+        f"strategy-1-add:{session_date.isoformat()}:{proposal.assignment_id}:"
+        f"{proposal.account_id}:{proposal.ticker}:{proposal.boundary_ms}:"
+        f"{proposal.resistance_id}"
+    )
+    return StrategyIntent(
+        intent_id=str(uuid5(NAMESPACE_URL, identity)),
+        ticker=proposal.ticker,
+        event_time=boundary.astimezone(timezone.utc),
+        action="add_long", quantity=0.,
+        reference_price=proposal.reference_ask,
+        capital_request=CapitalRequest(mode="mandate_fraction", value=1 / 3),
+        invalidation_price=proposal.working_stop,
+        profit_target_price=proposal.working_target,
+        execution_policy=ExecutionPolicy(
+            policy_id="strategy-adaptive_urgent",
+            name=ExecutionPolicyName.ADAPTIVE_URGENT,
+            envelope=ExecutionEnvelope(persist_until_cancelled=True),
+            partial_fill_policy=PartialFillPolicy.COMPLETE_REMAINDER,
+            quote_source="qmd",
+        ),
+        protection_profile=ProtectionProfile(
+            "early-squeeze-fixed-stop-full-target", 1,
+            slices=(ProtectionSlice(
+                "all", 1., StopRule(StopRuleType.FIXED_PRICE,
+                                     price=proposal.working_stop),
+                profit_target_price=proposal.working_target,
+            ),),
+        ),
+        urgency="urgent", time_in_force="",
+        outside_rth=boundary.time() < time(9, 30)
+        or boundary.time() >= time(16),
+        reason="strategy_one_add", metadata={},
     )

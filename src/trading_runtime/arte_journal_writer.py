@@ -34,7 +34,9 @@ from src.trading_runtime.arte_journal_schema import (
     journal_permission_preflight, storage_preflight,
     versioned_journal_v2_contracts, versioned_journal_v2_preflight,
 )
-from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+from src.trading_runtime.arte_strategy_one_entry_schema import (
+    ADD_EVIDENCE, ENTRY_EVIDENCE,
+)
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
@@ -102,6 +104,7 @@ _CONTRACTS.update({table.name: table for table in (
 )})
 _CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
+_CONTRACTS[ADD_EVIDENCE.name] = ADD_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
 _CONTRACTS[ACKNOWLEDGEMENT_V5.name] = ACKNOWLEDGEMENT_V5
 _CONTRACTS[CANCEL.name] = CANCEL
@@ -547,18 +550,21 @@ class V3SqueezeBatch:
 
 @dataclass(frozen=True, slots=True)
 class V4StrategyOneEntryBatch:
-    """One typed intent batch and its nonredundant numbered evidence."""
+    """One typed Strategy 1 acquisition and its nonredundant rule evidence."""
 
     base: TypedJournalBatch
     entry_evidence: tuple[Mapping[str, Any], ...]
+    add_evidence: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if (not isinstance(self.base, TypedJournalBatch)
                 or self.base.status != "running"
-                or not self.entry_evidence):
-            raise ValueError("V4 Strategy 1 entry needs a running typed batch and evidence")
+                or bool(self.entry_evidence) == bool(self.add_evidence)):
+            raise ValueError("V4 Strategy 1 acquisition needs one typed evidence family")
         object.__setattr__(self, "entry_evidence", tuple(
             MappingProxyType(dict(row)) for row in self.entry_evidence))
+        object.__setattr__(self, "add_evidence", tuple(
+            MappingProxyType(dict(row)) for row in self.add_evidence))
 
 
 @dataclass(frozen=True, slots=True)
@@ -2084,7 +2090,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     )
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
-                 ENTRY_EVIDENCE, V4_ALLOCATION,
+                 ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
                  *OMS_TACTIC_TABLES,
@@ -2110,7 +2116,7 @@ def v4_journal_write_tables() -> frozenset[str]:
             | frozenset({V4_ORDER_COMMAND_LINEAGE.name})
             | PORTFOLIO_SNAPSHOT_WRITE_TABLES
             | frozenset({
-                ENTRY_EVIDENCE.name, V4_ALLOCATION.name,
+                ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, V4_ALLOCATION.name,
                 RESERVATION_REASON.name, ACKNOWLEDGEMENT.name,
                 CANCEL.name, REPRICE.name,
                 "trading_backtest_account_snapshot_v2",
@@ -3933,7 +3939,7 @@ class ArteJournalWriter:
             return receipt
 
     def submit_strategy_one_entry_v4(self, unit: V4StrategyOneEntryBatch) -> Future[str]:
-        """Queue the intent and its typed child without blocking execution."""
+        """Queue an entry or add and its typed child without blocking execution."""
         if self._journal_profile not in self._V4_PROFILES or not isinstance(
                 unit, V4StrategyOneEntryBatch):
             raise ValueError("Strategy 1 entry requires the V4 writer profile")
@@ -4709,7 +4715,9 @@ class ArteJournalWriter:
                     )
                     unit = group[0][0]
                     committed_id = publish_strategy_one_entry_batch_v4(
-                        self._client, unit.base, entry_evidence=unit.entry_evidence)
+                        self._client, unit.base,
+                        entry_evidence=unit.entry_evidence,
+                        add_evidence=unit.add_evidence)
                 elif isinstance(group[0][0], V4OmsTacticBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_oms_tactic_batch_v4,

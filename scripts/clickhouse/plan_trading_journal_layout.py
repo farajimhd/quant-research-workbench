@@ -24,7 +24,9 @@ from src.trading_runtime.arte_journal_schema import (
     fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
     storage_preflight,
 )
-from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+from src.trading_runtime.arte_strategy_one_entry_schema import (
+    ADD_EVIDENCE, ENTRY_EVIDENCE,
+)
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
@@ -70,7 +72,7 @@ def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
         return (STRATEGY_ONE_APPROVAL,)
     if profile == "commit-v4":
         return V4_COMMIT_TABLES + (V4_ORDER_COMMAND_LINEAGE,
-                                   ENTRY_EVIDENCE, V4_ALLOCATION,
+                                   ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
                                    RESERVATION_REASON,
                                    ACKNOWLEDGEMENT, CANCEL, REPRICE,
                                    *RISK_ACTION_TABLES,

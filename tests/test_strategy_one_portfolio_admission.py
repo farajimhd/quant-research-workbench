@@ -169,6 +169,52 @@ def test_numbered_proposal_uses_shared_runtime_portfolio_and_oms_path():
     runtime.journal.close()
 
 
+def test_numbered_add_uses_shared_cash_oms_and_normalized_source():
+    from src.trading_runtime.strategy_one_add import StrategyOneAddProposal
+    from src.trading_runtime.strategy_one_intent import strategy_one_add_intent
+
+    session = date(2026, 8, 18)
+    proposal = StrategyOneAddProposal(
+        "DU1", "assignment-1", "AAA", 31_000, "B1", 10.,
+        10.01, 9.89, 12., 2)
+    intent = strategy_one_add_intent(proposal, session_date=session)
+    approved = replace(intent, quantity=2.,
+                       metadata={"assignment_id": "assignment-1"})
+
+    @dataclass
+    class Submitted:
+        filled_quantity: float = 0.
+
+    decision = SimpleNamespace(payload=lambda: {"status": "approved"})
+    runtime = object.__new__(TradingRuntime)
+    runtime.config = SimpleNamespace(
+        mode=RunMode.BACKTEST, strategy_id="early-squeeze-strategy",
+        strategy_revision=1, account_ids=("DU1",), anchor_date=session)
+    runtime.run_id = str(UUID(int=121))
+    runtime.journal = BacktestMemoryJournal(run_id=runtime.run_id)
+    runtime.intent_planner = object()
+    runtime.order_manager = SimpleNamespace(submit_intent=AsyncMock(
+        return_value=Submitted()))
+    runtime.portfolio = SimpleNamespace(approve=AsyncMock(
+        return_value=(decision, approved)), _typed_recovery=False)
+    runtime.strategy = SimpleNamespace(assignments=lambda: ())
+    runtime.last_event_time = intent.event_time
+    runtime._refresh_portfolio_from_broker = AsyncMock()
+
+    result = asyncio.run(runtime.submit_strategy_one_add(proposal))
+    assert result == [{"decision": {"status": "approved"},
+                       "order_group": {"filled_quantity": 0.}}]
+    runtime.portfolio.approve.assert_awaited_once_with(
+        intent, account_id="DU1", assignment_id="assignment-1")
+    runtime.order_manager.submit_intent.assert_awaited_once_with(
+        approved, account_id="DU1", event=None)
+    source = runtime.journal.records(runtime.run_id)[0]
+    assert runtime.journal.strategy_one_add_for_record(source.record_id) == (
+        proposal, session)
+    assert source.payload["action"] == "add_long"
+    runtime.journal.close()
+
+
 def test_numbered_protection_routes_target_then_stop_and_confirms_state():
     session = date(2026, 8, 18)
     financial = protection_financial()

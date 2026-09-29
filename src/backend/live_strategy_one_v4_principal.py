@@ -51,6 +51,7 @@ _EXCLUDED_FAMILY = frozenset({
 _V4_LIVE_DETAIL = frozenset({
     ACKNOWLEDGEMENT_V5.name,
     "trading_strategy_one_entry_evidence_v1",
+    "trading_strategy_one_add_evidence_v1",
     "trading_portfolio_allocation_fill_v4",
     "trading_portfolio_reservation_reason_v1",
     "trading_broker_acknowledgement_v4",

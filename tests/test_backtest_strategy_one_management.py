@@ -12,8 +12,11 @@ from src.backend.backtest_strategy_one_management import (
 )
 from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
 from src.trading_runtime.strategy_one_position import (
-    ResistanceBreak, confirm_protection_transition,
+    ProtectionState, ResistanceBreak, confirm_protection_transition,
 )
+from src.trading_runtime.strategy_one_add import propose_strategy_one_add
+from src.trading_runtime.strategy_one_intent import strategy_one_add_intent
+from datetime import date
 from src.trading_runtime.strategy_one_stateful import (
     StrategyOneEntryProposal, StrategyOneFinancialView,
 )
@@ -44,6 +47,84 @@ def _evidence(boundary, *, quote=True, breaks=()):
         tuple(_level(f"R{i}", 10 + i * .1) for i in range(1, 8)))
 
 
+def _add_rows(boundary=31_000):
+    return {
+        resolution: {
+            "ticker": "AAA", "boundary_ms": boundary,
+            "resolution_ms": resolution,
+            "indicator_resolution_ms": resolution,
+            "price_valid": 1, "macd_line": .2, "macd_signal": .1,
+            "open_int": 99_000, "close_int": 101_000,
+            "quote_valid": 1, "bid_int": 100_000,
+            "ask_int": 100_100, "high_int": 101_000,
+        } for resolution in (100, 1_000)
+    }
+
+
+def test_add_requires_distinct_completed_bars_bullish_macd_and_fresh_quote():
+    financial = _financial()
+    protection = ProtectionState(31_000, 9.69, 10.3,
+                                 frozenset({"B1"}))
+    resistance = ResistanceBreak(31_000, _level("B1", 10.))
+    rows = _add_rows()
+    proposal = propose_strategy_one_add(
+        financial, protection, resistance, rows, boundary_ms=31_000,
+        purchase_ordinal=2, fresh_bid=10., fresh_ask=10.01,
+        prior_accepted_ids=frozenset())
+    assert proposal is not None
+    assert proposal.resistance_id == "B1"
+    intent = strategy_one_add_intent(proposal, session_date=date(2026, 8, 18))
+    assert intent.action == "add_long" and intent.metadata == {}
+    assert intent.reason == "strategy_one_add"
+    assert intent.capital_request.value == 1 / 3
+    for resolution in (100, 1_000):
+        blocked = {key: dict(value) for key, value in rows.items()}
+        blocked[resolution]["macd_line"] = -.1
+        assert propose_strategy_one_add(
+            financial, protection, resistance, blocked,
+            boundary_ms=31_000, purchase_ordinal=2,
+            fresh_bid=10., fresh_ask=10.01,
+            prior_accepted_ids=frozenset()) is None
+    assert propose_strategy_one_add(
+        financial, protection, resistance, rows, boundary_ms=31_000,
+        purchase_ordinal=2, fresh_bid=None, fresh_ask=None,
+        prior_accepted_ids=frozenset()) is None
+    assert propose_strategy_one_add(
+        replace(financial, current_purchase_groups=3), protection,
+        resistance, rows, boundary_ms=31_000, purchase_ordinal=2,
+        fresh_bid=10., fresh_ask=10.01,
+        prior_accepted_ids=frozenset()) is None
+    with pytest.raises(ValueError, match="new pinned resistance"):
+        propose_strategy_one_add(
+            financial, protection, resistance, rows,
+            boundary_ms=31_000, purchase_ordinal=2,
+            fresh_bid=10., fresh_ask=10.01,
+            prior_accepted_ids=frozenset({"B1"}))
+
+
+def test_manager_submits_at_most_two_distinct_add_groups_after_entry():
+    async def run():
+        source, runtime = _Evidence(), _Runtime()
+        manager = StrategyOneManagementRunner(
+            runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(_proposal())
+        await manager.on_management(_financial(), {}, 30_100)
+        breaks = tuple(ResistanceBreak(31_000, _level(identity, center))
+                       for identity, center in (("B1", 9.8), ("B2", 9.9)))
+        source.rows[31_000] = _evidence(31_000, breaks=breaks)
+        await manager.on_management(_financial(), _add_rows(), 31_000)
+        assert [call for call in runtime.calls if call[0] == "add"] == [
+            ("add", "B1"), ("add", "B2")]
+        later = (ResistanceBreak(32_000, _level("B3", 10.)),)
+        source.rows[32_000] = _evidence(32_000, breaks=later)
+        rows = _add_rows(32_000)
+        await manager.on_management(
+            replace(_financial(), current_purchase_groups=3), rows, 32_000)
+        assert len([call for call in runtime.calls if call[0] == "add"]) == 2
+
+    asyncio.run(run())
+
+
 class _Evidence:
     def __init__(self):
         self.rows = {}
@@ -61,6 +142,11 @@ class _Runtime:
     async def submit_strategy_one_proposal(self, proposal):
         self.calls.append(("entry", proposal.boundary_ms))
         return ({"order_group": "G1", "decision": {"status": "approved"}},)
+
+    async def submit_strategy_one_add(self, proposal):
+        self.calls.append(("add", proposal.resistance_id))
+        return ({"order_group": proposal.resistance_id,
+                 "decision": {"status": "approved"}},)
 
     async def submit_strategy_one_protection(self, previous, transition,
                                              financial, *, bid, ask):

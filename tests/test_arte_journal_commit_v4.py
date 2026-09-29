@@ -1346,7 +1346,9 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
                                   "trading_commit_v4"]
     finally:
         journal.close()
-    from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+    from src.trading_runtime.arte_strategy_one_entry_schema import (
+        ADD_EVIDENCE, ENTRY_EVIDENCE,
+    )
     from src.trading_runtime.arte_order_cancel_v4 import CANCEL
     from src.trading_runtime.arte_order_reprice_v4 import REPRICE
     from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
@@ -1367,12 +1369,15 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     from src.trading_runtime.strategy_one_campaign_snapshot import (
         TABLES as CAMPAIGN_SNAPSHOT_TABLES,
     )
+    from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+        TABLES as OMS_OBSERVATION_SNAPSHOT_TABLES,
+    )
 
     assert len(observed) == 2
     assert {table.name for table in observed[0]} == {
         table.name for table in (*fixed_backtest_v2_contracts(),
                                  *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
-                                 ENTRY_EVIDENCE, V4_ALLOCATION,
+                                 ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
                                  RESERVATION_REASON,
                                      ACKNOWLEDGEMENT, CANCEL, REPRICE,
                                      *OMS_TACTIC_TABLES,
@@ -1383,14 +1388,16 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
                                  *MANAGER_SNAPSHOT_TABLES,
                                  *BROKER_MATCH_SNAPSHOT_TABLES,
                                  *EVIDENCE_SNAPSHOT_TABLES,
-                                 *CAMPAIGN_SNAPSHOT_TABLES)}
+                                 *CAMPAIGN_SNAPSHOT_TABLES,
+                                 *OMS_OBSERVATION_SNAPSHOT_TABLES)}
     from src.trading_runtime.arte_journal_schema import PORTFOLIO_SNAPSHOT_WRITE_TABLES
     from src.trading_runtime.arte_backtest_definition import TABLES as BACKTEST_DEFINITION_TABLES
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
             frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
                 V4_ORDER_COMMAND_LINEAGE.name,
-            ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
+            ENTRY_EVIDENCE.name, ADD_EVIDENCE.name,
+            V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,
             *(table.name for table in OMS_TACTIC_TABLES),
@@ -1402,6 +1409,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
             *(table.name for table in BROKER_MATCH_SNAPSHOT_TABLES),
             *(table.name for table in EVIDENCE_SNAPSHOT_TABLES),
             *(table.name for table in CAMPAIGN_SNAPSHOT_TABLES),
+            *(table.name for table in OMS_OBSERVATION_SNAPSHOT_TABLES),
             "trading_backtest_account_snapshot_v2",
             "trading_backtest_position_snapshot_v2",
             *(table.name for table in BACKTEST_DEFINITION_TABLES)}

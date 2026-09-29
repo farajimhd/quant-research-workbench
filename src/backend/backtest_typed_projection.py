@@ -138,7 +138,12 @@ def project_pending_backtest_v4_prefix(
     from src.trading_runtime.arte_strategy_one_entry_journal import (
         project_strategy_one_entry_evidence,
     )
-    from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+    from src.trading_runtime.arte_strategy_one_add_journal import (
+        project_strategy_one_add_evidence,
+    )
+    from src.trading_runtime.strategy_one_intent import (
+        strategy_one_add_intent, strategy_one_entry_intent,
+    )
     from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 
     attempt = str(UUID(attempt_id))
@@ -377,13 +382,16 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Backtest progress differs from fixed cursor contract")
                 batch = replace(batch, backtest_progress=typed_progress.backtest_progress)
             sidecar = journal.strategy_one_entry_for_record(record.record_id)
+            add_sidecar = journal.strategy_one_add_for_record(record.record_id)
             protection_source = journal.strategy_one_protection_for_record(
                 record.record_id)
-            if sidecar is not None and protection_source is not None:
+            if sum(value is not None for value in (
+                    sidecar, add_sidecar, protection_source)) > 1:
                 raise RuntimeError("Strategy 1 intent has two source authorities")
-            if sidecar is None:
+            if sidecar is None and add_sidecar is None:
                 if (kind == ("strategy", "strategy_intent")
-                        and record.payload.get("reason") == "strategy_one_entry"):
+                        and record.payload.get("reason") in {
+                            "strategy_one_entry", "strategy_one_add"}):
                     raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("strategy_id") == "early-squeeze-strategy"
@@ -407,7 +415,7 @@ def project_pending_backtest_v4_prefix(
                             batch, protection_source):
                         raise RuntimeError("V4 Strategy 1 protection identity was reused")
                     sources[protection_source.intent_id] = (batch, protection_source)
-            else:
+            elif sidecar is not None:
                 proposal, session_date = sidecar
                 intent = strategy_one_entry_intent(
                     proposal, session_date=session_date)
@@ -419,6 +427,28 @@ def project_pending_backtest_v4_prefix(
                 prior_source = sources.get(intent.intent_id)
                 if prior_source is not None and prior_source != (batch, intent):
                     raise RuntimeError("V4 Strategy 1 intent identity was reused")
+                sources[intent.intent_id] = (batch, intent)
+            else:
+                proposal, session_date = add_sidecar
+                intent = strategy_one_add_intent(
+                    proposal, session_date=session_date)
+                payload = {key: value for key, value in record.payload.items()
+                           if key not in {"strategy_id", "strategy_revision",
+                                          "correlation_id", "causation_id"}}
+                if (record.account_id != proposal.account_id
+                        or record.entity_id != intent.intent_id
+                        or canonical_json(payload) != canonical_json(intent.payload())
+                        or len(batch.intents) != 1
+                        or batch.intents[0]["intent_id"] != intent.intent_id):
+                    raise RuntimeError("Strategy 1 add differs from its typed intent")
+                evidence = project_strategy_one_add_evidence(
+                    proposal, intent, session_date=session_date,
+                    run_id=batch.run_id, batch_id=batch.batch_id,
+                    parent_record_id=record.record_id)
+                unit = V4StrategyOneEntryBatch(batch, (), (evidence,))
+                prior_source = sources.get(intent.intent_id)
+                if prior_source is not None and prior_source != (batch, intent):
+                    raise RuntimeError("V4 Strategy 1 add identity was reused")
                 sources[intent.intent_id] = (batch, intent)
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
         if (base.first_sequence != sequence or base.last_sequence != sequence

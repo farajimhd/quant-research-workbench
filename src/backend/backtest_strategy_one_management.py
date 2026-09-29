@@ -7,7 +7,7 @@ Portfolio/OMS retains sole order authority and confirms protection changes.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping, Protocol
 from src.trading_runtime.strategy_one_management_evidence import (
     StrategyOneManagementEvidence,
 )
+from src.trading_runtime.strategy_one_add import propose_strategy_one_add
 from src.trading_runtime.strategy_one_position import (
     ProtectionState, ResistanceBreak, advance_protection,
 )
@@ -64,6 +65,7 @@ class StrategyOneManagementRunner:
                  tick_for_ticker: Callable[[str], float],
                  max_pending_breaks: int = 256) -> None:
         if (not callable(getattr(runtime, "submit_strategy_one_proposal", None))
+                or not callable(getattr(runtime, "submit_strategy_one_add", None))
                 or not callable(getattr(runtime, "submit_strategy_one_protection", None))
                 or not callable(getattr(evidence, "management_evidence", None))
                 or not callable(tick_for_ticker)
@@ -286,3 +288,34 @@ class StrategyOneManagementRunner:
             raise RuntimeError("Strategy 1 OMS returned inconsistent protection")
         self._positions[key] = confirmed
         pending.clear()
+        # This 1s boundary and its co-terminating 100ms row are both closed.
+        # Resistances become actionable only after protection has been
+        # acknowledged. A rejection consumes this crossing, not a future one.
+        if financial.pending_entry or financial.current_purchase_groups >= 3:
+            return
+        purchase_ordinal = financial.current_purchase_groups + 1
+        for resistance in sorted(
+                evidence.breaks,
+                key=lambda row: ((float(row.level["lower"])
+                                  + float(row.level["upper"])) / 2,
+                                 str(row.level["unified_level_id"]))):
+            if purchase_ordinal > 3:
+                break
+            if resistance.level["unified_level_id"] in previous.accepted_ids:
+                continue
+            add_financial = replace(
+                financial, current_purchase_groups=purchase_ordinal - 1)
+            proposal = propose_strategy_one_add(
+                add_financial, confirmed, resistance, resolutions,
+                boundary_ms=boundary_ms, purchase_ordinal=purchase_ordinal,
+                fresh_bid=evidence.bid, fresh_ask=evidence.ask,
+                prior_accepted_ids=previous.accepted_ids)
+            if proposal is None:
+                continue
+            results = await self.runtime.submit_strategy_one_add(proposal)
+            if (len(results) != 1
+                    or results[0].get("order_group") is None
+                    or results[0].get("decision", {}).get("status")
+                    not in {"approved", "resized"}):
+                continue
+            purchase_ordinal += 1

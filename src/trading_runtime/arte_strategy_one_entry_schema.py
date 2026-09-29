@@ -19,3 +19,21 @@ ENTRY_EVIDENCE = TableContract(
     ),
     "toYYYYMM(event_month)", "run_id, parent_record_id, record_id",
 )
+
+# Strategy 1's omitted add behavior is a distinct semantic child, not an
+# entry-evidence JSON extension. The parent typed intent owns prices, cash
+# request, execution policy and bracket; this row owns only causal rule facts.
+ADD_EVIDENCE = TableContract(
+    "trading_strategy_one_add_evidence_v1",
+    (
+        ("record_id", "UUID"), ("parent_record_id", "UUID"),
+        ("run_id", "String"), ("event_month", "Date"),
+        ("batch_id", "UUID"), ("strategy_number", "UInt32"),
+        ("assignment_id", "String"), ("boundary_ms", "UInt32"),
+        ("resistance_id", "String"),
+        ("resistance_midpoint", "Decimal(38, 18)"),
+        ("purchase_ordinal", "UInt8"),
+        ("content_hash", "FixedString(64)"),
+    ),
+    "toYYYYMM(event_month)", "run_id, parent_record_id, record_id",
+)

@@ -15,6 +15,14 @@ evaluation interval. Once a numbered release is sealed or used for a run,
 old release, silently redirect its number, or reuse a rejected number.
 Historical runs retain their original number and content digest.
 
+The user explicitly authorized one exception for an omitted, Backtest-only
+Strategy 1 add path before live admission: two causal resistance adds may be
+completed under number 1. This authorization does **not** relax the creation
+rule for future requests. Previously completed Strategy 1 runs remain
+historical results of their pinned code hash; they must not be relabeled as
+runs of the corrected implementation. Interrupted runs with a different code
+hash remain ineligible for resume.
+
 Configuration, code, QMD product, broker, schema, rule-set, and run revisions
 are technical identities. Pin them in the release and run, but do not present
 them as competing Strategy versions. A content digest is an integrity seal,

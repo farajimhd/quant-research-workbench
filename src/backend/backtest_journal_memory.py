@@ -33,6 +33,7 @@ class BacktestMemoryJournal:
         # the execution path. These are provisional until the V4 writer fences.
         self._live_counts = {"signals": 0, "intents": 0, "commands": 0, "fills": 0}
         self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
+        self._strategy_one_adds: dict[str, tuple[Any, date]] = {}
         self._strategy_one_protection: dict[str, Any] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
@@ -96,6 +97,31 @@ class BacktestMemoryJournal:
         """Return only a still-unfenced proposal for the projection worker."""
         with self._lock:
             return self._strategy_one_entries.get(record_id)
+
+    def append_strategy_one_add_intent(
+        self, *, intent: Any, proposal: Any, session_date: date,
+        account_id: str, strategy_id: str, strategy_revision: int,
+    ) -> JournalRecord:
+        """Retain exact add evidence until its normalized V4 child is fenced."""
+        from src.trading_runtime.strategy_one_intent import strategy_one_add_intent
+
+        if (intent != strategy_one_add_intent(proposal, session_date=session_date)
+                or account_id != proposal.account_id or not strategy_id
+                or strategy_revision != 1):
+            raise ValueError("Strategy 1 add journal differs from numbered proposal")
+        with self._lock:
+            record = self.append(
+                run_id=self.run_id, category="strategy",
+                entity_type="strategy_intent", entity_id=intent.intent_id,
+                account_id=account_id, event_time=intent.event_time,
+                payload={**intent.payload(), "strategy_id": strategy_id,
+                         "strategy_revision": strategy_revision})
+            self._strategy_one_adds[record.record_id] = (proposal, session_date)
+            return record
+
+    def strategy_one_add_for_record(self, record_id: str) -> tuple[Any, date] | None:
+        with self._lock:
+            return self._strategy_one_adds.get(record_id)
 
     def attach_backtest_progress(self, record: JournalRecord,
                                  state: dict[str, Any]) -> None:
@@ -358,6 +384,7 @@ class BacktestMemoryJournal:
             if discard:
                 for record in self._records[:discard]:
                     self._strategy_one_entries.pop(record.record_id, None)
+                    self._strategy_one_adds.pop(record.record_id, None)
                     self._strategy_one_protection.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
@@ -782,6 +809,7 @@ class BacktestMemoryJournal:
         with self._lock:
             self._closed = True
             self._strategy_one_entries.clear()
+            self._strategy_one_adds.clear()
             self._order_requests.clear()
             self._backtest_progress.clear()
             self._oms_groups.clear()

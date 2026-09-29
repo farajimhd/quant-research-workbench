@@ -61,9 +61,20 @@ async def read_strategy_one_financial_views(
                for row in groups):
             raise RuntimeError("Strategy 1 OMS group differs from assignment")
         entries = [row for row in groups if row.action == "enter_long"]
+        acquisitions = [row for row in groups
+                        if row.action in {"enter_long", "add_long"}]
         pending_entry = any(
             row.state not in TERMINAL_MANAGEMENT_STATES
-            and not row.entry_submission_closed for row in entries)
+            and not row.entry_submission_closed for row in acquisitions)
+        filled_entries = [index for index, row in enumerate(groups)
+                          if row.action == "enter_long" and row.filled_quantity > 0]
+        current_purchase_groups = (1 + sum(
+            row.action == "add_long" and
+            (row.filled_quantity > 0 or row.state not in TERMINAL_MANAGEMENT_STATES)
+            for row in groups[filled_entries[-1] + 1:])
+            if quantity > 0 and filled_entries else 0)
+        if current_purchase_groups > 3:
+            raise RuntimeError("Strategy 1 position exceeded three purchase groups")
         pending_exit = any(
             row.action in {"exit_long", "reduce_long"}
             and row.state not in TERMINAL_MANAGEMENT_STATES for row in groups)
@@ -79,5 +90,6 @@ async def read_strategy_one_financial_views(
             assignment.assignment_id, assignment.account_id, assignment.ticker,
             assignment.status, assignment.permissions, quantity, pending_entry,
             pending_exit, False,
-            sum(row.filled_quantity > 0 for row in entries), 0))
+            sum(row.filled_quantity > 0 for row in entries), 0,
+            current_purchase_groups))
     return tuple(result)

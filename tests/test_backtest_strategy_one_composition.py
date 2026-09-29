@@ -149,6 +149,7 @@ def test_empty_causal_horizon_never_reads_market_or_invents_boundary(
     runtime = SimpleNamespace(
         broker=SimpleNamespace(financially_active_tickers=lambda: active),
         submit_strategy_one_proposal=lambda *_args: None,
+        submit_strategy_one_add=lambda *_args: None,
         submit_strategy_one_protection=lambda *_args: None)
     managers = []
 

@@ -278,6 +278,55 @@ def test_v4_publisher_routes_numbered_entry_with_exact_child_off_hot_path():
     asyncio.run(exercise())
 
 
+def test_v4_publisher_routes_numbered_add_with_exact_child_off_hot_path():
+    from src.trading_runtime.strategy_one_add import StrategyOneAddProposal
+    from src.trading_runtime.strategy_one_intent import strategy_one_add_intent
+
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_base_v4(self, _batch):
+            pytest.fail("Numbered add lost its normalized child")
+
+        def submit_strategy_one_entry_v4(self, unit):
+            self.add_unit = unit
+            return FakeWriter.submit(self, unit.base)
+
+    async def exercise():
+        proposal = StrategyOneAddProposal(
+            "DU1", "assignment-1", "AAA", 31_000, "B1", 10.,
+            10.01, 9.89, 12., 2)
+        intent = strategy_one_add_intent(proposal, session_date=DAY)
+        journal = BacktestMemoryJournal(run_id=RUN)
+        record = journal.append_strategy_one_add_intent(
+            intent=intent, proposal=proposal, session_date=DAY,
+            account_id="DU1", strategy_id="early-squeeze-strategy",
+            strategy_revision=1)
+        writer = V4Writer(automatic=False)
+        publisher = BacktestTypedJournalPublisher(
+            journal, writer, attempt_id=ATTEMPT, run_month=DAY.replace(day=1),
+            expected_config={"mode": "backtest",
+                             "strategy_id": "early-squeeze-strategy",
+                             "strategy_revision": 1})
+        task = publisher.enqueue_pending()
+        for _ in range(100):
+            if writer.receipts:
+                break
+            await asyncio.sleep(.01)
+        assert writer.receipts and not task.done()
+        assert journal.pending_record_count == 1
+        writer.receipts[0].set_result(writer.submitted[0].batch_id)
+        receipt = await task
+        assert receipt.last_sequence == 1
+        assert not writer.add_unit.entry_evidence
+        assert writer.add_unit.add_evidence[0]["parent_record_id"] == record.record_id
+        assert writer.add_unit.add_evidence[0]["resistance_id"] == "B1"
+        assert journal.strategy_one_add_for_record(record.record_id) is None
+        assert journal.pending_record_count == 0
+
+    asyncio.run(exercise())
+
+
 def test_v4_publisher_refuses_numbered_intent_without_atomic_sidecar():
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent

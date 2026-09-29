@@ -364,16 +364,22 @@ class BacktestTypedJournalPublisher:
                             TypedJournalBatch) else source_unit.base)
                         if isinstance(source_unit, V4StrategyOneEntryBatch):
                             from src.trading_runtime.strategy_one_intent import (
+                                strategy_one_add_intent,
                                 strategy_one_entry_intent,
                             )
 
                             parent_id = source_unit.base.events[0]["record_id"]
-                            sidecar = self.journal.strategy_one_entry_for_record(parent_id)
+                            sidecar = (self.journal.strategy_one_entry_for_record(parent_id)
+                                       if source_unit.entry_evidence else
+                                       self.journal.strategy_one_add_for_record(parent_id))
                             if sidecar is None:
-                                raise RuntimeError("Committed Strategy 1 entry lost its source")
+                                raise RuntimeError("Committed Strategy 1 acquisition lost its source")
                             proposal, session_date = sidecar
-                            intent = strategy_one_entry_intent(
+                            intent = (strategy_one_entry_intent(
                                 proposal, session_date=session_date)
+                                if source_unit.entry_evidence else
+                                strategy_one_add_intent(
+                                    proposal, session_date=session_date))
                             self._committed_strategy_intents[intent.intent_id] = (
                                 _committed_intent_source(
                                     batch, source_unit.base.events[0]["record_id"]),

@@ -14,6 +14,7 @@ from src.backend.backtest_strategy_one_management import StrategyOneManagementRu
 from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryScheduler
 from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 from src.trading_runtime.runtime import RunMode
+from src.trading_runtime.order_management import OrderManagementState
 from src.trading_runtime.strategy_engine import (
     AssignmentStatus, StrategyAssignment, StrategyPermissions,
 )
@@ -52,11 +53,20 @@ class _Runtime:
                                       strategy_revision=1)
         self.journal = BacktestMemoryJournal(run_id="test")
         self.broker = _Broker()
-        self.order_manager = SimpleNamespace(snapshots=lambda: [])
+        self.order_manager = SimpleNamespace(snapshots=lambda: [
+            SimpleNamespace(
+                group_id="G1", account_id="DU1", assignment_id="A1",
+                ticker="AAA", action="enter_long",
+                state=OrderManagementState.WORKING,
+                filled_quantity=1., entry_submission_closed=True)
+        ])
         self.actions = actions
 
     async def submit_strategy_one_proposal(self, proposal):
         return [{"order_group": "G1", "decision": {"status": "approved"}}]
+
+    async def submit_strategy_one_add(self, proposal):
+        raise AssertionError("No completed resistance add is present")
 
     async def submit_strategy_one_protection(self, *_args, **_kwargs):
         raise AssertionError("No later held boundary may need protection")

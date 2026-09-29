@@ -19,7 +19,9 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from src.trading_runtime.journal_contract import canonical_json
-from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+from src.trading_runtime.arte_strategy_one_entry_schema import (
+    ADD_EVIDENCE, ENTRY_EVIDENCE,
+)
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
@@ -481,7 +483,8 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name,
+                    ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
                     V4_ALLOCATION.name, RESERVATION_REASON.name,
@@ -528,6 +531,25 @@ def _load_verified_details_v4(
                                               events[parent_id], run_id, batch_id)
         except ValueError as exc:
             raise RuntimeError("V4 Strategy 1 entry evidence differs from its parent") from exc
+    add_parents = {str(UUID(str(row["record_id"]))): row for row in
+                   related_rows.get("trading_strategy_intent_v1", ())
+                   if row["reason"] == "strategy_one_add"}
+    add_children = related_rows.get(ADD_EVIDENCE.name, ())
+    if len(add_parents) != len(add_children):
+        raise RuntimeError("V4 Strategy 1 add evidence is missing or extra")
+    seen_add = set()
+    for child in add_children:
+        parent_id = str(UUID(str(child["parent_record_id"])))
+        if (parent_id in seen_add or parent_id not in add_parents
+                or parent_id not in events):
+            raise RuntimeError("V4 Strategy 1 add evidence has no unique parent")
+        seen_add.add(parent_id)
+        try:
+            _validate_strategy_one_add_link(
+                child, add_parents[parent_id], events[parent_id],
+                run_id, batch_id)
+        except ValueError as exc:
+            raise RuntimeError("V4 Strategy 1 add evidence differs from its parent") from exc
     acknowledgements = (*related_rows.get(ACKNOWLEDGEMENT.name, ()),
                         *related_rows.get(ACKNOWLEDGEMENT_V5.name, ()))
     seen_ack = set()
@@ -840,10 +862,15 @@ def publish_reservation_reason_batch_v4(client, batch, *, reasons) -> str:
         client, batch, reservation_reason_rows=reasons)
 
 
-def publish_strategy_one_entry_batch_v4(client, batch, *, entry_evidence) -> str:
-    """Commit a numbered entry and its scalar child on the writer lane."""
+def publish_strategy_one_entry_batch_v4(
+    client, batch, *, entry_evidence=(), add_evidence=(),
+) -> str:
+    """Commit one numbered acquisition and its scalar child on the writer lane."""
+    if bool(entry_evidence) == bool(add_evidence):
+        raise ValueError("Strategy 1 acquisition needs exactly one evidence family")
     return _publish_typed_batch_v4(
-        client, batch, strategy_one_entry_rows=entry_evidence)
+        client, batch, strategy_one_entry_rows=entry_evidence,
+        strategy_one_add_rows=add_evidence)
 
 
 def publish_oms_tactic_batch_v4(client, batch, *, tactic_state, tactic_steps=()) -> str:
@@ -1042,7 +1069,68 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
         raise ValueError("V4 Strategy 1 entry evidence differs from its typed parent")
 
 
+def _sealed_strategy_one_add_rows(batch, base_families, source_rows):
+    """Require one scalar child for every numbered add intent in the batch."""
+    from src.trading_runtime.arte_journal_writer import typed_row
+
+    parents = {str(UUID(str(row["record_id"]))): row for name, rows in base_families
+               if name == "trading_strategy_intent_v1" for row in rows
+               if row["reason"] == "strategy_one_add"}
+    events = {str(UUID(str(row["record_id"]))): row for name, rows in base_families
+              if name == "trading_event_v1" for row in rows}
+    if len(source_rows) != len(parents):
+        raise ValueError("V4 Strategy 1 add intent lacks exact normalized evidence")
+    seen = set()
+    sealed = []
+    for source in source_rows:
+        row = typed_row(ADD_EVIDENCE.name, source)
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        parent = parents.get(parent_id)
+        event = events.get(parent_id)
+        if parent_id in seen or parent is None or event is None:
+            raise ValueError("V4 Strategy 1 add evidence has no unique parent intent")
+        seen.add(parent_id)
+        _validate_strategy_one_add_link(row, parent, event,
+                                        batch.run_id, batch.batch_id)
+        sealed.append(row)
+    return tuple(sealed)
+
+
+def _validate_strategy_one_add_link(row, parent, event, run_id, batch_id):
+    """Verify scalar add facts against the independently typed parent clock."""
+    from datetime import time
+
+    source = str(event["event_time"]).replace("Z", "+00:00")
+    clock = datetime.fromisoformat(source)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    local = clock.astimezone(ZoneInfo("America/New_York"))
+    start = datetime.combine(local.date(), time(4), tzinfo=local.tzinfo)
+    elapsed = local - start
+    boundary_ms = (elapsed.days * 86_400_000 + elapsed.seconds * 1_000
+                   + elapsed.microseconds // 1_000)
+    if (row["run_id"] != run_id
+            or str(UUID(str(row["batch_id"]))) != batch_id
+            or row["event_month"] != parent["event_month"]
+            or event["account_id"] != parent["account_id"]
+            or (event["category"], event["entity_type"])
+               != ("strategy", "strategy_intent")
+            or parent["intent_id"] != event["entity_id"]
+            or parent["action"] != "add_long"
+            or parent["protection_profile_id"]
+               != "early-squeeze-fixed-stop-full-target"
+            or row["strategy_number"] != 1
+            or row["boundary_ms"] != boundary_ms
+            or boundary_ms <= 0 or boundary_ms % 1_000
+            or elapsed.microseconds % 1_000
+            or Decimal(str(row["resistance_midpoint"])) <= 0
+            or not row["assignment_id"] or not row["resistance_id"]
+            or row["purchase_ordinal"] not in (2, 3)):
+        raise ValueError("V4 Strategy 1 add evidence differs from its typed parent")
+
+
 def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
+                            strategy_one_add_rows=(),
                             oms_tactic_rows=None,
                             portfolio_allocation_row=None,
                             reservation_reason_rows=(),
@@ -1413,6 +1501,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         raise ValueError("V4 Strategy 1 commands need one typed lineage row each")
     entry_rows = _sealed_strategy_one_entry_rows(
         batch, base_families, strategy_one_entry_rows)
+    add_rows = _sealed_strategy_one_add_rows(
+        batch, base_families, strategy_one_add_rows)
     tactic_states = ()
     tactic_steps = ()
     if oms_tactic_rows is not None:
@@ -1452,6 +1542,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((STEP_TABLE, tactic_steps),)
     if entry_rows:
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
+    if add_rows:
+        families += ((ADD_EVIDENCE.name, add_rows),)
     if allocation_rows:
         families += ((V4_ALLOCATION.name, allocation_rows),)
     if reason_rows:

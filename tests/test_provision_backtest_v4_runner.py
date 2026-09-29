@@ -5,7 +5,9 @@ from src.trading_runtime.arte_journal_schema import (
     V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE, fixed_backtest_v2_contracts,
 )
 from src.trading_runtime.arte_backtest_definition import TABLES as DEFINITION_TABLES
-from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+from src.trading_runtime.arte_strategy_one_entry_schema import (
+    ADD_EVIDENCE, ENTRY_EVIDENCE,
+)
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
 from src.trading_runtime.arte_reservation_reason_v4 import RESERVATION_REASON
@@ -23,7 +25,8 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
         provision._v4_family_table(table)
         for table, _, _, _ in provision._FAMILIES) | frozenset(
             table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
-                ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
+                ENTRY_EVIDENCE.name, ADD_EVIDENCE.name,
+                V4_ALLOCATION.name, RESERVATION_REASON.name,
                 V4_ORDER_COMMAND_LINEAGE.name,
                 ACKNOWLEDGEMENT.name,
                 provision.CANCEL.name,
@@ -50,7 +53,8 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
     assert plan.select_arte == frozenset(
             table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
                                      V4_ORDER_COMMAND_LINEAGE,
-                                     ENTRY_EVIDENCE, V4_ALLOCATION,
+                                     ENTRY_EVIDENCE, ADD_EVIDENCE,
+                                     V4_ALLOCATION,
                                      RESERVATION_REASON,
                                      ACKNOWLEDGEMENT,
                                      provision.CANCEL,

@@ -894,6 +894,7 @@ class TradingRuntime:
         account_id: str,
         event: MarketEvent | None,
         *, strategy_one_proposal: Any | None = None,
+        strategy_one_add_proposal: Any | None = None,
         strategy_one_assignment_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
@@ -909,6 +910,7 @@ class TradingRuntime:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
 
             if (strategy_one_proposal is not None
+                    or strategy_one_add_proposal is not None
                     or self.config.mode != RunMode.BACKTEST
                     or not isinstance(self.journal, BacktestMemoryJournal)
                     or not strategy_one_assignment_id or event is not None
@@ -931,6 +933,22 @@ class TradingRuntime:
                         strategy_one_proposal,
                         session_date=self.config.anchor_date),)):
                 raise ValueError("Strategy 1 source intent lacks exact disk-free proposal")
+        if strategy_one_add_proposal is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            from .strategy_one_add import StrategyOneAddProposal
+            from .strategy_one_intent import strategy_one_add_intent
+
+            if (strategy_one_proposal is not None
+                    or self.config.mode != RunMode.BACKTEST
+                    or not isinstance(self.journal, BacktestMemoryJournal)
+                    or not isinstance(strategy_one_add_proposal,
+                                      StrategyOneAddProposal)
+                    or event is not None
+                    or account_id != strategy_one_add_proposal.account_id
+                    or evaluation.intents != (strategy_one_add_intent(
+                        strategy_one_add_proposal,
+                        session_date=self.config.anchor_date),)):
+                raise ValueError("Strategy 1 add lacks exact disk-free proposal")
         if evaluation.intents and self.intent_planner is None:
             raise ValueError("Strategy emitted semantic intents but the runtime has no intent planner")
         if evaluation.intents and self.order_manager is None:
@@ -948,6 +966,13 @@ class TradingRuntime:
             if strategy_one_proposal is not None:
                 self.journal.append_strategy_one_intent(
                     intent=intent, proposal=strategy_one_proposal,
+                    session_date=self.config.anchor_date,
+                    account_id=account_id,
+                    strategy_id=self.config.strategy_id,
+                    strategy_revision=self.config.strategy_revision)
+            elif strategy_one_add_proposal is not None:
+                self.journal.append_strategy_one_add_intent(
+                    intent=intent, proposal=strategy_one_add_proposal,
                     session_date=self.config.anchor_date,
                     account_id=account_id,
                     strategy_id=self.config.strategy_id,
@@ -1010,6 +1035,8 @@ class TradingRuntime:
                 await self._refresh_portfolio_from_broker()
             assignment_id = (strategy_one_proposal.assignment_id
                              if strategy_one_proposal is not None
+                             else strategy_one_add_proposal.assignment_id
+                             if strategy_one_add_proposal is not None
                              else strategy_one_assignment_id)
             if assignment_id is None:
                 decision, approved_intent = await self.portfolio.approve(
@@ -1155,6 +1182,28 @@ class TradingRuntime:
         return await self._execute_intents(
             StrategyEvaluation(intents=(intent,)), proposal.account_id, None,
             strategy_one_proposal=proposal)
+
+    async def submit_strategy_one_add(self, proposal: Any) -> list[dict[str, Any]]:
+        """Journal a normalized add witness before shared Portfolio/OMS admission."""
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from .strategy_one_add import StrategyOneAddProposal
+        from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+        from .strategy_one_intent import strategy_one_add_intent
+
+        if (self.config.mode != RunMode.BACKTEST
+                or self.config.strategy_id != STRATEGY_ID
+                or self.config.strategy_revision != STRATEGY_NUMBER
+                or not isinstance(self.journal, BacktestMemoryJournal)
+                or not isinstance(proposal, StrategyOneAddProposal)
+                or proposal.account_id not in self.config.account_ids):
+            raise ValueError("Strategy 1 add requires its numbered Backtest runtime")
+        intent = strategy_one_add_intent(
+            proposal, session_date=self.config.anchor_date)
+        if self.last_event_time is not None and intent.event_time < self.last_event_time:
+            raise ValueError("Strategy 1 add precedes the completed broker boundary")
+        return await self._execute_intents(
+            StrategyEvaluation(intents=(intent,)), proposal.account_id, None,
+            strategy_one_add_proposal=proposal)
 
     async def submit_strategy_one_protection(
         self, previous: Any, transition: Any, financial: Any, *,

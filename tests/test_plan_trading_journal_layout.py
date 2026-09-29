@@ -172,7 +172,9 @@ def test_v3_plan_includes_only_missing_normalized_squeeze_and_terminal_tables(mo
 
 
 def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
-    from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+    from src.trading_runtime.arte_strategy_one_entry_schema import (
+        ADD_EVIDENCE, ENTRY_EVIDENCE,
+    )
     from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
     from src.trading_runtime.arte_order_cancel_v4 import CANCEL
     from src.trading_runtime.arte_order_reprice_v4 import REPRICE
@@ -185,7 +187,8 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
 
     assert plan.profile_contracts("commit-v4") == V4_COMMIT_TABLES + (
         V4_ORDER_COMMAND_LINEAGE,
-        ENTRY_EVIDENCE, V4_ALLOCATION, RESERVATION_REASON,
+        ENTRY_EVIDENCE, ADD_EVIDENCE,
+        V4_ALLOCATION, RESERVATION_REASON,
         ACKNOWLEDGEMENT, CANCEL, REPRICE,
         *RISK_ACTION_TABLES,
         *PROTECTION_CHANGE_TABLES,
@@ -203,7 +206,8 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
     missing, ddl = plan.plan_missing(Client(), profile="commit-v4")
     assert [table.name for table in checked] == [present]
     assert missing == (V4_COMMIT_TABLES[1].name,
-                       V4_ORDER_COMMAND_LINEAGE.name, ENTRY_EVIDENCE.name,
+                           V4_ORDER_COMMAND_LINEAGE.name, ENTRY_EVIDENCE.name,
+                           ADD_EVIDENCE.name,
                            V4_ALLOCATION.name, RESERVATION_REASON.name,
                            ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
                            *(table.name for table in RISK_ACTION_TABLES),

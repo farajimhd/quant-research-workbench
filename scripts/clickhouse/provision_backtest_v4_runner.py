@@ -42,7 +42,9 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.arte_journal_schema import PORTFOLIO_SNAPSHOT_WRITE_TABLES
 from src.trading_runtime.arte_backtest_definition import TABLES as BACKTEST_DEFINITION_TABLES
-from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+from src.trading_runtime.arte_strategy_one_entry_schema import (
+    ADD_EVIDENCE, ENTRY_EVIDENCE,
+)
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
@@ -126,7 +128,8 @@ def desired_plan() -> PrincipalPlan:
         "running", PRINCIPAL,
         frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
                                           V4_ORDER_COMMAND_LINEAGE,
-                                          ENTRY_EVIDENCE, V4_ALLOCATION,
+                                          ENTRY_EVIDENCE, ADD_EVIDENCE,
+                                          V4_ALLOCATION,
                                           RESERVATION_REASON,
                                           ACKNOWLEDGEMENT, CANCEL,
                                           REPRICE,
@@ -185,7 +188,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
     storage_preflight(admin, tables=fixed_backtest_v2_contracts())
     storage_preflight(admin, tables=V4_COMMIT_TABLES)
     storage_preflight(admin, tables=(V4_ORDER_COMMAND_LINEAGE,))
-    storage_preflight(admin, tables=(ENTRY_EVIDENCE,))
+    storage_preflight(admin, tables=(ENTRY_EVIDENCE, ADD_EVIDENCE))
     storage_preflight(admin, tables=OMS_TACTIC_TABLES)
     storage_preflight(admin, tables=BACKTEST_DEFINITION_TABLES)
     storage_preflight(admin, tables=PROTECTION_SNAPSHOT_TABLES)

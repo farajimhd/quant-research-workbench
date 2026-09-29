@@ -28,6 +28,9 @@ class StrategyOneFinancialView:
     pending_capital_request: bool
     completed_entries: int
     reentry_not_before_ms: int = 0
+    # Purchase groups in the currently held position, including accepted
+    # add orders. Partial broker fills are not separate strategy adds.
+    current_purchase_groups: int = 1
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,9 +21,9 @@ def _assignment():
 
 
 def _group(*, state=OrderManagementState.WORKING, filled=0., closed=False,
-           action="enter_long"):
+           action="enter_long", group_id="group-1"):
     return SimpleNamespace(
-        group_id="group-1", account_id="DU1", assignment_id="assignment-1",
+        group_id=group_id, account_id="DU1", assignment_id="assignment-1",
         ticker="AAA", action=action, state=state, filled_quantity=filled,
         entry_submission_closed=closed)
 
@@ -39,6 +39,30 @@ def test_financial_view_uses_exact_position_and_live_oms_state():
     assert view.position_quantity == 5.
     assert view.completed_entries == 1
     assert not view.pending_entry and not view.pending_exit
+    assert view.current_purchase_groups == 1
+
+
+def test_financial_view_counts_add_groups_not_partial_fills():
+    async def positions(_account):
+        return [SimpleNamespace(conid=123, contractDesc="AAA", position=7.)]
+
+    groups = [
+        _group(filled=5., closed=True),
+        _group(action="add_long", group_id="add-1", filled=2.,
+               state=OrderManagementState.PARTIALLY_FILLED, closed=True),
+    ]
+    manager = SimpleNamespace(snapshots=lambda: groups)
+    broker = SimpleNamespace(positions=positions)
+    view = asyncio.run(read_strategy_one_financial_view(
+        _assignment(), broker, manager))
+    assert view.current_purchase_groups == 2
+    assert not view.pending_entry
+    groups.append(_group(action="add_long", group_id="add-2",
+                         state=OrderManagementState.WORKING))
+    view = asyncio.run(read_strategy_one_financial_view(
+        _assignment(), broker, manager))
+    assert view.current_purchase_groups == 3
+    assert view.pending_entry
 
 
 def test_financial_view_retains_pending_entry_and_rejects_mismatched_group():
