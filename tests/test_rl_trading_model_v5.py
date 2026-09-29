@@ -11,6 +11,7 @@ from research.rl_trading.v1.v5_feature_binding import (
 from research.rl_trading.v1.v5_order_adapter import (
     order_seconds, empty_stop_seconds, stop_second_indices)
 from research.rl_trading.v1.features import FEATURE_NAMES
+from research.rl_trading.v1.v5_training import train_chronological_session
 
 
 def test_streaming_120_second_context_matches_full_causal_sequence():
@@ -100,6 +101,19 @@ def test_teacher_forced_encoded_second_updates_holdings_within_second():
     assert not torch.equal(after.actions, state.actions)
 
 
+def test_market_context_stays_finite_before_any_listing_has_a_price():
+    model = DynamicMarketPolicy(features=2, ticker_vocabulary=2,
+                                history_seconds=4, width=8).eval()
+    with torch.no_grad():
+        listings, context, held = model.market_context(
+            torch.zeros(1, 2, 8), torch.tensor([[1, 2]]),
+            torch.tensor([[False, False]]), torch.tensor([[100., 100., 0., 0., 0.]]),
+            torch.zeros(1, 1, dtype=torch.long),
+            torch.zeros(1, 1, dtype=torch.bool), torch.zeros(1, 1, 4))
+    assert torch.isfinite(context).all()
+    assert not listings.any() and not held.any()
+
+
 def test_dynamic_supervision_orders_sells_first_and_sizes_remaining_cash():
     trajectory = pl.DataFrame(dict(time_us=[0, 1, 2], cash=[50., 40., 120.],
                                    profit_bank=[0., 0., 0.], bought=[1, 2, 0],
@@ -187,3 +201,36 @@ def test_v5_order_adapter_reconstructs_sells_sweep_buys_and_stop():
     assert len(empty) == 1 and empty[0].token.tolist() == [0]
     assert empty[0].account[0, :3].tolist() == [100., 118., 18.]
     assert not empty[0].held_valid.any()
+
+
+def test_v5_training_streams_causal_seconds_and_updates_from_actions_and_stops(tmp_path):
+    trajectory = pl.DataFrame(dict(
+        time_us=[0, 1_000_000, 2_000_000],
+        cash=[90., 90., 100.], profit_bank=[0., 0., 2.],
+        realized_net_pnl=[0., 0., 2.],
+        bought=[1, 0, 0], sold=[0, 0, 1], open_lots=[1, 1, 0]))
+    positions = pl.DataFrame(dict(entry_us=[0], exit_us=[2_000_000],
+        ticker=['A'], episode_uid=['A:1'], quantity=[1.],
+        entry_price=[10.], exit_price=[12.], entry_fee=[0.], exit_fee=[0.],
+        net_pnl=[2.], forced_terminal=[False]))
+    orders = order_labels(trajectory, positions, 100.)
+    path = tmp_path / 'features.npy'
+    bank = np.lib.format.open_memmap(path, mode='w+', dtype=np.float32,
+                                     shape=(2, FEATURE_BANK_SECONDS, len(FEATURE_NAMES)))
+    bank[:, :3, FEATURE_NAMES.index('price_available')] = 1
+    bank[0, :3, FEATURE_NAMES.index('log_price')] = np.log([10., 11., 12.])
+    bank[1, :3, FEATURE_NAMES.index('log_price')] = np.log(10.)
+    bank.flush()
+    del bank
+    bound = FeatureBinding('2026-07-30', ('A', 'B'), 3, len(FEATURE_NAMES),
+                           path, 'hash', tmp_path/'orders.parquet', 'hash', 'plan')
+    model = DynamicMarketPolicy(features=len(FEATURE_NAMES), ticker_vocabulary=2,
+                                history_seconds=4, width=8)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    result = train_chronological_session(model, optimizer, bound, orders,
+        trajectory, positions, np.asarray([1, 2]), initial_cash=100.,
+        device=torch.device('cpu'), seconds_per_chunk=2, stop_radius=1)
+    assert result.optimization_steps == 2
+    assert (result.active_seconds, result.sampled_empty_seconds,
+            result.teacher_orders) == (2, 1, 2)
+    assert np.isfinite(result.loss) and 0 <= result.action_accuracy <= 1

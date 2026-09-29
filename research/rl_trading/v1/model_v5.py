@@ -127,7 +127,9 @@ class DynamicMarketPolicy(nn.Module):
         # the device at every second of a 57,481-step rollout.
         tokens = encoded + self.identity(ticker_id)
         weights = self.market_gate(tokens).squeeze(-1).masked_fill(
-            ~valid, torch.finfo(tokens.dtype).min).softmax(1)
+            ~valid, -1e4).softmax(1)
+        weights = weights * valid.to(weights.dtype)
+        weights = weights / weights.sum(1, keepdim=True).clamp_min(1e-12)
         summary = (tokens * weights.unsqueeze(-1)).sum(1)
         listings = self.market_mix(torch.cat((tokens,
             summary.unsqueeze(1).expand_as(tokens)), dim=-1))

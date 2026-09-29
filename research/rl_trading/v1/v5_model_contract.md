@@ -43,6 +43,13 @@ per minute. Those sampling parameters and the STOP/action balance must be
 logged with each training run. Full-session closed-loop replay, rather than
 sampled training accuracy, determines whether the policy trades at sensible
 times.
+`v5_training.py` streams the certified feature bank in chronological chunks,
+merges order and sampled STOP targets, and detaches temporal and action state
+at bounded optimizer boundaries. It starts a new state for every session.
+The empty-STOP loss weight, sampling radius/stride, chunk size, and resulting
+action/size metrics must be recorded in the run manifest. The module is a
+session training core; campaign orchestration and executable validation replay
+are still required before a full training launch.
 STOP does not mutate action memory; empty seconds can be encoded in a block
 without invoking the order decoder for every second.
 
