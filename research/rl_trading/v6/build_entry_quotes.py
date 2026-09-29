@@ -1,4 +1,4 @@
-"""Certify minimal ARTE quote evidence for sparse long entry intentions."""
+"""Certify minimal ARTE quote evidence for sparse long entry/exit intentions."""
 from __future__ import annotations
 
 import argparse
@@ -33,6 +33,7 @@ def main(argv=None) -> int:
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--ledger', type=Path, required=True)
     parser.add_argument('--date', type=date.fromisoformat, required=True)
+    parser.add_argument('--clock', choices=('entry', 'exit'), default='entry')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
     if role(args.date) not in ('train', 'development'):
@@ -58,6 +59,11 @@ def main(argv=None) -> int:
     proposals = pl.read_parquet(allocation_file).filter(pl.col('direction') == 1)
     if proposals.is_empty():
         raise ValueError('No qualified long entry proposals to bind')
+    if args.clock == 'exit':
+        if 'exit_hint_us' not in proposals.columns:
+            raise ValueError('Missing hindsight exit decision clock')
+        proposals = proposals.with_columns(pl.col('exit_hint_us').alias('time_us'))
+    filename = f'{args.clock}_quotes.parquet'
     if output.exists() and any(output.iterdir()):
         cert = output / 'complete.json'
         if cert.exists():
@@ -65,8 +71,8 @@ def main(argv=None) -> int:
             if (saved['source_certificate_sha256'] == _hash(source_cert) and
                     saved['allocation_certificate_sha256'] ==
                         _hash(allocation / 'complete.json') and
-                    _hash(output / 'entry_quotes.parquet') ==
-                        saved['entry_quotes_sha256']):
+                    saved.get('clock') == args.clock and
+                    _hash(output / filename) == saved['quotes_sha256']):
                 print(json.dumps(saved, sort_keys=True), flush=True)
                 return 0
         raise ValueError('Uncertified quote output root exists')
@@ -94,9 +100,10 @@ def main(argv=None) -> int:
             evidence.select('episode_uid').n_unique() != evidence.height):
         raise ValueError('Quote read dropped or duplicated long proposals')
     output.mkdir(parents=True, exist_ok=True)
-    path = output / 'entry_quotes.parquet'
+    path = output / filename
     evidence.write_parquet(path)
-    report = {'version': 'rl-trading-sparse-entry-quotes-v6',
+    report = {'version': 'rl-trading-sparse-decision-quotes-v6',
+              'clock': args.clock,
               'day': str(args.date), 'rows': evidence.height,
               'fresh_quotes': int(evidence['quote_available'].sum()),
               'arrival_bucket_quotes': int((evidence['quote_source'] ==
@@ -106,7 +113,7 @@ def main(argv=None) -> int:
               'missing_or_stale_quotes': int((~evidence['quote_available']).sum()),
               'source_certificate_sha256': _hash(source_cert),
               'allocation_certificate_sha256': _hash(allocation / 'complete.json'),
-              'entry_quotes_sha256': _hash(path),
+              'quotes_sha256': _hash(path),
               'scope': 'optimistic_quote_bound_fill_input_not_broker_fills'}
     temporary = output / 'complete.json.tmp'
     temporary.write_text(json.dumps(report, sort_keys=True), encoding='utf-8')

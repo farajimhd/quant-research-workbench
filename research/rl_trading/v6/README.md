@@ -86,8 +86,11 @@ It verifies the source certificate and candidate hash without fetching market
 data or recomputing the candle bank.
 
 `build_entry_quotes.py` reads one pinned ARTE 100 ms broker-liquidity bucket
-after each first-qualified *long* decision and persists only the necessary
-quote fields and availability reason. It does not write a dense quote grid.
+after each first-qualified *long* entry or hindsight exit decision (`--clock
+entry|exit`) and persists only the necessary quote fields and availability
+reason. Missing arrival buckets may use a quote known at the decision close
+only if it remains fresh at arrival; the certificate counts both sources
+separately. It does not write a dense quote grid.
 `oms.py` uses fresh displayed bid/ask size as an optimistic fill cap and the
 existing price-based share caps, with modeled IBKR fees but no extra assumed
 half-spread. Target fills can only use certified price-level volume upper
