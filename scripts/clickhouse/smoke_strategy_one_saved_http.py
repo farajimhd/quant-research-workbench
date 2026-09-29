@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import closing
+import json
 import os
 from pathlib import Path
 import sys
@@ -31,12 +32,23 @@ def _ticker(run_id: str) -> str:
 
     with closing(backtest_v4_operator_client_from_env()) as journal_client, \
             closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
-        _, _, _, plan = certified_saved_run_plan(
+        session, _, cursor, plan = certified_saved_run_plan(
             journal_client, market_client, run_id=run_id)
-    tickers = plan.tickers
-    if not tickers or len(set(tickers)) != len(tickers):
-        raise RuntimeError("Saved run has no unique certified chart ticker")
-    return tickers[0]
+        pinned = {(unit.ticker, unit.attempt_id) for unit in plan.units
+                  if unit.stage == "bars" and unit.session_date == session.isoformat()}
+        through_second = int(cursor["boundary_ms"]) // 1000
+        rows = (json.loads(line) for line in market_client.execute(
+            "SELECT ticker,attempt_id,count() AS price_rows FROM arte.bars_v1 "
+            f"WHERE build_id='{plan.build_id}' "
+            f"AND session_date=toDate('{session.isoformat()}') "
+            "AND resolution_ms=1000 AND price_valid=1 AND extremes_valid=1 "
+            f"AND bucket_index>=14400 AND bucket_index<{through_second + 14400} "
+            "GROUP BY ticker,attempt_id ORDER BY price_rows DESC LIMIT 100 "
+            "FORMAT JSONEachRow").splitlines() if line.strip())
+        for row in rows:
+            if (row["ticker"], row["attempt_id"]) in pinned:
+                return row["ticker"]
+    raise RuntimeError("Saved run has no pinned premarket price-bearing chart ticker")
 
 
 async def _probe(run_id: str, ticker: str) -> None:
@@ -86,6 +98,7 @@ async def _probe(run_id: str, ticker: str) -> None:
                 "strategy-one-v4-chart-page-v1"
                 or chart.get("run_id") != run_id
                 or chart.get("ticker") != ticker
+                or not chart.get("bars")
                 or chart.get("market_plan_token") !=
                 terminal["run"]["market_plan_token"]):
             raise RuntimeError("Saved HTTP pages differ from the selected run")
