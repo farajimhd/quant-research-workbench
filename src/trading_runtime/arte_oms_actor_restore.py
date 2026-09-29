@@ -7,13 +7,16 @@ protection changes are a separate normalized family and must be complete.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from datetime import datetime, timezone
 import re
 from typing import Any
 
 from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
 from src.trading_runtime.arte_oms_projection import RecoveredStrategyOneOmsLineage
-from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
+from src.trading_runtime.order_management import (
+    _ManagedOrderGroup, OrderManagementEngine, OrderManagementState,
+)
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     BrokerMatchSnapshotRows, verify_broker_match_snapshot,
 )
@@ -22,11 +25,56 @@ from src.trading_runtime.strategy_orders import StrategyOrderPlan
 
 @dataclass(frozen=True, slots=True)
 class TypedOmsActorImage:
+    run_id: str
+    strategy_id: str
+    strategy_revision: int
     groups: dict[str, _ManagedOrderGroup]
     group_by_client_id: dict[str, str]
     group_by_broker_id: dict[str, str]
     protection_versions: dict[tuple[str, str, str, str, str], tuple[float, bool]]
     body_entry_group_ids: frozenset[str]
+
+
+def install_typed_oms_actor_image(
+    actor: OrderManagementEngine, image: TypedOmsActorImage,
+) -> None:
+    """Install a verified image into a fresh, inert OMS actor without I/O.
+
+    This does not reconcile or command a broker and does not grant resume.
+    The caller must separately fence the run and verify the broker image.
+    """
+    if not isinstance(actor, OrderManagementEngine) or not isinstance(image, TypedOmsActorImage):
+        raise TypeError("Typed OMS installation requires an actor and image")
+    if (actor.run_id != image.run_id or actor.strategy_id != image.strategy_id
+            or actor.strategy_revision != image.strategy_revision):
+        raise RuntimeError("Typed OMS actor identity differs from its image")
+    if (actor._groups or actor._group_by_client_id or actor._group_by_broker_id
+            or actor._body_entry_group_ids or actor._entry_trade_prices
+            or getattr(actor, "_protection_versions", {})):
+        raise RuntimeError("Typed OMS actor must be fresh before installation")
+    if any(group.reprice_task is not None or group.protection_task is not None
+           for group in image.groups.values()):
+        raise RuntimeError("Typed OMS image contains an active task")
+    expected_client = {request.cOID: group.group_id
+                       for group in image.groups.values() for request in group.orders
+                       if request.cOID}
+    expected_broker = {broker_id: group.group_id
+                       for group in image.groups.values()
+                       for broker_id in group.broker_order_ids}
+    if (len(expected_client) != sum(bool(request.cOID) for group in image.groups.values()
+                                   for request in group.orders)
+            or len(expected_broker) != sum(len(group.broker_order_ids)
+                                          for group in image.groups.values())
+            or expected_client != image.group_by_client_id
+            or expected_broker != image.group_by_broker_id
+            or not image.body_entry_group_ids.issubset(image.groups)):
+        raise RuntimeError("Typed OMS image indexes differ from groups")
+    # Detach from the audit image: subsequent broker replies mutate actor state.
+    actor._groups = deepcopy(image.groups)
+    actor._group_by_client_id = dict(image.group_by_client_id)
+    actor._group_by_broker_id = dict(image.group_by_broker_id)
+    actor._body_entry_group_ids = set(image.body_entry_group_ids)
+    actor._protection_versions = dict(image.protection_versions)
 
 
 def verify_typed_oms_broker_open_orders(
@@ -225,5 +273,6 @@ def reconstruct_typed_oms_actor_image(
                 or record.event_time > cutoff_at or key[0] not in groups):
             raise RuntimeError("Typed OMS protection history differs from groups")
         versions[key] = (float(payload["price"]), bool(payload["active"]))
-    return TypedOmsActorImage(groups, by_client, by_broker, versions,
+    return TypedOmsActorImage(run_id, strategy_id, strategy_revision,
+                              groups, by_client, by_broker, versions,
                               frozenset(body_ids))

@@ -14,6 +14,7 @@ import platform
 import re
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,8 +41,10 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.arte_journal_reader import load_complete_typed_protection_history
 from src.trading_runtime.arte_oms_actor_restore import (
-    reconstruct_typed_oms_actor_image, verify_typed_oms_broker_open_orders,
+    install_typed_oms_actor_image, reconstruct_typed_oms_actor_image,
+    verify_typed_oms_broker_open_orders,
 )
+from src.trading_runtime.order_management import OrderManagementEngine
 from src.trading_runtime.arte_oms_projection import (
     load_recovered_strategy_one_oms_lineage,
 )
@@ -152,6 +155,16 @@ def audit(*, run_id: str, build_id: str, session: date,
             strategy_revision=STRATEGY_NUMBER,
             through_sequence=prefix.last_sequence, cutoff_at=boundary)
         verify_typed_oms_broker_open_orders(oms_image, broker)
+        oms_actor = OrderManagementEngine(
+            broker=MagicMock(), planner=MagicMock(), risk=MagicMock(),
+            journal=MagicMock(), run_id=run_id, strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_NUMBER)
+        install_typed_oms_actor_image(oms_actor, oms_image)
+        if (set(oms_actor._groups) != set(oms_image.groups)
+                or oms_actor._group_by_client_id != oms_image.group_by_client_id
+                or oms_actor._group_by_broker_id != oms_image.group_by_broker_id
+                or oms_actor._protection_versions != oms_image.protection_versions):
+            raise RuntimeError("Cold OMS actor differs after installation")
         requests = {}
         broker_ids = {}
         for lineage in lineages:

@@ -1,16 +1,20 @@
 """Typed OMS actor images must be complete and side-effect free."""
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
 from src.trading_runtime.arte_intent_projection import RecoveredIntent
 from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
 from src.trading_runtime import arte_oms_actor_restore as restore
-from src.trading_runtime.arte_oms_actor_restore import reconstruct_typed_oms_actor_image
+from src.trading_runtime.arte_oms_actor_restore import (
+    install_typed_oms_actor_image, reconstruct_typed_oms_actor_image,
+)
 from src.trading_runtime.arte_oms_projection import (
     RecoveredOmsGroupState, RecoveredStrategyOneOmsLineage,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.order_management import OrderManagementEngine
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchSnapshotRows
 from tests.test_arte_intent_projection import intent
@@ -76,6 +80,31 @@ def test_typed_oms_actor_image_rebuilds_group_and_indexes():
         strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
         through_sequence=7, cutoff_at=AT)
     assert recovered.groups["group-1"].created_at == AT
+
+
+def test_typed_oms_image_installs_only_into_matching_fresh_actor():
+    lineage, history = _source()
+    image = reconstruct_typed_oms_actor_image(
+        (lineage,), history, run_id=RUN,
+        strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        through_sequence=7, cutoff_at=AT)
+    def actor(run_id=RUN):
+        return OrderManagementEngine(
+            broker=MagicMock(), planner=MagicMock(), risk=MagicMock(),
+            journal=MagicMock(), run_id=run_id, strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_NUMBER)
+    restored = actor()
+    install_typed_oms_actor_image(restored, image)
+    assert set(restored._groups) == set(image.groups)
+    assert restored._groups["group-1"].snapshot(restored.policy.version) == (
+        image.groups["group-1"].snapshot(restored.policy.version))
+    assert restored._groups["group-1"] is not image.groups["group-1"]
+    restored._groups["group-1"].broker_order_ids.append("new-reply")
+    assert image.groups["group-1"].broker_order_ids == ["broker-1"]
+    with pytest.raises(RuntimeError, match="fresh"):
+        install_typed_oms_actor_image(restored, image)
+    with pytest.raises(RuntimeError, match="identity"):
+        install_typed_oms_actor_image(actor("other-run"), image)
 
 
 def test_typed_oms_actor_image_rejects_incomplete_contract():
