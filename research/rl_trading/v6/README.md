@@ -37,6 +37,17 @@ role, historical origin, and presence. Empty slots are masked. Today's count
 separates streaming evidence from carried checkpoint evidence without
 duplicating separate groups of levels.
 
+`run_build.py` is the direct entry point. It accepts a certified current and
+previous market-day manifest, ledger, dates, exact runtime output path, and an
+optional repeatable `--ticker` canary subset. It pins the population, counts
+only 1-second rows to allocate exact shapes, then processes listings through
+bounded process workers. Each worker uses one read-only ClickHouse socket and
+one Polars thread. The cap is 64 concurrent listing workers, at most 128
+in-flight tasks, and a 32 GiB host reserve plus 1 GiB per worker. The launcher
+fails if those bounds are unavailable. Per-listing progress and sparse
+fragments are restartable; final parquet files and hashes certify the day.
+This compiler does not build a dense all-listing holding grid.
+
 The bracket oracle and sparse 100 ms event kernel are versioned separately.
 The certified ARTE execution-price sidecar supplies per-price volume for
 possible target fills. It does not reveal queue position; a touch alone is
