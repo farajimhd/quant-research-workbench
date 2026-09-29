@@ -26,6 +26,25 @@ Keeper logged a connection-drop warning during teardown despite successful
 completion and readback. This is one unprofiled observation, not proof of a
 speed improvement or checkpoint-resume equivalence. Interrupted-run resume
 remains closed pending complete actor restoration.
+An unprofiled repeat on `14c0ba065`, run
+`8ffb49f1-9155-409c-a8eb-8d9d1586cfa2`, passed 20.207s preflight and
+completed in 45.075s with the same 7,584 market rows, 7,785 journal events,
+58 intents, 3,682 linked actions, zero backdated actions, and zero failed
+writer units. Its 20 writer units used 29.357s of worker time; the three
+campaign units used 0.351s. Compound commits used 16.381s and the terminal
+phase waited 12.621s for the prior checkpoint. The 9.621s difference from
+the first run is uncontrolled run variation, not a measured code speedup.
+The laptop app backend was initially stale after these grants changed, and its
+old preflight blocked on an unauthorized INSERT grant. Restarting the managed
+backend (which also restarts its frontend dependent) loaded the current source.
+The full-market Aug 18 HTTP preflight then returned `ready=true`,
+`strategy_run_ready=true`, `execution_interval=100ms`, and 18 ready required
+checks. POST `/api/trading/backtest/runs` created run
+`9d38141a-b352-4605-a61e-2f018d7b88f7`; it reached `completed` after
+processing all 7,584 rows with an empty error field. The saved V4 terminal
+page returned `market_cursor_verified=true` and no limitations. Managed
+backend and frontend status were both `ready` after the run. This verifies
+the app API path, not a new browser-visual certification or interrupted resume.
 
 New V4 Backtest launches now hold a distinct lifetime Keeper run-owner claim
 (`36b2a73f4`) in addition to per-INSERT dispatch fences. The V4 runner and
