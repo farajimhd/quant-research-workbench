@@ -108,6 +108,30 @@ def _explain_difference(client, left_id: str, right_id: str,
     print(f"Journal event kinds differing: {len(count_changes)}", flush=True)
     for kind, before, after in count_changes:
         print(f"  {kind[0]}/{kind[1]}: left={before} right={after}", flush=True)
+        if kind in {("order_management", "order_group_state"),
+                    ("portfolio_management", "portfolio_reservation"),
+                    ("risk", "continuous_risk_state")}:
+            inventories = []
+            for run_id in (left_id, right_id):
+                rows = _rows(client,
+                    "SELECT entity_id,event_time,account_id,count() AS n "
+                    "FROM arte.trading_event_v1 "
+                    f"WHERE run_id={_literal(run_id)} "
+                    f"AND category={_literal(kind[0])} "
+                    f"AND entity_type={_literal(kind[1])} "
+                    "GROUP BY entity_id,event_time,account_id "
+                    "LIMIT 10001 FORMAT JSONEachRow")
+                if len(rows) > 10000:
+                    raise RuntimeError("State-event comparison exceeds bound")
+                inventories.append({
+                    (row["entity_id"], row["event_time"], row["account_id"]):
+                    int(row["n"]) for row in rows})
+            delta = [(key, inventories[0].get(key, 0), inventories[1].get(key, 0))
+                     for key in sorted(inventories[0].keys() | inventories[1].keys())
+                     if inventories[0].get(key, 0) != inventories[1].get(key, 0)]
+            print(f"    differing scalar identities: {len(delta)}", flush=True)
+            for key, old, new in delta[:12]:
+                print(f"    {key}: left={old} right={new}", flush=True)
     for table, fields in (
         ("trading_run_v1", ("configuration_hash", "code_hash",
                             "market_plan_token", "evaluation_interval_ms")),
