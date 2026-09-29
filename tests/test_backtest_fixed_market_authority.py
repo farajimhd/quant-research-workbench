@@ -9,7 +9,10 @@ from src.backend.backtest_fixed_market_authority import (
     fixed_market_authority_payload, project_fixed_market_authority,
     recover_fixed_market_authority, load_committed_fixed_market_authority,
 )
-from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
+from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
+    project_empty_market_day_plan,
+)
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_typed_projection import project_pending_backtest_prefix
 from src.trading_runtime.journal_contract import JournalRecord
@@ -68,6 +71,22 @@ def test_fixed_market_authority_projects_only_pinned_hashes_and_recovers():
         row, parent_plan=parent, execution_plan=execution) == {
             key: value for key, value in record.payload.items()
             if key not in {"correlation_id", "causation_id"}}
+
+
+def test_empty_candidate_market_authority_pins_zero_execution_tickers():
+    parent, _ = _plans()
+    parent = replace(parent, units=(MarketDayUnit(
+        "build-1", "2026-08-18", "ABCD", "bars",
+        "00000000-0000-0000-0000-000000000001", HASH, 1, HASH),))
+    execution = project_empty_market_day_plan(
+        parent, empty_candidate_token=HASH)
+    payload = fixed_market_authority_payload(parent, execution)
+    assert payload["scanner_ticker_count"] == 2
+    assert payload["execution_ticker_count"] == 0
+    assert payload["unit_count"] == 0
+    assert project_fixed_market_authority(
+        _record(parent, execution), parent_plan=parent,
+        execution_plan=execution, expected_event_time=AT).execution_plan_token == execution.token
 
 
 @pytest.mark.parametrize("change", [

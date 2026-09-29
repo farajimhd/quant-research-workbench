@@ -14,7 +14,7 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, CompletedBoundaryValidator, ExecutionInterval,
 )
-from src.backend.replay_run_service import ReplayRunController, ReplayRunService, RunMode, _fixed_market_evidence_gaps, _persisted_market_day_frame
+from src.backend.replay_run_service import ReplayRunController, ReplayRunDefinition, ReplayRunService, RunMode, _fixed_market_evidence_gaps, _persisted_market_day_frame
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.runtime import RunConfig, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
@@ -98,6 +98,39 @@ def test_public_backtest_gate_admits_only_immutable_strategy_one_100ms():
         FIXED_EXECUTION_BLOCKER)
     assert _backtest_launch_blocker(definition(selected, "events")) == (
         EVENT_EXECUTION_BLOCKER)
+
+
+def test_numbered_empty_candidate_definition_requires_exact_seal_without_v7():
+    from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+
+    candidate_token = "c" * 64
+    market_pins = {
+        "token": "a" * 64, "build_id": "build",
+        "execution_interval": {"milliseconds": 100},
+        "strategy_one_identity_token": "d" * 64,
+        "strategy_one_candidate_token": candidate_token,
+        "strategy_one_candidate_rule_digest": RULE_DIGEST,
+        "strategy_one_scan_query_sha256": "e" * 64,
+        "strategy_one_empty_candidate_token": candidate_token,
+    }
+    kwargs = dict(
+        session_date=date(2026, 8, 18), start_time=time(4),
+        end_time=time(9, 30), execution_interval="100ms",
+        mode=RunMode.BACKTEST,
+        configuration_revision={"revision_id": "strategy-one-1:test",
+            "payload": {"strategy": {"strategy_number": 1,
+                                     "revision": 1,
+                                     "execution_interval": "100ms"}}},
+        causal_v7_plan={},
+    )
+    definition = ReplayRunDefinition(**kwargs, market_data_plan=market_pins)
+    assert definition.market_data_plan["strategy_one_empty_candidate_token"] == candidate_token
+    with pytest.raises(ValueError, match="requires pinned candidates"):
+        ReplayRunDefinition(**kwargs, market_data_plan={**market_pins,
+            "strategy_one_empty_candidate_token": "0" * 64})
+    with pytest.raises(ValueError, match="requires pinned candidates"):
+        ReplayRunDefinition(**kwargs, market_data_plan={**market_pins,
+            "strategy_one_pivot_token": "p" * 64})
 
 
 def test_admitted_backtest_start_creates_no_local_authority(tmp_path, monkeypatch):

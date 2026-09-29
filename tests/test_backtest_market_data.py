@@ -14,6 +14,7 @@ from src.backend.backtest_market_data import (
     market_day_boundary,
     market_day_source_sqls,
     project_market_day_plan,
+    project_empty_market_day_plan,
     iter_market_boundary_groups,
     iter_market_day_rows,
     iter_market_time_groups,
@@ -85,6 +86,16 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertNotEqual(projected.token, plan.token)
         with self.assertRaisesRegex(ValueError, "nonempty subset"):
             project_market_day_plan(plan, ["OTHER"])
+
+    def test_empty_projection_requires_a_candidate_seal_and_has_no_rows(self) -> None:
+        plan = self._plan()
+        projected = project_empty_market_day_plan(
+            plan, empty_candidate_token="a" * 64)
+        self.assertEqual(projected.tickers, ())
+        self.assertEqual(projected.units, ())
+        self.assertNotEqual(projected.token, plan.token)
+        with self.assertRaisesRegex(ValueError, "sealed candidate"):
+            project_empty_market_day_plan(plan, empty_candidate_token="not-a-seal")
 
     def test_full_universe_stream_has_bounded_large_query_settings(self) -> None:
         with patch.dict("os.environ", {

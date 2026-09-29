@@ -80,9 +80,9 @@ def pinned_strategy_one_ticks(
 
 async def run_certified_strategy_one_session(
     *, market: CertifiedMarketDayPlan, candidates: CertifiedCandidatePlan,
-    activations: CertifiedActivationPlan, pivots: CertifiedPivotPlan,
-    hod: CertifiedHodPlan, seeds: CertifiedSeedPlan,
-    entry: CertifiedEntryEvidencePlan, prices: PriceLevelPlan,
+    activations: CertifiedActivationPlan | None, pivots: CertifiedPivotPlan | None,
+    hod: CertifiedHodPlan | None, seeds: CertifiedSeedPlan | None,
+    entry: CertifiedEntryEvidencePlan | None, prices: PriceLevelPlan,
     through_boundary_ms: int, runtime: Any,
     assignments: Sequence[StrategyAssignment],
     client_factory: Callable[[], Any],
@@ -103,13 +103,22 @@ async def run_certified_strategy_one_session(
     """
     if (not isinstance(market, CertifiedMarketDayPlan)
             or not isinstance(candidates, CertifiedCandidatePlan)
-            or not isinstance(activations, CertifiedActivationPlan)
-            or not isinstance(pivots, CertifiedPivotPlan)
-            or not isinstance(hod, CertifiedHodPlan)
-            or not isinstance(seeds, CertifiedSeedPlan)
+            or (bool(candidates.prepared) and (
+                not isinstance(activations, CertifiedActivationPlan)
+                or not isinstance(pivots, CertifiedPivotPlan)
+                or not isinstance(hod, CertifiedHodPlan)
+                or not isinstance(seeds, CertifiedSeedPlan)
+                or not isinstance(entry, CertifiedEntryEvidencePlan)))
+            or (not candidates.prepared and not (
+                all(value is None for value in (
+                    activations, pivots, hod, seeds, entry, interval_plan))
+                or (isinstance(activations, CertifiedActivationPlan)
+                    and isinstance(pivots, CertifiedPivotPlan)
+                    and isinstance(hod, CertifiedHodPlan)
+                    and isinstance(seeds, CertifiedSeedPlan)
+                    and isinstance(entry, CertifiedEntryEvidencePlan))))
             or interval_plan is not None
             and not isinstance(interval_plan, CertifiedV7IntervalPlan)
-            or not isinstance(entry, CertifiedEntryEvidencePlan)
             or not isinstance(prices, PriceLevelPlan)
             or len(market.sessions) != 1
             or market.execution_interval.kind != "fixed"

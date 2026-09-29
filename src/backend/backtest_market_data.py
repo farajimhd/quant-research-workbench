@@ -169,6 +169,28 @@ def project_market_day_plan(
     )
 
 
+def project_empty_market_day_plan(
+    plan: CertifiedMarketDayPlan, *, empty_candidate_token: str,
+) -> CertifiedMarketDayPlan:
+    """Pin an empty read scope only after a full-universe candidate seal.
+
+    No market row is fetched through this projection. The candidate token is
+    checked again at launch against the complete producer-owned coverage.
+    """
+    if (not isinstance(plan, CertifiedMarketDayPlan)
+            or len(empty_candidate_token) != 64
+            or any(char not in "0123456789abcdef" for char in empty_candidate_token)
+            or not plan.tickers or not plan.units):
+        raise ValueError("Empty market projection needs a sealed candidate scope")
+    return CertifiedMarketDayPlan(
+        execution_interval=plan.execution_interval,
+        build_id=plan.build_id, definition_hash=plan.definition_hash,
+        sessions=plan.sessions, tickers=(), units=(),
+        required_resolutions_ms=plan.required_resolutions_ms,
+        token=_stable_hash({"parent_token": plan.token, "tickers": ()}),
+    )
+
+
 def _stable_hash(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()

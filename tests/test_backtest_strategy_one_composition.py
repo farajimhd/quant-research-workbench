@@ -136,7 +136,9 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
 
 
 @pytest.mark.parametrize("active", [(), ("AAA",)])
-def test_empty_causal_horizon_never_reads_market_or_invents_boundary(monkeypatch, active):
+@pytest.mark.parametrize("no_derived_products", [False, True])
+def test_empty_causal_horizon_never_reads_market_or_invents_boundary(
+        monkeypatch, active, no_derived_products):
     market = CertifiedMarketDayPlan(
         ExecutionInterval.fixed(100), "build", "d" * 64,
         ("2026-08-18",), ("AAA",), (), (100,), "m" * 64)
@@ -169,6 +171,8 @@ def test_empty_causal_horizon_never_reads_market_or_invents_boundary(monkeypatch
         client_factory=lambda: pytest.fail("Empty horizon opened a market reader"),
         before_boundary=boundary, finish_boundary=boundary,
         manager_ready=managers.append)
+    if no_derived_products:
+        args.update(activations=None, pivots=None, hod=None, seeds=None, entry=None)
     if active:
         with pytest.raises(RuntimeError, match="active broker state"):
             asyncio.run(subject.run_certified_strategy_one_session(**args))

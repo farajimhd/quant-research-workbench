@@ -466,6 +466,9 @@ class ReplayRunDefinition:
                 raise ValueError("Backtest market-data plan does not match execution_interval")
             strategy = dict(self.configuration_revision.get("payload", {}).get("strategy") or {})
             if strategy.get("strategy_number") == 1:
+                empty_candidate_token = str(self.market_data_plan.get(
+                    "strategy_one_empty_candidate_token") or "")
+                empty_candidate = bool(empty_candidate_token)
                 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
                 from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
                 from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
@@ -483,7 +486,17 @@ class ReplayRunDefinition:
                         or self.market_data_plan.get("strategy_one_candidate_rule_digest") != RULE_DIGEST
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_scan_query_sha256") or "")) is None
-                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                        or (empty_candidate and (
+                            empty_candidate_token != self.market_data_plan.get(
+                                "strategy_one_candidate_token")
+                            or self.causal_v7_plan
+                            or any(self.market_data_plan.get(name) for name in (
+                                "strategy_one_pivot_token",
+                                "strategy_one_activation_token",
+                                "strategy_one_hod_token",
+                                "strategy_one_entry_token",
+                                "strategy_one_v7_interval_token"))))
+                        or (not empty_candidate and (re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_pivot_token") or "")) is None
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_activation_token") or "")) is None
@@ -496,7 +509,7 @@ class ReplayRunDefinition:
                         or self.market_data_plan.get("strategy_one_entry_digest") != ENTRY_DIGEST
                         or self.market_data_plan.get("strategy_one_v7_interval_digest") != V7_INTERVAL_DIGEST
                         or self.market_data_plan.get("strategy_one_hod_digest") != HOD_DIGEST
-                        or self.market_data_plan.get("strategy_one_pivot_digest") != PRODUCT_DIGEST):
+                        or self.market_data_plan.get("strategy_one_pivot_digest") != PRODUCT_DIGEST))):
                     raise ValueError("Strategy 1 requires pinned candidates, activations, pivots, V7 intervals, HOD, and entry evidence")
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
@@ -3502,7 +3515,9 @@ class ReplayRunController:
         )
 
         market = await self._fixed_certified_market_plan()
-        if not self.definition.causal_v7_plan:
+        if (not self.definition.causal_v7_plan
+                and not self.definition.market_data_plan.get(
+                    "strategy_one_empty_candidate_token")):
             raise ValueError("Strategy 1 lacks its pinned V7 seed plan")
         plans = await asyncio.to_thread(
             certify_strategy_one_fixed_plans, market, self._fixed_price_plan,
@@ -4415,7 +4430,10 @@ class ReplayRunController:
         if self.definition.mode == RunMode.BACKTEST:
             from src.backend.backtest_market_data import ExecutionInterval
             if ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed":
-                if self.definition.experimental_structure_book and not self.definition.causal_v7_plan:
+                if (self.definition.experimental_structure_book
+                        and not self.definition.causal_v7_plan
+                        and not self.definition.market_data_plan.get(
+                            "strategy_one_empty_candidate_token")):
                     raise ValueError("Fixed Backtest lacks a certified typed V7 seed plan")
                 return
         if (self.definition.mode == RunMode.BACKTEST_DEBUG
@@ -11791,6 +11809,7 @@ def backtest_preflight(
     market_data_error = ""
     causal_v7_plan: dict[str, Any] = {}
     causal_v7_error = ""
+    empty_candidate_token = ""
     strategy_parameters = dict(dict(configuration.get("strategy") or {}).get("parameters") or {})
     needs_v7 = bool(experimental_structure_book) or not bool(
         strategy_parameters.get("hindsight_long_contract")
@@ -12168,6 +12187,9 @@ def backtest_preflight(
         projection_tickers = candidate_projection_tickers(
             configuration, bar_signals["occurrences"] if bar_signals else [])
         if bar_signals is not None:
+            class _CertifiedEmptyCandidateScope(Exception):
+                """Exit dependent V7 checks after exact empty coverage is sealed."""
+
             try:
                 from src.backend.backtest_market_data import (
                     project_market_day_plan, readonly_clickhouse_client,
@@ -12196,7 +12218,9 @@ def backtest_preflight(
                         candidate_plan.scan_query_sha256)
                     projection_tickers = strategy_one_v7_tickers(candidate_plan.prepared)
                     if not projection_tickers:
-                        raise ValueError("Strategy 1 has no candidate; zero-candidate terminal authority is not typed")
+                        market_data_plan["strategy_one_empty_candidate_token"] = candidate_plan.token
+                        projected = certified
+                        raise _CertifiedEmptyCandidateScope
                     projected = project_market_day_plan(certified, projection_tickers)
                     independent_started = time.perf_counter()
                     pivot_plan, activation_plan, seed_plan = (
@@ -12273,17 +12297,24 @@ def backtest_preflight(
                 causal_v7_plan["market_projection_token"] = projected.token
                 causal_v7_plan["parent_market_plan_token"] = certified.token
                 causal_v7_error = ""
+            except _CertifiedEmptyCandidateScope:
+                causal_v7_plan = {}
+                causal_v7_error = ""
             except Exception as exc:
                 causal_v7_plan = {}
                 causal_v7_error = str(exc)
             v7_check = next(row for row in checks if row["id"] == "causal_v7_seed")
-            seed_ready = complete_strategy_one_seed_payload(
+            empty_candidate_token = market_data_plan.get(
+                "strategy_one_empty_candidate_token")
+            seed_ready = bool(empty_candidate_token) or complete_strategy_one_seed_payload(
                 causal_v7_plan, certified, projected)
             if not seed_ready and not causal_v7_error:
                 causal_v7_error = "Strategy 1 V7 seed certificate is incomplete"
                 causal_v7_plan = {}
             v7_check["status"] = "ready" if seed_ready else "blocked"
             v7_check["summary"] = (
+                "The sealed full-universe candidate coverage is empty; no V7 seed or interval is consumed."
+                if empty_candidate_token else
                 f"Pinned provisional V1 seeds and persisted V7 intervals cover {len(projected.tickers)} selected tickers; "
                 "the complete tradable universe was scanned before this computation prune."
                 if causal_v7_plan and causal_v7_plan.get("provisional") else
@@ -12292,7 +12323,8 @@ def backtest_preflight(
                 f"V7 seed or interval coverage is incomplete: {causal_v7_error}"
             )
             v7_check["evidence"] = (
-                causal_v7_plan.get("token", "") if causal_v7_plan else causal_v7_error)
+                empty_candidate_token or causal_v7_plan.get("token", "")
+                if seed_ready else causal_v7_error)
     if (execution_interval.kind == "fixed"
             and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
         identity_token = str((market_data_plan or {}).get(
@@ -12313,57 +12345,65 @@ def backtest_preflight(
         checks.append({
             "id": "strategy_one_hod_context",
             "label": "Certified causal HOD context",
-            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", hod_token) else "blocked",
+            "status": "ready" if empty_candidate_token or re.fullmatch(r"[0-9a-f]{64}", hod_token) else "blocked",
             "required": True,
             "summary": (
+                "No HOD context is consumed: certified candidate coverage is empty."
+                if empty_candidate_token else
                 "Every candidate boundary has normalized, source-pinned HOD context."
                 if hod_token else "Strategy 1 HOD context is unavailable: " +
                 (causal_v7_error or "candidate or market-data certification did not complete")
             ),
-            "evidence": hod_token or causal_v7_error,
+            "evidence": empty_candidate_token or hod_token or causal_v7_error,
         })
         pivot_token = str((market_data_plan or {}).get("strategy_one_pivot_token") or "")
         checks.append({
             "id": "strategy_one_confirmed_pivots",
             "label": "Certified completed-bar structural pivots",
-            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", pivot_token) else "blocked",
+            "status": "ready" if empty_candidate_token or re.fullmatch(r"[0-9a-f]{64}", pivot_token) else "blocked",
             "required": True,
             "summary": (
+                "No pivot intervals are consumed: certified candidate coverage is empty."
+                if empty_candidate_token else
                 "Candidate tickers have normalized, source-pinned pivot intervals."
                 if pivot_token else
                 "Strategy 1 pivot coverage is unavailable: " +
                 (causal_v7_error or "candidate or market-data certification did not complete")
             ),
-            "evidence": pivot_token or causal_v7_error,
+            "evidence": empty_candidate_token or pivot_token or causal_v7_error,
         })
         activation_token = str((market_data_plan or {}).get(
             "strategy_one_activation_token") or "")
         checks.append({
             "id": "strategy_one_activation_prices",
             "label": "Certified Early Squeeze activation prices",
-            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", activation_token) else "blocked",
+            "status": "ready" if empty_candidate_token or re.fullmatch(r"[0-9a-f]{64}", activation_token) else "blocked",
             "required": True,
             "summary": (
+                "No activation bars are consumed: certified candidate coverage is empty."
+                if empty_candidate_token else
                 "Each candidate episode starts at an exact pinned completed 100ms bar."
                 if activation_token else
                 "Strategy 1 activation bars are unavailable: " +
                 (causal_v7_error or "candidate or market-data certification did not complete")
             ),
-            "evidence": activation_token or causal_v7_error,
+            "evidence": empty_candidate_token or activation_token or causal_v7_error,
         })
         entry_token = str((market_data_plan or {}).get(
             "strategy_one_entry_token") or "")
         checks.append({
             "id": "strategy_one_entry_evidence",
             "label": "Certified causal entry evidence",
-            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", entry_token) else "blocked",
+            "status": "ready" if empty_candidate_token or re.fullmatch(r"[0-9a-f]{64}", entry_token) else "blocked",
             "required": True,
             "summary": (
+                "No entry evidence is consumed: certified candidate coverage is empty."
+                if empty_candidate_token else
                 "Every candidate has normalized, source-pinned V7/BOS and initial protection evidence."
                 if entry_token else "Strategy 1 entry evidence is unavailable: " +
                 (causal_v7_error or "candidate or source certification did not complete")
             ),
-            "evidence": entry_token or causal_v7_error,
+            "evidence": empty_candidate_token or entry_token or causal_v7_error,
         })
     signal_evidence = signal_check.get("evidence")
     if (execution_interval.kind == "fixed"

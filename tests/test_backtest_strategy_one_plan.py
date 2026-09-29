@@ -6,7 +6,9 @@ import pytest
 
 from src.backend import backtest_strategy_one_plan as subject
 from src.backend.backtest_liquidity_price import PriceLevelPlan
-from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
+from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
+)
 from src.backend.backtest_strategy_one_activation import CertifiedActivationPlan
 from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
@@ -119,3 +121,46 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
             market_pins={**pins, "strategy_one_entry_token": "wrong"},
             v7_pins=v7, client_factory=reader_factory)
     assert calls == ["closed"] * 8
+
+
+def test_certified_empty_candidate_scope_never_reads_v7_or_full_market(monkeypatch):
+    market = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "d" * 64,
+        ("2026-08-18",), ("AAA",),
+        (MarketDayUnit("build", "2026-08-18", "AAA", "bars",
+                       "00000000-0000-0000-0000-000000000001", "s" * 64,
+                       1, "o" * 64),), (100,), "m" * 64)
+    prices = PriceLevelPlan("build", (), "p" * 64)
+    candidate = CertifiedCandidatePlan(
+        "build", "r" * 64, "s" * 64, (), (), "c" * 64)
+    identity = CertifiedIdentityPlan(
+        "build", "2026-08-18", "00000000-0000-0000-0000-000000000001",
+        market.token, ("AAA",), (101,), "f" * 64, "g" * 64)
+    pins = {
+        "token": market.token, "price_level_plan_token": prices.token,
+        "strategy_one_identity_token": identity.token,
+        "strategy_one_candidate_token": candidate.token,
+        "strategy_one_candidate_rule_digest": candidate.candidate_rule_digest,
+        "strategy_one_scan_query_sha256": candidate.scan_query_sha256,
+        "strategy_one_empty_candidate_token": candidate.token,
+    }
+    monkeypatch.setattr(subject, "certify_candidate_plan", lambda *_a, **_k: candidate)
+    monkeypatch.setattr(subject, "certify_identity_plan", lambda *_a, **_k: identity)
+    monkeypatch.setattr(subject, "project_market_day_plan", lambda *_a, **_k:
+                        pytest.fail("empty candidate read projected full market"))
+    monkeypatch.setattr(subject, "certified_seed_plan", lambda *_a, **_k:
+                        pytest.fail("empty candidate read V7 seed"))
+    reader_factory = lambda: SimpleNamespace(close=lambda: None)
+    plan = subject.certify_strategy_one_fixed_plans(
+        market, prices, market_pins=pins, v7_pins={},
+        client_factory=reader_factory)
+    assert plan.execution_market.tickers == ()
+    assert plan.execution_market.units == ()
+    assert plan.candidates is candidate
+    assert (plan.activations, plan.pivots, plan.seeds, plan.v7_intervals,
+            plan.hod, plan.entry) == (None,) * 6
+    with pytest.raises(ValueError, match="empty candidate authority changed"):
+        subject.certify_strategy_one_fixed_plans(
+            market, prices, market_pins={**pins,
+                "strategy_one_empty_candidate_token": "0" * 64}, v7_pins={},
+            client_factory=reader_factory)

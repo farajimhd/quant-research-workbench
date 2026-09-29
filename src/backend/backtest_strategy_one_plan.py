@@ -14,7 +14,8 @@ from typing import Any, Callable, Mapping
 
 from src.backend.backtest_liquidity_price import PriceLevelPlan
 from src.backend.backtest_market_data import (
-    CertifiedMarketDayPlan, project_market_day_plan,
+    CertifiedMarketDayPlan, project_empty_market_day_plan,
+    project_market_day_plan,
 )
 from src.backend.backtest_strategy_one_activation import (
     CertifiedActivationPlan, load_strategy_one_activations,
@@ -49,12 +50,12 @@ class StrategyOneFixedPlans:
     execution_market: CertifiedMarketDayPlan
     prices: PriceLevelPlan
     candidates: CertifiedCandidatePlan
-    activations: CertifiedActivationPlan
-    pivots: CertifiedPivotPlan
-    seeds: CertifiedSeedPlan
-    v7_intervals: CertifiedV7IntervalPlan
-    hod: CertifiedHodPlan
-    entry: CertifiedEntryEvidencePlan
+    activations: CertifiedActivationPlan | None
+    pivots: CertifiedPivotPlan | None
+    seeds: CertifiedSeedPlan | None
+    v7_intervals: CertifiedV7IntervalPlan | None
+    hod: CertifiedHodPlan | None
+    entry: CertifiedEntryEvidencePlan | None
 
 
 def complete_strategy_one_seed_payload(
@@ -170,7 +171,20 @@ def certify_strategy_one_fixed_plans(
             raise ValueError("Strategy 1 candidate rule or full-session seal changed")
         selected = strategy_one_v7_tickers(candidates.prepared)
         if not selected:
-            raise RuntimeError("Strategy 1 zero-candidate terminal authority is not typed")
+            # The complete candidate coverage is the positive proof of an
+            # empty session. V7 and entry products have no selected ticker to
+            # certify; do not query the entire universe as a substitute.
+            if (market_pins.get("strategy_one_empty_candidate_token") != candidates.token
+                    or v7_pins
+                    or any(market_pins.get(name) for name in (
+                        "strategy_one_pivot_token", "strategy_one_activation_token",
+                        "strategy_one_hod_token", "strategy_one_entry_token",
+                        "strategy_one_v7_interval_token"))):
+                raise ValueError("Strategy 1 empty candidate authority changed")
+            return StrategyOneFixedPlans(
+                market, identities, project_empty_market_day_plan(
+                    market, empty_candidate_token=candidates.token), prices, candidates,
+                None, None, None, None, None, None)
         execution = project_market_day_plan(market, selected)
         projected_prices = prices.projected(execution)
         pivots, activations, seeds = certify_independent_strategy_one_products(
