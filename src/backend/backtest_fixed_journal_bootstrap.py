@@ -308,6 +308,14 @@ def assemble_resumed_fixed_v4_journal(
             recovery_evidence.campaign)
         assembly.journal.restore_verified_portfolio_admissions(
             recovery_evidence.oms)
+        from src.trading_runtime.arte_journal_reader import (
+            load_complete_typed_protection_history,
+        )
+        protection_history = load_complete_typed_protection_history(
+            read_client, recovery_evidence.prefix)
+        assembly.journal.restore_committed_records(protection_history.records)
+        assembly.publisher.restore_verified_oms_sources(
+            recovery_evidence.oms, protection_history)
     except BaseException:
         assembly.writer.close()
         assembly.journal.close()

@@ -135,6 +135,79 @@ class BacktestTypedJournalPublisher:
         self._committed_order_lineage_proofs: dict[str, str] = {}
         self._committed_order_lineage_oms_records: dict[str, str] = {}
 
+    def restore_verified_oms_sources(self, lineages, protection_history) -> None:
+        """Seed pre-crash source indexes from normalized committed V4 facts."""
+        from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
+        from src.trading_runtime.arte_oms_projection import (
+            RecoveredStrategyOneOmsLineage,
+        )
+
+        if (self.writer.journal_profile != "backtest_v4"
+                or not isinstance(protection_history, CompleteProtectionHistory)
+                or protection_history.run_id != self.journal.run_id
+                or protection_history.through_sequence != self._sequence
+                or self._committed_strategy_intents
+                or self._committed_order_lineage
+                or self.journal.pending_record_count):
+            raise RuntimeError("Cold OMS sources require a clean verified V4 prefix")
+        sources = {}
+        orders = {}
+        records = {}
+        proofs = {}
+        for lineage in lineages:
+            if not isinstance(lineage, RecoveredStrategyOneOmsLineage):
+                raise RuntimeError("Cold OMS source is not normalized")
+            source = lineage.source_intent
+            batch = getattr(source, "source_batch", None)
+            group = lineage.state.group
+            intent = getattr(source, "intent", None)
+            if (not isinstance(batch, TypedJournalBatch)
+                    or batch.run_id != self.journal.run_id
+                    or batch.first_sequence != source.sequence
+                    or batch.last_sequence > self._sequence
+                    or batch.batch_id != source.batch_id
+                    or batch.events[0]["record_id"] != source.record_id
+                    or group["strategy_intent_id"] != intent.intent_id):
+                raise RuntimeError("Cold OMS intent lacks its committed source batch")
+            previous = sources.setdefault(intent.intent_id, (batch, intent))
+            if previous != (batch, intent):
+                raise RuntimeError("Cold OMS intent identity is conflicting")
+            group_id = str(group["group_id"])
+            oms_record_id = str(UUID(str(group["record_id"])))
+            for order in lineage.orders:
+                raw = dict(order.raw or {})
+                if (set(raw) != {"strategy_id", "canonical_strategy_revision",
+                                 "canonical_run_id", "canonical_metadata"}
+                        or raw["canonical_run_id"] != self.journal.run_id
+                        or not isinstance(raw["canonical_metadata"], dict)
+                        or not order.cOID):
+                    raise RuntimeError("Cold OMS order lacks verified canonical lineage")
+                key = order.cOID
+                value = (raw, group["account_id"], order.ticker.upper(),
+                         order.conid, group_id, intent.intent_id)
+                if key in orders and orders[key] != value:
+                    raise RuntimeError("Cold OMS order lineage repeats a client ID")
+                orders[key] = value
+                records[key] = oms_record_id
+                meta = raw["canonical_metadata"]
+                if meta.get("reason") == "structural_profit_target_advanced":
+                    matching = [record for record in protection_history.records
+                                if record.payload.get("order_group_id") == group_id
+                                and record.payload.get("client_order_id") == key
+                                and record.payload.get("kind") == "target"
+                                and record.payload.get("phase") == "effective"
+                                and record.payload.get("intent_id") ==
+                                    meta.get("replacement_intent_id")
+                                and record.payload.get("price") ==
+                                    meta.get("target_price")]
+                    if len(matching) != 1:
+                        raise RuntimeError("Cold OMS amended order lacks one typed proof")
+                    proofs[key] = str(UUID(matching[0].record_id))
+        self._committed_strategy_intents = sources
+        self._committed_order_lineage = orders
+        self._committed_order_lineage_oms_records = records
+        self._committed_order_lineage_proofs = proofs
+
     @property
     def fenced_sequence(self) -> int:
         return self._sequence

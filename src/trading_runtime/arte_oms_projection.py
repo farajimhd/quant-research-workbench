@@ -701,7 +701,8 @@ def load_recovered_strategy_one_oms_lineage(
     for start in range(0, len(identifiers), page_size):
         chunk = tuple(identifiers[start:start + page_size])
         page = load_committed_strategy_intent_page(
-            client, prefix, limit=len(chunk), record_ids=chunk)
+            client, prefix, limit=len(chunk), record_ids=chunk,
+            include_source_batch=True)
         if len(page) != len(chunk):
             raise RuntimeError("Strategy 1 OMS intent join is incomplete")
         for row in page:

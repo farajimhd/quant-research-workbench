@@ -21,6 +21,8 @@ def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch)
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
     from src.trading_runtime.strategy_one_campaign_snapshot import project_campaign_snapshot
     from src.backend import backtest_fixed_running_anchor, backtest_v4_running_recovery
+    from src.trading_runtime import arte_journal_reader
+    from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
 
     batch_id = "00000000-0000-0000-0000-000000000a03"
     token = bootstrap.FixedV4JournalPreflightToken(
@@ -39,6 +41,10 @@ def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch)
                         "cold_verify_v4_resume_anchor", lambda *_a, **_k: anchor)
     monkeypatch.setattr(backtest_v4_running_recovery,
                         "verify_v4_recovery_at_anchor", lambda *_a: None)
+    monkeypatch.setattr(arte_journal_reader,
+                        "load_complete_typed_protection_history",
+                        lambda *_a: CompleteProtectionHistory(
+                            RUN, 7, (batch_id,), ()))
     context = dict(mode="backtest", account_ids=("DU1",),
                    configuration_hash=token.configuration_hash,
                    market_plan_token=token.market_plan_token, code_hash="d" * 64)
@@ -49,7 +55,9 @@ def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch)
     def assemble(*_args, **_kwargs):
         writer = SimpleNamespace(close=lambda: created.append("writer_closed"))
         journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=7)
-        result = SimpleNamespace(writer=writer, journal=journal)
+        result = SimpleNamespace(
+            writer=writer, journal=journal,
+            publisher=SimpleNamespace(restore_verified_oms_sources=lambda *_a: None))
         created.append(result)
         return result
 
@@ -65,11 +73,12 @@ def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch)
         expected_config={}, fixed_market_parent_plan=market,
         fixed_market_execution_plan=market,
         expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
-        code_hash="d" * 64, recovery_evidence=SimpleNamespace(campaign=rows, oms=()),
+        code_hash="d" * 64, recovery_evidence=SimpleNamespace(
+            campaign=rows, oms=(), prefix=object()),
         writer_factory=bootstrap.ArteJournalWriter)
     assert returned is anchor
     assert assembly.journal.campaign_ownership_snapshot()[0]["epoch"] == 2
-    bad = SimpleNamespace(oms=(), campaign=project_campaign_snapshot(
+    bad = SimpleNamespace(oms=(), prefix=object(), campaign=project_campaign_snapshot(
         run_id="other", session_date=date(2026, 8, 18),
         checkpoint_sequence=7, boundary_ms=100,
         journal_batch_id=batch_id, ownership=()))

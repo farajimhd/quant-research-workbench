@@ -344,6 +344,7 @@ class RecoveredIntent:
     record_id: str
     batch_id: str
     intent: StrategyIntent
+    source_batch: TypedJournalBatch | None = None
 
 
 def _stored_instant(value: str) -> str:
@@ -370,6 +371,7 @@ def load_committed_strategy_intent_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_slices: int = 4096,
     record_ids: tuple[str, ...] | None = None,
+    include_source_batch: bool = False,
 ) -> tuple[RecoveredIntent, ...]:
     """Read one bounded, fully typed intent page from a verified prefix."""
     if not _valid_prefix(prefix):
@@ -445,6 +447,7 @@ def load_committed_strategy_intent_page(
             raise RuntimeError("Protection slice lacks a committed intent parent")
         by_parent.setdefault(parent_id, []).append(canonical_row)
     recovered = []
+    commits: dict[str, dict[str, Any]] = {}
     for event in events:
         record_id = str(UUID(str(event["record_id"])))
         parent = by_id[record_id]
@@ -480,8 +483,47 @@ def load_committed_strategy_intent_page(
         reconstructed = restore_strategy_intent(
             ProjectedIntent(projected_core, tuple(projected_slices))
         )
+        source_batch = None
+        if include_source_batch:
+            from src.trading_runtime.arte_journal_commit_v4 import (
+                V4CommittedPrefix, load_verified_commit_v4,
+            )
+            from src.trading_runtime.arte_journal_writer import typed_row
+            if not isinstance(prefix, V4CommittedPrefix):
+                raise ValueError("Cold intent source batch requires V4 authority")
+            batch_id = str(UUID(str(event["batch_id"])))
+            if batch_id not in commits:
+                commits[batch_id], _ = load_verified_commit_v4(
+                    client, run_id=prefix.run_id, batch_id=batch_id)
+            commit = commits[batch_id]
+            recorded_at = datetime.fromisoformat(str(event["recorded_at"]))
+            if recorded_at.tzinfo is None:
+                recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+            source_batch = strategy_intent_batch(
+                reconstructed, run_id=prefix.run_id,
+                run_month=date.fromisoformat(str(commit["run_month"])),
+                account_id=str(event["account_id"]),
+                attempt_id=str(event["attempt_id"]),
+                batch_id=batch_id,
+                prior_batch_id=str(commit["prior_batch_id"]),
+                sequence=int(event["sequence"]),
+                source_cursor=str(commit["source_cursor"]),
+                run_status=str(commit["status"]), recorded_at=recorded_at,
+                record_id=record_id,
+                correlation_id=str(event["correlation_id"]),
+                causation_id=str(event["causation_id"]))
+            pairs = (("trading_event_v1", source_batch.events[0], event),
+                     ("trading_strategy_intent_v1", source_batch.intents[0], parent))
+            pairs += tuple(("trading_intent_protection_slice_v1", projected, stored)
+                           for projected, stored in zip(
+                               source_batch.intent_slices,
+                               sorted(by_parent.get(record_id, []),
+                                      key=lambda row: row["ordinal"]), strict=True))
+            if any(typed_row(name, projected)["content_hash"] != stored["content_hash"]
+                   for name, projected, stored in pairs):
+                raise RuntimeError("Cold source intent differs from normalized V4 rows")
         recovered.append(RecoveredIntent(
             int(event["sequence"]), str(event["account_id"]), record_id,
-            str(UUID(str(event["batch_id"]))), reconstructed,
+            str(UUID(str(event["batch_id"]))), reconstructed, source_batch,
         ))
     return tuple(recovered)

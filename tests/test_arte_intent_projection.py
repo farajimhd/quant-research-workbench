@@ -450,6 +450,10 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
     publish_base_typed_batch_v4(v4_client, v4_second)
     committed_v4 = load_verified_v4_prefix(v4_client, run_id)
     assert committed_v4 is not None
+    cold_intent = load_committed_strategy_intent_page(
+        v4_client, committed_v4, include_source_batch=True)[0]
+    assert cold_intent.source_batch is not None
+    assert cold_intent.source_batch.events[0]["record_id"] == cold_intent.record_id
     assert load_committed_strategy_one_command_page(
         v4_client, committed_v4)[0].request.raw == raw
     from src.trading_runtime.arte_journal_compound_v4 import (

@@ -130,7 +130,9 @@ def test_strategy_one_cold_join_uses_exact_intent_and_complete_history(
     monkeypatch.setattr(oms, "load_committed_oms_decision_page",
                         lambda *_a, **_k: {2: decision})
     requested = []
-    def exact_intent(_client, _prefix, *, limit, record_ids):
+    def exact_intent(_client, _prefix, *, limit, record_ids,
+                     include_source_batch):
+        assert include_source_batch
         requested.append((limit, record_ids))
         return (recovered_intent,)
     monkeypatch.setattr(intents, "load_committed_strategy_intent_page",
