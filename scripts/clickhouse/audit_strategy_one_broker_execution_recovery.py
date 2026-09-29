@@ -6,6 +6,7 @@ No result from this script grants interrupted-run resume admission.
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 import os
@@ -22,7 +23,16 @@ sys.path.insert(0, str(ROOT))
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
-from src.backend.backtest_market_data import _MarketCertificateReader, market_day_boundary
+from src.backend.backtest_market_data import (
+    _MarketCertificateReader, market_day_boundary, project_market_day_plan,
+)
+from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
+from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
+from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
+from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
+from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
+from src.backend.structural_v7_seed import certified_seed_plan
 from src.backend.backtest_strategy_one_configuration import selected_strategy_one_revision
 from src.backend.backtest_v3_clients import v3_client
 from src.backend.backtest_v4_run_context import historical_strategy_one_portfolio_profiles
@@ -61,6 +71,7 @@ from src.trading_runtime.strategy_one_evidence_snapshot import (
     load_unattested_evidence_snapshot_rows, restore_evidence_snapshot,
 )
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 from src.trading_runtime.strategy_one_management_snapshot import (
     load_unattested_manager_snapshot_rows, restore_manager_snapshot,
 )
@@ -220,6 +231,28 @@ def audit(*, run_id: str, build_id: str, session: date,
                 boundary_ms=int(broker.snapshot["boundary_ms"]),
                 state=restored.broker_match_snapshot_state()) != broker:
             raise RuntimeError("Restored broker differs from normalized checkpoint")
+        candidates = certify_candidate_plan(
+            plan, candidate_rule_digest=RULE_DIGEST,
+            through_boundary_ms=57_600_000, client=market_http)
+        selected = strategy_one_v7_tickers(candidates.prepared)
+        execution = project_market_day_plan(plan, selected)
+        seeds = certified_seed_plan(execution, market_http)
+        pivots = certify_pivot_plan(
+            plan, session_date=session.isoformat(),
+            candidate_tickers=selected, client=market_http)
+        hod = certify_hod_plan(plan, candidates, seeds, client=market_http)
+        intervals = certify_v7_interval_plan(
+            execution, seeds, session_date=session.isoformat(),
+            candidate_tickers=selected, client=market_http)
+        evidence = StrategyOneCausalEvidence(
+            market_plan=execution, seed_plan=seeds, pivot_plan=pivots,
+            hod_plan=hod, session=session, client=market_http,
+            interval_plan=intervals, precomputed_entry_facts=True)
+        asyncio.run(evidence.restore_recovery_state(
+            evidence_state,
+            financially_active_tickers=restored.financially_active_tickers()))
+        if evidence.capture_recovery_state() != evidence_state:
+            raise RuntimeError("Cold evidence actor differs after restoration")
         if any(datetime.fromisoformat(row["trade_time"]).astimezone(timezone.utc)
                > boundary for row in executions):
             raise RuntimeError("Audit found a fill after the broker checkpoint")
