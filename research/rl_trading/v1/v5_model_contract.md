@@ -30,6 +30,12 @@ each teacher order. In particular, a lot sold at the start of a second cannot
 remain a valid SELL target for the next order in that second. The trainer can
 encode chronological feature chunks once and decode only seconds with teacher
 orders, plus explicit STOP targets for sampled empty seconds.
+`v5_order_adapter.py` reconstructs those within-second teacher states from the
+certified order and position ledgers, checks cash/profit-bank/realized P&L and
+open-lot counts against the trajectory, and maps BUY/SELL tokens to the bound
+listing axis and current holding slots. It supplies only causal account and
+marked-price features to the policy; the teacher's episode IDs remain adapter
+keys and never become input features.
 STOP does not mutate action memory; empty seconds can be encoded in a block
 without invoking the order decoder for every second.
 

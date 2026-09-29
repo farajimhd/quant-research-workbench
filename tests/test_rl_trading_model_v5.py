@@ -1,12 +1,15 @@
 import polars as pl
 import torch
 import numpy as np
+import pytest
 
 from research.rl_trading.v1.dynamic_supervision import order_labels
 from research.rl_trading.v1.model_v5 import DynamicMarketPolicy
 from research.rl_trading.v1.objective_v5 import teacher_loss
 from research.rl_trading.v1.v5_feature_binding import (
     FEATURE_BANK_SECONDS, FeatureBinding, feature_chunks)
+from research.rl_trading.v1.v5_order_adapter import order_seconds
+from research.rl_trading.v1.features import FEATURE_NAMES
 
 
 def test_streaming_120_second_context_matches_full_causal_sequence():
@@ -144,3 +147,33 @@ def test_feature_chunks_stop_at_teacher_cutoff_without_window_duplication(tmp_pa
     assert [start for start, _ in chunks] == [0, 3, 6]
     assert [chunk.shape[1] for _, chunk in chunks] == [3, 3, 1]
     assert torch.cat([chunk for _, chunk in chunks], 1)[0, :, 0, 0].tolist() == list(range(7))
+
+
+def test_v5_order_adapter_reconstructs_sells_sweep_buys_and_stop():
+    trajectory = pl.DataFrame(dict(
+        time_us=[0, 1_000_000, 2_000_000], cash=[50., 50., 100.],
+        profit_bank=[0., 10., 18.], realized_net_pnl=[0., 10., 18.],
+        bought=[1, 2, 0], sold=[0, 1, 2], open_lots=[1, 2, 0]))
+    positions = pl.DataFrame(dict(
+        entry_us=[0, 1_000_000, 1_000_000],
+        exit_us=[1_000_000, 2_000_000, 2_000_000],
+        ticker=['A', 'B', 'C'], episode_uid=['A:1', 'B:1', 'C:1'],
+        quantity=[5., 3., 2.], entry_price=[10., 10., 10.],
+        exit_price=[12., 12., 11.], entry_fee=[0., 0., 0.],
+        exit_fee=[0., 0., 0.], net_pnl=[10., 6., 2.],
+        forced_terminal=[False, True, True]))
+    orders = order_labels(trajectory, positions, 100.)
+    bank = np.zeros((3, FEATURE_BANK_SECONDS, len(FEATURE_NAMES)), dtype=np.float32)
+    bank[:, :3, FEATURE_NAMES.index('price_available')] = 1
+    for second, prices in enumerate(((10., 10., 10.),
+                                     (12., 10., 10.),
+                                     (12., 12., 11.))):
+        bank[:, second, FEATURE_NAMES.index('log_price')] = np.log(prices)
+    steps = list(order_seconds(orders, trajectory, positions, bank,
+                               ('A', 'B', 'C'), initial_cash=100.))
+    assert [step.token.tolist() for step in steps] == [
+        [1, 0], [4, 2, 3, 0], [4, 4, 0]]
+    assert steps[1].account[:, 0].tolist() == [50., 100., 70., 50.]
+    assert steps[1].held_valid[:, :2].tolist() == [
+        [True, False], [False, False], [True, False], [True, True]]
+    assert steps[1].size[1:3].tolist() == pytest.approx([.3, 20/70])
