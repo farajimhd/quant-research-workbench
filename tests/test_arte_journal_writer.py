@@ -233,22 +233,46 @@ def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
     session = ManagedKeeperSession(KeeperClient())
     with pytest.raises(RuntimeError, match="writable Keeper session"):
         writer_module.backtest_v4_journal_client_from_env(keeper_session=session)
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+    session.close()
+    keeper = FakeKazoo()
+    keeper.add_listener = lambda _listener: None
+    keeper.remove_listener = lambda _listener: None
+    keeper.stop = lambda: None
+    keeper.close = lambda: None
+    session = ManagedKeeperSession(keeper)
     session._on_state("CONNECTED")
+    with pytest.raises(RuntimeError, match="same-session run owner"):
+        writer_module.backtest_v4_journal_client_from_env(
+            keeper_session=session)
+    lease = BacktestV4KeeperLease.acquire(
+        session, run_id="62908518-9fd4-4a8e-8c90-2162ccb237e1",
+        owner_id="test-worker")
     client = writer_module.backtest_v4_journal_client_from_env(
-        keeper_session=session)
+        keeper_session=session, lease=lease)
     try:
         assert client.user == "backtest_v4_runner" and client.persistent
         assert client.typed_insert_strict is True
         assert isinstance(client.typed_insert_dispatch,
                           TypedInsertDispatch)
         assert client.typed_insert_dispatch.keeper is session.client
+        assert client.backtest_v4_lease is lease
         assert len(client.v4_insert_lane_cache) == 4
         assert len({id(lane) for lane in client.v4_insert_lane_cache}) == 4
         assert all(lane is not client and lane.typed_insert_dispatch
                    is client.typed_insert_dispatch
+                   and lane.backtest_v4_lease is lease
                    for lane in client.v4_insert_lane_cache)
+        assert lease.release()
+        with pytest.raises(RuntimeError, match="lease lost"):
+            client.execute("INSERT INTO arte.trading_event_v1")
+        with pytest.raises(RuntimeError, match="lease lost"):
+            client.v4_insert_lane_cache[0].execute(
+                "INSERT INTO arte.trading_event_v1")
     finally:
         client.close()
+        lease.release()
         session.close()
     assert client.v4_insert_lane_cache == ()
 

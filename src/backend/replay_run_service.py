@@ -1199,6 +1199,7 @@ class ReplayRunController:
         self._journal_writer = None
         self._fixed_terminal_authority = None
         self._fixed_keeper_session = None
+        self._fixed_v4_lease = None
         self._fixed_v4_account_ids: tuple[str, ...] | None = None
         self._account_map: dict[str, str] = {}
         self._quotes: dict[str, QuoteEvent] = {}
@@ -3175,6 +3176,7 @@ class ReplayRunController:
             backtest_v4_operator_client_from_env,
         )
         from src.trading_runtime.keeper_session import open_workstation_keeper_session
+        from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
         from src.trading_runtime.keeper_ownership import KeeperOwnershipCoordinator
         from src.trading_runtime.arte_backtest_definition import (
             publish_backtest_definition,
@@ -3213,9 +3215,12 @@ class ReplayRunController:
             bootstrap_timings = {}
             bootstrap_phase = time.perf_counter()
             keeper = open_workstation_keeper_session()
+            lease = None
             assembly = None
             writer = None
             try:
+                lease = BacktestV4KeeperLease.acquire(
+                    keeper, run_id=self.run_id, owner_id=f"backtest-{uuid4()}")
                 with ExitStack() as control_clients:
                     context = control_clients.enter_context(closing(
                         backtest_v4_context_client_from_env(
@@ -3223,7 +3228,7 @@ class ReplayRunController:
                     reader = control_clients.enter_context(closing(
                         backtest_v4_operator_client_from_env()))
                     writer = backtest_v4_journal_client_from_env(
-                        keeper_session=keeper)
+                        keeper_session=keeper, lease=lease)
                     terminal = control_clients.enter_context(closing(
                         backtest_v4_operator_client_from_env()))
                     bootstrap_timings["strategy_one_journal_clients"] = (
@@ -3244,22 +3249,22 @@ class ReplayRunController:
                     bootstrap_phase = time.perf_counter()
                     coordinator = KeeperOwnershipCoordinator(keeper.client)
                     resource_id = f"backtest-definition:{self.run_id}"
-                    lease = coordinator.acquire_portfolio_admission_lease(
+                    definition_lease = coordinator.acquire_portfolio_admission_lease(
                         resource_id, owner_id=f"definition-{uuid4()}",
                         ttl_seconds=300.0)
-                    if lease is None:
+                    if definition_lease is None:
                         raise RuntimeError("Backtest definition launch is owned by another session")
                     try:
                         publish_backtest_definition(
                             writer, self.run_id, self.definition,
-                            keeper=coordinator, lease=lease)
+                            keeper=coordinator, lease=definition_lease)
                     finally:
                         coordinator.release_portfolio_admission_lease(
-                            resource_id, owner_id=lease["owner_id"],
-                            epoch=lease["epoch"])
+                            resource_id, owner_id=definition_lease["owner_id"],
+                            epoch=definition_lease["epoch"])
                     bootstrap_timings["strategy_one_definition_publish"] = (
                         time.perf_counter() - bootstrap_phase)
-                return assembly, keeper, bootstrap_timings
+                return assembly, keeper, lease, bootstrap_timings
             except BaseException:
                 try:
                     if assembly is not None:
@@ -3268,12 +3273,16 @@ class ReplayRunController:
                     elif writer is not None:
                         writer.close()
                 finally:
-                    keeper.close()
+                    try:
+                        if lease is not None:
+                            lease.release()
+                    finally:
+                        keeper.close()
                 raise
 
         bootstrap_started = time.perf_counter()
         try:
-            assembly, keeper, bootstrap_timings = await asyncio.to_thread(bootstrap)
+            assembly, keeper, lease, bootstrap_timings = await asyncio.to_thread(bootstrap)
         finally:
             self._record_stage_time("strategy_one_journal_bootstrap", bootstrap_started)
         for stage, elapsed in bootstrap_timings.items():
@@ -3284,10 +3293,14 @@ class ReplayRunController:
         try:
             self._attach_fixed_journal_assembly(assembly)
             self._fixed_keeper_session = keeper
+            self._fixed_v4_lease = lease
         except BaseException:
             await asyncio.to_thread(assembly.writer.close)
             assembly.journal.close()
-            await asyncio.to_thread(keeper.close)
+            try:
+                await asyncio.to_thread(lease.release)
+            finally:
+                await asyncio.to_thread(keeper.close)
             self._fixed_v4_account_ids = None
             raise
 
@@ -3316,6 +3329,8 @@ class ReplayRunController:
         self._fixed_terminal_authority = None
         keeper = getattr(self, "_fixed_keeper_session", None)
         self._fixed_keeper_session = None
+        lease = getattr(self, "_fixed_v4_lease", None)
+        self._fixed_v4_lease = None
         try:
             if writer is not None:
                 close_started = time.perf_counter()
@@ -3335,7 +3350,11 @@ class ReplayRunController:
                 if keeper is not None:
                     close_started = time.perf_counter()
                     try:
-                        await asyncio.to_thread(keeper.close)
+                        try:
+                            if lease is not None:
+                                await asyncio.to_thread(lease.release)
+                        finally:
+                            await asyncio.to_thread(keeper.close)
                     finally:
                         self._record_stage_time(
                             "strategy_one_keeper_close", close_started)

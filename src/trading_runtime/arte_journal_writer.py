@@ -249,7 +249,8 @@ def journal_client_from_env() -> Any:
     )
 
 
-def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
+def backtest_v4_journal_client_from_env(*, keeper_session=None,
+                                        lease=None) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -258,6 +259,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     from research.mlops.clickhouse import ClickHouseHttpClient
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
     from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
 
     url, user, password = _v4_runner_credentials()
     if user in {os.environ.get(key, "").strip() for key in (
@@ -268,8 +270,17 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     if (not isinstance(keeper_session, ManagedKeeperSession)
             or not keeper_session.writable):
         raise RuntimeError("V4 Backtest runner needs a caller-owned writable Keeper session")
+    if (not isinstance(lease, BacktestV4KeeperLease)
+            or lease.owner._session is not keeper_session):
+        raise RuntimeError("V4 Backtest runner needs its same-session run owner")
+    lease.assert_current()
 
     class _V4RunnerClient(ClickHouseHttpClient):
+        def execute(self, sql: str, **kwargs: Any) -> Any:
+            if isinstance(sql, str) and sql.lstrip().upper().startswith("INSERT "):
+                self.backtest_v4_lease.assert_current()
+            return super().execute(sql, **kwargs)
+
         def close(self) -> None:
             # The writer joins its publication thread before closing this
             # client. Borrowed detail connections therefore cannot outlive
@@ -298,16 +309,18 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     )
     client.typed_insert_dispatch = TypedInsertDispatch(keeper_session.client)
     client.typed_insert_strict = True
+    client.backtest_v4_lease = lease
     client.manager_keeper_session = keeper_session
     client.v4_batched_detail_readback = True
     def new_detail_lane() -> ClickHouseHttpClient:
-        lane = ClickHouseHttpClient(
+        lane = _V4RunnerClient(
             url, user, password, timeout_seconds=60, persistent=True,
             max_persistent_idle_seconds=5,
             default_query_params={"max_threads": 2, "max_execution_time": 60},
         )
         lane.typed_insert_dispatch = client.typed_insert_dispatch
         lane.typed_insert_strict = True
+        lane.backtest_v4_lease = lease
         return lane
     client.v4_insert_lane_factory = new_detail_lane
     client.v4_insert_lane_limit = 4
@@ -3652,6 +3665,15 @@ class ArteJournalWriter:
         else:
             lease = None
         self._live_v4_lease = lease
+        backtest_lease = getattr(client, "backtest_v4_lease", None)
+        if backtest_lease is not None:
+            from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+            if (journal_profile != "backtest_v4"
+                    or not isinstance(backtest_lease, BacktestV4KeeperLease)
+                    or backtest_lease.run_id != run_id):
+                raise RuntimeError("V4 Backtest writer has an invalid run owner")
+            backtest_lease.assert_current()
+        self._backtest_v4_lease = backtest_lease
         if self._run_mode == "backtest":
             account_ids = context.get("account_ids")
             if (not isinstance(account_ids, (tuple, list)) or not account_ids
@@ -4421,6 +4443,8 @@ class ArteJournalWriter:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
                 if self._live_v4_lease is not None:
                     self._live_v4_lease.assert_current()
+                if self._backtest_v4_lease is not None:
+                    self._backtest_v4_lease.assert_current()
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,

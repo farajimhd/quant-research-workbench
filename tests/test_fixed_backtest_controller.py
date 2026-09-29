@@ -170,6 +170,10 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     async def sparse_session(**kwargs):
         assert kwargs["through_boundary_ms"] == 19_800_000
         assert kwargs["assignments"] == controller._strategy.assignments()
+        def advance_empty(boundary):
+            assert boundary == 19_800_000
+        kwargs["manager_ready"](SimpleNamespace(evidence=SimpleNamespace(
+            advance_empty_boundary=advance_empty)))
         controller._stop_requested = stop_requested
         await kwargs["before_boundary"](work)
         assert controller.current_time == datetime(
