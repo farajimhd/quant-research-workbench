@@ -9,6 +9,24 @@ to SQLite or to a general ClickHouse account.
 
 ## Current verified status
 
+On `d3e7a25df`, the Backtest writer publishes a normalized campaign-ownership
+checkpoint after each committed completed-market cursor. Its two app-owned
+tables are on `live_market_ssd`; the dedicated V4 runner's exact grants and
+market-write denial passed workstation preflight. A fresh full-market
+2026-08-18 04:00–09:30 ET Strategy 1 run with $100,000 initial cash,
+`c925cda1-bd17-490e-ba65-bb13e4d8358f`, passed preflight in 28.280s and
+completed in 54.696s. It processed 7,584 persisted-market rows, committed
+7,785 normalized journal events in 20 worker units with zero failed units,
+and the saved causal audit found 58 intents, 3,682 linked actions, and zero
+backdated actions. Three campaign snapshot units used 0.396s total worker
+time. The largest observed costs were four compound commit units (19.493s)
+and terminal waiting for the prior checkpoint (15.652s); the 25.832s session
+stage overlaps asynchronous journal work, so stage totals are not additive.
+Keeper logged a connection-drop warning during teardown despite successful
+completion and readback. This is one unprofiled observation, not proof of a
+speed improvement or checkpoint-resume equivalence. Interrupted-run resume
+remains closed pending complete actor restoration.
+
 New V4 Backtest launches now hold a distinct lifetime Keeper run-owner claim
 (`36b2a73f4`) in addition to per-INSERT dispatch fences. The V4 runner and
 its bounded detail lanes reject INSERTs after that owner is lost; the writer

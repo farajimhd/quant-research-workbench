@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from src.backend import backtest_v4_running_recovery as subject
 from src.backend.backtest_strategy_one_management import StrategyOneManagementState
@@ -11,6 +11,7 @@ from src.trading_runtime.arte_oms_projection import (
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchSnapshotRows
+from src.trading_runtime.strategy_one_campaign_snapshot import project_campaign_snapshot
 
 
 RUN = "00000000-0000-0000-0000-000000000a01"
@@ -32,6 +33,12 @@ def _install(monkeypatch, *, open_orders=(), oms=(), moved=False):
                         lambda *_a, **_k: StrategyOneEvidenceState(100, (), (), ()))
     monkeypatch.setattr(subject, "load_attested_broker_match_snapshot",
                         lambda *_a, **_k: broker)
+    campaign = project_campaign_snapshot(
+        run_id=RUN, session_date=date(2026, 8, 18),
+        checkpoint_sequence=7, boundary_ms=100,
+        journal_batch_id=BATCH, ownership=())
+    monkeypatch.setattr(subject, "load_attested_campaign_snapshot",
+                        lambda *_a, **_k: campaign)
     monkeypatch.setattr(subject, "load_recovered_strategy_one_oms_lineage",
                         lambda *_a, **_k: oms)
     monkeypatch.setattr(subject, "load_completed_broker_quotes",
@@ -49,6 +56,7 @@ def test_v4_running_recovery_joins_exact_empty_oms(monkeypatch):
     assert result.prefix == PREFIX
     assert result.manager.boundary_ms == 100
     assert result.oms == ()
+    assert result.campaign.snapshot["owner_count"] == 0
 
 
 def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
@@ -136,6 +144,21 @@ def test_v4_running_recovery_rejects_mismatched_evidence_boundary(monkeypatch):
             market_client=object(), market_plan=object())
 
 
+def test_v4_running_recovery_rejects_mismatched_campaign_boundary(monkeypatch):
+    _install(monkeypatch)
+    wrong = project_campaign_snapshot(
+        run_id=RUN, session_date=date(2026, 8, 18),
+        checkpoint_sequence=7, boundary_ms=200,
+        journal_batch_id=BATCH, ownership=())
+    monkeypatch.setattr(subject, "load_attested_campaign_snapshot",
+                        lambda *_a, **_k: wrong)
+    with pytest.raises(RuntimeError, match="differ from pinned accounts or cursor"):
+        subject.load_v4_running_recovery_evidence(
+            object(), run_id=RUN, account_ids=("DU1",),
+            manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
+            market_client=object(), market_plan=object(), campaign_keeper=object())
+
+
 def test_v4_broker_state_uses_exact_open_oms_request(monkeypatch):
     lineage = _open_order_lineage()
     _install(monkeypatch, open_orders=({"broker_order_id": "broker-1",
@@ -195,7 +218,7 @@ def test_v4_broker_state_rejects_missing_open_oms_request(monkeypatch):
         evidence.prefix, evidence.portfolio_images, evidence.manager, evidence.evidence,
         BrokerMatchSnapshotRows(evidence.broker.snapshot, evidence.broker.accounts,
                                 (), ({"broker_order_id": "orphan"},), (), ()),
-        (), evidence.quotes)
+        (), evidence.quotes, evidence.campaign)
     with pytest.raises(RuntimeError, match="lacks open OMS request"):
         subject.reconstruct_v4_broker_state(orphan)
 
