@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from datetime import date, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -12,7 +13,9 @@ from src.backend.backtest_market_data import (
     market_day_boundary,
 )
 from src.backend.backtest_strategy_one_activation import StrategyOneActivation
-from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
+from src.backend.backtest_strategy_one_evidence import (
+    StrategyOneCausalEvidence, StrategyOneEvidenceState,
+)
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
@@ -23,6 +26,58 @@ from src.backend.backtest_strategy_one_preparation import StrategyOneEntryCursor
 from src.backend.structural_v7_seed import CertifiedSeedPlan
 from src.trading_runtime.strategy_one_pivot_product import PivotInterval
 from src.trading_runtime.strategy_one_hod_product import HodContext
+from src.trading_runtime.strategy_one_activation_state import (
+    ActivationCatalog, FrozenActivation,
+)
+from src.trading_runtime.strategy_one_resistance import ResistanceObservation
+
+
+def test_typed_evidence_capture_and_restore_primes_only_active_v7():
+    source = object.__new__(StrategyOneCausalEvidence)
+    source.session = date(2026, 8, 18)
+    source._precomputed_entry_facts = True
+    source._break_boundary_ms = 330_000
+    source._resistance = {"TEST": ResistanceObservation(330_000, 101_000)}
+    source._completed_breaks = {}
+    source.activations = ActivationCatalog()
+    source.activations.add(FrozenActivation("TEST", 301_000, 100_000, None, ()))
+    source._completed_30s = {"TEST": dict(boundary_ms=330_000, low_int=99_000,
+                                           price_valid=1, extremes_valid=1)}
+    state = source.capture_recovery_state()
+    assert isinstance(state, StrategyOneEvidenceState)
+    assert state.completed_30s_lows == (("TEST", 330_000, 99_000),)
+
+    restored = object.__new__(StrategyOneCausalEvidence)
+    restored.session = source.session
+    restored._precomputed_entry_facts = True
+    restored._break_boundary_ms = 0
+    restored._resistance = {}
+    restored._completed_breaks = {}
+    restored.activations = ActivationCatalog()
+    restored._completed_30s = {}
+    restored._levels = AsyncMock(return_value=())
+    asyncio.run(restored.restore_recovery_state(
+        state, financially_active_tickers=("TEST",)))
+    assert restored.capture_recovery_state() == state
+    restored._levels.assert_awaited_once_with("TEST", 330_000)
+    with pytest.raises(ValueError, match="fresh typed boundary"):
+        asyncio.run(restored.restore_recovery_state(
+            state, financially_active_tickers=("TEST",)))
+    # A newly submitted entry can make a ticker active before its first
+    # price-bearing resistance observation; the missing state is legitimate.
+    fresh = object.__new__(StrategyOneCausalEvidence)
+    fresh.session = source.session
+    fresh._precomputed_entry_facts = True
+    fresh._break_boundary_ms = 0
+    fresh._resistance = {}
+    fresh._completed_breaks = {}
+    fresh.activations = ActivationCatalog()
+    fresh._completed_30s = {}
+    fresh._levels = AsyncMock(return_value=())
+    asyncio.run(fresh.restore_recovery_state(
+        StrategyOneEvidenceState(330_000, (), (), ()),
+        financially_active_tickers=("TEST",)))
+    assert fresh._break_boundary_ms == 330_000
 
 
 def test_activation_and_later_candidate_use_same_completed_second_stream():

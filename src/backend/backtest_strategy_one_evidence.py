@@ -55,6 +55,16 @@ class StrategyOneEntryEvidence:
     protection: ProtectionTransition | None
 
 
+@dataclass(frozen=True, slots=True)
+class StrategyOneEvidenceState:
+    """Scalar/typed checkpoint source; persistence must use normalized rows."""
+
+    boundary_ms: int
+    resistance: tuple[tuple[str, ResistanceObservation], ...]
+    activations: tuple[FrozenActivation, ...]
+    completed_30s_lows: tuple[tuple[str, int, int], ...]
+
+
 class StrategyOneCausalEvidence:
     """One sequential, read-only V7/BOS lane per candidate ticker."""
 
@@ -101,6 +111,77 @@ class StrategyOneCausalEvidence:
         self._completed_breaks: dict[str, tuple[ResistanceBreak, ...]] = {}
         self._break_boundary_ms = 0
         self._completed_30s: dict[str, Mapping[str, Any]] = {}
+
+    def capture_recovery_state(self) -> StrategyOneEvidenceState:
+        """Capture only future-relevant scalar state, never market arrays."""
+        if not self._precomputed_entry_facts or self._break_boundary_ms <= 0:
+            raise RuntimeError("Strategy 1 evidence capture needs certified completed facts")
+        lows = tuple(sorted(
+            (ticker, int(row["boundary_ms"]), int(row["low_int"]))
+            for ticker, row in self._completed_30s.items()
+            if row.get("price_valid") == 1 and row.get("extremes_valid") == 1
+            and type(row.get("low_int")) is int and row["low_int"] > 0
+            and 0 <= self._break_boundary_ms - int(row["boundary_ms"]) < 30_000
+        ))
+        return StrategyOneEvidenceState(
+            self._break_boundary_ms, tuple(sorted(self._resistance.items())),
+            tuple(value for _, value in sorted(self.activations._by_episode.items())),
+            lows)
+
+    async def restore_recovery_state(
+        self, state: StrategyOneEvidenceState, *,
+        financially_active_tickers: tuple[str, ...],
+    ) -> None:
+        """Restore a typed state into fresh evidence, priming V7 by SELECT.
+
+        The journal reader must first verify a normalized state family at the
+        same V4 checkpoint. This method does no persistence or broker work.
+        """
+        if (not self._precomputed_entry_facts
+                or not isinstance(state, StrategyOneEvidenceState)
+                or type(state.boundary_ms) is not int
+                or not 0 < state.boundary_ms <= 57_600_000
+                or state.boundary_ms % 100
+                or self._break_boundary_ms or self._resistance
+                or self.activations._by_episode or self._completed_30s
+                or not isinstance(financially_active_tickers, tuple)
+                or len(set(financially_active_tickers)) != len(financially_active_tickers)
+                or any(not ticker or ticker != ticker.upper()
+                       for ticker in financially_active_tickers)):
+            raise ValueError("Strategy 1 evidence restore needs a fresh typed boundary")
+        resistance = dict(state.resistance)
+        if (len(resistance) != len(state.resistance)
+                or any(not ticker or ticker != ticker.upper()
+                       or not isinstance(value, ResistanceObservation)
+                       or value.boundary_ms > state.boundary_ms
+                       for ticker, value in state.resistance)):
+            raise ValueError("Strategy 1 resistance state differs from checkpoint")
+        catalog = ActivationCatalog()
+        for activation in state.activations:
+            if (not isinstance(activation, FrozenActivation)
+                    or activation.boundary_ms > state.boundary_ms):
+                raise ValueError("Strategy 1 activation state crossed checkpoint")
+            catalog.add(activation)
+        lows = {}
+        for ticker, boundary, low_int in state.completed_30s_lows:
+            if (ticker in lows or not ticker or ticker != ticker.upper()
+                    or type(boundary) is not int or boundary % 30_000
+                    or not 0 <= state.boundary_ms - boundary < 30_000
+                    or type(low_int) is not int or low_int <= 0):
+                raise ValueError("Strategy 1 completed 30s state is malformed")
+            lows[ticker] = dict(
+                session_date=self.session.isoformat(), ticker=ticker,
+                resolution_ms=30_000, boundary_ms=boundary,
+                price_valid=1, extremes_valid=1, low_int=low_int)
+        # A fixed V7 interval cache can rebuild its last completed input from
+        # certified bars. Prime active streams before exposing restored state.
+        for ticker in financially_active_tickers:
+            await self._levels(ticker, state.boundary_ms)
+        self._resistance = resistance
+        self.activations = catalog
+        self._completed_30s = lows
+        self._completed_breaks = {}
+        self._break_boundary_ms = state.boundary_ms
 
     async def rehydrate_completed_prefix(
         self, works: Iterable[StrategyOneBoundaryWork], *,
