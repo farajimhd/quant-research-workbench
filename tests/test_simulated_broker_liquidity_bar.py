@@ -27,6 +27,7 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
 from src.backend.backtest_v4_broker_quote_restore import load_completed_broker_quotes
+from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
 from tests.test_trading_runtime import quote, trade
 
 
@@ -227,6 +228,30 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quote["AAPL"].ask, 10.0)
         self.assertEqual(quote["AAPL"].quote_timestamp_us,
                          rows.tickers[0]["quote_timestamp_us"])
+        recovered_state = reconstruct_broker_match_state(
+            rows, requests_by_broker_id={
+                order.order_id: order.request
+                for order in self.broker._orders.values()
+                if order.status.value == rows.open_orders[0]["status"]},
+            quotes=quote)
+        restored = SimulatedBrokerAdapter(
+            ["TEST"], self.broker.config, mode=RunMode.BACKTEST,
+            initial_time=START)
+        await restored.initialize()
+        restored.restore_checkpoint_state(recovered_state)
+        self.assertEqual(restored.broker_match_snapshot_state(),
+                         self.broker.broker_match_snapshot_state())
+        next_at = at + timedelta(milliseconds=100)
+        next_row = bar(next_at, ask_size=20)
+        original_fills = await self.broker.on_liquidity_bar(next_row, at=next_at)
+        recovered_fills = await restored.on_liquidity_bar(next_row, at=next_at)
+        self.assertEqual(original_fills, recovered_fills)
+        with self.assertRaisesRegex(RuntimeError, "exact quote identities"):
+            reconstruct_broker_match_state(
+                rows, requests_by_broker_id={
+                    row["broker_order_id"]: self.broker._orders[
+                        row["broker_order_id"]].request
+                    for row in rows.open_orders}, quotes={})
         class MissingReader(Reader):
             def execute(self, sql):
                 super().execute(sql)
