@@ -102,3 +102,66 @@ def recover_fixed_market_authority(
             or row.parent_market_plan_token != parent_plan.token):
         raise ValueError("Fixed market authority row differs from pinned run plans")
     return fixed_market_authority_payload(parent_plan, execution_plan)
+
+
+def load_committed_fixed_market_authority(
+    client: Any, prefix: Any, *, parent_plan: CertifiedMarketDayPlan,
+    execution_plan: CertifiedMarketDayPlan, expected_start: datetime,
+) -> dict[str, Any]:
+    """Verify the original normalized authority before a resumed run reuses it."""
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime.arte_journal_writer import (
+        _CONTRACTS, _canonical_typed_content, _committed_batch_filter,
+        _literal, _rows,
+    )
+    from src.trading_runtime.journal_contract import canonical_json
+
+    _validate_plans(parent_plan, execution_plan)
+    if (not isinstance(prefix, V4CommittedPrefix)
+            or expected_start.tzinfo is None):
+        raise ValueError("Fixed market authority needs a verified V4 run")
+    name = "trading_backtest_market_authority_v1"
+    columns = ",".join(column for column, _ in _CONTRACTS[name].columns)
+    rows = _rows(client,
+        f"SELECT {columns} FROM arte.{name} "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"{_committed_batch_filter(prefix)} "
+        "LIMIT 2 FORMAT JSONEachRow")
+    if len(rows) != 1:
+        raise RuntimeError("Fixed market authority lacks one committed detail")
+    detail = rows[0]
+    event_name = "trading_event_v1"
+    event_columns = ",".join(column for column, _ in _CONTRACTS[event_name].columns)
+    events = _rows(client,
+        f"SELECT {event_columns} FROM arte.{event_name} "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND record_id=toUUID({_literal(detail['record_id'])}) "
+        f"{_committed_batch_filter(prefix)} "
+        "LIMIT 2 FORMAT JSONEachRow")
+    if len(events) != 1:
+        raise RuntimeError("Fixed market authority lacks one committed event")
+    event = events[0]
+    for table, row in ((name, detail), (event_name, event)):
+        content = {key: value for key, value in row.items()
+                   if key != "content_hash"}
+        digest = sha256(canonical_json(_canonical_typed_content(
+            table, content, stored_utc=True)).encode()).hexdigest()
+        if digest != str(row["content_hash"]):
+            raise RuntimeError("Fixed market authority row differs from its hash")
+    event_time = datetime.fromisoformat(str(event["event_time"]))
+    if event_time.tzinfo is None:
+        event_time = event_time.replace(tzinfo=timezone.utc)
+    if (detail["record_id"] != event["record_id"]
+            or detail["batch_id"] != event["batch_id"]
+            or detail["account_id"] or event["account_id"]
+            or event["category"] != "data_authority"
+            or event["entity_type"] != "source_revision"
+            or event["entity_id"] != "fixed_market_data"
+            or event_time.astimezone(timezone.utc)
+               != expected_start.astimezone(timezone.utc)
+            or detail["execution_plan_token"] != execution_plan.token
+            or detail["parent_market_plan_token"] != parent_plan.token):
+        raise RuntimeError("Fixed market authority differs from pinned start")
+    payload = fixed_market_authority_payload(parent_plan, execution_plan)
+    return {key: value for key, value in payload.items()
+            if key != "source_key"}

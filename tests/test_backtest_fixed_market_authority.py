@@ -7,7 +7,7 @@ import pytest
 
 from src.backend.backtest_fixed_market_authority import (
     fixed_market_authority_payload, project_fixed_market_authority,
-    recover_fixed_market_authority,
+    recover_fixed_market_authority, load_committed_fixed_market_authority,
 )
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -17,6 +17,7 @@ from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_journal_writer import (
     _sealed_families, load_committed_prefix, publish_typed_batch,
 )
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.arte_journal_schema import backtest_market_authority_upgrade_ddl
 from tests.test_arte_journal_writer import MemoryClient
 
@@ -122,6 +123,13 @@ def test_fixed_market_authority_typed_fence_and_corruption_with_fake_client():
     assert publish_typed_batch(client, batch) == identity["batch_id"]
     assert client.inserts[-1] == "trading_commit_v1"
     assert load_committed_prefix(client, record.run_id) is not None
+    prefix = V4CommittedPrefix(record.run_id, 1, identity["batch_id"],
+                               "start", "running", (identity["batch_id"],))
+    assert load_committed_fixed_market_authority(
+        client, prefix, parent_plan=parent, execution_plan=execution,
+        expected_start=AT) == {
+            key: value for key, value in record.payload.items()
+            if key not in {"source_key", "correlation_id", "causation_id"}}
     client.tables["trading_backtest_market_authority_v1"][0]["execution_plan_token"] = "c" * 64
     with pytest.raises(RuntimeError, match="row content differs from its hash"):
         load_committed_prefix(client, record.run_id)

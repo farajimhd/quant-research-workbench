@@ -9578,6 +9578,9 @@ class ReplayRunService:
         from src.backend.backtest_fixed_running_anchor import (
             cold_verify_v4_resume_anchor,
         )
+        from src.backend.backtest_fixed_market_authority import (
+            load_committed_fixed_market_authority,
+        )
         from src.backend.backtest_fixed_v4_certification import (
             certify_strategy_one_v4_projection,
         )
@@ -9650,6 +9653,10 @@ class ReplayRunService:
                         evidence_keeper=ManagedEvidenceSnapshotHeadReader(keeper),
                         campaign_keeper=ManagedCampaignSnapshotHeadReader(keeper),
                         market_client=market, market_plan=plans.market)
+                    fixed_authority = load_committed_fixed_market_authority(
+                        reader, recovery.prefix, parent_plan=plans.market,
+                        execution_plan=plans.execution_market,
+                        expected_start=definition.session_start)
                     image = load_v4_fixed_runtime_image(
                         reader, recovery, anchor, profiles)
                     token = prepare_fixed_v4_journal_token(
@@ -9668,7 +9675,7 @@ class ReplayRunService:
                         writer_factory=ArteJournalWriter, batch_size=4096)
                     if journal_anchor != image.anchor:
                         raise RuntimeError("V4 actor and writer anchors differ")
-                return image, assembly, keeper, lease
+                return image, assembly, keeper, lease, fixed_authority
             except BaseException:
                 try:
                     if assembly is not None:
@@ -9684,7 +9691,7 @@ class ReplayRunService:
                         keeper.close()
                 raise
 
-        image, assembly, keeper, lease = await asyncio.to_thread(assemble)
+        image, assembly, keeper, lease, fixed_authority = await asyncio.to_thread(assemble)
         try:
             resumed = ReplayRunController(
                 definition, run_id=run_id, runtime_root=self.runtime_root,
@@ -9692,6 +9699,7 @@ class ReplayRunService:
             resumed._strategy_one_fixed_plans = plans
             resumed._fixed_market_plan = controller._fixed_market_plan
             resumed._fixed_price_plan = controller._fixed_price_plan
+            resumed._data_authority["fixed_market_data"] = fixed_authority
             resumed._attach_resumed_fixed_v4_assembly(
                 assembly, keeper=keeper, lease=lease, anchor=image.anchor)
             return resumed
