@@ -31,7 +31,7 @@ pretend to know the order size, so the $1 order minimum and 1% trade-value cap
 are evaluated in Phase 3 after sizing. A minimum two-second remaining target
 duration is enforced even when the discount-adjusted score is positive.
 
-## Phase 3 V4
+## Phase 3 V5
 
 At each second, eligible long rows with after-proxy score at least 1% compete
 for available cash. A candidate is one episode, never one independent trade per
@@ -70,6 +70,13 @@ student observations, and do not promote this teacher on simulated profit
 alone. Compare the one-second close candidate policy against next-second-fill
 replay, fees, holding times, and sealed forward sessions before training or
 deployment.
+
+Full-session Phase 3 V5 keeps the same dynamic cash algorithm but restricts its
+candidate and market snapshots to the nonempty prior-V7 population certified
+by the corresponding immutable V3 teacher. This is a feature-availability
+contract, not a max-position limit. The old teacher's Phase 2 listing identity
+must exactly match the new Phase 2 V7 day. Bounded canaries may omit this proof;
+they cannot be promoted to training or test supervision.
 
 ## Dynamic supervision export
 

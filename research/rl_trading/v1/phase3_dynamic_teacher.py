@@ -1,4 +1,4 @@
-"""V4 uncapped, cost-aware hindsight allocation on completed-second labels.
+"""V5 uncapped, cost-aware hindsight allocation on completed-second labels.
 
 Candidate scoring and order sizing are vectorized. The account transition is
 necessarily chronological because sale proceeds fund later entries. This is
@@ -14,7 +14,7 @@ import polars as pl
 from research.rl_trading.v1.costs import FixedOrderCosts
 
 
-VERSION = "hindsight-phase3-dynamic-close-v4"
+VERSION = "hindsight-phase3-dynamic-close-v5"
 
 
 def session_profit_report(trajectory: pl.DataFrame, positions: pl.DataFrame,

@@ -150,11 +150,27 @@ def test_v7_sparse_tensor_preserves_episode_join(tmp_path,monkeypatch):
     monkeypatch.setattr(build_phase3_dynamic,'runtime_root',lambda:tmp_path)
     assert build_phase3_dynamic.main([
         '--phase2',str(tmp_path),'--end-second','7','--window-seconds','2'])==0
+    with pytest.raises(ValueError,match='certified prior V7 population'):
+        build_phase3_dynamic.main(['--phase2',str(tmp_path),'--end-second','57480'])
+    prior_root=tmp_path/'prior-phase3'
+    prior_root.mkdir()
+    prior=dict(version='hindsight-phase3-long-grid-v3',date=str(DAY),
+        phase2_root=str(tmp_path),phase2_plan_hash=plan['plan_hash'],
+        phase2_plan_file_hash=file_hash(tmp_path/'plan.json'),
+        phase2_complete_file_hash=file_hash(tmp_path/'complete.json'),
+        v7_population=dict(contract='nonempty-prior-v7-at-0400-v1',
+            included=['X'],excluded={}))
+    prior['plan_hash']=digest(prior)
+    write(prior_root/'plan.json',prior)
+    write(prior_root/'complete.json',dict(plan_hash=prior['plan_hash']))
+    assert build_phase3_dynamic.main(['--phase2',str(tmp_path),'--end-second','7',
+        '--window-seconds','2','--v7-population-phase3',str(prior_root)])==0
     roots=list((tmp_path/'hindsight-phase3-dynamic'/str(DAY)).iterdir())
-    assert len(roots)==1
-    completed=__import__('json').loads((roots[0]/'complete.json').read_text())
-    assert completed['trajectory_rows']==8
-    assert completed['report']['sells']==completed['report']['buys']
+    assert len(roots)==2
+    for root in roots:
+        completed=__import__('json').loads((root/'complete.json').read_text())
+        assert completed['trajectory_rows']==8
+        assert completed['report']['sells']==completed['report']['buys']
 
 
 def test_teacher_restart_reproduces_uninterrupted_result():
