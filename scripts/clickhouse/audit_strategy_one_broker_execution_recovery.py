@@ -39,6 +39,7 @@ from src.backend.backtest_v4_run_context import historical_strategy_one_portfoli
 from src.backend.backtest_v4_broker_quote_restore import load_completed_broker_quotes
 from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
 from src.backend.backtest_v4_execution_restore import load_v4_broker_executions
+from src.backend.typed_backtest_progress import load_committed_backtest_progress
 from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
 from src.trading_runtime.arte_market_day_cold_preflight import sealed_certified_market_day_plan
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
@@ -81,7 +82,7 @@ from src.trading_runtime.strategy_one_management_snapshot import (
 
 
 def audit(*, run_id: str, build_id: str, session: date,
-          checkpoint_sequence: int) -> tuple[int, int]:
+          checkpoint_sequence: int) -> tuple[int, int, int]:
     if (platform.node().upper() != "DESKTOP-SAAI85T"
             or str(UUID(run_id)) != run_id
             or re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", build_id) is None
@@ -127,6 +128,7 @@ def audit(*, run_id: str, build_id: str, session: date,
             run_id, checkpoint_sequence, matches[0]["batch_id"],
             matches[0]["source_cursor"], matches[0]["status"],
             terminal_prefix.batch_ids[:position + 1])
+        progress = load_committed_backtest_progress(client, prefix, required=True)
         broker = load_unattested_broker_match_snapshot(
             client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
         accounts = frozenset(row["account_id"] for row in broker.accounts)
@@ -295,7 +297,8 @@ def audit(*, run_id: str, build_id: str, session: date,
             raise RuntimeError("Audit found a fill after the broker checkpoint")
         if load_verified_v4_prefix(client, run_id) != terminal_prefix:
             raise RuntimeError("Audit V4 prefix moved across reads")
-        return len(executions), len(broker.open_orders)
+        return (len(executions), len(broker.open_orders),
+                progress["controller_processed_events"])
 
 
 def main() -> None:
@@ -322,11 +325,12 @@ def main() -> None:
         checkpoint_sequence = int(selected[0]["checkpoint_sequence"])
     else:
         checkpoint_sequence = int(args.checkpoint_sequence)
-    fills, orders = audit(run_id=args.run_id, build_id=args.build_id,
-                          session=args.session,
-                          checkpoint_sequence=checkpoint_sequence)
+    fills, orders, processed = audit(
+        run_id=args.run_id, build_id=args.build_id,
+        session=args.session, checkpoint_sequence=checkpoint_sequence)
     print(f"V4 cold broker image audit passed: fills={fills} "
-          f"open_orders={orders} checkpoint_sequence={checkpoint_sequence} writes=0")
+          f"open_orders={orders} processed_rows={processed} "
+          f"checkpoint_sequence={checkpoint_sequence} writes=0")
 
 
 if __name__ == "__main__":
