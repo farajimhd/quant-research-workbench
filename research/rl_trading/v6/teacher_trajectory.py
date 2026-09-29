@@ -38,6 +38,18 @@ def _period(us: int) -> str:
             'regular' if minute < 960 else 'after_hours')
 
 
+def _debit_nonnegative(balance: float, amount: float) -> float:
+    """Subtract a committed amount, removing only IEEE-754 cancellation dust."""
+    if (not math.isfinite(balance) or not math.isfinite(amount) or
+            balance < 0 or amount < 0):
+        raise ValueError('Invalid teacher account debit')
+    remaining = math.fsum((balance, -amount))
+    tolerance = 16*math.ulp(max(balance, amount, 1.))
+    if remaining < -tolerance:
+        raise ValueError('Teacher debit exceeds available balance')
+    return max(0., remaining)
+
+
 @dataclass(frozen=True)
 class Intent:
     ticker: str
@@ -186,8 +198,8 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
                 pending_buys.items()):
             if source[0] >= clock:
                 continue
-            cash -= spend
-            reserved = max(0., reserved-spend)
+            cash = _debit_nonnegative(cash, spend)
+            reserved = _debit_nonnegative(reserved, spend)
             fees += shares*FEE_PER_SHARE
             holdings[ticker] = Holding(intent, shares, clock)
             outcomes.append(ExecutionOutcome(source[0], source[1], clock,
@@ -206,7 +218,7 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
             fees += shares*FEE_PER_SHARE
             realized += pnl
             if pnl > 0:
-                cash -= pnl
+                cash = _debit_nonnegative(cash, pnl)
                 profit_bank += pnl
             outcomes.append(ExecutionOutcome(source[0], source[1], clock,
                 2, intent.listing_index, 1., 1.,

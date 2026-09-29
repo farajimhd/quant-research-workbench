@@ -1,6 +1,8 @@
 from datetime import date
 import math
 
+import pytest
+
 import numpy as np
 import polars as pl
 
@@ -8,7 +10,13 @@ from research.rl_trading.v6.bank import SessionBank
 from research.rl_trading.v6.features import SCALAR_NAMES
 from research.rl_trading.v6.session_data import PackedSession
 from research.rl_trading.v6.teacher_trajectory import (
-    bind_intents, compile_trajectory)
+    _debit_nonnegative, bind_intents, compile_trajectory)
+
+
+def test_teacher_account_debit_rejects_overspend_but_clears_roundoff():
+    assert _debit_nonnegative(.3, .1 + .2) == 0.
+    with pytest.raises(ValueError, match='exceeds available'):
+        _debit_nonnegative(100., 100.01)
 
 
 def test_quote_free_teacher_emits_delayed_account_actions(tmp_path):
