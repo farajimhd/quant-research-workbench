@@ -38,6 +38,8 @@ from research.rl_trading.v6.features import (CandleFeatures, LEVEL_NAMES,
                                              SCALAR_NAMES, VERSION, encode)
 from research.rl_trading.v6.opportunity import compile_ticker
 from research.rl_trading.v6.source import read_candles, read_previous_volume
+from research.rl_trading.v6.reference import read_reference
+from research.rl_trading.v6.split import role
 
 
 _READER = None
@@ -71,7 +73,7 @@ def _work(packet):
                 if ticker in prior['units'][str(previous_day)] else
                 pl.DataFrame(schema={'bucket_index': pl.Int64,
                                      'volume': pl.Float64}))
-    seed, splits, fundamentals, evidence = reference_features.read_reference(
+    seed, splits, fundamentals, evidence = read_reference(
         _READER, day, listing)
     episodes, candidates, report = compile_ticker(
         day, ticker, identity, bars, indicators)
@@ -180,6 +182,9 @@ def main(argv=None) -> int:
     parser.add_argument('--ticker', action='append', dest='tickers')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
+    split_role = role(args.date)
+    if split_role == 'context_only':
+        raise ValueError('Context-only day cannot produce V6 opportunity labels')
     runtime = Path(os.environ.get('QW_RUNTIME_ROOT', '')).resolve()
     output = args.output.resolve()
     if (not runtime.is_dir() or not output.is_relative_to(runtime) or
@@ -208,6 +213,7 @@ def main(argv=None) -> int:
     lengths = {identity: counts[by_identity[identity]['ticker']]
                for identity in identities}
     plan = {'version': VERSION, 'day': str(args.date),
+            'split_role': split_role,
             'previous_day': str(args.previous_date),
             'source_build_id': current['build_id'],
             'previous_build_id': prior['build_id'],

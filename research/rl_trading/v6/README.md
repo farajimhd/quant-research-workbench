@@ -36,6 +36,16 @@ upper distance, total and today-only observation counts, confirmation age,
 role, historical origin, and presence. Empty slots are masked. Today's count
 separates streaming evidence from carried checkpoint evidence without
 duplicating separate groups of levels.
+Listings without a prior certified V7 coverage row retain their candles and
+opportunities with all ten level slots masked. An existing malformed or
+uncertified coverage row still fails closed; the reference certificate records
+which case occurred.
+
+The forward training split begins on July 31, 2026. July 30 is used only as
+the prior-session candle context for July 31. It contributes no V6 training
+labels or trades. This avoids inventing a July 29 ARTE product that has no
+certified pre-open population. Development remains August 24–25; August 26
+stays sealed until checkpoint selection.
 
 `run_build.py` is the direct entry point. It accepts a certified current and
 previous market-day manifest, ledger, dates, exact runtime output path, and an

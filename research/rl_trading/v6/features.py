@@ -149,7 +149,7 @@ class _LevelIndex:
 
 
 def encode(day: date, bars: pl.DataFrame, indicators: pl.DataFrame,
-           prior_bars: pl.DataFrame, seed: dict, splits: list[dict],
+           prior_bars: pl.DataFrame, seed: dict | None, splits: list[dict],
            fundamentals: dict, *, prior_close_us: int | None = None,
            ) -> CandleFeatures:
     """Encode one listing once, using only completed data available by each close.
@@ -241,28 +241,29 @@ def encode(day: date, bars: pl.DataFrame, indicators: pl.DataFrame,
         seconds_of_day >= 57_600, np.log1p(gaps), refs,
         price_ok, extrema_ok,
     )).astype(np.float32)
-    stream = FixedV7Stream(seed, ticker=seed['ticker'], session=day,
-                           splits=splits, consume_seed=True)
     level_tensor = np.zeros((len(index), 2, LEVELS_PER_SIDE,
                              len(LEVEL_NAMES)), dtype=np.float32)
-    session = day.isoformat()
-    cached_revision = None
-    level_index = None
-    for position, (row, end_us, good, close) in enumerate(zip(
-            bars.iter_rows(named=True), close_us, extrema_ok, raw[:, 3])):
-        at = datetime.fromtimestamp(end_us / 1_000_000, timezone.utc)
-        if good:
-            stream.update_second(row, at=at)
-        context = stream.context(as_of=at, price=float(close) if good else 0.)
-        if float(context['v7_max_input_timestamp']) * 1_000_000 > end_us + 1:
-            raise ValueError('V7 consumed a future completed candle')
-        revision = getattr(stream.engine, '_projection_revision', 0)
-        if revision != cached_revision:
-            level_index = _LevelIndex(context['qmd_structure_unified_levels'],
-                                      session, stream.engine.rows)
-            cached_revision = revision
-        level_tensor[position] = level_index.render(
-            float(close) if good else 0., int(end_us))
+    if seed is not None:
+        stream = FixedV7Stream(seed, ticker=seed['ticker'], session=day,
+                               splits=splits, consume_seed=True)
+        session = day.isoformat()
+        cached_revision = None
+        level_index = None
+        for position, (row, end_us, good, close) in enumerate(zip(
+                bars.iter_rows(named=True), close_us, extrema_ok, raw[:, 3])):
+            at = datetime.fromtimestamp(end_us / 1_000_000, timezone.utc)
+            if good:
+                stream.update_second(row, at=at)
+            context = stream.context(as_of=at, price=float(close) if good else 0.)
+            if float(context['v7_max_input_timestamp']) * 1_000_000 > end_us + 1:
+                raise ValueError('V7 consumed a future completed candle')
+            revision = getattr(stream.engine, '_projection_revision', 0)
+            if revision != cached_revision:
+                level_index = _LevelIndex(context['qmd_structure_unified_levels'],
+                                          session, stream.engine.rows)
+                cached_revision = revision
+            level_tensor[position] = level_index.render(
+                float(close) if good else 0., int(end_us))
     result = CandleFeatures(close_us.astype(np.int64), scalar, level_tensor)
     result.validate()
     return result
