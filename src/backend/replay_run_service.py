@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from uuid import uuid4
+from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 from zoneinfo import ZoneInfo
 
@@ -9500,6 +9500,68 @@ class ReplayRunService:
         await self._admit(controller)
         await controller.start()
         return controller
+
+    @staticmethod
+    def _load_typed_backtest_resume_definition(run_id: str) -> ReplayRunDefinition | None:
+        """Cold-verify a persisted definition without touching a disk run.
+
+        The absence of a typed context is different from an invalid or
+        incomplete one. Only the former may fall through to legacy Replay.
+        This is a SELECT-only step; it never opens a journal writer.
+        """
+        from datetime import timedelta
+        from src.backend.backtest_strategy_one_configuration import (
+            selected_strategy_one_revision,
+        )
+        from src.backend.backtest_v3_clients import v3_client
+        from src.trading_runtime.arte_backtest_definition import (
+            load_backtest_definition, reconstruct_backtest_definition_from_arte,
+        )
+        from src.trading_runtime.arte_journal_writer import (
+            backtest_v4_operator_client_from_env, load_typed_run_context,
+        )
+
+        def local_clock(milliseconds: int) -> clock_time:
+            if type(milliseconds) is not int or not 0 <= milliseconds < 86_400_000:
+                raise ValueError("Saved Backtest local clock is invalid")
+            hour, remaining = divmod(milliseconds, 3_600_000)
+            minute, remaining = divmod(remaining, 60_000)
+            second, remaining = divmod(remaining, 1_000)
+            return clock_time(hour, minute, second, remaining * 1_000)
+
+        with closing(backtest_v4_operator_client_from_env()) as journal:
+            if journal.execute("SELECT getSetting('readonly')").strip() != "1":
+                raise RuntimeError("Typed Backtest definition requires a read-only journal principal")
+            canonical = str(UUID(run_id))
+            if canonical != run_id:
+                raise ValueError("Typed Backtest run ID must be canonical")
+            count = int(journal.execute(
+                "SELECT count() FROM arte.trading_run_v1 "
+                f"WHERE run_id='{canonical}'").strip())
+            if count == 0:
+                return None
+            if count != 1:
+                raise RuntimeError("Typed Backtest run context is ambiguous")
+            context = load_typed_run_context(journal, run_id)
+            saved = load_backtest_definition(journal, run_id, run_context=context)
+        parent = saved["definition"]
+        session = date.fromisoformat(context["session_date"])
+        with closing(v3_client("read")) as market:
+            if market.execute("SELECT getSetting('readonly')").strip() != "1":
+                raise RuntimeError("Typed Backtest definition requires a read-only market principal")
+            revision = selected_strategy_one_revision(
+                revision_id=parent["configuration_revision_id"], client=market)
+        preflight = backtest_preflight(
+            anchor_date=session + timedelta(days=1), session_count=1,
+            start_time=local_clock(parent["start_local_ms"]),
+            end_time=local_clock(parent["end_local_ms"]),
+            initial_cash=float(parent["initial_cash"]),
+            tickers=tuple(row["ticker"] for row in saved["tickers"]),
+            configuration_revision=revision,
+            experimental_structure_book=parent["structure_book"],
+        )
+        return reconstruct_backtest_definition_from_arte(
+            saved, context, revision, preflight)
 
     async def review_saved(self, run_id: str) -> ReplayRunController:
         normalized = str(run_id or "").strip()
