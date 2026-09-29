@@ -11,6 +11,7 @@ from concurrent.futures import Future, InvalidStateError
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
+from functools import lru_cache
 from hashlib import sha256
 import json
 import logging
@@ -1326,17 +1327,33 @@ def _datetime_wire(value: Any, scale: int, *, stored_utc: bool = False) -> str:
     return result + fraction[6:] if scale == 9 else result
 
 
+@lru_cache(maxsize=None)
+def _typed_content_shape(name: str) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
+    contract = _CONTRACTS.get(name)
+    if contract is None:
+        raise ValueError("Unknown typed journal family")
+    columns = tuple(contract.columns)
+    return frozenset(column for column, _ in columns if column != "content_hash"), columns
+
+
+@lru_cache(maxsize=None)
+def _decimal_content_bounds(base: str) -> tuple[int, Decimal, Decimal]:
+    decimal_type = re.fullmatch(r"Decimal\((\d+),\s*(\d+)\)", base)
+    if decimal_type is None:
+        raise ValueError(f"Unsupported typed decimal {base}")
+    precision, scale = map(int, decimal_type.groups())
+    return scale, Decimal(1).scaleb(-scale), Decimal(10) ** (precision - scale)
+
+
 def _canonical_typed_content(
     name: str, row: Mapping[str, Any], *, stored_utc: bool = False,
 ) -> dict[str, Any]:
     """Canonicalize every persisted field for reproducible row-hash recovery."""
-    if name not in _CONTRACTS:
-        raise ValueError("Unknown typed journal family")
-    expected = {column for column, _ in _CONTRACTS[name].columns} - {"content_hash"}
+    expected, columns = _typed_content_shape(name)
     if set(row) != expected:
         raise ValueError(f"{name} has missing or extra typed columns")
     canonical: dict[str, Any] = {}
-    for column, kind in _CONTRACTS[name].columns:
+    for column, kind in columns:
         if column == "content_hash":
             continue
         value = row[column]
@@ -1352,20 +1369,17 @@ def _canonical_typed_content(
         elif base.startswith("DateTime64(6"):
             canonical[column] = _datetime_wire(value, 6, stored_utc=stored_utc)
         elif base.startswith("Decimal("):
-            decimal_type = re.fullmatch(r"Decimal\((\d+),\s*(\d+)\)", base)
-            if decimal_type is None:
-                raise ValueError(f"Unsupported typed decimal {name}.{column}: {base}")
-            precision, scale = map(int, decimal_type.groups())
+            scale, quantum, maximum = _decimal_content_bounds(base)
             try:
                 with localcontext() as context:
                     context.prec = 50
                     number = Decimal(str(value))
-                    quantized = number.quantize(Decimal(1).scaleb(-scale))
+                    quantized = number.quantize(quantum)
             except (InvalidOperation, ValueError) as exc:
                 raise ValueError(f"{name}.{column} is not a valid decimal") from exc
             if not number.is_finite() or number != quantized:
                 raise ValueError(f"{name}.{column} loses decimal precision")
-            if quantized.copy_abs() >= Decimal(10) ** (precision - scale):
+            if quantized.copy_abs() >= maximum:
                 raise ValueError(f"{name}.{column} exceeds decimal width")
             canonical[column] = format(quantized, f".{scale}f")
         elif base.startswith("UInt"):
