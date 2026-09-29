@@ -183,17 +183,27 @@ def run_stream(times, snapshots, future: dict[int,float],
     for second in snapshots:
         if processed >= len(times):
             raise ValueError("Market stream exceeds declared timeline")
-        now = int(second["time_us"][0])
+        slim = isinstance(second, tuple)
+        if slim:
+            now, prices, candidates = second
+            now = int(now)
+        else:
+            now = int(second["time_us"][0])
         if now != int(times[processed]):
             raise ValueError("Missing or out-of-order market snapshot")
-        if population is None:
-            population = second.height
-        if (second.height != population or second["ticker"].n_unique()!=population or
-                not (second["side"] == "long").all()):
-            raise ValueError("Incomplete long market snapshot")
+        if not slim:
+            if population is None:
+                population = second.height
+            if (second.height != population or second["ticker"].n_unique()!=population or
+                    not (second["side"] == "long").all()):
+                raise ValueError("Incomplete long market snapshot")
+            prices = second.select("ticker","close_price","can_close")
+            candidates = second
+        elif (prices["ticker"].n_unique()!=prices.height or
+              candidates["ticker"].n_unique()!=candidates.height):
+            raise ValueError("Duplicate slim market rows")
         processed += 1
         terminal = now == int(times[-1])
-        prices = second.select("ticker","close_price","can_close")
         marked = held.join(prices,on="ticker",how="left",validate="m:1")
         if marked.height and (marked["close_price"].null_count() or
                               (marked["close_price"] <= 0).any()):
@@ -219,7 +229,7 @@ def run_stream(times, snapshots, future: dict[int,float],
         bought = 0
         reserve = 0.
         if not terminal and cash > 0:
-            candidates = second.filter(
+            candidates = candidates.filter(
                 pl.col("can_open") & pl.col("episode_uid").is_not_null() &
                 pl.col("open_value_per_dollar").is_finite() &
                 (pl.col("open_value_per_dollar") >= config.min_net_return) &

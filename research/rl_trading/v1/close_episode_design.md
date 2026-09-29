@@ -57,6 +57,10 @@ are vectorized; future episode scores use a cumulative sum rather than a
 per-second lookahead loop. A full-day build checkpoints every 60 seconds and resumes at
 the last committed second. The full model campaign requires a separately
 certified V5/V7 dataset and diagnostic replay before training.
+The streaming replay reads sparse eligible opening rows for allocation and a
+narrow complete-grid price projection for marking held positions. It verifies
+the certified holding grid at each second without joining sparse opening
+fields onto every market row.
 
 The completion report splits marked-equity profit into America/New_York
 premarket [04:00, 09:30), regular [09:30, 16:00), and after-hours

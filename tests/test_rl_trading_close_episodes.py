@@ -116,6 +116,16 @@ def test_future_episode_reserves_cash_in_bounded_window():
     trajectory,_,report=run(market,config)
     assert trajectory['reserved_for_future'][0]==pytest.approx(8_000.)
     assert report['allocation_contract'].startswith('score-normalized')
+    groups=market.partition_by('time_us',maintain_order=True)
+    slim=((int(group['time_us'][0]),group.select('ticker','close_price','can_close'),
+           group.filter(pl.col('can_open') &
+                        (pl.col('open_value_per_dollar')>=config.min_net_return)))
+          for group in groups)
+    slim_trajectory,slim_positions,slim_report=run_stream(
+        market['time_us'].unique(maintain_order=True).to_numpy(),slim,future,config)
+    assert slim_trajectory.equals(trajectory)
+    assert slim_positions.height==report['buys']
+    assert slim_report==report
 
 
 def test_two_second_episode_neither_opens_nor_reserves_cash():

@@ -13,6 +13,7 @@ from hashlib import sha256
 
 import numpy as np
 import polars as pl
+import pyarrow as pa
 
 from research.rl_trading.v1.common import bounds,digest,exclusive,file_hash
 from research.rl_trading.v1.costs import FixedOrderCosts
@@ -135,7 +136,10 @@ def main(argv=None):
         resume=progress.get('state') if progress is not None else None
         opening=source/complete['tensor']['opening']['file']
         candidates=(pl.scan_parquet(opening).filter(
-            (pl.col('side')=='long') & pl.col('time_us').is_between(int(times[0]),int(times[-1])))
+            (pl.col('side')=='long') & pl.col('can_open') &
+            pl.col('open_value_per_dollar').is_finite() &
+            (pl.col('open_value_per_dollar')>=config.min_net_return) &
+            pl.col('time_us').is_between(int(times[0]),int(times[-1])))
             .select('time_us','listing_index','episode_uid','can_open',
                     'open_value_per_dollar')
             .join(pl.scan_parquet(source/complete['tensor']['holding']['file'])
@@ -153,10 +157,33 @@ def main(argv=None):
         with MarketValues(source) as market:
             def snapshots():
                 for time_us in times[0 if resume is None else resume['processed']:]:
-                    snapshot=market.at(int(time_us)).filter(pl.col('side')=='long')
+                    holding=market.holding.at(int(time_us))
+                    if (holding is None or holding.height!=market.expected_rows or
+                            holding.select('listing_index','side').n_unique()!=market.expected_rows):
+                        raise ValueError('Incomplete certified holding grid')
+                    holding=holding.filter(pl.col('side')=='long')
                     if population:
-                        snapshot=snapshot.filter(pl.col('ticker').is_in(population['included']))
-                    yield snapshot
+                        holding=holding.filter(pl.col('ticker').is_in(population['included']))
+                    opening_rows=market.opening.at(int(time_us))
+                    if opening_rows is None:
+                        opening_rows=pl.from_arrow(pa.Table.from_batches([],
+                            schema=market.opening.parquet.schema_arrow))
+                    if (opening_rows.select('listing_index','side').n_unique()!=opening_rows.height or
+                            not opening_rows['can_open'].all()):
+                        raise ValueError('Invalid certified sparse opening rows')
+                    opening_rows=opening_rows.filter(
+                        (pl.col('side')=='long') &
+                        pl.col('open_value_per_dollar').is_finite() &
+                        (pl.col('open_value_per_dollar')>=config.min_net_return))
+                    if population:
+                        opening_rows=opening_rows.filter(
+                            pl.col('listing_index').is_in(indices))
+                    candidate_rows=holding.join(opening_rows.drop('side','time_us'),
+                        on='listing_index',how='inner',validate='1:1')
+                    # Price marking uses a narrow projection of the complete
+                    # market; only sparse eligible rows enter allocation.
+                    prices=holding.select('ticker','close_price','can_close')
+                    yield int(time_us),prices,candidate_rows
             def checkpoint(state):
                 write(progress_path,dict(plan_hash=plan['plan_hash'],
                     completed_seconds=state['processed'],total_seconds=len(times),
