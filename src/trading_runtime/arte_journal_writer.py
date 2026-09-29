@@ -328,8 +328,10 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.backtest_v4_lease = lease
         return lane
     client.v4_insert_lane_factory = new_detail_lane
-    client.v4_insert_lane_limit = 4
-    client.v4_insert_lane_cache = tuple(new_detail_lane() for _ in range(4))
+    # Independent typed families may publish concurrently; the batch cursor
+    # remains single-writer and is fenced only after full family readback.
+    client.v4_insert_lane_limit = 8
+    client.v4_insert_lane_cache = tuple(new_detail_lane() for _ in range(8))
     return client
 
 
