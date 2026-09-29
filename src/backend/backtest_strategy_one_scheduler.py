@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from contextlib import closing
 from heapq import heappop, heappush
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
 
 MarketGroup = tuple[int, Mapping[int, Mapping]]
 MarketSource = Callable[[str, int], Iterator[MarketGroup]]
+_NO_GROUP = object()
+MAX_ACTIVE_OPEN_WORKERS = 4
 
 
 class _BufferedMarketIterator(Iterator[MarketGroup]):
@@ -291,19 +294,13 @@ class StrategyOneBoundaryScheduler:
         self._prior_candidate = key
         self._candidate = row
 
-    def _advance_active(self, ticker: str) -> None:
-        source = self._active[ticker]
+    def _validate_active_group(self, ticker: str, prior: int,
+                               group: MarketGroup) -> None:
         try:
-            boundary, resolutions = next(source)
-        except StopIteration:
-            # Source exhaustion is not a financial close. The coordinator
-            # must still account for working orders and session-end policy.
-            self._exhausted.add(ticker)
-            close = getattr(source, "close", None)
-            if close is not None:
-                close()
-            return
-        if (type(boundary) is not int or boundary <= self._active_prior[ticker]
+            boundary, resolutions = group
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Active Strategy 1 source has no completed group") from exc
+        if (type(boundary) is not int or boundary <= prior
                 or boundary > 57_600_000 or boundary % 100
                 or not isinstance(resolutions, Mapping) or not resolutions
                 or any(type(resolution) is not int or resolution < 100
@@ -314,9 +311,30 @@ class StrategyOneBoundaryScheduler:
                        or row.get("resolution_ms") != resolution
                        for resolution, row in resolutions.items())):
             raise ValueError("Active Strategy 1 source is not a completed ticker boundary")
+
+    def _accept_active_group(self, ticker: str, group: MarketGroup | object) -> None:
+        source = self._active[ticker]
+        if group is _NO_GROUP:
+            # Source exhaustion is not a financial close. The coordinator
+            # must still account for working orders and session-end policy.
+            self._exhausted.add(ticker)
+            close = getattr(source, "close", None)
+            if close is not None:
+                close()
+            return
+        self._validate_active_group(ticker, self._active_prior[ticker], group)
+        boundary, resolutions = group
         self._active_prior[ticker] = boundary
         heappush(self._heads, (boundary, ticker,
                                self._generation[ticker], resolutions))
+
+    def _advance_active(self, ticker: str) -> None:
+        source = self._active[ticker]
+        try:
+            group = next(source)
+        except StopIteration:
+            group = _NO_GROUP
+        self._accept_active_group(ticker, group)
 
     def activate(self, ticker: str) -> None:
         """Begin reading strictly after the last globally processed boundary."""
@@ -359,9 +377,73 @@ class StrategyOneBoundaryScheduler:
                        or ticker != ticker.upper() for ticker in tickers)):
             raise ValueError("Active Strategy 1 financial ticker set is invalid")
         desired = set(tickers)
+        additions = sorted(desired - self._active.keys())
+        if len(additions) > 1:
+            # Independent SELECTs may start concurrently. Only this ordered
+            # coordinator installs heads and mutates the active ticker set.
+            prepared: dict[str, tuple[Iterator[MarketGroup], object]] = {}
+            failures: dict[str, BaseException] = {}
+
+            def prepare(ticker: str) -> tuple[Iterator[MarketGroup], object]:
+                source = self._active_source(ticker, self._boundary_ms)
+                if not hasattr(source, "__next__"):
+                    close = getattr(source, "close", None)
+                    if close is not None:
+                        close()
+                    raise TypeError("Active Strategy 1 source must be a lazy iterator")
+                try:
+                    return source, next(source, _NO_GROUP)
+                except BaseException:
+                    close = getattr(source, "close", None)
+                    if close is not None:
+                        close()
+                    raise
+
+            with ThreadPoolExecutor(max_workers=min(
+                    MAX_ACTIVE_OPEN_WORKERS, len(additions))) as pool:
+                futures = {pool.submit(prepare, ticker): ticker
+                           for ticker in additions}
+                for future in as_completed(futures):
+                    ticker = futures[future]
+                    try:
+                        prepared[ticker] = future.result()
+                    except BaseException as exc:
+                        failures[ticker] = exc
+            try:
+                if failures:
+                    raise failures[min(failures)]
+                for ticker in additions:
+                    _, group = prepared[ticker]
+                    if group is not _NO_GROUP:
+                        self._validate_active_group(ticker, self._boundary_ms, group)
+            except BaseException:
+                for source, _ in prepared.values():
+                    close = getattr(source, "close", None)
+                    if close is not None:
+                        close()
+                raise
+            installed: list[str] = []
+            try:
+                for ticker in additions:
+                    source, group = prepared[ticker]
+                    self._active[ticker] = source
+                    installed.append(ticker)
+                    self._active_prior[ticker] = self._boundary_ms
+                    self._generation[ticker] = self._generation.get(ticker, 0) + 1
+                    self._exhausted.discard(ticker)
+                    self._accept_active_group(ticker, group)
+            except BaseException:
+                for ticker in reversed(installed):
+                    self.deactivate(ticker)
+                for ticker in additions[len(installed):]:
+                    close = getattr(prepared[ticker][0], "close", None)
+                    if close is not None:
+                        close()
+                raise
+            additions = []
         added: list[str] = []
         try:
-            for ticker in sorted(desired - self._active.keys()):
+            for ticker in additions:
                 self.activate(ticker)
                 added.append(ticker)
         except BaseException:

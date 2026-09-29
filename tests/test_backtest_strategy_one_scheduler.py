@@ -3,6 +3,7 @@ import asyncio
 from dataclasses import replace
 import numpy as np
 import pytest
+from threading import Barrier
 from types import SimpleNamespace
 
 from src.backend.backtest_strategy_one_scheduler import (
@@ -131,6 +132,47 @@ def test_reconcile_financial_tickers_adds_after_boundary_and_removes_flat():
     assert clock.active_tickers == ()
     assert clock.pop_next() is None
     assert requests == [("AAA", 100)]
+    clock.close()
+
+
+def test_multiple_active_sources_open_concurrently_but_install_in_ticker_order():
+    rendezvous = Barrier(2)
+
+    def source(ticker, after):
+        def rows():
+            assert after == 0
+            rendezvous.wait(timeout=5)
+            yield group(ticker, 200)
+        return rows()
+
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter(()), active_source=source)
+    clock.reconcile_financial_tickers(("BBB", "AAA"))
+    work = clock.pop_next()
+    assert work.boundary_ms == 200
+    assert tuple(ticker for ticker, _ in work.broker_rows) == ("AAA", "BBB")
+    clock.close()
+
+
+def test_parallel_active_open_failure_closes_prepared_source_without_mutation():
+    closed = []
+
+    def source(ticker, _after):
+        if ticker == "CCC":
+            raise RuntimeError("source unavailable")
+        def rows():
+            try:
+                yield group(ticker, 200)
+            finally:
+                closed.append(ticker)
+        return rows()
+
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter(()), active_source=source)
+    with pytest.raises(RuntimeError, match="source unavailable"):
+        clock.reconcile_financial_tickers(("BBB", "CCC"))
+    assert clock.active_tickers == ()
+    assert closed == ["BBB"]
     clock.close()
 
 
