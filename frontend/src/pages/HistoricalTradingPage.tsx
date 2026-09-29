@@ -523,7 +523,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           <section className="backtest-v4-running-card backtest-v4-running-timings"><h2>{terminal ? "Backtest runtime" : "Elapsed runtime"}</h2><strong>{Number.isFinite(wallSeconds) ? `${wallSeconds.toFixed(1)}s` : "—"}</strong><dl>{timedStages.map(([label, key]) => <div key={key}><dt>{label}</dt><dd>{stages[key] ? `${stages[key].seconds.toFixed(2)}s` : "—"}</dd></div>)}</dl><p>Stage times are inclusive and may overlap. Final results appear after the journal is verified.</p></section>
         </main>
         <BacktestV4RunningWorkspace boundaries={run.processed_events || 0}
-          committedRows={run.performance_timings?.journal_writer?.committed_event_rows || 0} />
+          committedRows={run.performance_timings?.journal_writer?.committed_event_rows || 0}
+          liveCounts={run.live_evidence_counts} />
       </div>;
     }
     return <CanvasWorkspaceSurface canvasId="main" manager={false}

@@ -57,8 +57,9 @@ const CERTIFIED_LAYOUT_KEY = canvasRuntimeWorkspaceStorageKey("backtest.strategy
 /** Keep the same certified container layout during execution. A committed
  * journal prefix is not a terminal P&L report; unavailable domains remain
  * explicit until their normalized projection is verified. */
-export function BacktestV4RunningWorkspace({ boundaries, committedRows }: {
+export function BacktestV4RunningWorkspace({ boundaries, committedRows, liveCounts }: {
   boundaries: number; committedRows: number;
+  liveCounts?: { signals: number; intents: number; commands: number; fills: number } | null;
 }) {
   const [savedLayout] = useState<CanvasWorkspaceState | null>(() =>
     readCanvasWorkspaceStateByStorageKey(V4_LAYOUT_KEY)
@@ -72,8 +73,11 @@ export function BacktestV4RunningWorkspace({ boundaries, committedRows }: {
     storageKeyOverride={V4_LAYOUT_KEY} persistState={false}
     renderContainer={definition => <section className="trading-preview" role="status">
       <p className="trading-disclosure">{definition.id === "strategy_activity"
-        ? `${boundaries.toLocaleString()} candidate boundaries evaluated. ${committedRows.toLocaleString()} journal records committed.`
-        : `${definition.title} will show verified results after journal finalization. No intraday P&L or fills are inferred from market bars.`}</p>
+        ? `${boundaries.toLocaleString()} boundaries · ${liveCounts?.signals.toLocaleString() ?? "—"} signals · ${liveCounts?.intents.toLocaleString() ?? "—"} intents (provisional).`
+        : definition.id === "orders" ? `${liveCounts?.commands.toLocaleString() ?? "—"} order commands observed (provisional).`
+        : definition.id === "fills" ? `${liveCounts?.fills.toLocaleString() ?? "—"} fills observed (provisional).`
+        : `${definition.title} awaits verified account and position projections. No intraday P&L is inferred from market bars.`}</p>
+      <p className="trading-disclosure">{committedRows.toLocaleString()} normalized records committed; final financial results follow journal verification.</p>
     </section>} />;
 }
 

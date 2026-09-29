@@ -59,6 +59,7 @@ export type CanvasReplayRun = {
     targets: string[];
   };
   progress: number;
+  live_evidence_counts?: { signals: number; intents: number; commands: number; fills: number } | null;
   performance_timings?: {
     stages?: Record<string, { calls: number; seconds: number; maximum_seconds: number }>;
     journal_writer?: { committed_units?: number; committed_event_rows?: number; queue_depth?: number; failed_units?: number };

@@ -32,6 +32,20 @@ def test_invalid_batch_does_not_publish_partial_prefix():
     assert journal.latest_sequence(RUN_ID) == 0
 
 
+def test_live_activity_counts_are_constant_time_provisional_snapshots():
+    journal = BacktestMemoryJournal(run_id=RUN_ID)
+    kinds = (("market_discovery_signal", "signal"),
+             ("strategy", "strategy_intent"),
+             ("command", "order"), ("execution", "fill"))
+    journal.append_many(dict(run_id=RUN_ID, category=category,
+                             entity_type=entity_type, entity_id=str(index),
+                             payload={}, event_time=AT)
+                        for index, (category, entity_type) in enumerate(kinds))
+    assert journal.live_counts == {"signals": 1, "intents": 1, "commands": 1, "fills": 1}
+    journal.mark_fenced(4)
+    assert journal.live_counts["fills"] == 1
+
+
 def test_cold_oms_admission_cache_uses_verified_normalized_reservation_only():
     journal = BacktestMemoryJournal(run_id=RUN_ID, initial_sequence=7)
     reservation = dict(account_id="DU1", reservation_id="reserve-1",

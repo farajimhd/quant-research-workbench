@@ -1918,6 +1918,7 @@ class ReplayRunController:
                     if callable(getattr(journal_writer, 'metrics', None))
                     else dict(getattr(self, '_journal_writer_final_metrics', {}))),
                 "scope": "inclusive wall time; journal work is included in execution stages"},
+            "live_evidence_counts": getattr(self._journal, "live_counts", None),
             "preparation_stage": self._preparation_stage,
             "preparation_progress": {
                 "completed": self._preparation_completed_units,

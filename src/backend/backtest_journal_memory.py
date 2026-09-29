@@ -29,6 +29,9 @@ class BacktestMemoryJournal:
         self.run_id = run_id
         self.max_pending_records = max_pending_records
         self._records: list[JournalRecord] = []
+        # UI-only counters: O(1) updates, no record scan or ClickHouse read on
+        # the execution path. These are provisional until the V4 writer fences.
+        self._live_counts = {"signals": 0, "intents": 0, "commands": 0, "fills": 0}
         self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
         self._strategy_one_protection: dict[str, Any] = {}
         self._oms_groups: dict[str, Any] = {}
@@ -307,12 +310,26 @@ class BacktestMemoryJournal:
             self._reservation_creations.update(creations)
             for record in result:
                 if record.category == "market_discovery_signal":
+                    self._live_counts["signals"] += 1
+                elif record.category == "strategy" and record.entity_type == "strategy_intent":
+                    self._live_counts["intents"] += 1
+                elif record.category == "command" and record.entity_type == "order":
+                    self._live_counts["commands"] += 1
+                elif record.category == "execution" and record.entity_type == "fill":
+                    self._live_counts["fills"] += 1
+                if record.category == "market_discovery_signal":
                     self._signal_records.append(record)
                     self._by_identity.setdefault(
                         (record.category, record.entity_type, record.entity_id), record)
                 if record.category == "protection":
                     self._protection_records.append(record)
             return result
+
+    @property
+    def live_counts(self) -> dict[str, int]:
+        """Provisional, in-process activity totals; never durability evidence."""
+        with self._lock:
+            return dict(self._live_counts)
 
     def unfenced_records(self, *, after_sequence: int | None = None,
                          through_sequence: int | None = None) -> list[JournalRecord]:
