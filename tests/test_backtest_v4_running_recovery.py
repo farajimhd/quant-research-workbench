@@ -105,6 +105,10 @@ def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
             replace(recovery, progress={**recovery.progress,
                                         "runtime_last_event_time":
                                         "2026-08-18T00:00:01+00:00"}), anchor)
+    with pytest.raises(RuntimeError, match="runtime clock is missing"):
+        subject.reconstruct_v4_controller_image(
+            replace(recovery, progress={**recovery.progress,
+                                        "runtime_last_event_time": None}), anchor)
     with pytest.raises(RuntimeError, match="differs from cold journal anchor"):
         subject.verify_v4_recovery_at_anchor(
             recovery, replace(anchor, boundary_ms=200))

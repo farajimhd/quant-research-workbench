@@ -4430,6 +4430,11 @@ class ReplayRunController:
                     or self._journal.run_id != self.run_id):
                 raise RuntimeError("Typed V4 runtime restoration lacks a fenced journal")
             clock = fixed_restore.controller
+            if (clock.runtime_last_event_time is None
+                    or clock.runtime_last_event_time > clock.current_time
+                    or clock.source_cursor.get('session_date') !=
+                       self.definition.session_date.isoformat()):
+                raise RuntimeError("Typed V4 runtime clock differs from its pinned session")
             self.current_time = clock.current_time
             self.processed_events = clock.processed_events
             self.warmup_events = clock.warmup_events
@@ -4657,9 +4662,7 @@ class ReplayRunController:
             self._restore_restart_checkpoint(review_only=review_only)
         if fixed_restore is not None:
             self._runtime.processed_events = fixed_restore.controller.runtime_processed_events
-            self._runtime.last_event_time = (
-                fixed_restore.controller.runtime_last_event_time
-                or fixed_restore.controller.current_time)
+            self._runtime.last_event_time = fixed_restore.controller.runtime_last_event_time
         if not review_only:
             self._runtime.persist_strategy_assignments(
                 self.current_time or self.definition.requested_start,

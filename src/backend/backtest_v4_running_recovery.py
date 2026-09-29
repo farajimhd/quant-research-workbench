@@ -130,7 +130,9 @@ def reconstruct_v4_controller_image(
     if last_at is not None:
         last_at = (last_at.replace(tzinfo=timezone.utc) if last_at.tzinfo is None
                    else last_at.astimezone(timezone.utc))
-    if last_at is not None and last_at > anchor.completed_at:
+    if last_at is None:
+        raise RuntimeError("V4 runtime clock is missing")
+    if last_at > anchor.completed_at:
         raise RuntimeError("V4 runtime clock exceeds its completed boundary")
     frame = anchor.frame_cursor
     return V4FixedControllerImage(
