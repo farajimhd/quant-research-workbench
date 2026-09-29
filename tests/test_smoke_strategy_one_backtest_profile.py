@@ -60,6 +60,10 @@ def test_smoke_audits_every_saved_journal_page(monkeypatch, capsys, backdate):
     class Client:
         closed = False
 
+        def execute(self, sql):
+            assert "FROM arte.trading_account_risk_reason_v1" in sql
+            return ""
+
         def close(self):
             self.closed = True
 
@@ -68,7 +72,12 @@ def test_smoke_audits_every_saved_journal_page(monkeypatch, capsys, backdate):
                         "backtest_v4_operator_client_from_env", lambda: client)
 
     def row(sequence, family, at, detail):
-        return {"event": {"sequence": sequence, "event_time": at},
+        category, entity_type = {
+            "trading_strategy_intent_v1": ("strategy", "strategy_intent"),
+            "trading_portfolio_decision_v1": ("portfolio_management", "portfolio_decision"),
+        }[family]
+        return {"event": {"sequence": sequence, "event_time": at,
+                          "category": category, "entity_type": entity_type},
                 "detail_family": family, "detail": detail}
 
     source = "2026-08-19 08:00:42.100000000"
