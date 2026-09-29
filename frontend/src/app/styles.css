@@ -16264,9 +16264,7 @@ button {
 }
 
 .charts-quotes-layout .chart-component-toolbar.compact {
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  flex-wrap: wrap;
 }
 .hindsight-controls { display: flex; align-items: center; gap: 0.4rem; min-width: 0; flex-wrap: wrap; }
 .action-values-status { font-variant-numeric: tabular-nums; font-size: .8rem; padding-block: .3rem; }
