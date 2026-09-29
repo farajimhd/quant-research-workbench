@@ -91,6 +91,11 @@ entry|exit`) and persists only the necessary quote fields and availability
 reason. Missing arrival buckets may use a quote known at the decision close
 only if it remains fresh at arrival; the certificate counts both sources
 separately. It does not write a dense quote grid.
+`run_diagnostic.py` joins certified sparse intentions to entry and exit quote
+evidence and writes an order and closed-position ledger. Its reported P&L is
+only realized modeled quote P&L: stops, targets, unresolved holdings, terminal
+liquidation, spread impact, and broker execution are not certified by this
+diagnostic. It is not teacher supervision or a full-session profit result.
 `oms.py` uses fresh displayed bid/ask size as an optimistic fill cap and the
 existing price-based share caps, with modeled IBKR fees but no extra assumed
 half-spread. Target fills can only use certified price-level volume upper
