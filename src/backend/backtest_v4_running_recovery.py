@@ -90,6 +90,8 @@ class V4FixedRuntimeImage:
     portfolio: PortfolioRecovery
     broker: dict[str, Any]
     oms: TypedOmsActorImage
+    manager: StrategyOneManagementState
+    evidence: StrategyOneEvidenceState
 
 
 def load_v4_fixed_runtime_image(
@@ -115,7 +117,8 @@ def load_v4_fixed_runtime_image(
     oms = load_v4_running_oms_image(client, recovery)
     if load_verified_v4_prefix(client, anchor.run_id) != recovery.prefix:
         raise RuntimeError("V4 runtime image prefix moved during actor reads")
-    return V4FixedRuntimeImage(controller, portfolio, broker, oms)
+    return V4FixedRuntimeImage(
+        controller, portfolio, broker, oms, recovery.manager, recovery.evidence)
 
 
 def reconstruct_v4_controller_image(

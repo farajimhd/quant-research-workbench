@@ -137,6 +137,8 @@ def test_fixed_v4_runtime_installs_typed_images_without_legacy_recovery(monkeypa
     from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
     from src.trading_runtime.arte_oms_actor_restore import TypedOmsActorImage
     from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+    from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
     from tests.test_replay_run_service import approved_configuration
 
     configuration = approved_configuration()
@@ -151,7 +153,9 @@ def test_fixed_v4_runtime_installs_typed_images_without_legacy_recovery(monkeypa
         V4FixedControllerImage(
             boundary, {"session_date": DAY, "boundary_ms": 100,
                        "sequence": 1}, {}, 4, 0, 0, 2, boundary),
-        portfolio_image, {"schema_version": 4}, oms_image)
+        portfolio_image, {"schema_version": 4}, oms_image,
+        StrategyOneManagementState(100, (), (), ()),
+        StrategyOneEvidenceState(100, (), (), ()))
     controller = object.__new__(ReplayRunController)
     controller.run_id = RUN
     controller.definition = SimpleNamespace(
@@ -280,6 +284,76 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     controller._finish.assert_awaited_once_with(
         "stopped" if stop_requested else "completed")
     controller._process_strategy_frame.assert_not_awaited()
+
+
+def test_strategy_one_resumed_tape_starts_after_verified_cursor(monkeypatch):
+    from src.backend import backtest_strategy_one_execution
+    from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
+    from src.backend.backtest_v4_running_recovery import (
+        V4FixedControllerImage, V4FixedRuntimeImage,
+    )
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+    from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
+    from src.trading_runtime.strategy_engine import (
+        AssignmentStatus, StrategyAssignment, StrategyPermissions,
+    )
+    from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
+
+    checkpoint = datetime(2026, 8, 18, 8, 0, 0, 100_000, tzinfo=timezone.utc)
+    cursor = {"session_date": DAY, "boundary_ms": 100, "sequence": 7}
+    manager_state = StrategyOneManagementState(100, (), (), ())
+    evidence_state = StrategyOneEvidenceState(100, (), (), ())
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        execution_interval="100ms",
+        requested_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc),
+        session_end=datetime(2026, 8, 18, 13, 30, tzinfo=timezone.utc))
+    controller._fixed_v4_runtime_image = V4FixedRuntimeImage(
+        V4FixedControllerImage(checkpoint, cursor, {}, 42, 0, 0, 42, checkpoint),
+        None, {}, None, manager_state, evidence_state)
+    controller._journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=100)
+    controller._strategy = AssignedStrategyOne([StrategyAssignment(
+        "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
+        AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
+        {"execution": {"tick_size": .01}})])
+    controller._runtime = object()
+    controller._resume_state = None
+    controller._stop_requested = False
+    controller._source_cursor = dict(cursor)
+    controller.current_time = checkpoint
+    controller.processed_events = 42
+    controller._data_authority = {}
+    controller._record_data_authority = lambda key, value: controller._data_authority.update(
+        {key: value})
+    controller._fixed_through_boundary_ms = lambda: 19_800_000
+    controller._publish = AsyncMock()
+    controller._after_event = AsyncMock()
+    controller._finish = AsyncMock()
+    controller._wait_until_active = AsyncMock()
+    work = StrategyOneBoundaryWork(200, (("AAA", {100: {}}),), ())
+
+    async def sparse_session(**kwargs):
+        assert kwargs["start_after_boundary_ms"] == 100
+        assert kwargs["resume_evidence_state"] is evidence_state
+        assert kwargs["resume_manager_state"] is manager_state
+        kwargs["manager_ready"](SimpleNamespace(evidence=SimpleNamespace(
+            advance_empty_boundary=lambda _boundary: None)))
+        await kwargs["before_boundary"](work)
+        await kwargs["finish_boundary"](work)
+
+    monkeypatch.setattr(backtest_strategy_one_execution,
+                        "run_certified_strategy_one_session", sparse_session)
+    market = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build-1", "a" * 64,
+        (DAY,), ("AAA",), (), (100, 1000, 30000), "b" * 64)
+    asyncio.run(controller._run_strategy_one_fixed_days(
+        market=market, execution_market=market, candidates=object(),
+        activations=object(), pivots=object(), hod=object(), seeds=object(),
+        v7_intervals=object(), entry=object(), prices=object()))
+    assert controller._source_cursor == {
+        "session_date": DAY, "boundary_ms": 19_800_000, "sequence": 8}
+    assert controller.processed_events == 43
+    controller._finish.assert_awaited_once_with("completed")
 
 
 def test_strategy_one_engine_skips_legacy_signal_and_frame_preparation():

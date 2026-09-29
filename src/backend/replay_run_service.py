@@ -3486,6 +3486,8 @@ class ReplayRunController:
         )
         from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
 
+        fixed_restore = getattr(self, '_fixed_v4_runtime_image', None)
+
         if (not isinstance(self._journal, BacktestMemoryJournal)
                 or not isinstance(self._strategy, AssignedStrategyOne)
                 or self._runtime is None or self._resume_state is not None
@@ -3499,7 +3501,20 @@ class ReplayRunController:
         day = market.sessions[0]
         if self.definition.requested_start != market_day_boundary(day, 0):
             raise ValueError("Strategy 1 requires a flat start at the 04:00 session boundary")
-        boundary_count = 0
+        start_after = 0
+        if fixed_restore is not None:
+            clock = fixed_restore.controller
+            start_after = clock.source_cursor['boundary_ms']
+            if (self._source_cursor != clock.source_cursor
+                    or self.current_time != clock.current_time
+                    or clock.source_cursor['session_date'] != day
+                    or clock.source_cursor['sequence'] < 1
+                    or not 0 < start_after < self._fixed_through_boundary_ms()
+                    or fixed_restore.manager.boundary_ms != start_after
+                    or fixed_restore.evidence.boundary_ms != start_after):
+                raise RuntimeError("Strategy 1 resumed cursor differs from its causal actors")
+        boundary_count = (fixed_restore.controller.source_cursor['sequence']
+                          if fixed_restore is not None else 0)
         authority = fixed_market_authority_payload(market, execution_market)
         self._record_data_authority(
             "fixed_market_data", {key: value for key, value in authority.items()
@@ -3507,7 +3522,8 @@ class ReplayRunController:
         self._runtime_inputs_ready = True
         self._preparation_stage = "strategy_one_sparse_boundaries"
         self.status = "running"
-        self.current_time = self.definition.requested_start
+        if fixed_restore is None:
+            self.current_time = self.definition.requested_start
         await self._publish(force=True)
 
         async def before(work):
@@ -3556,6 +3572,11 @@ class ReplayRunController:
                     market_stream=True, v3_read_principal=True),
                 before_boundary=before, finish_boundary=finish,
                 manager_ready=manager_ready,
+                start_after_boundary_ms=start_after,
+                resume_evidence_state=(fixed_restore.evidence
+                                       if fixed_restore is not None else None),
+                resume_manager_state=(fixed_restore.manager
+                                      if fixed_restore is not None else None),
                 stage_time=self._record_stage_time)
         except StopRequested:
             await self._finish("stopped")

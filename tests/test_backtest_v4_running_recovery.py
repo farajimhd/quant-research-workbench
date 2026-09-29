@@ -151,6 +151,8 @@ def test_v4_runtime_image_reads_one_fenced_actor_set(monkeypatch):
     assert image.portfolio is expected_portfolio
     assert image.broker is expected_broker
     assert image.oms is expected_oms
+    assert image.manager is recovery.manager
+    assert image.evidence is recovery.evidence
     with pytest.raises(RuntimeError, match="portfolio accounts differ"):
         subject.load_v4_fixed_runtime_image(object(), recovery, anchor, ())
 
