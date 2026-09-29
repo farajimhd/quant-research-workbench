@@ -39,6 +39,49 @@ class FixedRunningPrefixAnchor:
     frame_cursor: tuple[datetime, str, str, int] | None
 
 
+def cold_verify_v4_resume_anchor(
+    client: Any, *, dispatch: Any, lease: Any, run_id: str,
+    plan: CertifiedMarketDayPlan, configuration_hash: str,
+    account_ids: tuple[str, ...],
+) -> FixedRunningPrefixAnchor:
+    """Join one exclusive owner, quiescent dispatch gate, and exact V4 cursor.
+
+    This selects only a restart location. Management, evidence, broker, OMS,
+    and portfolio recovery must still be verified before any writer opens.
+    """
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    if (not isinstance(lease, BacktestV4KeeperLease)
+            or lease.run_id != run_id
+            or not isinstance(dispatch, TypedInsertDispatch)
+            or dispatch.keeper is not lease.owner._session.client):
+        raise ValueError("V4 cold resume lacks its exclusive same-Keeper owner")
+    lease.assert_current()
+    if client.execute("SELECT getSetting('readonly')").strip() != "1":
+        raise RuntimeError("V4 cold resume requires a server-enforced read-only client")
+    barrier = dispatch.acquire_cold_barrier(run_id)
+    try:
+        barrier.verify_run_context_receipt(client)
+        prefix = barrier.verify_committed_prefix(
+            client, journal_profile="backtest_v4")
+        anchor = load_fixed_running_prefix_anchor(
+            client, run_id=run_id, plan=plan,
+            configuration_hash=configuration_hash,
+            account_ids=account_ids, journal_profile="backtest_v4")
+        if (not isinstance(prefix, V4CommittedPrefix)
+                or prefix.status != "running"
+                or prefix.last_sequence != anchor.journal_sequence
+                or prefix.last_batch_id != anchor.batch_id
+                or prefix.source_cursor != anchor.source_cursor):
+            raise RuntimeError("V4 cold resume anchor differs from Keeper prefix")
+        barrier.assert_fenced(run_id)
+    finally:
+        barrier.release()
+    lease.assert_current()
+    return anchor
+
+
 def load_fixed_running_prefix_anchor(
     client: Any, *, run_id: str, plan: CertifiedMarketDayPlan,
     configuration_hash: str, account_ids: tuple[str, ...],
