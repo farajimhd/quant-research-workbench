@@ -9,6 +9,20 @@ to SQLite or to a general ClickHouse account.
 
 ## Current verified status
 
+New V4 Backtest launches now hold a distinct lifetime Keeper run-owner claim
+(`36b2a73f4`) in addition to per-INSERT dispatch fences. The V4 runner and
+its bounded detail lanes reject INSERTs after that owner is lost; the writer
+checks it before each queued unit and releases it only after draining. This
+prevents two new-code processes from concurrently owning the same run ID, but
+does not yet authorize interrupted-run resume or retroactively certify older
+runs that lacked the claim. The first fresh all-ticker 2026-08-18 04:00–09:30
+ET workstation run with this claim, `964f64fe-a974-402a-8550-35745e705f70`,
+passed preflight in 25.938s and completed execution in 31.330s, consuming
+7,381 persisted rows and committing 2,216 normalized events in 11 units with
+zero failed units. Its causal audit found 58 intents, 966 linked actions, and
+zero backdated actions. The existing Keeper teardown connection-drop warning
+was still logged; completion and audit passed, but the warning is unresolved.
+
 On the current paired evidence/manager restoration code (`8b4e38a4b`), a
 fresh workstation 2026-08-18 04:00–09:30 ET all-ticker integration run
 `62908518-9fd4-4a8e-8c90-2162ccb237e1` passed preflight in 22.840s and
