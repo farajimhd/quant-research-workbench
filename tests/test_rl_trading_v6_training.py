@@ -47,4 +47,11 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads():
     assert metrics.decisions == 2 and metrics.execution_outcomes == 1
     assert metrics.optimizer_steps == 1
     assert np.isfinite(metrics.mean_loss)
+    assert metrics.action_class_counts['enter_long'] == 1
+    assert metrics.action_class_counts['set_stop'] == 1
+    assert sum(metrics.action_class_counts.values()) == metrics.decisions
+    assert metrics.buy_size_mae is not None
+    assert metrics.stop_log_distance_mae is not None
+    assert metrics.target_log_distance_mae is None
+    assert all(0 <= value <= 1 for value in metrics.action_class_f1.values())
     assert not torch.equal(before, policy.encoder.project.weight)

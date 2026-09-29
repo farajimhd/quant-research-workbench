@@ -51,16 +51,23 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
         torch.tensor([token], dtype=torch.long, device=logits.device))
     size = logits.new_zeros(())
     bracket = logits.new_zeros(())
+    size_absolute_error = logits.new_zeros(())
+    bracket_absolute_error = logits.new_zeros(())
     if entered:
         size = F.smooth_l1_loss(sizes[token - 1],
             sizes.new_tensor(size_fraction))
+        size_absolute_error = (sizes[token - 1] - size_fraction).abs()
     elif stop_set or target_set:
         raw = (stop_distances[token - stop_base] if stop_set else
                target_distances[token - target_base])
-        bracket = F.smooth_l1_loss(F.softplus(raw),
+        predicted = F.softplus(raw)
+        bracket = F.smooth_l1_loss(predicted,
             raw.new_tensor(oracle_log_distance))
+        bracket_absolute_error = (predicted-oracle_log_distance).abs()
     return action + size + bracket, {
         'action_loss': action.detach(), 'size_loss': size.detach(),
         'bracket_loss': bracket.detach(),
+        'size_absolute_error': size_absolute_error.detach(),
+        'bracket_absolute_error': bracket_absolute_error.detach(),
         'action_correct': (logits.argmax() == token).to(logits.dtype).detach(),
     }

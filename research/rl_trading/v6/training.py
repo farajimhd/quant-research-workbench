@@ -21,6 +21,18 @@ from research.rl_trading.v6.objective import bracket_loss
 from research.rl_trading.v6.session_data import PackedSession
 
 
+ACTION_NAMES = ('hold', 'enter_long', 'exit_long', 'set_stop', 'set_target')
+
+
+def _action_class(token: int, listings: int, holdings: int) -> int:
+    """Map a variable-width identity token to one of five stable classes."""
+    if token == 0:
+        return 0
+    if token <= listings:
+        return 1
+    return 2 + (token - 1 - listings) // holdings
+
+
 @dataclass(frozen=True)
 class TeacherDecision:
     """One action at a completed candle close; state is strictly pre-action."""
@@ -60,6 +72,13 @@ class TrainingMetrics:
     optimizer_steps: int
     mean_loss: float
     action_accuracy: float
+    action_class_counts: dict[str, int]
+    action_class_precision: dict[str, float]
+    action_class_recall: dict[str, float]
+    action_class_f1: dict[str, float]
+    buy_size_mae: float | None
+    stop_log_distance_mae: float | None
+    target_log_distance_mae: float | None
 
 
 def _validate(decisions: tuple[TeacherDecision, ...],
@@ -163,6 +182,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     observed_decisions = 0
     updates = 0
     loss_sum = correct_sum = 0.
+    confusion = np.zeros((5, 5), dtype=np.int64)
+    conditional_sum = np.zeros(3, dtype=np.float64)
+    conditional_count = np.zeros(3, dtype=np.int64)
     policy.train()
     optimizer.zero_grad(set_to_none=True)
     event_iter = iter(session.candle_events())
@@ -170,6 +192,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         labeled = any(event.close_us in decision_groups for event in chunk)
         pending_losses = []
         pending_correct = []
+        pending_predictions = []
+        pending_conditional = ([], [], [])
         # Empty chunks still advance every observed candle and actual order
         # outcome, but do not build a useless autograd graph.
         with torch.set_grad_enabled(labeled):
@@ -218,6 +242,15 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         oracle_log_distance=item.oracle_log_distance)
                     pending_losses.append(loss)
                     pending_correct.append(metrics['action_correct'])
+                    pending_predictions.append((logits.detach().argmax(),
+                        item.token, len(item.held_index)))
+                    target_class = _action_class(item.token, listings,
+                                                 len(item.held_index))
+                    if target_class in (1, 3, 4):
+                        slot = {1: 0, 3: 1, 4: 2}[target_class]
+                        pending_conditional[slot].append(
+                            metrics['size_absolute_error'] if slot == 0 else
+                            metrics['bracket_absolute_error'])
                     observed_decisions += 1
         if pending_losses:
             mean = torch.stack(pending_losses).mean()
@@ -229,12 +262,39 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
             loss_sum += float(torch.stack([value.detach() for value in
                                            pending_losses]).sum())
             correct_sum += float(torch.stack(pending_correct).sum())
+            predicted = torch.stack([item[0] for item in
+                                     pending_predictions]).cpu().tolist()
+            for selected, (_, target, held) in zip(predicted,
+                                                    pending_predictions):
+                confusion[_action_class(target, listings, held),
+                          _action_class(selected, listings, held)] += 1
+            for slot, values in enumerate(pending_conditional):
+                if values:
+                    conditional_sum[slot] += float(torch.stack(values).sum())
+                    conditional_count[slot] += len(values)
         state.detach()
         action_state = action_state.detach()
     if decision_groups or observed_decisions != len(decisions):
         raise ValueError('Teacher decision clock absent from certified candles')
     if next_outcome != len(outcomes):
         raise ValueError('Execution outcome occurs after last certified candle')
+    counts = {name: int(confusion[index].sum()) for index, name in
+              enumerate(ACTION_NAMES)}
+    precision, recall, f1 = {}, {}, {}
+    for index, name in enumerate(ACTION_NAMES):
+        correct = int(confusion[index, index])
+        predicted = int(confusion[:, index].sum())
+        actual = counts[name]
+        precision[name] = correct / predicted if predicted else 0.
+        recall[name] = correct / actual if actual else 0.
+        denominator = precision[name] + recall[name]
+        f1[name] = (2*precision[name]*recall[name]/denominator
+                    if denominator else 0.)
+    conditional_mae = [float(conditional_sum[index]/conditional_count[index])
+                       if conditional_count[index] else None
+                       for index in range(3)]
     return TrainingMetrics(observed_decisions, next_outcome, updates,
                            loss_sum / observed_decisions,
-                           correct_sum / observed_decisions)
+                           correct_sum / observed_decisions,
+                           counts, precision, recall, f1,
+                           *conditional_mae)
