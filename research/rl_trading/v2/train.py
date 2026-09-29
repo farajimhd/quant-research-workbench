@@ -78,7 +78,7 @@ def parser():
     p.add_argument('--resume',action='store_true')
     p.add_argument('--continue-from-run',type=Path)
     p.add_argument('--initialize-from-best',type=Path)
-    p.add_argument('--initialize-balanced-from-best',type=Path)
+    p.add_argument('--initialize-hierarchical-from-best',type=Path)
     p.add_argument('--allow-segment',action='store_true')
     p.add_argument('--wandb-mode',choices=('disabled','offline','online'),default='disabled')
     p.add_argument('--wandb-project',default='rl-trading-v2')
@@ -200,7 +200,7 @@ def train(args):
         raise ValueError('Streamed sessions require one account and chronological cycling')
     if not args.run_name or Path(args.run_name).name != args.run_name or args.run_name in ('.','..'):
         raise ValueError('Run name must be a single directory name')
-    if sum(bool(x) for x in (args.initialize_from_best,args.initialize_balanced_from_best,
+    if sum(bool(x) for x in (args.initialize_from_best,args.initialize_hierarchical_from_best,
                               args.continue_from_run)) > 1:
         raise ValueError('Choose one checkpoint initialization mode')
     config = Config(**{field.name:getattr(args,field.name) for field in fields(Config)})
@@ -323,19 +323,18 @@ def _best_initialization(parent_root, manifest, *, run_root, device):
     return lineage,best
 
 
-def _balanced_initialization(parent_root, manifest, *, run_root, device):
-    """Transfer only policy weights from the exact certified V4 best checkpoint."""
+def _hierarchical_initialization(parent_root, manifest, *, run_root, device):
+    """Transfer the exact certified V4 best policy into the V6 action hierarchy."""
     parent_root = Path(parent_root).resolve()
     manifest = json.loads(json.dumps(manifest))
-    manifest = json.loads(json.dumps(manifest))
     if parent_root == run_root.resolve():
-        raise ValueError('Balanced-action initialization requires a new run directory')
+        raise ValueError('Hierarchical-action initialization requires a new run directory')
     parent = read(parent_root/'run_manifest.json')
     if parent.get('contract_hash') != digest({k:v for k,v in parent.items() if k != 'contract_hash'}):
         raise ValueError('Parent run manifest integrity failure')
     if (parent.get('version') != 'rl-trading-v2-ppo-single-account-sessions-4' or
-            manifest.get('version') != 'rl-trading-v2-ppo-balanced-actions-5'):
-        raise ValueError('Balanced-action initialization requires V4 to V5 migration')
+            manifest.get('version') != 'rl-trading-v2-ppo-hierarchical-actions-6'):
+        raise ValueError('Hierarchical-action initialization requires V4 to V6 migration')
     for key in ('job','model','feature_names','train','validation','teacher_supervision',
                 'torch_version','numpy_version','wandb'):
         if parent.get(key) != manifest.get(key):
@@ -369,7 +368,7 @@ def _balanced_initialization(parent_root, manifest, *, run_root, device):
                    parent_best_iteration=best['iteration'],parent_best_score=best['best'],
                    transferred=['policy'],optimizer_state='fresh',account_state='fresh',
                    session_cursor='first_training_date',random_state='fresh_seed',
-                   change='eligible-action-type population normalization; nine-rollout selection')
+                   change='account-level action type then conditional listing; nine-rollout selection')
     return lineage,best
 
 
@@ -395,7 +394,7 @@ def _train_locked(args, config, root):
             for i in range(args.min_completed_episodes))
         if args.iterations*args.rollout_steps < required:
             raise ValueError(f'Iteration budget cannot complete {args.min_completed_episodes} sessions; require at least {required} steps')
-    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run','initialize_from_best','initialize_balanced_from_best')}
+    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run','initialize_from_best','initialize_hierarchical_from_best')}
     manifest = dict(version=VERSION,job='train',config=config.manifest(),arguments=contract_args,
         model=dict(features=len(sessions[0].plan['feature_names']),width=args.width,heads=args.heads),
         feature_names=sessions[0].plan['feature_names'],code=code_identity(),
@@ -415,8 +414,8 @@ def _train_locked(args, config, root):
         lineage, initialized_best = _best_initialization(args.initialize_from_best,manifest,
                                                           run_root=root,device=args.device)
         manifest['lineage'] = lineage
-    if args.initialize_balanced_from_best:
-        lineage, initialized_best = _balanced_initialization(args.initialize_balanced_from_best,
+    if args.initialize_hierarchical_from_best:
+        lineage, initialized_best = _hierarchical_initialization(args.initialize_hierarchical_from_best,
                                                               manifest,run_root=root,device=args.device)
         manifest['lineage'] = lineage
     manifest['contract_hash'] = digest(manifest)
@@ -492,8 +491,13 @@ def _train_locked(args, config, root):
                 _save(root/'checkpoint_best.pt',inherited_best)
     else:
         if initialized_best is not None:
-            policy.load_state_dict(initialized_best['policy'])
-            if not args.initialize_balanced_from_best:
+            if args.initialize_hierarchical_from_best:
+                missing,unexpected = policy.load_state_dict(initialized_best['policy'],strict=False)
+                if set(missing) != {'action_type.weight','action_type.bias'} or unexpected:
+                    raise ValueError('V4 policy transfer changed unexpected model parameters')
+            else:
+                policy.load_state_dict(initialized_best['policy'])
+            if not args.initialize_hierarchical_from_best:
                 optimizer.load_state_dict(initialized_best['optimizer'])
         # Even interruption in the first rollout/validation has a restart point.
         _save(latest,snapshot(0))

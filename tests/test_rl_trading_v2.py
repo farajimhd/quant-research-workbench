@@ -247,6 +247,27 @@ def test_scheduler_normalizes_action_type_mass_by_eligible_count():
     torch.testing.assert_close(probabilities[:,2].sum(),torch.tensor(1/3))
 
 
+def test_scheduler_learns_action_type_separately_from_listing_choice():
+    obs = TradingEnv(market(),config()).observe()
+    obs['action_mask'][:] = False
+    obs['action_mask'][:,0] = True
+    obs['action_mask'][:2,1] = True
+    obs['action_mask'][0,2:] = True
+    policy = PortfolioPolicy(3,width=16,heads=2)
+    with torch.no_grad():
+        policy.actor.weight.zero_()
+        policy.actor.bias.zero_()
+        policy.action_type.weight.zero_()
+        policy.action_type.bias.copy_(torch.tensor([0.,0.,2.]))
+    batch = collate([obs])
+    _,_,_,_,choice = policy(batch,scheduler=True)
+    probabilities = choice.probs.reshape(1,3,3)[0]
+    assert probabilities[:,2].sum() > probabilities[:,1].sum()
+    assert probabilities[:,2].sum() > probabilities[:,0].sum()
+    (-choice.log_prob(torch.tensor([2]))).backward()
+    assert policy.action_type.bias.grad.abs().sum() > 0
+
+
 def test_balanced_selection_requires_consistent_executed_returns():
     rows = [dict(net_return=.01,valid_terminal=True,filled_orders=2) for _ in range(9)]
     assert train.selection_evidence(rows) == pytest.approx((.01,True))
@@ -490,7 +511,7 @@ def test_best_policy_migration_verifies_lineage_and_resets_account(tmp_path):
 
 def test_balanced_policy_migration_is_policy_only_and_source_pinned(tmp_path):
     old_version = 'rl-trading-v2-ppo-single-account-sessions-4'
-    new_version = 'rl-trading-v2-ppo-balanced-actions-5'
+    new_version = 'rl-trading-v2-ppo-hierarchical-actions-6'
     parent = dict(version=old_version,job='train',config=dict(version=old_version,initial_cash=10000),
         arguments=dict(validation_rollouts=3,learning_rate=3e-5),
         model=dict(features=3,width=16,heads=2),feature_names=['a','b','c'],
@@ -515,13 +536,13 @@ def test_balanced_policy_migration_is_policy_only_and_source_pinned(tmp_path):
     current['config']['share_caps'] = ((1,35000), (None,15000))
     for name in train.BALANCED_ACTION_PARENT_HASHES:
         current['code']['files'][name] = 'new-'+name
-    lineage,best = train._balanced_initialization(root,current,run_root=tmp_path/'child',device='cpu')
+    lineage,best = train._hierarchical_initialization(root,current,run_root=tmp_path/'child',device='cpu')
     assert lineage['transferred'] == ['policy'] and lineage['optimizer_state'] == 'fresh'
     assert lineage['parent_best_iteration'] == 113
     assert best['policy']['weight'].item() == 1
     current['code']['files']['other.py'] = 'changed'
     with pytest.raises(ValueError,match='unapproved source'):
-        train._balanced_initialization(root,current,run_root=tmp_path/'bad',device='cpu')
+        train._hierarchical_initialization(root,current,run_root=tmp_path/'bad',device='cpu')
 
 
 def test_arrival_band_cap_and_fees_are_applied_on_both_sides():

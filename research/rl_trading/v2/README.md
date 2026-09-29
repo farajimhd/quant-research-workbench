@@ -208,8 +208,9 @@ and validation report fees, slippage dollars/ratios, partial/unfilled orders,
 forced fills, turnover notional, net return, and drawdown.
 
 The policy scores every visible ticker and first samples a learned trade/pass
-gate. If trading, it selects one eligible ticker and buy, reduce, or close
-mode, then samples its allocation and, for a new position, stop and target.
+gate. If trading, the V6 scheduler chooses buy, reduce, or close from the
+account context, then chooses an eligible ticker within that action type. It
+then samples allocation and, for a new position, stop and target.
 This limits discretionary fills to one order per second; sticky forced exits
 can still execute together. The gate begins with a sparse-trading prior but
 is trainable. PPO uses the selected action's probability and the full
