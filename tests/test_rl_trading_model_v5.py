@@ -8,7 +8,8 @@ from research.rl_trading.v1.model_v5 import DynamicMarketPolicy
 from research.rl_trading.v1.objective_v5 import teacher_loss
 from research.rl_trading.v1.v5_feature_binding import (
     FEATURE_BANK_SECONDS, FeatureBinding, feature_chunks)
-from research.rl_trading.v1.v5_order_adapter import order_seconds
+from research.rl_trading.v1.v5_order_adapter import (
+    order_seconds, empty_stop_seconds, stop_second_indices)
 from research.rl_trading.v1.features import FEATURE_NAMES
 
 
@@ -151,9 +152,11 @@ def test_feature_chunks_stop_at_teacher_cutoff_without_window_duplication(tmp_pa
 
 def test_v5_order_adapter_reconstructs_sells_sweep_buys_and_stop():
     trajectory = pl.DataFrame(dict(
-        time_us=[0, 1_000_000, 2_000_000], cash=[50., 50., 100.],
-        profit_bank=[0., 10., 18.], realized_net_pnl=[0., 10., 18.],
-        bought=[1, 2, 0], sold=[0, 1, 2], open_lots=[1, 2, 0]))
+        time_us=[0, 1_000_000, 2_000_000, 3_000_000],
+        cash=[50., 50., 100., 100.],
+        profit_bank=[0., 10., 18., 18.],
+        realized_net_pnl=[0., 10., 18., 18.],
+        bought=[1, 2, 0, 0], sold=[0, 1, 2, 0], open_lots=[1, 2, 0, 0]))
     positions = pl.DataFrame(dict(
         entry_us=[0, 1_000_000, 1_000_000],
         exit_us=[1_000_000, 2_000_000, 2_000_000],
@@ -164,7 +167,7 @@ def test_v5_order_adapter_reconstructs_sells_sweep_buys_and_stop():
         forced_terminal=[False, True, True]))
     orders = order_labels(trajectory, positions, 100.)
     bank = np.zeros((3, FEATURE_BANK_SECONDS, len(FEATURE_NAMES)), dtype=np.float32)
-    bank[:, :3, FEATURE_NAMES.index('price_available')] = 1
+    bank[:, :4, FEATURE_NAMES.index('price_available')] = 1
     for second, prices in enumerate(((10., 10., 10.),
                                      (12., 10., 10.),
                                      (12., 12., 11.))):
@@ -177,3 +180,10 @@ def test_v5_order_adapter_reconstructs_sells_sweep_buys_and_stop():
     assert steps[1].held_valid[:, :2].tolist() == [
         [True, False], [False, False], [True, False], [True, True]]
     assert steps[1].size[1:3].tolist() == pytest.approx([.3, 20/70])
+    assert stop_second_indices(np.asarray([0, 1, 2]), 4,
+                               radius=1, background_stride=60).tolist() == [3]
+    empty = list(empty_stop_seconds(np.asarray([3]), trajectory,
+                                    positions, bank, ('A', 'B', 'C')))
+    assert len(empty) == 1 and empty[0].token.tolist() == [0]
+    assert empty[0].account[0, :3].tolist() == [100., 118., 18.]
+    assert not empty[0].held_valid.any()

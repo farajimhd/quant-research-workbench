@@ -36,6 +36,12 @@ open-lot counts against the trajectory, and maps BUY/SELL tokens to the bound
 listing axis and current holding slots. It supplies only causal account and
 marked-price features to the policy; the teacher's episode IDs remain adapter
 keys and never become input features.
+The same adapter supplies deterministic STOP examples from empty seconds:
+all seconds within 15 seconds of a teacher order plus one background second
+per minute. Those sampling parameters and the STOP/action balance must be
+logged with each training run. Full-session closed-loop replay, rather than
+sampled training accuracy, determines whether the policy trades at sensible
+times.
 STOP does not mutate action memory; empty seconds can be encoded in a block
 without invoking the order decoder for every second.
 

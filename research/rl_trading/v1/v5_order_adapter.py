@@ -36,6 +36,106 @@ class OrderSecond:
     action_mask: np.ndarray
 
 
+def stop_second_indices(active_seconds: np.ndarray, decision_seconds: int, *,
+                        radius: int = 15, background_stride: int = 60) -> np.ndarray:
+    """Sample causal STOP examples near actions and across quiet intervals.
+
+    The 15-second neighborhood teaches when to wait immediately before and
+    after a teacher action. The fixed background stride covers the rest of the
+    session without materializing a STOP decision at every second. Training
+    must report these sampling parameters and calibrate with full-session
+    closed-loop replay; this sampler does not alter the teacher ledger.
+    """
+    active = np.asarray(active_seconds, dtype=np.int64)
+    if (decision_seconds < 1 or radius < 0 or background_stride < 1 or
+            (active.size and (np.any(active < 0) or
+                              np.any(active >= decision_seconds)))):
+        raise ValueError('Invalid STOP sampling bounds')
+    selected = np.zeros(decision_seconds, dtype=np.bool_)
+    selected[::background_stride] = True
+    for second in np.unique(active):
+        selected[max(0, second-radius):min(decision_seconds, second+radius+1)] = True
+    selected[active] = False
+    return np.flatnonzero(selected)
+
+
+def empty_stop_seconds(seconds: np.ndarray, trajectory: pl.DataFrame,
+                       positions: pl.DataFrame, feature_bank: np.ndarray,
+                       tickers: tuple[str, ...]):
+    """Yield STOP targets from causal post-action accounts on no-order seconds.
+
+    Position intervals are swept chronologically; no Phase 2 opportunity score
+    or future price enters the observation. The selected second must have zero
+    teacher buys/sells, so its post-action account equals its decision account.
+    """
+    requested = np.asarray(seconds, dtype=np.int64)
+    if (requested.ndim != 1 or (requested.size and
+            (requested[0] < 0 or requested[-1] >= trajectory.height or
+             np.any(np.diff(requested) <= 0))) or
+            feature_bank.shape[:2] != (len(tickers), 57_601) or
+            feature_bank.shape[2] != len(FEATURE_NAMES)):
+        raise ValueError('Invalid STOP seconds or identity-aligned features')
+    ticker_index = {ticker: slot for slot, ticker in enumerate(tickers)}
+    if len(ticker_index) != len(tickers):
+        raise ValueError('Duplicate listing identities')
+    by_entry = positions.sort('entry_us').to_dicts()
+    by_exit = positions.sort('exit_us').to_dicts()
+    events = np.sort(np.concatenate((positions['entry_us'].to_numpy(),
+                                     positions['exit_us'].to_numpy())))
+    cursor_in = cursor_out = 0
+    held: dict[str, dict] = {}
+    first = int(trajectory['time_us'][0])
+    for second in requested:
+        now = first+int(second)*1_000_000
+        while cursor_in < len(by_entry) and int(by_entry[cursor_in]['entry_us']) <= now:
+            row = by_entry[cursor_in]
+            held[row['episode_uid']] = row
+            cursor_in += 1
+        while cursor_out < len(by_exit) and int(by_exit[cursor_out]['exit_us']) <= now:
+            del held[by_exit[cursor_out]['episode_uid']]
+            cursor_out += 1
+        teacher = trajectory.row(int(second), named=True)
+        if (int(teacher['time_us']) != now or int(teacher['bought']) or
+                int(teacher['sold']) or len(held) != int(teacher['open_lots'])):
+            raise ValueError('STOP second contains a trade or wrong holdings')
+        features = feature_bank[:, second, :]
+        episodes = sorted(held)
+        slots = np.asarray([ticker_index[held[uid]['ticker']] for uid in episodes],
+                           dtype=np.int64)
+        marks = np.asarray([_marked_price(features, slot) for slot in slots])
+        quantity = np.asarray([float(held[uid]['quantity']) for uid in episodes])
+        exposure_value = float(np.dot(quantity, marks))
+        cash = float(teacher['cash'])
+        bank = float(teacher['profit_bank'])
+        equity = cash+bank+exposure_value
+        if not math.isfinite(equity) or equity <= 0:
+            raise ValueError('Invalid causal marked equity at STOP second')
+        previous_trade = np.searchsorted(events, now, side='right')-1
+        elapsed = ((now-int(events[previous_trade]))/1_000_000
+                   if previous_trade >= 0 else int(second))
+        account = np.asarray([[cash, equity, float(teacher['realized_net_pnl']),
+                               exposure_value/equity, elapsed]], dtype=np.float32)
+        width = max(1, len(episodes))
+        held_index = np.zeros((1, width), dtype=np.int64)
+        held_valid = np.zeros((1, width), dtype=np.bool_)
+        held_features = np.zeros((1, width, 4), dtype=np.float32)
+        held_index[0, :len(slots)] = slots
+        held_valid[0, :len(slots)] = True
+        for i, uid in enumerate(episodes):
+            held_features[0, i] = [math.log1p(float(held[uid]['quantity'])),
+                math.log(float(held[uid]['entry_price'])),
+                min((now-int(held[uid]['entry_us']))/3_600_000_000., 1.),
+                marks[i]/float(held[uid]['entry_price'])-1.]
+        mask = np.zeros((1, 1+len(tickers)+width), dtype=np.bool_)
+        mask[0, 0] = True
+        mask[0, 1:1+len(tickers)] = features[:, AVAILABLE] > .5
+        mask[0, 1+slots] = False
+        mask[0, 1+len(tickers):1+len(tickers)+len(slots)] = True
+        yield OrderSecond(int(second), account, held_index, held_valid,
+                          held_features, np.zeros(1, dtype=np.int64),
+                          np.zeros(1, dtype=np.float32), mask)
+
+
 def _marked_price(features: np.ndarray, listing: int) -> float:
     price = float(np.exp(float(features[listing, PRICE])))
     if not math.isfinite(price) or price <= 0:
