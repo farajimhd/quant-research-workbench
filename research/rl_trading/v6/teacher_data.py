@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from research.rl_trading.v6.model import HELD_FEATURE_WIDTH
 from research.rl_trading.v6.session_data import PackedSession
 from research.rl_trading.v6.training import (ExecutionOutcome,
                                              TeacherDecision, _validate)
@@ -71,7 +72,7 @@ def load_teacher(root: Path, session: PackedSession, *,
     for row in rows.iter_rows(named=True):
         held = np.asarray(row['held_listing_indices'], dtype=np.int64)
         features = np.asarray(row['held_features_flat'], dtype=np.float32)
-        if features.size != held.size * 4:
+        if features.size != held.size * HELD_FEATURE_WIDTH:
             raise ValueError('Teacher holding snapshot shape changed')
         enter = np.zeros(listings, dtype=np.bool_)
         candidates = np.asarray(row['enter_allowed_indices'], dtype=np.int64)
@@ -84,7 +85,7 @@ def load_teacher(root: Path, session: PackedSession, *,
             np.asarray([row['account_cash'], row['account_equity'],
                         row['account_realized'], row['account_exposure'],
                         row['seconds_since_action']], dtype=np.float32),
-            held, features.reshape(-1, 4), enter,
+            held, features.reshape(-1, HELD_FEATURE_WIDTH), enter,
             np.asarray(row['exit_allowed'], dtype=np.bool_),
             np.asarray(row['stop_allowed'], dtype=np.bool_),
             np.asarray(row['target_allowed'], dtype=np.bool_),

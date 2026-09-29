@@ -42,7 +42,7 @@ def test_five_action_decoder_masks_brackets_until_admissible():
     listings = torch.randn(3, 8)
     account = torch.tensor([10_000., 10_000., 0., 0., 0.])
     held_index = torch.tensor([1])
-    held_features = torch.zeros(1, 4)
+    held_features = torch.zeros(1, 9)
     logits, size, stop, target = decoder(
         listings, account, held_index, held_features,
         enter_allowed=torch.tensor([True, False, True]),
@@ -56,6 +56,14 @@ def test_five_action_decoder_masks_brackets_until_admissible():
     assert logits[5] == torch.finfo(logits.dtype).min
     assert torch.isfinite(logits[[0, 1, 3, 4, 6]]).all()
     assert ((size >= 0) & (size <= 1)).all()
+    armed = held_features.clone()
+    armed[0, 4:8] = torch.tensor([.02, .04, 1., 1.])
+    changed = decoder(listings, account, held_index, armed,
+        enter_allowed=torch.tensor([True, False, True]),
+        exit_allowed=torch.tensor([True]),
+        stop_allowed=torch.tensor([False]),
+        target_allowed=torch.tensor([True]))[0]
+    assert not torch.equal(logits[[4, 6]], changed[[4, 6]])
 
 
 def test_v6_policy_remembers_actual_execution_and_resets_by_session():
@@ -66,7 +74,7 @@ def test_v6_policy_remembers_actual_execution_and_resets_by_session():
     listed = torch.randn(3, 8)
     account = torch.tensor([10000., 10000., 0., 0., 0.])
     held_index = torch.empty(0, dtype=torch.long)
-    held_features = torch.empty(0, 4)
+    held_features = torch.empty(0, 9)
     masks = dict(enter_allowed=torch.tensor([True, True, False]),
                  exit_allowed=torch.empty(0, dtype=torch.bool),
                  stop_allowed=torch.empty(0, dtype=torch.bool),

@@ -16,7 +16,7 @@ import torch
 
 from research.rl_trading.v6.candle_stream import (SparseCandleState,
                                                    seed_previous_session)
-from research.rl_trading.v6.model import BracketPolicy
+from research.rl_trading.v6.model import BracketPolicy, HELD_FEATURE_WIDTH
 from research.rl_trading.v6.objective import bracket_loss
 from research.rl_trading.v6.session_data import PackedSession
 
@@ -30,7 +30,7 @@ class TeacherDecision:
     token: int  # 0 HOLD, 1..N enter, then H exit/stop/target slots.
     account: np.ndarray  # [5] causal cash/equity/P&L/exposure/age.
     held_index: np.ndarray  # [H] identity-ordered listing indices.
-    held_features: np.ndarray  # [H,4], causal quantity/basis/age/return.
+    held_features: np.ndarray  # [H,9], includes causal armed bracket state.
     enter_allowed: np.ndarray  # [N] causal fresh/listing/cash eligibility.
     exit_allowed: np.ndarray  # [H].
     stop_allowed: np.ndarray  # [H], false until confirmed entry fill.
@@ -74,7 +74,7 @@ def _validate(decisions: tuple[TeacherDecision, ...],
                 item.close_us <= 0 or item.order_index < 0 or
                 item.account.shape != (5,) or
                 item.held_index.shape != (held,) or
-                item.held_features.shape != (held, 4) or
+                item.held_features.shape != (held, HELD_FEATURE_WIDTH) or
                 item.enter_allowed.shape != (listings,) or
                 any(mask.shape != (held,) for mask in
                     (item.exit_allowed, item.stop_allowed,

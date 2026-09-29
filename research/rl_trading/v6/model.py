@@ -17,6 +17,7 @@ from research.rl_trading.v6.features import (CONTEXT_CANDLES, LEVEL_NAMES,
 
 
 INPUT_WIDTH = len(SCALAR_NAMES) + 2 * LEVELS_PER_SIDE * len(LEVEL_NAMES)
+HELD_FEATURE_WIDTH = 9
 
 
 @dataclass
@@ -122,8 +123,9 @@ class BracketActionDecoder(nn.Module):
         if width < 1:
             raise ValueError('Invalid action width')
         self.width = width
-        self.account = nn.Linear(5, width)
-        self.holding = nn.Linear(width + 4, width)
+        self.account = nn.Sequential(nn.Linear(5, width), nn.LayerNorm(width))
+        self.holding = nn.Sequential(
+            nn.Linear(width + HELD_FEATURE_WIDTH, width), nn.LayerNorm(width))
         self.hold_head = nn.Linear(width, 1)
         self.enter_head = nn.Linear(width, 1)
         self.exit_head = nn.Linear(width, 1)
@@ -141,14 +143,15 @@ class BracketActionDecoder(nn.Module):
         """Return logits [1+N+3H], size [N], distances [H] each.
 
         `listings` is [N,D]. Account is [5] (cash, equity, realized P&L,
-        exposure, seconds since action). Held features [H,4] are quantity,
-        cost basis, age, and marked return. STOP/target distances are raw
-        learnable predictions; execution code applies quote/tick constraints.
+        exposure, seconds since action). Held features [H,9] are quantity,
+        cost basis, age, marked return, stop/target distances from the causal
+        mark, stop/target armed flags, and stop pending. Raw prediction heads
+        are converted to valid prices by the OMS adapter.
         """
         if (listings.ndim != 2 or listings.shape[1] != self.width or
                 account.shape != (5,) or held_index.ndim != 1 or
                 held_index.dtype != torch.long or
-                held_features.shape != (len(held_index), 4) or
+                held_features.shape != (len(held_index), HELD_FEATURE_WIDTH) or
                 enter_allowed.shape != (len(listings),) or
                 any(mask.shape != (len(held_index),) for mask in
                     (exit_allowed, stop_allowed, target_allowed)) or
@@ -159,10 +162,18 @@ class BracketActionDecoder(nn.Module):
                    (enter_allowed, exit_allowed, stop_allowed, target_allowed)):
             raise ValueError('Action masks must be boolean')
         # [D] pooled market state plus a causal account projection.
-        context = listings.mean(dim=0) + self.account(account)
+        account_scaled = torch.cat((
+            torch.sign(account[:3]) * torch.log1p(account[:3].abs()),
+            account[3:4],
+            torch.log1p(account[4:5].clamp_min(0)) / 10))
+        held_scaled = held_features.clone()
+        if len(held_index):
+            held_scaled[:, :2] = torch.log1p(held_features[:, :2].clamp_min(0))
+            held_scaled[:, 2] = torch.log1p(held_features[:, 2].clamp_min(0)) / 10
+        context = listings.mean(dim=0) + self.account(account_scaled)
         listed = torch.tanh(listings + context[None])  # [N,D].
         held = torch.tanh(self.holding(torch.cat(
-            (listings[held_index], held_features), dim=1)) + context[None])
+            (listings[held_index], held_scaled), dim=1)) + context[None])
         logits = torch.cat((self.hold_head(context).view(1),
             self.enter_head(listed).flatten(),
             self.exit_head(held).flatten(),
