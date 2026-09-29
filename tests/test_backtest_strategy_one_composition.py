@@ -11,6 +11,7 @@ from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionIn
 from src.backend.backtest_strategy_one_activation import CertifiedActivationPlan
 from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
+from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
@@ -36,7 +37,8 @@ def test_execution_ticks_are_pinned_and_consistent_across_accounts():
         subject.pinned_strategy_one_ticks((assignment("DU1", 0),))
 
 
-def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
+@pytest.mark.parametrize("resume", [False, True])
+def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, resume):
     market = CertifiedMarketDayPlan(
         ExecutionInterval.fixed(100), "build", "d" * 64,
         ("2026-08-18",), ("AAA",), (), (100,), "m" * 64)
@@ -47,10 +49,11 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
     entry = CertifiedEntryEvidencePlan("build", "2026-08-18", (), (), (), "e" * 64)
     prices = PriceLevelPlan("build", (), "p" * 64)
     calls = []
-    fact_a, fact_b = object(), object()
+    fact_a, fact_b = (SimpleNamespace(boundary_ms=30_000),
+                      SimpleNamespace(boundary_ms=31_000))
     full_gate = StrategyOneStaticGate(
-        (fact_a, fact_b), np.array([1, 0], dtype=np.uint8),
-        np.array([1], dtype=np.int64))
+        (fact_a, fact_b), np.array([0, 0], dtype=np.uint8),
+        np.array([0, 1], dtype=np.int64))
     monkeypatch.setattr(subject, "project_candidate_plan",
                         lambda source, **_: source)
     monkeypatch.setattr(subject, "project_activation_plan",
@@ -66,6 +69,7 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
 
     def build(_market, _survivors, *, activation_source_candidates, **_kwargs):
         assert activation_source_candidates is candidates
+        assert _kwargs["start_after_boundary_ms"] == (30_000 if resume else 0)
         calls.append("scheduler_built")
         return scheduler
 
@@ -76,16 +80,22 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
         assert callable(client_factory)
         calls.append("seed_preloaded")
 
+    async def restore(state, *, financially_active_tickers):
+        assert state.boundary_ms == 30_000
+        assert financially_active_tickers == ("AAA",)
+        calls.append("evidence_restored")
+
     monkeypatch.setattr(subject, "StrategyOneCausalEvidence",
-                        lambda **_kwargs: SimpleNamespace(v7=SimpleNamespace(
-                            preload_seeds=preload_seeds)))
+                        lambda **_kwargs: SimpleNamespace(
+                            v7=SimpleNamespace(preload_seeds=preload_seeds),
+                            restore_recovery_state=restore))
     monkeypatch.setattr(subject, "StrategyOneManagementRunner",
                         lambda **_kwargs: SimpleNamespace())
 
     async def run(_scheduler, _entry, _evidence, _manager, *, static_gate,
                   **_kwargs):
-        assert static_gate.facts == (fact_b,)
-        assert static_gate.rejection_mask.tolist() == [0]
+        assert static_gate.facts == ((fact_b,) if resume else (fact_a, fact_b))
+        assert static_gate.rejection_mask.tolist() == ([0] if resume else [0, 0])
         calls.append("executed")
         return "complete"
 
@@ -100,14 +110,20 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
         hod=CertifiedHodPlan("build", "2026-08-18", (), "h" * 64),
         seeds=CertifiedSeedPlan("build", "v" * 64, (), "z" * 64, True),
         entry=entry, prices=prices, through_boundary_ms=19_800_000,
-        runtime=object(), assignments=(StrategyAssignment(
+        runtime=SimpleNamespace(broker=SimpleNamespace(
+            financially_active_tickers=lambda: ("AAA",))),
+        start_after_boundary_ms=30_000 if resume else 0,
+        resume_evidence_state=(StrategyOneEvidenceState(30_000, (), (), ())
+                               if resume else None),
+        assignments=(StrategyAssignment(
             "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
             AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
             {"execution": {"tick_size": .01}}),),
         client_factory=lambda: reader, before_boundary=boundary,
         finish_boundary=boundary))
     assert result == "complete"
-    assert calls == ["scheduler_built", "seed_preloaded", "executed",
+    assert calls == ["scheduler_built", "seed_preloaded",
+                     *(("evidence_restored",) if resume else ()), "executed",
                      "scheduler_closed", "reader_closed"]
 
 

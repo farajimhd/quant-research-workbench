@@ -30,7 +30,9 @@ from src.backend.backtest_strategy_one_coordinator import (
     StrategyOneProposalCounts, run_strategy_one_proposals,
 )
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
-from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
+from src.backend.backtest_strategy_one_evidence import (
+    StrategyOneCausalEvidence, StrategyOneEvidenceState,
+)
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
@@ -88,6 +90,8 @@ async def run_certified_strategy_one_session(
     max_workers: int = DEFAULT_SPARSE_READ_WORKERS,
     stage_time: Callable[[str, float], None] | None = None,
     interval_plan: CertifiedV7IntervalPlan | None = None,
+    start_after_boundary_ms: int = 0,
+    resume_evidence_state: StrategyOneEvidenceState | None = None,
 ) -> StrategyOneProposalCounts:
     """Compose the certified sparse route without legacy frames or events.
 
@@ -110,6 +114,13 @@ async def run_certified_strategy_one_session(
             or type(through_boundary_ms) is not int
             or not 0 < through_boundary_ms <= 57_600_000
             or through_boundary_ms % 100
+            or type(start_after_boundary_ms) is not int
+            or not 0 <= start_after_boundary_ms < through_boundary_ms
+            or start_after_boundary_ms % 100
+            or (start_after_boundary_ms == 0) != (resume_evidence_state is None)
+            or resume_evidence_state is not None and (
+                not isinstance(resume_evidence_state, StrategyOneEvidenceState)
+                or resume_evidence_state.boundary_ms != start_after_boundary_ms)
             or type(max_workers) is not int or not 1 <= max_workers <= 16
             or any(not callable(callback) for callback in (
                 client_factory, before_boundary, finish_boundary))
@@ -137,7 +148,9 @@ async def run_certified_strategy_one_session(
     # The scheduler sees only survivors. Its local gate must index exactly
     # those rows, while the full mask remains a separate certified reduction.
     surviving_facts = tuple(full_gate.facts[index]
-                            for index in full_gate.eligible_indices)
+                            for index in full_gate.eligible_indices
+                            if start_after_boundary_ms == 0 or
+                            full_gate.facts[index].boundary_ms > start_after_boundary_ms)
     surviving_gate = StrategyOneStaticGate(
         surviving_facts, np.zeros(len(surviving_facts), dtype=np.uint8),
         np.arange(len(surviving_facts), dtype=np.int64))
@@ -153,7 +166,8 @@ async def run_certified_strategy_one_session(
         projected, survivors, activations=activation_schedule,
         price_plan=projected_prices, through_boundary_ms=through_boundary_ms,
         client_factory=client_factory, max_workers=max_workers,
-        activation_source_candidates=visible, stage_time=stage_time)
+        activation_source_candidates=visible, stage_time=stage_time,
+        start_after_boundary_ms=start_after_boundary_ms)
     if stage_time is not None:
         stage_time("strategy_one_sparse_load", sparse_started)
     try:
@@ -190,6 +204,10 @@ async def run_certified_strategy_one_session(
                     max_workers=min(8, len(selected)))
                 if stage_time is not None:
                     stage_time("strategy_one_v7_seed_preload", seed_started)
+            if resume_evidence_state is not None:
+                active = runtime.broker.financially_active_tickers()
+                await evidence.restore_recovery_state(
+                    resume_evidence_state, financially_active_tickers=active)
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)
