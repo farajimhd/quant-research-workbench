@@ -169,13 +169,14 @@ def audit(*, run_id: str, build_id: str, session: date,
             state_revisions={profile.account_id: checkpoint_sequence
                              for profile in profiles}, cutoff_at=boundary)
         portfolio = PortfolioManagementEngine(
-            profiles, journal=object(), run_id=run_id,
+            profiles, journal=campaign_journal, run_id=run_id,
             strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
             groups=groups, typed_recovery=portfolio_recovery,
             event_clock=lambda: boundary)
         if (set(portfolio.states) != {row["account_id"] for row in broker.accounts}
                 or portfolio.reservations != portfolio_recovery.reservations
-                or portfolio.allocations != portfolio_recovery.allocations):
+                or portfolio.allocations != portfolio_recovery.allocations
+                or set(campaign_journal.portfolio_states()) != set(portfolio.states)):
             raise RuntimeError("Cold portfolio actor differs from normalized state")
         manager_rows = load_unattested_manager_snapshot_rows(
             client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
