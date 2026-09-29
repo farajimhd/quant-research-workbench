@@ -9570,8 +9570,10 @@ class ReplayRunService:
             if count != 1:
                 raise RuntimeError("Typed Backtest run context is ambiguous")
             terminal = _rows(journal,
-                "SELECT status FROM arte.trading_backtest_terminal_commit_v2 "
-                f"WHERE run_id='{canonical}' LIMIT 2 FORMAT JSONEachRow")
+                "SELECT status FROM arte.trading_commit_v4 "
+                f"WHERE run_id='{canonical}' "
+                "AND status IN ('completed','failed','stopped') "
+                "LIMIT 2 FORMAT JSONEachRow")
             if terminal:
                 # Presence of even an invalid terminal row must fail closed;
                 # recovery never appends to a run that might be finished.

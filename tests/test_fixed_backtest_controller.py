@@ -570,7 +570,7 @@ def test_completed_typed_backtest_resume_rejects_before_expensive_preflight(monk
                 return "1"
             if "SELECT count() FROM arte.trading_run_v1" in sql:
                 return "1"
-            assert "FROM arte.trading_backtest_terminal_commit_v2" in sql
+            assert "FROM arte.trading_commit_v4" in sql
             return '{"status":"completed"}'
 
         def close(self):
