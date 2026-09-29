@@ -23,6 +23,7 @@ def test_certified_sparse_teacher_loader_rejects_old_contract(tmp_path):
         'token': [1], 'account_cash': [10000.],
         'account_equity': [10000.], 'account_realized': [0.],
         'account_exposure': [0.], 'seconds_since_action': [0.],
+        'pending_reserved_cash': [0.], 'pending_entry_count': [0.],
         'held_listing_indices': [[]], 'held_features_flat': [[]],
         'enter_allowed_indices': [[0]], 'exit_allowed': [[]],
         'stop_allowed': [[]], 'target_allowed': [[]],
@@ -35,7 +36,9 @@ def test_certified_sparse_teacher_loader_rejects_old_contract(tmp_path):
     }).write_parquet(root / 'outcomes.parquet')
     def digest(path):
         return sha256(path.read_bytes()).hexdigest()
-    certificate = {'version': VERSION, 'status': 'audited_quote_bracket_teacher',
+    certificate = {'version': VERSION, 'status': 'audited_price_action_teacher',
+        'label_evidence': ['certified_1s_candles', 'sparse_episode_scores'],
+        'execution_evidence': 'none',
         'day': '2026-07-31', 'bank_certificate_sha256': 'bank-hash',
         'decision_rows': 1, 'outcome_rows': 1,
         'decisions_sha256': digest(root / 'decisions.parquet'),
@@ -44,8 +47,13 @@ def test_certified_sparse_teacher_loader_rejects_old_contract(tmp_path):
     decisions, outcomes = load_teacher(root, session, runtime_root=tmp_path)
     assert len(decisions) == len(outcomes) == 1
     assert decisions[0].enter_allowed.tolist() == [True]
-    certificate['version'] = 'old-v5-orders'
+    certificate['execution_evidence'] = 'quotes'
     (root / 'complete.json').write_text(json.dumps(certificate))
     import pytest
+    with pytest.raises(ValueError, match='unaudited'):
+        load_teacher(root, session, runtime_root=tmp_path)
+    certificate['execution_evidence'] = 'none'
+    certificate['version'] = 'old-v5-orders'
+    (root / 'complete.json').write_text(json.dumps(certificate))
     with pytest.raises(ValueError, match='unaudited'):
         load_teacher(root, session, runtime_root=tmp_path)

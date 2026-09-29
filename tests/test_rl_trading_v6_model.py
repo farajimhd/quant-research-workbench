@@ -40,7 +40,7 @@ def test_five_action_decoder_masks_brackets_until_admissible():
     torch.manual_seed(5)
     decoder = BracketActionDecoder(width=8)
     listings = torch.randn(3, 8)
-    account = torch.tensor([10_000., 10_000., 0., 0., 0.])
+    account = torch.tensor([10_000., 10_000., 0., 0., 0., 0., 0.])
     held_index = torch.tensor([1])
     held_features = torch.zeros(1, 9)
     logits, size, stop, target = decoder(
@@ -72,7 +72,7 @@ def test_v6_policy_remembers_actual_execution_and_resets_by_session():
     state = policy.initial_action_state(device=torch.device('cpu'),
                                         dtype=torch.float32)
     listed = torch.randn(3, 8)
-    account = torch.tensor([10000., 10000., 0., 0., 0.])
+    account = torch.tensor([10000., 10000., 0., 0., 0., 0., 0.])
     held_index = torch.empty(0, dtype=torch.long)
     held_features = torch.empty(0, 9)
     masks = dict(enter_allowed=torch.tensor([True, True, False]),

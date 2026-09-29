@@ -1,9 +1,9 @@
 """Chronological V6 training core over packed actual-candle events.
 
-This core deliberately accepts certified, already reconstructed teacher
-snapshots. A separate teacher adapter must prove those snapshots from a
-quote-bound fill ledger before a production launcher can use them. It cannot
-consume old V5 clock-second orders or price-only execution grids.
+This core deliberately accepts certified, already reconstructed price-action
+teacher snapshots. Teacher order outcomes are idealized candle-path events;
+the separate quote-aware environment supplies later interactive learning and
+model replay. Old V5 clock-second orders cannot satisfy this contract.
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class TeacherDecision:
     close_us: int
     order_index: int
     token: int  # 0 HOLD, 1..N enter, then H exit/stop/target slots.
-    account: np.ndarray  # [5] causal cash/equity/P&L/exposure/age.
+    account: np.ndarray  # [7] causal cash/equity/P&L/exposure/age/pending.
     held_index: np.ndarray  # [H] identity-ordered listing indices.
     held_features: np.ndarray  # [H,9], includes causal armed bracket state.
     enter_allowed: np.ndarray  # [N] causal fresh/listing/cash eligibility.
@@ -53,7 +53,7 @@ class TeacherDecision:
 
 @dataclass(frozen=True)
 class ExecutionOutcome:
-    """Later observed OMS result; never visible at the order decision."""
+    """Later hypothetical teacher result; never visible at the decision."""
 
     source_close_us: int
     source_order_index: int
@@ -91,7 +91,7 @@ def _validate(decisions: tuple[TeacherDecision, ...],
         held = len(item.held_index)
         if (previous_key is not None and key <= previous_key or
                 item.close_us <= 0 or item.order_index < 0 or
-                item.account.shape != (5,) or
+                item.account.shape != (7,) or
                 item.held_index.shape != (held,) or
                 item.held_features.shape != (held, HELD_FEATURE_WIDTH) or
                 item.enter_allowed.shape != (listings,) or

@@ -12,13 +12,15 @@ Phase 1/2/3 names with three responsibilities:
 2. **Portfolio Teacher** compares only sparse eligible opportunities across
    listings. It reserves initial-bankroll cash for first-eligible episodes in
    a 15-second window, has no fixed maximum number of positions, and uses a
-   three-second minimum hold. It must bind confirmed fills and bracket labels
-   before its output may supervise a model. Old V8 artifacts are not V6 labels.
+   three-second minimum hold. Its idealized entry, exit, stop, and target
+   labels depend on certified one-second candle price action, never quotes.
+   Old V8 artifacts are not V6 labels.
 3. **Causal Policy and Replay** consumes the last 120 *actual candles* per
    listing, including a prior certified session's tail where available. It
    learns entry, exit, hold, stop, target, and size from its action/holding
-   history. Replay compounds actual model-account cash subject to the existing
-   equity/price order-size rules; teacher bankroll segregation does not apply.
+   history. Quote-aware replay and environment learning compound actual
+   model-account cash subject to existing equity/price order-size rules;
+   teacher bankroll segregation does not apply.
 
 The packed bank stores each candle exactly once, as contiguous
 `[sum_listing_candles, 37]` scalars and
@@ -66,10 +68,16 @@ normalizes desired cash against the original $10,000 bankroll. This is a
 planning input, not an executable teacher trade: confirmed entries, account
 cash, bracket exits, and partial fills still require stateful replay.
 
-The bracket oracle and sparse 100 ms event kernel are versioned separately.
-The certified ARTE execution-price sidecar supplies per-price volume for
-possible target fills. It does not reveal queue position; a touch alone is
-not booked as a fill. Future episode extrema never enter policy features.
+The price-action-only V6 bracket oracle uses the minimum of three pre-entry
+one-second lows and observed held-period lows, minus an explicit tick offset,
+for the stop; the target is the held-period maximum high rounded to a
+certified tick. It withholds a perfect-stop label when a held second is
+unobserved. Historical tick-size authority remains required before final
+teacher certification. Future episode extrema never enter policy features.
+The older quote-dependent oracle is a separate prior version and is not used
+for V6 teacher labels. Quote and certified execution-price evidence affect
+the model environment and replay only; displayed size and price-level volume
+are optimistic fill bounds, never queue-position proof.
 
 `model.py` now implements the 120-actual-candle encoder. Training applies a
 causal depthwise convolution to each listing's stored sequence once; serving
@@ -138,16 +146,24 @@ cash fraction, or label-only stop/target distance conditionally.
 pre-open population into a small hash-bound sidecar. Replay uses this mapping
 to address the OMS; it never guesses a ticker from the packed row order.
 
-`teacher_data.py` requires a separately audited V6 quote/bracket teacher
-certificate bound to the exact bank hash. Its sparse decisions contain causal
-pre-action account and holding snapshots; later execution outcomes reference
-their originating decisions. `training.py` is the teacher-forced session core.
+`teacher_data.py` requires a separately audited V6 price-action-only teacher
+certificate bound to the exact bank hash. It rejects quote execution evidence
+in that certificate. Its sparse decisions contain causal pre-action account
+and holding snapshots; later idealized candle-path outcomes reference their
+originating decisions. `training.py` is the teacher-forced pretraining core.
 Each held snapshot contains quantity, cost basis, age, marked return,
 distances to armed stop/target, two armed flags, and a stop-pending flag. The
 decoder scales dollars and share counts before projecting them so realistic
-account magnitudes do not saturate the action logits.
-No V6 teacher certificate or complete campaign trainer/replay is available
-yet; these modules must not be presented as a trained V6 model.
+account magnitudes do not saturate the action logits. The replay observation
+also includes cash reserved by pending entries and their count; submitted
+orders cannot masquerade as confirmed holdings. A chronological quote queue
+books fills at later buckets and retries partial exits while the source has
+certified evidence. The August 5 single-attempt diagnostic left eleven
+positions open; a bounded follow-up check found fresh bids for all eleven
+within 60 seconds. This is a diagnosis, not a completed replay result.
+No V6 price-action teacher certificate, quote-aware policy rollout, or
+environment-learning campaign is available yet; these modules must not be
+presented as a trained V6 model.
 `replay_metrics.py` separates realized P&L, unrealized marked P&L, fees,
 period-by-period marked P&L, drawdown, turnover, holding time, stale marks,
 and terminal open positions. `replay_artifacts.py` persists immutable order,

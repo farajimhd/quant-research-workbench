@@ -123,7 +123,7 @@ class BracketActionDecoder(nn.Module):
         if width < 1:
             raise ValueError('Invalid action width')
         self.width = width
-        self.account = nn.Sequential(nn.Linear(5, width), nn.LayerNorm(width))
+        self.account = nn.Sequential(nn.Linear(7, width), nn.LayerNorm(width))
         self.holding = nn.Sequential(
             nn.Linear(width + HELD_FEATURE_WIDTH, width), nn.LayerNorm(width))
         self.hold_head = nn.Linear(width, 1)
@@ -142,14 +142,15 @@ class BracketActionDecoder(nn.Module):
                 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return logits [1+N+3H], size [N], distances [H] each.
 
-        `listings` is [N,D]. Account is [5] (cash, equity, realized P&L,
-        exposure, seconds since action). Held features [H,9] are quantity,
+        `listings` is [N,D]. Account is [7] (cash, equity, realized P&L,
+        exposure, seconds since action, reserved cash, pending entry count).
+        Held features [H,9] are quantity,
         cost basis, age, marked return, stop/target distances from the causal
         mark, stop/target armed flags, and stop pending. Raw prediction heads
         are converted to valid prices by the OMS adapter.
         """
         if (listings.ndim != 2 or listings.shape[1] != self.width or
-                account.shape != (5,) or held_index.ndim != 1 or
+                account.shape != (7,) or held_index.ndim != 1 or
                 held_index.dtype != torch.long or
                 held_features.shape != (len(held_index), HELD_FEATURE_WIDTH) or
                 enter_allowed.shape != (len(listings),) or
@@ -165,7 +166,8 @@ class BracketActionDecoder(nn.Module):
         account_scaled = torch.cat((
             torch.sign(account[:3]) * torch.log1p(account[:3].abs()),
             account[3:4],
-            torch.log1p(account[4:5].clamp_min(0)) / 10))
+            torch.log1p(account[4:5].clamp_min(0)) / 10,
+            torch.log1p(account[5:7].clamp_min(0))))
         held_scaled = held_features.clone()
         if len(held_index):
             held_scaled[:, :2] = torch.log1p(held_features[:, :2].clamp_min(0))

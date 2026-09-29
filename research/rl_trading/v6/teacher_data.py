@@ -1,8 +1,9 @@
-"""Certified sparse V6 bracket teacher adapter for chronological training.
+"""Certified sparse, price-action-only V6 teacher adapter for pretraining.
 
-The teacher writer must derive every pre-action snapshot from the causal OMS
-ledger. Future oracle values are loaded only as conditional loss targets.
-Old V5 trajectory and fixed-lot labels do not satisfy this versioned schema.
+The teacher's idealized entries, exits, stops and targets use certified one-
+second candle paths, not quotes or execution-liquidity inputs. Its P&L is a
+hindsight reference, never executable model profit. Quote-aware closed-loop
+replay and environment learning are separate contracts.
 """
 from __future__ import annotations
 
@@ -19,10 +20,11 @@ from research.rl_trading.v6.training import (ExecutionOutcome,
                                              TeacherDecision, _validate)
 
 
-VERSION = 'rl-trading-confirmed-bracket-teacher-v6'
+VERSION = 'rl-trading-price-action-bracket-teacher-v6-1'
 DECISION_COLUMNS = {
     'close_us', 'order_index', 'token', 'account_cash', 'account_equity',
     'account_realized', 'account_exposure', 'seconds_since_action',
+    'pending_reserved_cash', 'pending_entry_count',
     'held_listing_indices', 'held_features_flat',
     'enter_allowed_indices', 'exit_allowed', 'stop_allowed',
     'target_allowed', 'size_fraction', 'oracle_log_distance',
@@ -45,14 +47,17 @@ def _hash(path: Path) -> str:
 def load_teacher(root: Path, session: PackedSession, *,
                  runtime_root: Path) -> tuple[tuple[TeacherDecision, ...],
                                               tuple[ExecutionOutcome, ...]]:
-    """Bind sparse actions and later outcomes to one certified train bank."""
+    """Bind hypothetical teacher actions to one certified train bank."""
     root, runtime = Path(root).resolve(), Path(runtime_root).resolve()
     if (session.role != 'train' or not runtime.is_dir() or
             not root.is_relative_to(runtime) or root == session.root):
         raise ValueError('V6 training teacher needs a distinct runtime root')
     certificate = json.loads((root / 'complete.json').read_text())
-    if (certificate.get('status') != 'audited_quote_bracket_teacher' or
+    if (certificate.get('status') != 'audited_price_action_teacher' or
             certificate.get('version') != VERSION or
+            certificate.get('label_evidence') !=
+            ['certified_1s_candles', 'sparse_episode_scores'] or
+            certificate.get('execution_evidence') != 'none' or
             certificate.get('day') != str(session.day) or
             certificate.get('bank_certificate_sha256') !=
             session.source_certificate_sha256):
@@ -84,7 +89,9 @@ def load_teacher(root: Path, session: PackedSession, *,
             int(row['close_us']), int(row['order_index']), int(row['token']),
             np.asarray([row['account_cash'], row['account_equity'],
                         row['account_realized'], row['account_exposure'],
-                        row['seconds_since_action']], dtype=np.float32),
+                        row['seconds_since_action'],
+                        row['pending_reserved_cash'],
+                        row['pending_entry_count']], dtype=np.float32),
             held, features.reshape(-1, HELD_FEATURE_WIDTH), enter,
             np.asarray(row['exit_allowed'], dtype=np.bool_),
             np.asarray(row['stop_allowed'], dtype=np.bool_),

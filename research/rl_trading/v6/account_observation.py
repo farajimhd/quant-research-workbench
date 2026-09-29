@@ -13,11 +13,12 @@ import numpy as np
 
 from research.rl_trading.v6.model import HELD_FEATURE_WIDTH
 from research.rl_trading.v6.oms import BracketAccount
+from research.rl_trading.v6.causal_order_queue import CausalOrderQueue
 
 
 @dataclass(frozen=True)
 class AccountObservation:
-    account: np.ndarray  # [5] cash, marked equity, realized, exposure, age.
+    account: np.ndarray  # [7] cash, equity, realized, exposure, age, pending.
     held_index: np.ndarray  # [H] listing-axis indices, ascending.
     held_features: np.ndarray  # [H,9] causal position/bracket state.
     exit_allowed: np.ndarray  # [H], manual exit before stop is pending.
@@ -27,9 +28,10 @@ class AccountObservation:
 
 def observe_account(account: BracketAccount, tickers: tuple[str, ...],
                     marks: dict[str, tuple[float, int]], *,
-                    close_us: int) -> AccountObservation:
+                    close_us: int, queue: CausalOrderQueue) -> AccountObservation:
     """Produce shape-stable inputs from completed marks at ``close_us``."""
-    if (type(close_us) is not int or close_us <= 0 or not tickers or
+    if (queue.account is not account or
+            type(close_us) is not int or close_us <= 0 or not tickers or
             len(set(tickers)) != len(tickers)):
         raise ValueError('Invalid V6 market identity or completed close')
     by_ticker = {ticker: index for index, ticker in enumerate(tickers)}
@@ -56,7 +58,8 @@ def observe_account(account: BracketAccount, tickers: tuple[str, ...],
         raise ValueError('OMS order lies after observation close')
     state = np.asarray((account.cash, equity, realized,
                         exposure/equity if equity > 0 else 0.,
-                        (close_us-last_action_us)/1_000_000),
+                        (close_us-last_action_us)/1_000_000,
+                        queue.reserved_cash, len(queue.pending_entries)),
                        dtype=np.float32)
     features = np.zeros((len(held), HELD_FEATURE_WIDTH), dtype=np.float32)
     exit_mask = np.zeros(len(held), dtype=np.bool_)
