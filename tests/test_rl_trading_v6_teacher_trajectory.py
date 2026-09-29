@@ -19,6 +19,37 @@ def test_teacher_account_debit_rejects_overspend_but_clears_roundoff():
         _debit_nonnegative(100., 100.01)
 
 
+def test_simultaneous_entry_reservations_reconcile_from_pending_orders(tmp_path):
+    clocks = np.asarray([1_000_000, 2_000_000, 3_000_000, 4_000_000] * 2,
+                        dtype=np.int64)
+    scalar = np.zeros((8, len(SCALAR_NAMES)), dtype=np.float32)
+    scalar[:, SCALAR_NAMES.index('log_close')] = math.log(10.)
+    scalar[:, SCALAR_NAMES.index('bar_price_valid')] = 1.
+    bank = SessionBank(tmp_path / 'bank',
+        {'offsets': {'A': [0, 4], 'B': [4, 8]}}, clocks, scalar,
+        np.zeros((8, 2, 5, 11), dtype=np.float32))
+    session = PackedSession(date(2026, 7, 31), 'train', tmp_path / 'day',
+                            'bank-hash', bank, None, ('A', 'B'))
+    allocations = pl.DataFrame({'ticker': ['A', 'B'],
+        'listing_id': ['A', 'B'], 'episode_uid': ['A:1', 'B:1'],
+        'time_us': [1_000_000] * 2, 'exit_hint_us': [3_000_000] * 2,
+        'decision_close': [10.] * 2, 'exit_hint_close': [10.] * 2,
+        'desired_budget': [5000.] * 2, 'future_reservation': [0.] * 2,
+        'score': [.1] * 2, 'direction': [1] * 2})
+    brackets = pl.DataFrame({'ticker': ['A', 'B'],
+        'episode_uid': ['A:1', 'B:1'], 'entry_us': [1_000_000] * 2,
+        'exit_us': [3_000_000] * 2, 'oracle_stop': [9.] * 2,
+        'oracle_target': [11.] * 2,
+        'held_last_max_high_us': [3_000_000] * 2,
+        'label_available': [True] * 2})
+    intents, _ = bind_intents(allocations, brackets, session.listings)
+    _, _, report = compile_trajectory(session, intents)
+    assert report['completed_positions'] == 2
+    assert report['pending_entries'] == 0
+    assert report['ending_trading_cash'] == pytest.approx(
+        10_000. + report['modeled_net_pnl'])
+
+
 def test_quote_free_teacher_emits_delayed_account_actions(tmp_path):
     clocks = np.asarray([1_000_000, 2_000_000, 3_000_000, 4_000_000],
                         dtype=np.int64)

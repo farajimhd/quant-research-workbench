@@ -199,13 +199,13 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
             if source[0] >= clock:
                 continue
             cash = _debit_nonnegative(cash, spend)
-            reserved = _debit_nonnegative(reserved, spend)
             fees += shares*FEE_PER_SHARE
             holdings[ticker] = Holding(intent, shares, clock)
             outcomes.append(ExecutionOutcome(source[0], source[1], clock,
                 1, intent.listing_index, spend/max(initial_cash, cash+spend),
                 1., 0.))
             del pending_buys[ticker]
+            reserved = math.fsum(row[2] for row in pending_buys.values())
         for ticker, (holding, source, pre_exit_equity) in tuple(
                 pending_sells.items()):
             if source[0] >= clock:
@@ -356,8 +356,8 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
                 continue
             key = snapshot(1+intent.listing_index,
                 size_fraction=spend/max(cash-reserved, 1e-9))
-            reserved += spend
             pending_buys[ticker] = (intent, shares, spend, key)
+            reserved = math.fsum(row[2] for row in pending_buys.values())
         if index == 0 and event_number % hold_sample_seconds == 0:
             snapshot(0)
         max_open = max(max_open, len(holdings))
