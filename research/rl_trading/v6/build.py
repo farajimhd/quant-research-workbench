@@ -73,13 +73,19 @@ def _work(packet):
             'source_units': current['units'][str(day)][ticker],
             'excluded_reason': 'no_persisted_one_second_candle'}
     previous = (read_previous_volume(_READER, prior, previous_day, ticker)
-                if ticker in prior['units'][str(previous_day)] else
+                if prior is not None and
+                ticker in prior['units'][str(previous_day)] else
                 pl.DataFrame(schema={'bucket_index': pl.Int64,
                                      'volume': pl.Float64}))
     seed, splits, fundamentals, evidence = read_reference(
         _READER, day, listing)
-    episodes, candidates, report = compile_ticker(
-        day, ticker, identity, bars, indicators)
+    if previous_day is None:
+        episodes, candidates = pl.DataFrame(), pl.DataFrame()
+        report = {'ticker': ticker, 'episodes': 0, 'candidates': 0,
+                  'context_only': True}
+    else:
+        episodes, candidates, report = compile_ticker(
+            day, ticker, identity, bars, indicators)
     features = encode(
         day, bars, indicators, previous, seed, splits, fundamentals)
     report = {**report, 'listing_id': identity, 'candles': len(features.close_us),
@@ -110,6 +116,18 @@ def _ordered_bounded(pool, packets, max_in_flight):
 
 def _fragment_name(identity: str) -> str:
     return sha256(identity.encode()).hexdigest()[:24]
+
+
+def _packet(day, previous_day, listing, current, prior):
+    ticker = listing['ticker']
+    current_slice = {'build_id': current['build_id'], 'units': {
+        str(day): {ticker: current['units'][str(day)][ticker]}}}
+    if prior is None:
+        return day, None, listing, current_slice, None
+    old = prior['units'][str(previous_day)]
+    prior_slice = {'build_id': prior['build_id'], 'units': {
+        str(previous_day): {ticker: old[ticker]} if ticker in old else {}}}
+    return day, previous_day, listing, current_slice, prior_slice
 
 
 def _save_fragment(root: Path, identity: str, episodes: pl.DataFrame,
@@ -191,25 +209,28 @@ def main(argv=None) -> int:
     parser.add_argument('--previous-manifest', type=Path)
     parser.add_argument('--ledger', type=Path, required=True)
     parser.add_argument('--date', type=date.fromisoformat, required=True)
-    parser.add_argument('--previous-date', type=date.fromisoformat, required=True)
+    parser.add_argument('--previous-date', type=date.fromisoformat)
+    parser.add_argument('--context-only', action='store_true')
     parser.add_argument('--workers', type=int, default=64)
     parser.add_argument('--ticker', action='append', dest='tickers')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
     split_role = role(args.date)
-    if split_role == 'context_only':
-        raise ValueError('Context-only day cannot produce V6 opportunity labels')
+    if (args.context_only != (split_role == 'context_only') or
+            (args.previous_date is None) != args.context_only):
+        raise ValueError('Context-only split needs --context-only and no prior day')
     runtime = Path(os.environ.get('QW_RUNTIME_ROOT', '')).resolve()
     output = args.output.resolve()
     if (not runtime.is_dir() or not output.is_relative_to(runtime) or
-            args.previous_date >= args.date):
+            (args.previous_date is not None and args.previous_date >= args.date)):
         raise ValueError('Use chronological dates and an available runtime output root')
     load_env_files(discover_clickhouse_env_files(), verbose=False)
     tickers = sorted(set(t.upper() for t in args.tickers)) if args.tickers else None
     current = arte_source.load_build(args.manifest, args.ledger,
                                      [args.date], tickers)
-    prior = arte_source.load_build(args.previous_manifest or args.manifest,
-                                  args.ledger, [args.previous_date])
+    prior = (arte_source.load_build(args.previous_manifest or args.manifest,
+                                   args.ledger, [args.previous_date])
+             if args.previous_date is not None else None)
     reader = arte_source.reader(threads=1)
     try:
         arte_source.storage_check(reader)
@@ -228,14 +249,14 @@ def main(argv=None) -> int:
                for identity in identities}
     plan = {'version': VERSION, 'day': str(args.date),
             'split_role': split_role,
-            'previous_day': str(args.previous_date),
+            'previous_day': str(args.previous_date) if prior else None,
             'source_build_id': current['build_id'],
-            'previous_build_id': prior['build_id'],
+            'previous_build_id': prior['build_id'] if prior else None,
             'source_definition_hash': current['definition_hash'],
-            'prior_definition_hash': prior['definition_hash'],
+            'prior_definition_hash': prior['definition_hash'] if prior else None,
             'population_snapshot_hash': population_proof['snapshot_hash'],
             'source_units_hash': digest(current['units']),
-            'previous_units_hash': digest(prior['units']),
+            'previous_units_hash': digest(prior['units']) if prior else None,
             'census': lengths}
     plan['hash'] = digest(plan)
     output.mkdir(parents=True, exist_ok=True)
@@ -252,16 +273,8 @@ def main(argv=None) -> int:
         progress_path = output / 'bank' / 'progress.json'
         done = (set(json.loads(progress_path.read_text(encoding='utf-8')))
                 if progress_path.exists() else set())
-        packets = ((args.date, args.previous_date, by_identity[identity],
-                    {'build_id': current['build_id'], 'units': {
-                        str(args.date): {by_identity[identity]['ticker']:
-                                         current['units'][str(args.date)][by_identity[identity]['ticker']]}}},
-                    {'build_id': prior['build_id'], 'units': {
-                        str(args.previous_date): {
-                            by_identity[identity]['ticker']:
-                            prior['units'][str(args.previous_date)][by_identity[identity]['ticker']]}
-                            if by_identity[identity]['ticker'] in prior['units'][str(args.previous_date)]
-                            else {}}})
+        packets = (_packet(args.date, args.previous_date,
+                           by_identity[identity], current, prior)
                    for identity in identities if identity not in done)
         started = perf_counter()
         with ProcessPoolExecutor(max_workers=budget.listing_workers,

@@ -1,7 +1,9 @@
 """Restartable sparse-label fragment compilation."""
 import polars as pl
 
-from research.rl_trading.v6.build import (_combine_fragments,
+from datetime import date
+
+from research.rl_trading.v6.build import (_combine_fragments, _packet,
                                           _save_fragment)
 
 
@@ -21,3 +23,12 @@ def test_sparse_fragments_are_bound_and_reconciled(tmp_path):
     assert combined['outputs']['intended_allocations']['rows'] == 1
     assert (pl.read_parquet(tmp_path / 'intended_allocations.parquet')
             ['desired_budget'][0] == 10_000)
+
+
+def test_context_only_packet_has_no_prior_day():
+    day = date(2026, 7, 30)
+    listing = {'ticker': 'ABC', 'listing_id': 'a'}
+    source = {'build_id': 'certified', 'units': {str(day): {'ABC': {'bars': 1}}}}
+    packet = _packet(day, None, listing, source, None)
+    assert packet[1] is None and packet[4] is None
+    assert packet[3]['units'][str(day)]['ABC'] == {'bars': 1}

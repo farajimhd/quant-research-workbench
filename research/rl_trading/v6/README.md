@@ -43,8 +43,10 @@ which case occurred.
 
 The forward training split begins on July 31, 2026. July 30 is used only as
 the prior-session candle context for July 31. It contributes no V6 training
-labels or trades. This avoids inventing a July 29 ARTE product that has no
-certified pre-open population. Development remains August 24–25; August 26
+labels or trades. The builder's explicit `--context-only` mode compiles its
+feature bank without a prior-session RVOL baseline or July 29 dependency; the
+RVOL-available mask is zero. This avoids inventing a July 29 ARTE product that
+has no certified pre-open population. Development remains August 24–25; August 26
 stays sealed until checkpoint selection.
 
 `run_build.py` is the direct entry point. It accepts a certified current and
