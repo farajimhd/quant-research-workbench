@@ -68,11 +68,15 @@ class PortfolioPolicy(nn.Module):
         eligible = batch['action_mask'][...,1:].any(dim=(1,2))
         gate_logits = self.trade_gate(context[:,0]).squeeze(-1).masked_fill(~eligible,-1e9)
         type_mask = batch['action_mask'][...,1:].any(dim=1)
-        type_logits = self.action_type(context[:,0]).masked_fill(~type_mask,-1e9)
+        # The zero-initialized type head must reproduce the transferred V4
+        # flattened actor. Its learned output is a residual over that prior.
+        # [batch, 3, N] reduces listing logits within each action type.
+        listing_logits = logits[...,1:].transpose(1,2)
+        type_logits = (torch.logsumexp(listing_logits,dim=-1)
+                       + self.action_type(context[:,0])).masked_fill(~type_mask,-1e9)
         type_probability = torch.softmax(type_logits,dim=-1).masked_fill(~type_mask,0.)
         # [batch, 3 action types, N listings] is normalized within each type.
         # The resulting [batch, N*3] choice matches the existing action index.
-        listing_logits = logits[...,1:].transpose(1,2)
         listing_mask = batch['action_mask'][...,1:].transpose(1,2)
         listing_probability = torch.softmax(listing_logits,dim=-1).masked_fill(~listing_mask,0.)
         joint = (type_probability.unsqueeze(-1)*listing_probability).transpose(1,2).reshape(b,-1)

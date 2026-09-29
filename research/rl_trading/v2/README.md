@@ -31,6 +31,13 @@ rollout; such a checkpoint cannot be selected, even if its marked equity is high
 Training still stops if its own account cannot finish flat, since resetting that
 account would falsely assume an executable liquidation.
 
+The version-7 hierarchical selector treats its account-level buy/reduce/close
+head as a learned residual over the transferred version-4 listing logits.
+With a zero residual, its joint listing/action probabilities reproduce the
+parent policy exactly at initialization. This corrects the version-6
+uniform-type migration that sharply increased executed turnover. It does not
+change the execution model or guarantee validation performance.
+
 The early-exit version starts mandatory IOC liquidation 15 minutes before the
 20:00 ET session end and blocks new entries from that point. A missing market
 can still leave a position unsold, in which case training fails closed.
