@@ -106,6 +106,8 @@ def _audit_causal_journal(run_id: str) -> None:
 
     intents: dict[str, datetime] = {}
     event_families: Counter[tuple[str, str, str]] = Counter()
+    risk_state_by_account: dict[str, tuple[tuple[str, str], ...]] = {}
+    repeated_risk_scalars = 0
     linked = sequence = 0
     with closing(backtest_v4_operator_client_from_env()) as client:
         while True:
@@ -123,6 +125,19 @@ def _audit_causal_journal(run_id: str) -> None:
                 at = datetime.fromisoformat(event["event_time"])
                 family = row["detail_family"]
                 event_families[(event["category"], event["entity_type"], family)] += 1
+                if family == "trading_account_risk_state_v1":
+                    account = str(detail["account_id"])
+                    # Measure only exact normalized scalar repetition. Reasons
+                    # and timestamps remain distinct journal evidence; this
+                    # statistic does not authorize suppressing any record.
+                    scalar = tuple(sorted((key, str(value)) for key, value in
+                        detail.items() if key not in {
+                            "record_id", "run_id", "event_month", "batch_id",
+                            "source_event_time", "content_hash", "reason_count",
+                        }))
+                    if risk_state_by_account.get(account) == scalar:
+                        repeated_risk_scalars += 1
+                    risk_state_by_account[account] = scalar
                 if family == "trading_strategy_intent_v1":
                     identity = detail["intent_id"]
                     if identity in intents:
@@ -155,6 +170,9 @@ def _audit_causal_journal(run_id: str) -> None:
         raise RuntimeError("Strategy 1 journal family inventory is incomplete")
     for (category, entity_type, family), count in event_families.most_common():
         print(f"  event_family {category}/{entity_type}/{family}: {count}", flush=True)
+    print(f"  risk_scalar_repeats={repeated_risk_scalars}/"
+          f"{sum(count for (_, _, family), count in event_families.items() if family == 'trading_account_risk_state_v1')}",
+          flush=True)
 
 
 def _profile_preflight_call(call, **kwargs):
