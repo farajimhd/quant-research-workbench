@@ -37,13 +37,15 @@ def _profile_v7_updates(enabled: bool):
     if not enabled:
         yield
         return
-    from src.backend.fixed_v7_stream import FixedV7Stream
+    from src.backend.fixed_v7_stream import FixedV7Cache, FixedV7Stream
     from src.market_engine import reaction_band
 
     original = FixedV7Stream.update_second
+    original_stream = FixedV7Cache._stream
     original_fit = reaction_band.fit
     profiles: dict[int, cProfile.Profile] = {}
     fit_shapes: Counter[tuple[str, int]] = Counter()
+    stream_calls: Counter[str] = Counter()
     lock = Lock()
 
     def wrapped(self, row, **clock):
@@ -61,13 +63,22 @@ def _profile_v7_updates(enabled: bool):
             fit_shapes[(shape, min(len(prices), 20))] += 1
         return result
 
+    def counted_stream(self, ticker, *, as_of):
+        with lock:
+            stream_calls[ticker] += 1
+        return original_stream(self, ticker, as_of=as_of)
+
     FixedV7Stream.update_second = wrapped
+    FixedV7Cache._stream = counted_stream
     reaction_band.fit = counted_fit
     try:
         yield
     finally:
         FixedV7Stream.update_second = original
+        FixedV7Cache._stream = original_stream
         reaction_band.fit = original_fit
+        print(f"V7 cache stream calls={sum(stream_calls.values())} "
+              f"tickers={len(stream_calls)} update_threads={len(profiles)}", flush=True)
         print("V7 fit observation shapes (length 20 means 20+): "
               + ", ".join(f"{shape}/{length}={count}"
                           for (shape, length), count in sorted(fit_shapes.items())),

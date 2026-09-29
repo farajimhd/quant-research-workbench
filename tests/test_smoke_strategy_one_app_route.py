@@ -87,3 +87,17 @@ def test_seed_diagnostic_restores_wrapped_worker_functions(monkeypatch, capsys) 
     assert fixed_v7_stream.split_evidence_batch is splits
     assert fixed_v7_stream.FixedV7Stream.__init__ is book
     assert "V7 seed seed_select_decode: calls=1" in capsys.readouterr().out
+
+
+def test_v7_diagnostic_reports_cache_use_and_restores_methods(monkeypatch, capsys) -> None:
+    from src.backend.fixed_v7_stream import FixedV7Cache, FixedV7Stream
+
+    stream = Mock(return_value="ready")
+    update = Mock()
+    monkeypatch.setattr(FixedV7Cache, "_stream", stream)
+    monkeypatch.setattr(FixedV7Stream, "update_second", update)
+    with probe._profile_v7_updates(True):
+        assert FixedV7Cache._stream(object(), "TEST", as_of="clock") == "ready"
+    assert FixedV7Cache._stream is stream
+    assert FixedV7Stream.update_second is update
+    assert "V7 cache stream calls=1 tickers=1 update_threads=0" in capsys.readouterr().out
