@@ -1425,7 +1425,7 @@ def _insert_detail_families_v4(client, batch, pending):
                     dispatch_batch_id=batch.batch_id,
                     dispatch_sequence=batch.last_sequence)
         return
-    if (type(lane_limit) is not int or not 2 <= lane_limit <= 8
+    if (type(lane_limit) is not int or not 2 <= lane_limit <= 4
             or not callable(factory)):
         raise ValueError("V4 detail INSERT lanes must be bounded and configured")
     lane_count = min(lane_limit, len(pending))
