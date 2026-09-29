@@ -519,7 +519,9 @@ def load_committed_strategy_intent_page(
                                source_batch.intent_slices,
                                sorted(by_parent.get(record_id, []),
                                       key=lambda row: row["ordinal"]), strict=True))
-            if any(typed_row(name, projected)["content_hash"] != stored["content_hash"]
+            if any(typed_row(name, projected)["content_hash"] != (
+                       stored.get("content_hash") or
+                       sha256(canonical_json(stored).encode("utf-8")).hexdigest())
                    for name, projected, stored in pairs):
                 raise RuntimeError("Cold source intent differs from normalized V4 rows")
         recovered.append(RecoveredIntent(

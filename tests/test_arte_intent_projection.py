@@ -218,6 +218,34 @@ def test_restore_roundtrips_absent_optional_policy_and_full_rule_values():
     assert restore_strategy_intent(project_strategy_intent(complex_intent)) == complex_intent
 
 
+def test_v4_cold_intent_reconstructs_verified_source_with_slices():
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        load_verified_v4_prefix, publish_base_typed_batch_v4,
+    )
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+
+    run_id, batch_id = "backtest:cold-intent", str(uuid4())
+    source = intent(protection_profile=ProtectionProfile("single", 1, (
+        ProtectionSlice("main", 1.0, StopRule(price=11.5)),
+    )))
+    batch = strategy_intent_batch(
+        source, run_id=run_id, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=str(uuid4()), batch_id=batch_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        sequence=1, source_cursor="boundary-1", run_status="running",
+        recorded_at=source.event_time,
+    )
+    client = attached_v4_client()
+    publish_base_typed_batch_v4(client, batch)
+    prefix = load_verified_v4_prefix(client, run_id)
+    assert prefix is not None
+    recovered = load_committed_strategy_intent_page(
+        client, prefix, include_source_batch=True)
+    assert len(recovered) == 1
+    assert recovered[0].intent == source
+    assert recovered[0].source_batch == batch
+
+
 def test_intent_and_slice_publish_as_fence_verified_typed_rows():
     run_id, attempt_id, batch_id = "live:test", str(uuid4()), str(uuid4())
     profile = ProtectionProfile("single", 1, (
