@@ -93,6 +93,8 @@ async def _probe(run_id: str, ticker: str) -> None:
                            params={"ticker": ticker, "timeframe": "1s",
                                    "row_limit": 100,
                                    "indicator_columns": "macd_line,macd_signal"})
+        context = await page("chart-context", f"{root}/v4-chart-context",
+                             params={"ticker": ticker})
         if (trade.get("run_id") != run_id or orders.get("run_id") != run_id
                 or chart.get("schema_version") !=
                 "strategy-one-v4-chart-page-v1"
@@ -100,7 +102,13 @@ async def _probe(run_id: str, ticker: str) -> None:
                 or chart.get("ticker") != ticker
                 or not chart.get("bars")
                 or chart.get("market_plan_token") !=
-                terminal["run"]["market_plan_token"]):
+                terminal["run"]["market_plan_token"]
+                or context.get("schema_version") !=
+                "strategy-one-v4-chart-context-pair-v1"
+                or context.get("run_id") != run_id
+                or context.get("ticker") != ticker
+                or context.get("daily", {}).get("timeframe") != "1d"
+                or context.get("monthly", {}).get("timeframe") != "1mo"):
             raise RuntimeError("Saved HTTP pages differ from the selected run")
         print(f"Saved HTTP review passed: run_id={run_id} ticker={ticker} "
               f"journal_sequence={terminal['verified_sequence']} "
