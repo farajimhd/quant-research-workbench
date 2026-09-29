@@ -45,8 +45,12 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame,
                              (pl.col('entry_fill_confirmed') != True)).height or
             positions['entry_fill_confirmed'].null_count()):
         raise ValueError('Duplicate or invalid bracket input identity and clocks')
+    if (bars['extremes_valid'].null_count() or
+            bars.filter(~pl.col('extremes_valid').cast(pl.Int8)
+                        .is_in([0, 1])).height):
+        raise ValueError('Bar extrema validity must be zero or one')
     valid_bars = bars.filter(
-        pl.col('extremes_valid') & pl.col('high').is_finite() &
+        (pl.col('extremes_valid') == 1) & pl.col('high').is_finite() &
         pl.col('low').is_finite() & (pl.col('low') > 0) &
         (pl.col('high') >= pl.col('low')))
     # The inequality join applies the clock predicates during the join. A
