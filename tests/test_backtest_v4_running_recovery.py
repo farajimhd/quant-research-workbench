@@ -27,6 +27,10 @@ def _install(monkeypatch, *, open_orders=(), oms=(), moved=False):
         ({"account_id": "DU1"},), (), tuple(open_orders), (), ())
     monkeypatch.setattr(subject, "load_v4_running_portfolio_images",
                         lambda *_a, **_k: (PREFIX, {"DU1": {"state_hash": "a" * 64}}))
+    monkeypatch.setattr(subject, "load_committed_backtest_progress",
+                        lambda *_a, **_k: {"controller_time":
+                                            "2026-08-18T00:00:00+00:00",
+                                            "controller_processed_events": 1})
     monkeypatch.setattr(subject, "load_attested_manager_snapshot",
                         lambda *_a, **_k: StrategyOneManagementState(100, (), (), ()))
     monkeypatch.setattr(subject, "load_attested_evidence_snapshot",
@@ -54,9 +58,24 @@ def test_v4_running_recovery_joins_exact_empty_oms(monkeypatch):
         manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
         market_client=object(), market_plan=object())
     assert result.prefix == PREFIX
+    assert result.progress["controller_processed_events"] == 1
     assert result.manager.boundary_ms == 100
     assert result.oms == ()
     assert result.campaign.snapshot["owner_count"] == 0
+
+
+def test_v4_running_recovery_rejects_missing_progress(monkeypatch):
+    _install(monkeypatch)
+    def missing(*_args, **kwargs):
+        assert kwargs["required"] is True
+        raise RuntimeError("Backtest recovery lacks one typed progress row")
+    monkeypatch.setattr(subject, "load_committed_backtest_progress", missing)
+    with pytest.raises(RuntimeError, match="lacks one typed progress row"):
+        subject.load_v4_running_recovery_evidence(
+            object(), run_id=RUN, account_ids=("DU1",),
+            manager_keeper=object(), broker_keeper=object(),
+            evidence_keeper=object(), market_client=object(),
+            market_plan=object())
 
 
 def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
@@ -73,6 +92,11 @@ def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
     with pytest.raises(RuntimeError, match="differs from cold journal anchor"):
         subject.verify_v4_recovery_at_anchor(
             recovery, replace(anchor, boundary_ms=200))
+    with pytest.raises(RuntimeError, match="differs from cold journal anchor"):
+        subject.verify_v4_recovery_at_anchor(
+            replace(recovery, progress={**recovery.progress,
+                                        "controller_time": "2026-08-18T00:00:01+00:00"}),
+            anchor)
     corrupted = replace(recovery.campaign, snapshot={
         **recovery.campaign.snapshot, "owner_hash": "0" * 64})
     with pytest.raises(RuntimeError, match="committed seal"):
@@ -220,7 +244,8 @@ def test_v4_broker_state_rejects_missing_open_oms_request(monkeypatch):
         manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
         market_client=object(), market_plan=object())
     orphan = subject.V4RunningRecoveryEvidence(
-        evidence.prefix, evidence.portfolio_images, evidence.manager, evidence.evidence,
+        evidence.prefix, evidence.progress, evidence.portfolio_images,
+        evidence.manager, evidence.evidence,
         BrokerMatchSnapshotRows(evidence.broker.snapshot, evidence.broker.accounts,
                                 (), ({"broker_order_id": "orphan"},), (), ()),
         (), evidence.quotes, evidence.campaign)

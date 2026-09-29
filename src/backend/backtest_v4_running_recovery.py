@@ -13,6 +13,7 @@ from typing import Any
 from src.backend.backtest_market_data import CertifiedMarketDayPlan
 from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_fixed_running_anchor import FixedRunningPrefixAnchor
+from src.backend.typed_backtest_progress import load_committed_backtest_progress
 from src.backend.backtest_v4_broker_quote_restore import (
     CompletedBrokerQuote, load_completed_broker_quotes,
 )
@@ -53,6 +54,7 @@ from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMB
 @dataclass(frozen=True, slots=True)
 class V4RunningRecoveryEvidence:
     prefix: V4CommittedPrefix
+    progress: dict[str, Any]
     portfolio_images: dict[str, dict[str, Any]]
     manager: StrategyOneManagementState
     evidence: StrategyOneEvidenceState
@@ -74,6 +76,8 @@ def verify_v4_recovery_at_anchor(
             or recovery.prefix.last_batch_id != anchor.batch_id
             or recovery.prefix.source_cursor != anchor.source_cursor
             or recovery.prefix.status != "running"
+            or datetime.fromisoformat(recovery.progress["controller_time"]).astimezone(
+                timezone.utc) != anchor.completed_at.astimezone(timezone.utc)
             or recovery.broker.snapshot.get("session_date") != anchor.session_date
             or recovery.broker.snapshot.get("boundary_ms") != anchor.boundary_ms
             or recovery.manager.boundary_ms != anchor.boundary_ms
@@ -190,6 +194,7 @@ def load_v4_running_recovery_evidence(
     """Join every available recovery family at the same committed cursor."""
     prefix, portfolios = load_v4_running_portfolio_images(
         client, run_id=run_id, account_ids=account_ids)
+    progress = load_committed_backtest_progress(client, prefix, required=True)
     manager = load_attested_manager_snapshot(
         client, manager_keeper, run_id=run_id,
         checkpoint_sequence=prefix.last_sequence)
@@ -260,5 +265,5 @@ def load_v4_running_recovery_evidence(
         market_client, plan=market_plan, broker=broker)
     if load_verified_v4_prefix(client, run_id) != prefix:
         raise RuntimeError("V4 recovery prefix moved across domain reads")
-    return V4RunningRecoveryEvidence(prefix, portfolios, manager, evidence, broker, oms,
+    return V4RunningRecoveryEvidence(prefix, progress, portfolios, manager, evidence, broker, oms,
                                      quotes, campaign)
