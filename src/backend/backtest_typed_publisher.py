@@ -176,12 +176,15 @@ class BacktestTypedJournalPublisher:
             oms_record_id = str(UUID(str(group["record_id"])))
             for order in lineage.orders:
                 raw = dict(order.raw or {})
-                if (set(raw) != {"strategy_id", "canonical_strategy_revision",
+                if (set(raw) != {"canonical_strategy_id", "canonical_strategy_revision",
                                  "canonical_run_id", "canonical_metadata"}
                         or raw["canonical_run_id"] != self.journal.run_id
+                        or raw["canonical_strategy_id"] != group["strategy_id"]
+                        or raw["canonical_strategy_revision"] != group["strategy_revision"]
                         or not isinstance(raw["canonical_metadata"], dict)
                         or not order.cOID):
                     raise RuntimeError("Cold OMS order lacks verified canonical lineage")
+                raw["strategy_id"] = raw.pop("canonical_strategy_id")
                 key = order.cOID
                 value = (raw, group["account_id"], order.ticker.upper(),
                          order.conid, group_id, intent.intent_id)

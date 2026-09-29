@@ -82,6 +82,51 @@ def _publisher(journal, writer, *, batch_size=512):
         batch_size=batch_size, expected_config={"mode": "backtest"})
 
 
+def test_v4_cold_oms_sources_normalize_recovered_raw_key():
+    from src.trading_runtime.arte_intent_projection import (
+        RecoveredIntent, strategy_intent_batch,
+    )
+    from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
+    from src.trading_runtime.arte_oms_projection import RecoveredStrategyOneOmsLineage
+    from src.trading_runtime.ibkr_schema import OrderRequest
+    from src.trading_runtime.signals import StrategyIntent
+
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+    batch_id, record_id, group_record_id = (str(uuid4()) for _ in range(3))
+    source = StrategyIntent(
+        intent_id="intent-1", ticker="TEST", event_time=AT,
+        action="enter_long", quantity=5.0, reference_price=12.5)
+    batch = strategy_intent_batch(
+        source, run_id=RUN, run_month=DAY.replace(day=1),
+        account_id="DU1", attempt_id=ATTEMPT, batch_id=batch_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        sequence=1, source_cursor="boundary-1", run_status="running",
+        recorded_at=AT, record_id=record_id)
+    recovered = RecoveredIntent(1, "DU1", record_id, batch_id, source, batch)
+    raw = dict(canonical_run_id=RUN, canonical_strategy_id="strategy-one",
+               canonical_strategy_revision=1, canonical_metadata={})
+    order = OrderRequest(acctId="DU1", conid=123, cOID="client-1",
+                         ticker="TEST", orderType="LMT", side="BUY",
+                         quantity=5, price=12.5, raw=raw)
+    group = dict(group_id="group-1", record_id=group_record_id,
+                 account_id="DU1", strategy_intent_id="intent-1",
+                 strategy_id="strategy-one", strategy_revision=1)
+    lineage = RecoveredStrategyOneOmsLineage(
+        SimpleNamespace(group=group), recovered, (order,), 2)
+    journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=2)
+    publisher = BacktestTypedJournalPublisher(
+        journal, V4Writer(), attempt_id=ATTEMPT,
+        run_month=DAY.replace(day=1), initial_sequence=2,
+        prior_batch_id=batch_id)
+    publisher.restore_verified_oms_sources(
+        (lineage,), CompleteProtectionHistory(RUN, 2, (batch_id,), ()))
+    restored = publisher._committed_order_lineage["client-1"][0]
+    assert restored["strategy_id"] == "strategy-one"
+    assert "canonical_strategy_id" not in restored
+
+
 def test_fixed_publisher_rejects_legacy_v1_writer():
     writer = FakeWriter()
     writer.journal_profile = "v1"
