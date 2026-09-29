@@ -397,6 +397,9 @@ def assemble_fixed_v4_journal(
     published_context_seal: _V4PublishedContextSeal | None = None,
 ) -> FixedJournalAssembly:
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+
+    owner = getattr(writer_client, "backtest_v4_lease", None)
     if (not isinstance(token, FixedV4JournalPreflightToken)
             or len({id(read_client), id(writer_client), id(terminal_client)}) != 3
             or not 1 <= batch_size <= MAX_V4_COMMIT_EVENTS or not 1 <= queue_capacity <= 64
@@ -405,8 +408,13 @@ def assemble_fixed_v4_journal(
             or fixed_market_execution_plan is None
             or getattr(writer_client, "typed_insert_strict", False) is not True
             or not isinstance(getattr(writer_client, "typed_insert_dispatch", None),
-                              TypedInsertDispatch)):
+                              TypedInsertDispatch)
+            or writer_factory is ArteJournalWriter and (
+                not isinstance(owner, BacktestV4KeeperLease)
+                or owner.run_id != token.run_id)):
         raise ValueError("V4 bootstrap lacks bounded strict certified inputs")
+    if owner is not None:
+        owner.assert_current()
     UUID(attempt_id)
     if published_context_seal is None:
         context = load_typed_run_context(read_client, token.run_id)

@@ -270,6 +270,14 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
         max_events_per_commit = 1024
         def close(self):
             pass
+    with pytest.raises(ValueError, match="bounded strict certified"):
+        bootstrap.assemble_fixed_v4_journal(
+            read, writer_client, terminal, token, attempt_id=ATTEMPT,
+            expected_config={"mode": "backtest"},
+            fixed_market_parent_plan=object(),
+            fixed_market_execution_plan=object(),
+            expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+            writer_factory=bootstrap.ArteJournalWriter)
     assembly = bootstrap.assemble_fixed_v4_journal(
         read, writer_client, terminal, token, attempt_id=ATTEMPT,
         expected_config={"mode": "backtest"},
@@ -300,13 +308,27 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
 
 
 def test_v4_assembly_does_not_repeat_real_writer_constructor_preflight(monkeypatch):
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+
+    keeper = FakeKazoo()
+    keeper.add_listener = lambda _listener: None
+    keeper.remove_listener = lambda _listener: None
+    keeper.stop = lambda: None
+    keeper.close = lambda: None
+    session = ManagedKeeperSession(keeper)
+    session._on_state("CONNECTED")
+    lease = BacktestV4KeeperLease.acquire(
+        session, run_id=RUN, owner_id="test-assembly")
     context = {"mode": "backtest", "account_ids": ("DU1",),
                "run_month": "2026-08-01", "configuration_hash": "c" * 64,
                "market_plan_token": "b" * 64}
     calls = []
     dispatch = bootstrap.TypedInsertDispatch(object())
     writer_client = SimpleNamespace(typed_insert_strict=True,
-                                    typed_insert_dispatch=dispatch)
+                                    typed_insert_dispatch=dispatch,
+                                    backtest_v4_lease=lease)
     monkeypatch.setattr(bootstrap, "load_typed_run_context",
                         lambda *_args: context)
     monkeypatch.setattr(bootstrap, "_v4_preflight",
@@ -337,6 +359,8 @@ def test_v4_assembly_does_not_repeat_real_writer_constructor_preflight(monkeypat
         writer_factory=RealWriterStandIn)
     assert calls == ["constructor audit"]
     assembly.journal.close()
+    lease.release()
+    session.close()
 
 
 def test_v4_assembly_reuses_only_the_published_three_client_context(monkeypatch):
