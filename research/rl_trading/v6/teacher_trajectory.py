@@ -260,11 +260,17 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
                 exposure/equity if equity > 0 else 0.,
                 (clock-last_action_us)/1_000_000,
                 reserved, len(pending_buys)), dtype=np.float32)
-            mask = causal_enter_mask(listings, event.listing_index,
-                changed, cash=cash, reserved_cash=reserved,
-                held_index=held_index,
-                pending_index=np.asarray([row[0].listing_index for row in
-                    pending_buys.values()], dtype=np.int64))
+            pending_index = np.asarray([row[0].listing_index for row in
+                pending_buys.values()], dtype=np.int64)
+            try:
+                mask = causal_enter_mask(listings, event.listing_index,
+                    changed, cash=cash, reserved_cash=reserved,
+                    held_index=held_index, pending_index=pending_index)
+            except ValueError as exc:
+                raise ValueError(f'{clock}: teacher account/mask invalid '
+                    f'cash={cash:.8f} reserved={reserved:.8f} '
+                    f'changed={len(event.listing_index)} held={held_index.tolist()} '
+                    f'pending={pending_index.tolist()}') from exc
             exit_allowed = np.asarray([not holdings[name].exit_pending
                 for name in held], dtype=np.bool_)
             stop_allowed = np.asarray([(holdings[name].stop is None and
