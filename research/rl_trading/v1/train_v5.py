@@ -172,7 +172,73 @@ def main(argv=None) -> int:
     best_path = root / 'best_development.json'
     best = read(best_path) if best_path.exists() else None
     history = root / 'metrics.jsonl'
+    pending_path = root / 'pending_development_replay.json'
+
+    def replay_development(epoch: int, metrics: dict):
+        nonlocal best
+        replay_checkpoint = checks / f'checkpoint_epoch_{epoch:03d}.pt'
+        if replay_checkpoint.exists():
+            if file_hash(replay_checkpoint) != file_hash(latest):
+                raise ValueError('Saved V5 replay checkpoint differs from latest epoch')
+        else:
+            shutil.copyfile(latest, replay_checkpoint)
+        model.eval()
+        reports = []
+        try:
+            for source in plan.development:
+                session = sessions[source.date]
+                account = rollout_session(model, session.binding,
+                    source.execution_root,
+                    _ticker_ids(session.binding.tickers, vocabulary,
+                                model.unknown_ticker_id), Config(),
+                    device=device, seconds_per_chunk=args.seconds_per_chunk)
+                artifact = save_replay(account, session.binding,
+                    source.execution_root, replay_checkpoint,
+                    split='development', source_commit=commit)
+                reports.append(dict(date=source.date, artifact=str(artifact),
+                                    **account.summary()))
+                del account
+        finally:
+            model.train()
+        metrics.update({'development/net_profit':sum(row['net_profit']
+            for row in reports), 'development/fees':sum(row['fees']
+            for row in reports), 'development/buy_fills':sum(
+            row['buy_fills'] for row in reports),
+            'development/max_drawdown_worst':max(row['max_drawdown']
+            for row in reports), 'development/turnover':sum(
+            row['turnover'] for row in reports)})
+        for row in reports:
+            for key in ('net_profit', 'fees', 'buy_fills', 'sell_fills',
+                        'max_drawdown', 'turnover', 'open_positions'):
+                metrics[f'development/{row["date"]}/{key}'] = row[key]
+        if _qualified(reports) and (best is None or
+                metrics['development/net_profit'] > best['net_profit']):
+            chosen = checks / 'checkpoint_best_development.pt'
+            shutil.copyfile(replay_checkpoint, chosen)
+            best = dict(epoch=epoch,
+                net_profit=metrics['development/net_profit'],
+                checkpoint=str(chosen), checkpoint_hash=file_hash(chosen),
+                reports=reports)
+            write(best_path, best, immutable=False)
+
     try:
+        if args.resume and pending_path.exists():
+            pending = read(pending_path)
+            if pending.get('config_hash') != config['config_hash']:
+                raise ValueError('Pending V5 replay belongs to another run')
+            if pending.get('epoch') == start_epoch:
+                recovered = dict(epoch=start_epoch, recovered_validation=1)
+                replay_development(start_epoch, recovered)
+                with history.open('a', encoding='utf-8') as output:
+                    output.write(json.dumps(recovered, sort_keys=True) + '\n')
+                if wandb:
+                    wandb.log(recovered, step=start_epoch)
+                pending_path.unlink()
+            elif pending.get('epoch') == start_epoch + 1:
+                # Training stopped before publishing that epoch's checkpoint.
+                pending_path.unlink()
+            else:
+                raise ValueError('Pending V5 replay epoch disagrees with checkpoint')
         for epoch in range(start_epoch + 1, args.epochs + 1):
             if (root / 'STOP').exists():
                 break
@@ -195,6 +261,11 @@ def main(argv=None) -> int:
                     raise FloatingPointError('Nonfinite V5 session loss')
             checkpoint = dict(config_hash=config['config_hash'], epoch=epoch,
                               model=model.state_dict(), optimizer=optimizer.state_dict())
+            replay_due = (epoch == 1 or epoch % args.replay_every == 0 or
+                          epoch == args.epochs)
+            if replay_due:
+                write(pending_path, dict(config_hash=config['config_hash'],
+                                         epoch=epoch), immutable=False)
             _save_checkpoint(latest, checkpoint)
             metrics = dict(epoch=epoch,
                 **{f'train/{key}':sum(row[key] for row in rows)/len(rows)
@@ -203,53 +274,15 @@ def main(argv=None) -> int:
                 **{f'train/{key}':sum(row[key] for row in rows)
                    for key in ('teacher_orders', 'active_seconds',
                                'sampled_empty_seconds', 'optimization_steps')})
-            if epoch == 1 or epoch % args.replay_every == 0 or epoch == args.epochs:
-                replay_checkpoint = checks / f'checkpoint_epoch_{epoch:03d}.pt'
-                shutil.copyfile(latest, replay_checkpoint)
-                model.eval()
-                reports = []
-                for source in plan.development:
-                    session = sessions[source.date]
-                    account = rollout_session(model, session.binding,
-                        source.execution_root,
-                        _ticker_ids(session.binding.tickers, vocabulary,
-                                    model.unknown_ticker_id), Config(),
-                        device=device,
-                        seconds_per_chunk=args.seconds_per_chunk)
-                    artifact = save_replay(account, session.binding,
-                        source.execution_root, replay_checkpoint,
-                        split='development', source_commit=commit)
-                    report = dict(date=source.date, artifact=str(artifact),
-                                  **account.summary())
-                    reports.append(report)
-                    del account
-                metrics.update({'development/net_profit':sum(row['net_profit']
-                    for row in reports), 'development/fees':sum(row['fees']
-                    for row in reports), 'development/buy_fills':sum(
-                    row['buy_fills'] for row in reports),
-                    'development/max_drawdown_worst':max(row['max_drawdown']
-                    for row in reports), 'development/turnover':sum(
-                    row['turnover'] for row in reports)})
-                for row in reports:
-                    for key in ('net_profit', 'fees', 'buy_fills', 'sell_fills',
-                                'max_drawdown', 'turnover', 'open_positions'):
-                        metrics[f'development/{row["date"]}/{key}'] = row[key]
-                eligible = _qualified(reports)
-                if eligible and (best is None or
-                                 metrics['development/net_profit'] > best['net_profit']):
-                    chosen = checks / 'checkpoint_best_development.pt'
-                    shutil.copyfile(replay_checkpoint, chosen)
-                    best = dict(epoch=epoch,
-                        net_profit=metrics['development/net_profit'],
-                        checkpoint=str(chosen), checkpoint_hash=file_hash(chosen),
-                        reports=reports)
-                    write(best_path, best, immutable=False)
-                model.train()
+            if replay_due:
+                replay_development(epoch, metrics)
             with history.open('a', encoding='utf-8') as output:
                 output.write(json.dumps(metrics, sort_keys=True) + '\n')
             if wandb:
                 wandb.log(metrics, step=epoch)
             print(metrics, flush=True)
+            if replay_due:
+                pending_path.unlink()
     finally:
         if wandb:
             wandb.finish()
