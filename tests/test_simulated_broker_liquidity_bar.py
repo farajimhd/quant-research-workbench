@@ -90,6 +90,16 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "requires Backtest"):
             SimulatedBrokerAdapter(["TEST"], fixed_bar_mode=True)
 
+    async def test_fixed_bar_mode_rejects_direct_event_observation(self):
+        broker = SimulatedBrokerAdapter(
+            ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
+            fixed_bar_mode=True,
+        )
+        await broker.initialize()
+        with self.assertRaisesRegex(RuntimeError, "cannot mix with market events"):
+            broker.observe_market_event(trade(price=10.0, size=100))
+        self.assertEqual(broker._trades_by_ticker, {})
+
     async def asyncSetUp(self):
         self.broker = SimulatedBrokerAdapter(
             ["TEST"], SimulationConfig(initial_cash=100_000,

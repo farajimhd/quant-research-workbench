@@ -861,6 +861,8 @@ class SimulatedBrokerAdapter:
         """Update causal quote/trade marks without running order matching."""
 
         self._require_initialized()
+        if self._bar_mode:
+            raise RuntimeError("Liquidity-bar broker mode cannot mix with market events")
         if isinstance(event, TradeEvent) and not event.price_eligible:
             return 0
         ticker = event.ticker.upper()
