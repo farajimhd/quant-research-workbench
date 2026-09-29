@@ -73,6 +73,9 @@ from src.trading_runtime.strategy_one_management_snapshot import (
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     TABLES as BROKER_MATCH_SNAPSHOT_TABLES,
 )
+from src.trading_runtime.strategy_one_evidence_snapshot import (
+    TABLES as EVIDENCE_SNAPSHOT_TABLES,
+)
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES as PROTECTION_SNAPSHOT_TABLES,
 )
@@ -86,7 +89,7 @@ if TYPE_CHECKING:
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS.update({table.name: table for table in (
     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
-    *BROKER_MATCH_SNAPSHOT_TABLES,
+    *BROKER_MATCH_SNAPSHOT_TABLES, *EVIDENCE_SNAPSHOT_TABLES,
 )})
 _CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
@@ -1467,6 +1470,7 @@ def _insert(
     dispatch_snapshot_account_id: str | None = None,
     dispatch_manager_snapshot_hash: str | None = None,
     dispatch_broker_snapshot_hash: str | None = None,
+    dispatch_evidence_snapshot_hash: str | None = None,
     dispatch_policy_hash: str | None = None,
     dispatch_sync_account_id: str | None = None,
     dispatch_sync_revision: int | None = None,
@@ -1497,7 +1501,7 @@ def _insert(
                 any(value is not None for value in (
                     dispatch_sequence, dispatch_batch_id, dispatch_terminal_account_id,
                     dispatch_snapshot_account_id, dispatch_manager_snapshot_hash,
-                    dispatch_broker_snapshot_hash,
+                    dispatch_broker_snapshot_hash, dispatch_evidence_snapshot_hash,
                     dispatch_policy_hash)) or
                 dispatch_run_context):
             raise RuntimeError("Portfolio sync INSERT lacks strict dispatch identity")
@@ -1517,9 +1521,14 @@ def _insert(
         raise RuntimeError("Manager snapshot INSERT lacks durable dispatch authority")
     if dispatch_broker_snapshot_hash is not None and dispatch is None:
         raise RuntimeError("Broker snapshot INSERT lacks durable dispatch authority")
+    if dispatch_evidence_snapshot_hash is not None and dispatch is None:
+        raise RuntimeError("Evidence snapshot INSERT lacks durable dispatch authority")
     if (name in {table.name for table in BROKER_MATCH_SNAPSHOT_TABLES}
             and dispatch_broker_snapshot_hash is None):
         raise RuntimeError("Broker snapshot INSERT lacks its typed snapshot fence")
+    if (name in {table.name for table in EVIDENCE_SNAPSHOT_TABLES}
+            and dispatch_evidence_snapshot_hash is None):
+        raise RuntimeError("Evidence snapshot INSERT lacks its typed snapshot fence")
     if dispatch is not None:
         if dispatch_policy_hash is not None:
             policy_tables = {"trading_portfolio_policy_v1",
@@ -1532,7 +1541,8 @@ def _insert(
                         dispatch_sequence, dispatch_batch_id,
                         dispatch_terminal_account_id, dispatch_snapshot_account_id,
                         dispatch_manager_snapshot_hash,
-                        dispatch_broker_snapshot_hash))
+                        dispatch_broker_snapshot_hash,
+                        dispatch_evidence_snapshot_hash))
                     or dispatch_run_context):
                 raise ValueError("Policy dispatch identity differs from typed rows")
             dispatch.execute_policy_insert(
@@ -1561,6 +1571,12 @@ def _insert(
                        or row.get("snapshot_id") != rows[0].get("snapshot_id")
                        for row in rows)):
             raise ValueError("Broker snapshot dispatch identity differs from typed rows")
+        if dispatch_evidence_snapshot_hash is not None and (
+                name not in {table.name for table in EVIDENCE_SNAPSHOT_TABLES}
+                or any(row.get("checkpoint_sequence") != dispatch_sequence
+                       or row.get("snapshot_id") != rows[0].get("snapshot_id")
+                       for row in rows)):
+            raise ValueError("Evidence snapshot dispatch identity differs from typed rows")
         run_ids = {row.get("run_id") for row in rows}
         if len(run_ids) != 1 or not isinstance(next(iter(run_ids)), str) or not next(iter(run_ids)):
             raise RuntimeError("Durable typed INSERT lacks one run identity")
@@ -1572,7 +1588,8 @@ def _insert(
             terminal_account_id=dispatch_terminal_account_id,
             snapshot_account_id=dispatch_snapshot_account_id,
             manager_snapshot_hash=dispatch_manager_snapshot_hash,
-            broker_snapshot_hash=dispatch_broker_snapshot_hash)
+            broker_snapshot_hash=dispatch_broker_snapshot_hash,
+            evidence_snapshot_hash=dispatch_evidence_snapshot_hash)
     else:
         client.execute(sql)
     return sql
@@ -1976,6 +1993,9 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     from src.trading_runtime.strategy_one_broker_match_snapshot import (
         TABLES as broker_match_tables,
     )
+    from src.trading_runtime.strategy_one_evidence_snapshot import (
+        TABLES as evidence_tables,
+    )
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
                  ENTRY_EVIDENCE, V4_ALLOCATION,
@@ -1984,7 +2004,8 @@ def v4_storage_contracts() -> tuple[Any, ...]:
                  *OMS_TACTIC_TABLES,
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES,
-                 *protection_tables, *manager_tables, *broker_match_tables)
+                 *protection_tables, *manager_tables, *broker_match_tables,
+                 *evidence_tables)
     by_name = {}
     for contract in contracts:
         previous = by_name.setdefault(contract.name, contract)
@@ -2014,6 +2035,7 @@ def v4_journal_write_tables() -> frozenset[str]:
                 *(table.name for table in PROTECTION_SNAPSHOT_TABLES),
                 *(table.name for table in MANAGER_SNAPSHOT_TABLES),
                 *(table.name for table in BROKER_MATCH_SNAPSHOT_TABLES),
+                *(table.name for table in EVIDENCE_SNAPSHOT_TABLES),
                 *(table.name for table in definition_tables),
             }))
 
@@ -3547,6 +3569,14 @@ class _BrokerMatchSnapshotUnit:
 
 
 @dataclass(frozen=True, slots=True)
+class _EvidenceSnapshotUnit:
+    session_date: date
+    checkpoint_sequence: int
+    journal_batch_id: str
+    state: Any
+
+
+@dataclass(frozen=True, slots=True)
 class _RunningPortfolioSnapshotUnit:
     journal_batch_id: str
     captured: CapturedPortfolioSnapshot
@@ -3651,6 +3681,7 @@ class ArteJournalWriter:
                   | _DurabilityBarrier | _AdmissionUnit
                   | _PortfolioSyncUnit | _TerminalBacktestUnit
                   | _ManagerSnapshotUnit | _BrokerMatchSnapshotUnit
+                  | _EvidenceSnapshotUnit
                   | _RunningPortfolioSnapshotUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
@@ -4277,6 +4308,42 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_evidence_snapshot(self, *, session_date: date,
+                                 checkpoint_sequence: int,
+                                 journal_batch_id: str,
+                                 state: Any) -> Future[str]:
+        """Queue typed causal evidence for worker-only normalized publication."""
+        from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(session_date, date)
+                or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+                or not isinstance(state, StrategyOneEvidenceState)):
+            raise ValueError("Evidence snapshot needs a typed V4 boundary")
+        if str(UUID(journal_batch_id)) != journal_batch_id:
+            raise ValueError("Evidence snapshot batch ID is invalid")
+        if self._run_id is None:
+            raise RuntimeError("Evidence snapshot writer lacks a run")
+        from src.trading_runtime.strategy_one_evidence_snapshot import (
+            project_evidence_snapshot,
+        )
+        project_evidence_snapshot(
+            run_id=self._run_id, session_date=session_date,
+            checkpoint_sequence=checkpoint_sequence, state=state)
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((
+                    _EvidenceSnapshotUnit(session_date, checkpoint_sequence,
+                                          journal_batch_id, state), receipt))
+            except Full as exc:
+                raise JournalQueueFull("Evidence snapshot queue is full") from exc
+            self._accepted_writes = True
+        return receipt
+
     def submit_running_portfolio_snapshot(
         self, *, journal_batch_id: str, captured: CapturedPortfolioSnapshot,
     ) -> Future[str]:
@@ -4317,7 +4384,8 @@ class ArteJournalWriter:
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
             | _TerminalBacktestUnit | _ManagerSnapshotUnit
-            | _BrokerMatchSnapshotUnit | _RunningPortfolioSnapshotUnit,
+            | _BrokerMatchSnapshotUnit | _EvidenceSnapshotUnit
+            | _RunningPortfolioSnapshotUnit,
             Future[str],
         ] | None = None
         while True:
@@ -4373,7 +4441,7 @@ class ArteJournalWriter:
                         and not (self._journal_profile == "backtest_v4"
                                  and isinstance(group[0][0], (
                                      _TerminalBacktestUnit, _ManagerSnapshotUnit,
-                                     _BrokerMatchSnapshotUnit,
+                                     _BrokerMatchSnapshotUnit, _EvidenceSnapshotUnit,
                                      _RunningPortfolioSnapshotUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
                 if isinstance(group[0][0], V4CompoundBatch):
@@ -4579,6 +4647,22 @@ class ArteJournalWriter:
                         checkpoint_sequence=unit.checkpoint_sequence,
                         boundary_ms=unit.boundary_ms, state=unit.state)
                     publish_broker_match_snapshot(
+                        self._client, self._client.manager_keeper_session, rows,
+                        journal_batch_id=unit.journal_batch_id)
+                    committed_id = unit.journal_batch_id
+                elif isinstance(group[0][0], _EvidenceSnapshotUnit):
+                    from src.trading_runtime.strategy_one_evidence_snapshot import (
+                        project_evidence_snapshot, publish_evidence_snapshot,
+                    )
+                    unit = group[0][0]
+                    if self._last_commit_id != unit.journal_batch_id:
+                        raise RuntimeError(
+                            "Evidence snapshot has no preceding ordered V4 commit")
+                    rows = project_evidence_snapshot(
+                        run_id=self._run_id, session_date=unit.session_date,
+                        checkpoint_sequence=unit.checkpoint_sequence,
+                        state=unit.state)
+                    publish_evidence_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
                         journal_batch_id=unit.journal_batch_id)
                     committed_id = unit.journal_batch_id

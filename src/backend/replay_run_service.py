@@ -2355,6 +2355,7 @@ class ReplayRunController:
             manager = getattr(self, '_strategy_one_manager', None)
             manager_state = None
             broker_state = None
+            evidence_state = None
             if publisher.writer.journal_profile == 'backtest_v4' and manager is None:
                 # A V4 checkpoint must include the causal strategy state;
                 # a market cursor alone cannot attest its decision boundary.
@@ -2364,6 +2365,9 @@ class ReplayRunController:
                 if type(boundary) is not int:
                     raise RuntimeError('Strategy 1 checkpoint has no completed boundary')
                 manager_state = manager.capture_state(boundary_ms=boundary)
+                evidence_state = manager.evidence.capture_recovery_state()
+                if evidence_state.boundary_ms != boundary:
+                    raise RuntimeError("Strategy 1 evidence clock differs from checkpoint")
                 broker = getattr(self._runtime, 'broker', None)
                 capture_broker = getattr(broker, 'broker_match_snapshot_state', None)
                 if capture_broker is None:
@@ -2424,6 +2428,7 @@ class ReplayRunController:
                     receipt = publisher.enqueue_checkpoint(
                         boundary_id=boundary_id, status='running',
                         manager_state=manager_state, broker_state=broker_state,
+                        evidence_state=evidence_state,
                         portfolio_captures=portfolio_captures)
                     self._checkpoint_io_task = receipt
                     def completed(done):
@@ -2449,6 +2454,7 @@ class ReplayRunController:
                     boundary_id=boundary_id, status='running',
                     manager_state=manager_state,
                     broker_state=broker_state,
+                    evidence_state=evidence_state,
                     portfolio_captures=portfolio_captures,
                 ))
                 try:

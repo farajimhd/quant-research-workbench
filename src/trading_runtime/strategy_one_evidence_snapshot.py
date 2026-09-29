@@ -307,3 +307,134 @@ def restore_evidence_snapshot(rows: EvidenceSnapshotRows) -> StrategyOneEvidence
             checkpoint_sequence=root["checkpoint_sequence"], state=state) != rows:
         raise RuntimeError("Strategy 1 evidence snapshot is not canonical")
     return state
+
+
+def load_unattested_evidence_snapshot_rows(
+    client: Any, *, run_id: str, checkpoint_sequence: int,
+) -> EvidenceSnapshotRows:
+    """Read a complete historical image; caller proves V4/Keeper authority."""
+    from src.backend.backtest_market_data import assert_select_only
+    from src.trading_runtime.arte_journal_writer import _literal
+
+    if (type(run_id) is not str or not run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or not callable(getattr(client, "execute", None))):
+        raise ValueError("Strategy 1 evidence cold read needs exact run and cursor")
+
+    def read(contract: TableContract, predicate: str, limit: int) -> tuple[dict, ...]:
+        columns = ",".join(
+            f"toString({name}) AS {name}" if "Decimal(" in kind else name
+            for name, kind in contract.columns)
+        sql = assert_select_only(
+            f"SELECT {columns} FROM arte.{contract.name} WHERE {predicate} "
+            f"ORDER BY {contract.order} LIMIT {limit} FORMAT JSONEachRow")
+        return tuple(json.loads(line) for line in client.execute(sql).splitlines()
+                     if line.strip())
+
+    scope = (f"run_id={_literal(run_id)} "
+             f"AND checkpoint_sequence={checkpoint_sequence}")
+    roots = read(TABLES[0], scope, 2)
+    if len(roots) != 1:
+        raise RuntimeError("Strategy 1 evidence lacks exactly one snapshot root")
+    root = roots[0]
+    if (root.get("run_id") != run_id
+            or root.get("checkpoint_sequence") != checkpoint_sequence):
+        raise RuntimeError("Strategy 1 evidence root differs from requested cursor")
+    snapshot_id = str(UUID(str(root["snapshot_id"])))
+    predicate = f"snapshot_id=toUUID('{snapshot_id}')"
+    counts = tuple(root[name] for name in (
+        "resistance_count", "known_count", "activation_count",
+        "activation_level_count", "low_count"))
+    if any(type(count) is not int or not 0 <= count <= 100_000
+           for count in counts):
+        raise RuntimeError("Strategy 1 evidence child bound is invalid")
+    rows = EvidenceSnapshotRows(
+        root, *(read(contract, predicate, count + 1)
+                for contract, count in zip(TABLES[1:], counts)))
+    restore_evidence_snapshot(rows)
+    return _canonical(rows)
+
+
+def publish_evidence_snapshot(
+    client: Any, session: ManagedKeeperSession,
+    rows: EvidenceSnapshotRows, *, journal_batch_id: str,
+) -> EvidenceSnapshotHead:
+    """Journal-worker-only children-first, readback-first Keeper publication."""
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+    from src.trading_runtime.arte_journal_writer import _insert
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    if (not isinstance(session, ManagedKeeperSession) or not session.writable
+            or getattr(client, "typed_insert_strict", False) is not True
+            or not isinstance(getattr(client, "typed_insert_dispatch", None),
+                              TypedInsertDispatch)
+            or client.typed_insert_dispatch.keeper is not session.client):
+        raise RuntimeError("Strategy 1 evidence publication lacks fenced writer")
+    rows = _canonical(rows)
+    restored = restore_evidence_snapshot(rows)
+    root = rows.snapshot
+    run_id, sequence = root["run_id"], root["checkpoint_sequence"]
+    if str(UUID(journal_batch_id)) != journal_batch_id:
+        raise ValueError("Strategy 1 evidence batch ID is invalid")
+    prefix = load_verified_v4_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != sequence
+            or prefix.last_batch_id != journal_batch_id):
+        raise RuntimeError("Strategy 1 evidence lacks exact running V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict) or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != sequence
+            or cursor.get("batch_id") != journal_batch_id
+            or cursor.get("boundary_ms") != root["boundary_ms"]
+            or cursor.get("session_date") != root["session_date"]):
+        raise RuntimeError("Strategy 1 evidence cursor differs from capture")
+    reader = ManagedEvidenceSnapshotHeadReader(session)
+    path = reader.path(run_id)
+    previous = (reader.read_head(run_id=run_id)
+                if session.client.exists(path) is not None else None)
+    if previous is not None:
+        if previous.checkpoint_sequence == sequence:
+            if (previous.journal_batch_id != journal_batch_id
+                    or previous.snapshot_hash != root["content_hash"]
+                    or restore_evidence_snapshot(load_unattested_evidence_snapshot_rows(
+                        client, run_id=run_id,
+                        checkpoint_sequence=sequence)) != restored):
+                raise RuntimeError("Strategy 1 evidence repeat differs from selected state")
+            return previous
+        if previous.checkpoint_sequence > sequence:
+            raise RuntimeError("Strategy 1 evidence would rewind Keeper head")
+    families = tuple(zip(TABLES, (rows.snapshot, rows.resistance, rows.known,
+                                  rows.activations, rows.activation_levels,
+                                  rows.lows)))
+    operations = []
+    for contract, family in (*families[1:], families[0]):
+        if not family:
+            continue
+        source = (family,) if isinstance(family, dict) else family
+        token = (f"evidence-state:{run_id}:{sequence}:"
+                 f"{root['content_hash']}:{contract.name}")
+        _insert(client, contract.name, source, token,
+                dispatch_sequence=sequence,
+                dispatch_batch_id=journal_batch_id,
+                dispatch_evidence_snapshot_hash=root["content_hash"])
+        operations.append((contract.name, token))
+    observed = load_unattested_evidence_snapshot_rows(
+        client, run_id=run_id, checkpoint_sequence=sequence)
+    if observed != rows:
+        raise RuntimeError("Strategy 1 evidence readback differs from capture")
+    for table, token in operations:
+        client.typed_insert_dispatch.seal_verified_operation(
+            run_id=run_id, table=table, token=token,
+            batch_id=journal_batch_id, batch_last_sequence=sequence,
+            evidence_snapshot=True)
+    client.typed_insert_dispatch.compact_verified_evidence_snapshot(
+        run_id=run_id, batch_id=journal_batch_id, last_sequence=sequence,
+        snapshot_hash=root["content_hash"],
+        operations=tuple(operations), previous=previous)
+    selected = reader.read_head(run_id=run_id)
+    if (selected.checkpoint_sequence != sequence
+            or selected.journal_batch_id != journal_batch_id
+            or selected.snapshot_hash != root["content_hash"]):
+        raise RuntimeError("Strategy 1 evidence Keeper readback differs")
+    return selected
