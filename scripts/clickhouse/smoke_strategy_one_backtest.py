@@ -13,6 +13,7 @@ from contextlib import closing, contextmanager
 import cProfile
 from datetime import date, datetime, time, timedelta
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import platform
@@ -100,7 +101,9 @@ def _print_completed_profile(controller) -> None:
 def _audit_causal_journal(run_id: str) -> None:
     """Read every verified page and reject backdated decision descendants."""
     from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page
-    from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
+    from src.trading_runtime.arte_journal_writer import (
+        _literal, backtest_v4_operator_client_from_env,
+    )
 
     from collections import Counter
 
@@ -108,6 +111,7 @@ def _audit_causal_journal(run_id: str) -> None:
     event_families: Counter[tuple[str, str, str]] = Counter()
     risk_state_by_account: dict[str, tuple[tuple[str, str], ...]] = {}
     repeated_risk_scalars = 0
+    risk_records: list[tuple[str, str, int, tuple[tuple[str, str], ...]]] = []
     linked = sequence = 0
     with closing(backtest_v4_operator_client_from_env()) as client:
         while True:
@@ -138,6 +142,8 @@ def _audit_causal_journal(run_id: str) -> None:
                     if risk_state_by_account.get(account) == scalar:
                         repeated_risk_scalars += 1
                     risk_state_by_account[account] = scalar
+                    risk_records.append((account, str(detail["record_id"]),
+                                         int(detail["reason_count"]), scalar))
                 if family == "trading_strategy_intent_v1":
                     identity = detail["intent_id"]
                     if identity in intents:
@@ -164,6 +170,30 @@ def _audit_causal_journal(run_id: str) -> None:
                 break
             if page["next_sequence"] != sequence:
                 raise RuntimeError("Strategy 1 terminal page did not advance")
+        reason_rows = [json.loads(line) for line in client.execute(
+            "SELECT parent_record_id,ordinal,reason "
+            "FROM arte.trading_account_risk_reason_v1 "
+            f"WHERE run_id={_literal(run_id)} "
+            "ORDER BY parent_record_id,ordinal FORMAT JSONEachRow"
+        ).splitlines() if line.strip()]
+    reasons_by_parent: dict[str, list[tuple[int, str]]] = {}
+    for row in reason_rows:
+        if set(row) != {"parent_record_id", "ordinal", "reason"}:
+            raise RuntimeError("Risk reason audit returned an invalid typed row")
+        reasons_by_parent.setdefault(str(row["parent_record_id"]), []).append(
+            (int(row["ordinal"]), str(row["reason"])))
+    prior_risk: dict[str, tuple[tuple[tuple[str, str], ...], tuple[str, ...]]] = {}
+    exact_risk_repeats = 0
+    for account, record_id, reason_count, scalar in risk_records:
+        reasons = reasons_by_parent.pop(record_id, [])
+        if (len(reasons) != reason_count
+                or [ordinal for ordinal, _ in reasons] != list(range(reason_count))):
+            raise RuntimeError("Risk reason audit differs from its verified parent")
+        state = (scalar, tuple(reason for _, reason in reasons))
+        exact_risk_repeats += prior_risk.get(account) == state
+        prior_risk[account] = state
+    if reasons_by_parent:
+        raise RuntimeError("Risk reason audit found an orphan typed parent")
     print(f"Causal journal: events={sequence} intents={len(intents)} "
           f"linked_actions={linked} backdated=0", flush=True)
     if sum(event_families.values()) != sequence:
@@ -172,6 +202,8 @@ def _audit_causal_journal(run_id: str) -> None:
         print(f"  event_family {category}/{entity_type}/{family}: {count}", flush=True)
     print(f"  risk_scalar_repeats={repeated_risk_scalars}/"
           f"{sum(count for (_, _, family), count in event_families.items() if family == 'trading_account_risk_state_v1')}",
+          flush=True)
+    print(f"  risk_exact_state_repeats={exact_risk_repeats}/{len(risk_records)}",
           flush=True)
 
 
