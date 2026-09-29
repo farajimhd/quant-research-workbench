@@ -5,12 +5,14 @@ import pytest
 
 from src.trading_runtime.arte_intent_projection import RecoveredIntent
 from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
+from src.trading_runtime import arte_oms_actor_restore as restore
 from src.trading_runtime.arte_oms_actor_restore import reconstruct_typed_oms_actor_image
 from src.trading_runtime.arte_oms_projection import (
     RecoveredOmsGroupState, RecoveredStrategyOneOmsLineage,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchSnapshotRows
 from tests.test_arte_intent_projection import intent
 
 
@@ -95,3 +97,23 @@ def test_typed_oms_actor_image_rejects_incomplete_contract():
             (lineage,), history, run_id=RUN,
             strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
             through_sequence=7, cutoff_at=AT)
+
+
+def test_typed_oms_image_cross_checks_broker_open_set(monkeypatch):
+    lineage, history = _source()
+    image = reconstruct_typed_oms_actor_image(
+        (lineage,), history, run_id=RUN,
+        strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        through_sequence=7, cutoff_at=AT)
+    monkeypatch.setattr(restore, "verify_broker_match_snapshot", lambda row: row)
+    order = dict(broker_order_id="broker-1", client_order_id="co-1",
+                 account_id="DU1", conid=123, ticker="AAA", filled="0")
+    broker = BrokerMatchSnapshotRows({}, (), (), (order,), (), ())
+    assert restore.verify_typed_oms_broker_open_orders(image, broker) == 1
+    with pytest.raises(RuntimeError, match="open order identities"):
+        restore.verify_typed_oms_broker_open_orders(
+            image, BrokerMatchSnapshotRows({}, (), (), (), (), ()))
+    with pytest.raises(RuntimeError, match="fill quantity"):
+        restore.verify_typed_oms_broker_open_orders(
+            image, BrokerMatchSnapshotRows({}, (), (),
+                                            ({**order, "filled": "1"},), (), ()))

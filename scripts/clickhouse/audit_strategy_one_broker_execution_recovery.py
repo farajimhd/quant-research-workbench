@@ -35,7 +35,9 @@ from src.trading_runtime.arte_journal_writer import (
     load_typed_run_context,
 )
 from src.trading_runtime.arte_journal_reader import load_complete_typed_protection_history
-from src.trading_runtime.arte_oms_actor_restore import reconstruct_typed_oms_actor_image
+from src.trading_runtime.arte_oms_actor_restore import (
+    reconstruct_typed_oms_actor_image, verify_typed_oms_broker_open_orders,
+)
 from src.trading_runtime.arte_oms_projection import (
     load_recovered_strategy_one_oms_lineage,
 )
@@ -104,9 +106,7 @@ def audit(*, run_id: str, build_id: str, session: date,
             lineages, protection, run_id=run_id, strategy_id=STRATEGY_ID,
             strategy_revision=STRATEGY_NUMBER,
             through_sequence=prefix.last_sequence, cutoff_at=boundary)
-        if any(row["broker_order_id"] not in oms_image.group_by_broker_id
-               for row in broker.open_orders):
-            raise RuntimeError("Cold OMS image omits an open broker order")
+        verify_typed_oms_broker_open_orders(oms_image, broker)
         requests = {}
         broker_ids = {}
         for lineage in lineages:

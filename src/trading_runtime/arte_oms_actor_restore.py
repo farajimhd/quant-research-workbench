@@ -14,6 +14,9 @@ from typing import Any
 from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
 from src.trading_runtime.arte_oms_projection import RecoveredStrategyOneOmsLineage
 from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
+from src.trading_runtime.strategy_one_broker_match_snapshot import (
+    BrokerMatchSnapshotRows, verify_broker_match_snapshot,
+)
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 
 
@@ -24,6 +27,45 @@ class TypedOmsActorImage:
     group_by_broker_id: dict[str, str]
     protection_versions: dict[tuple[str, str, str, str, str], tuple[float, bool]]
     body_entry_group_ids: frozenset[str]
+
+
+def verify_typed_oms_broker_open_orders(
+    image: TypedOmsActorImage, broker: BrokerMatchSnapshotRows,
+) -> int:
+    """Prove one exact open-order set without mutating OMS or broker actors."""
+    if not isinstance(image, TypedOmsActorImage):
+        raise TypeError("Typed OMS broker audit requires a reconstructed image")
+    rows = verify_broker_match_snapshot(broker).open_orders
+    by_id = {row["broker_order_id"]: row for row in rows}
+    if len(by_id) != len(rows):
+        raise RuntimeError("Typed OMS broker snapshot repeats an open order")
+    expected = {
+        broker_id
+        for group in image.groups.values()
+        for broker_id in group.broker_order_ids
+        if broker_id not in group.terminal_broker_order_ids
+    }
+    if expected != set(by_id):
+        raise RuntimeError("Typed OMS and broker disagree on open order identities")
+    for broker_id, row in by_id.items():
+        group_id = image.group_by_broker_id.get(broker_id)
+        group = image.groups.get(group_id or "")
+        if group is None:
+            raise RuntimeError("Typed OMS open broker order has no group")
+        index = group.broker_order_request_indexes.get(broker_id)
+        if index is None or not 0 <= index < len(group.orders):
+            raise RuntimeError("Typed OMS open broker order lacks a request index")
+        request = group.orders[index]
+        if (request.cOID != row["client_order_id"]
+                or request.acctId != row["account_id"]
+                or request.conid != row["conid"]
+                or request.ticker != row["ticker"]
+                or group.account_id != row["account_id"]):
+            raise RuntimeError("Typed OMS open request differs from broker")
+        tracked = group.filled_by_broker_order.get(broker_id, 0.0)
+        if abs(tracked - float(row["filled"])) > 1e-8:
+            raise RuntimeError("Typed OMS fill quantity differs from broker")
+    return len(rows)
 
 
 def _time(value: Any, *, cutoff_at: datetime) -> datetime:
