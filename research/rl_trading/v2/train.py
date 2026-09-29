@@ -31,6 +31,11 @@ from research.mlops.wandb_utils import init_wandb
 # source bytes must still match exactly; this is its certified controller hash.
 PILOT_TRAIN_HASH = 'c814a0a450b7688f9561f922fa443eab7e5a1fbbe3cbe308fc0debd3046067ed'
 EARLY_EXIT_TRAIN_HASH = '0153e08463a748574c0f221bbbc47b00b3781290bdcf6628c06bf7867e70cdb5'
+BALANCED_ACTION_PARENT_HASHES = {
+    str(Path('research/rl_trading/v2/config.py')): '19c996d072e91872a61826580b99934dec0ebecd874fb30da4f72a5812f5f047',
+    str(Path('research/rl_trading/v2/model.py')): '4adbe145cce55244396509bff2d8e89dcc7ea46e3e989d4ed6dafc597afc2362',
+    str(Path('research/rl_trading/v2/train.py')): '719bf821da6fae635084d96ef27840ccb15c2e86a0cc5641b9a791b218c6aff6',
+}
 PRE_EARLY_EXIT_HASHES = {
     str(Path('research/rl_trading/v2/config.py')): '42141072c818fbea0fc164d6cdf08f5d3079fec7fbb42aaeeb0fab8cbe8b97b5',
     str(Path('research/rl_trading/v2/train.py')): 'f65b8861c8533a8f666471d560cff9ae24bb0c5b75c1d50ca73a3a996e54b50c',
@@ -64,6 +69,7 @@ def parser():
     p.add_argument('--target-kl',type=float,default=.03)
     p.add_argument('--eval-every',type=int,default=100)
     p.add_argument('--validation-rollouts',type=int,default=3)
+    p.add_argument('--selection-mode',choices=('legacy_mean','robust_q25'),default='legacy_mean')
     p.add_argument('--validation-seed',type=int,default=1917)
     p.add_argument('--capital-multipliers',type=float,nargs='+',default=[.5,1.,2.])
     p.add_argument('--session-order',choices=('random','cycle'),default='random')
@@ -74,6 +80,7 @@ def parser():
     p.add_argument('--continue-from-run',type=Path)
     p.add_argument('--initialize-from-best',type=Path)
     p.add_argument('--initialize-policy-from-best',type=Path)
+    p.add_argument('--initialize-balanced-from-best',type=Path)
     p.add_argument('--allow-segment',action='store_true')
     p.add_argument('--wandb-mode',choices=('disabled','offline','online'),default='disabled')
     p.add_argument('--wandb-project',default='rl-trading-v2')
@@ -144,6 +151,9 @@ def wandb_metrics(result):
             report['train/'+name+'_mean'] = float(np.mean([x[name] for x in summaries]))
     if 'validation_mean_return' in result:
         report['validation/net_return_mean'] = result['validation_mean_return']
+        if 'validation_return_q25' in result:
+            report['validation/net_return_q25'] = result['validation_return_q25']
+            report['validation/selection_eligible'] = int(result['validation_selection_eligible'])
         report['validation/valid_terminal_fraction'] = float(np.mean(
             [x['valid_terminal'] for x in result['validation']]))
         report['validation/max_drawdown_mean'] = float(np.mean([x['max_drawdown'] for x in result['validation']]))
@@ -155,6 +165,17 @@ def wandb_metrics(result):
                      'realized_net_pnl','realized_forced_exit_pnl'):
             report['validation/'+name+'_mean'] = float(np.mean([x[name] for x in result['validation']]))
     return report
+
+
+def selection_evidence(validation):
+    """Require broad positive, executed outcomes, not one lucky rollout."""
+    returns = np.asarray([row['net_return'] for row in validation],dtype=np.float64)
+    if len(returns) < 9 or not np.all(np.isfinite(returns)):
+        raise ValueError('Balanced selection requires nine finite validation returns')
+    q25 = float(np.quantile(returns,.25))
+    eligible = (all(row['valid_terminal'] and row['filled_orders'] > 0 for row in validation)
+                and q25 > 0.)
+    return q25,eligible
 
 
 def train(args):
@@ -171,6 +192,8 @@ def train(args):
         raise ValueError('Invalid PPO parameters')
     if args.min_completed_episodes < 0 or args.selection_min_episodes < 0:
         raise ValueError('Episode requirements must be nonnegative')
+    if args.selection_mode == 'robust_q25' and args.validation_rollouts < 9:
+        raise ValueError('Balanced-action selection requires at least nine validation rollouts')
     if args.min_completed_episodes and (args.environments != 1 or
             args.session_order != 'cycle' or args.capital_multipliers != [1.] or
             args.selection_min_episodes < 1):
@@ -180,7 +203,7 @@ def train(args):
     if not args.run_name or Path(args.run_name).name != args.run_name or args.run_name in ('.','..'):
         raise ValueError('Run name must be a single directory name')
     if sum(bool(x) for x in (args.initialize_from_best,args.initialize_policy_from_best,
-                             args.continue_from_run)) > 1:
+                             args.initialize_balanced_from_best,args.continue_from_run)) > 1:
         raise ValueError('Choose one checkpoint initialization or continuation')
     config = Config(**{field.name:getattr(args,field.name) for field in fields(Config)})
     root = output_root()/'train'/args.run_name
@@ -346,6 +369,54 @@ def _policy_only_initialization(parent_root, manifest, *, run_root, device):
     return lineage,best
 
 
+def _balanced_initialization(parent_root, manifest, *, run_root, device):
+    """Transfer only policy weights from the exact certified V4 best checkpoint."""
+    parent_root = Path(parent_root).resolve()
+    if parent_root == run_root.resolve():
+        raise ValueError('Balanced-action initialization requires a new run directory')
+    parent = read(parent_root/'run_manifest.json')
+    if parent.get('contract_hash') != digest({k:v for k,v in parent.items() if k != 'contract_hash'}):
+        raise ValueError('Parent run manifest integrity failure')
+    if (parent.get('version') != 'rl-trading-v2-ppo-single-account-sessions-4' or
+            manifest.get('version') != 'rl-trading-v2-ppo-balanced-actions-5'):
+        raise ValueError('Balanced-action initialization requires V4 to V5 migration')
+    for key in ('job','model','feature_names','train','validation','teacher_supervision',
+                'torch_version','numpy_version','wandb'):
+        if parent.get(key) != manifest.get(key):
+            raise ValueError('Balanced-action initialization changes parent contract: ' + key)
+    if ({k:v for k,v in parent['config'].items() if k != 'version'} !=
+            {k:v for k,v in manifest['config'].items() if k != 'version'}):
+        raise ValueError('Balanced-action initialization changes execution assumptions')
+    old_args, new_args = parent['arguments'], manifest['arguments']
+    if (old_args.get('validation_rollouts') != 3 or new_args.get('validation_rollouts') != 9 or
+            new_args.get('selection_mode') != 'robust_q25' or
+            {k:v for k,v in old_args.items() if k != 'validation_rollouts'} !=
+            {k:v for k,v in new_args.items() if k not in ('validation_rollouts','selection_mode')}):
+        raise ValueError('Balanced-action initialization changes unapproved training settings')
+    old_code, new_code = parent['code']['files'], manifest['code']['files']
+    if (set(old_code) != set(new_code) or
+            any(old_code[name] != new_code[name] for name in old_code if name not in BALANCED_ACTION_PARENT_HASHES) or
+            any(old_code.get(name) != expected for name,expected in BALANCED_ACTION_PARENT_HASHES.items())):
+        raise ValueError('Balanced-action initialization changes unapproved source')
+    best_path = parent_root/'checkpoint_best.pt'
+    best = torch.load(best_path,map_location=device,weights_only=False)
+    if (best.get('contract_hash') != parent['contract_hash'] or
+            not np.isfinite(best.get('best',-float('inf'))) or
+            best.get('completed_episodes',0) < 1):
+        raise ValueError('Parent best checkpoint is not eligible')
+    metric = read(parent_root/'metrics'/f"{best['iteration']:06d}.json")
+    if (not metric.get('validation_all_flat') or
+            not np.isclose(metric.get('validation_mean_return',float('nan')),best['best'])):
+        raise ValueError('Parent best checkpoint lacks valid validation evidence')
+    lineage = dict(parent_run=str(parent_root),parent_contract_hash=parent['contract_hash'],
+                   parent_best_checkpoint_hash=file_hash(best_path),
+                   parent_best_iteration=best['iteration'],parent_best_score=best['best'],
+                   transferred=['policy'],optimizer_state='fresh',account_state='fresh',
+                   session_cursor='first_training_date',random_state='fresh_seed',
+                   change='eligible-action-type population normalization; nine-rollout selection')
+    return lineage,best
+
+
 def _train_locked(args, config, root):
     torch.set_num_threads(args.threads)
     random.seed(args.seed)
@@ -368,7 +439,7 @@ def _train_locked(args, config, root):
             for i in range(args.min_completed_episodes))
         if args.iterations*args.rollout_steps < required:
             raise ValueError(f'Iteration budget cannot complete {args.min_completed_episodes} sessions; require at least {required} steps')
-    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run','initialize_from_best','initialize_policy_from_best')}
+    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run','initialize_from_best','initialize_policy_from_best','initialize_balanced_from_best')}
     manifest = dict(version=VERSION,job='train',config=config.manifest(),arguments=contract_args,
         model=dict(features=len(sessions[0].plan['feature_names']),width=args.width,heads=args.heads),
         feature_names=sessions[0].plan['feature_names'],code=code_identity(),
@@ -391,6 +462,10 @@ def _train_locked(args, config, root):
     if args.initialize_policy_from_best:
         lineage, initialized_policy = _policy_only_initialization(
             args.initialize_policy_from_best,manifest,run_root=root,device=args.device)
+        manifest['lineage'] = lineage
+    if args.initialize_balanced_from_best:
+        lineage, initialized_policy = _balanced_initialization(
+            args.initialize_balanced_from_best,manifest,run_root=root,device=args.device)
         manifest['lineage'] = lineage
     manifest['contract_hash'] = digest(manifest)
     path = root/'run_manifest.json'
@@ -600,7 +675,13 @@ def _train_locked(args, config, root):
                         restored = session = None
                 score = float(np.mean([x['net_return'] for x in result['validation']]))
                 valid = all(x['valid_terminal'] for x in result['validation'])
-                improved = valid and score > best
+                if args.selection_mode == 'robust_q25':
+                    q25,eligible = selection_evidence(result['validation'])
+                    result['validation_return_q25'] = q25
+                    result['validation_selection_eligible'] = eligible
+                    improved = eligible and score > best
+                else:
+                    improved = valid and score > best
                 if improved:
                     best = score
                 result['validation_mean_return'] = score

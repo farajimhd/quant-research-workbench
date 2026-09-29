@@ -61,7 +61,10 @@ class PortfolioPolicy(nn.Module):
             return category,sizing,value
         eligible = batch['action_mask'][...,1:].any(dim=(1,2))
         gate_logits = self.trade_gate(context[:,0]).squeeze(-1).masked_fill(~eligible,-1e9)
-        choice_logits = logits[...,1:].reshape(b,-1)
+        # Normalize each action type by its eligible population. Otherwise
+        # hundreds of buy candidates overwhelm a few held-position exits.
+        type_counts = batch['action_mask'][...,1:].sum(dim=1).clamp_min(1)
+        choice_logits = (logits[...,1:] - type_counts.log().unsqueeze(1)).reshape(b,-1)
         return category,sizing,value,Bernoulli(logits=gate_logits),Categorical(logits=choice_logits)
 
     def action(self, batch, modes=None, sizes=None, *, deterministic=False):

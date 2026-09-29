@@ -230,6 +230,33 @@ def test_policy_scheduler_selects_one_discretionary_action_or_passes():
     assert torch.count_nonzero(passed) == 0 and torch.isfinite(score).all()
 
 
+def test_scheduler_normalizes_action_type_mass_by_eligible_count():
+    obs = TradingEnv(market(),config()).observe()
+    obs['action_mask'][:] = False
+    obs['action_mask'][:,0] = True
+    obs['action_mask'][:2,1] = True
+    obs['action_mask'][0,2:] = True
+    policy = PortfolioPolicy(3,width=16,heads=2)
+    with torch.no_grad():
+        policy.actor.weight.zero_()
+        policy.actor.bias.zero_()
+    _,_,_,_,choice = policy(collate([obs]),scheduler=True)
+    probabilities = choice.probs.reshape(1,3,3)[0]
+    for action_type in range(3):
+        torch.testing.assert_close(probabilities[:,action_type].sum(),torch.tensor(1/3))
+
+
+def test_balanced_selection_requires_consistent_executed_returns():
+    rows = [dict(net_return=.01,valid_terminal=True,filled_orders=2) for _ in range(9)]
+    assert train.selection_evidence(rows) == pytest.approx((.01,True))
+    rows[0]['net_return'] = .50
+    rows[1]['net_return'] = rows[2]['net_return'] = rows[3]['net_return'] = -.02
+    assert not train.selection_evidence(rows)[1]
+    rows[1]['net_return'] = rows[2]['net_return'] = rows[3]['net_return'] = .01
+    rows[0]['filled_orders'] = 0
+    assert not train.selection_evidence(rows)[1]
+
+
 def test_empty_universe_and_padding_are_finite():
     session = market()
     session.arrays['volume_60s'][:] = 0
