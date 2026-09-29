@@ -756,7 +756,6 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (savedV4Focus && definition.id === "charts_quotes") return {
       detail: "Certified saved Strategy 1 bars, indicators, and liquidity at the committed Backtest boundary.",
-      freshness: previewContext.previewTime,
       sourceLabel: "ARTE verified V4",
       status: "ready",
     };
@@ -1129,9 +1128,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }
 
   return (
-    <div className={manager ? "canvas-config-page" : "canvas-config-page canvas-focus-page"}>
+    <div className={manager ? "canvas-config-page" : savedV4Focus ? "canvas-config-page canvas-focus-page saved-v4-chart-page" : "canvas-config-page canvas-focus-page"}>
       <header className="canvas-config-toolbar">
-        {labelerCanvas ? <strong>Labeler Canvas</strong> : <><div className="canvas-clock-control" aria-label="Preview clock">
+        {labelerCanvas ? <strong>Labeler Canvas</strong> : savedV4Focus ? null : <><div className="canvas-clock-control" aria-label="Preview clock">
           <div className="canvas-clock-zones" aria-label="Preview time zones">
             {previewClocks.map((clock, index) => {
               const Icon = clockIcons[index];
@@ -1481,24 +1480,11 @@ export function SavedBacktestChartFocus({ runId, ticker }: { runId: string; tick
     });
     return () => controller.abort();
   }, [runId]);
-  const returnToJournal = () => {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("backtest_ticker");
-    url.hash = "backtest-trading";
-    window.location.assign(url.toString());
-  };
-  if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error" role="alert">Chart unavailable: {error}</div><button onClick={returnToJournal} type="button">Return to journal</button></div>;
+  if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error" role="alert">Chart unavailable: {error}</div></div>;
   if (!page) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading saved Charts & Quotes" /></div>;
   const base = readCanvasRegistry();
   const { profile } = chartsQuotesFocusProfile(base, null, ticker, true);
-  const progress = page.status === "completed" ? 100 : 0;
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false}
-    modeControls={<div className="historical-canvas-run-state historical-backtest-progress saved-v4-focus-progress">
-      <div className="historical-backtest-progress-heading"><strong>Backtest {page.status.replaceAll("_", " ")}</strong><b>{page.status === "completed" ? `${progress}%` : page.status}</b></div>
-      <div aria-label="Backtest progress" aria-valuemax={100} aria-valuemin={0} aria-valuenow={page.status === "completed" ? progress : undefined}
-        className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progress}%` }} /></div>
-      <div className="historical-backtest-progress-actions"><button className="button secondary compact" onClick={returnToJournal} type="button">Return to journal</button></div>
-    </div>}
     readOnly runtimeWorkspaceId={`${runId}.charts`}
     savedV4Focus={{ runId, ticker, page, profile }} transient />;
 }

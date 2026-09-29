@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { api } from "../../api/client";
 import { dateInTimeZone } from "../timeZones";
-import { ChartPanel, type ChartPayload } from "./ChartPanel";
+import { ChartPanel, type ChartPayload, type ChartDisplayItem } from "./ChartPanel";
 
 type Bar = { bar_start: string; bar_end: string; open: number; high: number;
   low: number; close: number; volume: number; is_closed?: boolean };
@@ -16,6 +16,7 @@ export type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolea
 export const SAVED_CHART_FRAMES = ["100ms", "1s", "5s", "10s", "30s"] as const;
 const FRAMES = [...SAVED_CHART_FRAMES, "1d", "1mo"] as const;
 const MACD = ["macd_line", "macd_signal", "macd_histogram"] as const;
+const MACD_DISPLAY: ChartDisplayItem[] = [{ id: "saved.closed_macd", title: "Closed MACD", category: "Indicators", sourceColumns: [...MACD] }];
 const pageCache = new Map<string, Promise<ChartPage>>();
 
 function loadPage(path: string): Promise<ChartPage> {
@@ -37,11 +38,13 @@ function pageBoundary(page: ChartPage): number | null {
   return Number.isFinite(boundary) && boundary > 0 ? boundary : null;
 }
 
-export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false, initialFrame = "1s", onQuoteChange, toolbarAction, panelLabel, enabled = true, allowedFrames = SAVED_CHART_FRAMES, initialShowMacd = true, prefetchedPage }: {
+export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false, initialFrame = "1s", onQuoteChange, toolbarAction, panelLabel, enabled = true, allowedFrames = SAVED_CHART_FRAMES, initialShowMacd = true, prefetchedPage, tradeAnnotations = [], tradeError = "" }: {
   runId: string; ticker: string; onClose?: () => void; embedded?: boolean;
   initialFrame?: (typeof FRAMES)[number]; onQuoteChange?: (quote: ChartPage["quote"]) => void; toolbarAction?: ReactNode; panelLabel?: string; enabled?: boolean;
   allowedFrames?: readonly (typeof FRAMES)[number][]; initialShowMacd?: boolean;
   prefetchedPage?: ChartPage;
+  tradeAnnotations?: NonNullable<ChartPayload["trade_annotations"]>;
+  tradeError?: string;
 }) {
   const [symbol, setSymbol] = useState(ticker);
   const [draftSymbol, setDraftSymbol] = useState(ticker);
@@ -123,7 +126,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
 
   const payload = useMemo<ChartPayload>(() => {
     const series = (column: (typeof MACD)[number], label: string, color: string) => ({
-      column, label, color, style: "line" as const, lineWidth: 1,
+      column, displayItemId: "saved.closed_macd", label, color, style: "line" as const, lineWidth: 1,
       paneKey: "macd", data: indicators.filter(row => typeof row[column] === "number")
         .map(row => ({ time: Date.parse(row.bar_start) / 1000, value: row[column]! })),
     });
@@ -137,9 +140,9 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
         series("macd_line", "MACD", "var(--primary)"),
         series("macd_signal", "Signal", "var(--warning)"),
         series("macd_histogram", "Histogram", "var(--info)"),
-      ] : [], markers: [], regions: [],
+      ] : [], markers: [], regions: [], trade_annotations: tradeAnnotations,
     };
-  }, [bars, indicators, frame, showMacd]);
+  }, [bars, indicators, frame, showMacd, tradeAnnotations]);
 
   const older = page && pageBoundary(page);
   const compactContext = embedded && (frame === "1d" || frame === "1mo");
@@ -147,11 +150,10 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     {panelLabel ? <span className="backtest-v4-panel-label" title={compactContext && page
       ? `Certified ARTE history from ${page.history_first_session}; daily/monthly indicators are not persisted.`
       : undefined}>{panelLabel}{compactContext ? " · indicators stale" : ""}</span> : null}
-    {toolbarAction ? <div className="backtest-v4-focus-chart-toolbar">{toolbarAction}</div> : null}
     {!embedded ? <header><h4>Persisted market chart</h4>{onClose ? <button className="button secondary compact" type="button" onClick={onClose}>Close chart</button> : null}</header> : null}
-    {(!embedded || toolbarAction) ? <div className="backtest-v4-chart-controls">
-      {!embedded ? <form onSubmit={submitTicker}><label>Ticker <input aria-label="Chart ticker" value={draftSymbol} onChange={event => setDraftSymbol(event.target.value.toUpperCase())} maxLength={24} /></label><button className="button secondary compact" type="submit">Show</button></form> : null}
-      {!embedded ? <label>Resolution <select aria-label="Chart resolution" value={frame} onChange={event => changeScope({ frame: event.target.value as (typeof FRAMES)[number] })}>{FRAMES.map(value => <option key={value}>{value}</option>)}</select></label> : null}
+    {!embedded ? <div className="backtest-v4-chart-controls">
+      <form onSubmit={submitTicker}><label>Ticker <input aria-label="Chart ticker" value={draftSymbol} onChange={event => setDraftSymbol(event.target.value.toUpperCase())} maxLength={24} /></label><button className="button secondary compact" type="submit">Show</button></form>
+      <label>Resolution <select aria-label="Chart resolution" value={frame} onChange={event => changeScope({ frame: event.target.value as (typeof FRAMES)[number] })}>{FRAMES.map(value => <option key={value}>{value}</option>)}</select></label>
       {frame !== "1d" && frame !== "1mo" ? <label><input type="checkbox" checked={showMacd} onChange={event => changeScope({ macd: event.target.checked })} /> Closed MACD</label> : null}
     </div> : null}
     {!embedded ? <p className="backtest-v4-chart-source">ARTE closed bars and indicators · {page ? `verified through ${page.verified_boundary_ms.toLocaleString()} ms from 04:00 ET` : "verifying saved run…"}</p> : null}
@@ -163,10 +165,14 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     {!compactContext && page?.history_limited ? <p role="note">ARTE history available from {page.history_first_session}; earlier {frame === "1mo" ? "months" : "sessions"} are unavailable.</p> : null}
     {error ? <p role="alert">Chart unavailable: {error}</p> : null}
     <ChartPanel persistedOnly payload={payload} ticker={symbol} timeframe={frame} timeframes={[...allowedFrames]}
-      featureOptions={[]} indicatorOptions={[]} visibleColumns={showMacd ? [...MACD] : []} onVisibleColumnsChange={() => {}}
+      featureOptions={[]} indicatorOptions={[]} displayItemOptions={frame === "1d" || frame === "1mo" ? [] : MACD_DISPLAY}
+      visibleColumns={showMacd ? ["saved.closed_macd"] : []} onVisibleColumnsChange={values => changeScope({ macd: values.includes("saved.closed_macd") })}
       onTickerChange={value => changeScope({ symbol: value })} onTimeframeChange={value => changeScope({ frame: value as (typeof FRAMES)[number] })}
       emptyMessage="No price-bearing bars in this verified run window." loading={loading && !page}
-      showIndicatorControls={false} tickerEditable={false} enableFullscreen={false} baseHeight={320} />
-    {older ? <button className="button secondary compact" type="button" disabled={loading} onClick={() => setBefore(older)}>{loading ? "Loading…" : "Load earlier bars"}</button> : null}
+      showIndicatorControls={frame !== "1d" && frame !== "1mo"} strategyPresentationEnabled={Boolean(toolbarAction) || tradeAnnotations.length > 0}
+      dataStatus={tradeError || undefined}
+      tickerEditable={false} enableFullscreen={false} baseHeight={320} fillHeight={embedded} toolbarVariant={embedded ? "compact" : "full"}
+      toolbarActions={toolbarAction} canLoadEarlier={Boolean(older)} loadingEarlier={loading && before !== null}
+      onLoadEarlier={() => { if (older) setBefore(older); }} />
   </section>;
 }

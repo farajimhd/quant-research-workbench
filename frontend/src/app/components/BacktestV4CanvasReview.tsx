@@ -16,6 +16,7 @@ import type { PerformanceJournalReport } from "../../features/canvas/contracts";
 import { instanceSettings } from "../../features/canvas/settings";
 import { ExecutionsPreview, PositionsPreview, TradingDataTable, TradingJournalPreview } from "../../features/canvas/tradingPresentation";
 import { previewClockReadings, strategyReplayCanvasState } from "../../pages/CanvasConfigurationPage";
+import type { ChartPayload } from "./ChartPanel";
 
 type TradePage = {
   schema_version: "strategy-one-v4-trade-history-page-v1";
@@ -377,8 +378,43 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
   // container supplies only the typed V4 market adapter to that window.
   const chartFrame = SAVED_CHART_FRAMES.find(frame => frame === mainFrame) ?? "10s";
   const [quote, setQuote] = useState<SavedChartsQuote | null>(null);
+  const [tradeAnnotations, setTradeAnnotations] = useState<NonNullable<ChartPayload["trade_annotations"]>>([]);
+  const [tradeError, setTradeError] = useState("");
   const [contextPair, setContextPair] = useState<ContextPair | null>(null);
   const [contextError, setContextError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    void api<PerformancePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-performance`, {
+      signal: controller.signal, timeoutMs: 60_000,
+    }).then(value => {
+      if (controller.signal.aborted) return;
+      if (value.schema_version !== "strategy-one-v4-performance-report-v1") {
+        throw new Error("Saved position evidence contract mismatch");
+      }
+      // The saved chart uses the same lifecycle identity as the journal. Never
+      // infer a trade from candles or synthesize fills at bar boundaries.
+      const annotations: NonNullable<ChartPayload["trade_annotations"]> = [];
+      for (const row of value.position_lifecycles) {
+        const instrument = row.instrument as { symbol?: string } | undefined;
+        if (instrument?.symbol?.toUpperCase() !== ticker.toUpperCase()) continue;
+        const entryTime = Date.parse(String(row.opened_at ?? "")) / 1000;
+        const entryPrice = Number(row.entry_price);
+        if (!Number.isFinite(entryTime) || !Number.isFinite(entryPrice)) continue;
+        const exitTime = row.closed_at ? Date.parse(String(row.closed_at)) / 1000 : undefined;
+        const exitPrice = row.exit_price == null ? undefined : Number(row.exit_price);
+        annotations.push({ id: String(row.lifecycle_id ?? row.episode_id), color: "var(--chart-strategy-entry)",
+          entryTime, entryPrice, entryLabel: `Entry ${Number(row.quantity).toLocaleString()} @ ${entryPrice.toFixed(4)}`,
+          positionSide: row.side === "SHORT" ? "SHORT" : "LONG",
+          status: row.status === "closed" ? "closed" : "open",
+          ...(exitTime !== undefined && Number.isFinite(exitTime) && exitPrice !== undefined && Number.isFinite(exitPrice)
+            ? { exitTime, exitPrice, endTime: exitTime, exitLabel: `Exit @ ${exitPrice.toFixed(4)}` } : {}),
+          pnl: Number(row.net_pnl) });
+      }
+      setTradeAnnotations(annotations);
+      setTradeError("");
+    }).catch(() => { if (!controller.signal.aborted) { setTradeAnnotations([]); setTradeError("Saved position evidence unavailable"); } });
+    return () => controller.abort();
+  }, [runId, ticker]);
   useEffect(() => {
     if (maximized || contextPair) return;
     const controller = new AbortController();
@@ -404,7 +440,7 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
   return <div className="backtest-v4-chart-focus">
     <ChartsQuotesMarketLayout symbol={ticker} end={savedAsOf} savedQuote={quote} layout={layout} onLayoutChange={onLayoutChange}
         mainChartMaximized={maximized}
-        mainChart={<BacktestV4SavedChart embedded initialFrame={chartFrame} runId={runId} ticker={ticker} onQuoteChange={value => setQuote(value ?? null)}
+        mainChart={<BacktestV4SavedChart embedded initialFrame={chartFrame} runId={runId} ticker={ticker} tradeAnnotations={tradeAnnotations} tradeError={tradeError} onQuoteChange={value => setQuote(value ?? null)}
           toolbarAction={<button aria-label={maximized ? "Restore chart panels" : "Maximize main chart"} className="toolbar-button" onClick={() => setMaximized(value => !value)} title={maximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} />}
         monthChart={contextPair ? <BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1mo" allowedFrames={["1mo"]} initialShowMacd={false} panelLabel="Monthly context · limited ARTE history" prefetchedPage={contextPair.monthly} runId={runId} ticker={ticker} /> : <div className="trading-disclosure" role={contextError ? "alert" : "status"}>{contextError || "Loading certified monthly context…"}</div>}
         dailyChart={contextPair ? <BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1d" allowedFrames={["1d"]} initialShowMacd={false} panelLabel="Daily context · limited ARTE history" prefetchedPage={contextPair.daily} runId={runId} ticker={ticker} /> : <div className="trading-disclosure" role={contextError ? "alert" : "status"}>{contextError || "Loading certified daily context…"}</div>}

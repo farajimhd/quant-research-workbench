@@ -2612,8 +2612,19 @@ def capture(args: argparse.Namespace) -> int:
                             saved_chart.locator(".chart-shell canvas").first.wait_for(timeout=args.timeout_ms)
                             focus.wait_for_timeout(1000)
                             saved_chart.get_by_text('Loading chart data').wait_for(state='hidden', timeout=60_000)
+                            if focus.locator('.canvas-clock-control').count():
+                                raise RuntimeError("Saved Charts & Quotes added the generic date/time header")
+                            if focus.get_by_role('progressbar', name='Backtest progress').count() or focus.get_by_role('button', name='Return to journal').count():
+                                raise RuntimeError("Saved Charts & Quotes retained Backtest progress or journal navigation")
+                            if saved_chart.get_by_role('button', name='Load earlier bars').count():
+                                raise RuntimeError("Saved chart exposed the legacy paging footer")
+                            if not saved_chart.get_by_text('Indicators', exact=True).count():
+                                raise RuntimeError("Saved chart lost its indicator presentation toolbar")
+                            if not saved_chart.get_by_text('Strategy Presentation', exact=True).count():
+                                raise RuntimeError("Saved chart lost its position presentation toolbar")
                             if canvas.locator('.charts-quotes-body').get_attribute('data-main-chart-maximized') != 'true':
                                 raise RuntimeError("Saved Charts & Quotes did not initially hide supporting panels")
+                            focus.screenshot(path=str(output_dir / f"saved-charts-quotes-maximized__{scenario['theme']}__s{slug_scale(scenario['scale'])}__{scenario['viewport_name']}.png"))
                             focus.get_by_role('button', name='Restore chart panels').click(timeout=args.timeout_ms)
                             if canvas.locator('.charts-quotes-body').get_attribute('data-main-chart-maximized') != 'false':
                                 raise RuntimeError("Saved Charts & Quotes could not restore supporting panels")
