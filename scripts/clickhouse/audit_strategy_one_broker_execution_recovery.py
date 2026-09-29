@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 from uuid import UUID
 
@@ -19,8 +20,13 @@ sys.path.insert(0, str(ROOT))
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
-from src.backend.backtest_market_data import market_day_boundary
+from src.backend.backtest_market_data import _MarketCertificateReader, market_day_boundary
+from src.backend.backtest_v3_clients import v3_client
+from src.backend.backtest_v4_broker_quote_restore import load_completed_broker_quotes
+from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
 from src.backend.backtest_v4_execution_restore import load_v4_broker_executions
+from src.trading_runtime.arte_market_day_cold_preflight import sealed_certified_market_day_plan
+from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
 from src.trading_runtime.arte_journal_commit_v4 import (
     V4CommittedPrefix, load_verified_v4_prefix,
 )
@@ -31,24 +37,42 @@ from src.trading_runtime.arte_journal_writer import (
 from src.trading_runtime.arte_oms_projection import (
     load_recovered_strategy_one_oms_lineage,
 )
+from src.trading_runtime.domain import TradingMode
+from src.trading_runtime.keeper_session import open_workstation_keeper_session
+from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
-    load_unattested_broker_match_snapshot,
+    load_unattested_broker_match_snapshot, project_broker_match_snapshot,
 )
 
 
-def audit(*, run_id: str, checkpoint_sequence: int) -> tuple[int, int]:
+def audit(*, run_id: str, build_id: str, session: date,
+          checkpoint_sequence: int) -> tuple[int, int]:
     if (platform.node().upper() != "DESKTOP-SAAI85T"
             or str(UUID(run_id)) != run_id
+            or re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", build_id) is None
+            or not isinstance(session, date)
             or type(checkpoint_sequence) is not int or checkpoint_sequence < 1):
-        raise ValueError("Audit needs an exact workstation run and checkpoint")
+        raise ValueError("Audit needs exact workstation run, build, session, checkpoint")
     credential = Path(r"D:\TradingML\secrets\backtest_v4_runner.env")
-    if not credential.is_file():
-        raise RuntimeError("Managed journal audit credential is unavailable")
+    market_credential = Path(r"D:\TradingML\secrets\backtest_v3_read.env")
+    if not credential.is_file() or not market_credential.is_file():
+        raise RuntimeError("Managed audit credentials are unavailable")
     os.environ["BACKTEST_V4_RUNNER_CREDENTIAL_FILE"] = str(credential)
-    with closing(backtest_v4_operator_client_from_env()) as client:
+    os.environ["BACKTEST_V3_READ_CREDENTIAL_FILE"] = str(market_credential)
+    with closing(backtest_v4_operator_client_from_env()) as client, closing(
+            v3_client("read")) as market_http, closing(
+            open_workstation_keeper_session()) as keeper_session:
+        market = _MarketCertificateReader(market_http)
+        plan = sealed_certified_market_day_plan(
+            market, MarketDayKeeperReader(keeper_session.client), build_id,
+            sessions=(session.isoformat(),), tickers=(),
+            configuration={"strategy": {"strategy_number": 1,
+                                         "execution_interval": "100ms"}},
+            read_client_factory=lambda: _MarketCertificateReader(v3_client("read")))
         context = load_typed_run_context(client, run_id)
-        if context["mode"] != "backtest":
-            raise RuntimeError("Broker execution audit requires a Backtest run")
+        if (context["mode"] != "backtest"
+                or context["market_plan_token"] != plan.token):
+            raise RuntimeError("Broker audit differs from pinned Backtest market plan")
         terminal_prefix = load_verified_v4_prefix(client, run_id)
         if terminal_prefix is None or checkpoint_sequence > terminal_prefix.last_sequence:
             raise RuntimeError("Broker execution audit lacks verified V4 prefix")
@@ -90,6 +114,24 @@ def audit(*, run_id: str, checkpoint_sequence: int) -> tuple[int, int]:
             client, prefix, requests_by_coid=requests,
             coid_by_broker_id=broker_ids,
             next_execution_id=int(broker.snapshot["next_execution_id"]))
+        quotes = load_completed_broker_quotes(market, plan=plan, broker=broker)
+        open_requests = {
+            row["broker_order_id"]: requests[row["client_order_id"]]
+            for row in broker.open_orders
+        }
+        image = reconstruct_broker_match_state(
+            broker, requests_by_broker_id=open_requests, quotes=quotes)
+        image["executions"] = executions
+        restored = SimulatedBrokerAdapter(
+            [row["account_id"] for row in broker.accounts],
+            mode=TradingMode.BACKTEST)
+        restored.restore_checkpoint_state(image)
+        if project_broker_match_snapshot(
+                run_id=run_id, session_date=session,
+                checkpoint_sequence=checkpoint_sequence,
+                boundary_ms=int(broker.snapshot["boundary_ms"]),
+                state=restored.broker_match_snapshot_state()) != broker:
+            raise RuntimeError("Restored broker differs from normalized checkpoint")
         root = broker.snapshot
         boundary = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
         boundary += timedelta(milliseconds=int(root["boundary_ms"]))
@@ -104,11 +146,14 @@ def audit(*, run_id: str, checkpoint_sequence: int) -> tuple[int, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--build-id", required=True)
+    parser.add_argument("--session", required=True, type=date.fromisoformat)
     parser.add_argument("--checkpoint-sequence", required=True, type=int)
     args = parser.parse_args()
-    fills, orders = audit(run_id=args.run_id,
+    fills, orders = audit(run_id=args.run_id, build_id=args.build_id,
+                          session=args.session,
                           checkpoint_sequence=args.checkpoint_sequence)
-    print(f"V4 broker execution audit passed: fills={fills} "
+    print(f"V4 cold broker image audit passed: fills={fills} "
           f"open_orders={orders} writes=0")
 
 
