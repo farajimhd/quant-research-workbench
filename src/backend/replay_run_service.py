@@ -138,11 +138,13 @@ PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 REPLAY_RESTART_CHECKPOINT_INTERVAL_EVENTS = 25_000
 # A full Strategy 1 session emits far fewer than the journal's 65k capacity.
 # Fence a completed market boundary early enough for the writer to overlap
-# strategy execution instead of draining the entire prefix at terminal.
+# strategy execution instead of draining the entire prefix at terminal. A
+# 4,096-record bound reduced Aug 18's durable terminal tail versus 1,024,
+# while retaining a finite (larger) recovery window and exact V4 outcomes.
 # Backtest-only recovery cadence. Every journal record remains queued for a
 # fenced ClickHouse commit; this bounds how far the latest *resumable state*
 # may lag. Live trading uses its own durability contract.
-FIXED_JOURNAL_FLUSH_RECORDS = 1_024
+FIXED_JOURNAL_FLUSH_RECORDS = 4_096
 DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
