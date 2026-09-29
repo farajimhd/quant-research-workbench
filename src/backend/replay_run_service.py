@@ -1160,9 +1160,15 @@ class ReplayRunController:
             from src.backend.backtest_v4_running_recovery import V4FixedRuntimeImage
             if (definition.mode != RunMode.BACKTEST or resume_state is not None
                     or not isinstance(fixed_v4_runtime_image, V4FixedRuntimeImage)
-                    or fixed_v4_runtime_image.portfolio.run_id != self.run_id):
+                    or fixed_v4_runtime_image.portfolio.run_id != self.run_id
+                    or fixed_v4_runtime_image.anchor.run_id != self.run_id
+                    or fixed_v4_runtime_image.anchor.completed_at !=
+                       fixed_v4_runtime_image.controller.current_time
+                    or fixed_v4_runtime_image.anchor.market_sequence !=
+                       fixed_v4_runtime_image.controller.source_cursor.get('sequence')):
                 raise ValueError("Typed V4 runtime image differs from Backtest run")
         self._fixed_v4_runtime_image = fixed_v4_runtime_image
+        self._resumed_v4_admitted = False
         self.runtime_root = (runtime_root or replay_runtime_root()).resolve()
         self.run_dir = (self.runtime_root / self.run_id).resolve()
         if self.runtime_root != self.run_dir and self.runtime_root not in self.run_dir.parents:
@@ -1363,7 +1369,12 @@ class ReplayRunController:
             # A cold actor image alone cannot grant a writer lease. The
             # resumed V4 journal must be attached under its later Keeper epoch
             # before the public controller can start playback.
-            raise RuntimeError('Typed V4 actor restore lacks resumed journal admission')
+            lease = getattr(self, '_fixed_v4_lease', None)
+            if (not getattr(self, '_resumed_v4_admitted', False)
+                    or lease is None or getattr(self, '_journal', None) is None
+                    or getattr(self, '_journal_publisher', None) is None):
+                raise RuntimeError('Typed V4 actor restore lacks resumed journal admission')
+            await asyncio.to_thread(lease.assert_current)
         if self._task is not None:
             return
         if self.definition.mode == RunMode.BACKTEST:
@@ -3020,6 +3031,40 @@ class ReplayRunController:
         self._journal_publisher = assembly.publisher
         self._fixed_terminal_authority = assembly.terminal_authority
 
+    def _attach_resumed_fixed_v4_assembly(
+        self, assembly, *, keeper, lease, anchor,
+    ) -> None:
+        """Bind one later-epoch writer to the exact cold actor cursor."""
+        from src.backend.backtest_fixed_journal_bootstrap import FixedJournalAssembly
+        from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+        from src.trading_runtime.keeper_session import ManagedKeeperSession
+
+        image = getattr(self, '_fixed_v4_runtime_image', None)
+        if (image is None or not isinstance(assembly, FixedJournalAssembly)
+                or not isinstance(lease, BacktestV4KeeperLease)
+                or not isinstance(keeper, ManagedKeeperSession)
+                or lease.owner._session is not keeper
+                or lease.run_id != self.run_id or lease.epoch < 2
+                or anchor != image.anchor
+                or assembly.journal.run_id != self.run_id
+                or assembly.journal.latest_sequence(self.run_id) !=
+                   anchor.journal_sequence
+                or assembly.publisher._sequence != anchor.journal_sequence
+                or assembly.publisher._batch_id != anchor.batch_id
+                or assembly.publisher._source_cursor != anchor.source_cursor
+                or assembly.writer.client.backtest_v4_lease is not lease):
+            raise RuntimeError('Resumed V4 journal differs from its cold actor cursor')
+        lease.assert_current()
+        self._fixed_v4_account_ids = assembly.token.account_ids
+        try:
+            self._attach_fixed_journal_assembly(assembly)
+        except BaseException:
+            self._fixed_v4_account_ids = None
+            raise
+        self._fixed_keeper_session = keeper
+        self._fixed_v4_lease = lease
+        self._resumed_v4_admitted = True
+
     async def _prepare_fixed_journal_assembly(
         self, *, read_client, writer_client, terminal_client, keeper,
         attempt_id: str, writer_factory, projection_certifier,
@@ -3507,6 +3552,9 @@ class ReplayRunController:
             start_after = clock.source_cursor['boundary_ms']
             if (self._source_cursor != clock.source_cursor
                     or self.current_time != clock.current_time
+                    or fixed_restore.anchor.boundary_ms != start_after
+                    or fixed_restore.anchor.market_sequence !=
+                       clock.source_cursor['sequence']
                     or clock.source_cursor['session_date'] != day
                     or clock.source_cursor['sequence'] < 1
                     or not 0 < start_after < self._fixed_through_boundary_ms()
@@ -3619,7 +3667,12 @@ class ReplayRunController:
                 interval = ExecutionInterval.parse(self.definition.execution_interval)
                 if interval.kind != "fixed":
                     raise RuntimeError(EVENT_EXECUTION_BLOCKER)
-                await self._open_fixed_journal()
+                if getattr(self, '_fixed_v4_runtime_image', None) is None:
+                    await self._open_fixed_journal()
+                elif (not getattr(self, '_resumed_v4_admitted', False)
+                      or self._journal is None or self._journal_publisher is None
+                      or self._fixed_v4_lease is None):
+                    raise RuntimeError('Resumed V4 Backtest has no fenced journal lane')
             else:
                 self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
             configuration = self.definition.configuration_revision["payload"]
@@ -3631,7 +3684,9 @@ class ReplayRunController:
                 # preparation are not its execution authority.
                 self._preparation_stage = "strategy_one_runtime"
                 await self._publish(force=True)
-                await self._initialize_runtime()
+                await self._initialize_runtime(
+                    record_lifecycle=getattr(
+                        self, '_fixed_v4_runtime_image', None) is None)
                 await self._run_fixed_market_days()
                 return
             self._preparation_stage = "signal_occurrences"

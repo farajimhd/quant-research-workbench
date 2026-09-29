@@ -86,6 +86,7 @@ class V4FixedControllerImage:
 class V4FixedRuntimeImage:
     """One cold, read-only actor installation packet at a fenced V4 cursor."""
 
+    anchor: FixedRunningPrefixAnchor
     controller: V4FixedControllerImage
     portfolio: PortfolioRecovery
     broker: dict[str, Any]
@@ -118,7 +119,8 @@ def load_v4_fixed_runtime_image(
     if load_verified_v4_prefix(client, anchor.run_id) != recovery.prefix:
         raise RuntimeError("V4 runtime image prefix moved during actor reads")
     return V4FixedRuntimeImage(
-        controller, portfolio, broker, oms, recovery.manager, recovery.evidence)
+        anchor, controller, portfolio, broker, oms,
+        recovery.manager, recovery.evidence)
 
 
 def reconstruct_v4_controller_image(

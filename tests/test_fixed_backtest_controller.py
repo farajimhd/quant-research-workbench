@@ -134,6 +134,7 @@ def test_fixed_v4_runtime_installs_typed_images_without_legacy_recovery(monkeypa
     from src.backend.backtest_v4_running_recovery import (
         V4FixedControllerImage, V4FixedRuntimeImage,
     )
+    from src.backend.backtest_fixed_running_anchor import FixedRunningPrefixAnchor
     from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
     from src.trading_runtime.arte_oms_actor_restore import TypedOmsActorImage
     from src.trading_runtime.strategy_one_contract import STRATEGY_ID
@@ -150,6 +151,9 @@ def test_fixed_v4_runtime_installs_typed_images_without_legacy_recovery(monkeypa
     portfolio_image = PortfolioRecovery(RUN, {account: 7}, {}, {}, {}, {}, {})
     oms_image = TypedOmsActorImage(RUN, STRATEGY_ID, 1, {}, {}, {}, {}, frozenset())
     restore = V4FixedRuntimeImage(
+        FixedRunningPrefixAnchor(
+            RUN, "00000000-0000-0000-0000-000000000007", 7,
+            f"{DAY}:100", DAY, 100, 1, boundary, None),
         V4FixedControllerImage(
             boundary, {"session_date": DAY, "boundary_ms": 100,
                        "sequence": 1}, {}, 4, 0, 0, 2, boundary),
@@ -292,6 +296,7 @@ def test_strategy_one_resumed_tape_starts_after_verified_cursor(monkeypatch):
     from src.backend.backtest_v4_running_recovery import (
         V4FixedControllerImage, V4FixedRuntimeImage,
     )
+    from src.backend.backtest_fixed_running_anchor import FixedRunningPrefixAnchor
     from src.backend.backtest_strategy_one_management import StrategyOneManagementState
     from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
     from src.trading_runtime.strategy_engine import (
@@ -309,6 +314,9 @@ def test_strategy_one_resumed_tape_starts_after_verified_cursor(monkeypatch):
         requested_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc),
         session_end=datetime(2026, 8, 18, 13, 30, tzinfo=timezone.utc))
     controller._fixed_v4_runtime_image = V4FixedRuntimeImage(
+        FixedRunningPrefixAnchor(
+            RUN, "00000000-0000-0000-0000-000000000064", 100,
+            f"{DAY}:100", DAY, 100, 7, checkpoint, None),
         V4FixedControllerImage(checkpoint, cursor, {}, 42, 0, 0, 42, checkpoint),
         None, {}, None, manager_state, evidence_state)
     controller._journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=100)
@@ -383,6 +391,31 @@ def test_strategy_one_engine_skips_legacy_signal_and_frame_preparation():
     controller._run_fixed_market_days.assert_awaited_once()
     controller._load_historical_signal_events.assert_not_awaited()
     controller._load_strategy_frames.assert_not_awaited()
+
+
+def test_resumed_strategy_one_engine_reuses_fenced_lane_without_new_genesis():
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, execution_interval="100ms",
+        configuration_revision={"payload": {"strategy": {"strategy_number": 1}}})
+    controller.status = "created"
+    controller._fixed_v4_runtime_image = object()
+    controller._resumed_v4_admitted = True
+    controller._journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=7)
+    controller._journal_publisher = object()
+    controller._fixed_v4_lease = object()
+    controller._journal_writer = None
+    controller._prepared_v7 = None
+    controller._session_relative_volume_store = SimpleNamespace(close=lambda: None)
+    controller._publish = AsyncMock()
+    controller._open_fixed_journal = AsyncMock(side_effect=AssertionError(
+        "new V4 genesis was attempted"))
+    controller._initialize_runtime = AsyncMock()
+    controller._run_fixed_market_days = AsyncMock()
+    asyncio.run(controller._run_engine())
+    controller._open_fixed_journal.assert_not_awaited()
+    controller._initialize_runtime.assert_awaited_once_with(record_lifecycle=False)
+    controller._run_fixed_market_days.assert_awaited_once()
 
 
 def test_fixed_backtest_never_schedules_disk_manifest_task():

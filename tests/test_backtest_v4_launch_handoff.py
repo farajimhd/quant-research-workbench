@@ -58,6 +58,86 @@ def test_v4_writer_consumes_only_a_fresh_same_client_preflight(monkeypatch):
             coalesce_batches=False, v4_preflight_seal=fresh)
 
 
+def test_resumed_v4_controller_requires_exact_later_epoch_lane(monkeypatch):
+    from dataclasses import replace
+    from src.backend.backtest_fixed_running_anchor import FixedRunningPrefixAnchor
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_fixed_journal_bootstrap import (
+        FixedJournalAssembly, FixedV4JournalPreflightToken,
+    )
+
+    run_id = str(uuid4())
+    batch_id = str(uuid4())
+    anchor = FixedRunningPrefixAnchor(
+        run_id, batch_id, 7, "2026-08-18:100", "2026-08-18",
+        100, 1, datetime(2026, 8, 18, 8, 0, 0, 100_000,
+                        tzinfo=timezone.utc), None)
+    class Keeper:
+        pass
+    keeper = Keeper()
+    class Lease:
+        def __init__(self, epoch):
+            self.run_id = run_id
+            self.epoch = epoch
+            self.owner = SimpleNamespace(_session=keeper)
+            self.checked = 0
+        def assert_current(self):
+            self.checked += 1
+    monkeypatch.setattr(backtest_v4_keeper_lease, "BacktestV4KeeperLease", Lease)
+    monkeypatch.setattr(keeper_session, "ManagedKeeperSession", Keeper)
+    lease = Lease(2)
+    journal = BacktestMemoryJournal(run_id=run_id, initial_sequence=7)
+    publisher = SimpleNamespace(_sequence=7, _batch_id=batch_id,
+                                _source_cursor=anchor.source_cursor)
+    writer = SimpleNamespace(client=SimpleNamespace(backtest_v4_lease=lease))
+    token = FixedV4JournalPreflightToken(
+        run_id, ("SIM-01",), date(2026, 8, 1), "a" * 64, "b" * 64, "c" * 64)
+    assembly = FixedJournalAssembly(token, journal, writer, publisher, None)
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = run_id
+    controller._fixed_v4_runtime_image = SimpleNamespace(anchor=anchor)
+    controller._journal = None
+    controller._fixed_v4_account_ids = None
+    controller._resumed_v4_admitted = False
+    def attach(value):
+        assert value is assembly
+        controller._journal = journal
+        controller._journal_publisher = publisher
+    controller._attach_fixed_journal_assembly = attach
+    with pytest.raises(RuntimeError, match="differs from its cold actor cursor"):
+        controller._attach_resumed_fixed_v4_assembly(
+            assembly, keeper=keeper, lease=Lease(1), anchor=anchor)
+    with pytest.raises(RuntimeError, match="differs from its cold actor cursor"):
+        controller._attach_resumed_fixed_v4_assembly(
+            assembly, keeper=keeper, lease=lease,
+            anchor=replace(anchor, boundary_ms=200))
+    assert controller._journal is None
+    controller._attach_resumed_fixed_v4_assembly(
+        assembly, keeper=keeper, lease=lease, anchor=anchor)
+    assert controller._resumed_v4_admitted
+    assert controller._fixed_keeper_session is keeper
+    assert controller._fixed_v4_lease is lease
+    assert controller._fixed_v4_account_ids == ("SIM-01",)
+    assert lease.checked == 1
+    from src.backend import replay_run_service
+    controller.definition = SimpleNamespace(
+        archived_review_only=False, mode=RunMode.BACKTEST,
+        execution_interval="100ms",
+        configuration_revision={"payload": {"strategy": {
+            "strategy_number": 1, "revision": 1,
+            "execution_interval": "100ms"}}})
+    controller._task = None
+    monkeypatch.setattr(replay_run_service, "_backtest_launch_blocker", lambda _d: "")
+    async def no_op():
+        pass
+    controller._run = no_op
+    async def start():
+        await controller.start()
+        await controller._task
+    asyncio.run(start())
+    assert lease.checked == 2
+
+
 def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
     calls = []
     account = {"account_key": "main", "modes": ["backtest"]}

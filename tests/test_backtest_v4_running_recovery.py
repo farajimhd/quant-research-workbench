@@ -148,6 +148,7 @@ def test_v4_runtime_image_reads_one_fenced_actor_set(monkeypatch):
                         lambda *_a: expected_oms)
     image = subject.load_v4_fixed_runtime_image(
         object(), recovery, anchor, (profile,))
+    assert image.anchor is anchor
     assert image.portfolio is expected_portfolio
     assert image.broker is expected_broker
     assert image.oms is expected_oms
