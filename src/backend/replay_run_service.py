@@ -11684,6 +11684,12 @@ def backtest_preflight(
     configuration_revision: dict[str, Any] | None = None,
     experimental_structure_book: str = "",
 ) -> dict[str, Any]:
+    preflight_started = time.perf_counter()
+    preflight_timings: dict[str, float] = {}
+
+    def mark_preflight(name: str, started: float) -> None:
+        preflight_timings[name] = time.perf_counter() - started
+
     if not clock_time(4, 0) <= start_time < end_time <= clock_time(20, 0):
         raise ValueError(
             "Backtest period must stay within 04:00-20:00 New York with start before end"
@@ -11790,6 +11796,7 @@ def backtest_preflight(
         strategy_parameters.get("hindsight_long_contract")
     )
     if execution_interval.kind == "fixed":
+        market_started = time.perf_counter()
         try:
             certified = certified_market_plan_from_arte(
                 sessions=sessions,
@@ -11811,6 +11818,7 @@ def backtest_preflight(
                 causal_v7_error = str(exc)
             else:
                 market_data_error = str(exc)
+        mark_preflight("market_plan", market_started)
     price_future = (
         _STRATEGY_ONE_PRICE_PREFLIGHT_POOL.submit(
             _certify_fixed_price_plan, certified)
@@ -11991,6 +11999,7 @@ def backtest_preflight(
             "evidence": causal_v7_plan.get("token", "") if causal_v7_plan else causal_v7_error,
         })
     if execution_interval.kind == "fixed":
+        journal_started = time.perf_counter()
         from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
         from src.backend.backtest_fixed_journal_bootstrap import fixed_journal_operator_check
         from src.trading_runtime.arte_journal_writer import (
@@ -12020,6 +12029,7 @@ def backtest_preflight(
                 "evidence": str(exc),
             }
         checks.append(journal_check)
+        mark_preflight("journal_authority", journal_started)
         checks.append({
             "id": "fixed_execution_contract",
             "label": "Causal fixed-interval execution",
@@ -12063,6 +12073,7 @@ def backtest_preflight(
     bar_signals = None
     precertified_candidate_plan = None
     if strategy_one_fixed:
+        candidate_started = time.perf_counter()
         try:
             if not market_data_plan:
                 raise ValueError("Certified persisted market plan is unavailable")
@@ -12091,6 +12102,7 @@ def backtest_preflight(
                 **signal_check, "summary": f"Strategy 1 candidate/identity certification failed: {exc}",
                 "evidence": str(exc),
             }
+        mark_preflight("candidate_identity", candidate_started)
     elif execution_interval.kind == "fixed" and activated_signal_streams:
         from src.backend.fixed_bar_signal import (
             STREAM_ID as FIXED_BAR_STREAM_ID, load_first_squeeze_occurrences,
@@ -12166,6 +12178,7 @@ def backtest_preflight(
                     if not projection_tickers:
                         raise ValueError("Strategy 1 has no candidate; zero-candidate terminal authority is not typed")
                     projected = project_market_day_plan(certified, projection_tickers)
+                    independent_started = time.perf_counter()
                     pivot_plan, activation_plan, seed_plan = (
                         certify_independent_strategy_one_products(
                             certified, candidate_plan, projection_tickers, projected,
@@ -12173,6 +12186,7 @@ def backtest_preflight(
                                 market_stream=True, v3_read_principal=True),
                             seed_client_factory=lambda: readonly_clickhouse_client(
                                 v3_read_principal=True)))
+                    mark_preflight("pivot_activation_seed", independent_started)
                     market_data_plan["strategy_one_pivot_token"] = pivot_plan.token
                     market_data_plan["strategy_one_pivot_digest"] = PRODUCT_DIGEST
                     market_data_plan["strategy_one_activation_token"] = activation_plan.token
@@ -12183,6 +12197,7 @@ def backtest_preflight(
                         seed_plan = certified_seed_plan(projected, reader)
                 causal_v7_plan = seed_plan.payload()
                 if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+                    interval_started = time.perf_counter()
                     from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
                     from src.trading_runtime.strategy_one_v7_interval_schema import (
                         PRODUCT_DIGEST as V7_INTERVAL_DIGEST,
@@ -12196,6 +12211,8 @@ def backtest_preflight(
                             client=interval_reader)
                     market_data_plan["strategy_one_v7_interval_token"] = interval_plan.token
                     market_data_plan["strategy_one_v7_interval_digest"] = V7_INTERVAL_DIGEST
+                    mark_preflight("v7_intervals", interval_started)
+                    hod_started = time.perf_counter()
                     from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
                     from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
                     with closing(readonly_clickhouse_client(
@@ -12204,6 +12221,8 @@ def backtest_preflight(
                             certified, candidate_plan, seed_plan, client=hod_reader)
                     market_data_plan["strategy_one_hod_token"] = hod_plan.token
                     market_data_plan["strategy_one_hod_digest"] = HOD_DIGEST
+                    mark_preflight("hod", hod_started)
+                    entry_started = time.perf_counter()
                     from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
                     from src.trading_runtime.strategy_one_entry_evidence_schema import (
                         PRODUCT_DIGEST as ENTRY_DIGEST,
@@ -12216,6 +12235,7 @@ def backtest_preflight(
                             client=entry_reader)
                     market_data_plan["strategy_one_entry_token"] = entry_plan.token
                     market_data_plan["strategy_one_entry_digest"] = ENTRY_DIGEST
+                    mark_preflight("entry_evidence", entry_started)
                 causal_v7_plan["market_projection_token"] = projected.token
                 causal_v7_plan["parent_market_plan_token"] = certified.token
                 causal_v7_error = ""
@@ -12322,7 +12342,9 @@ def backtest_preflight(
         }
     checks.append(signal_check)
     if version_future is not None:
+        version_wait_started = time.perf_counter()
         version_check = version_future.result()
+        mark_preflight("version_wait", version_wait_started)
     else:
         try:
             version_check = runtime_version_check(
@@ -12426,6 +12448,7 @@ def backtest_preflight(
         price_plan_error = ""
         price_plan_token = ""
         if price_future is not None:
+            price_wait_started = time.perf_counter()
             try:
                 price_plan = price_future.result()
                 price_plan_token = price_plan.token
@@ -12433,6 +12456,7 @@ def backtest_preflight(
                 market_data_plan["price_level_unit_count"] = len(price_plan.units)
             except Exception as exc:
                 price_plan_error = str(exc)
+            mark_preflight("price_wait", price_wait_started)
         checks.append({
             "id": "eligible_execution_prices",
             "label": "Certified passive-fill price volume",
@@ -12456,6 +12480,7 @@ def backtest_preflight(
         and 1_000 <= initial_cash <= 1_000_000_000
         and all(row.get("status") == "ready" for row in checks if row.get("required"))
     )
+    mark_preflight("total", preflight_started)
     return {
         **base,
         "checks": checks,
@@ -12474,6 +12499,7 @@ def backtest_preflight(
         "initial_cash": initial_cash,
         "experiment_start_time": start_time.isoformat(timespec="seconds"),
         "experiment_end_time": end_time.isoformat(timespec="seconds"),
+        **({"preflight_timings_seconds": preflight_timings} if strategy_one_fixed else {}),
     }
 
 
