@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from datetime import date, datetime
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from src.backend.backtest_market_data import (
@@ -51,11 +52,11 @@ class FixedV7IntervalCache:
         self._last_loaded_ms: dict[str, int] = {}
         self._last_observed_ms: dict[str, int] = {}
         self._last_completed_price: dict[str, Mapping[str, Any]] = {}
-        # Geometry changes only on a certified valid completed second. Keep
-        # one immutable-ish projection per ticker/input clock, but hand every
-        # caller fresh dictionaries so strategy code cannot mutate evidence.
+        # Geometry changes only on a certified valid completed second. Cache
+        # immutable rows so repeated 100ms decisions cannot mutate evidence
+        # or pay for another copy of unchanged level dictionaries.
         self._level_projection: dict[
-            str, tuple[int, tuple[dict[str, object], ...]]
+            str, tuple[int, tuple[Mapping[str, object], ...]]
         ] = {}
 
     @property
@@ -197,6 +198,6 @@ class FixedV7IntervalCache:
         cached = self._level_projection.get(ticker)
         if cached is None or cached[0] != input_ms:
             rows = self.interval_plan.levels(ticker, boundary_ms=boundary)
-            cached = (input_ms, rows)
+            cached = (input_ms, tuple(MappingProxyType(row) for row in rows))
             self._level_projection[ticker] = cached
-        return tuple(dict(row) for row in cached[1])
+        return cached[1]
