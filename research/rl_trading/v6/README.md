@@ -97,3 +97,8 @@ training, and development banks. It uses the exact previous trading day and
 the two certified market-day manifests, crossing the August 17/18 boundary
 explicitly. It stops at a missing certificate. August 26 is absent from its
 date list so the sealed holdout is not consumed during data preparation.
+Its `--reuse-day-root` mapping binds an independently certified day, such as
+the August 5 full-market benchmark, so its 26.79 million feature rows are
+not recomputed. The controller still asks the day builder to verify that the
+reused root's source plan matches before accepting it, and records the actual
+root for each date in a restart-safe `day-roots.json` runtime manifest.

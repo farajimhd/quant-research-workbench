@@ -47,6 +47,8 @@ def main(argv=None) -> int:
     parser.add_argument('--ledger', type=Path, required=True)
     parser.add_argument('--output-root', type=Path, required=True)
     parser.add_argument('--workers', type=int, default=16)
+    parser.add_argument('--reuse-day-root', action='append', default=[],
+                        metavar='YYYY-MM-DD=ABSOLUTE_RUNTIME_ROOT')
     parser.add_argument('--through', type=date.fromisoformat,
                         default=DEVELOPMENT[-1])
     args = parser.parse_args(argv)
@@ -56,11 +58,22 @@ def main(argv=None) -> int:
         raise ValueError('Campaign output must be under the required runtime root')
     if args.through not in DATES:
         raise ValueError('Campaign end must be a certified train/development day')
+    reuse = {}
+    for item in args.reuse_day_root:
+        label, separator, path = item.partition('=')
+        if not separator or not path:
+            raise ValueError('Expected --reuse-day-root DATE=ABSOLUTE_RUNTIME_ROOT')
+        day = date.fromisoformat(label)
+        existing = Path(path).resolve()
+        if day not in DATES or day in reuse or not existing.is_relative_to(runtime):
+            raise ValueError('Reused day must be unique and inside the runtime root')
+        reuse[day] = existing
+    day_roots = {}
     for index, day in enumerate(DATES):
         if day > args.through:
             break
         previous = DATES[index-1] if index else None
-        output = root / str(day)
+        output = reuse.get(day, root / str(day))
         print(json.dumps({'day': str(day), 'status': 'starting',
                           'previous_day': str(previous) if previous else None}),
               flush=True)
@@ -69,8 +82,16 @@ def main(argv=None) -> int:
                                 output=output, workers=args.workers))
         if not (output / 'complete.json').is_file():
             raise ValueError(f'{day}: builder returned without a certificate')
+        day_roots[str(day)] = str(output)
         print(json.dumps({'day': str(day), 'status': 'certified',
                           'output': str(output)}), flush=True)
+        manifest = {'version': 'rl-trading-v6-forward-candle-day-roots',
+                    'through': str(day), 'day_roots': day_roots}
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = root / 'day-roots.json.tmp'
+        temporary.write_text(json.dumps(manifest, sort_keys=True),
+                             encoding='utf-8')
+        temporary.replace(root / 'day-roots.json')
     return 0
 
 
