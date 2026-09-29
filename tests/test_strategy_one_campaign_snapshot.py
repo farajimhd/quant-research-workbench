@@ -8,7 +8,7 @@ import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.strategy_one_campaign_snapshot import (
-    TABLES, load_attested_campaign_snapshot, load_campaign_snapshot,
+    TABLES, CampaignSnapshotHead, load_attested_campaign_snapshot, load_campaign_snapshot,
     project_campaign_snapshot, verify_campaign_snapshot,
 )
 
@@ -106,6 +106,9 @@ def test_select_only_recovery_requires_exact_cursor_and_child_seal(monkeypatch):
     reader = Reader()
     prefix = SimpleNamespace(status="running", last_sequence=42,
                              last_batch_id=BATCH)
+    selected = CampaignSnapshotHead(
+        RUN, 42, BATCH, rows.snapshot["content_hash"], 0)
+    keeper = SimpleNamespace(read_head=lambda **_kwargs: selected)
     cursor = dict(run_id=RUN, event_sequence=42, batch_id=BATCH,
                   session_date=DAY.isoformat(), boundary_ms=1_200_000)
     monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
@@ -113,7 +116,7 @@ def test_select_only_recovery_requires_exact_cursor_and_child_seal(monkeypatch):
     monkeypatch.setattr(arte_journal_projection, "load_latest_backtest_cursor",
                         lambda _client, _prefix: cursor)
     assert load_attested_campaign_snapshot(
-        reader, run_id=RUN, checkpoint_sequence=42) == rows
+        reader, keeper, run_id=RUN, checkpoint_sequence=42) == rows
     assert len(reader.queries) == 2
     reader.owners = ()
     with pytest.raises(RuntimeError, match="committed seal"):
@@ -122,4 +125,4 @@ def test_select_only_recovery_requires_exact_cursor_and_child_seal(monkeypatch):
     cursor["boundary_ms"] += 100
     with pytest.raises(RuntimeError, match="committed market cursor"):
         load_attested_campaign_snapshot(reader, run_id=RUN,
-                                        checkpoint_sequence=42)
+                                        checkpoint_sequence=42, keeper=keeper)

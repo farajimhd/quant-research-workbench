@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from hashlib import sha256
 import json
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_schema import TableContract
+from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.strategy_one_protection_snapshot import _digest
 
 
@@ -42,6 +44,60 @@ TABLES = (ROOT, OWNER)
 class CampaignSnapshotRows:
     snapshot: dict[str, Any]
     owners: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignSnapshotHead:
+    run_id: str
+    checkpoint_sequence: int
+    journal_batch_id: str
+    snapshot_hash: str
+    keeper_version: int
+
+
+class CampaignSnapshotHeadReader(Protocol):
+    def read_head(self, *, run_id: str) -> CampaignSnapshotHead: ...
+
+
+class ManagedCampaignSnapshotHeadReader:
+    """Read only the Keeper-selected normalized campaign checkpoint."""
+
+    def __init__(self, session: ManagedKeeperSession) -> None:
+        if not isinstance(session, ManagedKeeperSession):
+            raise TypeError("Campaign head requires a managed Keeper session")
+        self._session = session
+
+    @staticmethod
+    def path(run_id: str) -> str:
+        if (type(run_id) is not str or not run_id
+                or any(char in run_id for char in "\r\n\x00")):
+            raise ValueError("Campaign head run identity is invalid")
+        return ("/trading/strategy-one-campaign-snapshot/v1/"
+                + sha256(run_id.encode()).hexdigest() + "/head")
+
+    def read_head(self, *, run_id: str) -> CampaignSnapshotHead:
+        session, client = self._session, self._session.client
+        if not session.writable or client.client_id is None:
+            raise RuntimeError("Campaign Keeper session is unavailable")
+        generation, client_id = session._generation, client.client_id
+        try:
+            raw, stat = client.get(self.path(run_id))
+            fields = raw.decode("utf-8").split("\n")
+            if (len(fields) != 5 or fields[:2] != ["1", run_id]
+                    or str(int(fields[2])) != fields[2] or int(fields[2]) < 1
+                    or str(UUID(fields[3])) != fields[3]
+                    or len(fields[4]) != 64
+                    or any(char not in "0123456789abcdef" for char in fields[4])
+                    or type(stat.version) is not int or stat.version < 0):
+                raise ValueError
+            head = CampaignSnapshotHead(
+                run_id, int(fields[2]), fields[3], fields[4], stat.version)
+        except Exception as exc:
+            raise ValueError("Campaign Keeper head missing or corrupt") from exc
+        if (not session.writable or session._generation != generation
+                or client.client_id != client_id):
+            raise RuntimeError("Campaign Keeper session changed during read")
+        return head
 
 
 def project_campaign_snapshot(
@@ -142,7 +198,8 @@ def load_campaign_snapshot(
     return verify_campaign_snapshot(CampaignSnapshotRows(root, owners))
 
 
-def load_attested_campaign_snapshot(client: Any, *, run_id: str,
+def load_attested_campaign_snapshot(client: Any, keeper: CampaignSnapshotHeadReader,
+                                    *, run_id: str,
                                     checkpoint_sequence: int) -> CampaignSnapshotRows:
     """Require a stable running V4 prefix and its exact completed cursor."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
@@ -156,13 +213,20 @@ def load_attested_campaign_snapshot(client: Any, *, run_id: str,
     rows = load_campaign_snapshot(
         client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
     root = rows.snapshot
+    selected = keeper.read_head(run_id=run_id)
     if (not isinstance(cursor, dict)
+            or not isinstance(selected, CampaignSnapshotHead)
+            or selected.run_id != run_id
+            or selected.checkpoint_sequence != checkpoint_sequence
+            or selected.journal_batch_id != root["journal_batch_id"]
+            or selected.snapshot_hash != root["content_hash"]
             or cursor.get("run_id") != run_id
             or cursor.get("event_sequence") != checkpoint_sequence
             or cursor.get("batch_id") != root["journal_batch_id"]
             or cursor.get("session_date") != root["session_date"]
             or cursor.get("boundary_ms") != root["boundary_ms"]
             or prefix.last_batch_id != root["journal_batch_id"]
-            or load_verified_v4_prefix(client, run_id) != prefix):
+            or load_verified_v4_prefix(client, run_id) != prefix
+            or keeper.read_head(run_id=run_id) != selected):
         raise RuntimeError("Campaign checkpoint differs from committed market cursor")
     return rows
