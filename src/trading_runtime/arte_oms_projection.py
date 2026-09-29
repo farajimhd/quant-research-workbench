@@ -559,8 +559,22 @@ def _approved_strategy_one_oms_intent(
                          else "replace_profit_target")]
         if effective:
             latest = max(effective, key=lambda row: row.sequence)
-            approved_intent = replace(approved_intent,
-                                      **{field: latest.payload["price"]})
+            price = latest.payload["price"]
+            # Live OMS amends the scalar and its protection slice together.
+            # A cold actor must restore that same pair before reconciliation.
+            profile = approved_intent.protection_profile
+            if profile is not None:
+                profile = replace(profile, slices=tuple(
+                    replace(item, stop=replace(item.stop, price=price))
+                    if kind == "stop" else
+                    replace(item, profit_target_price=price)
+                    if item.profit_target_price is not None else item
+                    for item in profile.slices))
+            approved_intent = replace(
+                approved_intent, **{field: price}, protection_profile=profile,
+                metadata=({**approved_intent.metadata,
+                           "confirmed_support_stop": price}
+                          if kind == "stop" else approved_intent.metadata))
     return approved_intent, history
 
 

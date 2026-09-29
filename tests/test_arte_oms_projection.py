@@ -14,7 +14,8 @@ from src.trading_runtime.arte_journal_writer import (
     load_committed_prefix, publish_typed_batch, typed_row,
 )
 from src.trading_runtime.arte_oms_projection import (
-    RecoveredOmsGroupState, _duration_ms, freeze_oms_group,
+    RecoveredOmsGroupState, _approved_strategy_one_oms_intent,
+    _duration_ms, freeze_oms_group,
     load_committed_oms_admission_page, load_committed_oms_decision_page,
     load_committed_oms_group_state_page,
     load_latest_committed_oms_groups,
@@ -32,6 +33,10 @@ from src.trading_runtime.order_management import (
     ExecutionTactic, ExecutionUrgency, PriceStep,
 )
 from src.trading_runtime.signals import CapitalRequest
+from src.trading_runtime.execution_policies import (
+    ProtectionProfile, ProtectionSlice, StopRule,
+)
+from src.trading_runtime.order_management import _mandatory_broker_target
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID
 from src.trading_runtime.strategy_orders import canonical_runtime_order_raw
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
@@ -84,6 +89,50 @@ def test_strategy_one_cold_order_lineage_uses_complete_typed_target_proof() -> N
     with pytest.raises(ValueError, match="complete typed authority"):
         reconstruct_strategy_one_oms_lineage(
             state, recovered_intent, replace(base, through_sequence=2))
+
+
+def test_cold_oms_restores_amended_full_target_profile_and_stop_metadata() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    source = intent(
+        ticker="AAA", invalidation_price=11.5, profit_target_price=12.6,
+        protection_profile=ProtectionProfile(
+            "early-squeeze-fixed-stop-full-target", 1,
+            (ProtectionSlice("full", 1.0, StopRule(price=11.5),
+                             profit_target_price=12.6),)),
+    )
+    state = RecoveredOmsGroupState(
+        4, source.intent_id,
+        {"account_id": "DU1", "group_id": "group-1"},
+        (), (), (), (), (), (),
+    )
+    records = tuple(JournalRecord(
+        str(uuid4()), "backtest:one", sequence, at, at,
+        "protection", "protection_change", f"broker-{sequence}", "DU1",
+        {"order_group_id": "group-1", "kind": kind,
+         "phase": "effective", "action": action, "price": price},
+    ) for sequence, kind, action, price in (
+        (2, "stop", "replace_protective_stop", 11.75),
+        (3, "target", "replace_profit_target", 12.8),
+    ))
+    history = CompleteProtectionHistory("backtest:one", 4, (str(uuid4()),), records)
+    reservation = {
+        "account_id": "DU1", "intent_id": source.intent_id,
+        "decision_id": "decision-1", "reservation_id": "reservation-1",
+        "account_key": "cash", "assignment_id": "assignment-1", "quantity": 5,
+    }
+    decision = {
+        "decision_id": "decision-1", "reservation_id": "reservation-1",
+        "account_key": "cash", "status": "approved", "policy_id": "cash",
+        "policy_revision": 1, "requested_quantity": 5,
+    }
+    restored, _ = _approved_strategy_one_oms_intent(
+        state, SimpleNamespace(intent=source), history, reservation, decision)
+    assert restored.invalidation_price == 11.75
+    assert restored.profit_target_price == 12.8
+    assert restored.protection_profile.slices[0].stop.price == 11.75
+    assert restored.protection_profile.slices[0].profit_target_price == 12.8
+    assert restored.metadata["confirmed_support_stop"] == 11.75
+    assert _mandatory_broker_target(restored)
 
 
 def test_strategy_one_cold_join_uses_exact_intent_and_complete_history(
