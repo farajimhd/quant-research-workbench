@@ -183,6 +183,11 @@ impl LiquidityReducer {
             return Err("Strategy 1 liquidity bucket exceeded its source-receipt budget".into());
         }
         row.source_arrival_sequences.push(event.arrival_sequence);
+        // ARTE's windowed q tuple carries the last valid quote into every
+        // later event-bearing bucket, including a bucket with trades only.
+        // Match that row contract independently of quote age; the consumer
+        // applies freshness at the completed boundary.
+        self.project_quote();
         if event.event_type() == TRADE_EVENT_TYPE {
             self.apply_trade(event, decoder, rules, local_us)?;
         } else {
@@ -378,6 +383,27 @@ mod tests {
         assert_eq!(quote_only.cumulative_volume, 100.0);
         assert_eq!(quote_only.execution_vwap, 10.0);
         assert_eq!(quote_only.source_arrival_sequences, vec![3, 4]);
+    }
+
+    #[test]
+    fn trade_only_bucket_carries_the_last_valid_quote_like_arte() {
+        let (decoder, rules) = context();
+        let mut reducer = LiquidityReducer::default();
+        let quote = event(100, 1, false);
+        reducer.push(&quote, &decoder, &rules).unwrap();
+        let first = reducer.push(&event(200, 2, true), &decoder, &rules)
+            .unwrap().unwrap();
+        assert_eq!(first.quote_timestamp_us, quote.sip_timestamp_us);
+        let trade_only = reducer.push(&event(300, 3, true), &decoder, &rules)
+            .unwrap().unwrap();
+        assert_eq!(trade_only.quote_event_count, 0);
+        assert_eq!(trade_only.quote_valid, 1);
+        assert_eq!(trade_only.quote_timestamp_us, quote.sip_timestamp_us);
+        assert_eq!(trade_only.bid_int, 99_900);
+        assert_eq!(trade_only.ask_int, 100_100);
+        assert_eq!(trade_only.bid_size, 60.0);
+        assert_eq!(trade_only.ask_size, 50.0);
+        assert_eq!(trade_only.execution_volume, 100.0);
     }
 
     #[test]
