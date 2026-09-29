@@ -13,7 +13,8 @@ def test_sparse_first_arrival_quote_retains_missing_as_explicit_unavailable():
         'time_us': [origin+1_000_000, origin+1_000_000],
         'episode_uid': ['a', 'x']})
     keys = _keys(day, decisions, {'ABC': 'id1', 'XYZ': 'id2'})
-    quotes = pl.DataFrame({'ticker': ['ABC'], 'bucket_index': [10],
+    assert keys['bucket_index'].to_list() == [144010, 144010]
+    quotes = pl.DataFrame({'ticker': ['ABC'], 'bucket_index': [144010],
         'quote_timestamp_us': [origin+1_030_000], 'quote_valid': [1],
         'bid_int': [99900], 'ask_int': [100000],
         'bid_size': [20.], 'ask_size': [30.],

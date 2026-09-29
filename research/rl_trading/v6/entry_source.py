@@ -6,7 +6,8 @@ stale quotes remain explicit non-fills. No dense liquidity grid is stored.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -14,7 +15,13 @@ from research.rl_trading.v1 import arte_sql as sql
 from research.rl_trading.v1.arte_source import frame
 from research.rl_trading.v1.bracket_source import (assert_liquidity_storage,
                                                    broker_attempts)
-from research.rl_trading.v1.common import bounds
+
+NY = ZoneInfo('America/New_York')
+
+
+def _midnight_us(day: date) -> int:
+    """ARTE 100 ms bucket indices are day-relative, not session-relative."""
+    return int(datetime.combine(day, time.min, NY).timestamp()*1_000_000)
 
 
 def _keys(day: date, decisions: pl.DataFrame, attempts: dict[str, str],
@@ -23,7 +30,7 @@ def _keys(day: date, decisions: pl.DataFrame, attempts: dict[str, str],
         raise ValueError('Missing first-entry decision identity')
     if decisions.select('episode_uid').n_unique() != decisions.height:
         raise ValueError('Expected one first-eligible decision per episode')
-    origin, _ = bounds(day)
+    origin = _midnight_us(day)
     keys = decisions.select('ticker', 'time_us', 'episode_uid').with_columns(
         ((pl.col('time_us') - origin) // 100_000)
             .cast(pl.Int64).alias('bucket_index'))
@@ -46,7 +53,7 @@ def attach_quotes(keys: pl.DataFrame, quotes: pl.DataFrame,
             quotes.join(keys.select('ticker', 'bucket_index'),
                         on=['ticker', 'bucket_index'], how='anti').height):
         raise ValueError('Unexpected or duplicate pinned arrival quote')
-    origin, _ = bounds(day)
+    origin = _midnight_us(day)
     joined = keys.join(quotes, on=['ticker', 'bucket_index'],
                        how='left', validate='m:1')
     bucket_end = origin + (pl.col('bucket_index')+1)*100_000
