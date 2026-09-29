@@ -97,6 +97,8 @@ _RETIRED_SNAPSHOTS = frozenset({
     "trading_strategy_one_broker_match_open_order_v2",
     "trading_strategy_one_broker_match_ticker_v2",
     "trading_strategy_one_broker_match_performance_mark_v2",
+    "trading_strategy_one_oms_observation_snapshot_v1",
+    "trading_strategy_one_oms_observation_v1",
 })
 
 
