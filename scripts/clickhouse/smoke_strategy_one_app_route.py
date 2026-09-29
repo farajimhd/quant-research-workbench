@@ -32,37 +32,6 @@ from scripts.clickhouse.smoke_strategy_one_backtest import (  # noqa: E402
 
 
 @contextmanager
-def _profile_journal_worker(enabled: bool):
-    """Inspect the actual writer thread; the event-loop profiler cannot see it."""
-    if not enabled:
-        yield
-        return
-    from src.trading_runtime.arte_journal_writer import ArteJournalWriter
-
-    original = ArteJournalWriter._run
-    profiles: list[cProfile.Profile] = []
-    lock = Lock()
-
-    def profiled(writer):
-        profile = cProfile.Profile()
-        with lock:
-            profiles.append(profile)
-        return profile.runcall(original, writer)
-
-    ArteJournalWriter._run = profiled
-    try:
-        yield
-    finally:
-        ArteJournalWriter._run = original
-        for index, profile in enumerate(profiles, 1):
-            report = StringIO()
-            pstats.Stats(profile, stream=report).sort_stats(
-                "cumulative").print_stats(45)
-            print(f"Journal worker {index} CPU profile:\n{report.getvalue()}",
-                  flush=True)
-
-
-@contextmanager
 def _profile_v7_updates(enabled: bool):
     """Profile only completed-second engine CPU, keeping output off disk."""
     if not enabled:
@@ -197,8 +166,7 @@ def _profile_v7_seeds(enabled: bool):
 async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
                profile_v7: bool = False, profile_preflight: bool = False,
                repeat_preflight: int = 1,
-               profile_v7_seeds: bool = False,
-               profile_journal: bool = False) -> None:
+               profile_v7_seeds: bool = False) -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -254,7 +222,6 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
     sql_profile = _SqlCallProfile()
     with (_profile_v7_updates(profile_v7),
           _profile_v7_seeds(profile_v7_seeds),
-          _profile_journal_worker(profile_journal),
           _profile_sql_calls(sql_profile)):
         began = perf_counter()
         response = await trading_backtest_run_create(request)
@@ -294,8 +261,6 @@ def main() -> None:
                         help="time V7 seed read, split read, and book construction lanes")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="profile the read-only app preflight in memory")
-    parser.add_argument("--profile-journal", action="store_true",
-                        help="profile the normalized journal worker thread in memory")
     parser.add_argument("--repeat-preflight", type=int, default=1,
                         help="repeat identical read-only preflight in one process")
     parser.add_argument("--repeat-runs", type=int, default=1,
@@ -320,8 +285,7 @@ def main() -> None:
                       flush=True)
             await _run(args.session, args.ticker, args.minutes, args.cash,
                        args.apply, args.profile_v7, args.profile_preflight,
-                       args.repeat_preflight, args.profile_v7_seeds,
-                       args.profile_journal)
+                       args.repeat_preflight, args.profile_v7_seeds)
     asyncio.run(probes())
 
 

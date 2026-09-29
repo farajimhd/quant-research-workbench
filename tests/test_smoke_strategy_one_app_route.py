@@ -89,21 +89,6 @@ def test_seed_diagnostic_restores_wrapped_worker_functions(monkeypatch, capsys) 
     assert "V7 seed seed_select_decode: calls=1" in capsys.readouterr().out
 
 
-def test_journal_worker_diagnostic_profiles_thread_and_restores_method(
-    monkeypatch, capsys,
-) -> None:
-    from src.trading_runtime.arte_journal_writer import ArteJournalWriter
-
-    def worker(_self):
-        return "finished"
-
-    monkeypatch.setattr(ArteJournalWriter, "_run", worker)
-    with probe._profile_journal_worker(True):
-        assert ArteJournalWriter._run(object()) == "finished"
-    assert ArteJournalWriter._run is worker
-    assert "Journal worker 1 CPU profile" in capsys.readouterr().out
-
-
 def test_v7_diagnostic_reports_cache_use_and_restores_methods(monkeypatch, capsys) -> None:
     from src.backend.fixed_v7_stream import FixedV7Cache, FixedV7Stream
     from src.backend.fixed_v7_interval_cache import FixedV7IntervalCache
