@@ -14,6 +14,7 @@ from src.trading_runtime.arte_oms_projection import (
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchSnapshotRows
 from src.trading_runtime.strategy_one_campaign_snapshot import project_campaign_snapshot
+from src.trading_runtime.strategy_one_oms_observation_snapshot import project_oms_observation_snapshot
 from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
 
 
@@ -51,6 +52,12 @@ def _install(monkeypatch, *, open_orders=(), oms=(), moved=False):
         journal_batch_id=BATCH, ownership=())
     monkeypatch.setattr(subject, "load_attested_campaign_snapshot",
                         lambda *_a, **_k: campaign)
+    observations = project_oms_observation_snapshot(
+        run_id=RUN, session_date=date(2026, 8, 18),
+        checkpoint_sequence=7, boundary_ms=100,
+        groups={})
+    monkeypatch.setattr(subject, "load_attested_oms_observation_snapshot",
+                        lambda *_a, **_k: observations)
     monkeypatch.setattr(subject, "load_recovered_strategy_one_oms_lineage",
                         lambda *_a, **_k: oms)
     monkeypatch.setattr(subject, "load_completed_broker_quotes",
@@ -287,6 +294,9 @@ def test_v4_oms_image_joins_complete_protection_and_broker(monkeypatch):
         return image
 
     monkeypatch.setattr(subject, "reconstruct_typed_oms_actor_image", reconstruct)
+    monkeypatch.setattr(subject, "attach_typed_oms_observations",
+                        lambda found, observations, **kwargs:
+                        calls.append((observations, kwargs)) or found)
     monkeypatch.setattr(subject, "verify_typed_oms_broker_open_orders",
                         lambda found, broker: calls.append((found, broker)))
     assert subject.load_v4_running_oms_image(object(), recovery) is image
@@ -307,7 +317,7 @@ def test_v4_broker_state_rejects_missing_open_oms_request(monkeypatch):
         evidence.manager, evidence.evidence,
         BrokerMatchSnapshotRows(evidence.broker.snapshot, evidence.broker.accounts,
                                 (), ({"broker_order_id": "orphan"},), (), ()),
-        (), evidence.quotes, evidence.campaign)
+        (), evidence.quotes, evidence.campaign, evidence.oms_observations)
     with pytest.raises(RuntimeError, match="lacks open OMS request"):
         subject.reconstruct_v4_broker_state(orphan)
 

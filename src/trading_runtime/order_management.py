@@ -1681,6 +1681,26 @@ class OrderManagementEngine:
             for group in sorted(self._groups.values(), key=lambda item: item.created_at)
         ]
 
+    def capture_observed_broker_states(self) -> dict[str, object]:
+        """Freeze OMS's last processed order states, not the broker's latest.
+
+        Backtest checkpoint projection owns the normalized table contract.
+        This method is an in-memory snapshot only and never writes a journal.
+        """
+        from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+            OmsObservedGroup,
+        )
+
+        return {
+            group_id: OmsObservedGroup(
+                tuple(group.broker_order_ids),
+                {broker_id: tuple(fingerprint)
+                 for broker_id, fingerprint in
+                 group.broker_order_state_fingerprints.items()},
+            )
+            for group_id, group in sorted(self._groups.items())
+        }
+
     def snapshot_for_intent(self, intent_id: str) -> OrderGroupSnapshot | None:
         group = next((row for row in self._groups.values() if row.intent.intent_id == intent_id), None)
         return group.snapshot(self.policy.version) if group is not None else None

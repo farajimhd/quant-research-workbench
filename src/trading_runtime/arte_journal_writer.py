@@ -2079,6 +2079,9 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     from src.trading_runtime.strategy_one_evidence_snapshot import (
         TABLES as evidence_tables,
     )
+    from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+        TABLES as oms_observation_tables,
+    )
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
                  ENTRY_EVIDENCE, V4_ALLOCATION,
@@ -2088,7 +2091,8 @@ def v4_storage_contracts() -> tuple[Any, ...]:
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES,
                  *protection_tables, *manager_tables, *broker_match_tables,
-                 *evidence_tables, *CAMPAIGN_SNAPSHOT_TABLES)
+                 *evidence_tables, *CAMPAIGN_SNAPSHOT_TABLES,
+                 *oms_observation_tables)
     by_name = {}
     for contract in contracts:
         previous = by_name.setdefault(contract.name, contract)
@@ -2120,6 +2124,7 @@ def v4_journal_write_tables() -> frozenset[str]:
                 *(table.name for table in BROKER_MATCH_SNAPSHOT_TABLES),
                 *(table.name for table in EVIDENCE_SNAPSHOT_TABLES),
                 *(table.name for table in CAMPAIGN_SNAPSHOT_TABLES),
+                *(table.name for table in OMS_OBSERVATION_SNAPSHOT_TABLES),
                 *(table.name for table in definition_tables),
             }))
 
@@ -3653,6 +3658,15 @@ class _BrokerMatchSnapshotUnit:
 
 
 @dataclass(frozen=True, slots=True)
+class _OmsObservationSnapshotUnit:
+    session_date: date
+    checkpoint_sequence: int
+    boundary_ms: int
+    journal_batch_id: str
+    groups: Any
+
+
+@dataclass(frozen=True, slots=True)
 class _EvidenceSnapshotUnit:
     session_date: date
     checkpoint_sequence: int
@@ -3783,6 +3797,7 @@ class ArteJournalWriter:
                   | _DurabilityBarrier | _AdmissionUnit
                   | _PortfolioSyncUnit | _TerminalBacktestUnit
                   | _ManagerSnapshotUnit | _BrokerMatchSnapshotUnit
+                  | _OmsObservationSnapshotUnit
                   | _EvidenceSnapshotUnit
                   | _CampaignSnapshotUnit
                   | _RunningPortfolioSnapshotUnit,
@@ -4411,6 +4426,43 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_oms_observation_snapshot(
+        self, *, session_date: date, checkpoint_sequence: int,
+        boundary_ms: int, journal_batch_id: str,
+        groups: Mapping[str, Any],
+    ) -> Future[str]:
+        """Queue frozen OMS-observed states for worker-only typed publication."""
+        from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+            OmsObservedGroup,
+        )
+        if (self._journal_profile != "backtest_v4" or self._run_id is None
+                or not isinstance(session_date, date)
+                or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+                or type(boundary_ms) is not int
+                or not 0 <= boundary_ms <= 57_600_000 or boundary_ms % 100
+                or not isinstance(groups, Mapping)
+                or any(not isinstance(key, str) or not key
+                       or not isinstance(value, OmsObservedGroup)
+                       for key, value in groups.items())):
+            raise ValueError("OMS observation snapshot needs a typed V4 boundary")
+        if str(UUID(journal_batch_id)) != journal_batch_id:
+            raise ValueError("OMS observation batch ID is invalid")
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((
+                    _OmsObservationSnapshotUnit(
+                        session_date, checkpoint_sequence, boundary_ms,
+                        journal_batch_id, dict(groups)), receipt))
+            except Full as exc:
+                raise JournalQueueFull("OMS observation snapshot queue is full") from exc
+            self._accepted_writes = True
+        return receipt
+
     def submit_evidence_snapshot(self, *, session_date: date,
                                  checkpoint_sequence: int,
                                  journal_batch_id: str,
@@ -4517,6 +4569,7 @@ class ArteJournalWriter:
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
             | _TerminalBacktestUnit | _ManagerSnapshotUnit
             | _BrokerMatchSnapshotUnit | _EvidenceSnapshotUnit
+            | _OmsObservationSnapshotUnit
             | _CampaignSnapshotUnit
             | _RunningPortfolioSnapshotUnit,
             Future[str],
@@ -4577,6 +4630,7 @@ class ArteJournalWriter:
                                  and isinstance(group[0][0], (
                                      _TerminalBacktestUnit, _ManagerSnapshotUnit,
                                      _BrokerMatchSnapshotUnit, _EvidenceSnapshotUnit,
+                                     _OmsObservationSnapshotUnit,
                                      _CampaignSnapshotUnit,
                                      _RunningPortfolioSnapshotUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
@@ -4783,6 +4837,23 @@ class ArteJournalWriter:
                         checkpoint_sequence=unit.checkpoint_sequence,
                         boundary_ms=unit.boundary_ms, state=unit.state)
                     publish_broker_match_snapshot(
+                        self._client, self._client.manager_keeper_session, rows,
+                        journal_batch_id=unit.journal_batch_id)
+                    committed_id = unit.journal_batch_id
+                elif isinstance(group[0][0], _OmsObservationSnapshotUnit):
+                    from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+                        project_oms_observation_snapshot,
+                        publish_oms_observation_snapshot,
+                    )
+                    unit = group[0][0]
+                    if self._last_commit_id != unit.journal_batch_id:
+                        raise RuntimeError(
+                            "OMS observation has no preceding ordered V4 commit")
+                    rows = project_oms_observation_snapshot(
+                        run_id=self._run_id, session_date=unit.session_date,
+                        checkpoint_sequence=unit.checkpoint_sequence,
+                        boundary_ms=unit.boundary_ms, groups=unit.groups)
+                    publish_oms_observation_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
                         journal_batch_id=unit.journal_batch_id)
                     committed_id = unit.journal_batch_id

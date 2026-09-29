@@ -37,6 +37,22 @@ def test_snapshot_is_normalized_deterministic_and_canonical():
                for table in (ROOT, OBSERVATION) for _, kind in table.columns)
 
 
+def test_oms_capture_detaches_last_observed_state_from_live_group():
+    from src.trading_runtime.order_management import OrderManagementEngine
+
+    fingerprint = ("working", "Submitted", 0.0, 5.0, 0.0,
+                   10.0, 0.0, "", "", "")
+    actor = object.__new__(OrderManagementEngine)
+    actor._groups = {"group-1": type("Group", (), {
+        "broker_order_ids": ["broker-1"],
+        "broker_order_state_fingerprints": {"broker-1": fingerprint},
+    })()}
+    captured = actor.capture_observed_broker_states()
+    actor._groups["group-1"].broker_order_state_fingerprints.clear()
+    assert captured["group-1"].broker_order_state_fingerprints == {
+        "broker-1": fingerprint}
+
+
 def test_snapshot_rejects_unbound_and_live_shape():
     with pytest.raises(ValueError, match="unbound"):
         _snapshot({"other": ("working", "Submitted", 0, 5, 0, 10, 0, "", "", "")})

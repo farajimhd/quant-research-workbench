@@ -37,6 +37,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                 *(table.name for table in provision.BROKER_MATCH_SNAPSHOT_TABLES),
                 *(table.name for table in provision.EVIDENCE_SNAPSHOT_TABLES),
                 *(table.name for table in provision.CAMPAIGN_SNAPSHOT_TABLES),
+                *(table.name for table in provision.OMS_OBSERVATION_SNAPSHOT_TABLES),
                 "trading_backtest_account_snapshot_v2",
                 "trading_backtest_position_snapshot_v2",
                 *(table.name for table in DEFINITION_TABLES)}
@@ -63,6 +64,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                                  *provision.BROKER_MATCH_SNAPSHOT_TABLES,
                                      *provision.EVIDENCE_SNAPSHOT_TABLES,
                                      *provision.CAMPAIGN_SNAPSHOT_TABLES,
+                                     *provision.OMS_OBSERVATION_SNAPSHOT_TABLES,
                                      *DEFINITION_TABLES)) | MARKET_READ_TABLES | {
                                      provision.ENTRY_CONTEXT_TABLE.split(".", 1)[1]}
     assert all(" ON arte." in grant or " ON system." in grant

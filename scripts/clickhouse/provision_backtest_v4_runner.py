@@ -66,6 +66,9 @@ from src.trading_runtime.strategy_one_evidence_snapshot import (
 from src.trading_runtime.strategy_one_campaign_snapshot import (
     TABLES as CAMPAIGN_SNAPSHOT_TABLES,
 )
+from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+    TABLES as OMS_OBSERVATION_SNAPSHOT_TABLES,
+)
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES as PROTECTION_SNAPSHOT_TABLES,
 )
@@ -134,6 +137,7 @@ def desired_plan() -> PrincipalPlan:
                                           *BROKER_MATCH_SNAPSHOT_TABLES,
                                           *EVIDENCE_SNAPSHOT_TABLES,
                                           *CAMPAIGN_SNAPSHOT_TABLES,
+                                          *OMS_OBSERVATION_SNAPSHOT_TABLES,
                                           *BACKTEST_DEFINITION_TABLES))
         | MARKET_READ_TABLES
         | frozenset({ENTRY_CONTEXT_TABLE.split(".", 1)[1]}),

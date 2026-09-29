@@ -30,7 +30,8 @@ from src.trading_runtime.arte_journal_reader import (
     load_complete_typed_protection_history,
 )
 from src.trading_runtime.arte_oms_actor_restore import (
-    TypedOmsActorImage, reconstruct_typed_oms_actor_image,
+    TypedOmsActorImage, attach_typed_oms_observations,
+    reconstruct_typed_oms_actor_image,
     verify_typed_oms_broker_open_orders,
 )
 from src.trading_runtime.arte_oms_projection import (
@@ -52,6 +53,9 @@ from src.trading_runtime.strategy_one_evidence_snapshot import (
 from src.trading_runtime.strategy_one_campaign_snapshot import (
     CampaignSnapshotRows, load_attested_campaign_snapshot, verify_campaign_snapshot,
 )
+from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+    OmsObservationSnapshotRows, load_attested_oms_observation_snapshot,
+)
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
@@ -66,6 +70,7 @@ class V4RunningRecoveryEvidence:
     oms: tuple[RecoveredStrategyOneOmsLineage, ...]
     quotes: dict[str, CompletedBrokerQuote]
     campaign: CampaignSnapshotRows
+    oms_observations: OmsObservationSnapshotRows
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +195,12 @@ def verify_v4_recovery_at_anchor(
             or root.get("boundary_ms") != anchor.boundary_ms):
         raise RuntimeError("V4 campaign image differs from cold journal anchor")
     verify_campaign_snapshot(recovery.campaign)
+    observed_root = recovery.oms_observations.root
+    if (observed_root.get("run_id") != anchor.run_id
+            or observed_root.get("checkpoint_sequence") != anchor.journal_sequence
+            or observed_root.get("session_date") != anchor.session_date
+            or observed_root.get("boundary_ms") != anchor.boundary_ms):
+        raise RuntimeError("V4 OMS observations differ from cold journal anchor")
 
 
 def load_v4_running_oms_image(
@@ -206,6 +217,9 @@ def load_v4_running_oms_image(
         recovery.oms, history, run_id=recovery.prefix.run_id,
         strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
         through_sequence=recovery.prefix.last_sequence, cutoff_at=cutoff)
+    image = attach_typed_oms_observations(
+        image, recovery.oms_observations,
+        through_sequence=recovery.prefix.last_sequence)
     verify_typed_oms_broker_open_orders(image, recovery.broker)
     if load_verified_v4_prefix(client, recovery.prefix.run_id) != recovery.prefix:
         raise RuntimeError("V4 OMS image prefix moved across protection reads")
@@ -288,7 +302,7 @@ def load_v4_running_recovery_evidence(
     client: Any, *, run_id: str, account_ids: tuple[str, ...],
     manager_keeper: Any, broker_keeper: Any, evidence_keeper: Any,
     market_client: Any, market_plan: CertifiedMarketDayPlan,
-    campaign_keeper: Any = None,
+    campaign_keeper: Any = None, oms_observation_keeper: Any = None,
 ) -> V4RunningRecoveryEvidence:
     """Join every available recovery family at the same committed cursor."""
     prefix, portfolios = load_v4_running_portfolio_images(
@@ -306,16 +320,22 @@ def load_v4_running_recovery_evidence(
     campaign = load_attested_campaign_snapshot(
         client, campaign_keeper, run_id=run_id,
         checkpoint_sequence=prefix.last_sequence)
+    oms_observations = load_attested_oms_observation_snapshot(
+        client, oms_observation_keeper, run_id=run_id,
+        checkpoint_sequence=prefix.last_sequence)
     if (not isinstance(manager, StrategyOneManagementState)
             or not isinstance(evidence, StrategyOneEvidenceState)
             or not isinstance(broker, BrokerMatchSnapshotRows)
             or not isinstance(campaign, CampaignSnapshotRows)
+            or not isinstance(oms_observations, OmsObservationSnapshotRows)
             or broker.snapshot.get("checkpoint_sequence") != prefix.last_sequence
             or campaign.snapshot.get("run_id") != run_id
             or campaign.snapshot.get("checkpoint_sequence") != prefix.last_sequence
             or campaign.snapshot.get("journal_batch_id") != prefix.last_batch_id
             or campaign.snapshot.get("session_date") != broker.snapshot.get("session_date")
             or campaign.snapshot.get("boundary_ms") != broker.snapshot.get("boundary_ms")
+            or oms_observations.root.get("session_date") != broker.snapshot.get("session_date")
+            or oms_observations.root.get("boundary_ms") != broker.snapshot.get("boundary_ms")
             or {row["account_id"] for row in broker.accounts} != set(account_ids)
             or len(broker.accounts) != len(account_ids)
             or manager.boundary_ms != broker.snapshot.get("boundary_ms")
@@ -365,4 +385,4 @@ def load_v4_running_recovery_evidence(
     if load_verified_v4_prefix(client, run_id) != prefix:
         raise RuntimeError("V4 recovery prefix moved across domain reads")
     return V4RunningRecoveryEvidence(prefix, progress, portfolios, manager, evidence, broker, oms,
-                                     quotes, campaign)
+                                     quotes, campaign, oms_observations)

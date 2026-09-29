@@ -2399,6 +2399,7 @@ class ReplayRunController:
             manager = getattr(self, '_strategy_one_manager', None)
             manager_state = None
             broker_state = None
+            oms_observations = None
             evidence_state = None
             campaign_ownership = None
             if publisher.writer.journal_profile == 'backtest_v4' and manager is None:
@@ -2418,6 +2419,14 @@ class ReplayRunController:
                 if capture_broker is None:
                     raise RuntimeError('Strategy 1 broker cannot capture match state')
                 broker_state = (boundary, capture_broker())
+                if publisher.writer.journal_profile == 'backtest_v4':
+                    capture_oms = getattr(
+                        self._runtime.order_manager,
+                        'capture_observed_broker_states', None)
+                    if not callable(capture_oms):
+                        raise RuntimeError(
+                            'Strategy 1 OMS cannot capture observed broker state')
+                    oms_observations = capture_oms()
                 campaign_ownership = self._journal.campaign_ownership_snapshot()
             # The writer remains asynchronous, but UI readers still require a
             # complete bounded status snapshot while the receipt is pending.
@@ -2494,6 +2503,7 @@ class ReplayRunController:
                     receipt = publisher.enqueue_checkpoint(
                         boundary_id=boundary_id, status='running',
                         manager_state=manager_state, broker_state=broker_state,
+                        oms_observations=oms_observations,
                         evidence_state=evidence_state,
                         portfolio_captures=portfolio_captures,
                         campaign_ownership=campaign_ownership)
@@ -2521,6 +2531,7 @@ class ReplayRunController:
                     boundary_id=boundary_id, status='running',
                     manager_state=manager_state,
                     broker_state=broker_state,
+                    oms_observations=oms_observations,
                     evidence_state=evidence_state,
                     portfolio_captures=portfolio_captures,
                     campaign_ownership=campaign_ownership,
@@ -9671,6 +9682,9 @@ class ReplayRunService:
         from src.trading_runtime.strategy_one_management_snapshot import (
             ManagedManagerSnapshotHeadReader,
         )
+        from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+            ManagedOmsObservationHeadReader,
+        )
 
         if (definition.mode != RunMode.BACKTEST
                 or _backtest_launch_blocker(definition)
@@ -9713,6 +9727,7 @@ class ReplayRunService:
                         broker_keeper=ManagedBrokerMatchHeadReader(keeper),
                         evidence_keeper=ManagedEvidenceSnapshotHeadReader(keeper),
                         campaign_keeper=ManagedCampaignSnapshotHeadReader(keeper),
+                        oms_observation_keeper=ManagedOmsObservationHeadReader(keeper),
                         market_client=market, market_plan=plans.market)
                     fixed_authority = load_committed_fixed_market_authority(
                         reader, recovery.prefix, parent_plan=plans.market,

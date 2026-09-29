@@ -58,6 +58,12 @@ class OmsObservationSnapshotRows:
 
 
 @dataclass(frozen=True, slots=True)
+class OmsObservedGroup:
+    broker_order_ids: tuple[str, ...]
+    broker_order_state_fingerprints: Mapping[str, tuple[Any, ...]]
+
+
+@dataclass(frozen=True, slots=True)
 class OmsObservationHead:
     run_id: str
     checkpoint_sequence: int

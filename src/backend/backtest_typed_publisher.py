@@ -124,6 +124,7 @@ class BacktestTypedJournalPublisher:
         self._error: BaseException | None = None
         self._checkpoint_waiters: list[tuple[
             int, str, date, object | None, object | None, object | None,
+            object | None,
             tuple[CapturedPortfolioSnapshot, ...],
             tuple[dict[str, object], ...] | None,
             asyncio.Future[TypedBacktestReceipt],
@@ -436,7 +437,7 @@ class BacktestTypedJournalPublisher:
                     current = TypedBacktestReceipt(self._sequence, self._batch_id,
                                                    self._source_cursor)
                     remaining = []
-                    for sequence, cursor, session_date, manager_state, broker_state, evidence_state, portfolio_captures, campaign_ownership, waiter in self._checkpoint_waiters:
+                    for sequence, cursor, session_date, manager_state, broker_state, oms_observations, evidence_state, portfolio_captures, campaign_ownership, waiter in self._checkpoint_waiters:
                         if sequence <= self._sequence:
                             if not waiter.done():
                                 if (sequence != self._sequence
@@ -463,6 +464,16 @@ class BacktestTypedJournalPublisher:
                                         if await asyncio.wrap_future(broker_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "Broker snapshot differs from committed checkpoint")
+                                    if oms_observations is not None:
+                                        oms_receipt = self.writer.submit_oms_observation_snapshot(
+                                            session_date=session_date,
+                                            checkpoint_sequence=sequence,
+                                            boundary_ms=broker_state[0],
+                                            journal_batch_id=self._batch_id,
+                                            groups=oms_observations)
+                                        if await asyncio.wrap_future(oms_receipt) != self._batch_id:
+                                            raise RuntimeError(
+                                                "OMS observation differs from committed checkpoint")
                                     if evidence_state is not None:
                                         evidence_receipt = self.writer.submit_evidence_snapshot(
                                             session_date=session_date,
@@ -492,14 +503,15 @@ class BacktestTypedJournalPublisher:
                                     waiter.set_result(current)
                         else:
                             remaining.append((sequence, cursor, session_date,
-                                              manager_state, broker_state, evidence_state,
+                                              manager_state, broker_state, oms_observations,
+                                              evidence_state,
                                               portfolio_captures, campaign_ownership, waiter))
                     self._checkpoint_waiters = remaining
             return TypedBacktestReceipt(self._sequence, self._batch_id,
                                         self._source_cursor)
         except BaseException as exc:
             self._error = exc
-            for _, _, _, _, _, _, _, _, waiter in self._checkpoint_waiters:
+            for _, _, _, _, _, _, _, _, _, waiter in self._checkpoint_waiters:
                 if not waiter.done():
                     waiter.set_exception(exc)
             self._checkpoint_waiters.clear()
@@ -527,6 +539,7 @@ class BacktestTypedJournalPublisher:
                            status: str = "running",
                            manager_state: object | None = None,
                            broker_state: object | None = None,
+                           oms_observations: object | None = None,
                            evidence_state: object | None = None,
                            portfolio_captures: tuple[CapturedPortfolioSnapshot, ...] = (),
                            campaign_ownership: tuple[dict[str, object], ...] | None = None,
@@ -561,6 +574,17 @@ class BacktestTypedJournalPublisher:
                     or broker_state[0] != pending[-1].payload.get("boundary_ms")
                     or not isinstance(broker_state[1], dict)):
                 raise ValueError("Broker capture differs from checkpoint boundary")
+        if oms_observations is not None:
+            from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+                OmsObservedGroup,
+            )
+            if (self.writer.journal_profile != "backtest_v4"
+                    or broker_state is None
+                    or not isinstance(oms_observations, dict)
+                    or any(not isinstance(group_id, str) or not group_id
+                           or not isinstance(group, OmsObservedGroup)
+                           for group_id, group in oms_observations.items())):
+                raise ValueError("OMS observation capture differs from checkpoint boundary")
         if evidence_state is not None:
             from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
             if (self.writer.journal_profile != "backtest_v4"
@@ -585,7 +609,8 @@ class BacktestTypedJournalPublisher:
         waiter: asyncio.Future[TypedBacktestReceipt] = asyncio.get_running_loop().create_future()
         self._checkpoint_waiters.append((pending[-1].sequence, boundary_id,
                                          session_date, manager_state,
-                                         broker_state, evidence_state,
+                                         broker_state, oms_observations,
+                                         evidence_state,
                                          portfolio_captures, campaign_ownership, waiter))
         try:
             if active is None:
@@ -611,6 +636,7 @@ class BacktestTypedJournalPublisher:
         self, *, boundary_id: str, status: str = "running",
         manager_state: object | None = None,
         broker_state: object | None = None,
+        oms_observations: object | None = None,
         evidence_state: object | None = None,
         portfolio_captures: tuple[CapturedPortfolioSnapshot, ...] = (),
         campaign_ownership: tuple[dict[str, object], ...] | None = None,
@@ -624,6 +650,7 @@ class BacktestTypedJournalPublisher:
         return await asyncio.shield(self.enqueue_checkpoint(
             boundary_id=boundary_id, status=status,
             manager_state=manager_state, broker_state=broker_state,
+            oms_observations=oms_observations,
             evidence_state=evidence_state,
             portfolio_captures=portfolio_captures,
             campaign_ownership=campaign_ownership))
