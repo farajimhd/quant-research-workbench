@@ -23,7 +23,7 @@ from research.rl_trading.v6.price_action_oracle import geometry
 from research.rl_trading.v6.split import role
 
 
-VERSION = 'rl-trading-price-action-geometry-v6-1'
+VERSION = 'rl-trading-price-action-geometry-v6-2'
 
 
 def _hash(path: Path) -> str:

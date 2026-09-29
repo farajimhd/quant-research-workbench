@@ -11,7 +11,7 @@ from __future__ import annotations
 import polars as pl
 
 
-VERSION = 'rl-trading-price-action-bracket-oracle-v6-2'
+VERSION = 'rl-trading-price-action-bracket-oracle-v6-3'
 MIN_HOLD_SECONDS = 3
 
 
@@ -59,6 +59,10 @@ def geometry(positions: pl.DataFrame, bars: pl.DataFrame) -> pl.DataFrame:
     outcome = active.group_by('episode_uid').agg(
         pl.col('low').min().alias('held_min_low'),
         pl.col('high').max().alias('held_max_high'),
+        # A child target cannot act on an earlier intrabar high. Keep the
+        # last observed occurrence of the maximum for activation auditing.
+        pl.col('time_us').sort_by(['high', 'time_us'],
+            descending=[True, True]).first().alias('held_last_max_high_us'),
         pl.len().alias('held_bars'))
     return (positions.select('ticker', 'episode_uid', 'entry_us',
                              'exit_us', 'entry_price')
@@ -80,16 +84,26 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame,
            tick_policy: pl.DataFrame, *, offset_ticks: int = 1
            ) -> pl.DataFrame:
     """Return tick-rounded hypothetical brackets from one-second candles."""
+    return round_geometry(geometry(positions, bars), tick_policy,
+                          offset_ticks=offset_ticks)
+
+
+def round_geometry(result: pl.DataFrame, tick_policy: pl.DataFrame, *,
+                   offset_ticks: int = 1) -> pl.DataFrame:
+    """Round previously certified bar extrema without another market read."""
+    required = {'ticker', 'episode_uid', 'entry_price', 'held_min_low',
+                'held_max_high', 'swing_low_3s', 'expected_held_bars',
+                'held_bars', 'held_last_max_high_us'}
     if (set(tick_policy.columns) != {'ticker', 'tick_size'} or
+            not required <= set(result.columns) or
             tick_policy['ticker'].n_unique() != tick_policy.height or
             tick_policy['tick_size'].null_count() or
             tick_policy.filter(~pl.col('tick_size').is_finite() |
                                (pl.col('tick_size') <= 0)).height or
             type(offset_ticks) is not int or offset_ticks < 1):
         raise ValueError('Invalid price-action bracket source or tick policy')
-    result = geometry(positions, bars)
-    if tick_policy.height != positions['ticker'].n_unique() or (
-            positions.select('ticker').unique().join(
+    if tick_policy.height != result['ticker'].n_unique() or (
+            result.select('ticker').unique().join(
                 tick_policy.select('ticker'), on='ticker', how='anti').height):
         raise ValueError('Missing or extra per-listing tick authority')
     result = result.join(tick_policy, on='ticker', how='left', validate='m:1')

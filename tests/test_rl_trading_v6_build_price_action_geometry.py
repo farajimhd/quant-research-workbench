@@ -31,6 +31,7 @@ def test_sparse_geometry_binds_bank_and_uses_only_observed_bars(tmp_path):
     result = compile_geometry(positions, bars)
     assert result['swing_low_3s'][0] == 8.
     assert result['held_max_high'][0] == 15.
+    assert result['held_last_max_high_us'][0] == 8_000_000
     assert result['held_min_low'][0] == 9.
     assert result['unobserved_held_seconds'][0] == 2
     assert result['clock_complete'][0] is False

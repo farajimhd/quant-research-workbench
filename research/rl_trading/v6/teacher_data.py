@@ -20,7 +20,7 @@ from research.rl_trading.v6.training import (ExecutionOutcome,
                                              TeacherDecision, _validate)
 
 
-VERSION = 'rl-trading-price-action-bracket-teacher-v6-1'
+VERSION = 'rl-trading-price-action-bracket-teacher-v6-2'
 DECISION_COLUMNS = {
     'close_us', 'order_index', 'token', 'account_cash', 'account_equity',
     'account_realized', 'account_exposure', 'seconds_since_action',
@@ -58,6 +58,12 @@ def load_teacher(root: Path, session: PackedSession, *,
             certificate.get('label_evidence') !=
             ['certified_1s_candles', 'sparse_episode_scores'] or
             certificate.get('execution_evidence') != 'none' or
+            certificate.get('price_grid_source_type') !=
+                'canonical_bar_precision' or
+            certificate.get('price_unit') != 0.0001 or
+            certificate.get('executable_market_tick_claim') is not False or
+            certificate.get('profit_scope') !=
+                'hypothetical_close_path_not_executable' or
             certificate.get('day') != str(session.day) or
             certificate.get('bank_certificate_sha256') !=
             session.source_certificate_sha256):
