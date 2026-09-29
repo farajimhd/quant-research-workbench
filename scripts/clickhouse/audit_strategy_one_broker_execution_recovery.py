@@ -21,9 +21,12 @@ sys.dont_write_bytecode = True
 
 from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_v4_execution_restore import load_v4_broker_executions
-from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+from src.trading_runtime.arte_journal_commit_v4 import (
+    V4CommittedPrefix, load_verified_v4_prefix,
+)
 from src.trading_runtime.arte_journal_writer import (
-    backtest_v4_operator_client_from_env, load_typed_run_context,
+    _literal, _rows, backtest_v4_operator_client_from_env,
+    load_typed_run_context,
 )
 from src.trading_runtime.arte_oms_projection import (
     load_recovered_strategy_one_oms_lineage,
@@ -46,9 +49,21 @@ def audit(*, run_id: str, checkpoint_sequence: int) -> tuple[int, int]:
         context = load_typed_run_context(client, run_id)
         if context["mode"] != "backtest":
             raise RuntimeError("Broker execution audit requires a Backtest run")
-        prefix = load_verified_v4_prefix(client, run_id)
-        if prefix is None or checkpoint_sequence > prefix.last_sequence:
+        terminal_prefix = load_verified_v4_prefix(client, run_id)
+        if terminal_prefix is None or checkpoint_sequence > terminal_prefix.last_sequence:
             raise RuntimeError("Broker execution audit lacks verified V4 prefix")
+        matches = _rows(client,
+            "SELECT batch_id,source_cursor,status FROM arte.trading_commit_v4 "
+            f"WHERE run_id={_literal(run_id)} "
+            f"AND last_sequence={checkpoint_sequence} "
+            "LIMIT 2 FORMAT JSONEachRow")
+        if len(matches) != 1 or matches[0]["batch_id"] not in terminal_prefix.batch_ids:
+            raise RuntimeError("Broker checkpoint is not an exact V4 commit boundary")
+        position = terminal_prefix.batch_ids.index(matches[0]["batch_id"])
+        prefix = V4CommittedPrefix(
+            run_id, checkpoint_sequence, matches[0]["batch_id"],
+            matches[0]["source_cursor"], matches[0]["status"],
+            terminal_prefix.batch_ids[:position + 1])
         broker = load_unattested_broker_match_snapshot(
             client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
         accounts = frozenset(row["account_id"] for row in broker.accounts)
@@ -81,7 +96,7 @@ def audit(*, run_id: str, checkpoint_sequence: int) -> tuple[int, int]:
         if any(datetime.fromisoformat(row["trade_time"]).astimezone(timezone.utc)
                > boundary for row in executions):
             raise RuntimeError("Audit found a fill after the broker checkpoint")
-        if load_verified_v4_prefix(client, run_id) != prefix:
+        if load_verified_v4_prefix(client, run_id) != terminal_prefix:
             raise RuntimeError("Audit V4 prefix moved across reads")
         return len(executions), len(broker.open_orders)
 
