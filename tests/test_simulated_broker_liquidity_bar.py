@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -40,9 +41,12 @@ def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,
         low=9.98, high=10.02, execution_volume=100, quote_age_us=10_000,
         execution_price_levels=None):
     last_us = int(at.timestamp() * 1_000_000) - 1
+    local = at.astimezone(ZoneInfo("America/New_York"))
+    bucket_index = ((local.hour * 3_600 + local.minute * 60 + local.second)
+                    * 1_000 + local.microsecond // 1_000) // 100 - 1
     row = {
         "ticker": "AAPL", "resolution_ms": 100,
-        "bucket_index": int((at - START).total_seconds() * 10),
+        "bucket_index": bucket_index,
         "event_count": 3, "last_event_us": last_us,
         "quote_valid": 1, "quote_timestamp_us": last_us - quote_age_us,
         "bid_int": round(bid * 10_000), "ask_int": round(ask * 10_000),
@@ -91,6 +95,17 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.broker.on_liquidity_bar(stale, at=stale_at), [])
         self.assertIsNone(self.broker.completed_liquidity_quote("AAPL"))
         self.assertNotIn("AAPL", self.broker._bar_marks_by_ticker)
+
+    async def test_bucket_identity_is_checked_before_broker_mutation(self):
+        at = START + timedelta(milliseconds=100)
+        wrong = bar(at)
+        wrong["bucket_index"] += 1
+        with self.assertRaisesRegex(ValueError, "bucket identity"):
+            await self.broker.on_liquidity_bar(wrong, at=at)
+        with self.assertRaisesRegex(ValueError, "bucket identity"):
+            await self.broker.on_liquidity_bar(bar(at), at=at + timedelta(microseconds=1))
+        self.assertFalse(self.broker._bar_mode)
+        self.assertNotIn("AAPL", self.broker._bar_boundaries)
 
     async def test_other_ticker_bucket_does_not_scan_global_order_book(self):
         await self.order("MKT", quantity=5)

@@ -898,6 +898,13 @@ class SimulatedBrokerAdapter:
         """Reject malformed source rows before OMS or broker state changes."""
         if at.tzinfo is None or int(row.get("resolution_ms") or 0) != 100:
             raise ValueError("Broker requires a completed, timezone-aware 100ms liquidity bar")
+        local = at.astimezone(NEW_YORK)
+        local_ms = ((local.hour * 3_600 + local.minute * 60 + local.second)
+                    * 1_000 + local.microsecond // 1_000)
+        if (local.microsecond % 100_000
+                or type(row.get("bucket_index")) is not int
+                or row["bucket_index"] != local_ms // 100 - 1):
+            raise ValueError("Broker liquidity bucket identity differs from its completed boundary")
         ticker = str(row.get("ticker") or "").strip().upper()
         if not ticker or int(row.get("event_count") or 0) <= 0:
             raise ValueError("Broker liquidity bar requires a ticker and source events")
