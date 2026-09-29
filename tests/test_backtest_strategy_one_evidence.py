@@ -5,6 +5,8 @@ import json
 import re
 from datetime import date, datetime
 
+import pytest
+
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
     market_day_boundary,
@@ -88,18 +90,26 @@ def test_activation_and_later_candidate_use_same_completed_second_stream():
         session=session, client=client)
 
     async def run():
-        frozen = await evidence.observe_activation(
-            StrategyOneActivation(301_000, "TEST", 100_000))
-        assert frozen.boundary_ms == 301_000
-        assert frozen.average_gap is None
-        assert evidence._resistance["TEST"].boundary_ms == 301_000
-        assert evidence._resistance["TEST"].close_int == 100_000
         boundary = 302_000
         at = market_day_boundary(session, boundary)
-        await evidence.observe_completed_seconds(StrategyOneBoundaryWork(
+        completed = StrategyOneBoundaryWork(
             boundary,
             (("TEST", {1_000: {**bars[1], "session_date": session.isoformat(),
-                               "boundary_ms": boundary}}),), ()))
+                               "boundary_ms": boundary}}),), ())
+        count = await evidence.rehydrate_completed_prefix((
+            StrategyOneBoundaryWork(301_000, (), (),
+                (StrategyOneActivation(301_000, "TEST", 100_000),)),
+            completed,
+            StrategyOneBoundaryWork(303_000, (), ()),
+        ), through_boundary_ms=boundary)
+        assert count == 2
+        with pytest.raises(ValueError, match="fresh exact boundary"):
+            await evidence.rehydrate_completed_prefix((), through_boundary_ms=boundary)
+        frozen = evidence.activations.get("TEST", 301_000)
+        assert frozen.boundary_ms == 301_000
+        assert frozen.average_gap is None
+        assert evidence._break_boundary_ms == boundary
+        assert evidence._resistance["TEST"].close_int == 102_000
         candidate = StrategyOneDecisionCandidate(
             {"session_date": session.isoformat(), "ticker": "TEST",
              "boundary_ms": boundary, "resolution_ms": 100,

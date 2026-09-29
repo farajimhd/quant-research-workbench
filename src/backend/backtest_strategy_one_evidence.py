@@ -11,7 +11,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import date
 from math import isfinite
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, market_day_boundary,
@@ -101,6 +101,36 @@ class StrategyOneCausalEvidence:
         self._completed_breaks: dict[str, tuple[ResistanceBreak, ...]] = {}
         self._break_boundary_ms = 0
         self._completed_30s: dict[str, Mapping[str, Any]] = {}
+
+    async def rehydrate_completed_prefix(
+        self, works: Iterable[StrategyOneBoundaryWork], *,
+        through_boundary_ms: int,
+    ) -> int:
+        """Rebuild evidence from exact certified scheduler work, without actions.
+
+        The caller must reproduce the historical active-ticker schedule from
+        verified normalized financial history. This method only restores the
+        read-only V7/BOS, activation, resistance, and completed-30s evidence;
+        it cannot by itself authorize interrupted-run resume.
+        """
+        if (type(through_boundary_ms) is not int or through_boundary_ms <= 0
+                or through_boundary_ms % 100 or self._break_boundary_ms != 0
+                or self._completed_30s or self._resistance
+                or self._completed_breaks or self.activations._by_episode):
+            raise ValueError("Strategy 1 evidence rehydration needs a fresh exact boundary")
+        count = 0
+        for work in works:
+            if not isinstance(work, StrategyOneBoundaryWork):
+                raise TypeError("Strategy 1 evidence prefix contains untyped work")
+            if work.boundary_ms > through_boundary_ms:
+                break
+            await self.observe_completed_seconds(work)
+            for activation in work.activation_rows:
+                await self.observe_activation(activation)
+            count += 1
+        if self._break_boundary_ms != through_boundary_ms:
+            raise RuntimeError("Strategy 1 evidence prefix lacks exact checkpoint boundary")
+        return count
 
     async def observe_completed_seconds(self, work: StrategyOneBoundaryWork) -> None:
         """Advance loaded V7/BOS books from the same certified market tape.
