@@ -43,3 +43,25 @@ state or an unlabeled marker; do not borrow the other path's conclusion.
 
 The chart is a read-only projection. Presentation preferences are local to the
 user and never modify strategy decisions, journal rows, fills, or P&L.
+
+## Saved-chart viewport and causal overlay rules
+
+- A saved Backtest chart has one user-owned viewport. Once its initial fit is
+  established, new bars, indicators, V7 intervals, quote updates, and styling
+  changes must not refit or shift the visible time range, price range, or candle
+  pane pixel height. Only explicit pan, zoom, fit, or position-navigation
+  actions may change it.
+- Panning or zooming near the left edge requests the next certified ARTE page.
+  Prepend its bars without refetching loaded candles. Fetch indicators and V7
+  intervals as separate, pinned overlays for those bar buckets; cache immutable
+  pages by run, ticker, resolution, bucket range, and selected projection.
+- The position slider is an explicit fit action. It frames the selected
+  position on the time axis and fits its verified prices, protection rails,
+  references, fills, and in-position candles on the price axis with a small
+  margin. Later data arrivals must preserve that chosen view.
+- V7 chart intervals are the certified causal stream derivative, not a same-day
+  retrospective level-book query. The `historical` interval flag means the
+  level was inherited from the prior checkpoint; its complement means it was
+  created intraday. Source filtering and the six role/line/band style controls
+  are presentation-only and must not narrow or recompute the certified data.
+  Show every loaded interval, with no arbitrary historical-level count limit.

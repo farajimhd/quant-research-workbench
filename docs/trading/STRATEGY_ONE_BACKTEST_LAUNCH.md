@@ -662,3 +662,23 @@ not a workstation-controlled speed comparison. The largest measured remaining
 latency is durable journal publication/terminal waiting, not vectorized
 candidate evaluation (3.484s) or broker matching (6.628s). The live and
 interrupted-resume gates remain closed.
+
+The laptop-managed app was rechecked after chart-source changes on September
+29. A fresh August 18 full-market 04:00–09:30 ET preflight certified 6,100
+ticker-days, 957 V7-admitted tickers, a 100 ms execution interval, and no
+required blocker in 21.955s after backend restart. A subsequent public
+create request returned in 4.368s after rechecking preflight.
+Two independent $10,000 public-API runs completed in 39.617s and 40.234s
+after creation, each with 7,381 sparse boundaries, 2,215 contiguous journal
+events, 10 positions, 86 fills, and the same financial summary. The first
+run's session stage took 14.337s and terminal stage 14.946s. A further
+$100,000 run, `7a319505-ab9b-4cbc-ba91-56bf9777a3fc`, completed in
+65.904s after creation, with 7,584 boundaries and 7,784 journal events.
+Its 10 positions, 440 fills, and financial summary matched the earlier
+same-capital saved run `d5640721-050d-4161-a83e-44388c68c9ec` exactly.
+All eight terminal journal pages cold-verified with no sequence gap or
+limitation, and no run-local Backtest directory was created. Its session
+stage took 26.215s and terminal stage 27.185s; the bounded writer used
+37.517s of worker time overlapping execution. These are observed laptop
+wall times, not a claim that workstation services were started or that
+interrupted-run resume and live admission are enabled.
