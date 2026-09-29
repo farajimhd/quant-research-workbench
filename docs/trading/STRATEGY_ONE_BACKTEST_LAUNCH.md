@@ -22,6 +22,18 @@ candidate loading took 0.330s. These overlapping stage sums are diagnostic,
 not additive wall time. Keeper emitted a connection-drop warning during probe
 teardown despite the successful completed run and audit; that warning has not
 been resolved. This was a fresh run, not a checkpoint-resume equivalence test.
+After bounded concurrent opening of independent active-ticker sources
+(`aacef344c`), the same full-market probe
+`cc6d9aad-25a9-44ac-a73d-d04d70b3395f` passed a 25.010s preflight and
+completed in 32.315s with the same 7,381 rows, 2,216 journal events, 58
+intents, 966 linked actions, and zero backdated actions or failed writer
+units. Its active first-row stage took 5.376s across ten reads and the
+reconciliation stage 5.482s; the 14.913s session and 10.062s terminal stages
+were also close to the prior run. This does **not** establish a performance
+gain: full-session ticker openings appear mostly isolated, and the 0.689s
+total difference is within uncontrolled run variation. The parallel path is
+bounded to four readers for simultaneous activations, not a claimed speedup
+for this session.
 
 On the current V4 running-checkpoint contract, each completed checkpoint now
 fences the manager, broker matcher, and a normalized per-account portfolio
