@@ -69,6 +69,33 @@ def test_teacher_order_and_size_are_remembered_across_seconds():
         assert torch.equal(unchanged, state.actions)
 
 
+def test_teacher_forced_encoded_second_updates_holdings_within_second():
+    torch.manual_seed(9)
+    model = DynamicMarketPolicy(features=2, ticker_vocabulary=3,
+                                history_seconds=4, width=16).eval()
+    state = model.initial_state(1, 2, device=torch.device('cpu'), dtype=torch.float32)
+    encoded, state = model.advance(torch.ones(1, 2, 2), state)
+    # The first token sells the only holding; the next order must see its slot
+    # as absent even though both decisions share the same completed second.
+    masks = torch.tensor([[[True, True, True, True],
+                           [True, True, True, False]]])
+    with torch.no_grad():
+        actions, _, after = model.teacher_forced_encoded_second(
+            encoded, state, ticker_id=torch.tensor([[1, 2]]),
+            valid=torch.tensor([[True, True]]),
+            held_index_by_order=torch.tensor([[[0], [0]]]),
+            held_valid_by_order=torch.tensor([[[True], [False]]]),
+            held_features_by_order=torch.zeros(1, 2, 1, 4),
+            account_by_order=torch.tensor([[[50., 100., 0., .5, 1.],
+                                            [110., 110., 10., 0., 0.]]]),
+            action_mask=masks, teacher_tokens=torch.tensor([[3, 0]]),
+            teacher_sizes=torch.zeros(1, 2),
+            order_valid=torch.tensor([[True, True]]))
+    assert actions.shape == (1, 2, 4)
+    assert actions[0, 1, 3] == torch.finfo(actions.dtype).min
+    assert not torch.equal(after.actions, state.actions)
+
+
 def test_dynamic_supervision_orders_sells_first_and_sizes_remaining_cash():
     trajectory = pl.DataFrame(dict(time_us=[0, 1, 2], cash=[50., 40., 120.],
                                    profit_bank=[0., 0., 0.], bought=[1, 2, 0],

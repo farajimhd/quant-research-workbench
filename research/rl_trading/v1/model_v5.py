@@ -208,30 +208,71 @@ class DynamicMarketPolicy(nn.Module):
         the same session.
         """
         encoded, advanced = self.advance(second, state)
+        return self.teacher_forced_encoded_second(
+            encoded, advanced, ticker_id=ticker_id, valid=valid,
+            held_index_by_order=held_index[:, None].expand(-1, teacher_tokens.shape[1], -1),
+            held_valid_by_order=held_valid[:, None].expand(-1, teacher_tokens.shape[1], -1),
+            held_features_by_order=held_features[:, None].expand(
+                -1, teacher_tokens.shape[1], -1, -1),
+            account_by_order=account_by_order, action_mask=action_mask,
+            teacher_tokens=teacher_tokens, teacher_sizes=teacher_sizes,
+            order_valid=order_valid)
+
+    def teacher_forced_encoded_second(self, encoded: torch.Tensor, state: PolicyState, *,
+                                      ticker_id: torch.Tensor, valid: torch.Tensor,
+                                      held_index_by_order: torch.Tensor,
+                                      held_valid_by_order: torch.Tensor,
+                                      held_features_by_order: torch.Tensor,
+                                      account_by_order: torch.Tensor,
+                                      action_mask: torch.Tensor,
+                                      teacher_tokens: torch.Tensor,
+                                      teacher_sizes: torch.Tensor,
+                                      order_valid: torch.Tensor,
+                                      ) -> tuple[torch.Tensor, torch.Tensor, PolicyState]:
+        """Decode [B,N,D] once with causal account and holdings before each order.
+
+        The caller may obtain ``encoded`` from ``encode_chunk`` and skip empty
+        seconds. Holding axes are [B,O,H] and [B,O,H,4]; their order is the
+        same as the SELL token axis for that order. This prevents a same-second
+        sale from remaining sellable after it has executed.
+        """
         batch, orders = teacher_tokens.shape
         if (account_by_order.shape != (batch, orders, 5) or
                 teacher_sizes.shape != (batch, orders) or
                 order_valid.shape != (batch, orders) or
                 action_mask.shape[:2] != (batch, orders)):
             raise ValueError('Teacher order tensors do not share batch/order axes')
-        vocabulary = 1 + second.shape[1] + held_index.shape[1]
+        if (held_index_by_order.shape[:2] != (batch, orders) or
+                held_valid_by_order.shape != held_index_by_order.shape or
+                held_features_by_order.shape != (*held_index_by_order.shape, 4)):
+            raise ValueError('Teacher holdings do not share batch/order axes')
+        holdings = held_index_by_order.shape[2]
+        vocabulary = 1 + encoded.shape[1] + holdings
         if action_mask.shape[2] != vocabulary:
             raise ValueError('Teacher action vocabulary shape changed')
         listings, first_context, held = self.market_context(
             encoded, ticker_id, valid, account_by_order[:, 0],
-            held_index, held_valid, held_features)
+            held_index_by_order[:, 0], held_valid_by_order[:, 0],
+            held_features_by_order[:, 0])
         baseline_account = self.account(self._scaled_account(account_by_order[:, 0]))
-        history = advanced.actions
+        history = state.actions
         action_logits, size_logits = [], []
         for order in range(orders):
             current_account = self.account(self._scaled_account(account_by_order[:, order]))
             context = first_context - baseline_account + current_account
+            if order:
+                index = held_index_by_order[:, order].clamp(0, encoded.shape[1] - 1)
+                held = torch.gather(listings, 1, index.unsqueeze(-1).expand(
+                    -1, -1, self.width))
+                held = held + self.holding(held_features_by_order[:, order])
+                held = held.masked_fill(~held_valid_by_order[:, order].unsqueeze(-1), 0)
             logits, sizes = self.order_outputs(listings, context, held, history,
-                                                valid, held_valid, action_mask[:, order])
+                                                valid, held_valid_by_order[:, order],
+                                                action_mask[:, order])
             action_logits.append(logits)
             size_logits.append(sizes)
             updated = self.remember_action(history, listings, held,
                                            teacher_tokens[:, order], teacher_sizes[:, order])
             history = torch.where(order_valid[:, order, None], updated, history)
         return (torch.stack(action_logits, 1), torch.stack(size_logits, 1),
-                PolicyState(advanced.temporal, history))
+                PolicyState(state.temporal, history))

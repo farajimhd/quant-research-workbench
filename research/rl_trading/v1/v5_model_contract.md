@@ -25,6 +25,11 @@ account snapshots must be updated after each order. The sparse order sequence
 contains one STOP and padding is masked. No four-lot portfolio cap is embedded
 in the network; the padded holding axis and action-step count are batch shapes,
 with observed maxima certified from the selected training split.
+The holding slots, validity mask, and features must also be refreshed after
+each teacher order. In particular, a lot sold at the start of a second cannot
+remain a valid SELL target for the next order in that second. The trainer can
+encode chronological feature chunks once and decode only seconds with teacher
+orders, plus explicit STOP targets for sampled empty seconds.
 STOP does not mutate action memory; empty seconds can be encoded in a block
 without invoking the order decoder for every second.
 
