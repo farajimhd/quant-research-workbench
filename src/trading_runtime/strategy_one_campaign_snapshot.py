@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import json
 from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -107,4 +108,61 @@ def verify_campaign_snapshot(rows: CampaignSnapshotRows) -> CampaignSnapshotRows
         raise RuntimeError("Campaign snapshot contract is invalid") from exc
     if expected != rows:
         raise RuntimeError("Campaign snapshot rows differ from their committed seal")
+    return rows
+
+
+def load_campaign_snapshot(
+    client: Any, *, run_id: str, checkpoint_sequence: int,
+) -> CampaignSnapshotRows:
+    """SELECT bounded exact rows; no returned row is trusted without its seal."""
+    from src.backend.backtest_market_data import _literal, assert_select_only
+
+    if (type(run_id) is not str or not run_id or "\x00" in run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or not callable(getattr(client, "execute", None))):
+        raise ValueError("Campaign recovery needs an exact run and sequence")
+    where = (f"run_id={_literal(run_id)} "
+             f"AND checkpoint_sequence={checkpoint_sequence}")
+    root_sql = assert_select_only(
+        f"SELECT * FROM arte.{ROOT.name} WHERE {where} "
+        "LIMIT 2 FORMAT JSONEachRow")
+    roots = [json.loads(line) for line in client.execute(root_sql).splitlines()
+             if line.strip()]
+    if (len(roots) != 1
+            or type(roots[0].get("owner_count")) is not int
+            or not 0 <= roots[0]["owner_count"] <= 100_000):
+        raise RuntimeError("Campaign checkpoint root is missing, duplicate, or unbounded")
+    root = roots[0]
+    child_sql = assert_select_only(
+        f"SELECT * FROM arte.{OWNER.name} WHERE {where} "
+        f"AND snapshot_id=toUUID({_literal(root['snapshot_id'])}) "
+        f"LIMIT {int(root['owner_count']) + 1} FORMAT JSONEachRow")
+    owners = tuple(json.loads(line) for line in client.execute(child_sql).splitlines()
+                   if line.strip())
+    return verify_campaign_snapshot(CampaignSnapshotRows(root, owners))
+
+
+def load_attested_campaign_snapshot(client: Any, *, run_id: str,
+                                    checkpoint_sequence: int) -> CampaignSnapshotRows:
+    """Require a stable running V4 prefix and its exact completed cursor."""
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+
+    prefix = load_verified_v4_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != checkpoint_sequence):
+        raise RuntimeError("Campaign recovery lacks its committed running V4 prefix")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    rows = load_campaign_snapshot(
+        client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+    root = rows.snapshot
+    if (not isinstance(cursor, dict)
+            or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != checkpoint_sequence
+            or cursor.get("batch_id") != root["journal_batch_id"]
+            or cursor.get("session_date") != root["session_date"]
+            or cursor.get("boundary_ms") != root["boundary_ms"]
+            or prefix.last_batch_id != root["journal_batch_id"]
+            or load_verified_v4_prefix(client, run_id) != prefix):
+        raise RuntimeError("Campaign checkpoint differs from committed market cursor")
     return rows

@@ -1,12 +1,15 @@
 """Campaign checkpoint keeps exact normalized owner authority."""
 from dataclasses import replace
 from datetime import date
+import json
+from types import SimpleNamespace
 
 import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.strategy_one_campaign_snapshot import (
-    TABLES, project_campaign_snapshot, verify_campaign_snapshot,
+    TABLES, load_attested_campaign_snapshot, load_campaign_snapshot,
+    project_campaign_snapshot, verify_campaign_snapshot,
 )
 
 
@@ -77,3 +80,46 @@ def test_memory_capture_contains_only_active_owner_scalars():
         "owner_id": "campaign-a", "state": "confirmed", "epoch": 2,
     },)
     assert verify_campaign_snapshot(project(captured)).snapshot["owner_count"] == 1
+
+
+def test_select_only_recovery_requires_exact_cursor_and_child_seal(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4, arte_journal_projection
+
+    rows = project((
+        {"resource_id": "book:AAA", "session_key": "2026-08-18",
+         "owner_id": "campaign-a", "state": "confirmed", "epoch": 2},
+    ))
+
+    class Reader:
+        def __init__(self):
+            self.owners = rows.owners
+            self.queries = []
+
+        def execute(self, sql):
+            assert sql.startswith("SELECT ")
+            self.queries.append(sql)
+            if "campaign_snapshot_v1" in sql:
+                return json.dumps(rows.snapshot)
+            assert "campaign_owner_v1" in sql and "LIMIT 2" in sql
+            return "\n".join(json.dumps(row) for row in self.owners)
+
+    reader = Reader()
+    prefix = SimpleNamespace(status="running", last_sequence=42,
+                             last_batch_id=BATCH)
+    cursor = dict(run_id=RUN, event_sequence=42, batch_id=BATCH,
+                  session_date=DAY.isoformat(), boundary_ms=1_200_000)
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
+                        lambda _client, _run_id: prefix)
+    monkeypatch.setattr(arte_journal_projection, "load_latest_backtest_cursor",
+                        lambda _client, _prefix: cursor)
+    assert load_attested_campaign_snapshot(
+        reader, run_id=RUN, checkpoint_sequence=42) == rows
+    assert len(reader.queries) == 2
+    reader.owners = ()
+    with pytest.raises(RuntimeError, match="committed seal"):
+        load_campaign_snapshot(reader, run_id=RUN, checkpoint_sequence=42)
+    reader.owners = rows.owners
+    cursor["boundary_ms"] += 100
+    with pytest.raises(RuntimeError, match="committed market cursor"):
+        load_attested_campaign_snapshot(reader, run_id=RUN,
+                                        checkpoint_sequence=42)
