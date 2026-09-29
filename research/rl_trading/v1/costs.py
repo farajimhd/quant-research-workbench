@@ -11,6 +11,47 @@ import math
 
 
 VERSION = 'ibkr-pro-tiered-us-base-2026-09-v1'
+FIXED_VERSION = 'ibkr-pro-fixed-us-base-2026-09-v1'
+
+
+@dataclass(frozen=True)
+class FixedOrderCosts:
+    """Published Fixed commission proxy; fill price and venue remain unknown."""
+
+    version: str = FIXED_VERSION
+    per_share: float = .005
+    minimum_order: float = 1.
+    maximum_fraction_of_value: float = .01
+
+    def plan(self) -> dict:
+        return {**asdict(self),
+            'fill_assumption': 'one complete fill per order at completed-second close',
+            'fractional_assumption': 'same fixed schedule applied to fractional quantities as a research proxy',
+            'spread_and_slippage': 'unobserved; excluded'}
+
+    def fee(self, quantity: float, price: float, *, side: str) -> float:
+        if (side not in ('buy','sell') or not math.isfinite(quantity) or quantity <= 0
+                or not math.isfinite(price) or price <= 0):
+            raise ValueError('Fixed order fee requires positive finite quantity and price')
+        return min(max(quantity*self.per_share,self.minimum_order),
+                   quantity*price*self.maximum_fraction_of_value)
+
+    def buy_for_budget(self, price: float, budget: float) -> tuple[float,float]:
+        if not math.isfinite(price) or price <= 0 or not math.isfinite(budget) or budget <= 0:
+            raise ValueError('Invalid buy budget')
+        quantity = budget/price
+        for _ in range(32):
+            fee = self.fee(quantity,price,side='buy')
+            affordable = (budget-fee)/price
+            if affordable <= 0:
+                raise ValueError('Order fee exceeds buy budget')
+            if quantity*price+fee <= budget+1e-9:
+                break
+            quantity = min(quantity,affordable)*(1-1e-12)
+        fee = self.fee(quantity,price,side='buy')
+        if quantity <= 0 or quantity*price+fee > budget+1e-8:
+            raise ValueError('No affordable quantity')
+        return quantity,fee
 
 
 @dataclass(frozen=True)

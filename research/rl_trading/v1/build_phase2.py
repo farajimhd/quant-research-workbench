@@ -28,6 +28,7 @@ from rich.table import Table
 
 from research.rl_trading.v1.common import exclusive, bounds, digest
 from research.rl_trading.v1.phase2_values import VERSION, MODES, Position, ActionTable, coefficients, discount_policy
+from research.rl_trading.v1 import phase2_close_values as close_values
 from research.rl_trading.v1.market_values import MarketValues
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
@@ -147,12 +148,13 @@ def phase1_plan(root):
         raise ValueError("Duplicate Phase 1 ticker")
     if not plan["selected"] or complete["rows"] != 57601 * len(plan["selected"]):
         raise ValueError("Empty or incomplete Phase 1 decision grid")
-    if plan["version"] != "hindsight-phase1-arte-price-action-v4":
-        raise ValueError("RL trading Phase 2 requires arte price-action Phase 1 V4")
-    expected_basis = 'price_action' if plan['version'] in ('hindsight-phase1-arte-price-action-v2','hindsight-phase1-arte-price-action-v3','hindsight-phase1-arte-price-action-v4') else 'quotes'
+    if plan["version"] not in ("hindsight-phase1-arte-price-action-v4",
+                               "hindsight-phase1-arte-close-episodes-v5"):
+        raise ValueError("RL trading Phase 2 requires certified arte price-action Phase 1")
+    expected_basis = 'price_action'
     if plan.get('valuation_basis','quotes') != expected_basis:
         raise ValueError('Phase 1 valuation basis does not match its version')
-    if plan['version'] in ('hindsight-phase1-arte-price-action-v3','hindsight-phase1-arte-price-action-v4'):
+    if plan['version'] in ('hindsight-phase1-arte-price-action-v4','hindsight-phase1-arte-close-episodes-v5'):
         if plan.get('liquidation_us') != bounds(date.fromisoformat(plan['date']))[1]-120_000_000:
             raise ValueError('Phase 1 liquidation boundary must be 19:58 ET')
     return plan
@@ -184,7 +186,8 @@ def compile_listing(listing, source, root, plan):
             or frame["ticker"].unique().to_list() != [listing["ticker"]]
             or frame["listing_id"].unique().to_list() != [listing["listing_id"]]):
             raise ValueError("Phase 1 grid or identity mismatch")
-        if plan['phase1_version'] == 'hindsight-phase1-arte-price-action-v4':
+        if plan['phase1_version'] in ('hindsight-phase1-arte-price-action-v4',
+                                      'hindsight-phase1-arte-close-episodes-v5'):
             for side in ('long','short'):
                 required = {f'{side}_entry_us',f'{side}_target_id',f'{side}_status'}
                 if not required <= set(frame.columns):
@@ -211,9 +214,14 @@ def compile_listing(listing, source, root, plan):
             frame = frame.with_columns(
                 pl.col('volume').rolling_sum(60,min_samples=1).alias('volume_60s'),
                 pl.col('trades').rolling_sum(60,min_samples=1).alias('trades_60s'))
-        values = coefficients(frame, plan["gamma_per_second"], plan["cost_per_share_per_transaction"],
-                              valuation_basis=plan.get('valuation_basis','quotes'),
-                              **plan['liquidity_filter'])
+        if plan['version'] == close_values.VERSION:
+            values = close_values.coefficients(frame, plan['gamma_per_second'],
+                fee_per_share=plan['cost_per_share_per_transaction'],
+                **plan['liquidity_filter'])
+        else:
+            values = coefficients(frame, plan["gamma_per_second"], plan["cost_per_share_per_transaction"],
+                                  valuation_basis=plan.get('valuation_basis','quotes'),
+                                  **plan['liquidity_filter'])
         parquet(output / "coefficients.parquet", values)
         for mode in MODES:
             parquet(output / f"{mode}.parquet", summarize_listing(values, mode))
@@ -277,6 +285,9 @@ def publish_market_values(root, plan):
     opening_fields = ('can_open','value_available','open_value_available','entry_price',
         'capital_per_share','open_profit_per_share','open_value_per_share',
         'open_value_per_dollar')
+    if plan.get('version') == close_values.VERSION:
+        opening_fields += ('open_net_value_per_share','buy_fee_per_share_proxy',
+                           'sell_fee_per_share_proxy','episode_uid')
     keys = ('time_us','listing_index','side')
     source = pl.scan_parquet(temporary)
     holding_fields = [c for c in source.collect_schema().names() if c not in opening_fields]
@@ -337,6 +348,11 @@ def run_build(args, console):
     STOP = False
     source = args.phase1.resolve()
     original = phase1_plan(source)
+    close_version = getattr(args,'close_episodes_v7',False)
+    if close_version != (original['version'] == 'hindsight-phase1-arte-close-episodes-v5'):
+        raise ValueError('Phase 2 V7 requires Phase 1 V5; V6 requires Phase 1 V4')
+    if args.cost_per_share is None:
+        args.cost_per_share = .005 if close_version else 0.
     # Validate configuration even if source is empty or all outputs are reused.
     discount = discount_policy(original.get('macd_resolution_seconds',1.),
         half_life_bars=getattr(args,'half_life_bars',None),gamma=args.gamma)
@@ -350,7 +366,8 @@ def run_build(args, console):
         raise ValueError('Tensor sort budget must be within supported bounds')
     runtime = required_runtime()
     os.environ['POLARS_TEMP_DIR'] = str(runtime)
-    plan = dict(version=VERSION, phase1_root=str(source), phase1_plan_hash=original["plan_hash"],
+    plan = dict(version=close_values.VERSION if close_version else VERSION,
+                phase1_root=str(source), phase1_plan_hash=original["plan_hash"],
                 phase1_version=original['version'],
                 valuation_basis=original.get('valuation_basis','quotes'),
                 liquidation_us=original.get('liquidation_us'),
@@ -361,13 +378,15 @@ def run_build(args, console):
                     min_trades_60s=args.min_trades_60s),
                 sizes="fractional", modes=list(MODES),
                 short_policy="100% synthetic reserve; proceeds locked; no broker margin claim",
-                semantics="Local greedy values; no future reallocations; exact size coefficients",
+                semantics=("Completed-close episode coefficients; quantity-aware order fees deferred to Phase 3"
+                           if close_version else "Local greedy values; no future reallocations; exact size coefficients"),
                 market_tensor='market_hold_values.parquet full grid plus market_open_values.parquet sparse entries',
                 polars_version=pl.__version__,
                 tensor_sort=dict(engine='duckdb_external',version=duckdb.__version__,
                     memory_gb=args.sort_memory_gb,threads=args.sort_threads),
                 code_hashes={p: sha256((REPO / p).read_text(encoding="utf-8").replace("\r\n", "\n").encode()).hexdigest()
-                             for p in ("research/rl_trading/v1/build_phase2.py", "research/rl_trading/v1/phase2_values.py", "research/rl_trading/v1/market_values.py", "research/rl_trading/v1/common.py", "src/market_engine/hindsight_batch.py")})
+                             for p in (("research/rl_trading/v1/build_phase2.py", "research/rl_trading/v1/phase2_values.py", "research/rl_trading/v1/market_values.py", "research/rl_trading/v1/common.py", "src/market_engine/hindsight_batch.py") +
+                                       (("research/rl_trading/v1/phase2_close_values.py",) if close_version else ()))})
     plan["plan_hash"] = digest(plan)
     root = runtime / "hindsight-greedy" / plan["date"] / plan["plan_hash"][:16]
     root.mkdir(parents=True, exist_ok=True)
@@ -532,7 +551,10 @@ def main(argv=None):
     discount = build.add_mutually_exclusive_group()
     discount.add_argument('--half-life-bars',type=float,help='Discount half-life in MACD bars; default 30')
     discount.add_argument("--gamma", type=float, default=None, help="Explicit per-second discount override")
-    build.add_argument("--cost-per-share", type=float, default=0, help="Per transaction, included in prices; default 0")
+    build.add_argument("--cost-per-share", type=float, default=None,
+        help="V7 per-leg fixed share proxy defaults to 0.005; V6 defaults to zero")
+    build.add_argument('--close-episodes-v7',action='store_true',
+        help='Compile Phase 1 V5 completed-close episodes with cost-aware V7 ranking')
     build.add_argument('--min-volume-60s',type=float,default=20_000.,
         help='Minimum completed one-minute share volume for new entries; default 20000')
     build.add_argument('--min-trades-60s',type=int,default=11,

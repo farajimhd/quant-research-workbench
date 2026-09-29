@@ -61,10 +61,12 @@ def targets(bars, episodes, lookback=2):
         target_clock='completed_100ms_bar_end')
 
 
-def decision_values(day, bars, selected_targets, *, liquidation_us=None):
+def decision_values(day, bars, selected_targets, *, liquidation_us=None,
+                    price_resolution_ms=100):
     """Price-action labels; neither quotes nor hypothetical execution eligibility.
 
-    The decision reference is the latest completed eligible 100 ms trade close.
+    The decision reference is the latest completed eligible trade close at
+    ``price_resolution_ms`` (100 ms for the legacy V4 path).
     Sparse periods carry that observed close, retaining its timestamp and age.
     Future swing extrema are label-side prices, never current observations.
     """
@@ -75,7 +77,9 @@ def decision_values(day, bars, selected_targets, *, liquidation_us=None):
         bars = bars.filter(pl.col('time_us') <= liquidation_us)
         selected_targets = [p for p in selected_targets if round(p['exit_time']*1e6) < liquidation_us]
     grid = pl.DataFrame({'time_us':pl.int_range(left,right+1,1_000_000,eager=True)})
-    prices = bars.filter((pl.col('resolution_ms') == 100) & (pl.col('price_valid') == 1)).select(
+    if price_resolution_ms not in (100, 1000):
+        raise ValueError('Decision price resolution must be 100 or 1000 ms')
+    prices = bars.filter((pl.col('resolution_ms') == price_resolution_ms) & (pl.col('price_valid') == 1)).select(
         pl.col('time_us').alias('price_us'),pl.col('close').alias('decision_price')).sort('price_us')
     if prices['price_us'].n_unique() != prices.height or prices.filter(
             ~((pl.col('decision_price') > 0) & pl.col('decision_price').is_finite()).fill_null(False)).height:

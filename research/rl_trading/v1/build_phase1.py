@@ -31,6 +31,7 @@ from research.rl_trading.v1.common import bounds, digest, NY, exclusive, file_ha
 from src.market_engine.hindsight_batch import ordered_jobs, worker_budget
 from src.market_engine.level_book_store import read, write
 from research.rl_trading.v1 import phase1_labels as labels
+from research.rl_trading.v1 import phase1_close_labels as close_labels
 from research.rl_trading.v1 import arte_source as source_api
 from research.rl_trading.v1.build_phase2 import parquet
 from research.rl_trading.v1.phase2_values import discount_policy
@@ -73,9 +74,13 @@ def listing_work(listing, day, source, plan, root, client):
         bars = bars.filter(pl.col('time_us') <= cutoff)
         indicators = indicators.filter(pl.col('time_us') <= cutoff)
         episodes = labels.intervals(indicators,cutoff)
-        target = labels.targets(bars,episodes,plan['lookback_seconds'])
+        close_version = plan['version'] == close_labels.VERSION
+        target = (close_labels.targets if close_version else labels.targets)(
+            bars,episodes,plan['lookback_seconds'])
         stage = 'price-action labels'
-        values = labels.decision_values(day,bars,target['positions'],liquidation_us=cutoff).with_columns(
+        value_builder = close_labels.decision_values if close_version else labels.decision_values
+        extra = {'lookback_seconds': plan['lookback_seconds']} if close_version else {}
+        values = value_builder(day,bars,target['positions'],liquidation_us=cutoff,**extra).with_columns(
             pl.lit(ticker).alias('ticker'),pl.lit(listing['listing_id']).alias('listing_id'))
         terminal = values.filter(pl.col('time_us') == cutoff).row(0,named=True)
         target['terminal_liquidation'] = dict(time_us=cutoff,price=terminal['decision_price'],
@@ -98,20 +103,23 @@ def listing_work(listing, day, source, plan, root, client):
 def phase1(day, source, listings, population, root, args, console, code):
     folder = root/'days'/str(day)/'phase1'
     folder.mkdir(parents=True,exist_ok=True)
-    plan = dict(version=labels.VERSION,date=str(day),selected=listings,
+    close_version = getattr(args,'close_episodes_v5',False)
+    plan = dict(version=close_labels.VERSION if close_version else labels.VERSION,date=str(day),selected=listings,
         scope='explicit_canary' if args.tickers else 'certified_market_day_build_population',
         source_build_id=source['build_id'],source_definition_hash=source['definition_hash'],
         source_units=source['units'][str(day)],population=population,
         lookback_seconds=args.lookback_seconds,code_hashes={k:v for k,v in code.items() if 'greedy' not in k},
-        polars_version=pl.__version__,target_clock='completed_100ms_bar_end',
+        polars_version=pl.__version__,target_clock='completed_1s_close' if close_version else 'completed_100ms_bar_end',
         valuation_basis='price_action',
         macd_resolution_seconds=1.,
         liquidation_us=labels.liquidation_time(day),
         liquidation_seconds_before_close=labels.LIQUIDATION_SECONDS_BEFORE_CLOSE,
         session_close='20:00 America/New_York',
-        price_policy='latest completed eligible 100ms trade close; retain observation age; no quote gates',
+        price_policy=('completed eligible 1s close for episode entry, exit, and decision reference'
+                      if close_version else 'latest completed eligible 100ms trade close; retain observation age; no quote gates'),
         volume_policy='completed_1s_canonical_volume; rolling_10s; cumulative_from_0400',
-        semantics='Local MACD swing supervision; retained target and reward selection; no event parity claim')
+        semantics=('Local MACD close-to-close episode supervision with pre-crossover setup; no execution or event parity claim'
+                   if close_version else 'Local MACD swing supervision; retained target and reward selection; no event parity claim'))
     plan['plan_hash'] = digest(plan)
     counts = dict(completed=0,reused=0,failed=0)
     results = []
@@ -189,11 +197,16 @@ def main(argv=None):
     parser.add_argument('--sort-memory-gb',type=int,default=8)
     parser.add_argument('--sort-threads',type=int,default=4)
     parser.add_argument('--lookback-seconds',type=int,choices=range(31),default=2)
+    parser.add_argument('--close-episodes-v5',action='store_true',
+        help='Build separately versioned close-to-close MACD episode labels')
     discount_options = parser.add_mutually_exclusive_group()
     discount_options.add_argument('--half-life-bars',type=float,help='Discount half-life in MACD bars; default 30')
     discount_options.add_argument('--gamma',type=float,default=None,help='Explicit per-second discount override')
-    parser.add_argument('--cost-per-share',type=float,default=0.)
+    parser.add_argument('--cost-per-share',type=float,default=None,
+        help='Per-order-leg share proxy; V5 default 0.005, V4 default zero')
     args = parser.parse_args(argv)
+    if args.cost_per_share is None:
+        args.cost_per_share = .005 if args.close_episodes_v5 else 0.
     discount = discount_policy(1.,half_life_bars=args.half_life_bars,gamma=args.gamma)
     if not math.isfinite(args.cost_per_share) or args.cost_per_share < 0:
         parser.error('cost must be finite and nonnegative')
@@ -237,8 +250,9 @@ def main(argv=None):
     if args.command == 'preflight':
         console.print('Preflight passed. Product checksums are rechecked per listing during extraction. No dataset written.')
         return 0
-    code = {p:sha256((REPO/p).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest() for p in SOURCES}
-    plan = dict(version=labels.VERSION,source_build_id=source['build_id'],source_definition_hash=source['definition_hash'],
+    source_files = SOURCES + (('research/rl_trading/v1/phase1_close_labels.py',) if args.close_episodes_v5 else ())
+    code = {p:sha256((REPO/p).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest() for p in source_files}
+    plan = dict(version=close_labels.VERSION if args.close_episodes_v5 else labels.VERSION,source_build_id=source['build_id'],source_definition_hash=source['definition_hash'],
         source_units_hash=digest(source['units']),
         dates=list(map(str,days)),tickers=args.tickers,lookback_seconds=args.lookback_seconds,
         discount_policy=discount,cost_per_share=args.cost_per_share,code_hashes=code,polars_version=pl.__version__)
@@ -267,6 +281,8 @@ def main(argv=None):
                     command = ['research/rl_trading/v1/build_phase2.py','build','--phase1',str(p1),'--workers',str(args.workers),
                         '--cost-per-share',str(args.cost_per_share),'--result-file',str(handoff),
                         '--sort-memory-gb',str(args.sort_memory_gb),'--sort-threads',str(args.sort_threads)]
+                    if args.close_episodes_v5:
+                        command.append('--close-episodes-v7')
                     command += ['--gamma',str(args.gamma)] if args.gamma is not None else ['--half-life-bars',str(discount['half_life_bars'])]
                     last = [0.]
                     def progress(message):
