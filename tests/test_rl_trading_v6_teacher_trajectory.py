@@ -23,7 +23,8 @@ def test_quote_free_teacher_emits_delayed_account_actions(tmp_path):
         np.zeros((4, 2, 5, 11), dtype=np.float32))
     session = PackedSession(date(2026, 7, 31), 'train', tmp_path / 'day',
                             'bank-hash', bank, None, ('A',))
-    allocations = pl.DataFrame({'ticker': ['A'], 'episode_uid': ['A:1'],
+    allocations = pl.DataFrame({'ticker': ['A'], 'listing_id': ['A'],
+        'episode_uid': ['A:1'],
         'time_us': [1_000_000], 'exit_hint_us': [3_000_000],
         'decision_close': [10.], 'exit_hint_close': [11.],
         'desired_budget': [1000.], 'future_reservation': [0.],
@@ -59,7 +60,8 @@ def test_teacher_never_sets_a_target_after_its_oracle_peak(tmp_path):
         clocks, scalar, np.zeros((4, 2, 5, 11), dtype=np.float32))
     session = PackedSession(date(2026, 7, 31), 'train', tmp_path / 'day',
                             'bank-hash', bank, None, ('A',))
-    allocations = pl.DataFrame({'ticker': ['A'], 'episode_uid': ['A:1'],
+    allocations = pl.DataFrame({'ticker': ['A'], 'listing_id': ['A'],
+        'episode_uid': ['A:1'],
         'time_us': [1_000_000], 'exit_hint_us': [3_000_000],
         'decision_close': [10.], 'exit_hint_close': [9.],
         'desired_budget': [1000.], 'future_reservation': [0.],

@@ -68,7 +68,7 @@ class Holding:
 def bind_intents(allocations: pl.DataFrame, brackets: pl.DataFrame,
                  listings: tuple[str, ...]) -> tuple[tuple[Intent, ...], dict]:
     """Join only first-eligible long episodes to audited oracle geometry."""
-    required = {'ticker', 'episode_uid', 'time_us', 'exit_hint_us',
+    required = {'ticker', 'listing_id', 'episode_uid', 'time_us', 'exit_hint_us',
                 'decision_close', 'exit_hint_close', 'desired_budget',
                 'future_reservation', 'score', 'direction'}
     required_brackets = {'ticker', 'episode_uid', 'entry_us', 'exit_us',
@@ -89,9 +89,13 @@ def bind_intents(allocations: pl.DataFrame, brackets: pl.DataFrame,
                              (pl.col('exit_hint_us') != pl.col('exit_us'))).height):
         raise ValueError('Oracle brackets do not bind to first-eligible entries')
     permitted = joined.filter(pl.col('label_available'))
-    by_ticker = {ticker: index for index, ticker in enumerate(listings)}
-    if set(permitted['ticker']) - set(by_ticker):
-        raise ValueError('Teacher episode ticker absent from bank')
+    by_listing = {identity: index for index, identity in enumerate(listings)}
+    if set(permitted['listing_id']) - set(by_listing):
+        raise ValueError('Teacher episode listing absent from bank')
+    mapping = permitted.select('ticker', 'listing_id').unique()
+    if (mapping['ticker'].n_unique() != mapping.height or
+            mapping['listing_id'].n_unique() != mapping.height):
+        raise ValueError('Teacher ticker/listing mapping is ambiguous')
     ordered = permitted.sort('time_us', 'score', 'episode_uid',
                              descending=[False, True, False])
     intents = []
@@ -106,7 +110,7 @@ def bind_intents(allocations: pl.DataFrame, brackets: pl.DataFrame,
                 not 0 < row['oracle_stop'] < row['decision_close'] <
                         row['oracle_target']):
             raise ValueError('Malformed price-action teacher intent')
-        intents.append(Intent(row['ticker'], by_ticker[row['ticker']],
+        intents.append(Intent(row['ticker'], by_listing[row['listing_id']],
             row['episode_uid'], int(row['time_us']), int(row['exit_hint_us']),
             float(row['decision_close']), float(row['exit_hint_close']),
             float(row['desired_budget']), float(row['future_reservation']),
@@ -148,6 +152,10 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
         exit_by_clock[intent.exit_us].append(intent)
     for values in entry_by_clock.values():
         values.sort(key=lambda item: (-item.score, item.episode_uid))
+    ticker_by_listing = {intent.listing_index: intent.ticker
+                         for intent in intents}
+    if len(ticker_by_listing) != len(set(ticker_by_listing.values())):
+        raise ValueError('Teacher listing/ticker map changed across episodes')
     listings = len(session.listings)
     cash = initial_cash
     profit_bank = realized = fees = 0.
@@ -219,8 +227,9 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
             if row[PRICE_VALID] != 1.:
                 continue
             price = math.exp(float(row[LOG_CLOSE]))
-            if math.isfinite(price) and price > 0:
-                marks[session.listings[int(listing_index)]] = price
+            if math.isfinite(price) and price > 0 and (
+                    int(listing_index) in ticker_by_listing):
+                marks[ticker_by_listing[int(listing_index)]] = price
         index = 0
 
         def snapshot(token: int, *, size_fraction: float | None = None,

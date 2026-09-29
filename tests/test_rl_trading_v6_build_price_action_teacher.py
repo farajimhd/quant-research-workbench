@@ -24,7 +24,8 @@ def test_teacher_writer_certifies_only_bar_sidecar_and_reloads(tmp_path,
         path.mkdir()
     (source / 'plan.json').write_text(json.dumps({
         'day': str(day), 'split_role': 'train'}))
-    allocation = pl.DataFrame({'ticker': ['A'], 'episode_uid': ['A:1'],
+    allocation = pl.DataFrame({'ticker': ['A'], 'listing_id': ['A'],
+        'episode_uid': ['A:1'],
         'time_us': [1_000_000], 'exit_hint_us': [3_000_000],
         'decision_close': [10.], 'exit_hint_close': [11.],
         'desired_budget': [1000.], 'future_reservation': [0.],
