@@ -211,7 +211,7 @@ def main() -> None:
                         help="optional single-symbol scope; omit for all tradable tickers")
     parser.add_argument("--minutes", type=int, default=10,
                         help="whole minutes after 04:00 ET; maximum 330")
-    parser.add_argument("--cash", type=float, default=10_000.0,
+    parser.add_argument("--cash", type=float, default=100_000.0,
                         help="initial simulated cash; default matches the app")
     parser.add_argument("--apply", action="store_true",
                         help="create and await one normalized ClickHouse Backtest run")

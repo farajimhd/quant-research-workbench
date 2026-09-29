@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from contextlib import nullcontext
 from datetime import date
 from types import SimpleNamespace
@@ -28,6 +29,17 @@ def test_app_probe_defaults_to_read_only_preflight(monkeypatch) -> None:
     asyncio.run(probe._run(date(2026, 8, 18), "", 10, 10_000, False))
     assert preflight.call_args.args[0].initial_cash == 10_000
     create.assert_not_awaited()
+
+
+def test_cli_cash_default_matches_app(monkeypatch) -> None:
+    run = AsyncMock()
+    monkeypatch.setattr(sys, "argv", ["smoke_strategy_one_app_route.py"])
+    monkeypatch.setattr(probe, "_load_private_credentials", lambda: None)
+    monkeypatch.setattr(probe, "_run", run)
+    probe.main()
+    assert run.await_args.args[3] == app.BacktestRunCreateRequest.model_fields[
+        "initial_cash"].default
+    assert run.await_args.args[4] is False
 
 
 def test_app_probe_runs_one_public_controller_without_files(
