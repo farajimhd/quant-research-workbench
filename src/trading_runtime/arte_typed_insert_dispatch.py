@@ -19,6 +19,7 @@ from src.trading_runtime.keeper_ownership import (
 
 _ZERO_BATCH = "00000000-0000-0000-0000-000000000000"
 _ZERO_HASH = "0" * 64
+_REGISTER_CAS_ATTEMPTS = 64
 _ACK_CAS_ATTEMPTS = 64
 _SNAPSHOT_TABLES = frozenset({
     "trading_portfolio_snapshot_v1", "trading_portfolio_disabled_strategy_v1",
@@ -547,7 +548,7 @@ class TypedInsertDispatch:
                                   batch_last_sequence, "pending")
         completed = _operation_wire(run_id, table, query_id, token, sql, batch_id,
                                     batch_last_sequence, "acknowledged")
-        for _ in range(8):
+        for attempt in range(_REGISTER_CAS_ATTEMPTS):
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch run is cold-fenced")
@@ -619,6 +620,11 @@ class TypedInsertDispatch:
             txn.create(path, pending, ephemeral=False)
             if _committed(txn.commit()):
                 break
+            # Only a proven optimistic transaction conflict is retried. Separate
+            # family lanes share this gate; immediate retries can repeatedly
+            # collide before any lane has time to publish its registration.
+            if attempt + 1 < _REGISTER_CAS_ATTEMPTS:
+                sleep(min(0.001 * (attempt + 1), 0.01))
         else:
             raise KeeperUnavailable("Typed dispatch gate CAS contended")
         # Do not catch/clear transport errors: the server may still commit.

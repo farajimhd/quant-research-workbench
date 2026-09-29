@@ -169,6 +169,54 @@ def test_typed_ack_does_not_rewrite_shared_gate() -> None:
 
 
 @pytest.mark.parametrize("conflict_count,success", ((12, True), (64, False)))
+def test_typed_registration_tolerates_bounded_parallel_gate_contention(
+    monkeypatch, conflict_count, success,
+) -> None:
+    from src.trading_runtime import arte_typed_insert_dispatch as dispatch_module
+
+    keeper = Keeper()
+    authority = TypedInsertDispatch(keeper)
+    authority.initialize_new_run("run-1")
+    reserve_direct(authority)
+    actual_transaction = keeper.transaction
+    conflicts = conflict_count
+
+    def contended_transaction():
+        transaction = actual_transaction()
+        actual_commit = transaction.commit
+
+        def commit():
+            nonlocal conflicts
+            if (len(transaction.ops) == 2
+                    and transaction.ops[0][0] == "set"
+                    and transaction.ops[0][1] == _gate_path("run-1")
+                    and transaction.ops[1][0] == "create" and conflicts):
+                conflicts -= 1
+                return [BadVersionError()]
+            return actual_commit()
+
+        transaction.commit = commit
+        return transaction
+
+    keeper.transaction = contended_transaction
+    monkeypatch.setattr(dispatch_module, "sleep", lambda _: None)
+    client = Client(authority)
+    def insert():
+        authority.execute_typed_insert(
+            client, run_id="run-1", table="trading_event_v1", token="batch-1",
+            sql=SQL, batch_id=BATCH_ID, batch_last_sequence=1)
+
+    if success:
+        insert()
+        assert len(client.calls) == 1
+    else:
+        with pytest.raises(KeeperUnavailable, match="gate CAS contended"):
+            insert()
+        assert client.calls == []
+    assert conflicts == 0
+
+
+@pytest.mark.parametrize("conflict_count,success", ((12, True), (64, False)))
 def test_typed_ack_tolerates_bounded_parallel_gate_contention(
     monkeypatch, conflict_count, success,
 ) -> None:
