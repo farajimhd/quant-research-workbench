@@ -500,6 +500,42 @@ def test_strategy_one_saved_resume_reports_missing_normalized_recovery(
         asyncio.run(ReplayRunService(runtime_root=tmp_path).resume(RUN))
 
 
+def test_public_resume_uses_typed_v4_without_disk_manifest_or_sqlite(monkeypatch, tmp_path):
+    from src.backend import replay_run_service
+
+    service = ReplayRunService(
+        runtime_root=tmp_path, allow_typed_backtest_resume=True)
+    definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    calls = []
+
+    class Recovered:
+        run_id = RUN
+        status = "pending"
+
+        async def start(self):
+            calls.append("start")
+
+        async def _close_fixed_journal(self):
+            calls.append("close")
+
+    recovered = Recovered()
+    monkeypatch.setattr(ReplayRunService,
+                        "_load_typed_backtest_resume_definition",
+                        staticmethod(lambda run_id: definition if run_id == RUN else None))
+
+    async def prepare(self, run_id, loaded):
+        assert run_id == RUN and loaded is definition
+        calls.append("prepare")
+        return recovered
+
+    monkeypatch.setattr(ReplayRunService, "_prepare_typed_v4_resume", prepare)
+    monkeypatch.setattr(replay_run_service.TradingJournal, "__init__",
+                        lambda *_a, **_k: pytest.fail("SQLite opened"))
+    assert asyncio.run(service.resume(RUN)) is recovered
+    assert calls == ["prepare", "start"]
+    assert service.get(RUN) is recovered
+
+
 @pytest.mark.parametrize("count,expected", [(0, None), (2, "ambiguous")])
 def test_cold_typed_definition_distinguishes_absent_from_duplicate_context(
     monkeypatch, count, expected,

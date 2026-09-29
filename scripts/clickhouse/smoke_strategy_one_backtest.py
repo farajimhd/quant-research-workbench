@@ -412,7 +412,7 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
     sql_profile.print_summary()
 
 
-async def _resume_interrupted(run_id: str) -> None:
+async def _resume_interrupted(run_id: str, *, via_service: bool = False) -> None:
     """Exercise the cold actor/writer handoff before opening the app route."""
     from src.backend.replay_run_service import ReplayRunService
     from src.backend import backtest_typed_projection
@@ -453,15 +453,20 @@ async def _resume_interrupted(run_id: str) -> None:
 
     TradingRuntime._execute_intents = trace_protection
 
-    service = ReplayRunService(runtime_root=RUNTIME_ROOT)
-    definition = await asyncio.to_thread(
-        service._load_typed_backtest_resume_definition, run_id)
-    if definition is None:
-        raise RuntimeError("Interrupted V4 Backtest definition is absent")
-    controller = await service._prepare_typed_v4_resume(run_id, definition)
+    service = ReplayRunService(
+        runtime_root=RUNTIME_ROOT, allow_typed_backtest_resume=via_service)
+    if via_service:
+        controller = await service.resume(run_id)
+    else:
+        definition = await asyncio.to_thread(
+            service._load_typed_backtest_resume_definition, run_id)
+        if definition is None:
+            raise RuntimeError("Interrupted V4 Backtest definition is absent")
+        controller = await service._prepare_typed_v4_resume(run_id, definition)
     began = perf_counter()
     try:
-        await controller.start()
+        if not via_service:
+            await controller.start()
         if controller._task is None:
             raise RuntimeError("Recovered Backtest did not schedule execution")
         await controller._task
@@ -493,6 +498,8 @@ def main() -> None:
                         help="read-only causal audit of a completed Strategy 1 run")
     parser.add_argument("--resume-run-id", default="",
                         help="integration-only cold resume of an interrupted V4 run")
+    parser.add_argument("--resume-via-service", action="store_true",
+                        help="exercise the public Backtest service resume path")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="show the slowest preflight calls; does not create market data")
     parser.add_argument("--preflight-repeats", type=int, choices=(1, 2), default=1,
@@ -506,8 +513,11 @@ def main() -> None:
         if args.apply or args.audit_run_id or args.crash_after_checkpoint:
             parser.error("Cold resume is exclusive of launch, audit, and crash modes")
         _load_private_credentials()
-        asyncio.run(_resume_interrupted(args.resume_run_id))
+        asyncio.run(_resume_interrupted(
+            args.resume_run_id, via_service=args.resume_via_service))
         return
+    if args.resume_via_service:
+        parser.error("--resume-via-service requires --resume-run-id")
     if args.audit_run_id:
         if args.apply or args.profile_preflight or args.profile_execution:
             parser.error("Saved-run audit is read-only and cannot start a probe")

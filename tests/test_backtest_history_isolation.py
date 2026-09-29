@@ -2,6 +2,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
@@ -12,14 +13,18 @@ from src.backend.app import (
 
 
 class BacktestHistoryIsolationTests(IsolatedAsyncioTestCase):
-    async def test_resume_fails_before_any_disk_backed_replay_lookup(self):
-        with patch.object(backtest_run_service, "resume") as legacy:
+    async def test_resume_uses_only_backtest_service(self):
+        run_id = "00000000-0000-0000-0000-000000000001"
+        with patch.object(backtest_run_service, "resume") as resumed:
+            resumed.return_value = SimpleNamespace(
+                stream_snapshot=lambda: {"run_id": run_id})
+            self.assertEqual(await trading_backtest_run_resume(run_id),
+                             {"run_id": run_id})
+            resumed.assert_awaited_once_with(run_id)
+        with patch.object(backtest_run_service, "resume", side_effect=KeyError(run_id)):
             with self.assertRaises(HTTPException) as raised:
-                await trading_backtest_run_resume(
-                    "00000000-0000-0000-0000-000000000001")
-            self.assertEqual(raised.exception.status_code, 409)
-            self.assertIn("ClickHouse/Keeper", raised.exception.detail)
-            legacy.assert_not_called()
+                await trading_backtest_run_resume(run_id)
+            self.assertEqual(raised.exception.status_code, 404)
 
     async def test_history_does_not_queue_behind_preparation(self):
         loop = asyncio.get_running_loop()

@@ -9383,8 +9383,10 @@ class ReplayRunService:
         runtime_root: Path | None = None,
         *,
         max_resident_runs: int | None = None,
+        allow_typed_backtest_resume: bool = False,
     ) -> None:
         self.runtime_root = (runtime_root or replay_runtime_root()).resolve()
+        self.allow_typed_backtest_resume = allow_typed_backtest_resume
         configured_limit = max_resident_runs
         if configured_limit is None:
             try:
@@ -9429,7 +9431,31 @@ class ReplayRunService:
         manifest_path = run_dir / "manifest.json"
         journal_path = run_dir / "journal.sqlite3"
         if not manifest_path.is_file():
-            raise KeyError(run_id)
+            if not self.allow_typed_backtest_resume:
+                raise KeyError(run_id)
+            # New Backtests have no disk run directory. Only a complete typed
+            # definition and a verified running V4 anchor may enter recovery.
+            definition = await asyncio.to_thread(
+                self._load_typed_backtest_resume_definition, normalized)
+            if definition is None:
+                raise KeyError(run_id)
+            controller = await self._prepare_typed_v4_resume(
+                normalized, definition)
+            try:
+                if resident is not None and resident._journal is not None:
+                    if resident._monitoring is not None:
+                        await resident._monitoring.close()
+                    resident._journal.close()
+                    resident._journal = None
+                await self._admit(controller)
+                await controller.start()
+                return controller
+            except BaseException:
+                async with self._lock:
+                    if self._runs.get(normalized) is controller:
+                        self._runs.pop(normalized, None)
+                await controller._close_fixed_journal()
+                raise
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         prior_status = str(dict(manifest.get("run") or {}).get("status") or "")
         if prior_status == "completed":

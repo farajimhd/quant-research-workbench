@@ -677,7 +677,8 @@ def _qmd_stream_error(error: Exception, *, stream: str) -> dict[str, Any]:
 
 
 replay_run_service = ReplayRunService()
-backtest_run_service = ReplayRunService(runtime_root=backtest_runtime_root())
+backtest_run_service = ReplayRunService(
+    runtime_root=backtest_runtime_root(), allow_typed_backtest_resume=True)
 backtest_debug_run_service = ReplayRunService(runtime_root=backtest_debug_runtime_root())
 
 
@@ -6123,20 +6124,14 @@ async def trading_backtest_run_stop(run_id: str) -> dict[str, Any]:
 
 @app.post("/api/trading/backtest/runs/{run_id}/resume")
 async def trading_backtest_run_resume(run_id: str) -> dict[str, Any]:
-    # This route is Backtest-only. Its journal authority is ClickHouse/Keeper;
-    # never let the generic Replay resume service inspect a disk manifest or
-    # SQLite journal while normalized actor restoration remains unadmitted.
-    from uuid import UUID
-
     try:
-        UUID(run_id)
-    except (TypeError, ValueError) as exc:
+        return (await backtest_run_service.resume(run_id)).stream_snapshot()
+    except KeyError as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
-    raise HTTPException(
-        status_code=409,
-        detail="Strategy 1 Backtest resume requires verified normalized "
-               "ClickHouse/Keeper actor recovery; start a new run",
-    )
+    except ReplayRunCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/trading/backtest/runs/{run_id}/commands")
