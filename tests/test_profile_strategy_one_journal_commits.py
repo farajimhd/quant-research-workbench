@@ -4,6 +4,7 @@ from uuid import UUID
 import pytest
 
 from scripts.clickhouse.profile_strategy_one_journal_commits import _profile
+from src.trading_runtime.arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
 
 
 def _row(sequence, *, prior, first, last, cursor, status="running"):
@@ -22,7 +23,9 @@ def test_profile_reports_bounded_commit_distribution():
     ])
     assert lines[0] == "V4 commits=3 events=11 terminal=1"
     assert lines[1] == "Commit events: min=1 median=1 max=9 mean=3.7"
-    assert lines[2].endswith("2, 0, 1, 0, 0, 0")
+    assert lines[2] == (f"Commit size bins (1, 2-7, 8-63, 64-255, "
+                        f"256-1024, 1025-{MAX_V4_COMMIT_EVENTS}): "
+                        "2, 0, 1, 0, 0, 0")
     assert lines[3] == "Cursor changes=1 family_count_median=4"
 
 

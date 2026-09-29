@@ -65,7 +65,7 @@ def _profile(rows: list[dict]) -> tuple[str, ...]:
         f"terminal={sum(statuses[state] for state in ('completed', 'stopped', 'failed'))}",
         f"Commit events: min={min(sizes)} median={statistics.median(sizes):g} "
         f"max={max(sizes)} mean={statistics.mean(sizes):.1f}",
-        "Commit size bins (1, 2-7, 8-63, 64-255, 256-1024, 1025-2048): "
+        f"Commit size bins (1, 2-7, 8-63, 64-255, 256-1024, 1025-{MAX_V4_COMMIT_EVENTS}): "
         + ", ".join(str(count) for count in bins),
         f"Cursor changes={changes} family_count_median={statistics.median(families):g}",
     )

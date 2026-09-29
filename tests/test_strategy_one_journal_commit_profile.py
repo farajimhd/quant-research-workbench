@@ -4,6 +4,7 @@ from uuid import UUID
 import pytest
 
 from scripts.clickhouse.profile_strategy_one_journal_commits import _profile
+from src.trading_runtime.arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
 
 
 def _header(events: int) -> dict[str, object]:
@@ -16,12 +17,12 @@ def _header(events: int) -> dict[str, object]:
 
 
 def test_v4_maximum_commit_size_is_profiled():
-    result = _profile([_header(2048)])
-    assert "events=2048" in result[0]
-    assert "1025-2048" in result[2]
+    result = _profile([_header(MAX_V4_COMMIT_EVENTS)])
+    assert f"events={MAX_V4_COMMIT_EVENTS}" in result[0]
+    assert f"1025-{MAX_V4_COMMIT_EVENTS}" in result[2]
     assert result[2].endswith("0, 0, 0, 0, 0, 1")
 
 
 def test_oversized_commit_remains_rejected():
-    with pytest.raises(ValueError, match="bound=2048"):
-        _profile([_header(2049)])
+    with pytest.raises(ValueError, match=f"bound={MAX_V4_COMMIT_EVENTS}"):
+        _profile([_header(MAX_V4_COMMIT_EVENTS + 1)])
