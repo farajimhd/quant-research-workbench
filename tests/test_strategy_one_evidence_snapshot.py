@@ -1,6 +1,7 @@
 """Evidence checkpoints are normalized scalar rows, not opaque payloads."""
 from dataclasses import replace
 from datetime import date
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -8,7 +9,8 @@ import pytest
 from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
 from src.trading_runtime.strategy_one_activation_state import FrozenActivation
 from src.trading_runtime.strategy_one_evidence_snapshot import (
-    TABLES, EvidenceSnapshotRows, project_evidence_snapshot,
+    TABLES, EvidenceSnapshotRows, ManagedEvidenceSnapshotHeadReader,
+    project_evidence_snapshot,
     restore_evidence_snapshot,
 )
 from src.trading_runtime.strategy_one_resistance import (
@@ -56,3 +58,30 @@ def test_normalized_evidence_rejects_missing_child_or_semantic_change():
             run_id=RUN, session_date=DAY, checkpoint_sequence=1046,
             state=replace(state, resistance=(("AAA", ResistanceObservation(
                 330_000, 102_000, (), frozenset({"R1"}))),)))
+
+
+def test_evidence_keeper_head_is_run_scoped_and_requires_exact_wire():
+    assert ManagedEvidenceSnapshotHeadReader.path(RUN) != (
+        ManagedEvidenceSnapshotHeadReader.path(str(UUID(int=18))))
+    with pytest.raises(ValueError, match="run is invalid"):
+        ManagedEvidenceSnapshotHeadReader.path("bad\nrun")
+
+    class Client:
+        client_id = "reader-1"
+
+        def __init__(self, wire):
+            self.wire = wire
+
+        def get(self, _path):
+            return self.wire, SimpleNamespace(version=2)
+
+    reader = object.__new__(ManagedEvidenceSnapshotHeadReader)
+    client = Client(f"1\n{RUN}\n1046\n{str(UUID(int=19))}\n{'a' * 64}".encode())
+    reader._session = SimpleNamespace(
+        writable=True, client=client, _generation=1)
+    head = reader.read_head(run_id=RUN)
+    assert (head.checkpoint_sequence, head.snapshot_hash, head.keeper_version) == (
+        1046, "a" * 64, 2)
+    client.wire = b"not-a-head"
+    with pytest.raises(ValueError, match="missing or corrupt"):
+        reader.read_head(run_id=RUN)

@@ -12,10 +12,12 @@ from decimal import Decimal
 from hashlib import sha256
 import json
 from typing import Any, Mapping
+from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
 from src.trading_runtime.arte_journal_schema import TableContract
+from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.strategy_one_activation_state import FrozenActivation
 from src.trading_runtime.strategy_one_resistance import (
     KnownResistance, ResistanceObservation,
@@ -70,6 +72,60 @@ class EvidenceSnapshotRows:
     activations: tuple[dict[str, Any], ...]
     activation_levels: tuple[dict[str, Any], ...]
     lows: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceSnapshotHead:
+    run_id: str
+    checkpoint_sequence: int
+    journal_batch_id: str
+    snapshot_hash: str
+    keeper_version: int
+
+
+class EvidenceSnapshotHeadReader(Protocol):
+    def read_head(self, *, run_id: str) -> EvidenceSnapshotHead: ...
+
+
+class ManagedEvidenceSnapshotHeadReader:
+    """Read only a Keeper-selected, normalized evidence checkpoint."""
+
+    def __init__(self, session: ManagedKeeperSession) -> None:
+        if not isinstance(session, ManagedKeeperSession):
+            raise TypeError("Strategy 1 evidence head requires managed Keeper")
+        self._session = session
+
+    @staticmethod
+    def path(run_id: str) -> str:
+        if (type(run_id) is not str or not run_id
+                or any(char in run_id for char in "\r\n\x00")):
+            raise ValueError("Strategy 1 evidence head run is invalid")
+        return ("/trading/strategy-one-evidence-snapshot/v1/"
+                + sha256(run_id.encode()).hexdigest() + "/head")
+
+    def read_head(self, *, run_id: str) -> EvidenceSnapshotHead:
+        session, client = self._session, self._session.client
+        if not session.writable or client.client_id is None:
+            raise RuntimeError("Strategy 1 evidence Keeper session is unavailable")
+        generation, client_id = session._generation, client.client_id
+        try:
+            raw, stat = client.get(self.path(run_id))
+            fields = raw.decode("utf-8").split("\n")
+            if (len(fields) != 5 or fields[:2] != ["1", run_id]
+                    or str(int(fields[2])) != fields[2] or int(fields[2]) < 1
+                    or str(UUID(fields[3])) != fields[3]
+                    or len(fields[4]) != 64
+                    or any(char not in "0123456789abcdef" for char in fields[4])
+                    or type(stat.version) is not int or stat.version < 0):
+                raise ValueError
+            head = EvidenceSnapshotHead(
+                run_id, int(fields[2]), fields[3], fields[4], stat.version)
+        except Exception as exc:
+            raise ValueError("Strategy 1 evidence Keeper head missing or corrupt") from exc
+        if (not session.writable or session._generation != generation
+                or client.client_id != client_id):
+            raise RuntimeError("Strategy 1 evidence Keeper session changed during read")
+        return head
 
 
 def _digest(value: object) -> str:
