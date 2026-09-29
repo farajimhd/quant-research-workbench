@@ -2421,6 +2421,26 @@ class ReplayRunController:
                     if self._runtime is None or not self.account_ids:
                         raise RuntimeError('Strategy 1 checkpoint lacks portfolio accounts')
                     checkpoint_record = self._journal.unfenced_records()[-1]
+                    # Freeze only normalized progress scalars beside this cursor.
+                    # The worker projects named ClickHouse columns; no checkpoint
+                    # JSON or disk authority is introduced on the execution path.
+                    self._journal.attach_backtest_progress(checkpoint_record, {
+                        'identity': {'run_id': self.run_id, 'mode': 'backtest'},
+                        'controller': {
+                            'current_time': event_time.isoformat(),
+                            'processed_events': self.processed_events,
+                            'warmup_events': self.warmup_events,
+                            'processed_frames': self._processed_frames,
+                            'source_cursor': dict(self._source_cursor),
+                            'frame_cursor': dict(self._frame_cursor),
+                        },
+                        'runtime': {
+                            'processed_events': self._runtime.processed_events,
+                            'last_event_time': (
+                                self._runtime.last_event_time.isoformat()
+                                if self._runtime.last_event_time else None),
+                        },
+                    })
                     portfolio_captures = tuple(
                         self._runtime.portfolio.capture_recovery_snapshot(
                             account_id, state_revision=checkpoint_record.sequence,

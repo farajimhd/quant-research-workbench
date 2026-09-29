@@ -34,6 +34,7 @@ class BacktestMemoryJournal:
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
         self._order_requests: dict[str, Any] = {}
+        self._backtest_progress: dict[str, dict[str, Any]] = {}
         # Admission evidence is the immutable creation fact, never the mutable
         # reservation state after a fill, release, or cancellation.
         self._reservation_creations: dict[tuple[str, str], dict[str, Any]] = {}
@@ -92,6 +93,29 @@ class BacktestMemoryJournal:
         """Return only a still-unfenced proposal for the projection worker."""
         with self._lock:
             return self._strategy_one_entries.get(record_id)
+
+    def attach_backtest_progress(self, record: JournalRecord,
+                                 state: dict[str, Any]) -> None:
+        """Freeze scalar progress beside its unfenced cursor, never as a blob."""
+        with self._lock:
+            self._require_open()
+            if (record.run_id != self.run_id
+                    or (record.category, record.entity_type) !=
+                    ("checkpoint", "market_boundary")
+                    or record.sequence <= self._fenced_sequence
+                    or record.sequence > self._next_sequence
+                    or self._records[record.sequence - self._base_sequence - 1] != record):
+                raise ValueError("Backtest progress requires an unfenced market cursor")
+            frozen = deepcopy(state)
+            prior = self._backtest_progress.get(record.record_id)
+            if prior is not None and prior != frozen:
+                raise ValueError("Backtest progress changed during cursor retry")
+            self._backtest_progress[record.record_id] = frozen
+
+    def backtest_progress_for_record(self, record_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            value = self._backtest_progress.get(record_id)
+            return deepcopy(value) if value is not None else None
 
     def append_strategy_one_protection_intent(
         self, *, intent: Any, account_id: str, strategy_id: str,
@@ -321,6 +345,7 @@ class BacktestMemoryJournal:
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
                     self._order_requests.pop(record.record_id, None)
+                    self._backtest_progress.pop(record.record_id, None)
                 del self._records[:discard]
                 self._base_sequence = sequence
             self._fenced_sequence = sequence
@@ -708,6 +733,7 @@ class BacktestMemoryJournal:
             self._closed = True
             self._strategy_one_entries.clear()
             self._order_requests.clear()
+            self._backtest_progress.clear()
             self._oms_groups.clear()
             self._oms_admissions.clear()
             self._reservation_creations.clear()

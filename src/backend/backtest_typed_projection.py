@@ -5,7 +5,7 @@ the fixed Backtest launch remains blocked until typed recovery is complete.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import Mapping
 from uuid import UUID, NAMESPACE_URL, uuid5
@@ -355,6 +355,8 @@ def project_pending_backtest_v4_prefix(
             reasons = project_reservation_reasons_v3(record, batch_id=batch_id)
             unit = V4ReservationReasonBatch(base, reasons) if reasons else base
         else:
+            progress_state = (journal.backtest_progress_for_record(record.record_id)
+                              if kind == ("checkpoint", "market_boundary") else None)
             batch = project_journal_record(
                 record, run_month=run_month, attempt_id=attempt,
                 batch_id=batch_id, prior_batch_id=previous,
@@ -364,6 +366,16 @@ def project_pending_backtest_v4_prefix(
                 fixed_market_execution_plan=fixed_market_execution_plan,
                 expected_market_start=expected_market_start,
                 committed_order_lineage=order_lineage)
+            if progress_state is not None:
+                from src.backend.typed_backtest_progress import project_backtest_progress
+                typed_progress = project_backtest_progress(
+                    record, progress_state, run_month=run_month,
+                    attempt_id=attempt, batch_id=batch_id,
+                    prior_batch_id=previous)
+                if (typed_progress.events != batch.events
+                        or typed_progress.backtest_cursors != batch.backtest_cursors):
+                    raise RuntimeError("Backtest progress differs from fixed cursor contract")
+                batch = replace(batch, backtest_progress=typed_progress.backtest_progress)
             sidecar = journal.strategy_one_entry_for_record(record.record_id)
             protection_source = journal.strategy_one_protection_for_record(
                 record.record_id)

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_typed_projection import (
-    NIL_BATCH_ID, project_pending_backtest_prefix,
+    NIL_BATCH_ID, project_pending_backtest_prefix, project_pending_backtest_v4_prefix,
 )
 from src.trading_runtime.arte_journal_writer import _sealed_families
 from src.trading_runtime.arte_journal_schema import strategy_signal_decision_upgrade_ddl
@@ -65,6 +65,40 @@ def test_actual_memory_records_project_into_chained_typed_families():
                for row in batch.events)
     assert _project(journal).batches == projected.batches
     assert journal.pending_record_count == 2  # Projection is not a durability fence.
+
+
+def test_v4_cursor_progress_is_named_and_fenced_with_its_parent():
+    journal = _journal()
+    cursor = journal.append(
+        run_id=RUN_ID, category="checkpoint", entity_type="market_boundary",
+        entity_id=f"{DAY.isoformat()}:{BOUNDARY}", event_time=AT,
+        payload={"session_date": DAY.isoformat(), "boundary_ms": BOUNDARY,
+                 "market_sequence": 7, "frame_as_of": None,
+                 "frame_ticker": None, "frame_timeframe": None,
+                 "frame_sequence": None})
+    state = {"identity": {"run_id": RUN_ID, "mode": "backtest"},
+             "controller": {"current_time": AT.isoformat(),
+                            "processed_events": 9, "warmup_events": 2,
+                            "processed_frames": 11,
+                            "source_cursor": {"session_date": DAY.isoformat(),
+                                              "boundary_ms": BOUNDARY,
+                                              "sequence": 7},
+                            "frame_cursor": {}},
+             "runtime": {"processed_events": 7,
+                         "last_event_time": AT.isoformat()}}
+    journal.attach_backtest_progress(cursor, state)
+    state["controller"]["processed_events"] = 999
+    unit, = project_pending_backtest_v4_prefix(
+        journal, attempt_id=ATTEMPT_ID, run_month=DAY.replace(day=1),
+        prior_sequence=0, through_sequence=1,
+        expected_config={"mode": "backtest"})
+    assert unit.backtest_progress[0]["controller_processed_events"] == 9
+    assert unit.backtest_progress[0]["parent_record_id"] == cursor.record_id
+    assert dict(_sealed_families(unit))["trading_backtest_progress_v1"]
+    with pytest.raises(ValueError, match="changed during cursor retry"):
+        journal.attach_backtest_progress(cursor, state)
+    journal.mark_fenced(1)
+    assert journal.backtest_progress_for_record(cursor.record_id) is None
 
 
 def test_strategy_order_command_projects_from_actual_memory_journal() -> None:
