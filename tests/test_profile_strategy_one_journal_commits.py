@@ -22,7 +22,7 @@ def test_profile_reports_bounded_commit_distribution():
     ])
     assert lines[0] == "V4 commits=3 events=11 terminal=1"
     assert lines[1] == "Commit events: min=1 median=1 max=9 mean=3.7"
-    assert lines[2].endswith("2, 0, 1, 0, 0")
+    assert lines[2].endswith("2, 0, 1, 0, 0, 0")
     assert lines[3] == "Cursor changes=1 family_count_median=4"
 
 

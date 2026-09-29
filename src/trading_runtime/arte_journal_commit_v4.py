@@ -47,6 +47,7 @@ from src.backend.backtest_protection_change_v3 import (
 
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
+MAX_V4_COMMIT_EVENTS = 2048
 
 
 def _same_utc_time(left, right) -> bool:
@@ -949,7 +950,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
 
     if (type(_prepare_only) is not bool
             or not isinstance(batch, TypedJournalBatch)
-            or not 1 <= len(batch.events) <= 2048
+            or not 1 <= len(batch.events) <= MAX_V4_COMMIT_EVENTS
             or batch.status not in {"running", "completed", "stopped", "failed"}):
         raise ValueError("V4 publication needs one bounded typed event batch")
     if (getattr(client, "typed_insert_strict", False) is not True
