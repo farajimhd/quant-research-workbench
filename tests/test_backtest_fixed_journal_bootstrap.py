@@ -439,7 +439,7 @@ def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
         bootstrap.publish_and_assemble_fixed_v4_journal(
             context, read, writer, terminal,
             projection_certifier=lambda: "a" * 64,
-            batch_size=2049, **kwargs)
+            batch_size=4097, **kwargs)
     assert calls == ["market"]
     monkeypatch.setattr(bootstrap, "load_typed_run_context",
                         lambda *_args: calls.append("writer context") or

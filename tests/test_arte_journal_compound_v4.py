@@ -106,14 +106,14 @@ def test_compound_rejects_gap_and_foreign_parent():
         coalesce_v4_units((first, V4PortfolioAllocationBatch(second, foreign)))
 
 
-def test_compound_accepts_2048_event_transport_bound_but_rejects_2049():
+def test_compound_accepts_4096_event_transport_bound_but_rejects_4097():
     units = tuple(_base(sequence, 10 + sequence,
                         0 if sequence == 1 else 9 + sequence)
-                  for sequence in range(1, 2050))
-    compound = coalesce_v4_units(units[:2048], max_events=2048)
-    assert len(compound.base.events) == 2048
+                  for sequence in range(1, 4098))
+    compound = coalesce_v4_units(units[:4096], max_events=4096)
+    assert len(compound.base.events) == 4096
     with pytest.raises(ValueError, match="event bound"):
-        coalesce_v4_units(units, max_events=2048)
+        coalesce_v4_units(units, max_events=4096)
 
 
 def test_mixed_preparation_seals_combined_base_without_clickhouse_io():

@@ -3213,7 +3213,7 @@ class ReplayRunController:
                         expected_market_start=self.definition.session_start,
                         projection_certifier=certify_strategy_one_v4_projection,
                         writer_factory=ArteJournalWriter,
-                        batch_size=2048)
+                        batch_size=4096)
                     bootstrap_timings["strategy_one_journal_assembly"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()

@@ -120,7 +120,7 @@ def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
         assert kwargs["config"]["strategy_revision"] == 1
         assert kwargs["expected_config"]["strategy_id"] == "early-squeeze-strategy"
         assert kwargs["expected_config"]["strategy_revision"] == 1
-        assert kwargs["batch_size"] == 2048
+        assert kwargs["batch_size"] == 4096
         assert kwargs["projection_certifier"]() == "e" * 64
         return assembly
 

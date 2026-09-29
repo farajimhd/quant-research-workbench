@@ -47,7 +47,7 @@ from src.backend.backtest_protection_change_v3 import (
 
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
-MAX_V4_COMMIT_EVENTS = 2048
+MAX_V4_COMMIT_EVENTS = 4096
 
 
 def _same_utc_time(left, right) -> bool:

@@ -36,6 +36,7 @@ from src.trading_runtime.arte_journal_schema import (
     V4_COMMIT_TABLES, fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
     fixed_backtest_v2_preflight, storage_preflight,
 )
+from src.trading_runtime.arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
@@ -398,7 +399,7 @@ def assemble_fixed_v4_journal(
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
     if (not isinstance(token, FixedV4JournalPreflightToken)
             or len({id(read_client), id(writer_client), id(terminal_client)}) != 3
-            or not 1 <= batch_size <= 2048 or not 1 <= queue_capacity <= 64
+            or not 1 <= batch_size <= MAX_V4_COMMIT_EVENTS or not 1 <= queue_capacity <= 64
             or expected_market_start.tzinfo is None
             or fixed_market_parent_plan is None
             or fixed_market_execution_plan is None
@@ -493,7 +494,7 @@ def publish_and_assemble_fixed_v4_journal(
             or expected_market_start.tzinfo is None):
         raise ValueError("V4 launch requires pinned Strategy 1 at 100 ms")
     UUID(attempt_id)
-    if not 1 <= batch_size <= 2048 or not 1 <= queue_capacity <= 64:
+    if not 1 <= batch_size <= MAX_V4_COMMIT_EVENTS or not 1 <= queue_capacity <= 64:
         raise ValueError("V4 launch journal bounds are invalid")
     # Every reversible check runs before the first Keeper gate or ClickHouse
     # INSERT. Once publication starts, failures remain cold-recovery work.

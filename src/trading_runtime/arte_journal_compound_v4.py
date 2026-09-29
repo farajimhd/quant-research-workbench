@@ -18,6 +18,7 @@ from .arte_journal_writer import (
     V4OrderRepriceBatch, V4ProtectionChangeBatch, V4StrategyOneEntryBatch,
     _can_coalesce, _coalesce_unpublished,
 )
+from .arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
 from .arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
 from .arte_protection_reconciliation_v4 import V4ProtectionReconciliationBatch
 from .arte_reservation_reason_v4 import V4ReservationReasonBatch
@@ -56,7 +57,7 @@ class V4CompoundBatch:
     def __post_init__(self) -> None:
         if (self.base.status != "running" or len(self.units) < 2
                 or set(self.children) != set(_CHILD_KEYS)
-                or len(self.base.events) > 2048
+                or len(self.base.events) > MAX_V4_COMMIT_EVENTS
                 or len(self.base.events)
                    != self.base.last_sequence - self.base.first_sequence + 1):
             raise ValueError("V4 compound lacks a bounded contiguous event prefix")
@@ -105,7 +106,7 @@ def coalesce_v4_units(
 ) -> V4CompoundBatch:
     """Rekey adjacent unpublished micro-units without mutating source rows."""
     if (len(units) < 2 or type(max_events) is not int
-            or not 2 <= max_events <= 2048):
+            or not 2 <= max_events <= MAX_V4_COMMIT_EVENTS):
         raise ValueError("V4 compound needs two or more bounded units")
     bases = []
     for unit in units:
