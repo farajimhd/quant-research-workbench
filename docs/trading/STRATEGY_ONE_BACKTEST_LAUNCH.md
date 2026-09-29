@@ -467,3 +467,18 @@ three times in the $100,000 run. Any warm-path optimization must retain the
 Keeper-compacted prefix, exact current-batch row hashes, causal cursor, and
 cold reader verification; merely omitting the readback would weaken the
 journal contract.
+
+On commit `396f46747`, writer-owned Strategy 1 snapshot publication switched
+from re-verifying all older V4 detail batches to checking the current
+Keeper-compacted head and re-verifying the current batch's normalized detail
+rows. Cold review and recovery still use the full-prefix scan. The full
+Aug 18 app-route run at $100,000 cash (`cbb8e513-41a5-4cca-b7a6-7ced45e96b4b`)
+passed preflight in 27.254s and completed execution in 58.773s. It kept the
+same 7,785 journal rows, 17 writer units, three snapshot sets, and zero
+failed units. The three snapshot families together took 13.687s, versus
+roughly 27–30s in the two comparable earlier runs; terminal handling took
+23.002s versus 36–42s. The session itself took 27.812s, so this is a
+measured reduction in snapshot/terminal cost, not a claimed strategy-engine
+speedup. A fresh cold causal audit verified all 7,785 events, 58 intents,
+3,682 linked actions, and zero backdated actions. Keeper connection-drop
+messages still appeared during shutdown and remain unresolved.
