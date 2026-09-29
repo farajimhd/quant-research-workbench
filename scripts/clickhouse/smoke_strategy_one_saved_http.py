@@ -25,15 +25,15 @@ from scripts.clickhouse.smoke_strategy_one_backtest import (  # noqa: E402
     _load_private_credentials,
 )
 def _ticker(run_id: str) -> str:
-    from src.trading_runtime.arte_backtest_definition import load_backtest_definition
-    from src.trading_runtime.arte_journal_writer import (
-        backtest_v4_operator_client_from_env, load_typed_run_context,
-    )
+    from src.backend.backtest_market_data import readonly_clickhouse_client
+    from src.backend.backtest_v4_chart import certified_saved_run_plan
+    from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
 
-    with closing(backtest_v4_operator_client_from_env()) as client:
-        context = load_typed_run_context(client, run_id)
-        definition = load_backtest_definition(client, run_id, run_context=context)
-    tickers = tuple(row["ticker"] for row in definition["tickers"])
+    with closing(backtest_v4_operator_client_from_env()) as journal_client, \
+            closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
+        _, _, _, plan = certified_saved_run_plan(
+            journal_client, market_client, run_id=run_id)
+    tickers = plan.tickers
     if not tickers or len(set(tickers)) != len(tickers):
         raise RuntimeError("Saved run has no unique certified chart ticker")
     return tickers[0]
