@@ -1349,31 +1349,52 @@ def _decimal_content_bounds(base: str) -> tuple[int, Decimal, Decimal]:
     return scale, Decimal(1).scaleb(-scale), Decimal(10) ** (precision - scale)
 
 
+@lru_cache(maxsize=None)
+def _typed_content_fields(name: str) -> tuple[tuple[str, str, bool, Any], ...]:
+    """Compile immutable schema dispatch once, never once per journal row."""
+    _, columns = _typed_content_shape(name)
+    fields = []
+    for column, kind in columns:
+        if column == "content_hash":
+            continue
+        nullable = kind.startswith("Nullable(")
+        base = kind[9:-1] if nullable else kind
+        if base.startswith("DateTime64(9"):
+            conversion, parameter = "datetime", 9
+        elif base.startswith("DateTime64(6"):
+            conversion, parameter = "datetime", 6
+        elif base.startswith("Decimal("):
+            conversion, parameter = "decimal", _decimal_content_bounds(base)
+        elif base.startswith("UInt"):
+            conversion, parameter = "uint", 1 << int(base[4:])
+        elif base in {"Int64", "Int32", "Bool", "Float64", "UUID", "Date",
+                      "String", "LowCardinality(String)", "FixedString(64)"}:
+            conversion, parameter = base, None
+        else:
+            raise ValueError(f"Unsupported typed journal field {name}.{column}: {kind}")
+        fields.append((column, conversion, nullable, parameter))
+    return tuple(fields)
+
+
 def _canonical_typed_content(
     name: str, row: Mapping[str, Any], *, stored_utc: bool = False,
 ) -> dict[str, Any]:
     """Canonicalize every persisted field for reproducible row-hash recovery."""
-    expected, columns = _typed_content_shape(name)
+    expected, _ = _typed_content_shape(name)
     if set(row) != expected:
         raise ValueError(f"{name} has missing or extra typed columns")
     canonical: dict[str, Any] = {}
-    for column, kind in columns:
-        if column == "content_hash":
-            continue
+    for column, conversion, nullable, parameter in _typed_content_fields(name):
         value = row[column]
-        nullable = kind.startswith("Nullable(")
         if value is None:
             if not nullable:
                 raise ValueError(f"{name}.{column} cannot be null")
             canonical[column] = None
             continue
-        base = kind[9:-1] if nullable else kind
-        if base.startswith("DateTime64(9"):
-            canonical[column] = _datetime_wire(value, 9, stored_utc=stored_utc)
-        elif base.startswith("DateTime64(6"):
-            canonical[column] = _datetime_wire(value, 6, stored_utc=stored_utc)
-        elif base.startswith("Decimal("):
-            scale, quantum, maximum = _decimal_content_bounds(base)
+        if conversion == "datetime":
+            canonical[column] = _datetime_wire(value, parameter, stored_utc=stored_utc)
+        elif conversion == "decimal":
+            scale, quantum, maximum = parameter
             try:
                 with localcontext() as context:
                     context.prec = 50
@@ -1386,37 +1407,37 @@ def _canonical_typed_content(
             if quantized.copy_abs() >= maximum:
                 raise ValueError(f"{name}.{column} exceeds decimal width")
             canonical[column] = format(quantized, f".{scale}f")
-        elif base.startswith("UInt"):
+        elif conversion == "uint":
             if isinstance(value, bool) or not str(value).isdigit():
                 raise ValueError(f"{name}.{column} is not an unsigned integer")
             number = int(value)
-            if number >= 1 << int(base[4:]):
+            if number >= parameter:
                 raise ValueError(f"{name}.{column} exceeds its unsigned width")
             canonical[column] = number
-        elif base == "Int64":
+        elif conversion == "Int64":
             if type(value) is not int or not -(2**63) <= value < 2**63:
                 raise ValueError(f"{name}.{column} is not an Int64")
             canonical[column] = value
-        elif base == "Int32":
+        elif conversion == "Int32":
             if type(value) is not int or not -(2**31) <= value < 2**31:
                 raise ValueError(f"{name}.{column} is not an Int32")
             canonical[column] = value
-        elif base == "Bool":
+        elif conversion == "Bool":
             if type(value) is bool:
                 canonical[column] = value
             elif stored_utc and type(value) is int and value in (0, 1):
                 canonical[column] = bool(value)
             else:
                 raise ValueError(f"{name}.{column} is not a Bool")
-        elif base == "Float64":
+        elif conversion == "Float64":
             if type(value) not in (int, float) or not math.isfinite(value):
                 raise ValueError(f"{name}.{column} is not a finite Float64")
             canonical[column] = float(value)
-        elif base == "UUID":
+        elif conversion == "UUID":
             canonical[column] = str(UUID(str(value)))
-        elif base == "Date":
+        elif conversion == "Date":
             canonical[column] = date.fromisoformat(str(value)).isoformat()
-        elif base in {"String", "LowCardinality(String)", "FixedString(64)"}:
+        elif conversion in {"String", "LowCardinality(String)", "FixedString(64)"}:
             if not isinstance(value, str):
                 raise ValueError(f"{name}.{column} is not a string")
             # A String column is not an escape hatch for an unmodelled JSON
@@ -1433,8 +1454,6 @@ def _canonical_typed_content(
                             f"{name}.{column} requires normalized typed rows, not JSON text"
                         )
             canonical[column] = value
-        else:
-            raise ValueError(f"Unsupported typed journal field {name}.{column}: {kind}")
     return canonical
 
 
