@@ -28,7 +28,9 @@ class TypedOmsActorImage:
 def _time(value: Any, *, cutoff_at: datetime) -> datetime:
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if parsed.tzinfo is None or parsed > cutoff_at:
-        raise RuntimeError("Typed OMS timestamp exceeds the recovery boundary")
+        raise RuntimeError(
+            f"Typed OMS recovery boundary {cutoff_at.isoformat()} precedes "
+            f"timestamp {parsed.isoformat()}")
     return parsed
 
 
