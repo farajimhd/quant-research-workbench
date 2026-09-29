@@ -1725,18 +1725,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [payload, visibleColumnKey, visibleSupervisionKey, liveEntryLineKey]);
 
   useEffect(() => {
-    const scale = candleRef.current?.priceScale();
-    const range = scale?.getVisibleRange();
-    if (!range || !liveEntryLine) return;
-    const prices = [liveEntryLine.price, liveEntryLine.stopPrice, ...(liveEntryLine.targetPrices ?? [])]
-      .filter((price): price is number => typeof price === 'number' && Number.isFinite(price) && price > 0);
-    const padding = Math.max((range.to-range.from)*0.04, 0.01);
-    const from = Math.min(range.from, ...prices.map(price => price-padding));
-    const to = Math.max(range.to, ...prices.map(price => price+padding));
-    if (from < range.from || to > range.to) scale?.setVisibleRange({from, to});
-  }, [liveEntryLine?.price, liveEntryLine?.stopPrice, JSON.stringify(liveEntryLine?.targetPrices)]);
-
-  useEffect(() => {
     if (!priceChartRef.current) return;
     updateOscillatorPanes(oscillatorPaneGroups);
   }, [payload, visibleColumnKey, timeframe, oscillatorThresholdSettings, emaCurvature, emaUnits, emaLength, formingMacd.series]);
