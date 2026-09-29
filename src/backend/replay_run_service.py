@@ -3492,7 +3492,6 @@ class ReplayRunController:
             await self._finish("stopped")
             return
         finally:
-            self._strategy_one_manager = None
             self._record_stage_time("strategy_one_session", session_started)
         if self._stop_requested:
             await self._finish("stopped")
@@ -3924,6 +3923,10 @@ class ReplayRunController:
         finally:
             if self._journal_writer is not None:
                 await self._close_fixed_journal()
+            # The sparse session's trailing empty boundary and terminal V4
+            # cursor still need the manager capture. Release it only after
+            # the final journal receipt has drained (including failure paths).
+            self._strategy_one_manager = None
             await asyncio.to_thread(self._session_relative_volume_store.close)
             pool=getattr(self,'_prepared_v7',None)
             if pool is not None:
