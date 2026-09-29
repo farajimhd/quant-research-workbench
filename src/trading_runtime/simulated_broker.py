@@ -216,11 +216,13 @@ class SimulatedBrokerAdapter:
 
     requires_fresh_execution_state = False
 
-    def __init__(self, account_ids: list[str], config: SimulationConfig | None = None, *, mode: TradingMode = TradingMode.REPLAY, initial_time: datetime | None = None) -> None:
+    def __init__(self, account_ids: list[str], config: SimulationConfig | None = None, *, mode: TradingMode = TradingMode.REPLAY, initial_time: datetime | None = None, fixed_bar_mode: bool = False) -> None:
         if not account_ids or any(not item.strip() for item in account_ids):
             raise ValueError("At least one non-empty simulated account id is required")
         if len(set(account_ids)) != len(account_ids):
             raise ValueError("Simulated account ids must be unique")
+        if fixed_bar_mode and mode != TradingMode.BACKTEST:
+            raise ValueError("Fixed-bar broker mode requires Backtest")
         self.config = config or SimulationConfig()
         self.mode = mode
         if initial_time is not None and initial_time.tzinfo is None:
@@ -246,7 +248,9 @@ class SimulatedBrokerAdapter:
         self._performance = dict(complete=True, as_of='', unrealized=0., market_value=0.,
             peak_unrealized=0., worst_unrealized=0., equity_peak=0., maximum_drawdown=0.)
         self._liquidity_consumed: dict[str, tuple[str, float]] = {}
-        self._bar_mode = False
+        # Execution mode is a run contract, not evidence inferred from the
+        # first market row. An empty fixed-bar horizon still needs a checkpoint.
+        self._bar_mode = fixed_bar_mode
         self._bar_boundaries: dict[str, datetime] = {}
         self._bar_marks_by_ticker: dict[str, float] = {}
         self._next_order_id = 1

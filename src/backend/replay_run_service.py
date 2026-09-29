@@ -4705,6 +4705,10 @@ class ReplayRunController:
             _simulation_config(self.definition),
             mode=TradingMode(self.definition.mode.value),
             initial_time=self.definition.session_start,
+            fixed_bar_mode=(fixed_restore is None and self._resume_state is None
+                            and self.definition.mode == RunMode.BACKTEST
+                            and not _backtest_launch_blocker(self.definition)
+                            and self.definition.execution_interval == "100ms"),
         )
         if fixed_restore is not None:
             broker.restore_checkpoint_state(fixed_restore.broker)

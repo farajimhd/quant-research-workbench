@@ -70,6 +70,26 @@ def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,
 
 
 class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_fixed_bar_horizon_has_checkpoint_without_market_rows(self):
+        broker = SimulatedBrokerAdapter(
+            ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
+            fixed_bar_mode=True,
+        )
+        await broker.initialize()
+        snapshot = broker.broker_match_snapshot_state()
+        self.assertTrue(snapshot["bar_mode"])
+        self.assertEqual(snapshot["bar_boundaries"], {})
+        self.assertEqual(snapshot["orders"], [])
+        restored = SimulatedBrokerAdapter(
+            ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
+        )
+        restored.restore_checkpoint_state(snapshot)
+        self.assertEqual(restored.broker_match_snapshot_state(), snapshot)
+
+    async def test_fixed_bar_mode_cannot_enable_replay(self):
+        with self.assertRaisesRegex(ValueError, "requires Backtest"):
+            SimulatedBrokerAdapter(["TEST"], fixed_bar_mode=True)
+
     async def asyncSetUp(self):
         self.broker = SimulatedBrokerAdapter(
             ["TEST"], SimulationConfig(initial_cash=100_000,
