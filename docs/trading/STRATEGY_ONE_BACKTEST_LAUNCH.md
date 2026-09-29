@@ -496,3 +496,14 @@ A fresh cold audit verified 58 intents, 3,682 linked actions, and zero
 backdated actions. The Backtest-specific resume HTTP route now rejects before
 the generic disk-manifest/SQLite Replay path; actor restoration remains
 fail-closed rather than pretending a saved Backtest is resumable.
+
+Commit `b1621e513` cached immutable typed-journal schema shapes and Decimal
+bounds during row canonicalization. On the same full-market Aug 18 app route
+with $100,000 cash, run `b7b31eac-ab6b-4b5d-9c60-e0b2fc49ec3f` passed
+preflight in 26.438s and completed in 56.005s. It committed 7,785 events
+in 17 writer units with zero failures; cold review audited 58 intents,
+3,682 linked actions, and zero backdated actions. Compound preparation took
+7.589s versus 8.554s in the immediately preceding run. This single
+measurement suggests lower CPU preparation cost, but does not establish a
+stable end-to-end speedup. Session and terminal phases took 27.715s and
+19.889s. Keeper shutdown connection warnings remained.
