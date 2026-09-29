@@ -1102,6 +1102,40 @@ def test_fixed_journal_starts_background_fence_before_terminal_session():
         at, nonblocking_fixed=True)
 
 
+def test_nonblocking_fixed_checkpoint_keeps_a_bounded_polling_snapshot():
+    from concurrent.futures import Future
+
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller.run_id = RUN
+    controller.status = "running"
+    controller.processed_events = 1
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._checkpoint_io_task = None
+    controller._journal_publish_error = None
+    controller._strategy_one_manager = None
+    controller._source_cursor = {"session_date": DAY, "boundary_ms": 100,
+                                 "sequence": 1}
+    controller._frame_cursor = {}
+    controller._flush_passive_market_events = lambda: None
+    controller._record_stage_time = lambda *_args: None
+    controller._restart_checkpoint_interval_events = lambda: None
+    polling = {"run_id": RUN, "progress": 0.25, "checkpoint": {},
+               "created_at": "2026-08-18T08:00:00Z",
+               "updated_at": "2026-08-18T08:00:00Z"}
+    controller.stream_snapshot = lambda: dict(polling)
+    receipt = Future()
+    controller._journal_publisher = SimpleNamespace(
+        enqueue_checkpoint=lambda **_kwargs: receipt)
+    at = datetime(2026, 8, 18, 4, 0, 0, 100000, tzinfo=NY)
+
+    asyncio.run(controller._save_restart_checkpoint_responsive(
+        at, nonblocking_fixed=True))
+
+    assert controller._checkpoint_work_snapshot == polling
+    assert controller._checkpoint_io_task is receipt
+
+
 def test_fixed_journal_close_retains_only_worker_metrics():
     controller = object.__new__(ReplayRunController)
     closed = []

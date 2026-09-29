@@ -2365,7 +2365,10 @@ class ReplayRunController:
                 if capture_broker is None:
                     raise RuntimeError('Strategy 1 broker cannot capture match state')
                 broker_state = (boundary, capture_broker())
-            snapshot = {} if nonblocking_fixed else self.stream_snapshot()
+            # The writer remains asynchronous, but UI readers still require a
+            # complete bounded status snapshot while the receipt is pending.
+            # An empty placeholder makes both run listing and polling fail.
+            snapshot = self.stream_snapshot()
             self._checkpoint_phase = 'checkpoint_capture'
             self._checkpoint_started_at = datetime.now(UTC)
             self._checkpoint_work_snapshot = snapshot
