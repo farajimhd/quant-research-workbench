@@ -124,7 +124,8 @@ def empty_stop_seconds(seconds: np.ndarray, trajectory: pl.DataFrame,
         for i, uid in enumerate(episodes):
             held_features[0, i] = [math.log1p(float(held[uid]['quantity'])),
                 math.log(float(held[uid]['entry_price'])),
-                min((now-int(held[uid]['entry_us']))/3_600_000_000., 1.),
+                math.log1p(max(0., (now-int(held[uid]['entry_us']))/1_000_000.)) /
+                    math.log1p(57_600.),
                 marks[i]/float(held[uid]['entry_price'])-1.]
         mask = np.zeros((1, 1+len(tickers)+width), dtype=np.bool_)
         mask[0, 0] = True
@@ -223,7 +224,8 @@ def order_seconds(orders: pl.DataFrame, trajectory: pl.DataFrame,
             held_features = np.asarray([
                 [math.log1p(float(held[uid]['quantity'])),
                  math.log(float(held[uid]['entry_price'])),
-                 min((now-int(held[uid]['entry_us']))/3_600_000_000., 1.),
+                 math.log1p(max(0., (now-int(held[uid]['entry_us']))/1_000_000.)) /
+                     math.log1p(57_600.),
                  marks[i]/float(held[uid]['entry_price'])-1.]
                 for i, uid in enumerate(episodes)], dtype=np.float32).reshape(-1, 4)
             return account, episodes, slots, held_features

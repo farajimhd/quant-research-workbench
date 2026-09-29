@@ -35,7 +35,8 @@ certified order and position ledgers, checks cash/profit-bank/realized P&L and
 open-lot counts against the trajectory, and maps BUY/SELL tokens to the bound
 listing axis and current holding slots. It supplies only causal account and
 marked-price features to the policy; the teacher's episode IDs remain adapter
-keys and never become input features.
+keys and never become input features. Holding age is log-scaled over the full
+session, retaining distinctions among one-hour and multi-hour positions.
 The same adapter supplies deterministic STOP examples from empty seconds:
 all seconds within 15 seconds of a teacher order plus one background second
 per minute. Those sampling parameters and the STOP/action balance must be
