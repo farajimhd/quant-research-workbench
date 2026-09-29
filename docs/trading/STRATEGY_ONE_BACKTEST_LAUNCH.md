@@ -482,3 +482,17 @@ measured reduction in snapshot/terminal cost, not a claimed strategy-engine
 speedup. A fresh cold causal audit verified all 7,785 events, 58 intents,
 3,682 linked actions, and zero backdated actions. Keeper connection-drop
 messages still appeared during shutdown and remain unresolved.
+
+Commit `7d79b8681` reused the first current-batch detail verification for
+later snapshot families at the *same* Keeper head, with lease, gate, and
+stored-commit-hash checks on each reuse. A same-configuration full Aug 18
+app-route run (`25461a1e-52a5-4419-866e-deaa9944c4cc`) completed in
+58.986s after 29.323s preflight, with 7,785 events, 17 writer units, three
+snapshot sets, and zero failures. Snapshot-family time fell further to
+8.971s, and terminal handling to 20.969s. Overall execution was essentially
+unchanged from the prior 58.773s run because the causal session took 29.409s
+instead of 27.812s; no end-to-end speedup is claimed for this one sample.
+A fresh cold audit verified 58 intents, 3,682 linked actions, and zero
+backdated actions. The Backtest-specific resume HTTP route now rejects before
+the generic disk-manifest/SQLite Replay path; actor restoration remains
+fail-closed rather than pretending a saved Backtest is resumable.

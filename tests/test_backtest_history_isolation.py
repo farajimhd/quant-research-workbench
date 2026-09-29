@@ -5,10 +5,22 @@ from threading import Event
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
-from src.backend.app import backtest_run_service, trading_backtest_runs
+from fastapi import HTTPException
+from src.backend.app import (
+    backtest_run_service, trading_backtest_run_resume, trading_backtest_runs,
+)
 
 
 class BacktestHistoryIsolationTests(IsolatedAsyncioTestCase):
+    async def test_resume_fails_before_any_disk_backed_replay_lookup(self):
+        with patch.object(backtest_run_service, "resume") as legacy:
+            with self.assertRaises(HTTPException) as raised:
+                await trading_backtest_run_resume(
+                    "00000000-0000-0000-0000-000000000001")
+            self.assertEqual(raised.exception.status_code, 409)
+            self.assertIn("ClickHouse/Keeper", raised.exception.detail)
+            legacy.assert_not_called()
+
     async def test_history_does_not_queue_behind_preparation(self):
         loop = asyncio.get_running_loop()
         loop.set_default_executor(ThreadPoolExecutor(max_workers=1))

@@ -6123,14 +6123,20 @@ async def trading_backtest_run_stop(run_id: str) -> dict[str, Any]:
 
 @app.post("/api/trading/backtest/runs/{run_id}/resume")
 async def trading_backtest_run_resume(run_id: str) -> dict[str, Any]:
+    # This route is Backtest-only. Its journal authority is ClickHouse/Keeper;
+    # never let the generic Replay resume service inspect a disk manifest or
+    # SQLite journal while normalized actor restoration remains unadmitted.
+    from uuid import UUID
+
     try:
-        return (await backtest_run_service.resume(run_id)).snapshot()
-    except KeyError as exc:
+        UUID(run_id)
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
-    except ReplayRunCapacityError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    raise HTTPException(
+        status_code=409,
+        detail="Strategy 1 Backtest resume requires verified normalized "
+               "ClickHouse/Keeper actor recovery; start a new run",
+    )
 
 
 @app.post("/api/trading/backtest/runs/{run_id}/commands")
