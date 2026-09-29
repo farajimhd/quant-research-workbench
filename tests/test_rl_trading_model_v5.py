@@ -1,9 +1,12 @@
 import polars as pl
 import torch
+import numpy as np
 
 from research.rl_trading.v1.dynamic_supervision import order_labels
 from research.rl_trading.v1.model_v5 import DynamicMarketPolicy
 from research.rl_trading.v1.objective_v5 import teacher_loss
+from research.rl_trading.v1.v5_feature_binding import (
+    FEATURE_BANK_SECONDS, FeatureBinding, feature_chunks)
 
 
 def test_streaming_120_second_context_matches_full_causal_sequence():
@@ -98,3 +101,19 @@ def test_v5_loss_learns_buy_size_and_excludes_padded_orders():
     assert sizes.grad[0, 1, 1] != 0
     assert sizes.grad[0, 3].abs().sum() == 0
     assert logits.grad[0, 3].abs().sum() == 0
+
+
+def test_feature_chunks_stop_at_teacher_cutoff_without_window_duplication(tmp_path):
+    path = tmp_path / 'features.npy'
+    bank = np.lib.format.open_memmap(path, mode='w+', dtype=np.float32,
+                                     shape=(2, FEATURE_BANK_SECONDS, 3))
+    bank[0, :7, 0] = np.arange(7)
+    bank[1, :7, 0] = np.arange(7) + 10
+    bank.flush()
+    del bank
+    bound = FeatureBinding('2026-07-30', ('A', 'B'), 7, 3, path, 'hash',
+                           tmp_path / 'orders.parquet', 'hash', 'plan')
+    chunks = list(feature_chunks(bound, seconds_per_chunk=3, device=torch.device('cpu')))
+    assert [start for start, _ in chunks] == [0, 3, 6]
+    assert [chunk.shape[1] for _, chunk in chunks] == [3, 3, 1]
+    assert torch.cat([chunk for _, chunk in chunks], 1)[0, :, 0, 0].tolist() == list(range(7))

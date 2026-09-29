@@ -14,10 +14,11 @@ import torch
 
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v1.dynamic_supervision import VERSION as SUPERVISION_VERSION
-from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS
 from research.rl_trading.v1.phase2_close_values import VERSION as PHASE2_VERSION
 from research.rl_trading.v1.phase3_dynamic_teacher import VERSION as PHASE3_VERSION
 from src.market_engine.level_book_store import read
+
+FEATURE_BANK_SECONDS = 57_601
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class FeatureBinding:
     date: str
     tickers: tuple[str, ...]
     decision_seconds: int
+    feature_count: int
     features: Path
     features_hash: str
     orders: Path
@@ -43,7 +45,7 @@ def feature_chunks(binding: FeatureBinding, *, seconds_per_chunk: int,
     if seconds_per_chunk < 1:
         raise ValueError('seconds_per_chunk must be positive')
     bank = np.load(binding.features, mmap_mode='r', allow_pickle=False)
-    if bank.shape != (len(binding.tickers), SECONDS, len(FEATURE_NAMES)):
+    if bank.shape != (len(binding.tickers), FEATURE_BANK_SECONDS, binding.feature_count):
         raise ValueError('Certified feature bank shape changed')
     try:
         for start in range(0, binding.decision_seconds, seconds_per_chunk):
@@ -76,6 +78,7 @@ def bind_existing_features(supervision_root: Path, shard_root: Path,
     copy the old actions or substitute hindsight Phase 2 columns as features.
     """
     runtime = runtime_root.resolve()
+    from research.rl_trading.v1.features import FEATURE_NAMES
     supervision_root, shard_root = supervision_root.resolve(), shard_root.resolve()
     if not runtime.is_dir() or any(not path.is_relative_to(runtime)
                                     for path in (supervision_root, shard_root)):
@@ -121,7 +124,7 @@ def bind_existing_features(supervision_root: Path, shard_root: Path,
             len(set(shard['tickers'])) != len(shard['tickers']) or
             teacher['date'] != shard['date'] or new_phase2['date'] != shard['date'] or
             shard_done.get('rows') != teacher_done.get('trajectory_rows') or
-            not 1 <= int(teacher_done.get('trajectory_rows', 0)) <= SECONDS):
+            not 1 <= int(teacher_done.get('trajectory_rows', 0)) <= FEATURE_BANK_SECONDS):
         raise ValueError('Causal feature bank does not match the dynamic teacher population')
     features = shard_root / 'features.npy'
     orders = supervision_root / 'orders.parquet'
@@ -131,7 +134,8 @@ def bind_existing_features(supervision_root: Path, shard_root: Path,
             file_hash(features) != features_hash or file_hash(orders) != orders_hash):
         raise ValueError('Feature or order bytes changed after certification')
     bank = np.load(features, mmap_mode='r', allow_pickle=False)
-    if bank.shape != (len(expected_tickers), SECONDS, len(FEATURE_NAMES)) or bank.dtype != np.float32:
+    if (bank.shape != (len(expected_tickers), FEATURE_BANK_SECONDS, len(FEATURE_NAMES)) or
+            bank.dtype != np.float32):
         raise ValueError('Causal feature bank shape or dtype changed')
     del bank
     label_tickers = pl.scan_parquet(orders).select('ticker').unique().collect()['ticker'].to_list()
@@ -139,5 +143,5 @@ def bind_existing_features(supervision_root: Path, shard_root: Path,
     if missing:
         raise ValueError(f'{len(missing)} teacher listings are absent from causal features')
     return FeatureBinding(shard['date'], tuple(expected_tickers),
-                          int(teacher_done['trajectory_rows']), features,
+                          int(teacher_done['trajectory_rows']), len(FEATURE_NAMES), features,
                           features_hash, orders, orders_hash, supervision['plan_hash'])
