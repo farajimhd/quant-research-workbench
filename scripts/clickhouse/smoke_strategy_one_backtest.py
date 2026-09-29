@@ -415,6 +415,23 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
 async def _resume_interrupted(run_id: str) -> None:
     """Exercise the cold actor/writer handoff before opening the app route."""
     from src.backend.replay_run_service import ReplayRunService
+    from src.trading_runtime.runtime import TradingRuntime
+
+    execute_intents = TradingRuntime._execute_intents
+
+    async def trace_protection(self, *args, **kwargs):
+        result = await execute_intents(self, *args, **kwargs)
+        if kwargs.get("strategy_one_assignment_id") and result:
+            for row in result:
+                if row.get("order_group") is None:
+                    decision = row.get("decision") or {}
+                    print("Cold protection result: "
+                          f"status={decision.get('status')} "
+                          f"reason={str(decision.get('reason') or '')[:300]}",
+                          flush=True)
+        return result
+
+    TradingRuntime._execute_intents = trace_protection
 
     service = ReplayRunService(runtime_root=RUNTIME_ROOT)
     definition = await asyncio.to_thread(
