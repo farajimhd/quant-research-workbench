@@ -1129,7 +1129,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
 
   return (
     <div className={manager ? "canvas-config-page" : savedV4Focus ? "canvas-config-page canvas-focus-page saved-v4-chart-page" : "canvas-config-page canvas-focus-page"}>
-      <header className="canvas-config-toolbar">
+      {savedV4Focus ? null : <header className="canvas-config-toolbar">
         {labelerCanvas ? <strong>Labeler Canvas</strong> : savedV4Focus ? null : <><div className="canvas-clock-control" aria-label="Preview clock">
           <div className="canvas-clock-zones" aria-label="Preview time zones">
             {previewClocks.map((clock, index) => {
@@ -1142,7 +1142,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         {contextError && !replayRun ? <span className="canvas-context-warning" title={contextError}>Saved clock</span> : null}
         <div className="canvas-mode-context-slot">{modeControls}{readOnly || labelerCanvas ? null : <TradingPerformanceStrip state={performanceState} />}</div>
         {managementEnabled ? <div className="canvas-toolbar-actions">{manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState || !editableProfileReady} onClick={() => void saveDefaultLayout()} title="Save this composition as the shared draft default. Publish it from Trading Configuration before Live or Paper can use it." type="button"><Save size={13} /> {defaultSaved ? "Shared default saved" : "Save shared default"}</button> : null}<button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
-      </header>
+      </header>}
 
       {(contextError && replayRun) || error ? <div className="canvas-status-stack">
         {contextError && replayRun ? <div aria-live="assertive" className="canvas-inline-error replay-runtime-error"><TriangleAlert aria-hidden="true" size={15} /><div><strong>{runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : "Replay"} stopped</strong><span>{contextError}</span></div></div> : null}

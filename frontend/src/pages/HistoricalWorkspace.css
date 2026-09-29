@@ -57,7 +57,6 @@
 .backtest-v4-running { height: 100%; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
 .backtest-v4-running > .canvas-config-toolbar { grid-template-columns: max-content minmax(0, 1fr); }
 .saved-v4-chart-page { grid-template-rows: minmax(0, 1fr); gap: 0; }
-.saved-v4-chart-page > .canvas-config-toolbar { display: none; }
 .saved-v4-chart-page > .trading-workspace-shell { grid-row: 1; }
 .backtest-v4-running > .canvas-config-toolbar .canvas-mode-context-slot { min-width: 0; }
 .backtest-v4-running > .canvas-config-toolbar .historical-backtest-progress { width: 100%; }
