@@ -87,7 +87,8 @@ def _rows_for(client, run_id: str, table: str, fields: tuple[str, ...]) -> list[
     return sorted(tuple(str(row[field]) for field in fields) for row in rows)
 
 
-def _explain_difference(client, left_id: str, right_id: str) -> None:
+def _explain_difference(client, left_id: str, right_id: str,
+                        ticker: str = "") -> None:
     """Print bounded scalar lineage and fill deltas, never source payloads."""
     def event_counts(run_id: str) -> dict[tuple[str, str], int]:
         rows = _rows(client,
@@ -172,9 +173,24 @@ def _explain_difference(client, left_id: str, right_id: str) -> None:
     changed = [(key, left.get(key), right.get(key)) for key in sorted(left.keys() | right.keys())
                if left.get(key) != right.get(key)]
     print(f"Execution order-side groups differing: {len(changed)}", flush=True)
-    for (order_id, ticker, side), before, after in changed[:30]:
-        print(f"  {ticker} {side} order={order_id}:"
+    for (order_id, symbol, side), before, after in changed[:30]:
+        print(f"  {symbol} {side} order={order_id}:"
               f" left={before} right={after}", flush=True)
+    if ticker:
+        fields = ("intent_id", "ticker", "action", "quantity", "reference_price",
+                  "invalidation_price", "profit_target_price", "capital_mode",
+                  "capital_value")
+        for label, run_id in (("left", left_id), ("right", right_id)):
+            rows = _rows(client,
+                f"SELECT {','.join(fields)} FROM arte.trading_strategy_intent_v1 "
+                f"WHERE run_id={_literal(run_id)} AND ticker={_literal(ticker)} "
+                "ORDER BY intent_id LIMIT 11 FORMAT JSONEachRow")
+            if len(rows) > 10 or any(set(row) != set(fields) for row in rows):
+                raise RuntimeError("Ticker intent comparison exceeds its typed bound")
+            print(f"{label} {ticker} intents ({len(rows)}):", flush=True)
+            for row in rows:
+                print("  " + " ".join(f"{field}={row[field]}" for field in fields),
+                      flush=True)
 
 
 def main() -> None:
@@ -183,7 +199,13 @@ def main() -> None:
     parser.add_argument("--right", required=True, type=lambda value: str(UUID(value)))
     parser.add_argument("--explain", action="store_true",
                         help="print bounded scalar lineage and order-side fill differences")
+    parser.add_argument("--ticker", default="",
+                        help="with --explain, print at most ten typed intents for one ticker")
     args = parser.parse_args()
+    if args.ticker and (not args.explain or not args.ticker.isascii()
+                        or not args.ticker.isalnum() or len(args.ticker) > 16
+                        or args.ticker != args.ticker.upper()):
+        parser.error("--ticker requires --explain and one uppercase ASCII ticker")
     _load_private_credentials()
     client = backtest_v4_operator_client_from_env()
     try:
@@ -212,7 +234,7 @@ def main() -> None:
                            if old != new}
                 print(f"  differing scalar fields: {', '.join(sorted(changed))}", flush=True)
         if args.explain:
-            _explain_difference(client, args.left, args.right)
+            _explain_difference(client, args.left, args.right, args.ticker)
         if failed:
             raise SystemExit(1)
     finally:
