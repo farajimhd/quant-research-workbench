@@ -765,7 +765,7 @@ class PortfolioManagementEngine:
             self._update_realized_pnl(state, ledger.realizedpnl)
             state.sync_state = PortfolioSyncState.SYNCHRONIZED
             state.stale_reason = ""
-            self._reconcile_account(state)
+            self._reconcile_account(state, record=persist)
             if persist:
                 self._persist_state(state)
 
@@ -2118,7 +2118,7 @@ class PortfolioManagementEngine:
         age_ms = (now - state.observed_at.astimezone(timezone.utc)).total_seconds() * 1_000
         return age_ms > self._policy(state).maximum_snapshot_age_ms
 
-    def _reconcile_account(self, state: PortfolioAccountState) -> None:
+    def _reconcile_account(self, state: PortfolioAccountState, *, record: bool = True) -> None:
         account_key = state.profile.account_key
         prior = {
             key: value
@@ -2152,7 +2152,7 @@ class PortfolioManagementEngine:
             for key, value in self.differences.items()
             if key[0] == account_key
         }
-        if _reconciliation_signature(prior) != _reconciliation_signature(current):
+        if record and _reconciliation_signature(prior) != _reconciliation_signature(current):
             rows = [asdict(current[key]) for key in sorted(current)]
             self._record(
                 "portfolio_reconciliation",

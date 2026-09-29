@@ -143,6 +143,42 @@ def test_engine_typed_seam_skips_sqlite_and_blocks_admission(monkeypatch) -> Non
             strategy_revision=1, typed_recovery=recovered)
 
 
+def test_readonly_canonical_reconciliation_never_appends(monkeypatch) -> None:
+    client, profile = _client(monkeypatch)
+    recovered = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+
+    class NoJournal:
+        def __getattr__(self, name):
+            raise AssertionError(f"read-only reconciliation used journal: {name}")
+
+    engine = PortfolioManagementEngine(
+        (profile,), journal=NoJournal(), run_id="live-run",
+        strategy_id="strategy-a", strategy_revision=1,
+        typed_recovery=recovered, event_clock=lambda: AT)
+    account_value = SimpleNamespace(
+        account_id="account-id", key="NetLiquidation", segment="base",
+        monetary_value=100_000, value=None, source_event_time=AT)
+    account_ledger = SimpleNamespace(
+        account_id="account-id", is_base=True, currency="USD",
+        values={"cashbalance": 100_000, "netliquidationvalue": 100_000},
+        source_event_time=AT)
+    snapshot = SimpleNamespace(
+        account_ids=("account-id",), account_values=(account_value,),
+        ledger=(account_ledger,), positions=(), orders=(), executions=(),
+        complete=True, stale=False, stale_reason="", as_of=AT)
+
+    # The saved allocation is 2 shares, but the broker is flat. Reconciliation
+    # changes the in-memory difference and must not publish a new event while
+    # the caller is only reconstructing an already committed checkpoint.
+    engine.synchronize_canonical(snapshot, persist=False)
+    difference = engine.differences[("account-key", "AAA")]
+    assert difference.broker_quantity == 0
+    assert difference.attributed_quantity == 2
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.SYNCHRONIZED
+
+
 def test_typed_admission_waits_for_receipt_and_poison_on_uncertain_commit(monkeypatch) -> None:
     client, profile = _client(monkeypatch)
     recovered = recovery.recover_portfolio_engine_state(
