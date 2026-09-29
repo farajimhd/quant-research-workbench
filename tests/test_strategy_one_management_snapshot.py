@@ -11,6 +11,7 @@ from src.trading_runtime.strategy_one_management_snapshot import (
     TABLES, ManagerSnapshotHead, ManagedManagerSnapshotHeadReader,
     project_manager_snapshot, publish_manager_snapshot,
     restore_manager_snapshot, load_attested_manager_snapshot,
+    load_unattested_manager_snapshot_rows,
 )
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.keeper_session import ManagedKeeperSession
@@ -132,6 +133,10 @@ def test_cold_loader_requires_same_keeper_head_and_verified_journal_cursor(monke
     assert len(client.queries) == 3
     assert all(query.startswith("SELECT ") and "INSERT" not in query
                for query in client.queries)
+    historical = Client()
+    assert restore_manager_snapshot(load_unattested_manager_snapshot_rows(
+        historical, run_id=run, checkpoint_sequence=42)) == restore_manager_snapshot(rows)
+    assert len(historical.queries) == 3
     keeper.head = replace(keeper.head, snapshot_hash="0" * 64)
     with pytest.raises(RuntimeError, match="selected cursor"):
         load_attested_manager_snapshot(

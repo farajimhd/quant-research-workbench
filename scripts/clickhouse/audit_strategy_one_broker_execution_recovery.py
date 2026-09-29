@@ -13,6 +13,7 @@ from pathlib import Path
 import platform
 import re
 import sys
+from types import SimpleNamespace
 from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +26,7 @@ from src.backend.backtest_v3_clients import v3_client
 from src.backend.backtest_v4_broker_quote_restore import load_completed_broker_quotes
 from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
 from src.backend.backtest_v4_execution_restore import load_v4_broker_executions
+from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
 from src.trading_runtime.arte_market_day_cold_preflight import sealed_certified_market_day_plan
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
 from src.trading_runtime.arte_journal_commit_v4 import (
@@ -48,6 +50,9 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import (
     load_unattested_broker_match_snapshot, project_broker_match_snapshot,
 )
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.strategy_one_management_snapshot import (
+    load_unattested_manager_snapshot_rows, restore_manager_snapshot,
+)
 
 
 def audit(*, run_id: str, build_id: str, session: date,
@@ -101,6 +106,21 @@ def audit(*, run_id: str, build_id: str, session: date,
         root = broker.snapshot
         boundary = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
         boundary += timedelta(milliseconds=int(root["boundary_ms"]))
+        manager_rows = load_unattested_manager_snapshot_rows(
+            client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+        if (manager_rows.snapshot["session_date"] != session.isoformat()
+                or manager_rows.snapshot["boundary_ms"] != root["boundary_ms"]):
+            raise RuntimeError("Cold manager image differs from broker boundary")
+        manager_state = restore_manager_snapshot(manager_rows)
+        inert = lambda *_a, **_k: None
+        manager = StrategyOneManagementRunner(
+            runtime=SimpleNamespace(submit_strategy_one_proposal=inert,
+                                    submit_strategy_one_protection=inert),
+            evidence=SimpleNamespace(management_evidence=inert),
+            tick_for_ticker=lambda _ticker: 0.01)
+        manager.restore_state(manager_state)
+        if manager.capture_state(boundary_ms=int(root["boundary_ms"])) != manager_state:
+            raise RuntimeError("Cold manager actor differs after restoration")
         protection = load_complete_typed_protection_history(client, prefix)
         oms_image = reconstruct_typed_oms_actor_image(
             lineages, protection, run_id=run_id, strategy_id=STRATEGY_ID,

@@ -291,15 +291,64 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
     return state
 
 
+def load_unattested_manager_snapshot_rows(
+    client: Any, *, run_id: str, checkpoint_sequence: int,
+) -> ManagerSnapshotRows:
+    """SELECT a content-verified historical image; caller proves V4 authority."""
+    from src.backend.backtest_market_data import assert_select_only
+    from src.trading_runtime.arte_journal_writer import _literal
+
+    if (type(run_id) is not str or not run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or not callable(getattr(client, "execute", None))):
+        raise ValueError("Strategy 1 manager cold read needs exact run and cursor")
+
+    def read(contract: TableContract, predicate: str, limit: int) -> tuple[dict, ...]:
+        columns = ",".join(
+            f"toString({name}) AS {name}" if "Decimal(" in kind else name
+            for name, kind in contract.columns)
+        sql = assert_select_only(
+            f"SELECT {columns} FROM arte.{contract.name} WHERE {predicate} "
+            f"LIMIT {limit} FORMAT JSONEachRow")
+        return tuple(json.loads(line) for line in client.execute(sql).splitlines()
+                     if line.strip())
+
+    scope = (f"run_id={_literal(run_id)} "
+             f"AND checkpoint_sequence={checkpoint_sequence}")
+    seals = read(PARENT, scope, 2)
+    if len(seals) != 1:
+        raise RuntimeError("Strategy 1 manager lacks exactly one selected seal")
+    seal = seals[0]
+    if (seal.get("run_id") != run_id
+            or seal.get("checkpoint_sequence") != checkpoint_sequence
+            or seal.get("snapshot_id") is None):
+        raise RuntimeError("Strategy 1 manager seal differs from requested cursor")
+    try:
+        snapshot_id = str(UUID(str(seal["snapshot_id"])))
+    except ValueError as exc:
+        raise RuntimeError("Strategy 1 manager snapshot ID is malformed") from exc
+    predicate = f"snapshot_id=toUUID('{snapshot_id}')"
+    source_count = seal.get("source_count")
+    break_count = seal.get("pending_break_count")
+    if (type(source_count) is not int or not 0 <= source_count <= 100_000
+            or type(break_count) is not int or not 0 <= break_count <= 100_000):
+        raise RuntimeError("Strategy 1 manager child bound is invalid")
+    protection = load_protection_snapshot_rows(
+        client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
+    rows = ManagerSnapshotRows(
+        seal, read(SOURCE, predicate, source_count + 1),
+        read(BREAK, predicate, break_count + 1), protection)
+    restore_manager_snapshot(rows)
+    return rows
+
+
 def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReader,
                                    *, run_id: str,
                                    checkpoint_sequence: int,
                                    ) -> StrategyOneManagementState:
     """Read only a Keeper-selected snapshot at the exact cold V4 cursor."""
-    from src.backend.backtest_market_data import assert_select_only
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
-    from src.trading_runtime.arte_journal_writer import _literal
 
     if (type(run_id) is not str or not run_id
             or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
@@ -329,43 +378,12 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
             or cursor.get("event_sequence") != checkpoint_sequence
             or cursor.get("batch_id") != prefix.last_batch_id):
         raise RuntimeError("Strategy 1 manager lacks a committed market cursor")
-
-    def read(contract: TableContract, predicate: str, limit: int) -> tuple[dict, ...]:
-        columns = ",".join(
-            f"toString({name}) AS {name}" if "Decimal(" in kind else name
-            for name, kind in contract.columns)
-        sql = assert_select_only(
-            f"SELECT {columns} FROM arte.{contract.name} WHERE {predicate} "
-            f"LIMIT {limit} FORMAT JSONEachRow")
-        return tuple(json.loads(line) for line in client.execute(sql).splitlines()
-                     if line.strip())
-
-    scope = (f"run_id={_literal(run_id)} "
-             f"AND checkpoint_sequence={checkpoint_sequence}")
-    seals = read(PARENT, scope, 2)
-    if len(seals) != 1:
-        raise RuntimeError("Strategy 1 manager lacks exactly one selected seal")
-    seal = seals[0]
-    if (seal.get("content_hash") != first.snapshot_hash
-            or seal.get("boundary_ms") != cursor.get("boundary_ms")
-            or seal.get("session_date") != cursor.get("session_date")
-            or seal.get("snapshot_id") is None):
-        raise RuntimeError("Strategy 1 manager seal differs from selected cursor")
-    try:
-        snapshot_id = str(UUID(str(seal["snapshot_id"])))
-    except ValueError as exc:
-        raise RuntimeError("Strategy 1 manager snapshot ID is malformed") from exc
-    predicate = f"snapshot_id=toUUID('{snapshot_id}')"
-    source_count = seal.get("source_count")
-    break_count = seal.get("pending_break_count")
-    if (type(source_count) is not int or not 0 <= source_count <= 100_000
-            or type(break_count) is not int or not 0 <= break_count <= 100_000):
-        raise RuntimeError("Strategy 1 manager child bound is invalid")
-    protection = load_protection_snapshot_rows(
+    rows = load_unattested_manager_snapshot_rows(
         client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
-    rows = ManagerSnapshotRows(
-        seal, read(SOURCE, predicate, source_count + 1),
-        read(BREAK, predicate, break_count + 1), protection)
+    if (rows.snapshot["content_hash"] != first.snapshot_hash
+            or rows.snapshot["boundary_ms"] != cursor.get("boundary_ms")
+            or rows.snapshot["session_date"] != cursor.get("session_date")):
+        raise RuntimeError("Strategy 1 manager seal differs from selected cursor")
     state = restore_manager_snapshot(rows)
     if keeper.read_head(run_id=run_id) != first:
         raise RuntimeError("Strategy 1 manager Keeper head changed during cold read")
