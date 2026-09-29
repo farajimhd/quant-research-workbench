@@ -34,6 +34,14 @@ gain: full-session ticker openings appear mostly isolated, and the 0.689s
 total difference is within uncontrolled run variation. The parallel path is
 bounded to four readers for simultaneous activations, not a claimed speedup
 for this session.
+Cold saved-review reads compared this run with the prior `62908518-...` run:
+both verified the same terminal market boundary and sequence, final financial
+account state, 86 fills, and 86 commissions. Every fill's economic and market
+time fields matched after excluding run-scoped record/batch/client-order IDs
+and receive timestamps; every commission matched on the same basis. The
+terminal wait fences queued normalized V4 event, evidence, manager, broker,
+and portfolio units. Dropping those units would weaken restart evidence rather
+than optimize the current contract.
 
 On the current V4 running-checkpoint contract, each completed checkpoint now
 fences the manager, broker matcher, and a normalized per-account portfolio
