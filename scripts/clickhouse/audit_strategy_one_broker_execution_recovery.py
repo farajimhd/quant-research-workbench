@@ -34,6 +34,8 @@ from src.trading_runtime.arte_journal_writer import (
     _literal, _rows, backtest_v4_operator_client_from_env,
     load_typed_run_context,
 )
+from src.trading_runtime.arte_journal_reader import load_complete_typed_protection_history
+from src.trading_runtime.arte_oms_actor_restore import reconstruct_typed_oms_actor_image
 from src.trading_runtime.arte_oms_projection import (
     load_recovered_strategy_one_oms_lineage,
 )
@@ -43,6 +45,7 @@ from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     load_unattested_broker_match_snapshot, project_broker_match_snapshot,
 )
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
 def audit(*, run_id: str, build_id: str, session: date,
@@ -93,6 +96,17 @@ def audit(*, run_id: str, build_id: str, session: date,
         accounts = frozenset(row["account_id"] for row in broker.accounts)
         lineages = load_recovered_strategy_one_oms_lineage(
             client, prefix, allowed_accounts=accounts)
+        root = broker.snapshot
+        boundary = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
+        boundary += timedelta(milliseconds=int(root["boundary_ms"]))
+        protection = load_complete_typed_protection_history(client, prefix)
+        oms_image = reconstruct_typed_oms_actor_image(
+            lineages, protection, run_id=run_id, strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_NUMBER,
+            through_sequence=prefix.last_sequence, cutoff_at=boundary)
+        if any(row["broker_order_id"] not in oms_image.group_by_broker_id
+               for row in broker.open_orders):
+            raise RuntimeError("Cold OMS image omits an open broker order")
         requests = {}
         broker_ids = {}
         for lineage in lineages:
@@ -132,9 +146,6 @@ def audit(*, run_id: str, build_id: str, session: date,
                 boundary_ms=int(broker.snapshot["boundary_ms"]),
                 state=restored.broker_match_snapshot_state()) != broker:
             raise RuntimeError("Restored broker differs from normalized checkpoint")
-        root = broker.snapshot
-        boundary = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
-        boundary += timedelta(milliseconds=int(root["boundary_ms"]))
         if any(datetime.fromisoformat(row["trade_time"]).astimezone(timezone.utc)
                > boundary for row in executions):
             raise RuntimeError("Audit found a fill after the broker checkpoint")
