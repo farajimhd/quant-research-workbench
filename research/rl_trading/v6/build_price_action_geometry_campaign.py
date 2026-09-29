@@ -23,6 +23,7 @@ VERSION = 'rl-trading-v6-price-action-geometry-campaign-1'
 
 def run_available(source_manifest: Path, output: Path, *, early: Path,
                   late: Path, ledger: Path,
+                  allocation_roots: dict[date, Path] | None = None,
                   done: tuple[str, ...] = ()) -> dict:
     """Process only source-certified days in chronological order."""
     state = json.loads(source_manifest.read_text())
@@ -39,10 +40,14 @@ def run_available(source_manifest: Path, output: Path, *, early: Path,
         source = Path(root)
         if not (source / 'complete.json').is_file():
             raise ValueError(f'{day}: feature day listed without certificate')
-        build_day(['--source-root', str(source), '--manifest',
-                   str(early if day <= date(2026, 8, 17) else late),
-                   '--ledger', str(ledger), '--date', str(day), '--output',
-                   str(output / str(day))])
+        arguments = ['--source-root', str(source), '--manifest',
+                     str(early if day <= date(2026, 8, 17) else late),
+                     '--ledger', str(ledger), '--date', str(day), '--output',
+                     str(output / str(day))]
+        if allocation_roots and day in allocation_roots:
+            arguments.extend(['--allocation-root',
+                              str(allocation_roots[day])])
+        build_day(arguments)
         complete.append(str(day))
     return {'version': VERSION, 'completed': complete,
             'queued': [str(day) for day in DATES[len(complete):]],
@@ -57,6 +62,8 @@ def main(argv=None) -> int:
     parser.add_argument('--late-manifest', type=Path, required=True)
     parser.add_argument('--ledger', type=Path, required=True)
     parser.add_argument('--poll-seconds', type=int, default=60)
+    parser.add_argument('--allocation-root', action='append', default=[],
+                        metavar='YYYY-MM-DD=ABSOLUTE_RUNTIME_ROOT')
     parser.add_argument('--once', action='store_true')
     args = parser.parse_args(argv)
     runtime = Path(os.environ.get('QW_RUNTIME_ROOT', '')).resolve()
@@ -65,12 +72,23 @@ def main(argv=None) -> int:
             not args.source_manifest.resolve().is_relative_to(runtime) or
             not 5 <= args.poll_seconds <= 3600):
         raise ValueError('Geometry campaign requires bounded runtime roots')
+    allocation_roots = {}
+    for item in args.allocation_root:
+        label, separator, path = item.partition('=')
+        if not separator or not path:
+            raise ValueError('Expected --allocation-root DATE=ROOT')
+        day, root = date.fromisoformat(label), Path(path).resolve()
+        if day not in DATES or day in allocation_roots or (
+                not root.is_relative_to(runtime)):
+            raise ValueError('Invalid external allocation root')
+        allocation_roots[day] = root
     output.mkdir(parents=True, exist_ok=True)
     done: tuple[str, ...] = ()
     while True:
         state = run_available(args.source_manifest, output,
                               early=args.early_manifest,
                               late=args.late_manifest, ledger=args.ledger,
+                              allocation_roots=allocation_roots,
                               done=done)
         done = tuple(state['completed'])
         temporary = output / 'campaign-state.json.tmp'

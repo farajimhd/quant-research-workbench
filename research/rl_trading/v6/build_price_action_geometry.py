@@ -34,7 +34,8 @@ def _hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def source_positions(source: Path, day: date) -> tuple[pl.DataFrame, dict]:
+def source_positions(source: Path, day: date, *, allocation_root: Path | None = None
+                     ) -> tuple[pl.DataFrame, dict, str]:
     """Hash-bind the compact first-eligible long-episode allocation table."""
     certificate = json.loads((source / 'complete.json').read_text())
     plan = json.loads((source / 'plan.json').read_text())
@@ -43,10 +44,28 @@ def source_positions(source: Path, day: date) -> tuple[pl.DataFrame, dict]:
             plan.get('split_role') != role(day) or
             role(day) not in ('train', 'development')):
         raise ValueError('Geometry requires a certified train/development bank')
-    metadata = certificate['outputs']['intended_allocations']
-    allocation = source / 'intended_allocations.parquet'
+    if allocation_root is None:
+        metadata = certificate['outputs'].get('intended_allocations')
+        if metadata is None:
+            raise ValueError('Certified day lacks embedded allocation sidecar')
+        allocation = source / 'intended_allocations.parquet'
+        allocation_hash = metadata['sha256']
+    else:
+        if allocation_root == source:
+            raise ValueError('External allocation root must be distinct')
+        sidecar = json.loads((allocation_root / 'complete.json').read_text())
+        if (sidecar.get('version') != 'rl-trading-sparse-allocation-v6' or
+                sidecar.get('status') != 'planning_only_not_fills' or
+                sidecar.get('source_certificate_sha256') !=
+                    _hash(source / 'complete.json') or
+                sidecar.get('source_candidate_sha256') !=
+                    certificate['outputs']['candidates']['sha256']):
+            raise ValueError('Allocation sidecar is not bound to source day')
+        allocation = allocation_root / 'intended_allocations.parquet'
+        allocation_hash = sidecar['intended_allocations_sha256']
+        metadata = {'rows': sidecar['rows'], 'sha256': allocation_hash}
     if (not allocation.is_file() or
-            _hash(allocation) != metadata['sha256']):
+            _hash(allocation) != allocation_hash):
         raise ValueError('Sparse allocation differs from source certificate')
     selected = pl.read_parquet(allocation).filter(pl.col('direction') == 1)
     if (selected.height > metadata['rows'] or
@@ -57,7 +76,7 @@ def source_positions(source: Path, day: date) -> tuple[pl.DataFrame, dict]:
         pl.col('time_us').alias('entry_us'),
         pl.col('exit_hint_us').alias('exit_us'),
         pl.col('decision_close').alias('entry_price'))
-    return positions, certificate
+    return positions, certificate, allocation_hash
 
 
 def compile_geometry(positions: pl.DataFrame, bars: pl.DataFrame
@@ -79,6 +98,7 @@ def compile_geometry(positions: pl.DataFrame, bars: pl.DataFrame
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-root', type=Path, required=True)
+    parser.add_argument('--allocation-root', type=Path)
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--ledger', type=Path, required=True)
     parser.add_argument('--date', type=date.fromisoformat, required=True)
@@ -86,10 +106,15 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     runtime = Path(os.environ.get('QW_RUNTIME_ROOT', '')).resolve()
     source, output = args.source_root.resolve(), args.output.resolve()
+    allocation_root = (args.allocation_root.resolve()
+                       if args.allocation_root is not None else None)
     if (not runtime.is_dir() or source == output or
-            any(not path.is_relative_to(runtime) for path in (source, output))):
+            any(not path.is_relative_to(runtime) for path in
+                (source, output, *((allocation_root,) if allocation_root else ()))) or
+            allocation_root == output):
         raise ValueError('Geometry artifacts need distinct runtime roots')
-    positions, certificate = source_positions(source, args.date)
+    positions, certificate, allocation_hash = source_positions(
+        source, args.date, allocation_root=allocation_root)
     source_hash = _hash(source / 'complete.json')
     if output.exists() and any(output.iterdir()):
         complete = output / 'complete.json'
@@ -97,6 +122,7 @@ def main(argv=None) -> int:
             saved = json.loads(complete.read_text())
             if (saved.get('version') == VERSION and
                     saved.get('source_certificate_sha256') == source_hash and
+                    saved.get('allocation_sha256') == allocation_hash and
                     _hash(output / 'geometry.parquet') ==
                     saved.get('geometry_sha256')):
                 print(json.dumps(saved, sort_keys=True), flush=True)
@@ -118,8 +144,7 @@ def main(argv=None) -> int:
     report = {'version': VERSION, 'status': 'geometry_only_not_supervision',
               'day': str(args.date), 'source_certificate_sha256': source_hash,
               'source_build_id': build['build_id'],
-              'allocation_sha256': certificate['outputs']
-                  ['intended_allocations']['sha256'],
+              'allocation_sha256': allocation_hash,
               'geometry_sha256': _hash(path), 'episodes': positions.height,
               'observed_extrema_rows': bars.height,
               'held_clock_complete': int(result['clock_complete'].sum()),
