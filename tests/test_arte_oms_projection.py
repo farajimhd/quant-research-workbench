@@ -71,6 +71,15 @@ def test_strategy_one_cold_order_lineage_uses_complete_typed_target_proof() -> N
     assert restored[0].raw == canonical_runtime_order_raw(
         order, source, run_id=run_id, strategy_id=STRATEGY_ID,
         strategy_revision=1)
+    add_source = replace(source, action="add_long")
+    add_intent = replace(recovered_intent, intent=add_source)
+    add_restored = reconstruct_strategy_one_oms_lineage(state, add_intent, base)
+    assert add_restored[0].raw == canonical_runtime_order_raw(
+        order, add_source, run_id=run_id, strategy_id=STRATEGY_ID,
+        strategy_revision=1)
+    with pytest.raises(ValueError, match="complete typed authority"):
+        reconstruct_strategy_one_oms_lineage(
+            state, replace(recovered_intent, intent=replace(source, action="replace_profit_target")), base)
     proof = JournalRecord(
         str(uuid4()), run_id, 2, at, at,
         "protection", "protection_change", "broker-1", "DU1",

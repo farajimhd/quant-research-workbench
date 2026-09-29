@@ -611,7 +611,10 @@ def reconstruct_strategy_one_oms_lineage(
             or state.intent_record_id != source_intent.record_id
             or group.get("account_id") != source_intent.account_id
             or group.get("strategy_intent_id") != source_intent.intent.intent_id
-            or source_intent.intent.action != "enter_long"
+            # A resistance add is a new, independently admitted OMS group.
+            # Its immutable source intent is add_long, not the first entry's
+            # enter_long. Both require the same exact typed lineage proof.
+            or source_intent.intent.action not in {"enter_long", "add_long"}
             or not state.orders or len(state.orders) > 65_535
             or len({order.cOID for order in state.orders}) != len(state.orders)):
         raise ValueError("Strategy 1 OMS lineage lacks one complete typed authority")
