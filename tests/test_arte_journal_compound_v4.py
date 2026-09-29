@@ -179,6 +179,18 @@ def test_mixed_preparation_retains_broker_acknowledgement_child():
     assert ack["record_id"] == source.record_id
     assert ack["batch_id"] == second_id
 
+    altered = {key: tuple(dict(row) for row in rows)
+               for key, rows in compound.children.items()}
+    altered["acknowledgements"][0]["broker_order_id"] = "foreign-order"
+    with pytest.raises(ValueError, match="lost normalized"):
+        prepare_compound_v4_families(client, replace(compound, children=altered))
+
+    altered = {key: tuple(dict(row) for row in rows)
+               for key, rows in compound.children.items()}
+    altered["acknowledgements"][0]["content_hash"] = "forged"
+    with pytest.raises(ValueError, match="lost normalized"):
+        prepare_compound_v4_families(client, replace(compound, children=altered))
+
 
 def test_compound_publishes_one_cold_verified_commit_for_two_events():
     first = batch()

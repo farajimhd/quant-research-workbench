@@ -1365,6 +1365,9 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     from src.trading_runtime.strategy_one_evidence_snapshot import (
         TABLES as EVIDENCE_SNAPSHOT_TABLES,
     )
+    from src.trading_runtime.strategy_one_campaign_snapshot import (
+        TABLES as CAMPAIGN_SNAPSHOT_TABLES,
+    )
 
     assert len(observed) == 2
     assert {table.name for table in observed[0]} == {
@@ -1380,7 +1383,8 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
                                  *PROTECTION_SNAPSHOT_TABLES,
                                  *MANAGER_SNAPSHOT_TABLES,
                                  *BROKER_MATCH_SNAPSHOT_TABLES,
-                                 *EVIDENCE_SNAPSHOT_TABLES)}
+                                 *EVIDENCE_SNAPSHOT_TABLES,
+                                 *CAMPAIGN_SNAPSHOT_TABLES)}
     from src.trading_runtime.arte_journal_schema import PORTFOLIO_SNAPSHOT_WRITE_TABLES
     from src.trading_runtime.arte_backtest_definition import TABLES as BACKTEST_DEFINITION_TABLES
     writable = frozenset(writer_module._v4_family_table(table)
@@ -1398,6 +1402,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
             *(table.name for table in MANAGER_SNAPSHOT_TABLES),
             *(table.name for table in BROKER_MATCH_SNAPSHOT_TABLES),
             *(table.name for table in EVIDENCE_SNAPSHOT_TABLES),
+            *(table.name for table in CAMPAIGN_SNAPSHOT_TABLES),
             "trading_backtest_account_snapshot_v2",
             "trading_backtest_position_snapshot_v2",
             *(table.name for table in BACKTEST_DEFINITION_TABLES)}

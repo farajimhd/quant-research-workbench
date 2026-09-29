@@ -283,8 +283,14 @@ def prepare_compound_v4_families(
             "entry_order_hash": source["entry_order_hash"],
         })
     for key, name in table_for_key.items():
-        expected = tuple(typed_row(name, row) for row in compound.children[key])
-        if tuple(extra[name]) != expected:
+        # Each prepared row above was already schema-checked and hashed by
+        # typed_row. Exact scalar equality to the rekeyed source also proves
+        # its expected hash; sealing the same children twice is redundant.
+        prepared_content = tuple(
+            {column: value for column, value in row.items()
+             if column != "content_hash"} for row in extra[name])
+        expected_content = tuple(dict(row) for row in compound.children[key])
+        if prepared_content != expected_content:
             raise ValueError(f"V4 compound lost normalized {name} children")
 
     ids = lambda name: tuple(row["record_id"] for row in extra[name])
