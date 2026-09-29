@@ -98,6 +98,27 @@ def test_market_plan_cache_requires_exact_keeper_and_inventory():
         cache.put(("scope",), {"build": None}, "fingerprint", plan)
 
 
+def test_market_plan_cache_retains_run_and_context_without_weakening_proofs():
+    cache = subject.MarketPlanCache(max_entries=2)
+    proofs = {"build": "proof"}
+    run = object()
+    context = object()
+    cache.put(("run",), proofs, "parts-run", run,
+              selected_fingerprint="selected-run")
+    cache.put(("context",), proofs, "parts-context", context,
+              selected_fingerprint="selected-context")
+    assert cache.get(("run",), proofs, "parts-run") is run
+    assert cache.get_selected(("context",), proofs, "selected-context") is context
+    assert cache.get(("run",), {"build": "changed"}, "parts-run") is None
+    assert cache.get_selected(("context",), proofs, "changed") is None
+    cache.put(("third",), proofs, "parts-third", object())
+    assert len(cache._entries) == 2
+    assert cache.get(("run",), proofs, "parts-run") is None
+    assert cache.get(("context",), proofs, "parts-context") is context
+    with pytest.raises(ValueError, match="bounded"):
+        subject.MarketPlanCache(max_entries=0)
+
+
 def test_fixed_plan_reuses_only_unchanged_verified_snapshot(monkeypatch):
     from src.backend import backtest_market_data as market
     from src.trading_runtime import arte_market_day_cold_preflight as cold
@@ -198,7 +219,7 @@ def test_cold_plan_rechecks_pinned_build_during_unrelated_part_growth(
     else:
         assert market.certified_market_plan_from_arte(**args) is scans[-1]
     assert len(scans) == 2
-    assert cache._entry is None
+    assert not cache._entries
 
 
 def test_unrelated_part_growth_reuses_full_audit_with_selected_fence(monkeypatch):
@@ -241,7 +262,7 @@ def test_unrelated_part_growth_reuses_full_audit_with_selected_fence(monkeypatch
         sessions=("2026-08-18",), tickers=("ABCD",),
         configuration={"strategy": {"execution_interval": "100ms"}})
     assert plan is scans[0] and len(scans) == 1
-    assert cache._entry is not None
+    assert len(cache._entries) == 1
     assert market.certified_market_plan_from_arte(
         sessions=("2026-08-18",), tickers=("ABCD",),
         configuration={"strategy": {"execution_interval": "100ms"}}) is plan

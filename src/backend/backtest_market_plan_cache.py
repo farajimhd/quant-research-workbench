@@ -6,6 +6,7 @@ Any change falls back to the exact cold audit; absent metadata fails closed.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from hashlib import sha256
 import json
 import re
@@ -168,31 +169,45 @@ def product_inventory_fingerprint(client: Any, names: tuple[str, ...]) -> str:
 
 
 class MarketPlanCache:
-    """One verified plan at a time; never a source of authority by itself."""
+    """Bounded verified plans; never a source of authority by themselves.
 
-    def __init__(self) -> None:
+    A saved chart alternates between the all-ticker run plan and its narrow
+    historical context plan. Keep both without weakening the per-request
+    Keeper and active-part checks performed by the caller.
+    """
+
+    def __init__(self, max_entries: int = 16) -> None:
+        if type(max_entries) is not int or not 1 <= max_entries <= 32:
+            raise ValueError("Market plan cache needs a bounded positive capacity")
         self._lock = Lock()
-        self._entry: tuple[tuple, tuple, str, str | None, Any] | None = None
+        self._max_entries = max_entries
+        self._entries: OrderedDict[tuple, tuple[tuple, str, str | None, Any]] = OrderedDict()
 
     def get(self, key: tuple, proofs: Mapping[str, Any], fingerprint: str) -> Any | None:
         identity = tuple(sorted(proofs.items()))
         with self._lock:
-            if self._entry is None:
+            saved = self._entries.get(key)
+            if saved is None:
                 return None
-            saved_key, saved_proofs, saved_fingerprint, _, plan = self._entry
-            return (plan if key == saved_key and identity == saved_proofs
-                    and fingerprint == saved_fingerprint else None)
+            saved_proofs, saved_fingerprint, _, plan = saved
+            if identity != saved_proofs or fingerprint != saved_fingerprint:
+                return None
+            self._entries.move_to_end(key)
+            return plan
 
     def get_selected(self, key: tuple, proofs: Mapping[str, Any],
                      fingerprint: str) -> Any | None:
         """Reuse only the same previously audited selected-build parts."""
         identity = tuple(sorted(proofs.items()))
         with self._lock:
-            if self._entry is None:
+            saved = self._entries.get(key)
+            if saved is None:
                 return None
-            saved_key, saved_proofs, _, selected, plan = self._entry
-            return (plan if key == saved_key and identity == saved_proofs
-                    and selected is not None and fingerprint == selected else None)
+            saved_proofs, _, selected, plan = saved
+            if identity != saved_proofs or selected is None or fingerprint != selected:
+                return None
+            self._entries.move_to_end(key)
+            return plan
 
     def put(self, key: tuple, proofs: Mapping[str, Any],
             fingerprint: str, plan: Any, *,
@@ -200,8 +215,11 @@ class MarketPlanCache:
         if not proofs or any(proof is None for proof in proofs.values()):
             raise RuntimeError("Market plan cache requires attested Keeper proofs")
         with self._lock:
-            self._entry = (key, tuple(sorted(proofs.items())), fingerprint,
-                           selected_fingerprint, plan)
+            self._entries[key] = (tuple(sorted(proofs.items())), fingerprint,
+                                  selected_fingerprint, plan)
+            self._entries.move_to_end(key)
+            if len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
 
 
 MARKET_PLAN_CACHE = MarketPlanCache()
