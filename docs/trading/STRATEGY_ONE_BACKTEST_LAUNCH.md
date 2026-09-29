@@ -585,3 +585,23 @@ took 22.917s and terminal handling 14.935s, including 11.014s waiting for
 the prior commit. This is one faster measurement under variable service
 latency, not evidence that the clock guard itself accelerated execution.
 Keeper shutdown connection warnings remain.
+
+On September 29, a fresh read-only workstation preflight for the full
+August 18 market measured 22.524s cold and 2.445s warm in one process.
+This confirms that repeated experiments mostly avoid the cold certificate
+scan; it created no run or journal. A separate instrumented full-session
+run (`6a5040f7-2646-4bb5-8893-163372432195`) completed with 7,584 rows,
+7,785 events, and zero failed writer units. Profiling raised its execution
+wall time to 84.872s, so that figure is not a production-speed sample. The
+four compound commits spent 15.654s in preparation and 18.476s in
+publication; the terminal waited 22.379s for a prior checkpoint commit.
+
+A bounded 2,048-record flush-threshold trial (`764ae99d3`) passed the
+56 focused controller tests and completed an unprofiled full-session run
+(`7593c9a4-883e-43f5-a147-192f5102e360`) in 46.904s after 20.488s
+preflight. It still emitted four compound batches and three snapshot sets,
+with 15.156s terminal prior-commit wait, and did not improve on the earlier
+45.075s measured run. The threshold was restored to 1,024 in `e92d14aee`
+and synchronized to the workstation. Further optimization should target
+compound preparation/readback or snapshot publication directly, preserving
+the exact journal prefix and causal recovery anchor.
