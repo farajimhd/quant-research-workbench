@@ -12,6 +12,7 @@ from typing import Any
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan
 from src.backend.backtest_market_data import market_day_boundary
+from src.backend.backtest_fixed_running_anchor import FixedRunningPrefixAnchor
 from src.backend.backtest_v4_broker_quote_restore import (
     CompletedBrokerQuote, load_completed_broker_quotes,
 )
@@ -47,6 +48,25 @@ class V4RunningRecoveryEvidence:
     broker: BrokerMatchSnapshotRows
     oms: tuple[RecoveredStrategyOneOmsLineage, ...]
     quotes: dict[str, CompletedBrokerQuote]
+
+
+def verify_v4_recovery_at_anchor(
+    recovery: V4RunningRecoveryEvidence,
+    anchor: FixedRunningPrefixAnchor,
+) -> None:
+    """Reject a financial/causal image from any cursor other than the journal seed."""
+    if (not isinstance(recovery, V4RunningRecoveryEvidence)
+            or not isinstance(anchor, FixedRunningPrefixAnchor)
+            or recovery.prefix.run_id != anchor.run_id
+            or recovery.prefix.last_sequence != anchor.journal_sequence
+            or recovery.prefix.last_batch_id != anchor.batch_id
+            or recovery.prefix.source_cursor != anchor.source_cursor
+            or recovery.prefix.status != "running"
+            or recovery.broker.snapshot.get("session_date") != anchor.session_date
+            or recovery.broker.snapshot.get("boundary_ms") != anchor.boundary_ms
+            or recovery.manager.boundary_ms != anchor.boundary_ms
+            or recovery.evidence.boundary_ms != anchor.boundary_ms):
+        raise RuntimeError("V4 recovery image differs from cold journal anchor")
 
 
 def reconstruct_v4_broker_state(evidence: V4RunningRecoveryEvidence) -> dict:

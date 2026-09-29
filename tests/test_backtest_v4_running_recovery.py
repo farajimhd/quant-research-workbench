@@ -1,8 +1,10 @@
 import pytest
+from datetime import datetime, timezone
 
 from src.backend import backtest_v4_running_recovery as subject
 from src.backend.backtest_strategy_one_management import StrategyOneManagementState
 from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
+from src.backend.backtest_fixed_running_anchor import FixedRunningPrefixAnchor
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.arte_oms_projection import (
     RecoveredOmsGroupState, RecoveredStrategyOneOmsLineage,
@@ -47,6 +49,22 @@ def test_v4_running_recovery_joins_exact_empty_oms(monkeypatch):
     assert result.prefix == PREFIX
     assert result.manager.boundary_ms == 100
     assert result.oms == ()
+
+
+def test_v4_recovery_must_match_exact_journal_anchor(monkeypatch):
+    _install(monkeypatch)
+    recovery = subject.load_v4_running_recovery_evidence(
+        object(), run_id=RUN, account_ids=("DU1",),
+        manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
+        market_client=object(), market_plan=object())
+    anchor = FixedRunningPrefixAnchor(
+        RUN, BATCH, 7, PREFIX.source_cursor, "2026-08-18", 100, 1,
+        datetime(2026, 8, 18, tzinfo=timezone.utc), None)
+    subject.verify_v4_recovery_at_anchor(recovery, anchor)
+    from dataclasses import replace
+    with pytest.raises(RuntimeError, match="differs from cold journal anchor"):
+        subject.verify_v4_recovery_at_anchor(
+            recovery, replace(anchor, boundary_ms=200))
 
 
 def test_v4_running_recovery_rejects_orphan_broker_order(monkeypatch):

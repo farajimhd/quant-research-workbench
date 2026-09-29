@@ -241,7 +241,8 @@ def assemble_resumed_fixed_v4_journal(
     token: FixedV4JournalPreflightToken, *, attempt_id: str,
     expected_config: dict[str, Any], fixed_market_parent_plan: object,
     fixed_market_execution_plan: object, expected_market_start: datetime,
-    code_hash: str, writer_factory: Callable[..., ArteJournalWriter],
+    code_hash: str, recovery_evidence: object,
+    writer_factory: Callable[..., ArteJournalWriter],
     batch_size: int = 1024, queue_capacity: int = 8,
 ) -> tuple[FixedJournalAssembly, Any]:
     """Cold-seed a V4 lane from Keeper plus the exact committed market cursor.
@@ -254,6 +255,9 @@ def assemble_resumed_fixed_v4_journal(
     )
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
     from src.backend.backtest_market_data import CertifiedMarketDayPlan
+    from src.backend.backtest_v4_running_recovery import (
+        verify_v4_recovery_at_anchor,
+    )
 
     lease = getattr(writer_client, "backtest_v4_lease", None)
     dispatch = getattr(writer_client, "typed_insert_dispatch", None)
@@ -277,6 +281,7 @@ def assemble_resumed_fixed_v4_journal(
         plan=fixed_market_parent_plan,
         configuration_hash=token.configuration_hash,
         account_ids=token.account_ids, code_hash=code_hash)
+    verify_v4_recovery_at_anchor(recovery_evidence, anchor)
     context = load_typed_run_context(writer_client, token.run_id)
     if (context != load_typed_run_context(terminal_client, token.run_id)
             or context.get("mode") != "backtest"
