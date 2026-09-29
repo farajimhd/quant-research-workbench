@@ -53,11 +53,21 @@ def test_oms_capture_detaches_last_observed_state_from_live_group():
         "broker-1": fingerprint}
 
 
-def test_snapshot_rejects_unbound_and_live_shape():
+def test_snapshot_rejects_unbound_and_bad_shape():
     with pytest.raises(ValueError, match="unbound"):
         _snapshot({"other": ("working", "Submitted", 0, 5, 0, 10, 0, "", "", "")})
-    with pytest.raises(ValueError, match="canonical"):
-        _snapshot({"broker-1": ("Submitted", 0, 5, 0, 10, 0, "")})
+    with pytest.raises(ValueError, match="observed order"):
+        _snapshot({"broker-1": ("Submitted", 0, 5, 0, 10)})
+
+
+def test_snapshot_preserves_live_adapter_fingerprint_shape():
+    rows = verify_oms_observation_snapshot(
+        _snapshot({"broker-1": ("Submitted", 0, 5, 0, 10, 0, "working")}))
+    row = rows.observations[0]
+    assert row["fingerprint_kind"] == "live_adapter"
+    assert row["lifecycle_state"] == ""
+    assert row["broker_status"] == "Submitted"
+    assert row["warning"] == "working"
 
 
 def test_snapshot_rejects_tampered_child_and_missing_row():

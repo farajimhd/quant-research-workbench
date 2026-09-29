@@ -1148,7 +1148,7 @@ def test_oms_observation_rows_require_exact_compacted_cursor_and_selected_head()
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
-    table = "trading_strategy_one_oms_observation_snapshot_v1"
+    table = "trading_strategy_one_oms_observation_snapshot_v2"
     token = f"oms-observation:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
            "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
@@ -1179,7 +1179,7 @@ def test_oms_observation_lost_insert_response_never_selects_head():
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
-    table = "trading_strategy_one_oms_observation_snapshot_v1"
+    table = "trading_strategy_one_oms_observation_snapshot_v2"
     token = f"oms-observation:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
            "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"

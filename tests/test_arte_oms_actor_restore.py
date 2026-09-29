@@ -112,6 +112,18 @@ def test_typed_oms_observation_attachment_preserves_last_observed_state():
     assert restored.groups["group-1"].broker_order_state_fingerprints == {
         "broker-1": observed}
     assert image.groups["group-1"].broker_order_state_fingerprints == {}
+    live = ("Submitted", 0.0, 5.0, 0.0, 10.0, 0.0, "working")
+    live_rows = project_oms_observation_snapshot(
+        run_id=RUN, session_date=AT.date(), checkpoint_sequence=7,
+        boundary_ms=30_000,
+        groups={"group-1": type("Observed", (), {
+            "broker_order_ids": ["broker-1"],
+            "broker_order_state_fingerprints": {"broker-1": live},
+        })()})
+    live_restored = attach_typed_oms_observations(
+        image, live_rows, through_sequence=7)
+    assert live_restored.groups["group-1"].broker_order_state_fingerprints == {
+        "broker-1": live}
     with pytest.raises(RuntimeError, match="checkpoint"):
         attach_typed_oms_observations(image, rows, through_sequence=8)
     stored, history = _source(malformed={

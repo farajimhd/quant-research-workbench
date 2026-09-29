@@ -65,14 +65,21 @@ def attach_typed_oms_observations(
                 or image.group_by_broker_id.get(broker_id) != group_id
                 or broker_id in group.broker_order_state_fingerprints):
             raise RuntimeError("Typed OMS observation has no unique broker binding")
-        group.broker_order_state_fingerprints[broker_id] = (
-            str(row["lifecycle_state"]), str(row["broker_status"]),
-            *(float(row[field]) for field in (
-                "filled_quantity", "remaining_quantity", "average_fill_price",
-                "limit_price", "stop_price")),
-            str(row["warning"]), str(row["rejection_code"]),
-            str(row["rejection_reason"]),
-        )
+        numeric = tuple(float(row[field]) for field in (
+            "filled_quantity", "remaining_quantity", "average_fill_price",
+            "limit_price", "stop_price"))
+        if row["fingerprint_kind"] == "canonical":
+            fingerprint = (
+                str(row["lifecycle_state"]), str(row["broker_status"]),
+                *numeric, str(row["warning"]), str(row["rejection_code"]),
+                str(row["rejection_reason"]),
+            )
+        elif row["fingerprint_kind"] == "live_adapter":
+            fingerprint = (str(row["broker_status"]), *numeric,
+                           str(row["warning"]))
+        else:
+            raise RuntimeError("Typed OMS observation has unknown fingerprint kind")
+        group.broker_order_state_fingerprints[broker_id] = fingerprint
     return replace(image, groups=groups)
 
 

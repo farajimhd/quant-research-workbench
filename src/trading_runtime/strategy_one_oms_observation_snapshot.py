@@ -2,9 +2,8 @@
 
 The broker match snapshot may be ahead of OMS at a completed boundary. Never
 seed OMS deduplication from broker state: doing so can suppress a pending
-transition. These normalized rows preserve the OMS-observed canonical order
-fingerprints. They are inert until a commit-last publisher and cold attestation
-wire them into the running checkpoint contract.
+transition. Canonical-order and live-adapter fingerprints have distinct scalar
+contracts so cold recovery can restore their exact deduplication tuple shape.
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ from src.trading_runtime.keeper_session import ManagedKeeperSession
 
 
 ROOT = TableContract(
-    "trading_strategy_one_oms_observation_snapshot_v1",
+    "trading_strategy_one_oms_observation_snapshot_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("session_date", "Date"),
      ("checkpoint_sequence", "UInt64"), ("boundary_ms", "UInt32"),
@@ -32,10 +31,11 @@ ROOT = TableContract(
     "toYYYYMM(snapshot_month)", "run_id, checkpoint_sequence, snapshot_id",
 )
 OBSERVATION = TableContract(
-    "trading_strategy_one_oms_observation_v1",
+    "trading_strategy_one_oms_observation_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("group_id", "String"), ("broker_order_id", "String"),
+     ("fingerprint_kind", "LowCardinality(String)"),
      ("lifecycle_state", "String"), ("broker_status", "String"),
      ("filled_quantity", "Decimal(38, 18)"),
      ("remaining_quantity", "Decimal(38, 18)"),
@@ -85,7 +85,7 @@ class ManagedOmsObservationHeadReader:
         if (type(run_id) is not str or not run_id
                 or any(char in run_id for char in "\r\n\x00")):
             raise ValueError("OMS observation head run is invalid")
-        return ("/trading/strategy-one-oms-observation/v1/"
+        return ("/trading/strategy-one-oms-observation/v2/"
                 + sha256(run_id.encode()).hexdigest() + "/head")
 
     def read_head(self, *, run_id: str) -> OmsObservationHead:
@@ -143,14 +143,14 @@ def project_oms_observation_snapshot(*, run_id: str, session_date: date,
                                      boundary_ms: int,
                                      groups: Mapping[str, Any]
                                      ) -> OmsObservationSnapshotRows:
-    """Freeze only canonical OMS-observed states, never current broker states."""
+    """Freeze only OMS-observed states, never current broker states."""
     if (not run_id or not isinstance(session_date, date)
             or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
             or type(boundary_ms) is not int or not 0 <= boundary_ms <= 57_600_000
             or boundary_ms % 100 or not isinstance(groups, Mapping)):
         raise ValueError("OMS observation snapshot needs one completed boundary")
     snapshot_id = str(uuid5(NAMESPACE_URL,
-                            f"{run_id}:{checkpoint_sequence}:oms-observation-v1"))
+                            f"{run_id}:{checkpoint_sequence}:oms-observation-v2"))
     common = {"snapshot_id": snapshot_id, "run_id": run_id,
               "snapshot_month": session_date.replace(day=1).isoformat(),
               "checkpoint_sequence": checkpoint_sequence}
@@ -164,18 +164,27 @@ def project_oms_observation_snapshot(*, run_id: str, session_date: date,
                 or set(observed) - set(broker_ids)):
             raise ValueError("OMS observation has an unbound broker order")
         for broker_order_id, fingerprint in sorted(observed.items()):
+            kind = ("canonical" if isinstance(fingerprint, tuple)
+                    and len(fingerprint) == 10 else
+                    "live_adapter" if isinstance(fingerprint, tuple)
+                    and len(fingerprint) == 7 else "")
             if (not isinstance(broker_order_id, str) or not broker_order_id
                     or broker_order_id in seen_orders
                     or not isinstance(fingerprint, tuple)
-                    or len(fingerprint) != 10
+                    or not kind
                     or type(fingerprint[0]) is not str or not fingerprint[0]
                     or any(type(fingerprint[index]) is not str
-                           for index in (1, 7, 8, 9))):
-                raise ValueError("OMS observation differs from its canonical order")
+                           for index in ((1, 7, 8, 9) if kind == "canonical"
+                                         else (6,)))):
+                raise ValueError("OMS observation differs from its observed order")
+            if kind == "live_adapter":
+                fingerprint = ("", fingerprint[0], *fingerprint[1:6],
+                               fingerprint[6], "", "")
             seen_orders.add(broker_order_id)
             observations.append(_sealed({
                 **common, "group_id": group_id,
                 "broker_order_id": broker_order_id,
+                "fingerprint_kind": kind,
                 "lifecycle_state": fingerprint[0],
                 "broker_status": fingerprint[1],
                 "filled_quantity": _number(fingerprint[2]),
@@ -221,6 +230,13 @@ def verify_oms_observation_snapshot(
                 or _digest({name: value for name, value in row.items()
                             if name != "content_hash"}) != row.get("content_hash")):
             raise RuntimeError("OMS observation child differs from its root")
+        if (row["fingerprint_kind"] not in {"canonical", "live_adapter"}
+                or (row["fingerprint_kind"] == "canonical"
+                    and not row["lifecycle_state"])
+                or (row["fingerprint_kind"] == "live_adapter"
+                    and (row["lifecycle_state"] or row["rejection_code"]
+                         or row["rejection_reason"]))):
+            raise RuntimeError("OMS observation has invalid fingerprint kind")
         seen.add(key)
         members.append((*key, row["content_hash"]))
     if (len(rows.observations) != int(root["observation_count"])
