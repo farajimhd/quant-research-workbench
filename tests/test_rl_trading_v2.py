@@ -152,6 +152,31 @@ def test_stale_price_does_not_fill_and_unresolved_terminal_is_reported():
     assert not env.summary()['valid_terminal']
 
 
+def test_discretionary_exit_mask_requires_fresh_market_and_sellable_size():
+    one = market(n=1)
+    one.arrays['volume'][0,1] = 1
+    env = TradingEnv(one,config())
+    act(env,0,1)
+    assert env.quantity[0] == 1
+    assert env.observe()['action_mask'][0].tolist() == [True,True,False,True]
+    one.arrays['fresh'][0,1] = False
+    assert env.observe()['action_mask'][0,2:].tolist() == [False,False]
+    one.arrays['fresh'][0,1] = True
+    act(env,0,3)
+    assert env.quantity[0] == 0
+
+    two = market(n=1)
+    two.arrays['volume'][0,1] = 2
+    env = TradingEnv(two,config())
+    act(env,0,1)
+    assert env.quantity[0] == 2
+    assert env.observe()['action_mask'][0,2]
+    act(env,0,2,.001)
+    assert env.quantity[0] == 1
+    assert env.metrics['unfilled_orders'] == 0
+    assert not env.observe()['action_mask'][0,2]
+
+
 def test_no_future_information_in_observation_or_rank():
     session = market()
     env = TradingEnv(session,config())
@@ -174,8 +199,8 @@ def test_all_1000_candidates_and_outside_holdings_are_visible():
     env.cash -= 15
     obs = env.observe()
     assert len(obs['ids']) == 1001 and obs['ids'][-1] == 1004
-    assert obs['action_mask'][900].tolist() == [True,False,True,True]
-    assert obs['action_mask'][999].tolist() == [True,False,True,True]
+    assert obs['action_mask'][900].tolist() == [True,False,False,True]
+    assert obs['action_mask'][999].tolist() == [True,False,False,True]
     assert obs['action_mask'][-1].tolist() == [True,False,False,False]
 
 
@@ -554,7 +579,7 @@ def test_policy_only_best_initialization_verifies_contract_and_resets_optimizer(
 
 def test_hierarchical_policy_migration_is_policy_only_and_source_pinned(tmp_path):
     old_version = 'rl-trading-v2-ppo-single-account-sessions-4'
-    new_version = 'rl-trading-v2-ppo-hierarchical-actions-7'
+    new_version = 'rl-trading-v2-ppo-hierarchical-actions-8'
     parent = dict(version=old_version,job='train',config=dict(version=old_version,initial_cash=10000),
         arguments=dict(validation_rollouts=3,learning_rate=3e-5),
         model=dict(features=3,width=16,heads=2),feature_names=['a','b','c'],

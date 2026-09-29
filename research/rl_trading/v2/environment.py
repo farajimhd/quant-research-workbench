@@ -131,7 +131,11 @@ class TradingEnv:
         if regular(self.t):
             mask[:,1] &= ((a['prior_close'][ids] >= PRIOR_CLOSE_MINIMUM)
                            & (a['estimated_reference'][ids,self.t] > 0))
-        mask[:,2] = mask[:,3] = valid & (self.quantity[ids]>0) & ~self.forced[ids]
+        discretionary_exit = (valid & (self.quantity[ids]>0) & ~self.forced[ids]
+                              & a['fresh'][ids,self.t])
+        # A fractional reduction of one share cannot execute; a full close can.
+        mask[:,2] = discretionary_exit & (self.quantity[ids]>1)
+        mask[:,3] = discretionary_exit
         return dict(ids=ids, valid=valid, market=market, position=position,
                     account=np.asarray([self.cash/equity, 1-self.cash/equity,
                         equity/self.initial-1, (self.peak-equity)/self.peak,
@@ -288,8 +292,13 @@ class TradingEnv:
                 brackets[int(ticker)] = (
                     c.minimum_stop_ratio+sizes[slot,1]*(c.maximum_stop_ratio-c.minimum_stop_ratio),
                     c.minimum_target_ratio+sizes[slot,2]*(c.maximum_target_ratio-c.minimum_target_ratio))
-            elif mode in (2,3):
-                sells[int(ticker)] = self.quantity[ticker]*(sizes[slot,0] if mode == 2 else 1.)
+            elif mode == 2:
+                held = int(self.quantity[ticker])
+                # Keep reduce distinct from close and ensure a sampled reduce
+                # requests at least one executable whole share.
+                sells[int(ticker)] = min(held-1,max(1,math.floor(held*sizes[slot,0])))
+            elif mode == 3:
+                sells[int(ticker)] = self.quantity[ticker]
         self.forced |= (self.quantity>0) & (self.t == self.session.seconds-2)
         sells.update({int(i):self.quantity[i] for i in np.flatnonzero(self.forced)})
         # Joint budget transform of sampled buy demands. The trainer stores the
