@@ -1555,7 +1555,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const previousLast = previousTimeline.at(-1)?.time;
     const appended = previousLast === undefined ? 0 : timeline.filter((bar) => bar.time > previousLast).length;
     const removed = timeline.length ? previousTimeline.filter((bar) => bar.time < timeline[0].time).length : 0;
-    const followLatest = !labeling && currentRange && previousTimeline.length && currentRange.to >= previousTimeline.length - 1;
+    // A user-owned range is stable across later bars, even if the user left
+    // its right edge at the latest candle. Only an untouched chart may follow.
+    const followLatest = !userViewportClaimedRef.current && !labeling && currentRange
+      && previousTimeline.length && currentRange.to >= previousTimeline.length - 1;
     previousTimelineRef.current = timeline;
     candleBoundsRef.current = candleValueBounds(payload.candles);
     // Trade guides participate in the candle series autoscale. Seed the
@@ -1579,8 +1582,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         window.clearTimeout(initialFitTimerRef.current);
       }
       initialFitTimerRef.current = window.setTimeout(() => {
+        initialFitTimerRef.current = null;
         const currentPayload = payloadRef.current;
-        if (!currentPayload || !priceChartRef.current) return;
+        if (!currentPayload || !priceChartRef.current || userViewportClaimedRef.current) return;
         suppressEarlierLoad();
         candleRef.current?.priceScale().applyOptions({ autoScale: true });
         if (reference) {
@@ -1593,9 +1597,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         window.requestAnimationFrame(() => {
           const scale = candleRef.current?.priceScale();
           const range = scale?.getVisibleRange();
-          if (range && !labeling) scale?.setVisibleRange(range);
+          if (range && !labeling && !userViewportClaimedRef.current) scale?.setVisibleRange(range);
         });
-        initialFitTimerRef.current = null;
       }, 20);
     } else {
       suppressEarlierLoad();
@@ -1612,7 +1615,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [deferInitialFitUntilLoaded, effectiveChartSettings.hideEmptyIntervals, initialFitMode, loading, payload, reference, referenceKey, ticker, timeframe]);
 
   useEffect(() => {
-    if (!priceChartRef.current || !payload?.candles.length || !reference) return;
+    if (!priceChartRef.current || !payload?.candles.length || !reference || userViewportClaimedRef.current) return;
     suppressEarlierLoad();
     fitAroundReference(priceChartRef.current, payload.candles, reference, timeframe, chartSettingsRef.current.hideEmptyIntervals);
     drawCurrentRegions();
