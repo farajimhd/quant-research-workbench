@@ -431,3 +431,27 @@ had matching financial outcomes but a different code hash and `decided_at`
 values; it is not same-code replay equality. Aug 19's active-ticker first-row
 reads took 5.5–5.7s and terminal durability about 6.2–6.4s, now larger than
 its 0.46–0.48s scheduler cost.
+
+A separate full-market Aug 18 app-route profile used the UI's $100,000 cash
+setting rather than the $10,000 integration-probe setting above. Two runs at
+the original 1,024-record Backtest checkpoint threshold completed in 74.485s
+and 66.434s of execution after 26.959s and 23.957s preflight. Run IDs were
+`880efba4-0661-4cb5-b2bb-7dba055107a8` and
+`1a46d058-fa93-4f46-b2d2-51cf4a06db97`. Each committed 7,785 normalized
+journal events in 17 writer units with zero failed units and three sets of
+manager, broker, and evidence snapshots. Their causal session phases took
+24.898s and 23.302s, while terminal phases took 42.116s and 36.207s,
+mostly awaiting prior journal commits. A cold causal audit of the first run
+found 58 intents, 3,682 linked actions, and zero backdated actions. The
+larger event volume makes these timings incomparable to the $10,000 runs.
+
+A bounded trial doubling only the Backtest checkpoint threshold to 2,048
+records did not reduce the snapshot count or terminal backlog. On that code,
+run `5ac2dcda-8085-4eab-8221-b86221362e46` completed in 68.991s after
+21.641s preflight, with the same 7,785 events, 17 writer units, and three
+snapshot sets; its terminal phase took 39.470s. The threshold was restored
+to 1,024 rather than retaining a longer unrecoverable suffix without measured
+benefit. The next performance target is normalized snapshot publication and
+readback, not a looser recovery cadence. All three runs completed despite
+Keeper connection-drop/retry messages during shutdown; those messages remain
+an operational issue, not a claimed clean bill of health.
