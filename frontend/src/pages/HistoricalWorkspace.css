@@ -55,6 +55,15 @@
 .backtest-v4-review { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; min-width: 0; }
 .backtest-v4-direct-review { height: 100%; min-height: 0; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
 .backtest-v4-running { height: 100%; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+.backtest-v4-running-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; padding: 16px; align-content: start; }
+.backtest-v4-running-card { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.backtest-v4-running-card h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+.backtest-v4-running-card > strong { font-size: 24px; font-variant-numeric: tabular-nums; }
+.backtest-v4-running-card p { margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
+.backtest-v4-running-timings dl { margin: 12px 0 0; }
+.backtest-v4-running-timings dl > div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.backtest-v4-running-timings dd { margin: 0; font-variant-numeric: tabular-nums; }
+.backtest-v4-completed-timing { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 5px 12px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 12px; font-variant-numeric: tabular-nums; }
 .backtest-v4-running > .canvas-config-toolbar { grid-template-columns: max-content minmax(0, 1fr); }
 .saved-v4-chart-page { grid-template-rows: minmax(0, 1fr); gap: 0; }
 .saved-v4-chart-page > .trading-workspace-shell { grid-row: 1; }

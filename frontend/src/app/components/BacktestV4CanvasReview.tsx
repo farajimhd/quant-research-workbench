@@ -54,6 +54,29 @@ const EXCLUDED = TRADING_WORKSPACE_CONTAINERS.filter(item => !AVAILABLE_CONTAINE
 const V4_LAYOUT_KEY = "quant-research-workbench.canvas.backtest.strategy-one-v4-v3";
 const CERTIFIED_LAYOUT_KEY = canvasRuntimeWorkspaceStorageKey("backtest.strategy.main", "persistent-layout-v1", "main");
 
+/** Keep the same certified container layout during execution. A committed
+ * journal prefix is not a terminal P&L report; unavailable domains remain
+ * explicit until their normalized projection is verified. */
+export function BacktestV4RunningWorkspace({ boundaries, committedRows }: {
+  boundaries: number; committedRows: number;
+}) {
+  const [savedLayout] = useState<CanvasWorkspaceState | null>(() =>
+    readCanvasWorkspaceStateByStorageKey(V4_LAYOUT_KEY)
+    ?? strategyReplayCanvasState(readCanvasWorkspaceStateByStorageKey(CERTIFIED_LAYOUT_KEY)));
+  return <TradingWorkspace clockLabel="" commandBarVisible={false} compact
+    definitionsOverride={DEFINITIONS} defaultOpenIds={REVIEW_CONTAINERS}
+    excludedContainerIds={EXCLUDED} initialStateOverride={savedLayout}
+    layoutPreset="focus" historicalSourceReady mode="backtest" runLabel="Strategy 1"
+    runStatus="running" sourceLabel="ARTE typed journal" showHealth={false}
+    metaForContainer={() => ({ sourceLabel: "ARTE V4", status: "connecting", freshness: "At run clock" })}
+    storageKeyOverride={V4_LAYOUT_KEY} persistState={false}
+    renderContainer={definition => <section className="trading-preview" role="status">
+      <p className="trading-disclosure">{definition.id === "strategy_activity"
+        ? `${boundaries.toLocaleString()} candidate boundaries evaluated. ${committedRows.toLocaleString()} journal records committed.`
+        : `${definition.title} will show verified results after journal finalization. No intraday P&L or fills are inferred from market bars.`}</p>
+    </section>} />;
+}
+
 function display(value: unknown): string {
   return value == null || value === "" ? "—" : String(value);
 }
@@ -112,8 +135,9 @@ function EvidenceTable({ rows, columns, empty, onSymbolSelect }: {
  * legacy SQLite preview readers. Every rendered fact is from a verified V4
  * ClickHouse prefix; unprojected legacy domains remain explicitly unavailable.
  */
-export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
+export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: {
   runId: string; initialPage: V4Page; onClose: () => void;
+  timing?: { totalSeconds: number; executionSeconds?: number; finalizationSeconds?: number };
 }) {
   // Keep the certified Canvas interactive while paging the typed journal.
   // Larger runs stay bounded and expose explicit manual continuation.
@@ -310,6 +334,11 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
   return <div className="canvas-config-page canvas-focus-page backtest-v4-canvas-review">
     <SavedV4CanvasHeader initialPage={initialPage} onClose={onClose} title="Backtest Canvas · Strategy 1"
       managementOpen={managementOpen} onManage={() => setManagementOpen(value => !value)} />
+    {timing ? <div className="backtest-v4-completed-timing" aria-label="Completed Backtest timing">
+      <strong>Total {timing.totalSeconds.toFixed(2)}s</strong>
+      <span>Execution {timing.executionSeconds?.toFixed(2) ?? "—"}s</span>
+      <span>Journal finalization {timing.finalizationSeconds?.toFixed(2) ?? "—"}s</span>
+    </div> : null}
     <TradingWorkspace clockLabel="" commandBarVisible={false} compact
       definitionsOverride={DEFINITIONS} defaultOpenIds={REVIEW_CONTAINERS}
       excludedContainerIds={EXCLUDED}
@@ -425,12 +454,11 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
           ...(exitTime !== undefined && Number.isFinite(exitTime) && exitPrice !== undefined && Number.isFinite(exitPrice)
             ? { exitTime, exitPrice, endTime: exitTime, exitFills: [{ kind: "exit_fill" as const,
               time: exitTime, price: exitPrice, side: side === "SHORT" ? "BUY" as const : "SELL" as const,
-              // The verified lifecycle may lack an exit cause. The red fill
-              // marker remains truthful; a label appears only for a recorded
-              // cause, never one inferred from price or P&L.
-              labelParts: exitReason ? strategyActionLabel({ kind: "exit", side,
-                reason: reasonCode, quantity, price: exitPrice,
-                pnl: pnl !== undefined && Number.isFinite(pnl) ? pnl : undefined }) : [] }] } : {}),
+              // A missing cause must not suppress verified fill price or P&L.
+              // The shared presenter omits an unverified reason on its own.
+              labelParts: strategyActionLabel({ kind: "exit", side,
+                reason: exitReason ? reasonCode : undefined, quantity, price: exitPrice,
+                pnl: pnl !== undefined && Number.isFinite(pnl) ? pnl : undefined }) }] } : {}),
           pnl: pnl !== undefined && Number.isFinite(pnl) ? pnl : undefined });
       }
       setTradeAnnotations(annotations);

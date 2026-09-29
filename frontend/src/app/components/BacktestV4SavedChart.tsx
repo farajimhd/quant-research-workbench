@@ -5,8 +5,7 @@ import { ChartPanel, type ChartPayload, type ChartDisplayItem } from "./ChartPan
 
 type Bar = { bar_start: string; bar_end: string; open: number; high: number;
   low: number; close: number; volume: number; is_closed?: boolean };
-type Indicator = { bar_start: string; macd_line?: number; macd_signal?: number;
-  macd_histogram?: number };
+type Indicator = { bar_start: string; [column: string]: string | number | undefined };
 export type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolean;
   next_before: string; session_date: string; ticker: string; timeframe: string;
   verified_boundary_ms: number; indicator_provenance: { unavailable_columns: string[] };
@@ -16,7 +15,13 @@ export type ChartPage = { bars: Bar[]; indicators: Indicator[]; has_more: boolea
 export const SAVED_CHART_FRAMES = ["100ms", "1s", "5s", "10s", "30s"] as const;
 const FRAMES = [...SAVED_CHART_FRAMES, "1d", "1mo"] as const;
 const MACD = ["macd_line", "macd_signal", "macd_histogram"] as const;
-const MACD_DISPLAY: ChartDisplayItem[] = [{ id: "saved.closed_macd", title: "Closed MACD", category: "Indicators", sourceColumns: [...MACD] }];
+const EMA = ["ema_7", "ema_9", "ema_12", "ema_15", "ema_20", "ema_26", "ema_50"] as const;
+const INDICATOR_DISPLAY: ChartDisplayItem[] = [
+  { id: "saved.closed_macd", title: "Closed MACD", category: "Indicators", sourceColumns: [...MACD] },
+  ...EMA.map(column => ({ id: `saved.${column}`, title: `EMA ${column.slice(4)}`, category: "Indicators", sourceColumns: [column] })),
+  { id: "saved.rsi_14", title: "RSI 14", category: "Indicators", sourceColumns: ["rsi_14"] },
+  { id: "saved.atr_14", title: "ATR 14", category: "Indicators", sourceColumns: ["atr_14"] },
+];
 const pageCache = new Map<string, Promise<ChartPage>>();
 
 function loadPage(path: string): Promise<ChartPage> {
@@ -50,6 +55,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   const [draftSymbol, setDraftSymbol] = useState(ticker);
   const [frame, setFrame] = useState<(typeof FRAMES)[number]>(initialFrame);
   const [showMacd, setShowMacd] = useState(initialShowMacd);
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>(initialShowMacd ? ["saved.closed_macd"] : []);
   const [page, setPage] = useState<ChartPage | null>(null);
   const [bars, setBars] = useState<Bar[]>([]);
   const [indicators, setIndicators] = useState<Indicator[]>([]);
@@ -66,19 +72,22 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     setIndicators([]);
   }, [runId, ticker]);
 
+  const canUsePrefetch = Boolean(prefetchedPage && symbol === ticker && frame === initialFrame
+    && before === null && selectedIndicators.length === 1 && selectedIndicators[0] === "saved.closed_macd");
   useEffect(() => {
-    if (!prefetchedPage) return;
+    if (!prefetchedPage || !canUsePrefetch) return;
     setPage(prefetchedPage);
     setBars(prefetchedPage.bars);
     setIndicators(prefetchedPage.indicators);
-  }, [prefetchedPage]);
+  }, [prefetchedPage, canUsePrefetch]);
 
   useEffect(() => { onQuoteChange?.(page?.quote); }, [onQuoteChange, page?.quote]);
 
   function changeScope(next: { symbol?: string; frame?: (typeof FRAMES)[number]; macd?: boolean }) {
     if (next.symbol !== undefined) setSymbol(next.symbol);
     if (next.frame !== undefined) setFrame(next.frame);
-    if (next.macd !== undefined) setShowMacd(next.macd);
+    if (next.macd !== undefined) { setShowMacd(next.macd); setSelectedIndicators(current => next.macd
+      ? [...new Set([...current, "saved.closed_macd"])] : current.filter(value => value !== "saved.closed_macd")); }
     setBefore(null);
     setPage(null);
     setBars([]);
@@ -96,7 +105,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   }
 
   useEffect(() => {
-    if (!enabled || prefetchedPage) return;
+    if (!enabled || canUsePrefetch) return;
     const normalized = symbol.trim().toUpperCase();
     if (!normalized || !/^[A-Z0-9.-]{1,24}$/.test(normalized)) {
       setError("Enter a valid ticker.");
@@ -106,9 +115,10 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     const params = new URLSearchParams({ ticker: normalized, timeframe: frame,
       row_limit: "1000" });
     if (before !== null) params.set("before_boundary_ms", String(before));
-    // The saved-chart API accepts one comma-separated projection parameter.
-    // Repeated keys would request only the last MACD column.
-    if (showMacd && frame !== "1d" && frame !== "1mo") params.set("indicator_columns", MACD.join(","));
+    // One projected, comma-separated column set; never derive indicators locally.
+    const columns = new Set(INDICATOR_DISPLAY.filter(item => selectedIndicators.includes(item.id))
+      .flatMap(item => item.sourceColumns));
+    if (columns.size && frame !== "1d" && frame !== "1mo") params.set("indicator_columns", [...columns].join(","));
     setLoading(true);
     setError("");
     void loadPage(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart?${params}`).then(value => {
@@ -122,14 +132,14 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [enabled, prefetchedPage, runId, ticker, symbol, frame, showMacd, before]);
+  }, [enabled, canUsePrefetch, runId, ticker, symbol, frame, selectedIndicators, before]);
 
   const payload = useMemo<ChartPayload>(() => {
-    const series = (column: (typeof MACD)[number], label: string, color: string) => ({
-      column, displayItemId: "saved.closed_macd", label, color,
+    const series = (column: string, label: string, color: string, displayItemId = "saved.closed_macd", paneKey = "macd") => ({
+      column, displayItemId, label, color,
       style: column === "macd_histogram" ? "histogram" as const : "line" as const, lineWidth: 1,
-      paneKey: "macd", data: indicators.filter(row => typeof row[column] === "number")
-        .map(row => ({ time: Date.parse(row.bar_start) / 1000, value: row[column]! })),
+      paneKey, data: indicators.filter(row => typeof row[column] === "number")
+        .map(row => ({ time: Date.parse(row.bar_start) / 1000, value: Number(row[column]) })),
     });
     return { timeframe: frame, candles: bars.map(bar => ({
       time: Date.parse(bar.bar_start) / 1000,
@@ -137,13 +147,17 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       open: bar.open, high: bar.high, low: bar.low, close: bar.close,
     })), volume: bars.map(bar => ({ time: Date.parse(bar.bar_start) / 1000,
       value: bar.volume, color: bar.close >= bar.open ? "var(--success)" : "var(--danger)" })),
-      overlay_series: [], oscillator_series: showMacd ? [
+      overlay_series: EMA.filter(column => selectedIndicators.includes(`saved.${column}`))
+        .map(column => series(column, `EMA ${column.slice(4)}`, "var(--info)", `saved.${column}`, "price")),
+      oscillator_series: [...(showMacd ? [
         series("macd_line", "MACD", "var(--primary)"),
         series("macd_signal", "Signal", "var(--warning)"),
         series("macd_histogram", "Histogram", "var(--info)"),
-      ] : [], markers: [], regions: [], trade_annotations: tradeAnnotations,
+      ] : []), ...(selectedIndicators.includes("saved.rsi_14") ? [series("rsi_14", "RSI 14", "var(--info)", "saved.rsi_14", "rsi")] : []),
+      ...(selectedIndicators.includes("saved.atr_14") ? [series("atr_14", "ATR 14", "var(--warning)", "saved.atr_14", "atr")] : [])],
+      markers: [], regions: [], trade_annotations: tradeAnnotations,
     };
-  }, [bars, indicators, frame, showMacd, tradeAnnotations]);
+  }, [bars, indicators, frame, showMacd, selectedIndicators, tradeAnnotations]);
 
   const older = page && pageBoundary(page);
   const compactContext = embedded && (frame === "1d" || frame === "1mo");
@@ -166,8 +180,11 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     {!compactContext && page?.history_limited ? <p role="note">ARTE history available from {page.history_first_session}; earlier {frame === "1mo" ? "months" : "sessions"} are unavailable.</p> : null}
     {error ? <p role="alert">Chart unavailable: {error}</p> : null}
     <ChartPanel persistedOnly payload={payload} ticker={symbol} timeframe={frame} timeframes={[...allowedFrames]}
-      featureOptions={[]} indicatorOptions={[]} displayItemOptions={frame === "1d" || frame === "1mo" ? [] : MACD_DISPLAY}
-      visibleColumns={showMacd ? ["saved.closed_macd"] : []} onVisibleColumnsChange={values => changeScope({ macd: values.includes("saved.closed_macd") })}
+      featureOptions={[]} indicatorOptions={[]} displayItemOptions={frame === "1d" || frame === "1mo" ? [] : INDICATOR_DISPLAY}
+      visibleColumns={selectedIndicators} onVisibleColumnsChange={values => {
+        setSelectedIndicators(values); setShowMacd(values.includes("saved.closed_macd"));
+        setBefore(null); setPage(null); setBars([]); setIndicators([]);
+      }}
       onTickerChange={value => changeScope({ symbol: value })} onTimeframeChange={value => changeScope({ frame: value as (typeof FRAMES)[number] })}
       emptyMessage="No price-bearing bars in this verified run window." loading={loading && !page}
       showIndicatorControls={frame !== "1d" && frame !== "1mo"} strategyPresentationEnabled={Boolean(toolbarAction) || tradeAnnotations.length > 0}

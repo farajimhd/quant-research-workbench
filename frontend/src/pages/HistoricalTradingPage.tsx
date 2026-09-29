@@ -3,7 +3,7 @@ import { FilteredV7Preparation } from "../app/components/FilteredV7Preparation";
 import { BacktestRecoveryState } from "../app/components/BacktestRecoveryState";
 import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
 import type { V4Page } from "../app/components/BacktestV4SavedReview";
-import { BacktestV4CanvasReview } from "../app/components/BacktestV4CanvasReview";
+import { BacktestV4CanvasReview, BacktestV4RunningWorkspace } from "../app/components/BacktestV4CanvasReview";
 import { normalizeTicker } from "../app/tickerNavigation";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, LoaderCircle, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -137,6 +137,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [creating, setCreating] = useState(false);
   const [run, setRun] = useState<BacktestRun | null>(null);
+  const [completedTiming, setCompletedTiming] = useState<BacktestRun | null>(null);
   const [v4ReviewPage, setV4ReviewPage] = useState<V4Page | null>(null);
   const [activeRunIdentity, setActiveRunIdentity] = useState<BacktestRunIdentity | null>(null);
   const [restoreError, setRestoreError] = useState("");
@@ -235,6 +236,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     persistSelectedRun("");
     setSelectedRunId("");
     setRun(null);
+    setCompletedTiming(null);
     setV4ReviewPage(null);
     setRestoreError("");
   }
@@ -355,6 +357,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           throw new Error("Saved Strategy 1 review identity differs from the completed run.");
         }
         setV4ReviewPage(page);
+        setCompletedTiming(run);
         setRun(null);
         setError("");
       }).catch((reason) => {
@@ -504,8 +507,23 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     // journal reader. Keep the certified Canvas header and its progress track
     // visible while execution is active without invoking legacy preview reads.
     if (run.journal_backend === "arte_typed_journal_v4") {
+      const stages = run.performance_timings?.stages ?? {};
+      const wallSeconds = Math.max(0, (Date.parse(run.updated_at) - Date.parse(run.created_at)) / 1000);
+      const timedStages = [
+        ["Preparation", "strategy_one_journal_bootstrap"],
+        ["Market execution", "strategy_one_session"],
+        ["Journal finalization", "strategy_one_terminal"],
+      ] as const;
       return <div className="canvas-config-page canvas-focus-page backtest-v4-running">
         <header className="canvas-config-toolbar"><div className="canvas-clock-control" aria-label="Backtest session"><strong>{run.session_date || "Backtest session"}</strong></div><div className="canvas-mode-context-slot">{progressControls}</div></header>
+        <main className="backtest-v4-running-body" aria-label="Backtest workspace" aria-live="polite">
+          <section className="backtest-v4-running-card"><h2>Strategy activity</h2><strong>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)}</strong><p>Candidate boundaries evaluated · {run.current_time ? `${formatReplayTime(run.current_time)} ET` : "preparing"}</p></section>
+          <section className="backtest-v4-running-card"><h2>Market scope</h2><strong>{run.execution_scope?.admitted_ticker_count?.toLocaleString() ?? "—"}</strong><p>Admitted tickers of {run.execution_scope?.configured_ticker_count?.toLocaleString() ?? "—"} configured</p></section>
+          <section className="backtest-v4-running-card"><h2>Verified journal</h2><strong>{run.performance_timings?.journal_writer?.committed_event_rows?.toLocaleString() ?? "0"}</strong><p>Committed records · {run.performance_timings?.journal_writer?.queue_depth ?? 0} queued</p></section>
+          <section className="backtest-v4-running-card backtest-v4-running-timings"><h2>{terminal ? "Backtest runtime" : "Elapsed runtime"}</h2><strong>{Number.isFinite(wallSeconds) ? `${wallSeconds.toFixed(1)}s` : "—"}</strong><dl>{timedStages.map(([label, key]) => <div key={key}><dt>{label}</dt><dd>{stages[key] ? `${stages[key].seconds.toFixed(2)}s` : "—"}</dd></div>)}</dl><p>Stage times are inclusive and may overlap. Final results appear after the journal is verified.</p></section>
+        </main>
+        <BacktestV4RunningWorkspace boundaries={run.processed_events || 0}
+          committedRows={run.performance_timings?.journal_writer?.committed_event_rows || 0} />
       </div>;
     }
     return <CanvasWorkspaceSurface canvasId="main" manager={false}
@@ -516,8 +534,13 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     const focusTicker = normalizeTicker(new URL(window.location.href).searchParams.get("backtest_ticker") || "");
     if (focusTicker) return <SavedBacktestChartFocus key={`${selectedRunId}:${focusTicker}`}
       runId={selectedRunId} ticker={focusTicker} />;
+    const timing = completedTiming?.run_id === selectedRunId ? completedTiming : null;
+    const seconds = timing ? (Date.parse(timing.updated_at) - Date.parse(timing.created_at)) / 1000 : NaN;
     return <BacktestV4CanvasReview key={selectedRunId} runId={selectedRunId}
-      initialPage={v4ReviewPage} onClose={returnToSetup} />;
+      initialPage={v4ReviewPage} onClose={returnToSetup}
+      timing={Number.isFinite(seconds) ? { totalSeconds: seconds,
+        executionSeconds: timing?.performance_timings?.stages?.strategy_one_session?.seconds,
+        finalizationSeconds: timing?.performance_timings?.stages?.strategy_one_terminal?.seconds } : undefined} />;
   }
 
   if (selectedRunId) return <BacktestRecoveryState error={restoreError}

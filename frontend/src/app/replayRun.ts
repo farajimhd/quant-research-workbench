@@ -59,6 +59,10 @@ export type CanvasReplayRun = {
     targets: string[];
   };
   progress: number;
+  performance_timings?: {
+    stages?: Record<string, { calls: number; seconds: number; maximum_seconds: number }>;
+    journal_writer?: { committed_units?: number; committed_event_rows?: number; queue_depth?: number; failed_units?: number };
+  };
   preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership" | "level_book_coverage" | "level_book_working_set" | "signal_identity" | "strategy_quality_admission";
   preparation_progress?: { completed: number; total: number; v7_reuse?: { bars: number; seeds: number; loaded: number } | null; filtered_v7?: FilteredV7Progress | null };
   preparation_cache?: { strategy_frames?: "fixture" | "hit" | "miss" | "partial_hit" | "built" | "reusing" | "reused" | "reused_and_built" | "not_requested" | "not_required" | "request_memory" | "run_checkpoint" };
