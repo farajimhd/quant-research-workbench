@@ -853,8 +853,11 @@ def test_active_source_reads_persisted_window_and_closes_on_deactivation():
     clock.activate("AAA")
     assert clock.pop_next().boundary_ms == 200
     assert len(opened[0].queries) == 2
-    assert len(timings) == 1
-    assert timings[0][0] == "strategy_one_active_first_row"
+    assert [name for name, _ in timings] == [
+        "strategy_one_active_plan_projection",
+        "strategy_one_active_client_creation",
+        "strategy_one_active_first_row",
+    ]
     assert all("bucket_index>=144001" in sql for sql in opened[0].queries)
     clock.deactivate("AAA")
     assert opened[0].closed

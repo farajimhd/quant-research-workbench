@@ -176,9 +176,15 @@ def persisted_active_market_source(
             return
         scoped = project_market_day_plan(plan, (ticker,))
         prices = price_plan.projected(scoped)
+        if stage_time is not None:
+            stage_time("strategy_one_active_plan_projection", started)
+            started = perf_counter()
         reader = client_factory()
         if reader is None or not callable(getattr(reader, "close", None)):
             raise TypeError("Active Strategy 1 source needs a closable read client")
+        if stage_time is not None:
+            stage_time("strategy_one_active_client_creation", started)
+            started = perf_counter()
         with closing(reader):
             rows = iter_market_day_rows(
                 scoped, client=reader, after_boundary_ms=after_boundary_ms,
