@@ -68,7 +68,7 @@ def _same_utc_time(left, right) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class V4CommittedPrefix:
-    """Cold-verified normalized run chain, not an admission or write lease."""
+    """Verified normalized run chain, not an admission or write lease."""
 
     run_id: str
     last_sequence: int
@@ -76,6 +76,78 @@ class V4CommittedPrefix:
     source_cursor: str
     status: str
     batch_ids: tuple[str, ...]
+
+
+def load_writer_v4_snapshot_prefix(client, run_id: str, *,
+                                   max_commits: int = 100_000,
+                                   ) -> V4CommittedPrefix | None:
+    """Verify a writer-owned head without rehashing its older compacted batches.
+
+    This shortcut is limited to the current exclusive Backtest writer session.
+    Every batch was detail-verified before Keeper compaction; the current batch
+    is detail-verified again here. Cold readers still scan the entire prefix.
+    """
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
+
+    lease = getattr(client, "backtest_v4_lease", None)
+    if lease is None:
+        # Older injected test clients and non-Backtest consumers retain the
+        # complete cold verifier. A present but invalid lease never falls back.
+        return (load_verified_v4_prefix(client, run_id)
+                if max_commits == 100_000 else load_verified_v4_prefix(
+                    client, run_id, max_commits=max_commits))
+    dispatch = getattr(client, "typed_insert_dispatch", None)
+    if (not isinstance(lease, BacktestV4KeeperLease)
+            or lease.run_id != run_id or lease.epoch != 1
+            or getattr(client, "typed_insert_strict", False) is not True
+            or not isinstance(dispatch, TypedInsertDispatch)
+            or dispatch.keeper is not lease.owner._session.client
+            or type(max_commits) is not int or not 1 <= max_commits <= 100_000):
+        raise RuntimeError("V4 warm snapshot lacks its original exclusive writer")
+    lease.assert_current()
+    gate, _ = dispatch._read_gate(run_id)
+    zero = str(UUID(int=0))
+    if (gate.mode != "open" or gate.inflight or gate.registered
+            or gate.active_batch_id != zero or gate.compacted_through < 1):
+        raise RuntimeError("V4 warm snapshot has an unsealed dispatch gate")
+    columns = ",".join(name for name, _ in _CONTRACTS["trading_commit_v4"].columns)
+    commits = _rows(client,
+        f"SELECT {columns} FROM arte.trading_commit_v4 "
+        f"WHERE run_id={_literal(run_id)} ORDER BY first_sequence,batch_id "
+        f"LIMIT {max_commits + 1} FORMAT JSONEachRow")
+    if not commits or len(commits) > max_commits:
+        raise RuntimeError("V4 warm snapshot has no bounded committed chain")
+    prior, sequence, ids, seen = zero, 0, [], set()
+    month = commits[0]["run_month"]
+    for row in commits:
+        identity = str(UUID(str(row["batch_id"])))
+        cursor = row["source_cursor"]
+        if (row["run_id"] != run_id or row["run_month"] != month
+                or str(UUID(str(row["prior_batch_id"]))) != prior
+                or row["first_sequence"] != sequence + 1
+                or row["last_sequence"] < row["first_sequence"]
+                or row["event_count"] != row["last_sequence"] - sequence
+                or row["status"] != "running" or identity in seen
+                or not isinstance(cursor, str) or not cursor
+                or cursor.lstrip("\ufeff \t\r\n").startswith(("{", "["))):
+            raise RuntimeError("V4 warm snapshot chain is forked or incomplete")
+        prior, sequence = identity, row["last_sequence"]
+        ids.append(identity)
+        seen.add(identity)
+    latest = commits[-1]
+    if (sequence != gate.compacted_through
+            or prior != gate.compacted_batch_id
+            or sha256(canonical_json(latest).encode()).hexdigest()
+               != gate.compacted_commit_hash):
+        raise RuntimeError("V4 warm snapshot differs from Keeper compaction")
+    verified, _ = load_verified_commit_v4(client, run_id=run_id, batch_id=prior)
+    if verified != latest:
+        raise RuntimeError("V4 warm snapshot current detail differs from commit")
+    lease.assert_current()
+    return V4CommittedPrefix(run_id, sequence, prior, latest["source_cursor"],
+                             "running", tuple(ids))
 
 
 def load_verified_v4_prefix(client, run_id: str, *,

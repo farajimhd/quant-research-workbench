@@ -1581,3 +1581,66 @@ def test_v4_strategy_signal_uses_installed_v2_table_and_readback():
         "trading_strategy_signal_v2"
     assert load_verified_commit_v4(
         client, run_id=item.run_id, batch_id=item.batch_id)[0]["event_count"] == 1
+def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkeypatch):
+    from types import SimpleNamespace
+    from hashlib import sha256
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from src.trading_runtime.arte_typed_insert_dispatch import (
+        TypedInsertDispatch, _Gate, _gate_path,
+    )
+    from src.trading_runtime import arte_journal_commit_v4 as commit
+    from src.trading_runtime import arte_journal_writer as writer
+    from src.trading_runtime.journal_contract import canonical_json
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+
+    run = "62908518-9fd4-4a8e-8c90-2162ccb237e1"
+    zero = "00000000-0000-0000-0000-000000000000"
+    first = "00000000-0000-0000-0000-000000000011"
+    second = "00000000-0000-0000-0000-000000000012"
+    commits = [
+        dict(run_id=run, run_month="2026-08-01", batch_id=first,
+             prior_batch_id=zero, first_sequence=1, last_sequence=2,
+             event_count=2, status="running", source_cursor="2026-08-18:100"),
+        dict(run_id=run, run_month="2026-08-01", batch_id=second,
+             prior_batch_id=first, first_sequence=3, last_sequence=4,
+             event_count=2, status="running", source_cursor="2026-08-18:200"),
+    ]
+    keeper = FakeKazoo()
+    keeper.add_listener = lambda _listener: None
+    session = ManagedKeeperSession(keeper)
+    session._on_state("CONNECTED")
+    lease = BacktestV4KeeperLease.acquire(session, run_id=run, owner_id="worker")
+    dispatch = TypedInsertDispatch(keeper)
+    dispatch.initialize_new_run(run)
+    gate, _ = dispatch._read_gate(run)
+    digest = sha256(canonical_json(commits[-1]).encode()).hexdigest()
+    keeper.nodes[_gate_path(run)] = (
+        _Gate("open", 0, gate.epoch, 0, 4, second, digest, zero).wire(), 1, 0)
+    client = SimpleNamespace(backtest_v4_lease=lease,
+                             typed_insert_strict=True,
+                             typed_insert_dispatch=dispatch)
+    monkeypatch.setattr(writer, "_rows", lambda _client, _sql: commits)
+    verified = []
+    monkeypatch.setattr(commit, "load_verified_commit_v4",
+                        lambda _client, *, run_id, batch_id:
+                        (verified.append(batch_id) or commits[-1], ()))
+    monkeypatch.setattr(commit, "load_verified_v4_prefix",
+                        lambda *_a, **_k: pytest.fail("warm path scanned cold prefix"))
+    prefix = commit.load_writer_v4_snapshot_prefix(client, run)
+    assert prefix.batch_ids == (first, second)
+    assert verified == [second]
+    keeper.nodes[_gate_path(run)] = (
+        _Gate("open", 0, gate.epoch, 0, 4, second, "a" * 64, zero).wire(), 2, 0)
+    with pytest.raises(RuntimeError, match="Keeper compaction"):
+        commit.load_writer_v4_snapshot_prefix(client, run)
+    keeper.nodes[_gate_path(run)] = (
+        _Gate("open", 0, gate.epoch, 0, 4, second, digest, zero).wire(), 3, 0)
+    commits[1]["prior_batch_id"] = zero
+    with pytest.raises(RuntimeError, match="forked or incomplete"):
+        commit.load_writer_v4_snapshot_prefix(client, run)
+    commits[1]["prior_batch_id"] = first
+    client.typed_insert_strict = False
+    with pytest.raises(RuntimeError, match="exclusive writer"):
+        commit.load_writer_v4_snapshot_prefix(client, run)
+    lease.release()

@@ -595,7 +595,7 @@ def publish_broker_match_snapshot(
     An uncertain INSERT never selects a head. The execution thread may only
     submit this work through its bounded journal queue and receives a future.
     """
-    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_journal_commit_v4 import load_writer_v4_snapshot_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
     from src.trading_runtime.arte_journal_writer import _insert
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
@@ -614,7 +614,7 @@ def publish_broker_match_snapshot(
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise ValueError("Broker match batch ID is invalid") from exc
-    prefix = load_verified_v4_prefix(client, run_id)
+    prefix = load_writer_v4_snapshot_prefix(client, run_id)
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != sequence
             or prefix.last_batch_id != journal_batch_id):
