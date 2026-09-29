@@ -3,8 +3,8 @@
 This teacher sees future one-second highs/lows only on the *label* side. It
 does not read quotes, displayed size, spread, or broker execution. The stop
 and target are hypothetical orders; replay separately measures executable
-fills and rewards. Sparse paths with an unobserved second are not called
-perfectly protected episodes.
+fills and rewards. An absent one-second trade candle contributes no price;
+the output reports that clock gap rather than inventing a high or low.
 """
 from __future__ import annotations
 
@@ -22,9 +22,10 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame, *,
     """Return oracle geometry from only the episode's one-second candles.
 
     The hypothetical entry occurs at the completed candle close `entry_us`.
-    Three prior completed candles define the swing-low candidate. Active
-    extrema run from the next completed candle through `exit_us`, inclusive.
-    All expected one-second bars must be present and valid for a label.
+    Observed candles in the three prior clock seconds define the optional
+    swing-low candidate. Active extrema run from the next observed completed
+    candle through `exit_us`, inclusive. Missing trade candles are not
+    forward-filled; their count remains visible for uncertainty review.
     """
     required_positions = {'ticker', 'episode_uid', 'entry_us', 'exit_us',
                           'entry_price'}
@@ -72,15 +73,23 @@ def labels(positions: pl.DataFrame, bars: pl.DataFrame, *,
             (pl.col('pre_entry_bars') == 3) &
             (pl.col('held_bars') == pl.col('expected_held_bars')) &
             (pl.col('held_bars') >= MIN_HOLD_SECONDS)
-        ).fill_null(False).alias('path_complete')))
-    stop = ((pl.min_horizontal('swing_low_3s', 'held_min_low')-
-             offset_ticks*tick_size)/tick_size).floor()*tick_size
-    target = (pl.col('held_max_high')/tick_size).floor()*tick_size
+        ).fill_null(False).alias('clock_complete'))
+        .with_columns((pl.col('expected_held_bars')-
+                       pl.col('held_bars').fill_null(0))
+                      .alias('unobserved_held_seconds')))
+    # Remove the tick offset in integer tick space. Subtracting two binary
+    # floats before floor can spuriously move an on-grid low down two ticks.
+    stop = ((pl.min_horizontal('swing_low_3s', 'held_min_low')/
+             tick_size + 1e-9).floor() - offset_ticks)*tick_size
+    target = (pl.col('held_max_high')/tick_size + 1e-9).floor()*tick_size
     result = result.with_columns(
-        pl.when(pl.col('path_complete')).then(stop).alias('oracle_stop'),
-        pl.when(pl.col('path_complete')).then(target).alias('oracle_target'))
+        pl.when(pl.col('held_bars').is_not_null()).then(stop)
+          .alias('oracle_stop'),
+        pl.when(pl.col('held_bars').is_not_null()).then(target)
+          .alias('oracle_target'))
     return result.with_columns((
-        pl.col('path_complete') &
+        (pl.col('expected_held_bars') >= MIN_HOLD_SECONDS) &
+        (pl.col('held_bars') >= 1) &
         (pl.col('oracle_stop') > 0) &
         (pl.col('oracle_stop') < pl.col('entry_price')) &
         (pl.col('oracle_target') > pl.col('entry_price'))

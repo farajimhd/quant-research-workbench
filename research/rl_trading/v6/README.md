@@ -71,8 +71,8 @@ cash, bracket exits, and partial fills still require stateful replay.
 The price-action-only V6 bracket oracle uses the minimum of three pre-entry
 one-second lows and observed held-period lows, minus an explicit tick offset,
 for the stop; the target is the held-period maximum high rounded to a
-certified tick. It withholds a perfect-stop label when a held second is
-unobserved. Historical tick-size authority remains required before final
+certified tick. It uses only actual observed trade candles and records gaps
+without inventing missing prices. Historical tick-size authority is required before final
 teacher certification. Future episode extrema never enter policy features.
 The older quote-dependent oracle is a separate prior version and is not used
 for V6 teacher labels. Quote and certified execution-price evidence affect
