@@ -1,4 +1,4 @@
-"""Bounded workstation integration probe for the public Strategy 1 Backtest.
+"""Bounded laptop or workstation integration probe for Strategy 1 Backtest.
 
 This invokes the public controller start path after full market preflight.
 --apply persists a new normalized ClickHouse test journal, never a run-local
@@ -35,23 +35,43 @@ RUNTIME_ROOT = Path(r"D:\TradingML\runtimes")
 
 
 def _load_private_credentials() -> None:
-    if platform.node().upper() != "DESKTOP-SAAI85T":
-        raise RuntimeError("Strategy 1 integration probe is workstation-only")
-    if not RUNTIME_ROOT.is_dir() or not SECRET_ROOT.is_dir():
-        raise RuntimeError("Managed workstation runtime or secrets root is unavailable")
-    os.environ["BACKTEST_V3_READ_CREDENTIAL_FILE"] = str(
-        SECRET_ROOT / "backtest_v3_read.env")
-    for name in ("trading_journal.env", "backtest_v4_runner.env"):
-        path = SECRET_ROOT / name
-        if not path.is_file():
-            raise RuntimeError(f"Managed credential file is absent: {name}")
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line or line.startswith("#"):
-                continue
-            key, separator, value = line.partition("=")
-            if not separator or not key or not value or key in os.environ:
-                raise RuntimeError(f"Managed credential file is invalid: {name}")
-            os.environ[key] = value
+    from src.backend.managed_backtest_credentials import _FILES, _private_values
+
+    if not RUNTIME_ROOT.is_dir():
+        raise RuntimeError("Managed runtime root is unavailable")
+    if platform.node().upper() == "DESKTOP-SAAI85T":
+        paths = {name: SECRET_ROOT / name for name in _FILES}
+        reader = SECRET_ROOT / "backtest_v3_read.env"
+        keeper = {}
+    else:
+        catalog = json.loads((ROOT / "scripts" / "service_catalog.json")
+                             .read_text(encoding="utf-8"))
+        managed = catalog["services"]["backend"]["environment"]
+        paths = {
+            "trading_journal.env": Path(managed["TRADING_JOURNAL_CREDENTIAL_FILE"]),
+            "backtest_v4_runner.env": Path(managed["BACKTEST_V4_RUNNER_CREDENTIAL_FILE"]),
+        }
+        reader = Path(managed["BACKTEST_V3_READ_CREDENTIAL_FILE"])
+        keeper = {key: managed[key] for key in (
+            "TRADING_KEEPER_LAN_HOST", "TRADING_KEEPER_LAN_PORT",
+            "TRADING_KEEPER_CA_FILE", "TRADING_KEEPER_CLIENT_CERT_FILE",
+            "TRADING_KEEPER_CLIENT_KEY_FILE")}
+    if not reader.is_file() or any(not path.is_file() for path in paths.values()):
+        raise RuntimeError("Managed Backtest credential files are unavailable")
+    if (os.environ.get("BACKTEST_V3_READ_CREDENTIAL_FILE")
+            and os.environ["BACKTEST_V3_READ_CREDENTIAL_FILE"] != str(reader)):
+        raise RuntimeError("Managed Backtest reader path conflicts with the environment")
+    if any(key in os.environ and os.environ[key] != value
+           for key, value in keeper.items()):
+        raise RuntimeError("Managed Keeper settings conflict with the environment")
+    values = {key: value for name, path in paths.items()
+              for key, value in _private_values(path, _FILES[name]).items()}
+    if any(key in os.environ and os.environ[key] != value
+           for key, value in values.items()):
+        raise RuntimeError("Managed Backtest credentials conflict with the environment")
+    os.environ.update(keeper)
+    os.environ.update(values)
+    os.environ["BACKTEST_V3_READ_CREDENTIAL_FILE"] = str(reader)
 
 
 def _print_completed_profile(controller) -> None:
@@ -424,8 +444,8 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
 
                 publisher.enqueue_checkpoint = crash_after_durable_receipt
         except Exception:
-            # This probe runs only on the managed workstation. Emit a Python
-            # stack, never SQL, request headers, credential values, or files.
+            # Emit a bounded Python stack, never SQL, request headers,
+            # credential values, or private files.
             traceback.print_exc(limit=12)
             raise
 
