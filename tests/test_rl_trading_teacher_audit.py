@@ -16,5 +16,6 @@ def test_prior_order_audit_counts_lots_and_distinct_entry_seconds(tmp_path):
     result = _prior_orders(path)
     assert result['buys'] == result['sells'] == 2
     assert result['unique_ticker_entry_seconds'] == 1
+    assert result['repeated_same_ticker_second_lots'] == 1
     assert abs(result['fees']-2.2) < 1e-12
     assert result['realized_net_from_legs'] == 4

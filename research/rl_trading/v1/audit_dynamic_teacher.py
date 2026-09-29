@@ -55,7 +55,8 @@ def _prior_orders(path: Path) -> dict:
             else:
                 gross += float(leg['realized_pnl'])
     return dict(buys=counts['buy'], sells=counts['sell'], fees=fees,
-                realized_net_from_legs=gross, unique_ticker_entry_seconds=len(ticker_entries))
+                realized_net_from_legs=gross, unique_ticker_entry_seconds=len(ticker_entries),
+                repeated_same_ticker_second_lots=counts['buy']-len(ticker_entries))
 
 
 def audit_day(supervision_root: Path, runtime: Path) -> dict:
@@ -93,10 +94,12 @@ def audit_day(supervision_root: Path, runtime: Path) -> dict:
     report = dynamic_done['report']
     dynamic_buys = orders.filter(pl.col('action') == 'buy')
     dynamic_sells = orders.filter(pl.col('action') == 'sell')
+    dynamic_entry_events = dynamic_buys.select('time_us','ticker').n_unique()
     new_fees = float(positions['entry_fee'].sum()+positions['exit_fee'].sum()) if positions.height else 0.0
     new_net = float(report['net_profit'])
     old_net = float(prior_done['terminal_profit'])
     if (dynamic_buys.height != positions.height or dynamic_sells.height != positions.height or
+            dynamic_entry_events != dynamic_buys.height or
             report['buys'] != positions.height or report['sells'] != positions.height or
             abs(float(positions['net_pnl'].sum())-new_net) > 1e-5 or
             abs(float(trajectory['equity'][-1])-float(dynamic['initial_cash'])-new_net) > 1e-5 or
@@ -107,6 +110,7 @@ def audit_day(supervision_root: Path, runtime: Path) -> dict:
         dynamic=dict(net_profit=new_net, gross_before_fees=new_net+new_fees,
             fees=new_fees, completed_positions=positions.height,
             buys=dynamic_buys.height, sells=dynamic_sells.height,
+            unique_ticker_entry_seconds=dynamic_entry_events,
             max_open_positions=int(report['max_open_lots']),
             max_drawdown=float(report['max_drawdown']),
             session_periods=report['session_periods']),
@@ -115,6 +119,7 @@ def audit_day(supervision_root: Path, runtime: Path) -> dict:
             fees=prior_orders['fees'], completed_positions=prior_orders['sells'],
             buys=prior_orders['buys'], sells=prior_orders['sells'],
             unique_ticker_entry_seconds=prior_orders['unique_ticker_entry_seconds'],
+            repeated_same_ticker_second_lots=prior_orders['repeated_same_ticker_second_lots'],
             max_open_positions=int(prior['config']['max_lots'])),
         comparable_contract=False,
         contract_differences=['close-price episode V5 versus prior price-action labels',
@@ -148,10 +153,13 @@ def main(argv=None):
     def total(side, field):
         return sum(row[side][field] for row in rows)
     totals = {side:{key:total(side,key) for key in ('net_profit','gross_before_fees','fees',
-        'completed_positions','buys','sells')} for side in ('dynamic','prior')}
+        'completed_positions','buys','sells','unique_ticker_entry_seconds')}
+        for side in ('dynamic','prior')}
+    totals['prior']['repeated_same_ticker_second_lots'] = total('prior','repeated_same_ticker_second_lots')
     comparison = dict(version=VERSION, split_manifest=str(manifest_path),
         split_manifest_hash=file_hash(manifest_path), days=rows, totals=totals,
-        expectation=dict(fewer_completed_positions=totals['dynamic']['completed_positions'] < totals['prior']['completed_positions'],
+        expectation=dict(fewer_entry_events=totals['dynamic']['unique_ticker_entry_seconds'] < totals['prior']['unique_ticker_entry_seconds'],
+            fewer_completed_lots=totals['dynamic']['completed_positions'] < totals['prior']['completed_positions'],
             higher_modeled_net_profit=totals['dynamic']['net_profit'] > totals['prior']['net_profit']),
         interpretation='Diagnostic only: price labels, order sizing, and fee contracts differ. The sealed test is excluded.')
     comparison['report_hash'] = digest(comparison)
