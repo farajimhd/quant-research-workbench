@@ -65,6 +65,15 @@ def test_typed_oms_actor_image_rebuilds_group_and_indexes():
     assert image.group_by_client_id == {"co-1": "group-1"}
     assert image.group_by_broker_id == {"broker-1": "group-1"}
     assert image.protection_versions == {}
+    stored, history = _source(malformed={
+        "created_at": "2026-08-18 08:05:00.000000",
+        "updated_at": "2026-08-18 08:05:00.000000",
+        "submitted_at": "2026-08-18 08:05:00.000000"})
+    recovered = reconstruct_typed_oms_actor_image(
+        (stored,), history, run_id=RUN,
+        strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        through_sequence=7, cutoff_at=AT)
+    assert recovered.groups["group-1"].created_at == AT
 
 
 def test_typed_oms_actor_image_rejects_incomplete_contract():
@@ -76,6 +85,12 @@ def test_typed_oms_actor_image_rejects_incomplete_contract():
             through_sequence=7, cutoff_at=AT)
     lineage, history = _source(malformed={"updated_at": "2026-08-18T08:06:00+00:00"})
     with pytest.raises(RuntimeError, match="recovery boundary"):
+        reconstruct_typed_oms_actor_image(
+            (lineage,), history, run_id=RUN,
+            strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+            through_sequence=7, cutoff_at=AT)
+    lineage, history = _source(malformed={"created_at": "2026-08-18 08:05:00"})
+    with pytest.raises(RuntimeError, match="lacks UTC authority"):
         reconstruct_typed_oms_actor_image(
             (lineage,), history, run_id=RUN,
             strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,

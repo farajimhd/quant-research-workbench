@@ -7,7 +7,8 @@ protection changes are a separate normalized family and must be complete.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+import re
 from typing import Any
 
 from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
@@ -26,8 +27,16 @@ class TypedOmsActorImage:
 
 
 def _time(value: Any, *, cutoff_at: datetime) -> datetime:
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    if parsed.tzinfo is None or parsed > cutoff_at:
+    source = str(value)
+    parsed = datetime.fromisoformat(source.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        # The verified ClickHouse DateTime64 wire format has no offset even
+        # though the column contract is UTC. Only accept that exact format;
+        # never reinterpret arbitrary naive application timestamps.
+        if re.fullmatch(r"\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d\.\d{6}", source) is None:
+            raise RuntimeError("Typed OMS recovery timestamp lacks UTC authority")
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed > cutoff_at:
         raise RuntimeError(
             f"Typed OMS recovery boundary {cutoff_at.isoformat()} precedes "
             f"timestamp {parsed.isoformat()}")
