@@ -101,6 +101,19 @@ class EvaluationTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     gpu_preflight()
 
+    def test_gpu_preflight_allows_only_system_logonui_and_retains_load_limits(self):
+        import os
+        genuine = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "LogonUI.exe")
+        for process, utilization, allowed in ((genuine, 0, True), (r"D:\other\LogonUI.exe", 0, False),
+                                                (genuine, 90, False)):
+            with patch("subprocess.run", side_effect=[SimpleNamespace(stdout=f"56252, {process}"),
+                       SimpleNamespace(stdout=f"0, GPU, {utilization}, 906, 90000")]):
+                if allowed:
+                    self.assertIn("gpus", gpu_preflight())
+                else:
+                    with self.assertRaises(RuntimeError):
+                        gpu_preflight()
+
     def test_score_reconciles_complete_packet_and_rejects_partial(self):
         day = "2026-08-03"
         start = clock(day, "09:30:00")

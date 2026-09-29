@@ -76,6 +76,10 @@ def gpu_preflight() -> dict:
             continue
         if os.name == "nt" and pid.strip() == "4":
             continue  # Windows System; WDDM can redact its image, not a user training process.
+        if os.name == "nt" and name.strip().lower() == str(
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "LogonUI.exe"
+        ).lower():
+            continue  # Windows lock-screen renderer; require the system path, not just its name.
         if Path(name.strip()).name.lower() not in benign:
             occupied.append(line)
     state = query(["--query-gpu=index,name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
