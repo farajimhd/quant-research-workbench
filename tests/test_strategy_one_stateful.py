@@ -10,7 +10,9 @@ from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidat
 from src.backend.backtest_strategy_one_preparation import StrategyOneEntryCursor
 from src.backend.backtest_strategy_one_stateful import propose_certified_strategy_one_entry
 from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
-from src.trading_runtime.strategy_one_stateful import StrategyOneFinancialView
+from src.trading_runtime.strategy_one_stateful import (
+    StrategyOneFinancialView, StrategyOneReentryWitness,
+)
 
 
 def _facts():
@@ -75,6 +77,31 @@ def test_reentry_stays_closed_without_certified_prior_position_break():
     assert propose_certified_strategy_one_entry(
         candidate, fact, activation, permitted).reason == (
             "reentry_structure_confirmation_unavailable")
+
+
+def test_completed_bar_reentry_requires_fresh_prior_high_crossing():
+    candidate, fact, activation, financial = _facts()
+    permitted = replace(financial, completed_entries=1,
+                        permissions=replace(financial.permissions, reenter=True))
+    witness = StrategyOneReentryWitness(
+        30_500, "R3", 100_000, 99_900, 100_200)
+    assert propose_certified_strategy_one_entry(
+        candidate, fact, activation, permitted, reentry=witness).reason == (
+            "entry_proposed")
+    assert propose_certified_strategy_one_entry(
+        candidate, fact, activation, permitted,
+        reentry=replace(witness, previous_bar_close_int=100_100)).reason == (
+            "reentry_requires_prior_high_bar_break")
+    assert propose_certified_strategy_one_entry(
+        candidate, fact, activation, permitted,
+        reentry=replace(witness, current_bar_close_int=100_000)).reason == (
+            "reentry_requires_prior_high_bar_break")
+    # A different resistance after ten seconds is the ordinary entry path.
+    assert propose_certified_strategy_one_entry(
+        candidate, fact, activation, permitted,
+        reentry=replace(witness, closed_boundary_ms=20_000,
+                        prior_entry_resistance_id="OTHER",
+                        current_bar_close_int=100_000)).reason == "entry_proposed"
 
 
 def test_missing_protection_and_stale_quote_fail_without_fabrication():

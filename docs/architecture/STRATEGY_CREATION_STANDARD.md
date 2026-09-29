@@ -123,6 +123,17 @@ necessary-condition mask, sparse candidate work, causal V7 and BOS state,
 and the shared portfolio/OMS/broker coordinator. It does not dispatch
 Candidate 350's event-time evaluator or compute forming MACD itself.
 
+For bar-mode re-entry, a prior-position high must be captured only from
+completed price-bearing bars after the filled entry bucket and checkpointed
+as typed scalar state. Rapid (under ten seconds) or same-resistance re-entry
+requires the previous completed 100 ms bar close at/below that high and the
+current completed close above it. The preceding close must come from the
+certified bar attempt, not the preceding sparse candidate or an inferred
+intrabar trade sequence. If the prior state or either close is unavailable,
+re-entry fails closed. A different-resistance entry after ten seconds retains
+the ordinary entry rules. This is the approved bar-resolution adaptation of
+the historical event-native crossing, not an assertion of event-fill parity.
+
 Entry requires an immediately preceding completed price-bearing 30s low;
 one tick below it is the initial stop. An absent/empty latest 30s bucket
 does not carry a prior low forward. Stops only ratchet upward; after each

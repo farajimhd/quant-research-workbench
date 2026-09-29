@@ -11,6 +11,7 @@ from src.backend.backtest_strategy_one_static_gate import (
     MISSING_INITIAL_PROTECTION, StrategyOneStaticGate,
 )
 from test_strategy_one_stateful import _facts
+from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
 
 
 def test_proposal_lane_uses_broker_before_financial_entry_without_order():
@@ -57,6 +58,43 @@ def test_proposal_lane_uses_broker_before_financial_entry_without_order():
     assert actions == [("activation", "AAA", 30_000),
                        ("broker", "AAA", 31_000),
                        ("proposal", "AAA", 31_000)]
+
+
+def test_reentry_proposal_consumes_only_supplied_completed_bar_witness():
+    candidate, fact, activation, financial = _facts()
+    financial = replace(
+        financial, completed_entries=1,
+        permissions=replace(financial.permissions, reenter=True))
+    entry = CertifiedEntryEvidencePlan(
+        "b" * 16, "2026-08-18", (), (activation,), (fact,), "e" * 64)
+    proposals = []
+
+    async def noop(*_args):
+        pass
+
+    async def view(_ticker, _boundary):
+        return (financial,)
+
+    async def witness(_financial, _candidate):
+        return StrategyOneReentryWitness(
+            30_500, "R3", 100_000, 99_900, 100_200)
+
+    async def proposed(value):
+        proposals.append(value)
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date="2026-08-18", candidate_rows=iter((candidate,)),
+        activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
+        active_source=lambda _ticker, _after: iter(()))
+    counts = asyncio.run(run_strategy_one_proposals(
+        scheduler, entry, process_broker_boundary=noop,
+        financial_views=view, on_entry_proposal=proposed,
+        on_management=noop, position_source_owned=lambda _view: False,
+        financially_active_tickers=lambda: (), finish_boundary=noop,
+        observe_activation=noop, observe_completed_seconds=noop,
+        reentry_witness=witness))
+    assert counts.entry_proposals == 1
+    assert len(proposals) == 1
 
 
 def test_vectorized_rejection_prevents_stateful_candidate_decision():

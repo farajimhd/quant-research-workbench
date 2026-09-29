@@ -18,6 +18,7 @@ from src.backend.backtest_market_data import (
     iter_market_boundary_groups,
     iter_market_day_rows,
     iter_market_time_groups,
+    load_previous_completed_100ms_close,
     iter_persisted_v7_seconds,
     readonly_clickhouse_client,
     verify_market_day_plan,
@@ -534,6 +535,34 @@ class BacktestMarketDataTests(unittest.TestCase):
             list(iter_persisted_v7_seconds(plan, session_date="2026-08-18",
                                             ticker="OTHER", through_boundary_ms=300_100,
                                             client=client))
+
+    def test_reentry_previous_close_reads_only_prior_price_bearing_bar(self) -> None:
+        class CloseClient:
+            def __init__(self, rows):
+                self.rows = rows
+                self.queries = []
+
+            def execute(self, sql):
+                self.queries.append(sql)
+                return "\n".join(json.dumps(row) for row in self.rows)
+
+        previous = CloseClient([dict(bucket_index=144001, close_int=101_000,
+                                     price_valid=1)])
+        assert load_previous_completed_100ms_close(
+            self._plan(), session_date="2026-08-18", ticker="SUGP",
+            boundary_ms=300, client=previous) == 101_000
+        assert "bucket_index<144002" in previous.queries[0]
+        assert "attempt_id=toUUID('00000000-0000-0000-0000-000000000001')" in previous.queries[0]
+        empty = CloseClient([])
+        assert load_previous_completed_100ms_close(
+            self._plan(), session_date="2026-08-18", ticker="SUGP",
+            boundary_ms=300, client=empty) is None
+        with self.assertRaisesRegex(RuntimeError, "pinned source"):
+            load_previous_completed_100ms_close(
+                self._plan(), session_date="2026-08-18", ticker="SUGP",
+                boundary_ms=300, client=CloseClient([
+                    dict(bucket_index=144002, close_int=101_000,
+                         price_valid=1)]))
 
     def test_v7_catch_up_closes_stream_when_consumer_stops_early(self) -> None:
         plan = self._plan()

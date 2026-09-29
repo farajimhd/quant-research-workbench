@@ -918,7 +918,7 @@ def test_manager_snapshot_rows_are_dispatched_only_at_compacted_cursor():
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
     tables = ("trading_strategy_one_protection_snapshot_v1",
-              "trading_strategy_one_manager_snapshot_v1")
+              "trading_strategy_one_manager_snapshot_v2")
     operations = []
     for table in tables:
         token = f"manager-state:run-1:1:{MANAGER_HASH}:{table}"
@@ -949,7 +949,7 @@ def test_manager_snapshot_rejects_foreign_cursor_before_insert():
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
-    table = "trading_strategy_one_manager_snapshot_v1"
+    table = "trading_strategy_one_manager_snapshot_v2"
     token = f"manager-state:run-1:2:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
            "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
@@ -967,7 +967,7 @@ def test_manager_snapshot_lost_insert_response_cannot_select_head():
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
-    table = "trading_strategy_one_manager_snapshot_v1"
+    table = "trading_strategy_one_manager_snapshot_v2"
     token = f"manager-state:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
            "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"

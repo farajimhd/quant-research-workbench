@@ -12,13 +12,15 @@ from src.backend.backtest_strategy_one_entry_product import ActivationFact, Cand
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 from src.trading_runtime.strategy_one_stateful import (
     StrategyOneEntryDecision, StrategyOneEntryInput,
-    StrategyOneFinancialView, propose_strategy_one_entry,
+    StrategyOneFinancialView, StrategyOneReentryWitness,
+    propose_strategy_one_entry,
 )
 
 
 def propose_certified_strategy_one_entry(
     candidate: StrategyOneDecisionCandidate, fact: CandidateFact,
     activation: ActivationFact, financial: StrategyOneFinancialView,
+    *, reentry: StrategyOneReentryWitness | None = None,
 ) -> StrategyOneEntryDecision:
     """Use only the certified completed row and exact producer-owned scalars."""
     if (not isinstance(candidate, StrategyOneDecisionCandidate)
@@ -47,10 +49,13 @@ def propose_certified_strategy_one_entry(
     ).timestamp() * 1_000_000)
     if quote_at > now_us:
         raise ValueError("Strategy 1 candidate quote is from the future")
+    if reentry is not None and not isinstance(reentry, StrategyOneReentryWitness):
+        raise TypeError("Strategy 1 re-entry witness is not typed")
     evidence = StrategyOneEntryInput(
         fact.ticker, fact.boundary_ms, fact.episode_start_ms,
         activation.average_gap, fact.bos_break_boundary_ms,
         fact.bos_support_level_id, fact.protection_valid,
         fact.stop_price, fact.target_price, fact.target_level_id,
-        fact.target_ordinal, bid_int, ask_int, now_us - quote_at)
+        fact.target_ordinal, bid_int, ask_int, now_us - quote_at,
+        reentry)
     return propose_strategy_one_entry(evidence, financial)

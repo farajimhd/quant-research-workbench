@@ -5,7 +5,9 @@ import json
 
 import pytest
 
-from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+from src.backend.backtest_strategy_one_management import (
+    StrategyOneClosedPosition, StrategyOneManagementState,
+)
 from src.trading_runtime import strategy_one_management_snapshot as subject
 from src.trading_runtime.strategy_one_management_snapshot import (
     TABLES, ManagerSnapshotHead, ManagedManagerSnapshotHeadReader,
@@ -32,7 +34,10 @@ def _rows():
         ((KEY, ProtectionState(30_100, 9.69, 10.3)),),
         ((KEY, (ResistanceBreak(31_000, {
             "unified_level_id": "B1", "lower": 9.79, "upper": 9.81,
-            "role": "resistance", "side": "resistance"}),)),))
+            "role": "resistance", "side": "resistance"}),)),),
+        ((KEY, 101_000),),
+        ((('DU1', 'A2', 'BBB'), StrategyOneClosedPosition(
+            30_000, "R0", 98_000)),))
     return project_manager_snapshot(
         run_id="backtest:one", session_date=date(2026, 8, 18),
         checkpoint_sequence=42, state=state)
@@ -44,8 +49,12 @@ def test_manager_snapshot_roundtrips_all_owned_state_without_json_columns():
     assert state.submitted[0][1].target_level_id == "R3"
     assert state.positions[0][1].stop == 9.69
     assert state.pending_breaks[0][1][0].level["unified_level_id"] == "B1"
+    assert state.position_highs == ((KEY, 101_000),)
+    assert state.closed_positions[0][1].entry_resistance_id == "R0"
     assert rows.snapshot["source_count"] == 1
     assert rows.snapshot["pending_break_count"] == 1
+    assert rows.snapshot["position_high_count"] == 1
+    assert rows.snapshot["closed_position_count"] == 1
     assert rows.snapshot["protection_hash"] == rows.protection.snapshot["content_hash"]
     assert all("live_market_ssd" in table.ddl() for table in TABLES)
     assert all("json" not in name and "blob" not in name
@@ -113,8 +122,11 @@ def test_cold_loader_requires_same_keeper_head_and_verified_journal_cursor(monke
 
         def execute(self, sql):
             self.queries.append(sql)
-            selected = (rows.snapshot,) if "manager_snapshot_v1" in sql else (
-                rows.sources if "manager_source_v1" in sql else rows.pending_breaks)
+            selected = ((rows.snapshot,) if "manager_snapshot_v2" in sql else
+                        rows.sources if "manager_source_v2" in sql else
+                        rows.position_highs if "manager_position_high_v2" in sql else
+                        rows.closed_positions if "manager_closed_position_v2" in sql else
+                        rows.pending_breaks)
             return "\n".join(json.dumps(row) for row in selected)
 
     class Keeper:
@@ -130,13 +142,13 @@ def test_cold_loader_requires_same_keeper_head_and_verified_journal_cursor(monke
     assert load_attested_manager_snapshot(
         client, keeper, run_id=run, checkpoint_sequence=42
     ) == restore_manager_snapshot(rows)
-    assert len(client.queries) == 3
+    assert len(client.queries) == 5
     assert all(query.startswith("SELECT ") and "INSERT" not in query
                for query in client.queries)
     historical = Client()
     assert restore_manager_snapshot(load_unattested_manager_snapshot_rows(
         historical, run_id=run, checkpoint_sequence=42)) == restore_manager_snapshot(rows)
-    assert len(historical.queries) == 3
+    assert len(historical.queries) == 5
     keeper.head = replace(keeper.head, snapshot_hash="0" * 64)
     with pytest.raises(RuntimeError, match="selected cursor"):
         load_attested_manager_snapshot(
@@ -231,6 +243,7 @@ def test_manager_publication_is_rows_first_then_keeper_selected(monkeypatch):
         "trading_strategy_one_protection_state_v1",
         subject.PARENT.name,
         subject.SOURCE.name, subject.BREAK.name,
+        subject.HIGH.name, subject.CLOSED.name,
     }
     assert publish_manager_snapshot(client, session, rows,
                                     journal_batch_id=batch) == head

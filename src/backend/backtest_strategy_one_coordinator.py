@@ -20,6 +20,7 @@ from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 from src.backend.backtest_strategy_one_stateful import propose_certified_strategy_one_entry
 from src.trading_runtime.strategy_one_stateful import (
     StrategyOneEntryProposal, StrategyOneFinancialView,
+    StrategyOneReentryWitness,
 )
 
 
@@ -44,6 +45,8 @@ async def run_strategy_one_proposals(
     observe_activation: Callable[[object], Awaitable[None]],
     observe_completed_seconds: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]] | None = None,
+    reentry_witness: Callable[[StrategyOneFinancialView, object],
+                              Awaitable[StrategyOneReentryWitness | None]] | None = None,
     static_gate: StrategyOneStaticGate | None = None,
     stage_time: Callable[[str, float], None] | None = None,
 ) -> StrategyOneProposalCounts:
@@ -53,6 +56,7 @@ async def run_strategy_one_proposals(
             or scheduler.session_date != entry.session_date
             or static_gate is not None
             and not isinstance(static_gate, StrategyOneStaticGate)
+            or reentry_witness is not None and not callable(reentry_witness)
             or any(not callable(callback) for callback in (
                 process_broker_boundary, financial_views, on_entry_proposal,
                 on_management, position_source_owned, financially_active_tickers, finish_boundary,
@@ -122,7 +126,10 @@ async def run_strategy_one_proposals(
                     current_by_id = refreshed
                 continue
             decision = propose_certified_strategy_one_entry(
-                candidate, fact, activation, current)
+                candidate, fact, activation, current,
+                reentry=(await reentry_witness(current, candidate)
+                         if current.completed_entries and reentry_witness is not None
+                         else None))
             candidate_count += 1
             if decision.proposal is not None:
                 proposal_count += 1

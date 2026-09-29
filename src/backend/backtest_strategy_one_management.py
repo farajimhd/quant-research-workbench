@@ -36,6 +36,15 @@ ManagerKey = tuple[str, str, str]  # account, assignment, ticker
 
 
 @dataclass(frozen=True, slots=True)
+class StrategyOneClosedPosition:
+    """Causal high of completed bars strictly after a filled entry bucket."""
+
+    closed_boundary_ms: int
+    entry_resistance_id: str
+    high_int: int
+
+
+@dataclass(frozen=True, slots=True)
 class StrategyOneManagementState:
     """Typed mutable-state capture; never a JSON/disk checkpoint."""
 
@@ -43,6 +52,8 @@ class StrategyOneManagementState:
     submitted: tuple[tuple[ManagerKey, StrategyOneEntryProposal], ...]
     positions: tuple[tuple[ManagerKey, ProtectionState], ...]
     pending_breaks: tuple[tuple[ManagerKey, tuple[ResistanceBreak, ...]], ...]
+    position_highs: tuple[tuple[ManagerKey, int], ...] = ()
+    closed_positions: tuple[tuple[ManagerKey, StrategyOneClosedPosition], ...] = ()
 
 
 class StrategyOneManagementRunner:
@@ -66,6 +77,8 @@ class StrategyOneManagementRunner:
         self._submitted: dict[tuple[str, str, str], StrategyOneEntryProposal] = {}
         self._positions: dict[tuple[str, str, str], ProtectionState] = {}
         self._pending_breaks: dict[tuple[str, str, str], list[ResistanceBreak]] = {}
+        self._position_highs: dict[ManagerKey, int] = {}
+        self._closed_positions: dict[ManagerKey, StrategyOneClosedPosition] = {}
 
     @staticmethod
     def _validate_capture(state: StrategyOneManagementState, *,
@@ -76,7 +89,8 @@ class StrategyOneManagementRunner:
                 or state.boundary_ms % 100):
             raise ValueError("Strategy 1 management capture has no causal boundary")
         keys = {}
-        for family in ("submitted", "positions", "pending_breaks"):
+        for family in ("submitted", "positions", "pending_breaks",
+                       "position_highs", "closed_positions"):
             rows = getattr(state, family)
             identities = [key for key, _ in rows]
             if (any(not isinstance(key, tuple) or len(key) != 3
@@ -88,6 +102,8 @@ class StrategyOneManagementRunner:
         if not keys["positions"] <= keys["submitted"] or not keys[
                 "pending_breaks"] <= keys["submitted"]:
             raise ValueError("Strategy 1 management state lacks its entry source")
+        if keys["position_highs"] != keys["positions"]:
+            raise ValueError("Strategy 1 position high lacks its active position")
         for key, proposal in state.submitted:
             if (not isinstance(proposal, StrategyOneEntryProposal)
                     or (proposal.account_id, proposal.assignment_id,
@@ -116,6 +132,17 @@ class StrategyOneManagementRunner:
                            or row.completed_boundary_ms > state.boundary_ms
                            for row in breaks)):
                 raise ValueError("Strategy 1 pending break is ahead of capture")
+        for _, high_int in state.position_highs:
+            if type(high_int) is not int or high_int <= 0:
+                raise ValueError("Strategy 1 position high is invalid")
+        for _, prior in state.closed_positions:
+            if (not isinstance(prior, StrategyOneClosedPosition)
+                    or type(prior.closed_boundary_ms) is not int
+                    or not 0 < prior.closed_boundary_ms <= state.boundary_ms
+                    or prior.closed_boundary_ms % 100
+                    or not prior.entry_resistance_id
+                    or type(prior.high_int) is not int or prior.high_int <= 0):
+                raise ValueError("Strategy 1 closed position witness is invalid")
 
     def capture_state(self, *, boundary_ms: int) -> StrategyOneManagementState:
         """Capture only position-owned facts at an ordered global boundary."""
@@ -127,13 +154,16 @@ class StrategyOneManagementRunner:
                 row.completed_boundary_ms, MappingProxyType(dict(row.level)))
                 for row in value)) for key, value in
                          self._pending_breaks.items())),
+            tuple(sorted(self._position_highs.items())),
+            tuple(sorted(self._closed_positions.items())),
         )
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         return state
 
     def restore_state(self, state: StrategyOneManagementState) -> None:
         """Cold typed restore only; a populated manager cannot be overwritten."""
-        if self._submitted or self._positions or self._pending_breaks:
+        if (self._submitted or self._positions or self._pending_breaks
+                or self._position_highs or self._closed_positions):
             raise RuntimeError("Strategy 1 manager is already active")
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         self._submitted = dict(state.submitted)
@@ -141,6 +171,8 @@ class StrategyOneManagementRunner:
         self._pending_breaks = {key: [ResistanceBreak(
             row.completed_boundary_ms, MappingProxyType(dict(row.level)))
             for row in rows] for key, rows in state.pending_breaks}
+        self._position_highs = dict(state.position_highs)
+        self._closed_positions = dict(state.closed_positions)
 
     def owns_position_source(self, financial: StrategyOneFinancialView) -> bool:
         """Check ownership before cleanup; a same-bucket exit cannot reenter."""
@@ -148,6 +180,15 @@ class StrategyOneManagementRunner:
             raise TypeError("Strategy 1 ownership needs typed financial state")
         return ((financial.account_id, financial.assignment_id, financial.ticker)
                 in self._submitted)
+
+    def last_closed_position(
+        self, financial: StrategyOneFinancialView,
+    ) -> StrategyOneClosedPosition | None:
+        """Expose only a completed, checkpointed prior position to the reducer."""
+        if not isinstance(financial, StrategyOneFinancialView):
+            raise TypeError("Strategy 1 prior position needs typed financial state")
+        return self._closed_positions.get((
+            financial.account_id, financial.assignment_id, financial.ticker))
 
     async def on_entry_proposal(self, proposal: StrategyOneEntryProposal) -> None:
         if not isinstance(proposal, StrategyOneEntryProposal):
@@ -171,6 +212,11 @@ class StrategyOneManagementRunner:
         key = (financial.account_id, financial.assignment_id, financial.ticker)
         if financial.position_quantity <= 0:
             if not financial.pending_entry and not financial.pending_exit:
+                source = self._submitted.get(key)
+                high_int = self._position_highs.pop(key, None)
+                if source is not None and high_int is not None:
+                    self._closed_positions[key] = StrategyOneClosedPosition(
+                        boundary_ms, source.bos_support_level_id, high_int)
                 self._positions.pop(key, None)
                 self._pending_breaks.pop(key, None)
                 self._submitted.pop(key, None)
@@ -186,10 +232,20 @@ class StrategyOneManagementRunner:
             # its aggregate bucket, so it cannot advance protection yet.
             self._positions[key] = ProtectionState(
                 boundary_ms, source.initial_stop, source.initial_target)
+            # The fill can occur anywhere inside its aggregate liquidity bar.
+            # Do not include that bucket's high in the prior-position witness.
+            self._position_highs[key] = round(source.reference_ask * 10_000)
             return
         previous = self._positions[key]
         if boundary_ms <= previous.boundary_ms:
             raise ValueError("Strategy 1 position management clock did not advance")
+        current_bar = resolutions.get(100)
+        if current_bar is not None and current_bar.get("price_valid") == 1:
+            high_int = current_bar.get("high_int")
+            if type(high_int) is not int or high_int <= 0:
+                raise ValueError("Strategy 1 held bar lacks certified high")
+            self._position_highs[key] = max(
+                self._position_highs[key], high_int)
         evidence = await self.evidence.management_evidence(
             financial.ticker, resolutions, boundary_ms=boundary_ms)
         if (type(evidence) is not StrategyOneManagementEvidence

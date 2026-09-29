@@ -761,7 +761,7 @@ def market_day_source_sqls(
     ))
     projection = (
         "m.session_date,m.ticker,m.resolution_ms,m.boundary_ms,"
-        "m.close_int,m.low_int,m.price_valid,m.extremes_valid,"
+        "m.close_int,m.high_int,m.low_int,m.price_valid,m.extremes_valid,"
         "m.bid_int,m.ask_int,m.quote_valid,m.quote_timestamp_us,"
         "m.execution_vwap,m.cumulative_volume,m.cumulative_notional,"
         "m.trade_count AS volume_trade_count,"
@@ -857,6 +857,49 @@ def iter_candidate_market_rows(
             raise ValueError("Sparse Strategy 1 market read omitted a candidate")
     finally:
         source.close()
+
+
+def load_previous_completed_100ms_close(
+    plan: CertifiedMarketDayPlan, *, session_date: str, ticker: str,
+    boundary_ms: int, client: Any,
+) -> int | None:
+    """Read the last price-bearing bar strictly before one candidate bucket.
+
+    This is a rare stateful re-entry refinement, not a market builder. Empty
+    buckets cannot invent a closing price, and the current aggregate bucket
+    cannot prove its own prior crossing witness.
+    """
+    if (plan.execution_interval.kind != "fixed"
+            or plan.execution_interval.milliseconds != 100
+            or session_date not in plan.sessions or ticker not in plan.tickers
+            or type(boundary_ms) is not int
+            or not 0 < boundary_ms <= 57_600_000 or boundary_ms % 100
+            or not callable(getattr(client, "execute", None))):
+        raise ValueError("Previous close needs a pinned 100 ms market boundary")
+    unit = _unit_map(plan, "bars").get((session_date, ticker))
+    if unit is None:
+        raise ValueError("Previous close lacks certified bar attempt")
+    candidate_index = (boundary_ms + SESSION_OPEN_OFFSET_MS) // 100 - 1
+    query = assert_select_only(
+        "SELECT bucket_index,close_int,price_valid FROM arte.bars_v1 "
+        f"WHERE build_id={_literal(plan.build_id)} "
+        f"AND session_date=toDate({_literal(session_date)}) "
+        f"AND ticker={_literal(ticker)} "
+        f"AND attempt_id=toUUID({_literal(unit.attempt_id)}) "
+        f"AND resolution_ms=100 AND bucket_index<{candidate_index} "
+        "ORDER BY bucket_index DESC LIMIT 1 FORMAT JSONEachRow"
+    )
+    rows = [json.loads(line) for line in client.execute(query).splitlines()
+            if line.strip()]
+    if not rows:
+        return None
+    if (len(rows) != 1 or type(rows[0].get("bucket_index")) is not int
+            or rows[0]["bucket_index"] >= candidate_index
+            or rows[0].get("price_valid") != 1
+            or type(rows[0].get("close_int")) is not int
+            or rows[0]["close_int"] <= 0):
+        raise RuntimeError("Previous completed bar differs from pinned source")
+    return rows[0]["close_int"]
 
 
 def iter_persisted_v7_seconds(

@@ -78,7 +78,10 @@ URL_KEY = "BACKTEST_V4_RUNNER_CLICKHOUSE_URL"
 USER_KEY = "BACKTEST_V4_RUNNER_CLICKHOUSE_USER"
 PASSWORD_KEY = "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD"
 
-_RETIRED_BROKER_SNAPSHOTS = frozenset({
+_RETIRED_SNAPSHOTS = frozenset({
+    "trading_strategy_one_manager_snapshot_v1",
+    "trading_strategy_one_manager_source_v1",
+    "trading_strategy_one_manager_pending_break_v1",
     "trading_strategy_one_broker_match_snapshot_v1",
     "trading_strategy_one_broker_match_account_v1",
     "trading_strategy_one_broker_match_position_v1",
@@ -94,14 +97,14 @@ _RETIRED_BROKER_SNAPSHOTS = frozenset({
 })
 
 
-def _retire_broker_snapshot_grants(admin: Any, writer: Any) -> None:
-    """Retire only superseded app-owned broker grants; keep market ACL intact."""
+def _retire_snapshot_grants(admin: Any, writer: Any) -> None:
+    """Retire superseded app-owned snapshots; keep market ACL intact."""
     observed: set[tuple[str, str]] = set()
     for line in writer.execute("SHOW GRANTS FINAL").splitlines():
         match = re.fullmatch(
             rf"GRANT ([A-Z ,]+) ON arte\.([a-z][a-z0-9_]*) TO {PRINCIPAL}",
             line.strip())
-        if match is None or match.group(2) not in _RETIRED_BROKER_SNAPSHOTS:
+        if match is None or match.group(2) not in _RETIRED_SNAPSHOTS:
             continue
         for privilege in match.group(1).split(","):
             privilege = privilege.strip()
@@ -190,7 +193,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
         if present == "1":
             if writer.execute("SELECT currentUser()").strip() != PRINCIPAL:
                 raise RuntimeError("Saved V4 credential authenticates as another principal")
-            _retire_broker_snapshot_grants(admin, writer)
+            _retire_snapshot_grants(admin, writer)
             have = _effective_grants(writer, plan)
         else:
             digest = sha256(password.encode()).hexdigest()

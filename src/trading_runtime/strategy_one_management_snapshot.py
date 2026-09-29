@@ -17,7 +17,8 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from src.backend.backtest_strategy_one_management import (
-    StrategyOneManagementRunner, StrategyOneManagementState,
+    StrategyOneClosedPosition, StrategyOneManagementRunner,
+    StrategyOneManagementState,
 )
 from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.keeper_session import ManagedKeeperSession
@@ -33,7 +34,7 @@ from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 
 
 PARENT = TableContract(
-    "trading_strategy_one_manager_snapshot_v1",
+    "trading_strategy_one_manager_snapshot_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("session_date", "Date"),
      ("checkpoint_sequence", "UInt64"), ("boundary_ms", "UInt32"),
@@ -41,11 +42,15 @@ PARENT = TableContract(
      ("source_count", "UInt32"), ("source_hash", "FixedString(64)"),
      ("pending_break_count", "UInt32"),
      ("pending_break_hash", "FixedString(64)"),
+     ("position_high_count", "UInt32"),
+     ("position_high_hash", "FixedString(64)"),
+     ("closed_position_count", "UInt32"),
+     ("closed_position_hash", "FixedString(64)"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)", "run_id, checkpoint_sequence, snapshot_id",
 )
 SOURCE = TableContract(
-    "trading_strategy_one_manager_source_v1",
+    "trading_strategy_one_manager_source_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("account_id", "String"), ("assignment_id", "String"),
@@ -64,7 +69,7 @@ SOURCE = TableContract(
     "run_id, checkpoint_sequence, account_id, assignment_id, ticker",
 )
 BREAK = TableContract(
-    "trading_strategy_one_manager_pending_break_v1",
+    "trading_strategy_one_manager_pending_break_v2",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("account_id", "String"), ("assignment_id", "String"),
@@ -76,7 +81,29 @@ BREAK = TableContract(
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, account_id, assignment_id, ticker, ordinal",
 )
-TABLES = (PARENT, SOURCE, BREAK)
+HIGH = TableContract(
+    "trading_strategy_one_manager_position_high_v2",
+    (("snapshot_id", "UUID"), ("run_id", "String"),
+     ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
+     ("account_id", "String"), ("assignment_id", "String"),
+     ("ticker", "LowCardinality(String)"), ("high_int", "UInt64"),
+     ("content_hash", "FixedString(64)")),
+    "toYYYYMM(snapshot_month)",
+    "run_id, checkpoint_sequence, account_id, assignment_id, ticker",
+)
+CLOSED = TableContract(
+    "trading_strategy_one_manager_closed_position_v2",
+    (("snapshot_id", "UUID"), ("run_id", "String"),
+     ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
+     ("account_id", "String"), ("assignment_id", "String"),
+     ("ticker", "LowCardinality(String)"),
+     ("closed_boundary_ms", "UInt32"),
+     ("entry_resistance_id", "String"), ("high_int", "UInt64"),
+     ("content_hash", "FixedString(64)")),
+    "toYYYYMM(snapshot_month)",
+    "run_id, checkpoint_sequence, account_id, assignment_id, ticker",
+)
+TABLES = (PARENT, SOURCE, BREAK, HIGH, CLOSED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +112,8 @@ class ManagerSnapshotRows:
     sources: tuple[dict[str, Any], ...]
     pending_breaks: tuple[dict[str, Any], ...]
     protection: ProtectionSnapshotRows
+    position_highs: tuple[dict[str, Any], ...] = ()
+    closed_positions: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +142,7 @@ class ManagedManagerSnapshotHeadReader:
         if (type(run_id) is not str or not run_id
                 or any(char in run_id for char in "\r\n\x00")):
             raise ValueError("Strategy 1 manager head run is invalid")
-        return ("/trading/strategy-one-manager-snapshot/v1/"
+        return ("/trading/strategy-one-manager-snapshot/v2/"
                 + sha256(run_id.encode()).hexdigest() + "/head")
 
     def read_head(self, *, run_id: str) -> ManagerSnapshotHead:
@@ -194,16 +223,34 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
                            lower=_price(witness.level["lower"]),
                            upper=_price(witness.level["upper"]))
             breaks.append({**payload, "content_hash": _digest(payload)})
+    highs = []
+    for (account, assignment, ticker), high_int in state.position_highs:
+        payload = dict(**common, account_id=account,
+                       assignment_id=assignment, ticker=ticker,
+                       high_int=high_int)
+        highs.append({**payload, "content_hash": _digest(payload)})
+    closed = []
+    for (account, assignment, ticker), prior in state.closed_positions:
+        payload = dict(**common, account_id=account,
+                       assignment_id=assignment, ticker=ticker,
+                       closed_boundary_ms=prior.closed_boundary_ms,
+                       entry_resistance_id=prior.entry_resistance_id,
+                       high_int=prior.high_int)
+        closed.append({**payload, "content_hash": _digest(payload)})
     seal = dict(**common, session_date=session_date.isoformat(),
                 boundary_ms=state.boundary_ms,
                 protection_hash=root["content_hash"],
                 source_count=len(sources),
                 source_hash=_digest([row["content_hash"] for row in sources]),
                 pending_break_count=len(breaks),
-                pending_break_hash=_digest([row["content_hash"] for row in breaks]))
+                pending_break_hash=_digest([row["content_hash"] for row in breaks]),
+                position_high_count=len(highs),
+                position_high_hash=_digest([row["content_hash"] for row in highs]),
+                closed_position_count=len(closed),
+                closed_position_hash=_digest([row["content_hash"] for row in closed]))
     return ManagerSnapshotRows(
         {**seal, "content_hash": _digest(seal)}, tuple(sources),
-        tuple(breaks), protection)
+        tuple(breaks), protection, tuple(highs), tuple(closed))
 
 
 def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
@@ -223,6 +270,12 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                           row["account_id"], row["assignment_id"],
                           row["ticker"], row["ordinal"]))),
         canonical_protection_snapshot_rows(rows.protection),
+        tuple(sorted((_canonical_snapshot_row(HIGH, row)
+                      for row in rows.position_highs), key=lambda row: (
+                          row["account_id"], row["assignment_id"], row["ticker"]))),
+        tuple(sorted((_canonical_snapshot_row(CLOSED, row)
+                      for row in rows.closed_positions), key=lambda row: (
+                          row["account_id"], row["assignment_id"], row["ticker"]))),
     )
     seal = rows.snapshot
     if (seal.get("content_hash") != _digest({
@@ -237,11 +290,15 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
             or seal.get("checkpoint_sequence") != rows.protection.snapshot.get(
                 "checkpoint_sequence")
             or seal.get("source_count") != len(rows.sources)
-            or seal.get("pending_break_count") != len(rows.pending_breaks)):
+            or seal.get("pending_break_count") != len(rows.pending_breaks)
+            or seal.get("position_high_count") != len(rows.position_highs)
+            or seal.get("closed_position_count") != len(rows.closed_positions)):
         raise ValueError("Strategy 1 manager snapshot seal differs")
     for family, children, expected in (
             ("source", rows.sources, seal["source_hash"]),
-            ("break", rows.pending_breaks, seal["pending_break_hash"])):
+            ("break", rows.pending_breaks, seal["pending_break_hash"]),
+            ("high", rows.position_highs, seal["position_high_hash"]),
+            ("closed", rows.closed_positions, seal["closed_position_hash"])):
         if (any(row.get("content_hash") != _digest({
                 key: value for key, value in row.items()
                 if key != "content_hash"})
@@ -279,7 +336,14 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
         tuple(sorted(((account, assignment, ticker), value)
                      for (account, ticker, assignment), value
                      in positions.items())),
-        tuple(sorted((key, tuple(value)) for key, value in pending.items())))
+        tuple(sorted((key, tuple(value)) for key, value in pending.items())),
+        tuple(((row["account_id"], row["assignment_id"], row["ticker"]),
+               int(row["high_int"])) for row in rows.position_highs),
+        tuple(((row["account_id"], row["assignment_id"], row["ticker"]),
+               StrategyOneClosedPosition(
+                   int(row["closed_boundary_ms"]),
+                   row["entry_resistance_id"], int(row["high_int"])))
+              for row in rows.closed_positions))
     StrategyOneManagementRunner._validate_capture(
         state, max_pending_breaks=max_pending_breaks)
     if project_manager_snapshot(
@@ -330,14 +394,20 @@ def load_unattested_manager_snapshot_rows(
     predicate = f"snapshot_id=toUUID('{snapshot_id}')"
     source_count = seal.get("source_count")
     break_count = seal.get("pending_break_count")
+    high_count = seal.get("position_high_count")
+    closed_count = seal.get("closed_position_count")
     if (type(source_count) is not int or not 0 <= source_count <= 100_000
-            or type(break_count) is not int or not 0 <= break_count <= 100_000):
+            or type(break_count) is not int or not 0 <= break_count <= 100_000
+            or type(high_count) is not int or not 0 <= high_count <= 100_000
+            or type(closed_count) is not int or not 0 <= closed_count <= 100_000):
         raise RuntimeError("Strategy 1 manager child bound is invalid")
     protection = load_protection_snapshot_rows(
         client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
     rows = ManagerSnapshotRows(
         seal, read(SOURCE, predicate, source_count + 1),
-        read(BREAK, predicate, break_count + 1), protection)
+        read(BREAK, predicate, break_count + 1), protection,
+        read(HIGH, predicate, high_count + 1),
+        read(CLOSED, predicate, closed_count + 1))
     restore_manager_snapshot(rows)
     return rows
 
@@ -462,6 +532,8 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
         ),
         (
             (SOURCE.name, rows.sources), (BREAK.name, rows.pending_breaks),
+            (HIGH.name, rows.position_highs),
+            (CLOSED.name, rows.closed_positions),
             (PARENT.name, (seal,)),
         ),
     )
@@ -485,6 +557,8 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
         "trading_strategy_one_protection_resistance_v1": protection.resistances,
         PARENT.name: (seal,), SOURCE.name: rows.sources,
         BREAK.name: rows.pending_breaks,
+        HIGH.name: rows.position_highs,
+        CLOSED.name: rows.closed_positions,
     }
     for table, expected in expected_rows.items():
         contract = contracts[table]

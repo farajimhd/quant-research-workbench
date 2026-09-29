@@ -40,9 +40,11 @@ _MANAGER_TABLES = frozenset({
     "trading_strategy_one_protection_snapshot_v1",
     "trading_strategy_one_protection_state_v1",
     "trading_strategy_one_protection_resistance_v1",
-    "trading_strategy_one_manager_snapshot_v1",
-    "trading_strategy_one_manager_source_v1",
-    "trading_strategy_one_manager_pending_break_v1",
+    "trading_strategy_one_manager_snapshot_v2",
+    "trading_strategy_one_manager_source_v2",
+    "trading_strategy_one_manager_pending_break_v2",
+    "trading_strategy_one_manager_position_high_v2",
+    "trading_strategy_one_manager_closed_position_v2",
 })
 _BROKER_MATCH_TABLES = frozenset({
     "trading_strategy_one_broker_match_snapshot_v3",
@@ -983,7 +985,7 @@ class TypedInsertDispatch:
                 or re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None
                 or not operations or len(set(operations)) != len(operations)
                 or {"trading_strategy_one_protection_snapshot_v1",
-                    "trading_strategy_one_manager_snapshot_v1"}
+                    "trading_strategy_one_manager_snapshot_v2"}
                 - {table for table, _ in operations}):
             raise ValueError("Manager snapshot operation inventory is invalid")
         try:

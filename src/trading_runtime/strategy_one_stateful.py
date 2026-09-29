@@ -46,6 +46,24 @@ class StrategyOneEntryInput:
     bid_int: int
     ask_int: int
     quote_age_us: int
+    reentry: StrategyOneReentryWitness | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyOneReentryWitness:
+    """Prior filled position plus adjacent completed 100 ms bar closes.
+
+    A candidate's high/low does not prove intrabucket trade ordering. The
+    caller supplies the previous *price-bearing* completed bar close, not the
+    previous sparse candidate close, and a high observed only after the prior
+    entry fill boundary. Both must be certified as-of the candidate clock.
+    """
+
+    closed_boundary_ms: int
+    prior_entry_resistance_id: str
+    prior_position_high_int: int
+    previous_bar_close_int: int
+    current_bar_close_int: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,12 +140,25 @@ def propose_strategy_one_entry(
     if evidence.boundary_ms < financial.reentry_not_before_ms:
         return StrategyOneEntryDecision("reentry_cooldown")
     if financial.completed_entries:
-        # Candidate 350 also requires a fresh break of the prior position's
-        # resistance high for rapid/same-resistance re-entry. This reducer
-        # does not yet receive a producer-certified completed-bar witness for
-        # that transition. Re-entry must remain closed, not inferred from a
-        # permission flag or from unordered trades inside a 100ms bucket.
-        return StrategyOneEntryDecision("reentry_structure_confirmation_unavailable")
+        witness = evidence.reentry
+        if (not isinstance(witness, StrategyOneReentryWitness)
+                or type(witness.closed_boundary_ms) is not int
+                or not 0 < witness.closed_boundary_ms < evidence.boundary_ms
+                or witness.closed_boundary_ms % 100
+                or not witness.prior_entry_resistance_id
+                or any(type(price) is not int or price <= 0 for price in (
+                    witness.prior_position_high_int,
+                    witness.previous_bar_close_int,
+                    witness.current_bar_close_int))):
+            return StrategyOneEntryDecision("reentry_structure_confirmation_unavailable")
+        rapid = evidence.boundary_ms - witness.closed_boundary_ms < 10_000
+        same_resistance = (witness.prior_entry_resistance_id ==
+                           evidence.bos_support_level_id)
+        if ((rapid or same_resistance)
+                and not (witness.previous_bar_close_int <=
+                         witness.prior_position_high_int <
+                         witness.current_bar_close_int)):
+            return StrategyOneEntryDecision("reentry_requires_prior_high_bar_break")
     if (evidence.activation_gap is None
             or type(evidence.activation_gap) is not float
             or not isfinite(evidence.activation_gap)

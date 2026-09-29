@@ -106,6 +106,39 @@ def test_breaks_wait_for_fresh_quote_then_commit_only_confirmed_oms_state():
         assert key not in manager._positions
         assert key not in manager._submitted
         assert not manager.owns_position_source(held)
+        assert manager.last_closed_position(held).closed_boundary_ms == 31_200
+        assert manager.last_closed_position(held).entry_resistance_id == "S1"
+
+    asyncio.run(run())
+
+
+def test_prior_position_high_uses_only_completed_bars_after_entry_bucket():
+    async def run():
+        source, runtime = _Evidence(), _Runtime()
+        manager = StrategyOneManagementRunner(
+            runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(_proposal())
+        held = _financial()
+        await manager.on_management(
+            held, {100: {"price_valid": 1, "high_int": 200_000}}, 30_100)
+        assert manager.capture_state(boundary_ms=30_100).position_highs == (
+            (("DU1", "A1", "AAA"), 100_100),)
+        source.rows[30_200] = _evidence(30_200)
+        await manager.on_management(
+            held, {100: {"price_valid": 1, "high_int": 101_200}}, 30_200)
+        captured = manager.capture_state(boundary_ms=30_200)
+        restored = StrategyOneManagementRunner(
+            runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        restored.restore_state(captured)
+        assert restored.capture_state(boundary_ms=30_200) == captured
+        await restored.on_management(
+            replace(held, position_quantity=0.),
+            {100: {"price_valid": 1, "high_int": 300_000}}, 30_300)
+        prior = restored.last_closed_position(held)
+        assert prior.high_int == 101_200
+        assert prior.closed_boundary_ms == 30_300
+        assert restored.capture_state(boundary_ms=30_300).closed_positions == (
+            (("DU1", "A1", "AAA"), prior),)
 
     asyncio.run(run())
 

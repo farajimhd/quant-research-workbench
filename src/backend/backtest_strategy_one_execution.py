@@ -17,7 +17,9 @@ from typing import Any, Awaitable, Callable, Sequence
 import numpy as np
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
-from src.backend.backtest_market_data import market_day_boundary
+from src.backend.backtest_market_data import (
+    load_previous_completed_100ms_close, market_day_boundary,
+)
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, project_market_day_plan
 from src.backend.backtest_liquidity_price import PriceLevelPlan
 from src.backend.backtest_strategy_one_activation import (
@@ -53,6 +55,7 @@ from src.backend.structural_v7_seed import CertifiedSeedPlan
 from src.trading_runtime.runtime import RunMode
 from src.trading_runtime.strategy_engine import StrategyAssignment
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
 
 
 def pinned_strategy_one_ticks(
@@ -163,7 +166,9 @@ async def run_certified_strategy_one_session(
             tick_for_ticker=ticks.__getitem__)
         if resume_manager_state is not None:
             if (resume_manager_state.submitted or resume_manager_state.positions
-                    or resume_manager_state.pending_breaks):
+                    or resume_manager_state.pending_breaks
+                    or resume_manager_state.position_highs
+                    or resume_manager_state.closed_positions):
                 raise RuntimeError("Empty Strategy 1 prefix has recovered financial state")
             manager.restore_state(resume_manager_state)
         if manager_ready is not None:
@@ -247,6 +252,7 @@ async def run_certified_strategy_one_session(
             return await run_strategy_one_fixed_session(
                 scheduler, entry, evidence, manager, runtime=runtime,
                 static_gate=surviving_gate, assignments=assignments,
+                market_plan=projected, client_factory=client_factory,
                 before_boundary=before_boundary,
                 finish_boundary=finish_boundary,
                 stage_time=stage_time)
@@ -260,6 +266,8 @@ async def run_strategy_one_fixed_session(
     manager: StrategyOneManagementRunner, *, runtime: Any,
     static_gate: StrategyOneStaticGate,
     assignments: Sequence[StrategyAssignment],
+    market_plan: CertifiedMarketDayPlan | None = None,
+    client_factory: Callable[[], Any] | None = None,
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     stage_time: Callable[[str, float], None] | None = None,
@@ -324,6 +332,38 @@ async def run_strategy_one_fixed_session(
         return await read_strategy_one_financial_views(
             tuple(selected), broker, order_manager)
 
+    prior_close_cache: dict[tuple[str, int], int | None] = {}
+
+    async def reentry_witness(financial, candidate):
+        prior = manager.last_closed_position(financial)
+        if prior is None or market_plan is None or client_factory is None:
+            return None
+        row = candidate.market_row
+        current_close = row.get("close_int")
+        if (type(current_close) is not int or current_close <= 0
+                or row.get("ticker") != financial.ticker):
+            raise ValueError("Strategy 1 re-entry lacks completed current close")
+        key = (financial.ticker, candidate.evidence.boundary_ms)
+        if key not in prior_close_cache:
+            began = perf_counter() if stage_time is not None else 0.0
+
+            def read_previous():
+                with closing(client_factory()) as client:
+                    return load_previous_completed_100ms_close(
+                        market_plan, session_date=scheduler.session_date,
+                        ticker=financial.ticker, boundary_ms=key[1],
+                        client=client)
+
+            prior_close_cache[key] = await asyncio.to_thread(read_previous)
+            if stage_time is not None:
+                stage_time("strategy_one_reentry_previous_close", began)
+        previous_close = prior_close_cache[key]
+        if previous_close is None:
+            return None
+        return StrategyOneReentryWitness(
+            prior.closed_boundary_ms, prior.entry_resistance_id,
+            prior.high_int, previous_close, current_close)
+
     def financially_active_tickers() -> tuple[str, ...]:
         tickers = broker.financially_active_tickers()
         if (not isinstance(tickers, tuple)
@@ -337,6 +377,7 @@ async def run_strategy_one_fixed_session(
         financial_views=financial_views,
         on_entry_proposal=manager.on_entry_proposal,
         on_management=manager.on_management,
+        reentry_witness=reentry_witness,
         position_source_owned=manager.owns_position_source,
         financially_active_tickers=financially_active_tickers,
         finish_boundary=finish_boundary,
