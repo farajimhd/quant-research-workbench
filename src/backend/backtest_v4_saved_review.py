@@ -29,6 +29,10 @@ from src.backend.typed_backtest_review_core import (
 
 _V4_CACHE = AuditedSessionCache(max_sessions=8, max_bytes=8 * 1024 * 1024,
                                 max_entry_bytes=512 * 1024, ttl_seconds=300)
+_V4_PERFORMANCE_CACHE = AuditedSessionCache(
+    max_sessions=8, max_bytes=16 * 1024 * 1024,
+    max_entry_bytes=2 * 1024 * 1024, ttl_seconds=300,
+)
 
 
 def _terminal_financial_accounts(client, prefix, account_ids: tuple[str, ...]) -> dict:
@@ -363,3 +367,37 @@ def load_v4_performance_report(client, run_id: str, *,
         "fill_count": len(executions),
         "fee_count": len(fee_by_execution),
     }
+
+
+def load_cached_v4_performance_report(client, run_id: str, *,
+                                      cache: AuditedSessionCache | None = None) -> dict:
+    """Reuse only a fully verified terminal projection, never its authority.
+
+    The attestation rechecks the ClickHouse run context and committed head on
+    every call. The bounded cache stores presentation data only in process
+    memory; a changed head cannot authorize an old report.
+    """
+    try:
+        normalized = str(UUID(run_id))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Strategy 1 performance requires a UUID run id") from exc
+    selected_cache = cache if cache is not None else _V4_PERFORMANCE_CACHE
+    if not isinstance(selected_cache, AuditedSessionCache):
+        raise ValueError("Strategy 1 performance cache is invalid")
+    attestation = _terminal_attestation(client, normalized, None)
+    prefix = attestation["prefix"]
+    key = _cache_key(client, normalized, attestation["context"], prefix)
+    cached = selected_cache.get(key)
+    if cached is not None and _head_matches(client, normalized, prefix):
+        return cached["report"]
+    report = load_v4_performance_report(client, normalized)
+    if (report["run_id"] != normalized
+            or int(report["verified_sequence"]) != prefix.last_sequence
+            or not _head_matches(client, normalized, prefix)):
+        raise RuntimeError("Saved performance head changed during projection")
+    try:
+        selected_cache.put(key, {"report": report})
+    except ValueError:
+        # A large but valid report remains readable without growing the cache.
+        pass
+    return report

@@ -384,7 +384,7 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
   const [contextError, setContextError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void api<PerformancePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-performance`, {
+    void api<PerformancePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-performance?include_entry_context=false`, {
       signal: controller.signal, timeoutMs: 60_000,
     }).then(value => {
       if (controller.signal.aborted) return;
