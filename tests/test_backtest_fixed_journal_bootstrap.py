@@ -365,7 +365,7 @@ def test_v4_assembly_reuses_only_the_published_three_client_context(monkeypatch)
     token = bootstrap.FixedV4JournalPreflightToken(
         RUN, ("DU1",), date(2026, 8, 1), "c" * 64, "b" * 64, "a" * 64)
     seal = bootstrap._V4PublishedContextSeal(
-        context, (id(read), id(writer_client), id(terminal)))
+        context, (read, writer_client, terminal), bootstrap._V4_CONTEXT_SECRET)
     kwargs = dict(attempt_id=ATTEMPT, expected_config={"mode": "backtest"},
                   fixed_market_parent_plan=object(),
                   fixed_market_execution_plan=object(),
@@ -377,6 +377,9 @@ def test_v4_assembly_reuses_only_the_published_three_client_context(monkeypatch)
     with pytest.raises(RuntimeError, match="different clients"):
         bootstrap.assemble_fixed_v4_journal(
             object(), writer_client, terminal, token, **kwargs)
+    with pytest.raises(RuntimeError, match="different clients"):
+        bootstrap.assemble_fixed_v4_journal(
+            read, writer_client, terminal, token, **kwargs)
 
 
 def test_v4_publication_preflights_before_keeper_gate(monkeypatch):

@@ -86,12 +86,30 @@ class FixedV4JournalPreflightToken:
     projection_certificate: str
 
 
-@dataclass(frozen=True, slots=True)
+_V4_CONTEXT_SECRET = object()
+
+
 class _V4PublishedContextSeal:
     """One-launch receipt for the exact three clients already cold-verified."""
 
-    context: dict[str, Any]
-    client_ids: tuple[int, int, int]
+    __slots__ = ("context", "clients", "used")
+
+    def __init__(self, context: dict[str, Any], clients: tuple[Any, Any, Any],
+                 secret: object) -> None:
+        if secret is not _V4_CONTEXT_SECRET:
+            raise RuntimeError("V4 published context seal requires its publication path")
+        self.context = dict(context)
+        self.clients = clients
+        self.used = False
+
+    def consume(self, clients: tuple[Any, Any, Any], run_id: str) -> dict[str, Any]:
+        if self.used or any(actual is not expected
+                            for actual, expected in zip(clients, self.clients)):
+            raise RuntimeError("V4 published context seal belongs to different clients")
+        if self.context.get("run_id") != run_id:
+            raise RuntimeError("V4 published context seal belongs to a different run")
+        self.used = True
+        return self.context
 
 
 def fixed_journal_operator_check(client: Any) -> dict[str, Any]:
@@ -394,12 +412,8 @@ def assemble_fixed_v4_journal(
         same_context = (load_typed_run_context(writer_client, token.run_id) == context
                         and load_typed_run_context(terminal_client, token.run_id) == context)
     else:
-        if published_context_seal.client_ids != (
-                id(read_client), id(writer_client), id(terminal_client)):
-            raise RuntimeError("V4 published context seal belongs to different clients")
-        context = published_context_seal.context
-        if context.get("run_id") != token.run_id:
-            raise RuntimeError("V4 published context seal belongs to a different run")
+        context = published_context_seal.consume(
+            (read_client, writer_client, terminal_client), token.run_id)
         same_context = True
     if (context["mode"] != "backtest"
             or tuple(context["account_ids"]) != token.account_ids
@@ -515,8 +529,8 @@ def publish_and_assemble_fixed_v4_journal(
         v4_preflight_seal=(writer_preflight_seal
                            if writer_factory is ArteJournalWriter else None),
         published_context_seal=_V4PublishedContextSeal(
-            dict(published_context), (id(read_client), id(writer_client),
-                                      id(terminal_client))))
+            published_context, (read_client, writer_client, terminal_client),
+            _V4_CONTEXT_SECRET))
 
 
 def _v4_cold_reader_preflight(client: Any) -> None:
