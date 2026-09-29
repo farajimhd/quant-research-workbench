@@ -250,7 +250,7 @@ def main() -> None:
     parser.add_argument("--ticker", default="",
                         help="optional single-symbol scope; omit for all tradable tickers")
     parser.add_argument("--minutes", type=int, default=10,
-                        help="whole minutes after 04:00 ET; maximum 330")
+                        help="whole minutes after 04:00 ET; maximum 960 (20:00 ET)")
     parser.add_argument("--cash", type=float, default=100_000.0,
                         help="initial simulated cash; default matches the app")
     parser.add_argument("--apply", action="store_true",
@@ -266,13 +266,13 @@ def main() -> None:
     parser.add_argument("--repeat-runs", type=int, default=1,
                         help="run one or two full app probes in this process to compare warm reuse; requires --apply")
     args = parser.parse_args()
-    if (not 1 <= args.minutes <= 330 or not 1 <= args.repeat_preflight <= 5
+    if (not 1 <= args.minutes <= 960 or not 1 <= args.repeat_preflight <= 5
             or not 1 <= args.repeat_runs <= 2
             or not 1_000 <= args.cash <= 1_000_000_000
             or args.cash != args.cash or args.cash in (float("inf"), float("-inf"))
             or (args.ticker and (not args.ticker.isascii()
                                  or not args.ticker.isalnum()))):
-        parser.error("require 1..330 minutes, 1,000..1,000,000,000 finite cash, "
+        parser.error("require 1..960 minutes, 1,000..1,000,000,000 finite cash, "
                      "and an optional ASCII ticker")
     if args.repeat_runs > 1 and not args.apply:
         parser.error("--repeat-runs requires --apply")
