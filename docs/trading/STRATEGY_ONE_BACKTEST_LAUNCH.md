@@ -615,3 +615,17 @@ an unprofiled full-session Aug 18 run
 zero failed units, and zero backdated actions. Compound preparation took
 5.968s and publication 10.674s. This single run does not prove a wall-time
 speedup; network insertion and readback remain the larger measured cost.
+
+The workstation hostname subsequently resolved first to a WSL adapter
+(`172.25.144.1`) while the managed ClickHouse listener was bound to the LAN
+address (`192.168.1.218:18123`). Commit `ce07b54e6` now selects a reachable
+private IPv4 listener instead of trusting the first resolver result. After
+this fix, the read-only cold audit of run
+`ea543ebe-e636-4371-b00c-65d7aa5612bf` again passed at checkpoint
+sequence 7,783. Recovery work through `36489a166` installs its verified
+portfolio and OMS images into an actual `TradingRuntime`, reconciles the
+simulated broker's canonical snapshot, and skips legacy OMS journal recovery.
+The workstation audit verified 440 historical fills, zero open orders, and
+zero writes. Focused portfolio/runtime/OMS tests passed (154 tests plus nine
+subtests). This proves cold actor initialization, not continued execution or
+checkpoint-resumed equivalence; the public resume gate remains closed.
