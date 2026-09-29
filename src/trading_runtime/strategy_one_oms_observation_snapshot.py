@@ -126,7 +126,8 @@ def _number(value: Any) -> str:
             raise ValueError("OMS observation exceeds its decimal contract")
         with localcontext() as context:
             context.prec = 38
-            return str(number.quantize(Decimal("0.000000000000000001")))
+            return format(number.quantize(Decimal("0.000000000000000001")),
+                          ".18f")
     except InvalidOperation as exc:
         raise ValueError("OMS observation exceeds its decimal scale") from exc
 
@@ -287,3 +288,91 @@ def load_attested_oms_observation_snapshot(
             or keeper.read_head(run_id=run_id) != head):
         raise RuntimeError("OMS observation seal differs from selected cursor")
     return rows
+
+
+def publish_oms_observation_snapshot(
+    client: Any, session: ManagedKeeperSession,
+    rows: OmsObservationSnapshotRows, *, journal_batch_id: str,
+) -> OmsObservationHead:
+    """Journal-worker-only children-first publication followed by Keeper CAS.
+
+    A lost INSERT response leaves a pending dispatch operation; it cannot
+    select a Keeper head or silently make an orphan root resumable.
+    """
+    from src.trading_runtime.arte_journal_commit_v4 import load_writer_v4_snapshot_prefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+    from src.trading_runtime.arte_journal_writer import _insert
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    if (not isinstance(session, ManagedKeeperSession) or not session.writable
+            or getattr(client, "typed_insert_strict", False) is not True
+            or not isinstance(getattr(client, "typed_insert_dispatch", None),
+                              TypedInsertDispatch)
+            or client.typed_insert_dispatch.keeper is not session.client):
+        raise RuntimeError("OMS observation publication lacks fenced writer")
+    expected = verify_oms_observation_snapshot(rows)
+    seal = expected.root
+    run_id, sequence = seal["run_id"], seal["checkpoint_sequence"]
+    try:
+        if str(UUID(journal_batch_id)) != journal_batch_id:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("OMS observation batch ID is invalid") from exc
+    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running"
+            or prefix.last_sequence != sequence
+            or prefix.last_batch_id != journal_batch_id):
+        raise RuntimeError("OMS observation lacks exact running V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, dict) or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != sequence
+            or cursor.get("batch_id") != journal_batch_id
+            or cursor.get("boundary_ms") != seal["boundary_ms"]
+            or cursor.get("session_date") != seal["session_date"]):
+        raise RuntimeError("OMS observation cursor differs from captured state")
+    reader = ManagedOmsObservationHeadReader(session)
+    path = reader.path(run_id)
+    previous = (None if session.client.exists(path) is None
+                else reader.read_head(run_id=run_id))
+    if previous is not None:
+        if previous.checkpoint_sequence == sequence:
+            if (previous.journal_batch_id != journal_batch_id
+                    or previous.snapshot_hash != seal["content_hash"]
+                    or load_attested_oms_observation_snapshot(
+                        client, reader, run_id=run_id,
+                        checkpoint_sequence=sequence) != expected):
+                raise RuntimeError("OMS observation repeat differs from selected state")
+            return previous
+        if previous.checkpoint_sequence > sequence:
+            raise RuntimeError("OMS observation would rewind Keeper head")
+    operations: list[tuple[str, str]] = []
+    for contract, family in ((OBSERVATION, expected.observations),
+                             (ROOT, (seal,))):
+        if not family:
+            continue
+        token = (f"oms-observation:{run_id}:{sequence}:"
+                 f"{seal['content_hash']}:{contract.name}")
+        _insert(client, contract.name, family, token,
+                dispatch_sequence=sequence,
+                dispatch_batch_id=journal_batch_id,
+                dispatch_oms_observation_snapshot_hash=seal["content_hash"])
+        operations.append((contract.name, token))
+    observed = load_unattested_oms_observation_snapshot(
+        client, run_id=run_id, checkpoint_sequence=sequence)
+    if observed != expected:
+        raise RuntimeError("OMS observation readback differs from captured state")
+    for table, token in operations:
+        client.typed_insert_dispatch.seal_verified_operation(
+            run_id=run_id, table=table, token=token,
+            batch_id=journal_batch_id, batch_last_sequence=sequence,
+            oms_observation_snapshot=True)
+    client.typed_insert_dispatch.compact_verified_oms_observation_snapshot(
+        run_id=run_id, batch_id=journal_batch_id,
+        last_sequence=sequence, snapshot_hash=seal["content_hash"],
+        operations=tuple(operations), previous=previous)
+    selected = reader.read_head(run_id=run_id)
+    if (selected.checkpoint_sequence != sequence
+            or selected.journal_batch_id != journal_batch_id
+            or selected.snapshot_hash != seal["content_hash"]):
+        raise RuntimeError("OMS observation Keeper readback differs")
+    return selected

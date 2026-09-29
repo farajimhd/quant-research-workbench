@@ -9,7 +9,8 @@ from src.trading_runtime.strategy_one_oms_observation_snapshot import (
     OBSERVATION, ROOT, OmsObservationHead, OmsObservationSnapshotRows,
     load_attested_oms_observation_snapshot,
     load_unattested_oms_observation_snapshot,
-    project_oms_observation_snapshot, verify_oms_observation_snapshot,
+    project_oms_observation_snapshot, publish_oms_observation_snapshot,
+    ManagedOmsObservationHeadReader, verify_oms_observation_snapshot,
 )
 
 
@@ -129,3 +130,74 @@ def test_cold_attestation_rejects_changed_keeper_head(monkeypatch):
         load_attested_oms_observation_snapshot(
             object(), MovingKeeper(), run_id="backtest:one",
             checkpoint_sequence=42)
+
+
+def test_publication_is_children_first_and_keeper_selected(monkeypatch):
+    import json
+    from src.trading_runtime import arte_journal_commit_v4, arte_journal_projection
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime.arte_typed_insert_dispatch import (
+        TypedInsertDispatch, _Gate, _context_receipt_path, _gate_path,
+    )
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from tests.test_arte_typed_insert_dispatch import Keeper, Stat
+
+    rows = _snapshot()
+    run_id = "backtest:one"
+    batch = "00000000-0000-0000-0000-000000000001"
+    prefix = V4CommittedPrefix(run_id, 42, batch, "2026-08-18:30000",
+                               "running", (batch,))
+    monkeypatch.setattr(arte_journal_commit_v4, "load_writer_v4_snapshot_prefix",
+                        lambda *_: prefix)
+    monkeypatch.setattr(arte_journal_commit_v4, "load_verified_v4_prefix",
+                        lambda *_: prefix)
+    monkeypatch.setattr(arte_journal_projection, "load_latest_backtest_cursor",
+                        lambda *_: {"run_id": run_id, "event_sequence": 42,
+                                    "batch_id": batch, "boundary_ms": 30_000,
+                                    "session_date": "2026-08-18"})
+    keeper = Keeper()
+    keeper.add_listener = lambda _listener: None
+    keeper.connected = True
+    keeper.client_id = (101, b"secret")
+    keeper.exists = lambda path: keeper.rows.get(path)
+    session = ManagedKeeperSession(keeper)
+    session._on_state("CONNECTED")
+    dispatch = TypedInsertDispatch(keeper)
+    dispatch.initialize_new_run(run_id)
+    keeper.create(_context_receipt_path(run_id), b"1\n" + b"a" * 64)
+    gate, version = dispatch._read_gate(run_id)
+    keeper.rows[_gate_path(run_id)] = (
+        _Gate("open", 0, gate.epoch, 0, 42, batch,
+              "a" * 64, "00000000-0000-0000-0000-000000000000").wire(),
+        Stat(version + 1))
+
+    class Client:
+        typed_insert_strict = True
+        typed_insert_dispatch = dispatch
+
+        def __init__(self):
+            self.tables = {}
+            self.inserts = []
+
+        def execute(self, sql, *, query_id=None):
+            table = sql.split("arte.", 1)[1].split(" ", 1)[0]
+            if sql.startswith("INSERT INTO "):
+                self.inserts.append(table)
+                self.tables.setdefault(table, []).extend(
+                    json.loads(line) for line in sql.split("\n", 1)[1].splitlines())
+                return ""
+            assert sql.startswith("SELECT ")
+            return "\n".join(json.dumps(row)
+                             for row in self.tables.get(table, ()))
+
+    client = Client()
+    head = publish_oms_observation_snapshot(
+        client, session, rows, journal_batch_id=batch)
+    assert head == OmsObservationHead(
+        run_id, 42, batch, rows.root["content_hash"], 0)
+    assert client.inserts == [OBSERVATION.name, ROOT.name]
+    assert dispatch._read_gate(run_id)[0].registered == 0
+    assert ManagedOmsObservationHeadReader(session).read_head(run_id=run_id) == head
+    assert publish_oms_observation_snapshot(
+        client, session, rows, journal_batch_id=batch) == head
+    assert len(client.inserts) == 2
