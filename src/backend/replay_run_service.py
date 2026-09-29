@@ -3515,6 +3515,10 @@ class ReplayRunController:
         }
         self.current_time = self.definition.session_end
         if prior_boundary < terminal_boundary:
+            manager = getattr(self, "_strategy_one_manager", None)
+            if manager is None:
+                raise RuntimeError("Strategy 1 terminal boundary lacks manager")
+            manager.evidence.advance_empty_boundary(terminal_boundary)
             await self._after_event(self.definition.session_end)
         await self._finish("completed")
 

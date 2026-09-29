@@ -272,6 +272,19 @@ class StrategyOneCausalEvidence:
                 self._resistance[ticker] = state
                 self._completed_breaks[ticker] = breaks
 
+    def advance_empty_boundary(self, boundary_ms: int) -> None:
+        """Advance an explicit scheduler-only boundary without a market row.
+
+        The terminal 09:30 cursor can follow the last sparse bar. It clears
+        same-boundary break witnesses but never creates a candle, quote, or V7
+        observation; last completed 30s lows age naturally by their timestamp.
+        """
+        if (type(boundary_ms) is not int or boundary_ms <= self._break_boundary_ms
+                or boundary_ms > 57_600_000 or boundary_ms % 100):
+            raise ValueError("Strategy 1 empty boundary is not causal")
+        self._break_boundary_ms = boundary_ms
+        self._completed_breaks = {}
+
     def completed_resistance_breaks(
         self, ticker: str, *, boundary_ms: int,
     ) -> tuple[ResistanceBreak, ...]:

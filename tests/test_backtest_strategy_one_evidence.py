@@ -80,6 +80,21 @@ def test_typed_evidence_capture_and_restore_primes_only_active_v7():
     assert fresh._break_boundary_ms == 330_000
 
 
+def test_trailing_empty_boundary_advances_clock_without_fabricating_bar():
+    evidence = object.__new__(StrategyOneCausalEvidence)
+    evidence._break_boundary_ms = 330_000
+    evidence._completed_breaks = {"TEST": (object(),)}
+    evidence._completed_30s = {"TEST": {"boundary_ms": 330_000}}
+    evidence._resistance = {"TEST": ResistanceObservation(330_000, 101_000)}
+    evidence.advance_empty_boundary(19_800_000)
+    assert evidence._break_boundary_ms == 19_800_000
+    assert evidence._completed_breaks == {}
+    assert evidence._completed_30s == {"TEST": {"boundary_ms": 330_000}}
+    assert evidence._resistance["TEST"].boundary_ms == 330_000
+    with pytest.raises(ValueError, match="not causal"):
+        evidence.advance_empty_boundary(19_800_000)
+
+
 def test_activation_and_later_candidate_use_same_completed_second_stream():
     session = date(2026, 8, 18)
     origin_us = round(market_day_boundary(session, 0).timestamp() * 1_000_000)
