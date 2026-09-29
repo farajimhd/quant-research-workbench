@@ -682,3 +682,27 @@ stage took 26.215s and terminal stage 27.185s; the bounded writer used
 37.517s of worker time overlapping execution. These are observed laptop
 wall times, not a claim that workstation services were started or that
 interrupted-run resume and live admission are enabled.
+
+On September 29, the Backtest-only Strategy 1 add correction was exercised
+through the laptop app with the same full-market August 18, 04:00–09:30 ET,
+$10,000, 100 ms baseline setup. The first attempted run failed at 07:40 ET
+before any journal commit because compound publication omitted the new
+normalized add-evidence family; no result from that run is valid. Commit
+`b820815fa` includes the family in compaction, independently seals its parent
+link, and adds a compound regression test. Two subsequent public UI runs,
+`b789290e-8a9f-4da4-920d-e75edae5570b` and
+`51dcacfb-bc9e-44a0-a9c8-8e2d2f103156`, completed and cold-verified 6,443
+journal records each. Their observed total wall times were 83.16s and 80.65s;
+market execution took 49.75s and 49.09s, and journal finalization 21.87s
+and 20.62s. The runs matched on final financial account, 131 typed strategy
+intents, 210 fills, 210 commissions, 123 order commands, and all 15 scalar
+resistance-add evidence rows. SLE had two completed three-purchase episodes
+(entry plus two distinct resistance adds); six tickers had at least one add.
+A read-only cash reconstruction over every fill and matching commission in
+the first run had a $2,726.50 minimum balance and no negative balance from
+$10,000 initial cash. This verifies the observed session, not every possible
+market path. The writer committed 16 units with zero failed units; compound
+publication took 22.45s of worker time and terminal prior-commit waiting
+16.47s, so normalized journal durability remains the measured latency target.
+The public interrupted-resume and live Strategy 1 admission gates remain
+closed pending their separate acceptance checks.
