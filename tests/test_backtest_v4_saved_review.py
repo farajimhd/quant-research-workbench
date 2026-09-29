@@ -267,6 +267,39 @@ def test_v4_performance_derives_net_trade_from_typed_fills_and_final_fees(monkey
     assert result["report"]["execution"]["order_count"] is None
 
 
+def test_v4_performance_orders_opposing_same_timestamp_fills_by_journal_sequence(monkeypatch):
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
+                        {"prefix": _prefix()})
+    base = {"account_id": "SIM-01-A", "conid": 10, "ticker": "ABC",
+            "currency": "USD", "exchange": "SIM", "broker_order_id": "",
+            "client_order_id": "", "strategy_id": "early-squeeze-strategy",
+            "strategy_revision": 1, "setup": "", "exit_reason": "",
+            "signal_price": None, "arrival_midpoint": None,
+            "planned_risk": None,
+            "source_event_time": "2026-08-18 08:00:00.000000000"}
+    # Lexical execution-ID order is deliberately opposite to the committed
+    # fill order; source timestamps alone cannot resolve this bucket.
+    fills = (
+        {**base, "sequence": 1, "execution_id": "z-buy", "side": "B",
+         "quantity": "10", "price": "2"},
+        {**base, "sequence": 3, "execution_id": "a-sell", "side": "S",
+         "quantity": "10", "price": "3"},
+    )
+    fees = (
+        {"sequence": 2, "execution_id": "z-buy", "account_id": "SIM-01-A",
+         "commission": "1", "currency": "USD", "status": "final"},
+        {"sequence": 4, "execution_id": "a-sell", "account_id": "SIM-01-A",
+         "commission": "1", "currency": "USD", "status": "final"},
+    )
+    monkeypatch.setattr(review, "load_committed_execution_page", lambda *_a, **_k: fills)
+    monkeypatch.setattr(review, "load_committed_commission_page", lambda *_a, **_k: fees)
+    monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
+    result = review.load_v4_performance_report(Client(), RUN)
+    assert result["fill_count"] == 2
+    assert result["report"]["summary"]["episode_count"] == 1
+    assert float(result["report"]["summary"]["net_pnl"]) == 8.0
+
+
 def test_v4_performance_rejects_unfinalized_fee(monkeypatch):
     monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
                         {"prefix": _prefix()})

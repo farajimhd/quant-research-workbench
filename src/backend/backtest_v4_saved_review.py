@@ -293,7 +293,7 @@ def load_v4_performance_report(client, run_id: str, *,
             fee_by_execution[identity] = fee
     executions = []
     identities = set()
-    sides_at_boundary: dict[tuple[str, str, datetime], str] = {}
+    journal_sequences: set[int] = set()
     for fill in fills:
         identity = str(fill["execution_id"])
         if identity in identities:
@@ -314,10 +314,10 @@ def load_v4_performance_report(client, run_id: str, *,
             raise RuntimeError("Saved Canvas performance requires point-in-time conid on every fill")
         symbol = str(fill["ticker"])
         stamp = _utc_timestamp(fill["source_event_time"])
-        tie_key = (str(fill["account_id"]), f"conid:{conid}", stamp)
-        prior_side = sides_at_boundary.setdefault(tie_key, side)
-        if prior_side != side:
-            raise RuntimeError("Saved Canvas cannot order opposing fills at the same source timestamp")
+        sequence = fill.get("sequence")
+        if type(sequence) is not int or sequence < 1 or sequence in journal_sequences:
+            raise RuntimeError("Saved Canvas fill lacks a unique committed journal sequence")
+        journal_sequences.add(sequence)
         executions.append(Execution(
             execution_id=identity, account_id=str(fill["account_id"]),
             instrument=InstrumentContract(
@@ -342,6 +342,7 @@ def load_v4_performance_report(client, run_id: str, *,
                               if fill["arrival_midpoint"] is not None else None),
             planned_risk=(Decimal(str(fill["planned_risk"]))
                           if fill["planned_risk"] is not None else None),
+            journal_sequence=sequence,
         ))
     if set(fee_by_execution) != identities:
         raise RuntimeError("Saved Canvas contains a commission without a matching fill")

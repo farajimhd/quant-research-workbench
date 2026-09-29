@@ -220,6 +220,7 @@ class Execution:
     planned_risk: Decimal | None = None
     received_at: datetime = field(default_factory=utc_now)
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
+    journal_sequence: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -104,7 +104,13 @@ def _derive_episode_states(
     states: dict[tuple[str, str], _EpisodeState] = {}
     episodes: list[TradeEpisode] = []
     sequences: dict[tuple[str, str], int] = defaultdict(int)
-    ordered = sorted(executions, key=lambda row: (row.source_event_time, row.execution_id))
+    # A normalized journal sequence resolves actual same-timestamp fill order.
+    # Unjournaled live fills retain the stable execution-ID tie break.
+    ordered = sorted(executions, key=lambda row: (
+        row.source_event_time,
+        row.journal_sequence if row.journal_sequence is not None else 0,
+        row.execution_id,
+    ))
     for execution in ordered:
         quantity = abs(execution.quantity)
         if quantity <= POSITION_EPSILON:
