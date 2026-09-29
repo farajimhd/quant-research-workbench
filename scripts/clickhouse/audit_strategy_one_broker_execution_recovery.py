@@ -45,6 +45,7 @@ from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
 from src.trading_runtime.arte_journal_commit_v4 import (
     V4CommittedPrefix, load_verified_v4_prefix,
 )
+from src.trading_runtime.arte_backtest_definition import load_backtest_definition
 from src.trading_runtime.arte_journal_writer import (
     _literal, _rows, backtest_v4_operator_client_from_env,
     load_typed_run_context,
@@ -102,6 +103,7 @@ def audit(*, run_id: str, build_id: str, session: date,
                                          "execution_interval": "100ms"}},
             read_client_factory=lambda: _MarketCertificateReader(v3_client("read")))
         context = load_typed_run_context(client, run_id)
+        definition = load_backtest_definition(client, run_id, run_context=context)
         if (context["mode"] != "backtest"
                 or context["market_plan_token"] != plan.token):
             raise RuntimeError("Broker audit differs from pinned Backtest market plan")
@@ -237,6 +239,8 @@ def audit(*, run_id: str, build_id: str, session: date,
         selected = strategy_one_v7_tickers(candidates.prepared)
         execution = project_market_day_plan(plan, selected)
         seeds = certified_seed_plan(execution, market_http)
+        if seeds.token != definition["definition"]["causal_v7_plan_token"]:
+            raise RuntimeError("Cold V7 seed differs from saved Backtest definition")
         pivots = certify_pivot_plan(
             plan, session_date=session.isoformat(),
             candidate_tickers=selected, client=market_http)
