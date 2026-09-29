@@ -37,6 +37,11 @@ With a zero residual, its joint listing/action probabilities reproduce the
 parent policy exactly at initialization. This corrects the version-6
 uniform-type migration that sharply increased executed turnover. It does not
 change the execution model or guarantee validation performance.
+Version 8 masks discretionary exits when the current listing has no fresh
+market, and masks reduction of a one-share position. For larger holdings a
+reduction requests at least one whole share while leaving at least one share;
+full close remains a separate action. Mandatory IOC exits still attempt to
+liquidate independently and unresolved terminal holdings remain invalid.
 
 The early-exit version starts mandatory IOC liquidation 15 minutes before the
 20:00 ET session end and blocks new entries from that point. A missing market

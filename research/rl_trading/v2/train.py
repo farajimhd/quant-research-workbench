@@ -38,6 +38,7 @@ BALANCED_ACTION_PARENT_HASHES = {
     str(Path('research/rl_trading/v2/config.py')): '19c996d072e91872a61826580b99934dec0ebecd874fb30da4f72a5812f5f047',
     str(Path('research/rl_trading/v2/model.py')): '4adbe145cce55244396509bff2d8e89dcc7ea46e3e989d4ed6dafc597afc2362',
     str(Path('research/rl_trading/v2/train.py')): '719bf821da6fae635084d96ef27840ccb15c2e86a0cc5641b9a791b218c6aff6',
+    str(Path('research/rl_trading/v2/environment.py')): '3eca8a7db4d37485e6f38cf87cab273329da31a7f4a58d1adabe6efac77f1b0d',
 }
 
 
@@ -324,7 +325,7 @@ def _best_initialization(parent_root, manifest, *, run_root, device):
 
 
 def _hierarchical_initialization(parent_root, manifest, *, run_root, device):
-    """Transfer the exact certified V4 best policy into the V7 action hierarchy."""
+    """Transfer the certified V4 policy under the V8 executable-action mask."""
     parent_root = Path(parent_root).resolve()
     manifest = json.loads(json.dumps(manifest))
     if parent_root == run_root.resolve():
@@ -333,8 +334,8 @@ def _hierarchical_initialization(parent_root, manifest, *, run_root, device):
     if parent.get('contract_hash') != digest({k:v for k,v in parent.items() if k != 'contract_hash'}):
         raise ValueError('Parent run manifest integrity failure')
     if (parent.get('version') != 'rl-trading-v2-ppo-single-account-sessions-4' or
-            manifest.get('version') != 'rl-trading-v2-ppo-hierarchical-actions-7'):
-        raise ValueError('Hierarchical-action initialization requires V4 to V7 migration')
+            manifest.get('version') != 'rl-trading-v2-ppo-hierarchical-actions-8'):
+        raise ValueError('Hierarchical-action initialization requires V4 to V8 migration')
     for key in ('job','model','feature_names','train','validation','teacher_supervision',
                 'torch_version','numpy_version','wandb'):
         if parent.get(key) != manifest.get(key):
@@ -368,7 +369,7 @@ def _hierarchical_initialization(parent_root, manifest, *, run_root, device):
                    parent_best_iteration=best['iteration'],parent_best_score=best['best'],
                    transferred=['policy'],optimizer_state='fresh',account_state='fresh',
                    session_cursor='first_training_date',random_state='fresh_seed',
-                   change='V4-equivalent type prior plus learned residual; nine-rollout selection')
+                   change='V4-equivalent type prior; executable reduce mask and whole-share sizing; nine-rollout selection')
     return lineage,best
 
 
