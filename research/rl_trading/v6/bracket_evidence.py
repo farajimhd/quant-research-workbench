@@ -1,7 +1,8 @@
 """Sparse reads of certified execution prices for touched bracket buckets."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -13,6 +14,82 @@ from src.backend.backtest_liquidity_price import PriceLevelPlan
 
 SCHEMA = {'ticker': pl.String, 'boundary_us': pl.Int64,
           'price_int': pl.Int64, 'execution_volume': pl.Float64}
+BUCKET_SCHEMA = {'ticker': pl.String, 'boundary_us': pl.Int64,
+                 'high': pl.Float64, 'low': pl.Float64,
+                 'extremes_valid': pl.Int64}
+NY = ZoneInfo('America/New_York')
+
+
+def read_held_bucket_extrema(reader, source: dict, day: date,
+                             positions: pl.DataFrame) -> pl.DataFrame:
+    """Project only 100 ms extrema within confirmed held intervals.
+
+    Future buckets may be fetched for historical simulation, but are never
+    supplied to the policy before their completed boundary. The caller must
+    retain invalid/gap buckets as missing evidence, not as a non-trigger.
+    Source population and stage attempts are pinned by ``load_build``.
+    """
+    required = {'ticker', 'entry_us', 'exit_us'}
+    if not required <= set(positions.columns):
+        raise ValueError('Missing confirmed held interval')
+    if positions.is_empty():
+        return pl.DataFrame(schema=BUCKET_SCHEMA)
+    if (positions.select('ticker', 'entry_us').n_unique() != positions.height or
+            positions.filter(pl.col('exit_us') <= pl.col('entry_us')).height):
+        raise ValueError('Duplicate or invalid held interval')
+    midnight = int(datetime.combine(day, time.min, NY).timestamp()*1_000_000)
+    intervals = []
+    units = source['units'][str(day)]
+    for ticker, entry_us, exit_us in positions.select(
+            'ticker', 'entry_us', 'exit_us').iter_rows():
+        if (ticker not in units or entry_us < midnight+14_400_000_000 or
+                exit_us > midnight+72_000_000_000):
+            raise ValueError('Held interval is outside the certified day')
+        first = (int(entry_us)-midnight)//100_000
+        last = (int(exit_us)-midnight)//100_000-1
+        if first <= last:
+            intervals.append((ticker, units[ticker]['bars']['attempt_id'],
+                              first, last))
+    if not intervals:
+        return pl.DataFrame(schema=BUCKET_SCHEMA)
+    parts = []
+    boundary = f'toInt64({arte_sql.bounds(day)})+(toInt64(bucket_index)+1)*100000'
+    for start in range(0, len(intervals), 100):
+        scoped = intervals[start:start+100]
+        predicate = ' OR '.join(
+            f'(ticker={arte_sql.literal(ticker)} AND '
+            f'attempt_id=toUUID({arte_sql.literal(attempt)}) AND '
+            f'bucket_index BETWEEN {first} AND {last})'
+            for ticker, attempt, first, last in scoped)
+        statement = (
+            f'SELECT ticker,{boundary} AS boundary_us,high_int/10000. AS high,'
+            'low_int/10000. AS low,extremes_valid FROM arte.bars_v1 '
+            f'WHERE build_id={arte_sql.literal(source["build_id"])} AND '
+            f'session_date=toDate({arte_sql.literal(day)}) AND '
+            f'resolution_ms=100 AND ({predicate}) '
+            'ORDER BY ticker,bucket_index')
+        part = frame(reader, statement, BUCKET_SCHEMA)
+        if part.height:
+            parts.append(part)
+    rows = pl.concat(parts) if parts else pl.DataFrame(schema=BUCKET_SCHEMA)
+    if rows.height:
+        conflicting = rows.group_by('ticker', 'boundary_us').agg(
+            pl.col('high').n_unique().alias('high_values'),
+            pl.col('low').n_unique().alias('low_values'),
+            pl.col('extremes_valid').n_unique().alias('valid_values'))
+        if conflicting.filter(
+                (pl.col('high_values') != 1) |
+                (pl.col('low_values') != 1) |
+                (pl.col('valid_values') != 1)).height:
+            raise ValueError('Pinned 100 ms bucket has conflicting values')
+        # Overlapping held intervals can request the same certified row twice.
+        rows = rows.unique(['ticker', 'boundary_us']).sort(
+            'ticker', 'boundary_us')
+    if (rows.select('ticker', 'boundary_us').n_unique() != rows.height or
+            rows.filter((pl.col('boundary_us') % 100_000 != 0) |
+                (pl.col('low') < 0) | (pl.col('high') < pl.col('low'))).height):
+        raise ValueError('Pinned held 100 ms extrema are malformed')
+    return rows
 
 
 def read_touched_price_levels(reader, source: dict, ledger: str,
