@@ -7,6 +7,7 @@ import { ChartsQuotesMarketLayout, type SavedChartsQuote, type ChartsQuotesLayou
 import { MarketStatusBadge, historicalMarketStatus } from "./MarketStatusBadge";
 import { StrategyActivityContainer } from "./MarketScreenerContainers";
 import { dateInTimeZone } from "../timeZones";
+import { strategyActionLabel, strategyExitReason } from "../strategyPresentationContract";
 import { normalizeTicker } from "../tickerNavigation";
 import type { V4Page } from "./BacktestV4SavedReview";
 import { canvasRuntimeWorkspaceStorageKey, readCanvasRegistry,
@@ -402,13 +403,35 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
         if (!Number.isFinite(entryTime) || !Number.isFinite(entryPrice)) continue;
         const exitTime = row.closed_at ? Date.parse(String(row.closed_at)) / 1000 : undefined;
         const exitPrice = row.exit_price == null ? undefined : Number(row.exit_price);
+        const side = row.side === "SHORT" ? "SHORT" : "LONG";
+        const quantity = Number(row.quantity);
+        const reasonCode = String(row.exit_reason || row.presentation_exit_reason || "");
+        const exitReason = strategyExitReason(reasonCode);
+        const pnl = row.net_pnl == null ? undefined : Number(row.net_pnl);
+        const protectionPath = Array.isArray(row.protection_timeline)
+          ? (row.protection_timeline as Array<Record<string, unknown>>)
+            .filter(event => event.phase === "effective" && (event.kind === "stop" || event.kind === "target")
+              && Number.isFinite(Number(event.price)) && Number.isFinite(Date.parse(String(event.event_time))))
+            .map(event => ({ time: Date.parse(String(event.event_time)) / 1000, sequence: Number(event.sequence),
+              orderId: String(event.order_id), kind: event.kind as "stop" | "target",
+              price: Number(event.price), active: event.active === true }))
+            .sort((a, b) => a.time - b.time || a.sequence - b.sequence)
+          : [];
         annotations.push({ id: String(row.lifecycle_id ?? row.episode_id), color: "var(--chart-strategy-entry)",
-          entryTime, entryPrice, entryLabel: `Entry ${Number(row.quantity).toLocaleString()} @ ${entryPrice.toFixed(4)}`,
-          positionSide: row.side === "SHORT" ? "SHORT" : "LONG",
+          entryTime, entryPrice, entryLabelParts: strategyActionLabel({ kind: "entry", side, quantity, price: entryPrice }),
+          positionSide: side,
+          protectionPath,
           status: row.status === "closed" ? "closed" : "open",
           ...(exitTime !== undefined && Number.isFinite(exitTime) && exitPrice !== undefined && Number.isFinite(exitPrice)
-            ? { exitTime, exitPrice, endTime: exitTime, exitLabel: `Exit @ ${exitPrice.toFixed(4)}` } : {}),
-          pnl: Number(row.net_pnl) });
+            ? { exitTime, exitPrice, endTime: exitTime, exitFills: [{ kind: "exit_fill" as const,
+              time: exitTime, price: exitPrice, side: side === "SHORT" ? "BUY" as const : "SELL" as const,
+              // The verified lifecycle may lack an exit cause. The red fill
+              // marker remains truthful; a label appears only for a recorded
+              // cause, never one inferred from price or P&L.
+              labelParts: exitReason ? strategyActionLabel({ kind: "exit", side,
+                reason: reasonCode, quantity, price: exitPrice,
+                pnl: pnl !== undefined && Number.isFinite(pnl) ? pnl : undefined }) : [] }] } : {}),
+          pnl: pnl !== undefined && Number.isFinite(pnl) ? pnl : undefined });
       }
       setTradeAnnotations(annotations);
       setTradeError("");

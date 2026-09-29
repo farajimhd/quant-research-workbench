@@ -15,6 +15,7 @@ import { StructuralDetectorPrimitive, useStructuralDetector } from "./Structural
 import {SupertrendRenderer,useSupertrend} from './SupertrendIndicator';
 import { structureTimeCoordinate } from "./structureTimeCoordinate";
 import { STRATEGY_ENTRY_REFERENCE_BACKING, STRATEGY_ENTRY_REFERENCE_COLOR } from "../theme";
+import type { StrategyLabelPart } from "../strategyPresentationContract";
 import {
   type AutoscaleInfo,
   CandlestickSeries,
@@ -78,7 +79,7 @@ type ChartSeries = {
   bandFillColor?: string;
   bandFillOpacity?: number;
   chartRole?: string;
-  colorMode?: "confidence-sign" | "sign";
+  colorMode?: "candle" | "confidence-sign" | "sign";
   column: string;
   displayItemId?: string;
   emptyMessage?: string;
@@ -99,7 +100,7 @@ type RendererDatum = { time: Time; [key: string]: unknown };
 type RendererDataCache = { data: RendererDatum[]; styleKey: string };
 const rendererDataCache = new WeakMap<object, RendererDataCache>();
 type Region = { start: number; end: number; color: string; label: string };
-type TradeLabelPart = { text: string; tone?: "exitLong" | "exitPriceLong" | "exitPriceShort" | "exitShort" | "label" | "long" | "pnlLoss" | "pnlWin" | "price" | "priceLong" | "priceShort" | "reason" | "separator" | "short" | "size" };
+type TradeLabelPart = StrategyLabelPart;
 type TradeLabelPartSettings = Partial<Record<NonNullable<TradeLabelPart["tone"]>, StrategyPresentationStyleSettings>>;
 type TradeFillAnnotation = {
   kind?: "add" | "entry_fill" | "exit_fill" | "exit_intent" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" | "stop_change" | "target_change" | "protection_repair" | "entry_freeze";
@@ -1097,20 +1098,28 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   visibleSelectionRef.current = visibleSelectionLookup;
   const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const displayedPriceZones = (payload?.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionLookup.has(zone.displayItemId.toLowerCase()));
+  const candleToneByTime = useMemo(() => new Map((payload?.candles ?? [])
+    .map(candle => [candle.time, candle.close >= candle.open ? "buy" as const : "sell" as const])), [payload?.candles]);
   const macdBpsSeries = useMemo(() => (payload?.oscillator_series ?? [])
     .filter((series) => oscillatorPaneKey(series) === "oscillator:macd")
     .map((series): ChartSeries => ({ ...series,
       label: `${series.label} bps`, axisTitle: `${series.axisTitle ?? series.label} bps`,
       paneKey: "macd", chartRole: "macd-bps", priceScaleId: "left",
-      data: macdBpsPoints(series.data, payload?.candles ?? []),
-    })), [payload?.oscillator_series, payload?.candles]);
+      ...(series.column === "macd_histogram" ? { style: "histogram" as const, colorMode: "candle" as const } : {}),
+      data: macdBpsPoints(series.data, payload?.candles ?? []).map(point =>
+        series.column === "macd_histogram" ? { ...point, tone: candleToneByTime.get(point.time) } : point),
+    })), [payload?.oscillator_series, payload?.candles, candleToneByTime]);
   const macdBpsEnabled = oscillatorThresholdSettings["oscillator:macd"]?.macdBpsVisible !== false;
   const emaLength=emaPeriod(legendSettings[EMA_ACCELERATION_KEY]?.emaLength??7);
   const emaUnits=accelerationUnit(legendSettings[EMA_ACCELERATION_KEY]?.accelerationUnits);
   const emaCurvature=useMemo(()=>visibleColumnLookup.has(EMA_ACCELERATION_ID)?emaAcceleration(payload?.candles??[],emaLength,emaUnits,
     indicatorAsOf?Date.parse(indicatorAsOf)/1000:Date.now()/1000,chartTimeframeSeconds(timeframe)??60):[],[payload?.candles,emaLength,emaUnits,indicatorAsOf,timeframe,visibleColumnKey]);
   const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) =>
-    visibleColumnLookup.has(seriesSelectionKey(series)) && !(macdBpsEnabled && oscillatorPaneKey(series) === "oscillator:macd"));
+    visibleColumnLookup.has(seriesSelectionKey(series)) && !(macdBpsEnabled && oscillatorPaneKey(series) === "oscillator:macd"))
+    .map(series => series.column === "macd_histogram"
+      ? { ...series, style: "histogram" as const, colorMode: "candle" as const,
+        data: series.data.map(point => ({ ...point, tone: candleToneByTime.get(point.time) })) }
+      : series);
   if(visibleColumnLookup.has(EMA_ACCELERATION_ID))displayedOscillatorSeries.push({column:'ema_acceleration',displayItemId:EMA_ACCELERATION_ID,
     label:`EMA ${emaLength} second derivative`,axisTitle:accelerationUnits[emaUnits],paneKey:'ema-acceleration',chartRole:'ema-acceleration',
     style:'line',color:'var(--info)',lineWidth:2,data:emaCurvature});
@@ -3613,7 +3622,6 @@ function StrategyPresentationSelect({
 }) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [styleElement, setStyleElement] = useState<StrategyVisualElementKey | null>(null);
-  const enabledCount = strategyVisualElementDefinitions.filter((item) => settings.elements[item.key].visible).length;
   const updateElement = (key: StrategyVisualElementKey, patch: Partial<StrategyPresentationStyleSettings>) => onChange((current) => ({
     ...current,
     elements: { ...current.elements, [key]: { ...current.elements[key], ...patch } },
@@ -3636,15 +3644,14 @@ function StrategyPresentationSelect({
     >
       <Layers3 size={18} />
       <span>Strategy Presentation</span>
-      <b>{settings.visible ? enabledCount : 0}</b>
       <ChevronDown size={14} />
     </button>
-    <div className="strategy-presentation-navigation" role="group" aria-label="Strategy lifecycle navigation">
+    {annotationCount > 1 ? <div className="strategy-presentation-navigation" role="group" aria-label="Strategy lifecycle navigation">
       <button className="toolbar-button" aria-label="Previous strategy position" title="Previous position" disabled={selectedIndex <= 0} onClick={() => onSelect(selectedIndex - 1)} type="button"><ChevronLeft size={16} /></button>
       <span aria-live="polite" title={selectedTrade ? `${selectedTrade.positionSide ?? "Position"} - ${new Date(selectedTrade.entryTime * 1000).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false })} ET` : "No strategy positions in this chart"}>{selectedIndex + 1} / {annotationCount}</span>
       <input aria-label="Strategy position" aria-valuetext={selectedTrade ? `Position ${selectedIndex + 1} of ${annotationCount}` : "No positions"} disabled={annotationCount < 2} min={1} max={Math.max(1, annotationCount)} step={1} type="range" value={Math.max(1, selectedIndex + 1)} onChange={(event) => onSelect(Number(event.target.value) - 1)} />
       <button className="toolbar-button" aria-label="Next strategy position" title="Next position" disabled={selectedIndex < 0 || selectedIndex >= annotationCount - 1} onClick={() => onSelect(selectedIndex + 1)} type="button"><ChevronRight size={16} /></button>
-    </div>
+    </div> : null}
     {open ? <ChartColumnMenuPortal anchor={triggerRef.current} className="strategy-presentation-menu">
       {selectedDefinition && styleElement ? <StrategyPresentationStylePage
         definition={selectedDefinition}
@@ -3708,12 +3715,12 @@ type StrategyVisualElementDefinition = { help: string; key: StrategyVisualElemen
 const strategyVisualElementDefinitions: StrategyVisualElementDefinition[] = [
   { key: "entryLine", kind: "line", title: "Entry price line", help: "Position entry price across the lifecycle." },
   { key: "entryArrow", kind: "marker", title: "Entry intent arrow", help: "Strategy intent time and decision reference price on the containing candle." },
-  { key: "entryLabel", kind: "label", title: "Entry intent label", help: "Long or short issued by the durable strategy decision." },
+  { key: "entryLabel", kind: "label", title: "Entry label", help: "Compact direction and verified entry evidence." },
   { key: "entryFillArrow", kind: "marker", title: "Entry final-fill arrow", help: "Last immutable execution completing each entry order." },
   { key: "entryFillLabel", kind: "label", title: "Entry final-fill label", help: "Cumulative quantity, truthful fill state, and execution VWAP." },
   { key: "exitLine", kind: "line", title: "Exit price line", help: "Final exit price across the lifecycle." },
   { key: "exitArrow", kind: "marker", title: "Exit intent arrow", help: "Each durable reduce, take-profit, cover, or exit decision." },
-  { key: "exitLabel", kind: "label", title: "Exit intent label", help: "The strategy-issued exit action at its decision reference price." },
+  { key: "exitLabel", kind: "label", title: "Exit reason label", help: "Verified exit cause; an unknown cause leaves only the marker." },
   { key: "exitFillArrow", kind: "marker", title: "Exit final-fill arrow", help: "Last immutable execution completing each exit order." },
   { key: "exitFillLabel", kind: "label", title: "Exit final-fill label", help: "Cumulative quantity, truthful fill state, execution VWAP, and final realized P&L." },
   { key: "highOfDayLine", kind: "line", title: "Strategy HOD line", help: "HOD recorded at entry, held constant through the position lifecycle. Dashed black by default." },
@@ -3739,24 +3746,25 @@ type StrategyLabelPartDefinition = { help: string; key: StrategyVisualElementKey
 
 const strategyLabelPartDefinitions: Record<StrategyCompositeLabelKey, StrategyLabelPartDefinition[]> = {
   entryLabel: [
-    { key: "entryDirectionPart", title: "Long issued", help: "Long entry intent text." },
-    { key: "entryShortDirectionPart", title: "Short issued", help: "Short entry intent text." },
+    { key: "entryDirectionPart", title: "Long", help: "Long entry direction." },
+    { key: "entryShortDirectionPart", title: "Short", help: "Short entry direction." },
+    { key: "entrySizePart", title: "Quantity", help: "Verified entry quantity when available." },
+    { key: "entryPricePart", title: "Long price", help: "Verified long-entry price." },
+    { key: "entryShortPricePart", title: "Short price", help: "Verified short-entry price." },
   ],
   entryFillLabel: [
     { key: "entryFillSizePart", title: "Quantity", help: "Cumulative filled quantity or filled/requested quantity for terminal partials." },
-    { key: "entryFillStatusPart", title: "Status", help: "Filled or Partial, derived from canonical order state." },
-    { key: "entryFillSeparatorPart", title: "@", help: "Separator before the execution VWAP." },
+    { key: "entryFillStatusPart", title: "Partial status", help: "Shown only for a partial execution." },
     { key: "entryFillPricePart", title: "Long-entry price", help: "Execution VWAP for a long entry order." },
     { key: "entryFillShortPricePart", title: "Short-entry price", help: "Execution VWAP for a short entry order." },
   ],
   exitLabel: [
-    { key: "exitReasonPart", title: "Close long", help: "Long-position exit intent text." },
-    { key: "exitShortReasonPart", title: "Cover short", help: "Short-position exit intent text." },
+    { key: "exitReasonPart", title: "Long exit reason", help: "Verified long-position exit cause." },
+    { key: "exitShortReasonPart", title: "Short exit reason", help: "Verified short-position exit cause." },
   ],
   exitFillLabel: [
     { key: "exitFillSizePart", title: "Quantity", help: "Cumulative filled quantity or filled/requested quantity for terminal partials." },
-    { key: "exitFillStatusPart", title: "Status", help: "Filled or Partial, derived from canonical order state." },
-    { key: "exitFillSeparatorPart", title: "@", help: "Separator before the execution VWAP." },
+    { key: "exitFillStatusPart", title: "Cause / partial", help: "Verified exit cause or partial execution state." },
     { key: "exitFillPricePart", title: "Long-exit price", help: "Execution VWAP when reducing or closing a long." },
     { key: "exitFillShortPricePart", title: "Short-exit price", help: "Execution VWAP when reducing or covering a short." },
     { key: "exitPnlPart", title: "Profit", help: "Positive realized lifecycle P&L on the final closing fill." },
@@ -3923,17 +3931,17 @@ function StrategyCompositeLabelStylePage({
 function StrategyCompositeLabelPreview({ elements, labelKey, settings }: { elements: Record<StrategyVisualElementKey, StrategyPresentationStyleSettings>; labelKey: StrategyCompositeLabelKey; settings: StrategyPresentationStyleSettings }) {
   const palette = readChartPalette();
   const rows: Array<Array<{ key: StrategyVisualElementKey; text: string }>> = labelKey === "entryLabel" ? [
-    [{ key: "entryDirectionPart", text: "Long issued" }],
-    [{ key: "entryShortDirectionPart", text: "Short issued" }],
+    [{ key: "entryDirectionPart", text: "Long" }],
+    [{ key: "entryShortDirectionPart", text: "Short" }],
   ] : labelKey === "entryFillLabel" ? [
-    [{ key: "entryFillSizePart", text: "200" }, { key: "entryFillStatusPart", text: "Filled" }, { key: "entryFillSeparatorPart", text: "@" }, { key: "entryFillPricePart", text: "2.30" }],
-    [{ key: "entryFillSizePart", text: "120/200" }, { key: "entryFillStatusPart", text: "Partial" }, { key: "entryFillSeparatorPart", text: "@" }, { key: "entryFillShortPricePart", text: "2.30" }],
+    [{ key: "entryFillSizePart", text: "200" }, { key: "entryFillPricePart", text: "2.30" }],
+    [{ key: "entryFillSizePart", text: "120/200" }, { key: "entryFillStatusPart", text: "Partial" }, { key: "entryFillShortPricePart", text: "2.30" }],
   ] : labelKey === "exitLabel" ? [
-    [{ key: "exitReasonPart", text: "Exit issued" }],
-    [{ key: "exitShortReasonPart", text: "Cover issued" }],
+    [{ key: "exitReasonPart", text: "Stop hit" }],
+    [{ key: "exitShortReasonPart", text: "Target hit" }],
   ] : [
-    [{ key: "exitFillSizePart", text: "200" }, { key: "exitFillStatusPart", text: "Filled" }, { key: "exitFillSeparatorPart", text: "@" }, { key: "exitFillPricePart", text: "2.42" }, { key: "exitPnlPart", text: "+$24.00" }],
-    [{ key: "exitFillSizePart", text: "120/200" }, { key: "exitFillStatusPart", text: "Partial" }, { key: "exitFillSeparatorPart", text: "@" }, { key: "exitFillShortPricePart", text: "2.42" }, { key: "exitPnlLossPart", text: "−$9.50" }],
+    [{ key: "exitFillStatusPart", text: "Stop hit" }, { key: "exitFillSizePart", text: "200" }, { key: "exitFillPricePart", text: "2.42" }, { key: "exitPnlPart", text: "+$24.00" }],
+    [{ key: "exitFillStatusPart", text: "Target hit" }, { key: "exitFillSizePart", text: "120/200" }, { key: "exitFillShortPricePart", text: "2.42" }, { key: "exitPnlLossPart", text: "−$9.50" }],
   ];
   const borderColor = strategyPresentationColor(settings.borderColor, settings.color || palette.text);
   const containerStyle: CSSProperties = {
@@ -5783,6 +5791,12 @@ function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSer
       color: applyOpacity(signColor(point.value, appearance)),
     }));
   }
+  if (series.colorMode === "candle") {
+    return series.data.map((point) => ({ ...point,
+      color: applyOpacity(point.tone === "buy" ? appearance.upColor
+        : point.tone === "sell" ? appearance.downColor : neutralColor),
+    }));
+  }
   if (series.colorMode === "confidence-sign") {
     return series.data.map(({ tone: _tone, ...point }) => ({
       ...point,
@@ -6387,7 +6401,6 @@ function drawLiveEntryLine(
   sizeBadge.className = "live-entry-size-badge";
   const pieces = [
     { text: Math.abs(liveEntryLine.quantity).toLocaleString(), tone: "quantity" },
-    { text: "Filled", tone: "filled" },
     { text: formatPrice(liveEntryLine.price), tone: "price" },
   ];
   for (const part of pieces) {
@@ -7829,7 +7842,8 @@ function drawTradeAnnotationPrimitiveGeometry(
         if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, entryIntentTime, entryIntentX, entryIntentY, entryArrowColor, elements.connector, settings.connectorThreshold);
         drawCanvasTradeArrow(context, entryIntentX, entryIntentY, entryArrowColor, "entry", annotation.selected === true, elements.entryArrow);
       }
-      if (elements.entryLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry issued"), entryIntentX, entryIntentY + elements.entryArrow.markerSize + 7, entryLabelColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, elements.entryLabel, labelLayout, elements.connector, annotation.entryLabelParts, entryLabelPartSettings);
+      const entryLabel = compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "");
+      if (elements.entryLabel.visible && entryLabel) drawCanvasTradeLabel(context, entryLabel, entryIntentX, entryIntentY + elements.entryArrow.markerSize + 7, entryLabelColor, chartBackground, annotation.entryLabelSide ?? "left", width, height, elements.entryLabel, labelLayout, elements.connector, annotation.entryLabelParts, entryLabelPartSettings);
     }
     annotation.exitIntents?.forEach((intent) => {
       const intentX = xForAnnotationTime(chart, intent.time, timeline);
@@ -7839,7 +7853,8 @@ function drawTradeAnnotationPrimitiveGeometry(
         if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, intent.time, intentX, intentY, exitArrowColor, elements.connector, settings.connectorThreshold);
         drawCanvasTradeArrow(context, intentX, intentY, exitArrowColor, "exit", annotation.selected === true, elements.exitArrow);
       }
-      if (elements.exitLabel.visible) drawCanvasTradeLabel(context, compactTradeLabel(intent.labelParts, intent.label, "Exit issued"), intentX, intentY - elements.exitLabel.labelSize - elements.exitArrow.markerSize - 8, exitLabelColor, chartBackground, "right", width, height, elements.exitLabel, labelLayout, elements.connector, intent.labelParts, exitLabelPartSettings);
+      const intentLabel = compactTradeLabel(intent.labelParts, intent.label, "");
+      if (elements.exitLabel.visible && intentLabel) drawCanvasTradeLabel(context, intentLabel, intentX, intentY - elements.exitLabel.labelSize - elements.exitArrow.markerSize - 8, exitLabelColor, chartBackground, "right", width, height, elements.exitLabel, labelLayout, elements.connector, intent.labelParts, exitLabelPartSettings);
       const exitGuideSpan = clippedTradeSpan(intentX, exitX, width) ?? span;
       if (elements.levelLine.visible || elements.levelLabel.visible) {
         intent.supportPrices?.slice(0, 3).forEach((price, index) => {
@@ -7865,7 +7880,8 @@ function drawTradeAnnotationPrimitiveGeometry(
         if (elements.connector.visible) drawCanvasCandleConnector(context, priceSeries, candles, fill.time, x, y, arrowColor, elements.connector, settings.connectorThreshold);
         drawCanvasTradeArrow(context, x, y, arrowColor, fillKind, false, arrowSettings);
       }
-      if (labelSettings.visible) drawCanvasTradeLabel(context, compactTradeLabel(fill.labelParts, fill.label, "Filled"), x, fillKind === "entry" ? y + arrowSettings.markerSize + 7 : y - labelSettings.labelSize - arrowSettings.markerSize - 8, labelColor, chartBackground, fillKind === "entry" ? "left" : "right", width, height, labelSettings, labelLayout, elements.connector, fill.labelParts, fillKind === "entry" ? entryFillLabelPartSettings : exitFillLabelPartSettings);
+      const fillLabel = compactTradeLabel(fill.labelParts, fill.label, "");
+      if (labelSettings.visible && fillLabel) drawCanvasTradeLabel(context, fillLabel, x, fillKind === "entry" ? y + arrowSettings.markerSize + 7 : y - labelSettings.labelSize - arrowSettings.markerSize - 8, labelColor, chartBackground, fillKind === "entry" ? "left" : "right", width, height, labelSettings, labelLayout, elements.connector, fill.labelParts, fillKind === "entry" ? entryFillLabelPartSettings : exitFillLabelPartSettings);
     };
     annotation.entryFills?.forEach((fill) => drawFinalFill(fill, "entry"));
     annotation.exitFills?.forEach((fill) => drawFinalFill(fill, "exit"));
@@ -8075,13 +8091,13 @@ function drawCanvasPositionAdjustment(
     context,
     compactTradeLabel(fill.labelParts, fill.label, {
       add: "Add",
-      entry_fill: "Filled",
-      exit_fill: "Filled",
-      exit_intent: "Exit issued",
+      entry_fill: "",
+      exit_fill: "",
+      exit_intent: "",
       profit_target: "Target",
       protective_stop: "Stop",
       trailing_stop: "Trail",
-      position_exit: "Exit",
+      position_exit: "",
       stop_change: "SL",
       target_change: "TP",
       protection_repair: "Reconcile",

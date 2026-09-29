@@ -16,12 +16,12 @@ from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 from src.trading_runtime.arte_journal_reader import load_typed_event_page
 from src.trading_runtime.arte_journal_writer import (
-    _CONTRACTS, _literal, _rows, load_committed_commission_page,
+    _CONTRACTS, _committed_batch_filter, _literal, _rows, load_committed_commission_page,
     load_committed_execution_page, load_committed_order_command_page,
     load_committed_order_transition_page, load_typed_run_context,
 )
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
-from src.backend.backtest_terminal_v2_fence import _verify_rows
+from src.backend.backtest_terminal_v2_fence import _verify_rows, _verify_v1_rows
 from src.backend.typed_backtest_review_core import (
     AuditedSessionCache, _cache_key, _client_scope, _head_matches,
 )
@@ -270,6 +270,69 @@ def _complete_detail_rows(loader, client, prefix, *, maximum: int = 100_000) -> 
         after = next_after
 
 
+def _saved_protection_events(client, prefix, *, maximum: int = 20_000) -> list[dict]:
+    """Read only committed, sealed protection facts for chart presentation.
+
+    Unlike a whole-journal scan, this projects the normalized protection family
+    directly. It is never a broker/recovery authority and never writes ARTE.
+    """
+    from src.backend.backtest_protection_change_v3 import recover_protection_change_payload
+
+    def fetch(table: str, predicate: str, bound: int) -> tuple[dict, ...]:
+        columns = ",".join(name for name, _ in _CONTRACTS[table].columns)
+        raw = _rows(client, f"SELECT {columns} FROM arte.{table} "
+                    f"WHERE run_id={_literal(prefix.run_id)} {predicate} "
+                    f"{_committed_batch_filter(prefix)}"
+                    f"LIMIT {bound + 1} FORMAT JSONEachRow")
+        if len(raw) > bound:
+            raise RuntimeError("Saved chart protection evidence exceeds its bound")
+        return _verify_v1_rows(table, tuple(raw))
+
+    details = fetch("trading_protection_change_v3", "", maximum)
+    if not details:
+        return []
+    child_count = sum(int(row["entry_order_count"]) for row in details)
+    if child_count > maximum * 16:
+        raise RuntimeError("Saved chart protection child evidence exceeds its bound")
+    children: list[dict] = []
+    parents: list[dict] = []
+    # Bound the SQL text as well as returned rows; a long all-ticker session
+    # must not create a single unbounded IN expression on the read path.
+    for start in range(0, len(details), 500):
+        group = details[start:start + 500]
+        ids = ",".join(f"toUUID({_literal(str(UUID(row['record_id'])))})" for row in group)
+        predicate = f"AND record_id IN ({ids})"
+        children.extend(fetch("trading_protection_entry_order_v3", predicate,
+                              sum(int(row["entry_order_count"]) for row in group)))
+        parents.extend(fetch("trading_event_v1", predicate, len(group)))
+    if len(parents) != len(details) or len(children) != child_count:
+        raise RuntimeError("Saved chart protection evidence is incomplete")
+    parent_by_id = {str(UUID(row["record_id"])): row for row in parents}
+    if len(parent_by_id) != len(parents):
+        raise RuntimeError("Saved chart protection parent repeats")
+    children_by_id: dict[str, list[dict]] = {}
+    for row in children:
+        children_by_id.setdefault(str(UUID(row["record_id"])), []).append(row)
+    events = []
+    for detail in details:
+        identity = str(UUID(detail["record_id"]))
+        parent = parent_by_id.pop(identity, None)
+        if parent is None or int(parent["sequence"]) > prefix.last_sequence:
+            raise RuntimeError("Saved chart protection parent is uncommitted")
+        ordered = sorted(children_by_id.pop(identity, ()), key=lambda row: int(row["ordinal"]))
+        payload = recover_protection_change_payload(parent, detail, ordered)
+        if (detail["batch_id"] != parent["batch_id"]
+                or detail["event_month"] != parent["event_month"]
+                or detail["account_id"] != parent["account_id"]):
+            raise RuntimeError("Saved chart protection identity differs")
+        events.append({**payload, "account_id": parent["account_id"],
+                       "event_time": _utc_timestamp(parent["event_time"]).isoformat(),
+                       "sequence": int(parent["sequence"])})
+    if parent_by_id or children_by_id:
+        raise RuntimeError("Saved chart protection has orphan evidence")
+    return events
+
+
 def load_v4_performance_report(client, run_id: str, *,
                                cache: AuditedSessionCache | None = None) -> dict:
     """Derive the existing flat-to-flat report from complete normalized facts.
@@ -282,6 +345,7 @@ def load_v4_performance_report(client, run_id: str, *,
         build_performance_report, derive_position_lifecycles,
         derive_trade_episodes,
     )
+    from src.trading_runtime.protection_timeline import attach_protection_timelines
 
     try:
         normalized = str(UUID(run_id))
@@ -354,6 +418,54 @@ def load_v4_performance_report(client, run_id: str, *,
         raise RuntimeError("Saved Canvas terminal head changed during performance projection")
     episodes = derive_trade_episodes(executions)
     report = build_performance_report(episodes, executions, ())
+    lifecycles = derive_position_lifecycles(executions, ())
+    protection_events = _saved_protection_events(client, prefix)
+    # Opening-order identities, not ticker/price coincidence, assign broker
+    # protection revisions to a lifecycle. Unmatched events remain journal
+    # evidence but cannot be drawn as position-specific rails.
+    attach_protection_timelines(
+        lifecycles, protection_events, executions, datetime.max.replace(tzinfo=UTC))
+    executions_by_id = {execution.execution_id: execution for execution in executions}
+    for lifecycle in lifecycles:
+        # A stop/target label requires the exact closing broker order to have
+        # been effective before its fill. Price proximity is never evidence.
+        closing_at = lifecycle.get("closed_at")
+        if not closing_at or lifecycle.get("exit_reason"):
+            continue
+        closing_time = _utc_timestamp(closing_at)
+        opening_side = "BUY" if lifecycle["side"] == "LONG" else "SELL"
+        exit_executions = [executions_by_id[str(identity)] for identity in lifecycle["execution_ids"]
+                           if str(identity) in executions_by_id
+                           and executions_by_id[str(identity)].side != opening_side]
+        terminal = [execution for execution in exit_executions
+                    if execution.source_event_time == closing_time]
+        if not terminal:
+            continue
+        kinds = set()
+        first_fill_by_order = {}
+        for execution in exit_executions:
+            previous = first_fill_by_order.get(execution.broker_order_id)
+            if previous is None or execution.journal_sequence < previous.journal_sequence:
+                first_fill_by_order[execution.broker_order_id] = execution
+        for order_id in {execution.broker_order_id for execution in terminal}:
+            execution = first_fill_by_order[order_id]
+            states = [event for event in lifecycle["protection_timeline"]
+                      if event["phase"] == "effective"
+                      and event["order_id"] == execution.broker_order_id
+                      and (datetime.fromisoformat(event["event_time"]), int(event["sequence"]))
+                      <= (execution.source_event_time, execution.journal_sequence)]
+            if not states:
+                break
+            latest = max(states, key=lambda event: (event["event_time"], event["sequence"]))
+            if not latest["active"]:
+                break
+            kinds.add(latest["kind"])
+        else:
+            if len(kinds) == 1:
+                lifecycle["presentation_exit_reason"] = (
+                    "stop_hit" if kinds == {"stop"} else "target_hit")
+    if not _head_matches(client, normalized, prefix):
+        raise RuntimeError("Saved Canvas terminal head changed during chart projection")
     # No order lifecycle projection has been asserted yet. Do not turn an
     # absent order reader into a false zero order count or rejection count.
     report["execution"]["order_count"] = None
@@ -363,7 +475,7 @@ def load_v4_performance_report(client, run_id: str, *,
         "run_id": normalized,
         "verified_sequence": prefix.last_sequence,
         "report": report,
-        "position_lifecycles": derive_position_lifecycles(executions, ()),
+        "position_lifecycles": lifecycles,
         "fill_count": len(executions),
         "fee_count": len(fee_by_execution),
     }

@@ -9,6 +9,7 @@ import { usePollingTask } from "../../app/hooks/usePollingTask";
 import { api } from "../../api/client";
 import { CANVAS_SETTINGS_STORAGE_KEY, type CanvasChartTimeframe, type CanvasLinkContext } from "../../app/canvasWorkspace";
 import { ChartPanel, type ChartAppearanceDefaults, type ChartPayload, type LiveEntryLine } from "../../app/components/ChartPanel";
+import { strategyActionLabel, strategyExitReason } from "../../app/strategyPresentationContract";
 import { stockSplitTimelineEvents, useStockSplitEvents } from "../../app/components/chartSplitEvents";
 import {
   DEFAULT_STRATEGY_CHART_PRESENTATION,
@@ -336,7 +337,7 @@ export function ChartPreview({
   );
   const targetQuantity = Number(activeEntryOrder?.total_quantity || 0);
   const positionQuantityLabel = targetQuantity > Math.abs(quantity)
-    ? `${formatQuantity(Math.abs(quantity))} filled / ${formatQuantity(targetQuantity)} target`
+    ? `${formatQuantity(Math.abs(quantity))}/${formatQuantity(targetQuantity)}`
     : formatQuantity(Math.abs(quantity));
   // Broker protection is available immediately, independently of the slower
   // lifecycle/journal enrichment request. Never hide a working stop or target
@@ -353,9 +354,8 @@ export function ChartPreview({
     stopPrice: stops.length ? (quantity > 0 ? Math.max(...stops) : Math.min(...stops)) : undefined,
     targetPrices: targets,
     labelParts: [
-      { text: "Entry", tone: "label" as const },
+      { text: quantity < 0 ? "Short" : "Long", tone: quantity < 0 ? "short" as const : "long" as const },
       { text: positionQuantityLabel, tone: "size" as const },
-      { text: "@", tone: "separator" as const },
       { text: money(averagePrice), tone: quantity > 0 ? "priceLong" as const : "priceShort" as const },
     ],
     pnl: Number(activePosition.unrealized_pnl || 0),
@@ -530,7 +530,9 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     const plannedStopPrice = positiveNumber(decisionValues.initial_stop ?? decisionValues.invalidation_price);
     const planStartTime = entryIntentTime;
     const quantity = Math.abs(Number(row.quantity || 0));
-    const pnl = Number(row.net_pnl || row.gross_pnl || 0);
+    const recordedPnl = row.net_pnl ?? row.gross_pnl;
+    const pnl = recordedPnl === undefined || recordedPnl === null || recordedPnl === ""
+      ? undefined : Number(recordedPnl);
     const fills: NonNullable<NonNullable<ChartPayload["trade_annotations"]>[number]["fills"]> = [];
     let activeStop = plannedStopPrice;
     let activeTarget = positiveNumber(selectedTargets[0] ?? (Array.isArray(decisionValues.profit_targets) ? decisionValues.profit_targets[0] : undefined)) ?? plannedTargetPrices[0];
@@ -544,14 +546,14 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       const nextStop = positiveNumber(values.active_stop ?? values.invalidation_price);
       if (nextStop !== undefined && nextStop !== activeStop) {
         activeStop = nextStop;
-        fills.push({ kind: "stop_change", label: `SL@${compactPrice(nextStop)}`, price: nextStop, side: "SELL", time });
+        fills.push({ kind: "stop_change", label: `SL ${compactPrice(nextStop)}`, price: nextStop, side: "SELL", time });
       }
       const management = (event.management_event as PreviewRow | undefined) ?? {};
       const operation = String(management.operation ?? event.operation ?? "");
       const nextTarget = positiveNumber(values.profit_target ?? management.target_price);
       if ((operation === "profit_target_replaced" || event.action === "replace_profit_target") && nextTarget !== undefined && nextTarget !== activeTarget) {
         activeTarget = nextTarget;
-        fills.push({ kind: "target_change", label: `TP@${compactPrice(nextTarget)}`, price: nextTarget, side: "SELL", time });
+        fills.push({ kind: "target_change", label: `TP ${compactPrice(nextTarget)}`, price: nextTarget, side: "SELL", time });
       }
       const managementActions = Array.isArray(management.actions) ? management.actions as PreviewRow[] : [];
       managementActions.forEach((managementAction) => {
@@ -590,27 +592,18 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
     fills.sort((left, right) => left.time - right.time);
     const finalFillAnnotation = (action: PositionExecutionAction, fillSide: "entry" | "exit", realizedPnl?: number) => {
       const partial = action.completion === "partial";
-      const quantityText = partial && action.totalQuantity && action.totalQuantity > action.quantity
-        ? `${formatQuantity(action.quantity)}/${formatQuantity(action.totalQuantity)}`
-        : formatQuantity(action.quantity);
-      const statusText = partial ? "Partial" : "Filled";
-      const exitReason = fillSide === "exit" ? shortExitReason(action.exitReason
-        || (["profit_target", "protective_stop", "trailing_stop", "protective_exit"].includes(action.executionRole) ? action.executionRole : "")) : "";
-      const priceTone = fillSide === "entry"
-        ? side === "SHORT" ? "priceShort" as const : "priceLong" as const
-        : side === "SHORT" ? "exitPriceShort" as const : "exitPriceLong" as const;
-      const pnlText = realizedPnl === undefined ? "" : signedMoneyShort(realizedPnl);
+      const exitReasonCode = fillSide === "exit" ? action.exitReason
+        || (["profit_target", "protective_stop", "trailing_stop", "protective_exit"].includes(action.executionRole) ? action.executionRole : "") : "";
+      const labelParts = strategyActionLabel(fillSide === "entry"
+        ? { kind: "entry_fill", side: side === "SHORT" ? "SHORT" : "LONG",
+          quantity: action.quantity, requestedQuantity: action.totalQuantity,
+          price: action.price, partial }
+        : { kind: "exit_fill", side: side === "SHORT" ? "SHORT" : "LONG",
+          quantity: action.quantity, requestedQuantity: action.totalQuantity,
+          price: action.price, partial, reason: exitReasonCode, pnl: realizedPnl });
       return {
         kind: fillSide === "entry" ? "entry_fill" as const : "exit_fill" as const,
-        label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}${exitReason ? ` · ${exitReason}` : ""}${pnlText ? ` · ${pnlText}` : ""}`,
-        labelParts: [
-          { text: quantityText, tone: "size" as const },
-          { text: statusText, tone: "reason" as const },
-          { text: "@", tone: "separator" as const },
-          { text: compactPrice(action.price), tone: priceTone },
-          ...(exitReason ? [{ text: "·", tone: "separator" as const }, { text: exitReason, tone: "reason" as const }] : []),
-          ...(pnlText ? [{ text: "·", tone: "separator" as const }, { text: pnlText, tone: realizedPnl! >= 0 ? "pnlWin" as const : "pnlLoss" as const }] : []),
-        ],
+        labelParts,
         orderId: action.orderId,
         price: action.price,
         quantity: action.quantity,
@@ -630,14 +623,14 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       .filter(({ row: event, time }) => String(event.event_type || "") === "decision" && exitIntentActions.has(String(event.action || "")) && time >= entryTime && time <= Math.min(endTime, asOfTime))
       .map(({ row: event, time }) => {
         // Use the issued decision, never the position's later filled-exit reason.
-        const reason = shortExitReason(String(event.reason_code || event.reason || ""));
-        const label = exitIntentLabel(String(event.action || ""), side);
+        const reasonCode = String(event.reason_code || event.reason || "");
+        const labelParts = reasonCode ? strategyActionLabel({ kind: "exit",
+          side: side === "SHORT" ? "SHORT" : "LONG", reason: reasonCode }) : [];
         const exitPlan = (event.chart_plan as PreviewRow | undefined) ?? (event.gate_snapshot as PreviewRow | undefined) ?? {};
         const exitStructure = (exitPlan.structural_level_snapshot as PreviewRow | undefined) ?? {};
         return {
           kind: "exit_intent" as const,
-          label: `${label} issued · ${reason}`,
-          labelParts: [{ text: label, tone: side === "SHORT" ? "exitShort" as const : "exitLong" as const }, { text: "issued", tone: "label" as const }, { text: "·", tone: "separator" as const }, { text: reason, tone: "reason" as const }],
+          labelParts,
           price: decisionReferencePrice(event) ?? Number(exitPrice ?? entryPrice),
           side: openingSide === "BUY" ? "SELL" as const : "BUY" as const,
           time,
@@ -646,15 +639,13 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         };
       });
     return [{
-      color: pnl >= 0 ? "var(--success)" : "var(--danger)",
+      color: pnl === undefined || !Number.isFinite(pnl) ? "var(--muted-foreground)" : pnl >= 0 ? "var(--success)" : "var(--danger)",
       entryColor: side === "SHORT" ? "#dc2626" : "#16a34a",
       entryFills,
       entryIntentPrice,
       entryIntentTime,
-      entryLabel: `${side === "SHORT" ? "Short" : "Long"} issued${gateEvidenceText ? ` · ${gateEvidenceText}` : ""}`,
       entryLabelParts: [
-        { text: side === "SHORT" ? "Short" : "Long", tone: side === "SHORT" ? "short" : "long" },
-        { text: "issued", tone: "label" },
+        ...strategyActionLabel({ kind: "entry", side: side === "SHORT" ? "SHORT" : "LONG" }),
         ...(gateEvidenceText ? [{ text: gateEvidenceText, tone: "label" as const }] : []),
       ],
       entryPrice,
@@ -663,7 +654,8 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
       exitColor: status === "closed" ? side === "SHORT" ? "#16a34a" : "#dc2626" : undefined,
       exitFills,
       exitIntents,
-      exitLabelColor: status === "closed" ? pnl > 0 ? "#16A34A" : pnl < 0 ? "#DC2626" : "#C2410C" : undefined,
+      exitLabelColor: status === "closed" && pnl !== undefined && Number.isFinite(pnl)
+        ? pnl > 0 ? "#16A34A" : pnl < 0 ? "#DC2626" : "#C2410C" : undefined,
       exitPrice,
       exitTime,
       fills,
@@ -754,16 +746,6 @@ function compactPrice(value: number): string {
   return value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function positionExitLabel(exitReason: string, fallbackKind: string): string {
-  const reason = exitReason.trim().toLowerCase();
-  if (reason.includes("macd")) return "MACD exit";
-  if (reason.includes("vwap")) return "VWAP exit";
-  if (reason.includes("stop")) return "Stop exit";
-  if (reason.includes("target") || fallbackKind === "profit_target") return "Target filled";
-  if (reason.includes("breakout") || reason.includes("structure")) return "Structure exit";
-  return "Exit";
-}
-
 type PositionExecutionRole = "entry" | "managed_exit" | "profit_target" | "protective_stop" | "trailing_stop" | "protective_exit" | "";
 type PositionExecutionAction = { completion: "filled" | "partial" | "unknown"; executionRole: PositionExecutionRole; exitReason: string; firstTime: number; orderId: string; price: number; quantity: number; side: "BUY" | "SELL"; time: number; totalQuantity?: number };
 
@@ -811,66 +793,7 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
 }
 
 export function shortExitReason(reason: string): string {
-  const labels: Record<string, string> = {
-    recent_reentry_resistance_stop: "Re-entry resistance stop hit",
-    supported_swing_low_stop: "Supported swing low stop hit",
-    below_vwap_support_stop: "Support below VWAP stop hit",
-    one_percent_entry_stop: "1% entry stop hit",
-    five_percent_entry_stop: "5% entry stop hit",
-    three_resistance_step_stop: "Three-resistance trailing stop hit",
-    momentum_target_5x: "Target filled · 5× frozen gap",
-    momentum_target_8x: "Target filled · 8× frozen gap",
-    momentum_target_10x: "Target filled · 10× frozen gap",
-    protective_stop: "Stop hit", trailing_stop: "Trailing stop",
-    macd_episode_ended: "MACD ended", session_flatten: "Session end",
-    luld_buffer_reached: "LULD buffer", manual_exit: "Manual exit",
-    red_close_below_attempt_open: "Failed retest",
-    protective_swing_failed: "Swing low failed",
-    confirmed_structural_reversal: "Structure reversed",
-    resistance_rejection_failed_recovery: "Rejection failed",
-    exit_pending: "Exit pending", profit_target: "Target reached",
-  };
-  const key = reason.trim().toLowerCase();
-  const target = /^momentum_target_(\d+)x$/.exec(key);
-  if (target) return `Target filled · ${target[1]}× frozen gap`;
-  return labels[key] ?? (key ? key.replaceAll("_", " ") : "Reason unavailable");
-}
-
-function exitIntentLabel(action: string, positionSide: string): string {
-  if (action === "take_profit") return "Take profit";
-  if (action === "reduce_long" || action === "reduce_short") return "Reduce";
-  if (action === "cover") return "Cover";
-  return positionSide === "SHORT" ? "Cover" : "Exit";
-}
-
-function normalizedExecutionRole(
-  role: PositionExecutionRole,
-  price: number,
-  entryPrice: number,
-  positionSide: string,
-): "profit_target" | "protective_stop" | "trailing_stop" | "position_exit" {
-  if (role === "profit_target" || role === "protective_stop" || role === "trailing_stop") return role;
-  const favorable = positionSide === "SHORT" ? price < entryPrice : price > entryPrice;
-  return favorable ? "profit_target" : "position_exit";
-}
-
-function positionActionLabel(
-  kind: "add" | "profit_target" | "protective_stop" | "trailing_stop" | "position_exit",
-  quantity: number,
-  price: number,
-): string {
-  const name = {
-    add: "A",
-    profit_target: "TP",
-    protective_stop: "SL",
-    trailing_stop: "TSL",
-    position_exit: "X",
-  }[kind];
-  return `${name}${formatQuantity(quantity)}@${compactPrice(price)}`;
-}
-
-function signedMoneyShort(value: number): string {
-  return `${value >= 0 ? "+" : "−"}$${Math.abs(value).toFixed(2)}`;
+  return strategyExitReason(reason);
 }
 
 function durationSeconds(value: string): number {

@@ -126,7 +126,8 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
 
   const payload = useMemo<ChartPayload>(() => {
     const series = (column: (typeof MACD)[number], label: string, color: string) => ({
-      column, displayItemId: "saved.closed_macd", label, color, style: "line" as const, lineWidth: 1,
+      column, displayItemId: "saved.closed_macd", label, color,
+      style: column === "macd_histogram" ? "histogram" as const : "line" as const, lineWidth: 1,
       paneKey: "macd", data: indicators.filter(row => typeof row[column] === "number")
         .map(row => ({ time: Date.parse(row.bar_start) / 1000, value: row[column]! })),
     });

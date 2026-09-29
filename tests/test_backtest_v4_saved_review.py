@@ -246,9 +246,9 @@ def test_v4_performance_derives_net_trade_from_typed_fills_and_final_fees(monkey
             "signal_price": None, "arrival_midpoint": None,
             "planned_risk": None}
     fills = (
-        {**base, "sequence": 1, "execution_id": "buy", "side": "B",
+        {**base, "sequence": 1, "execution_id": "buy", "side": "B", "broker_order_id": "entry-1",
          "quantity": "10", "price": "2", "source_event_time": "2026-08-18 08:00:00.000000000"},
-        {**base, "sequence": 3, "execution_id": "sell", "side": "S",
+        {**base, "sequence": 3, "execution_id": "sell", "side": "S", "broker_order_id": "exit-1",
          "quantity": "10", "price": "3", "source_event_time": "2026-08-18 08:01:00.000000000"},
     )
     fees = (
@@ -259,12 +259,20 @@ def test_v4_performance_derives_net_trade_from_typed_fills_and_final_fees(monkey
     )
     monkeypatch.setattr(review, "load_committed_execution_page", lambda *_a, **_k: fills)
     monkeypatch.setattr(review, "load_committed_commission_page", lambda *_a, **_k: fees)
+    monkeypatch.setattr(review, "_saved_protection_events", lambda *_a: [{
+        "sequence": 2, "event_time": "2026-08-18T08:00:30+00:00",
+        "account_id": "SIM-01-A", "entry_order_ids": ["entry-1"],
+        "phase": "effective", "kind": "stop", "order_id": "exit-1",
+        "price": 1.9, "active": True,
+    }])
     monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
     result = review.load_v4_performance_report(Client(), RUN)
     assert result["fill_count"] == result["fee_count"] == 2
     assert float(result["report"]["summary"]["net_pnl"]) == 8.0
     assert result["report"]["summary"]["episode_count"] == 1
     assert result["report"]["execution"]["order_count"] is None
+    assert result["position_lifecycles"][0]["presentation_exit_reason"] == "stop_hit"
+    assert len(result["position_lifecycles"][0]["protection_timeline"]) == 1
 
 
 def test_v4_performance_orders_opposing_same_timestamp_fills_by_journal_sequence(monkeypatch):
@@ -293,6 +301,7 @@ def test_v4_performance_orders_opposing_same_timestamp_fills_by_journal_sequence
     )
     monkeypatch.setattr(review, "load_committed_execution_page", lambda *_a, **_k: fills)
     monkeypatch.setattr(review, "load_committed_commission_page", lambda *_a, **_k: fees)
+    monkeypatch.setattr(review, "_saved_protection_events", lambda *_a: [])
     monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
     result = review.load_v4_performance_report(Client(), RUN)
     assert result["fill_count"] == 2
