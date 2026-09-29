@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import src.backend.backtest_market_data as market_data
+from src.backend import replay_run_service as replay_service
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, CompletedBoundaryValidator, ExecutionInterval,
@@ -1092,7 +1093,9 @@ def test_fixed_journal_starts_background_fence_before_terminal_session():
     controller._publish = AsyncMock()
     controller._save_restart_checkpoint_responsive = AsyncMock()
     controller._restart_checkpoint_interval_events = lambda: None
-    for index in range(1023):
+    threshold = replay_service.FIXED_JOURNAL_FLUSH_RECORDS
+    assert 1_024 <= threshold <= 4_096
+    for index in range(threshold - 1):
         controller._journal.append(
             run_id=RUN, category="test", entity_type="frame",
             entity_id=f"frame-{index}", event_time=at, payload={})
@@ -1100,7 +1103,7 @@ def test_fixed_journal_starts_background_fence_before_terminal_session():
     controller._save_restart_checkpoint_responsive.assert_not_awaited()
     controller._journal.append(
         run_id=RUN, category="test", entity_type="frame",
-        entity_id="frame-1023", event_time=at, payload={})
+        entity_id=f"frame-{threshold - 1}", event_time=at, payload={})
     asyncio.run(controller._after_event(at))
     controller._save_restart_checkpoint_responsive.assert_awaited_once_with(
         at, nonblocking_fixed=True)
