@@ -1026,7 +1026,8 @@ class TradingRuntime:
                     != assignment_id):
                 raise RuntimeError(
                     "Strategy 1 Portfolio approval lost its normalized assignment")
-            if getattr(self.portfolio, "_typed_recovery", False):
+            if (getattr(self.portfolio, "_typed_recovery", False)
+                    and not getattr(self.portfolio, "_typed_backtest_recovery", False)):
                 raise RuntimeError(
                     "Typed portfolio live order submission remains disabled until "
                     "all state transitions use verified typed receipts")
@@ -1491,7 +1492,8 @@ class TradingRuntime:
     async def canonical_snapshot(self, *, as_of: datetime | None = None):
         """Return the freshest canonical broker projection for UI and recovery consumers."""
         if self._canonical_session is not None:
-            if getattr(self.portfolio, "_typed_recovery", False):
+            if (getattr(self.portfolio, "_typed_recovery", False)
+                    and not getattr(self.portfolio, "_typed_backtest_recovery", False)):
                 raise RuntimeError("Typed portfolio canonical broker sync is not wired")
             await self._canonical_session.reconcile()
             snapshot = self._canonical_session.projector.snapshot()
@@ -1506,7 +1508,8 @@ class TradingRuntime:
     async def _refresh_portfolio_from_broker(self) -> None:
         async with self._portfolio_sync_lock:
             if self._canonical_session is not None:
-                if getattr(self.portfolio, "_typed_recovery", False):
+                if (getattr(self.portfolio, "_typed_recovery", False)
+                        and not getattr(self.portfolio, "_typed_backtest_recovery", False)):
                     raise RuntimeError("Typed portfolio canonical broker sync is not wired")
                 await self._canonical_session.reconcile()
                 self.portfolio.synchronize_canonical(

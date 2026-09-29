@@ -15,6 +15,8 @@ from research.rl_trading.v1.features import SECONDS
 from research.rl_trading.v2.build_data import execution_arrays
 from research.rl_trading.v2.estimated_luld import reference_series
 
+VERSION = 'rl-trading-v5-arte-next-open-grid-v1'
+
 
 def project_certified_seconds(bars: pl.DataFrame, prior_close: float) -> dict[str, np.ndarray]:
     """Vectorize one pinned listing into [57_601] completed and arrival arrays.

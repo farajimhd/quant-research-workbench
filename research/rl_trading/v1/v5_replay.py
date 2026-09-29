@@ -55,6 +55,7 @@ class Intent:
     listing: int
     side: int  # +1 BUY or -1 full-position SELL
     cash_fraction: float = 0.  # fraction of remaining cash for BUY
+    kind: str = 'model'  # model or terminal liquidation
 
 
 @dataclass
@@ -125,7 +126,8 @@ class ReplayAccount:
         self.order_trace.append(dict(ticker=self.grid.tickers[intent.listing],
             side='buy' if intent.side == 1 else 'sell', decision_second=decision,
             arrival_second=arrival, requested_shares=requested, filled_shares=0,
-            fill_price=None, fee=0., slippage_ratio=None, status='unfilled',
+            fill_price=None, fee=0., cash_before=self.cash,
+            slippage_ratio=None, status='unfilled', kind=intent.kind,
             reason=reason))
 
     def _execute(self, intent: Intent, decision: int, arrival: int):
@@ -187,6 +189,7 @@ class ReplayAccount:
                 self._trace_unfilled(intent, decision, arrival, requested,
                                      'estimated_band_blocks_fill')
                 return
+        cash_before = self.cash
         if intent.side == 1:
             self.cash -= quantity*price+fee
             self.positions[listing] = Position(listing, quantity, price, fee, arrival)
@@ -203,7 +206,7 @@ class ReplayAccount:
                 shares=quantity, entry_price=position.entry_price,
                 exit_price=price, entry_fee=entry_fee, exit_fee=fee,
                 gross_pnl=quantity*(price-position.entry_price), net_pnl=pnl,
-                exit_kind='model_sell'))
+                exit_kind=('terminal' if intent.kind == 'terminal' else 'model_sell')))
             if position.shares == 0:
                 del self.positions[listing]
         self.fees += fee
@@ -215,7 +218,8 @@ class ReplayAccount:
             side='buy' if intent.side == 1 else 'sell', decision_second=decision,
             arrival_second=arrival, requested_shares=requested,
             filled_shares=quantity, fill_price=price, fee=fee,
-            fee_components=pieces, slippage_ratio=slip,
+            fee_components=pieces, cash_before=cash_before,
+            slippage_ratio=slip, kind=intent.kind,
             status='filled' if quantity == requested else 'partial', reason=None))
 
     def advance(self, intents: list[Intent]):
@@ -226,6 +230,8 @@ class ReplayAccount:
         sold = set()
         for intent in intents:
             if (intent.side not in (-1, 1) or
+                    intent.kind not in ('model', 'terminal') or
+                    (intent.side == 1 and intent.kind != 'model') or
                     not 0 <= intent.listing < len(self.grid.tickers) or
                     not math.isfinite(intent.cash_fraction) or
                     not 0 <= intent.cash_fraction <= 1 or
@@ -287,6 +293,9 @@ class ReplayAccount:
             partial_orders=sum(row['status'] == 'partial' for row in self.order_trace),
             unfilled_orders=sum(row['status'] == 'unfilled' for row in self.order_trace),
             completed_position_rows=len(self.position_ledger),
+            terminal_sell_fills=sum(row['side'] == 'sell' and
+                row['kind'] == 'terminal' and row['filled_shares'] > 0
+                for row in self.order_trace),
             max_open_positions=self.max_open_positions,
             open_positions=len(self.positions),
             share_weighted_holding_seconds=(sum(row['shares']*row['holding_seconds']

@@ -23,14 +23,14 @@ from research.rl_trading.v1 import arte_source
 from research.rl_trading.v1.arte_sql import ArteReader
 from research.rl_trading.v1.common import digest, exclusive, file_hash
 from research.rl_trading.v1.features import SECONDS
-from research.rl_trading.v1.v5_execution_binding import project_certified_seconds
+from research.rl_trading.v1.v5_execution_binding import (
+    VERSION, project_certified_seconds)
 from research.rl_trading.v1.v5_feature_binding import bind_existing_features
 from research.rl_trading.v2.build_data import (read_execution_bars,
     read_prior_close, verify_execution_source)
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-v5-arte-next-open-grid-v1'
 ARRAYS = dict(close=np.float32, next_open=np.float32, volume=np.float32,
               fresh=np.bool_, estimated_reference=np.float32,
               prior_close=np.float32)
