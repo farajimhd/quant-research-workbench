@@ -35,3 +35,9 @@ def test_campaign_orders_stages_and_never_opens_sealed_day(tmp_path, monkeypatch
     assert calls[2][1][calls[2][1].index('--previous-root') + 1] == (
         roots[str(previous)])
     assert '2026-08-26' not in json.dumps(state)
+    calls.clear()
+    resumed = campaign.run_available(manifest, output, early=manifest,
+        late=manifest, ledger=manifest, allocation_roots={},
+        done=(str(first),))
+    assert resumed == state
+    assert calls == []

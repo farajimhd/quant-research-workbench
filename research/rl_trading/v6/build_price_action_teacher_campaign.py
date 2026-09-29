@@ -25,15 +25,18 @@ VERSION = 'rl-trading-v6-price-action-teacher-campaign-1'
 
 def run_available(source_manifest: Path, output: Path, *, early: Path,
                   late: Path, ledger: Path,
-                  allocation_roots: dict[date, Path]) -> dict:
+                  allocation_roots: dict[date, Path],
+                  done: tuple[str, ...] = ()) -> dict:
     """Use certificates as restart state; no date is skipped on a bad input."""
     state = json.loads(source_manifest.read_text(encoding='utf-8'))
     if state.get('version') != 'rl-trading-v6-forward-candle-day-roots':
         raise ValueError('Unknown feature-bank campaign manifest')
+    if done != tuple(str(day) for day in DATES[:len(done)]):
+        raise ValueError('Completed dates are not a forward prefix')
     roots = state['day_roots']
-    complete: list[str] = []
-    previous = CONTEXT_ONLY[0]
-    for day in DATES:
+    complete: list[str] = list(done)
+    previous = DATES[len(done)-1] if done else CONTEXT_ONLY[0]
+    for day in DATES[len(done):]:
         source_root = roots.get(str(day))
         previous_root = roots.get(str(previous))
         if source_root is None or previous_root is None:
@@ -110,10 +113,12 @@ def main(argv=None) -> int:
             raise ValueError('Invalid external allocation root')
         allocation_roots[day] = root
     output.mkdir(parents=True, exist_ok=True)
+    done: tuple[str, ...] = ()
     while True:
         progress = run_available(args.source_manifest, output,
             early=args.early_manifest, late=args.late_manifest,
-            ledger=args.ledger, allocation_roots=allocation_roots)
+            ledger=args.ledger, allocation_roots=allocation_roots, done=done)
+        done = tuple(progress['completed'])
         if args.once or not progress['queued']:
             return 0
         time.sleep(args.poll_seconds)
