@@ -1816,7 +1816,10 @@ class OrderManagementEngine:
             )
             raise
         group.decision_to_submit_ms = (perf_counter() - started) * 1000.0
-        group.submitted_at = datetime.now(timezone.utc)
+        # Backtest/Replay submissions belong to the completed market boundary,
+        # not the worker's wall clock. Live still uses wall time via this helper.
+        group.submitted_at = self._causal_group_time(
+            group.intent, previous=group.updated_at)
         if group.state == OrderManagementState.POLICY_BLOCKED:
             return
         rejected = next((row for row in response if row.get("error") or row.get("errorCode")), None)
@@ -2170,7 +2173,8 @@ class OrderManagementEngine:
                 current_limit_price=initial_price,
             )
             group.decision_to_submit_ms = (perf_counter() - started) * 1000.0
-            group.submitted_at = datetime.now(timezone.utc)
+            group.submitted_at = self._causal_group_time(
+                group.intent, previous=group.updated_at)
             self._groups[group.group_id] = group
             for broker_order_id in broker_order_ids:
                 self._group_by_broker_id[broker_order_id] = group.group_id
@@ -2307,7 +2311,8 @@ class OrderManagementEngine:
                 protected.protection_delegated = False
                 raise
             group.decision_to_submit_ms = (perf_counter() - started) * 1000.0
-            group.submitted_at = datetime.now(timezone.utc)
+            group.submitted_at = self._causal_group_time(
+                group.intent, previous=group.updated_at)
             if group.state == OrderManagementState.POLICY_BLOCKED:
                 protected.protection_delegated = False
                 return group.snapshot(self.policy.version)

@@ -873,6 +873,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     event=None,
                 )
                 self.assertEqual(submitted.current_limit_price, 10.02)
+                self.assertEqual(submitted.submitted_at, request.event_time)
                 self.assertIsNone(manager.snapshots()[0].internal_reaction_ms)
 
                 causal_time = NOW + timedelta(milliseconds=100)
