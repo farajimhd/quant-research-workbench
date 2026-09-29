@@ -113,7 +113,10 @@ def plan_second(model: DynamicMarketPolicy, account: ReplayAccount,
         eligible = available.clone()
         for listing in virtual.keys() | blocked_buys:
             eligible[0, listing] = False
-        price = torch.as_tensor(account.grid.close[:, second], device=device)
+        # The certified grid is a read-only NumPy memmap. Copy the one-second
+        # price vector before passing it to PyTorch, which otherwise warns
+        # that writes through the tensor would have undefined behavior.
+        price = torch.tensor(account.grid.close[:, second], device=device)
         eligible &= (price > 0) & (price <= virtual_cash)
         action_mask = torch.cat((torch.ones(1, 1, dtype=torch.bool, device=device),
             eligible, held_valid & (not buying_started)), dim=1)
