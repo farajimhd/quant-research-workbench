@@ -54,8 +54,10 @@
 .backtest-run-history [role="alert"] { color: var(--destructive); }
 .backtest-v4-review { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; min-width: 0; }
 .backtest-v4-direct-review { height: 100%; min-height: 0; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
-.backtest-v4-running { height: 100%; min-height: 0; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
-.backtest-v4-running > .historical-backtest-progress { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin: 0 auto; max-width: 960px; padding: 16px; }
+.backtest-v4-running { height: 100%; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+.backtest-v4-running > .canvas-config-toolbar { grid-template-columns: max-content minmax(0, 1fr); }
+.backtest-v4-running > .canvas-config-toolbar .canvas-mode-context-slot { min-width: 0; }
+.backtest-v4-running > .canvas-config-toolbar .historical-backtest-progress { width: 100%; }
 .backtest-v4-running .historical-backtest-progress-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch; }
 .backtest-v4-running .historical-backtest-strategy { flex-basis: auto; min-width: 0; width: auto; }
 @media (max-width: 720px) {
@@ -2295,6 +2297,7 @@
   padding: 0 8px;
   white-space: nowrap;
 }
+.backtest-v4-canvas-review > .canvas-config-toolbar .historical-backtest-progress { width: 100%; }
 
 .backtest-v4-canvas-review > .canvas-config-toolbar .canvas-mode-context-slot > span {
   overflow: hidden;

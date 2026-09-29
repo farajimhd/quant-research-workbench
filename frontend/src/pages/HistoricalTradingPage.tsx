@@ -501,10 +501,12 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         {error ? <div className="canvas-inline-error" role="alert">{error}</div> : null}
       </div>;
     // V4 has a typed saved chart and review, not the legacy canvas/SQLite
-    // journal reader. During its short execution show the existing progress
-    // controls; transition to the persisted review once the commit is sealed.
+    // journal reader. Keep the certified Canvas header and its progress track
+    // visible while execution is active without invoking legacy preview reads.
     if (run.journal_backend === "arte_typed_journal_v4") {
-      return <div className="backtest-v4-running">{progressControls}</div>;
+      return <div className="canvas-config-page canvas-focus-page backtest-v4-running">
+        <header className="canvas-config-toolbar"><div className="canvas-clock-control" aria-label="Backtest session"><strong>{run.session_date || "Backtest session"}</strong></div><div className="canvas-mode-context-slot">{progressControls}</div></header>
+      </div>;
     }
     return <CanvasWorkspaceSurface canvasId="main" manager={false}
       modeControls={progressControls} replayRun={run} runtimeWorkspaceId="main" />;
