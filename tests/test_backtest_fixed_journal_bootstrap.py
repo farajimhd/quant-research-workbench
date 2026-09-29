@@ -65,11 +65,11 @@ def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch)
         expected_config={}, fixed_market_parent_plan=market,
         fixed_market_execution_plan=market,
         expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
-        code_hash="d" * 64, recovery_evidence=SimpleNamespace(campaign=rows),
+        code_hash="d" * 64, recovery_evidence=SimpleNamespace(campaign=rows, oms=()),
         writer_factory=bootstrap.ArteJournalWriter)
     assert returned is anchor
     assert assembly.journal.campaign_ownership_snapshot()[0]["epoch"] == 2
-    bad = SimpleNamespace(campaign=project_campaign_snapshot(
+    bad = SimpleNamespace(oms=(), campaign=project_campaign_snapshot(
         run_id="other", session_date=date(2026, 8, 18),
         checkpoint_sequence=7, boundary_ms=100,
         journal_batch_id=batch_id, ownership=()))

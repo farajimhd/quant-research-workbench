@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from copy import deepcopy
 from itertools import chain
 from threading import RLock
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 from src.request_context import causal_identity, current_request_identity
@@ -529,6 +529,39 @@ class BacktestMemoryJournal:
         with self._lock:
             creation = self._reservation_creations.get((account_id, reservation_id))
             return deepcopy(creation) if creation is not None else None
+
+    def restore_verified_portfolio_admissions(self, lineages: Any) -> None:
+        """Seed only committed OMS admission facts from a cold typed join."""
+        from src.trading_runtime.arte_oms_projection import (
+            RecoveredStrategyOneOmsLineage,
+        )
+
+        restored: dict[tuple[str, str], dict[str, Any]] = {}
+        for lineage in lineages:
+            if (not isinstance(lineage, RecoveredStrategyOneOmsLineage)
+                    or lineage.approved_intent is None
+                    or not isinstance(lineage.admission_reservation, Mapping)):
+                raise ValueError("Cold OMS admission lacks verified normalized rows")
+            row = dict(lineage.admission_reservation)
+            key = (str(row.get("account_id") or ""),
+                   str(row.get("reservation_id") or ""))
+            metadata = lineage.approved_intent.metadata
+            if (not all(key)
+                    or row.get("event") != "reservation_created"
+                    or row.get("status") != "reserved"
+                    or row.get("intent_id") != lineage.approved_intent.intent_id
+                    or key[0] != lineage.state.group.get("account_id")
+                    or key[1] != metadata.get("portfolio_reservation_id")
+                    or row.get("assignment_id") != metadata.get("assignment_id")):
+                raise ValueError("Cold OMS admission differs from its approved intent")
+            previous = restored.setdefault(key, row)
+            if previous != row:
+                raise ValueError("Cold OMS admission repeats a conflicting reservation")
+        with self._lock:
+            self._require_open()
+            if self._records or self._reservation_creations:
+                raise ValueError("Cold OMS admission requires a clean fenced lane")
+            self._reservation_creations = restored
 
     def acquire_portfolio_admission_lease(self, resource_id: str, *, owner_id: str,
                                           ttl_seconds: float = 30.0) -> dict[str, Any] | None:

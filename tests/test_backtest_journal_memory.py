@@ -9,6 +9,7 @@ from src.backend.replay_run_service import ReplayRunController, RunMode
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.arte_journal_projection import backtest_cursor_batch
 from src.trading_runtime.arte_journal_writer import _sealed_families
+from src.trading_runtime.arte_oms_projection import RecoveredStrategyOneOmsLineage
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -29,6 +30,30 @@ def test_invalid_batch_does_not_publish_partial_prefix():
     with pytest.raises(ValueError, match="mix runs"):
         journal.append_once_many([_entry("one"), _entry("two", run_id="other")])
     assert journal.latest_sequence(RUN_ID) == 0
+
+
+def test_cold_oms_admission_cache_uses_verified_normalized_reservation_only():
+    journal = BacktestMemoryJournal(run_id=RUN_ID, initial_sequence=7)
+    reservation = dict(account_id="DU1", reservation_id="reserve-1",
+                       assignment_id="assignment-1", intent_id="intent-1",
+                       status="reserved", event="reservation_created",
+                       quantity="5")
+    lineage = RecoveredStrategyOneOmsLineage(
+        SimpleNamespace(group={"account_id": "DU1"}), object(), (), 7,
+        SimpleNamespace(intent_id="intent-1", metadata={
+            "portfolio_reservation_id": "reserve-1",
+            "assignment_id": "assignment-1"}), reservation)
+    journal.restore_verified_portfolio_admissions((lineage,))
+    assert journal.portfolio_admission_reservation("DU1", "reserve-1") == reservation
+    with pytest.raises(ValueError, match="clean fenced lane"):
+        journal.restore_verified_portfolio_admissions((lineage,))
+    wrong = BacktestMemoryJournal(run_id=RUN_ID, initial_sequence=7)
+    with pytest.raises(ValueError, match="differs from its approved intent"):
+        wrong.restore_verified_portfolio_admissions((
+            RecoveredStrategyOneOmsLineage(
+                lineage.state, lineage.source_intent, (), 7,
+                lineage.approved_intent,
+                {**reservation, "assignment_id": "different"}),))
 
 
 def test_accepted_nested_payload_is_detached_from_mutable_observation():

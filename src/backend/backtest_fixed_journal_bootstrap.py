@@ -306,6 +306,8 @@ def assemble_resumed_fixed_v4_journal(
     try:
         assembly.journal.restore_verified_campaign_ownership(
             recovery_evidence.campaign)
+        assembly.journal.restore_verified_portfolio_admissions(
+            recovery_evidence.oms)
     except BaseException:
         assembly.writer.close()
         assembly.journal.close()

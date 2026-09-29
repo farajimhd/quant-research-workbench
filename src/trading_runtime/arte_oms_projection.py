@@ -495,6 +495,7 @@ class RecoveredStrategyOneOmsLineage:
     orders: tuple[OrderRequest, ...]
     through_sequence: int
     approved_intent: StrategyIntent | None = None
+    admission_reservation: Mapping[str, Any] | None = None
 
 
 def _approved_strategy_one_oms_intent(
@@ -723,6 +724,7 @@ def load_recovered_strategy_one_oms_lineage(
         _approved_strategy_one_oms_intent(
             group, by_id[group.intent_record_id], history,
             admissions[group.sequence], decisions[group.sequence])[0],
+        dict(admissions[group.sequence]),
     ) for group in groups)
 
 
