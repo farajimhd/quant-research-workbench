@@ -53,9 +53,11 @@ def _reject_strategy_one_legacy_runtime(snapshot: dict[str, Any]) -> None:
     from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
     strategy = dict(dict(snapshot.get("payload") or {}).get("strategy") or {})
-    if (str(strategy.get("strategy_id") or ""),
-            str(strategy.get("revision") or "")) == (
-            STRATEGY_ID, str(STRATEGY_NUMBER)):
+    # Any identity claiming the immutable numbered strategy must stay out of
+    # the SQLite runtime, including incomplete or mismatched configuration
+    # revisions. The typed live admission path is a separate authority.
+    if (str(strategy.get("strategy_id") or "") == STRATEGY_ID
+            or str(strategy.get("strategy_number") or "") == str(STRATEGY_NUMBER)):
         raise RuntimeError(
             "Strategy 1 live journal cutover is incomplete; SQLite is forbidden")
 
