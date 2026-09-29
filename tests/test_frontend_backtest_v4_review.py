@@ -16,6 +16,70 @@ def _performance_page():
 
 @unittest.skipUnless(os.environ.get("BACKTEST_REVIEW_UI"), "opt-in managed browser check")
 class BacktestV4ReviewUITests(unittest.TestCase):
+    def test_saved_ticker_uses_certified_canvas_with_backtest_progress(self):
+        from playwright.sync_api import sync_playwright
+
+        evidence = Path(os.environ["BACKTEST_REVIEW_EVIDENCE"])
+        evidence.mkdir(parents=True, exist_ok=True)
+        run_id = "a27304bd-8d1b-4dbc-a0e3-75156c0214d2"
+        legacy_requests = []
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1440, "height": 900})
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+
+                def handle(route):
+                    url = route.request.url
+                    if "/canvas-chart/" in url or url.split("?", 1)[0].endswith("/canvas"):
+                        legacy_requests.append(url)
+                    if "/v4-terminal-page" in url:
+                        payload = {"schema_version": "strategy-one-v4-terminal-review-page-v1",
+                            "run": {"run_id": run_id, "session_date": "2026-08-18",
+                                    "strategy_id": "early-squeeze-strategy", "strategy_revision": 1},
+                            "status": "completed", "verified_sequence": 2,
+                            "market_cursor_verified": True,
+                            "market_cursor": {"session_date": "2026-08-18", "boundary_ms": 19800000},
+                            "limitations": [], "financial_accounts": {}, "events": [],
+                            "next_sequence": 0, "complete": True}
+                    elif f"/runs/{run_id}?compact=true" in url:
+                        payload = {"run_id": run_id, "mode": "backtest", "status": "completed",
+                            "journal_backend": "arte_typed_journal_v4", "progress": 1,
+                            "session_date": "2026-08-18", "session_start": "2026-08-18T08:00:00Z",
+                            "session_end": "2026-08-18T13:30:00Z",
+                            "requested_start": "2026-08-18T08:00:00Z",
+                            "current_time": "2026-08-18T13:30:00Z",
+                            "created_at": "2026-09-28T00:00:00Z",
+                            "updated_at": "2026-09-28T00:00:00Z",
+                            "account_ids": [], "canvas_revision": "certified",
+                            "execution_mode": "strategy", "tickers": ["WFF"], "error": ""}
+                    elif "/v4-chart-context" in url:
+                        payload = {}
+                    elif "/v4-chart" in url:
+                        payload = {"bars": [], "indicators": [], "has_more": False,
+                            "next_before": "", "session_date": "2026-08-18",
+                            "ticker": "WFF", "timeframe": "10s", "verified_boundary_ms": 19800000,
+                            "indicator_provenance": {"unavailable_columns": []}}
+                    else:
+                        payload = {}
+                    route.fulfill(json=payload)
+
+                page.route("**/api/trading/**", handle)
+                page.goto(f"http://127.0.0.1:5173/?backtest_run={run_id}&backtest_ticker=WFF#canvas-focus")
+                page.get_by_role("progressbar", name="Backtest progress").wait_for()
+                self.assertEqual(page.get_by_role("progressbar", name="Backtest progress").get_attribute("aria-valuenow"), "100")
+                page.get_by_role("button", name="Restore chart panels").wait_for()
+                self.assertEqual(page.get_by_role("button", name="Resize upper and lower chart rows").count(), 0)
+                page.get_by_role("button", name="Restore chart panels").click()
+                page.locator('.charts-quotes-body[data-main-chart-maximized="false"]').wait_for()
+                page.screenshot(path=str(evidence / "v4-certified-canvas-focus.png"))
+                self.assertTrue(page.locator('button[aria-label="Resize upper and lower chart rows"]').is_visible())
+                self.assertEqual(legacy_requests, [])
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_saved_activity_loads_other_tickers_from_verified_next_page(self):
         from playwright.sync_api import sync_playwright
 

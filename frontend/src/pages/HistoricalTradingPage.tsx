@@ -3,7 +3,7 @@ import { FilteredV7Preparation } from "../app/components/FilteredV7Preparation";
 import { BacktestRecoveryState } from "../app/components/BacktestRecoveryState";
 import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
 import type { V4Page } from "../app/components/BacktestV4SavedReview";
-import { BacktestV4CanvasReview, BacktestV4ChartFocus } from "../app/components/BacktestV4CanvasReview";
+import { BacktestV4CanvasReview } from "../app/components/BacktestV4CanvasReview";
 import { normalizeTicker } from "../app/tickerNavigation";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, LoaderCircle, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -14,7 +14,7 @@ import { recoverBacktest } from "../app/backtestRecovery";
 import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
-import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
+import { CanvasWorkspaceSurface, SavedBacktestChartFocus } from "./CanvasConfigurationPage";
 import { DEFAULT_BACKTEST_DATE } from './backtestPresets';
 
 type HistoricalCheck = {
@@ -512,9 +512,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
 
   if (selectedRunId && v4ReviewPage?.run.run_id === selectedRunId) {
     const focusTicker = normalizeTicker(new URL(window.location.href).searchParams.get("backtest_ticker") || "");
-    if (focusTicker) return <BacktestV4ChartFocus key={`${selectedRunId}:${focusTicker}`}
-      runId={selectedRunId} ticker={focusTicker} initialPage={v4ReviewPage}
-      onClose={() => { const url = new URL(window.location.href); url.searchParams.delete("backtest_ticker"); window.location.assign(url.toString()); }} />;
+    if (focusTicker) return <SavedBacktestChartFocus key={`${selectedRunId}:${focusTicker}`}
+      runId={selectedRunId} ticker={focusTicker} />;
     return <BacktestV4CanvasReview key={selectedRunId} runId={selectedRunId}
       initialPage={v4ReviewPage} onClose={returnToSetup} />;
   }

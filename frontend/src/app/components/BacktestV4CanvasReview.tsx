@@ -361,15 +361,16 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose }: {
 
 /** A ticker drilldown is a new, isolated Canvas page. It never rewrites the
  * saved review layout or asks the legacy replay/chart reader for V4 data. */
-export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
-  runId: string; ticker: string; initialPage: V4Page; onClose: () => void;
+export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layout, onLayoutChange, mainFrame }: {
+  runId: string; ticker: string; initialPage: V4Page;
+  layout: ChartsQuotesLayoutSettings;
+  onLayoutChange: (layout: ChartsQuotesLayoutSettings) => void;
+  mainFrame: string;
 }) {
   const [maximized, setMaximized] = useState(true);
-  // Saved review keeps the certified Charts & Quotes geometry. Only its
-  // market-data adapter differs; it must never invoke a legacy chart builder.
-  const [settings] = useState(() => instanceSettings(readCanvasRegistry(), "charts_quotes").charts_quotes);
-  const [layout, setLayout] = useState<ChartsQuotesLayoutSettings>(settings.layout);
-  const mainFrame = SAVED_CHART_FRAMES.find(frame => frame === settings.main.timeframe) ?? "10s";
+  // The certified Canvas owns the window, header, and saved layout. This
+  // container supplies only the typed V4 market adapter to that window.
+  const chartFrame = SAVED_CHART_FRAMES.find(frame => frame === mainFrame) ?? "10s";
   const [quote, setQuote] = useState<SavedChartsQuote | null>(null);
   const [contextPair, setContextPair] = useState<ContextPair | null>(null);
   const [contextError, setContextError] = useState("");
@@ -395,21 +396,13 @@ export function BacktestV4ChartFocus({ runId, ticker, initialPage, onClose }: {
   const savedAsOf = sessionDate && /^\d{4}-\d\d-\d\d$/.test(sessionDate)
     ? new Date(dateInTimeZone(sessionDate, "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()
     : undefined;
-  const definition = TRADING_WORKSPACE_CONTAINERS.filter(item => item.id === "charts_quotes");
-  return <div className="canvas-config-page canvas-focus-page backtest-v4-canvas-review backtest-v4-chart-focus">
-    <SavedV4CanvasHeader initialPage={initialPage} onClose={onClose} backLabel="Return to journal" title={`${ticker} · Charts & Quotes`} />
-    <TradingWorkspace clockLabel="" commandBarVisible={false} compact
-      definitionsOverride={definition} defaultOpenIds={["charts_quotes"]}
-      excludedContainerIds={TRADING_WORKSPACE_CONTAINERS.filter(item => item.id !== "charts_quotes").map(item => item.id)}
-      historicalSourceReady layoutPreset="focus" mode="backtest" persistState={false}
-      runLabel={`${ticker} · Charts & Quotes`} runStatus="completed" sourceLabel="ARTE saved market"
-      showHealth={false} metaForContainer={() => ({ sourceLabel: "ARTE verified V4", status: "ready", freshness: "Saved run" })}
-      renderContainer={() => <ChartsQuotesMarketLayout symbol={ticker} end={savedAsOf} savedQuote={quote} layout={layout} onLayoutChange={setLayout}
+  return <div className="backtest-v4-chart-focus">
+    <ChartsQuotesMarketLayout symbol={ticker} end={savedAsOf} savedQuote={quote} layout={layout} onLayoutChange={onLayoutChange}
         mainChartMaximized={maximized}
-        mainChart={<BacktestV4SavedChart embedded initialFrame={mainFrame} runId={runId} ticker={ticker} onQuoteChange={value => setQuote(value ?? null)}
+        mainChart={<BacktestV4SavedChart embedded initialFrame={chartFrame} runId={runId} ticker={ticker} onQuoteChange={value => setQuote(value ?? null)}
           toolbarAction={<button aria-label={maximized ? "Restore chart panels" : "Maximize main chart"} className="toolbar-button" onClick={() => setMaximized(value => !value)} title={maximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} />}
         monthChart={contextPair ? <BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1mo" allowedFrames={["1mo"]} initialShowMacd={false} panelLabel="Monthly context · limited ARTE history" prefetchedPage={contextPair.monthly} runId={runId} ticker={ticker} /> : <div className="trading-disclosure" role={contextError ? "alert" : "status"}>{contextError || "Loading certified monthly context…"}</div>}
         dailyChart={contextPair ? <BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1d" allowedFrames={["1d"]} initialShowMacd={false} panelLabel="Daily context · limited ARTE history" prefetchedPage={contextPair.daily} runId={runId} ticker={ticker} /> : <div className="trading-disclosure" role={contextError ? "alert" : "status"}>{contextError || "Loading certified daily context…"}</div>}
-        reservedPanel={<div className="trading-disclosure">Saved Backtest review · order entry disabled</div>} />} />
+        reservedPanel={<div className="trading-disclosure">Saved Backtest review · order entry disabled</div>} />
   </div>;
 }

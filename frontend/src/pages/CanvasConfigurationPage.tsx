@@ -1,5 +1,5 @@
 import { LazyBacktestActivity } from "../app/components/LazyBacktestActivity";
-import { BacktestV4ChartFocus } from "../app/components/BacktestV4CanvasReview";
+import { BacktestV4ChartsQuotesContent } from "../app/components/BacktestV4CanvasReview";
 import type { V4Page } from "../app/components/BacktestV4SavedReview";
 import { VisibleBacktestPanel } from "../app/components/VisibleBacktestPanel";
 import { openBacktestSetup, recoverBacktest } from "../app/backtestRecovery";
@@ -358,7 +358,7 @@ function ReplayFocusTransportStatus({ run }: { run: CanvasReplayRun }) {
   return <div aria-label={`Replay ${label} at ${speed}`} className="replay-focus-transport" data-status={run.status} role="status"><Icon aria-hidden="true" size={13} /><span><strong>{label}</strong><small>{speed}</small></span></div>;
 }
 
-export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; transient?: boolean }) {
+export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, savedV4Focus, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; savedV4Focus?: { ticker: string; page: V4Page }; transient?: boolean }) {
   const runtimeMode: CanvasRuntimeMode = replayRun?.mode === "backtest" || replayRun?.mode === "backtest_debug" ? replayRun.mode : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
   const liveMode = runtimeMode === "live" || runtimeMode === "paper";
   const labelerCanvas = canvasId === LABELER_CANVAS_ID;
@@ -685,7 +685,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [liveMode, replayRun]);
 
   usePollingTask({
-    enabled: Boolean(contextReady && replayRun && replayRuntimeReady && previewContainerKey),
+    enabled: Boolean(!savedV4Focus && contextReady && replayRun && replayRuntimeReady && previewContainerKey),
     initialDelayMs: 0,
     intervalMs: runtimeMode === "backtest" ? 5_000 : 250,
     // Let the one final read finish even if its tab is hidden. A single-shot
@@ -749,6 +749,12 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [accountSignature, activeSymbol, contextError, contextReady, liveMode, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.current_time, replayRun?.run_id, replayRun?.status, replayRuntimeReady, runtimeMode]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
+    if (savedV4Focus && definition.id === "charts_quotes") return {
+      detail: "Certified saved Strategy 1 bars, indicators, and liquidity at the committed Backtest boundary.",
+      freshness: previewContext.previewTime,
+      sourceLabel: "ARTE verified V4",
+      status: "ready",
+    };
     if (definition.id === "labeler") return { detail: "Historical session selection and save status are shown inside Labeler.", sourceLabel: "QMD History · Manual labels", status: "ready" };
     if (definition.id === "chart") {
       return {
@@ -826,7 +832,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
               : "IBKR preview",
       status: sourceError ? "error" : newsContainer || secContainer || preview ? "ready" : "idle",
     };
-  }, [contextError, liveMode, preview, previewContext.previewTime, replayRun, runtimeMode, scannerError, scannerLoading, scannerSnapshot]);
+  }, [contextError, liveMode, preview, previewContext.previewTime, replayRun, runtimeMode, savedV4Focus, scannerError, scannerLoading, scannerSnapshot]);
 
   const canvasTargets = registry.canvases.map((canvas, index) => ({
     color: ["var(--primary)", "var(--info)", "var(--success)", "var(--warning)"][index % 4],
@@ -1174,6 +1180,12 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         persistState={!transient}
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
+          if (savedV4Focus && definition.id === "charts_quotes") return <BacktestV4ChartsQuotesContent
+            initialPage={savedV4Focus.page} key={`${replayRun?.run_id}:${savedV4Focus.ticker}`}
+            layout={settings.charts_quotes.layout} mainFrame={settings.charts_quotes.main.timeframe}
+            onLayoutChange={layout => updateInstanceSettings(instanceId, current => ({
+              ...current, charts_quotes: { ...current.charts_quotes, layout },
+            }))} runId={replayRun!.run_id} ticker={savedV4Focus.ticker} />;
           const linkable = containerSupportsCanvasLink(definition.id);
           const group = linkable ? registry.linkAssignments[instanceId] ?? "none" : "none";
           const linkContext = group === "none" ? { symbol: settings.chart.symbol } : registry.linkContexts[group];
@@ -1443,19 +1455,26 @@ function BacktestUnavailableContextChart({ label }: { label: string }) {
   </div>;
 }
 
-function SavedBacktestChartFocus({ runId, ticker }: { runId: string; ticker: string }) {
+export function SavedBacktestChartFocus({ runId, ticker }: { runId: string; ticker: string }) {
   const [page, setPage] = useState<V4Page | null>(null);
+  const [run, setRun] = useState<CanvasReplayRun | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=0&limit=100`, {
-      signal: controller.signal, timeoutMs: 60_000,
-    }).then(value => {
+    void Promise.all([
+      api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=0&limit=100`, {
+        signal: controller.signal, timeoutMs: 60_000,
+      }),
+      recoverBacktest<CanvasReplayRun>(runId, controller.signal),
+    ]).then(([value, snapshot]) => {
       if (controller.signal.aborted) return;
-      if (value.schema_version !== "strategy-one-v4-terminal-review-page-v1" || value.run.run_id !== runId) {
+      if (value.schema_version !== "strategy-one-v4-terminal-review-page-v1"
+          || value.run.run_id !== runId || snapshot.run_id !== runId
+          || snapshot.journal_backend !== "arte_typed_journal_v4") {
         throw new Error("Saved Backtest chart identity differs from the selected run.");
       }
       setPage(value);
+      setRun(snapshot);
     }).catch(reason => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
     });
@@ -1468,8 +1487,20 @@ function SavedBacktestChartFocus({ runId, ticker }: { runId: string; ticker: str
     window.location.assign(url.toString());
   };
   if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error" role="alert">Chart unavailable: {error}</div><button onClick={returnToJournal} type="button">Return to journal</button></div>;
-  if (!page) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading saved Charts & Quotes" /></div>;
-  return <BacktestV4ChartFocus initialPage={page} onClose={returnToJournal} runId={runId} ticker={ticker} />;
+  if (!page || !run) return <div className="canvas-config-page canvas-focus-page"><LoadingState fill label="Loading saved Charts & Quotes" /></div>;
+  const base = run.canvas_profile?.instanceSettings ? run.canvas_profile : readCanvasRegistry();
+  const { profile } = chartsQuotesFocusProfile(base, null, ticker, true);
+  const progress = run.status === "completed" ? 100
+    : Math.round(Math.max(0, Math.min(1, run.progress || 0)) * 100);
+  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false}
+    modeControls={<div className="historical-canvas-run-state historical-backtest-progress saved-v4-focus-progress">
+      <div className="historical-backtest-progress-heading"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><b>{progress}%</b></div>
+      <div aria-label="Backtest progress" aria-valuemax={100} aria-valuemin={0} aria-valuenow={progress}
+        className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progress}%` }} /></div>
+      <div className="historical-backtest-progress-actions"><button className="button secondary compact" onClick={returnToJournal} type="button">Return to journal</button></div>
+    </div>}
+    readOnly replayRun={{ ...run, canvas_profile: profile }} runtimeWorkspaceId={`${runId}.charts`}
+    savedV4Focus={{ ticker, page }} transient />;
 }
 
 function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
