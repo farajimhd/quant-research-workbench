@@ -1360,19 +1360,16 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const first = lowerBoundTimelineTime(timeline, trade.entryTime);
     const last = lowerBoundTimelineTime(timeline, trade.exitTime ?? trade.entryTime);
     const margin = Math.max(8, Math.ceil((last - first) * 0.6));
-    const visibleFrom = Math.max(0, first - margin);
-    const visibleTo = Math.min(timeline.length - 1, Math.max(first + 1, last) + margin);
-    const firstVisibleTime = timeline[visibleFrom]?.time ?? trade.entryTime;
-    const lastVisibleTime = timeline[visibleTo]?.time ?? trade.exitTime ?? trade.entryTime;
+    const positionEndTime = trade.exitTime ?? trade.endTime ?? candles[candles.length - 1]?.time ?? trade.entryTime;
     const prices = [trade.entryPrice, trade.exitPrice, trade.stopPrice, trade.highOfDayPrice,
       trade.triggerPrice, ...(trade.targetPrices ?? []), ...(trade.levelPrices ?? []),
       ...(trade.supportPrices ?? []), ...(trade.resistancePrices ?? []),
       ...(trade.protectionPath ?? []).filter(point => point.active).map(point => point.price),
       ...(trade.fills ?? []).map(fill => fill.price),
       ...(trade.exitIntents ?? []).flatMap(intent => [intent.price, ...(intent.supportPrices ?? []), ...(intent.resistancePrices ?? [])]),
-      // The horizontal fit includes context on both sides of the position.
-      // Price-fit that same visible window so a context candle cannot clip.
-      ...candles.filter(candle => candle.time >= firstVisibleTime && candle.time <= lastVisibleTime)
+      // Horizontal context must not dilute the vertical fit: only candles
+      // belonging to this position contribute to its price-axis bounds.
+      ...candles.filter(candle => candle.time >= trade.entryTime && candle.time <= positionEndTime)
         .flatMap(candle => [candle.low, candle.high])]
       .filter((price): price is number => typeof price === "number" && Number.isFinite(price));
     executeViewportCommand(() => {
