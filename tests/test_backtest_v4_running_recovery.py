@@ -157,6 +157,34 @@ def test_v4_broker_state_uses_exact_open_oms_request(monkeypatch):
     assert subject.reconstruct_v4_broker_state(evidence) is expected
 
 
+def test_v4_oms_image_joins_complete_protection_and_broker(monkeypatch):
+    _install(monkeypatch)
+    recovery = subject.load_v4_running_recovery_evidence(
+        object(), run_id=RUN, account_ids=("DU1",),
+        manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
+        market_client=object(), market_plan=object())
+    calls = []
+    history = object()
+    image = object()
+    monkeypatch.setattr(subject, "load_complete_typed_protection_history",
+                        lambda client, prefix: calls.append((client, prefix)) or history)
+
+    def reconstruct(oms, protection, **kwargs):
+        assert oms == recovery.oms and protection is history
+        assert kwargs["through_sequence"] == PREFIX.last_sequence
+        assert kwargs["strategy_revision"] == 1
+        return image
+
+    monkeypatch.setattr(subject, "reconstruct_typed_oms_actor_image", reconstruct)
+    monkeypatch.setattr(subject, "verify_typed_oms_broker_open_orders",
+                        lambda found, broker: calls.append((found, broker)))
+    assert subject.load_v4_running_oms_image(object(), recovery) is image
+    assert calls[-1] == (image, recovery.broker)
+    monkeypatch.setattr(subject, "load_verified_v4_prefix", lambda *_a: None)
+    with pytest.raises(RuntimeError, match="prefix moved"):
+        subject.load_v4_running_oms_image(object(), recovery)
+
+
 def test_v4_broker_state_rejects_missing_open_oms_request(monkeypatch):
     _install(monkeypatch)
     evidence = subject.load_v4_running_recovery_evidence(

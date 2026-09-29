@@ -25,6 +25,13 @@ from src.backend.backtest_v4_running_portfolio import (
 from src.trading_runtime.arte_journal_commit_v4 import (
     V4CommittedPrefix, load_verified_v4_prefix,
 )
+from src.trading_runtime.arte_journal_reader import (
+    load_complete_typed_protection_history,
+)
+from src.trading_runtime.arte_oms_actor_restore import (
+    TypedOmsActorImage, reconstruct_typed_oms_actor_image,
+    verify_typed_oms_broker_open_orders,
+)
 from src.trading_runtime.arte_oms_projection import (
     RecoveredStrategyOneOmsLineage, load_recovered_strategy_one_oms_lineage,
 )
@@ -37,6 +44,7 @@ from src.trading_runtime.strategy_one_management_snapshot import (
 from src.trading_runtime.strategy_one_evidence_snapshot import (
     load_attested_evidence_snapshot,
 )
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +75,26 @@ def verify_v4_recovery_at_anchor(
             or recovery.manager.boundary_ms != anchor.boundary_ms
             or recovery.evidence.boundary_ms != anchor.boundary_ms):
         raise RuntimeError("V4 recovery image differs from cold journal anchor")
+
+
+def load_v4_running_oms_image(
+    client: Any, recovery: V4RunningRecoveryEvidence,
+) -> TypedOmsActorImage:
+    """Recover and cross-audit OMS from complete committed protection history."""
+    if not isinstance(recovery, V4RunningRecoveryEvidence):
+        raise TypeError("V4 OMS recovery requires joined evidence")
+    root = recovery.broker.snapshot
+    cutoff = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
+    cutoff += timedelta(milliseconds=int(root["boundary_ms"]))
+    history = load_complete_typed_protection_history(client, recovery.prefix)
+    image = reconstruct_typed_oms_actor_image(
+        recovery.oms, history, run_id=recovery.prefix.run_id,
+        strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        through_sequence=recovery.prefix.last_sequence, cutoff_at=cutoff)
+    verify_typed_oms_broker_open_orders(image, recovery.broker)
+    if load_verified_v4_prefix(client, recovery.prefix.run_id) != recovery.prefix:
+        raise RuntimeError("V4 OMS image prefix moved across protection reads")
+    return image
 
 
 def reconstruct_v4_broker_state(evidence: V4RunningRecoveryEvidence) -> dict:
