@@ -172,7 +172,7 @@ def test_numbered_proposal_uses_shared_runtime_portfolio_and_oms_path():
     runtime.journal.close()
 
 
-@pytest.mark.parametrize("number", (9, 10))
+@pytest.mark.parametrize("number", (9, 10, 11))
 def test_nine_failure_exit_uses_typed_source_and_shared_assignment_admission(number):
     from src.trading_runtime.strategy_followthrough_failure import FollowThroughFailure
     from src.trading_runtime.strategy_followthrough_exit import followthrough_exit_intent
@@ -214,6 +214,13 @@ def test_nine_failure_exit_uses_typed_source_and_shared_assignment_admission(num
     record = runtime.journal.records(runtime.run_id)[0]
     assert runtime.journal.followthrough_exit_for_record(record.record_id) == (
         intent, witness, entry_id)
+    if number == 11:
+        late = replace(witness, boundary_ms=95_000)
+        with pytest.raises(ValueError, match='window'):
+            asyncio.run(runtime.submit_followthrough_failure(financial, late, entry_id))
+        # A forged late source cannot reach financial admission or the journal.
+        runtime.portfolio.approve.assert_awaited_once()
+        assert len(runtime.journal.records(runtime.run_id)) == 1
     with pytest.raises(ValueError, match="normalized witness"):
         asyncio.run(runtime._execute_intents(StrategyEvaluation(intents=(intent,)), "DU1", None))
     assert runtime.order_manager.submit_intent.await_count == 1

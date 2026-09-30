@@ -270,24 +270,25 @@ def test_manager_publication_is_rows_first_then_keeper_selected(monkeypatch, str
         journal.close()
 
 
-def _nine_rows():
+def _nine_rows(number=9):
     inherited = restore_manager_snapshot(_rows())
     state = replace(inherited,
-        submitted=((KEY, replace(inherited.submitted[0][1], strategy_number=9)),),
+        submitted=((KEY, replace(inherited.submitted[0][1], strategy_number=number)),),
         first_held_boundaries=((KEY, 30_200),))
     return project_manager_snapshot(run_id="backtest:nine", session_date=date(2026, 8, 18),
         checkpoint_sequence=42, state=state)
 
 
-def test_ninth_manager_persists_first_held_in_versioned_scalar_family():
-    rows = _nine_rows()
+@pytest.mark.parametrize('number', (9, 10, 11))
+def test_ninth_manager_persists_first_held_in_versioned_scalar_family(number):
+    rows = _nine_rows(number)
     assert set(rows.snapshot) == {name for name, _ in subject.PARENT_V3.columns}
     assert "first_held_count" not in _rows().snapshot
     assert rows.snapshot['first_held_count'] == 1
     assert rows.first_held_boundaries[0]['first_held_boundary_ms'] == 30_200
     restored = restore_manager_snapshot(rows)
     assert restored.first_held_boundaries == ((KEY, 30_200),)
-    assert restored.submitted[0][1].strategy_number == 9
+    assert restored.submitted[0][1].strategy_number == number
     assert "live_market_ssd" in subject.PARENT_V3.ddl()
     assert "live_market_ssd" in subject.FIRST_HELD.ddl()
 

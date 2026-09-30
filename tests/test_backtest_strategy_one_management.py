@@ -61,7 +61,7 @@ def _add_rows(boundary=31_000):
     }
 
 
-@pytest.mark.parametrize("number", (9, 10))
+@pytest.mark.parametrize("number", (9, 10, 11))
 def test_nine_failure_waits_for_whole_post_fill_bar_and_preserves_entry_source(number):
     from types import SimpleNamespace
     from src.backend.backtest_market_data import market_day_boundary
@@ -96,6 +96,37 @@ def test_nine_failure_waits_for_whole_post_fill_bar_and_preserves_entry_source(n
         assert exits[0][1].first_held_boundary_ms == 30_200
         assert exits[0][2] == strategy_one_entry_intent(
             proposal, session_date=runtime.config.anchor_date).intent_id
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('number', (9, 10, 11))
+@pytest.mark.parametrize('boundary', (90_000, 95_000))
+def test_failure_window_dispatch_survives_manager_restore(number, boundary):
+    from types import SimpleNamespace
+    from src.backend.backtest_market_data import market_day_boundary
+
+    async def run():
+        source, runtime = _Evidence(), _Runtime()
+        runtime.config = SimpleNamespace(strategy_revision=number, anchor_date=date(2026, 8, 18))
+        exits = []
+        async def submit(financial, witness, entry_id):
+            exits.append(witness)
+        runtime.submit_followthrough_failure = submit
+        first = StrategyOneManagementRunner(runtime=runtime, evidence=source,
+                                            tick_for_ticker=lambda _: .01)
+        await first.on_entry_proposal(replace(_proposal(), strategy_number=number))
+        await first.on_management(_financial(), {}, 30_200)
+        manager = StrategyOneManagementRunner(runtime=runtime, evidence=source,
+                                              tick_for_ticker=lambda _: .01)
+        manager.restore_state(first.capture_state(boundary_ms=30_200))
+        source.rows[boundary] = replace(_evidence(boundary), bid=9.8, ask=9.81)
+        rows = _add_rows(boundary)
+        rows[100]['quote_timestamp_us'] = int(
+            market_day_boundary(runtime.config.anchor_date, boundary).timestamp() * 1_000_000)
+        rows[5_000] = {'boundary_ms': boundary, 'price_valid': 1,
+                       'close_int': 98_000, 'macd_line': -.2, 'macd_signal': -.1}
+        await manager.on_management(_financial(), rows, boundary)
+        assert bool(exits) == (number != 11 or boundary - 30_200 <= 60_000)
     asyncio.run(run())
 
 

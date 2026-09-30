@@ -729,3 +729,13 @@ Strategy 11 run can establish the resulting allocation and fills.
 11 is not registered or published yet. Its manifest, runtime dispatch,
 normalized source sealing/cold recovery and four-session results remain
 required before adoption. The four-session goal stays active.
+
+The Strategy 11 implementation checkpoint now includes its exact Strategy 10
+parent, new manifest and source proof, exclusive manager dispatch, and the
+inclusive age guard before runtime admission and at normalized persistence/
+cold-recovery boundaries. It reuses the occupied scalar witness and v3
+first-held checkpoint schemas; no database migration is required. Old 9/10
+predicates retain unbounded eligibility. A 316-test integration selection
+passed, including original releases, forged late sources, manager restoration,
+shared Portfolio/OMS routing, source-guard mutations and normalized journal
+recovery. Publication and four actual session backtests remain pending.

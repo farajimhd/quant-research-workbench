@@ -114,7 +114,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position high lacks its active position")
         sources = dict(state.submitted)
         required = {key for key in keys["positions"]
-                    if sources[key].strategy_number in (9, 10)}
+                    if sources[key].strategy_number in (9, 10, 11)}
         if keys["first_held_boundaries"] != required:
             raise ValueError("Strategy 9 position lacks its first held boundary")
         for key, boundary in state.first_held_boundaries:
@@ -294,7 +294,13 @@ class StrategyOneManagementRunner:
             age_us = (int(at.timestamp() * 1_000_000) - quote_us
                       if type(quote_us) is int and quote.get("quote_valid") == 1
                       else None)
-            witness = followthrough_failure(FollowThroughFailureInput(
+            from src.trading_runtime.strategy_early_followthrough_failure import early_followthrough_failure
+            # The installed number owns eligibility; old seals retain the
+            # original unbounded predicate and first-held checkpoint contract.
+            failure_rule = (early_followthrough_failure
+                            if self.contract.strategy_number == 11
+                            else followthrough_failure)
+            witness = failure_rule(FollowThroughFailureInput(
                 boundary_ms, self._first_held_boundaries[key],
                 source.reference_ask, source.initial_stop,
                 bar.get("boundary_ms"), bar.get("close_int"),

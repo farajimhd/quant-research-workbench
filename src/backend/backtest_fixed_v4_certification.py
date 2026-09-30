@@ -61,7 +61,7 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
     tree = ast.parse(source)
     predicates = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                   and node.name == "is_numbered_fixed_strategy"]
-    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10))"
+    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11))"
     if (len(predicates) != 1 or len(predicates[0].body) != 1
             or ast.unparse(predicates[0].body[0]) != expected):
         raise ValueError("Numbered fixed identity whitelist changed")
@@ -72,8 +72,9 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
-    followthrough_proof = certify_followthrough_failure_v4_source() if strategy_number in (9, 10) else ""
-    entry_scope_proof = certify_empty_exclusion_entry_scope_source() if strategy_number == 10 else ""
+    followthrough_proof = certify_followthrough_failure_v4_source() if strategy_number in (9, 10, 11) else ""
+    entry_scope_proof = certify_empty_exclusion_entry_scope_source() if strategy_number in (10, 11) else ""
+    early_failure_proof = certify_early_followthrough_failure_v4_source() if strategy_number == 11 else ""
     base = certify_strategy_one_v4_projection()
     if strategy_number == 1:
         return base
@@ -117,7 +118,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
             and isinstance(finish.body[0].value, ast.Await)
             and ast.unparse(finish.body[0].value.value) == "finish_boundary(work)"):
         raise ValueError("Numbered terminal cursor must complete before residual failure")
-    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10):
+    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11):
         gate = named(trees[5], "compile_static_entry_gate")
         if not {"fromiter", "flatnonzero"} <= calls(gate):
             raise ValueError("Strategy 3 activation gate must remain vectorized")
@@ -133,7 +134,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                 and ast.unparse(key.value) == "runtime.config.strategy_revision"
                 for key in gates[0].keywords)):
             raise ValueError("Strategy 3 static gate is not bound to its selected contract")
-    if strategy_number in (4, 5, 6, 7, 8, 9, 10):
+    if strategy_number in (4, 5, 6, 7, 8, 9, 10, 11):
         management = named(trees[6], "on_management")
         guard = [node for node in management.body if isinstance(node, ast.If)
                  and "not self.contract.allows_adds" in ast.unparse(node.test)]
@@ -153,7 +154,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                 or len(submission_guards) != 1 or not submissions
                 or any(node.lineno <= submission_guards[0].lineno for node in submissions)):
             raise ValueError("Strategy 4 must prohibit adds after confirmed protection")
-    if strategy_number in (5, 6, 8, 9, 10):
+    if strategy_number in (5, 6, 8, 9, 10, 11):
         reducer = named(trees[7], "advance_protection")
         swing = [node for node in reducer.body if isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name) and target.id == "swing" for target in node.targets)]
@@ -177,12 +178,12 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         bound = [node for node in ast.walk(manager) if isinstance(node, ast.Call)
                  and isinstance(node.func, ast.Name) and node.func.id == "advance_protection"]
         if (len(trailing.body) != 1
-                or ast.unparse(trailing.body[0]) != "return self.strategy_number not in (5, 6, 8, 9, 10)"
+                or ast.unparse(trailing.body[0]) != "return self.strategy_number not in (5, 6, 8, 9, 10, 11)"
                 or len(bound) != 1 or not any(key.arg == "allows_completed_30s_trailing"
                     and ast.unparse(key.value) == "self.contract.allows_completed_30s_trailing"
                     for key in bound[0].keywords)):
             raise ValueError("Strategy 7 must restore the existing completed-low trailing branch")
-    if strategy_number in (6, 7, 8, 9, 10):
+    if strategy_number in (6, 7, 8, 9, 10, 11):
         reducer = named(trees[7], "advance_protection")
         targets = [node for node in reducer.body if isinstance(node, ast.Assign)
                    and any(isinstance(target, ast.Name) and target.id == "target_amendment" for target in node.targets)]
@@ -201,7 +202,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                     and ast.unparse(key.value) == "self.contract.allows_target_escalation"
                     for key in bindings[0].keywords)):
             raise ValueError("Strategy 6 must freeze only subsequent target escalation")
-    if strategy_number in (8, 9, 10):
+    if strategy_number in (8, 9, 10, 11):
         cap = named(trees[0], "caps_entry_at_reference_ask")
         entry = named(trees[8], "strategy_one_entry_intent")
         envelopes = [node for node in ast.walk(entry) if isinstance(node, ast.Call)
@@ -210,7 +211,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                     and isinstance(node.func, ast.Name) and node.func.id == "ExecutionPolicy"]
         envelope_keys = {key.arg: ast.unparse(key.value) for key in envelopes[0].keywords} if len(envelopes) == 1 else {}
         policy_keys = {key.arg: ast.unparse(key.value) for key in policies[0].keywords} if len(policies) == 1 else {}
-        if (len(cap.body) != 1 or ast.unparse(cap.body[0]) != "return self.strategy_number in (8, 9, 10)"
+        if (len(cap.body) != 1 or ast.unparse(cap.body[0]) != "return self.strategy_number in (8, 9, 10, 11)"
                 or envelope_keys.get("maximum_buy_price") != "proposal.reference_ask if numbered_fixed_strategy(proposal.strategy_number).caps_entry_at_reference_ask else None"
                 or envelope_keys.get("persist_until_cancelled") != "True"
                 or policy_keys.get("partial_fill_policy") != "PartialFillPolicy.COMPLETE_REMAINDER"):
@@ -219,12 +220,58 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                and isinstance(node.func, ast.Name) and node.func.id == "StrategyIntent"]
     keywords = {key.arg: ast.unparse(key.value) for key in intents[0].keywords} if len(intents) == 1 else {}
     if (keywords.get("action") != "'exit'" or keywords.get("metadata") != "{}"
-            or keywords.get("reason") != "'strategy_two_session_exit' if strategy_number == 2 else 'strategy_three_session_exit' if strategy_number == 3 else 'strategy_four_session_exit' if strategy_number == 4 else 'strategy_five_session_exit' if strategy_number == 5 else 'strategy_six_session_exit' if strategy_number == 6 else 'strategy_seven_session_exit' if strategy_number == 7 else 'strategy_eight_session_exit' if strategy_number == 8 else 'strategy_nine_session_exit' if strategy_number == 9 else 'strategy_ten_session_exit'"):
+            or keywords.get("reason") != "'strategy_two_session_exit' if strategy_number == 2 else 'strategy_three_session_exit' if strategy_number == 3 else 'strategy_four_session_exit' if strategy_number == 4 else 'strategy_five_session_exit' if strategy_number == 5 else 'strategy_six_session_exit' if strategy_number == 6 else 'strategy_seven_session_exit' if strategy_number == 7 else 'strategy_eight_session_exit' if strategy_number == 8 else 'strategy_nine_session_exit' if strategy_number == 9 else 'strategy_ten_session_exit' if strategy_number == 10 else 'strategy_eleven_session_exit'"):
         raise ValueError("Strategy 2 liquidation source is not a normalized scalar exit")
-    return sha256(json.dumps({"strategy_number": strategy_number, "inventory": base, "followthrough": followthrough_proof, "entry_scope": entry_scope_proof,
+    return sha256(json.dumps({"strategy_number": strategy_number, "inventory": base, "followthrough": followthrough_proof, "entry_scope": entry_scope_proof, "early_failure": early_failure_proof,
         "identity": _certify_numbered_identity(), "sources": tuple(
             sha256(source.encode()).hexdigest() for source in sources)},
         sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+
+def certify_early_followthrough_failure_v4_source(*, source_path: Path | None = None,
+                                                management_path: Path | None = None) -> str:
+    """Strategy 11 binds the inclusive minute bound to first held authority."""
+    runtime_root = Path(__file__).parents[1] / "trading_runtime"
+    paths = (source_path or runtime_root / "strategy_early_followthrough_failure.py",
+             management_path or Path(__file__).with_name("backtest_strategy_one_management.py"),
+             runtime_root / "arte_followthrough_failure_v4.py",
+             runtime_root / "runtime.py")
+    sources = tuple(path.read_text(encoding="utf-8") for path in paths)
+    trees = tuple(ast.parse(source) for source in sources)
+    functions = [n for n in trees[0].body if isinstance(n, ast.FunctionDef)
+                 and n.name == "early_followthrough_failure"]
+    constants = [n for n in trees[0].body if isinstance(n, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == "EARLY_FAILURE_WINDOW_MS" for target in n.targets)]
+    if (len(functions) != 1 or len(constants) != 1
+            or ast.unparse(constants[0].value) != "60000"):
+        raise ValueError("Strategy 11 early failure bound changed")
+    function = functions[0]
+    substantive = [n for n in function.body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str))]
+    expected = ("witness = followthrough_failure(value)",
+                "if witness is None or witness.boundary_ms - witness.first_held_boundary_ms > EARLY_FAILURE_WINDOW_MS:\n    return None",
+                "return witness")
+    if tuple(ast.unparse(n) for n in substantive) != expected:
+        raise ValueError("Strategy 11 must preserve original failure conditions and inclusive first-held age")
+    assignments = [n for n in ast.walk(trees[1]) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "failure_rule" for t in n.targets)]
+    if (len(assignments) != 1 or ast.unparse(assignments[0].value)
+            != "early_followthrough_failure if self.contract.strategy_number == 11 else followthrough_failure"):
+        raise ValueError("Strategy 11 early failure predicate is not exclusively routed")
+    numbered = [n for n in trees[2].body if isinstance(n, ast.FunctionDef)
+                and n.name == "validate_numbered_failure"]
+    if (len(numbered) != 1
+            or "strategy_number == 11" not in ast.unparse(numbered[0])
+            or "witness.boundary_ms - witness.first_held_boundary_ms > EARLY_FAILURE_WINDOW_MS" not in ast.unparse(numbered[0])):
+        raise ValueError("Strategy 11 normalized witness must preserve its inclusive first-held bound")
+    execute = [n for n in ast.walk(trees[3]) if isinstance(n, ast.AsyncFunctionDef)
+               and n.name == "_execute_intents"]
+    if (len(execute) != 1 or not any(isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name) and n.func.id == "validate_numbered_failure"
+            for n in ast.walk(execute[0]))):
+        raise ValueError("Strategy 11 runtime must validate its numbered failure witness")
+    return sha256(json.dumps(tuple((path.name, sha256(source.encode()).hexdigest())
+        for path, source in zip(paths, sources)), separators=(",", ":")).encode()).hexdigest()
 
 
 def certify_empty_exclusion_entry_scope_source(*, source_path: Path | None = None) -> str:
@@ -302,9 +349,14 @@ def certify_followthrough_failure_v4_source() -> str:
     if keys.get("metadata") != "{}" or keys.get("action") != "'exit'" or keys.get("reason") != "'strategy_nine_followthrough_failure'":
         raise ValueError("Strategy 9 exit must use a metadata-free normalized intent")
     management = named(trees[4], "on_management")
+    selectors = [n for n in ast.walk(management) if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == "failure_rule" for t in n.targets)]
+    if (len(selectors) != 1 or ast.unparse(selectors[0].value)
+            != "early_followthrough_failure if self.contract.strategy_number == 11 else followthrough_failure"):
+        raise ValueError("Original failure rule must remain routed exclusively to Strategy 9/10")
     submit = named(trees[3], "submit_followthrough_failure")
     execute = named(trees[3], "_execute_intents")
-    if (not {"followthrough_failure", "submit_followthrough_failure"} <= calls(management)
+    if (not {"failure_rule", "submit_followthrough_failure"} <= calls(management)
             or not {"followthrough_exit_intent", "_execute_intents"} <= calls(submit)
             or "append_followthrough_exit" not in calls(execute)):
         raise ValueError("Strategy 9 normalized followthrough source proof routing is not wired")
@@ -313,12 +365,15 @@ def certify_followthrough_failure_v4_source() -> str:
     source = named(trees[9], "append_followthrough_exit")
     if (not {"followthrough_exit_for_record", "project_followthrough_failure", "V4FollowThroughFailureBatch"} <= calls(projection)
             or "submit_followthrough_exit_v4" not in calls(publisher)
-            or "validate_witness" not in calls(source)):
+            or "validate_numbered_failure" not in calls(source)):
         raise ValueError("Strategy 9 normalized followthrough source proof publisher is not wired")
     project = named(trees[2], "project_followthrough_failure")
     seal = named(trees[2], "seal_followthrough_rows")
-    if "validate_witness" not in calls(project) or not {"restore_failure", "_source_entry", "typed_row"} <= calls(seal):
+    if "validate_numbered_failure" not in calls(project) or not {"restore_failure", "_source_entry", "typed_row"} <= calls(seal):
         raise ValueError("Strategy 9 failure source must bind its typed original entry graph")
+    numbered_validation = named(trees[2], "validate_numbered_failure")
+    if "validate_witness" not in calls(numbered_validation):
+        raise ValueError("Normalized numbered failure must preserve its original witness validation")
     named(trees[5], "submit_followthrough_exit_v4")
     if "seal_followthrough_rows" not in calls(trees[6]):
         raise ValueError("Strategy 9 durable commit lacks the witness seal")

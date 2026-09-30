@@ -2770,7 +2770,7 @@ class OrderManagementEngine:
 
     async def cancel_numbered_session_acquisitions(self, *, at: datetime) -> None:
         """Cancel open acquisition roots through typed command/state receipts."""
-        if (self.strategy_id != STRATEGY_ID or self.strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10)) or not self.causal_execution_clock:
+        if (self.strategy_id != STRATEGY_ID or self.strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11)) or not self.causal_execution_clock:
             raise ValueError("Session cutoff needs the numbered fixed OMS")
         changed = False
         for group in tuple(self._groups.values()):
@@ -2784,7 +2784,8 @@ class OrderManagementEngine:
                           else "strategy_seven_session_cutoff" if self.strategy_revision == 7
                           else "strategy_eight_session_cutoff" if self.strategy_revision == 8
                           else "strategy_nine_session_cutoff" if self.strategy_revision == 9
-                          else "strategy_ten_session_cutoff")
+                          else "strategy_ten_session_cutoff" if self.strategy_revision == 10
+                          else "strategy_eleven_session_cutoff")
                 changed = await self._cancel_open_entry_roots(group, reason) or changed
         if changed:
             await self.reconcile()

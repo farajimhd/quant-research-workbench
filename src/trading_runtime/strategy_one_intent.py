@@ -52,7 +52,7 @@ def strategy_one_entry_intent(
     if (not isinstance(proposal, StrategyOneEntryProposal)
             or not isinstance(session_date, date)
             or isinstance(session_date, datetime)
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
             or type(proposal.boundary_ms) is not int
             or not 0 < proposal.boundary_ms <= 57_600_000
             or proposal.boundary_ms % 100

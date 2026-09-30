@@ -37,12 +37,21 @@ class V4FollowThroughFailureBatch:
         object.__setattr__(self, "failure", MappingProxyType(dict(self.failure)))
 
 
+
+def validate_numbered_failure(witness, strategy_number):
+    """Pin the successor eligibility bound at every persistence boundary."""
+    validate_witness(witness)
+    if type(strategy_number) is not int or strategy_number not in (9, 10, 11):
+        raise ValueError("Failure evidence requires Strategy 9, 10 or 11")
+    if strategy_number == 11:
+        from .strategy_early_followthrough_failure import EARLY_FAILURE_WINDOW_MS
+        if witness.boundary_ms - witness.first_held_boundary_ms > EARLY_FAILURE_WINDOW_MS:
+            raise ValueError("Strategy 11 failure witness exceeds the first-minute eligibility window")
+
 def project_followthrough_failure(witness, intent, source_entry_intent_id, *,
                                 run_id, batch_id, parent_record_id, assignment_id, strategy_number=9):
-    validate_witness(witness)
+    validate_numbered_failure(witness, strategy_number)
     UUID(source_entry_intent_id)
-    if type(strategy_number) is not int or strategy_number not in (9, 10):
-        raise ValueError("Failure evidence requires Strategy 9 or its Strategy 10 successor")
     if intent.reason != REASON or intent.action != "exit" or intent.metadata or not assignment_id:
         raise ValueError("Failure witness requires a metadata-free Strategy 9 exit")
     return dict(record_id=str(uuid5(NAMESPACE_URL, f"{run_id}:{parent_record_id}:followthrough")),
@@ -56,7 +65,7 @@ def restore_failure(row):
     integer = {"boundary_ms", "first_held_boundary_ms", "completed_close_int", "quote_age_us"}
     witness = FollowThroughFailure(**{f.name: (int(row[f.name]) if f.name in integer else float(row[f.name]))
                                      for f in fields(FollowThroughFailure)})
-    validate_witness(witness)
+    validate_numbered_failure(witness, row["strategy_number"])
     return witness
 
 
@@ -162,7 +171,7 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
             if len(matches) != 1:
                 raise ValueError("Follow-through original entry has no exact typed evidence")
             source_child = matches[0]
-        if (row['strategy_number'] not in (9, 10)
+        if (row['strategy_number'] not in (9, 10, 11)
                 or source_child['strategy_number'] != row['strategy_number']
                 or row['assignment_id'] != source_child['assignment_id']
                 or row['run_id'] != parent['run_id'] or row['batch_id'] != parent['batch_id']

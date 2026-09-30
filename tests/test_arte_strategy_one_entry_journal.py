@@ -24,10 +24,10 @@ from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 
 
-def _source():
+def _source(strategy_number=1):
     proposal = StrategyOneEntryProposal(
         "assignment-1", "DU1", "AAA", 31_000, 30_000, 10.01, 9.89,
-        12., "R4", .5, 30_000, "S1",
+        12., "R4", .5, 30_000, "S1", strategy_number,
     )
     session = date(2026, 8, 18)
     return proposal, strategy_one_entry_intent(proposal, session_date=session), session
@@ -72,8 +72,9 @@ def test_entry_evidence_rejects_parent_intent_or_causal_mismatch():
                                       session_date=session), **kwargs)
 
 
-def test_v4_commit_seals_exact_one_entry_child_to_the_typed_parent(monkeypatch):
-    proposal, intent, session = _source()
+@pytest.mark.parametrize("strategy_number", [1, 9, 10, 11])
+def test_v4_commit_seals_exact_one_entry_child_to_the_typed_parent(monkeypatch, strategy_number):
+    proposal, intent, session = _source(strategy_number)
     attempt, batch_id = str(uuid4()), str(uuid4())
     prior = "00000000-0000-0000-0000-000000000000"
     item = strategy_intent_batch(
