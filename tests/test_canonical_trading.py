@@ -679,6 +679,15 @@ class CanonicalProjectionTests(unittest.TestCase):
 
 
 class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_incremental_admission_refresh_is_not_live_authority(self) -> None:
+        broker = SimulatedBrokerAdapter(["SIM"], mode=TradingMode.PAPER)
+        session = CanonicalBrokerSession(
+            broker, mode=TradingMode.PAPER,
+            provider=BrokerProvider.SIMULATED,
+        )
+        with self.assertRaisesRegex(ValueError, "Backtest-only"):
+            await session.reconcile(include_executions=False)
+
     async def test_simulated_adapter_accepts_canonical_intent_and_returns_audit_events(self) -> None:
         broker = SimulatedBrokerAdapter(["SIM"], mode=TradingMode.BACKTEST)
         await broker.initialize()
@@ -800,6 +809,21 @@ class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.executions[0].quantity, Decimal("5"))
         self.assertEqual(snapshot.positions[0].quantity, Decimal("5"))
         self.assertTrue(snapshot.orders[0].terminal)
+
+        # Strategy 1 admission refreshes current buying power and positions,
+        # but must not re-fetch every execution already applied above.
+        with patch.object(
+            broker,
+            "canonical_executions",
+            side_effect=AssertionError("entry admission rescanned fill history"),
+        ):
+            await session.reconcile(include_executions=False)
+        refreshed = session.projector.snapshot()
+        self.assertEqual(refreshed.executions, snapshot.executions)
+        self.assertEqual(
+            [(row.instrument.conid, row.quantity) for row in refreshed.positions],
+            [(row.instrument.conid, row.quantity) for row in snapshot.positions],
+        )
 
 
 class CanonicalBacktestTests(unittest.TestCase):

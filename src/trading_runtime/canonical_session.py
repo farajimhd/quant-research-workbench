@@ -96,7 +96,18 @@ class CanonicalBrokerSession:
             self.sink.persist_canonical_events(events)
         return events
 
-    async def reconcile(self) -> dict[str, Any]:
+    async def reconcile(self, *, include_executions: bool = True) -> dict[str, Any]:
+        """Refresh broker authority; preserve incrementally applied fills when requested.
+
+        Only the single-threaded simulated Backtest admission path may skip
+        the historical execution rescan. Its fills must already have passed
+        through ``reconcile_executions`` before the next strategy decision.
+        """
+        if not include_executions and (
+            self.provider != BrokerProvider.SIMULATED
+            or self.mode != TradingMode.BACKTEST
+        ):
+            raise ValueError("Incremental execution projection is Backtest-only")
         before = self.projector.snapshot()
         differences: dict[str, Any] = {
             "account_values": [],
@@ -153,17 +164,21 @@ class CanonicalBrokerSession:
         for account in before.accounts:
             if account.can_trade:
                 orders.extend(await self.adapter.canonical_orders(account.account_id))
-                executions.extend(await self.adapter.canonical_executions(account.account_id, days=7))
+                if include_executions:
+                    executions.extend(await self.adapter.canonical_executions(
+                        account.account_id, days=7))
         previous_orders = {(row.account_id, row.broker_order_id): (row.lifecycle_state.value, row.filled_quantity) for row in before.orders}
         current_orders = {(row.account_id, row.broker_order_id): (row.lifecycle_state.value, row.filled_quantity) for row in orders}
         if previous_orders != current_orders:
             differences["orders"] = {"before": json_safe(previous_orders), "after": json_safe(current_orders)}
-        previous_executions = {(row.account_id, row.execution_id) for row in before.executions}
-        current_executions = {(row.account_id, row.execution_id) for row in executions}
-        if previous_executions != current_executions:
-            differences["executions"] = {"missing": sorted(previous_executions - current_executions), "new": sorted(current_executions - previous_executions)}
+        if include_executions:
+            previous_executions = {(row.account_id, row.execution_id) for row in before.executions}
+            current_executions = {(row.account_id, row.execution_id) for row in executions}
+            if previous_executions != current_executions:
+                differences["executions"] = {"missing": sorted(previous_executions - current_executions), "new": sorted(current_executions - previous_executions)}
         self.projector.set_orders(orders)
-        self.projector.set_executions(executions)
+        if include_executions:
+            self.projector.set_executions(executions)
         event = self._event(
             BrokerEventType.RECONCILIATION_COMPLETED,
             "",

@@ -226,6 +226,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--left", required=True, type=lambda value: str(UUID(value)))
     parser.add_argument("--right", required=True, type=lambda value: str(UUID(value)))
+    parser.add_argument("--allow-failed-terminal", action="store_true",
+                        help="diagnostic only: compare two cold-verified failed cutoffs")
     parser.add_argument("--explain", action="store_true",
                         help="print bounded scalar lineage and order-side fill differences")
     parser.add_argument("--ticker", default="",
@@ -240,8 +242,12 @@ def main() -> None:
     try:
         reviews = [load_v4_terminal_review_page(client, run_id, limit=1)
                    for run_id in (args.left, args.right)]
-        if any(review["status"] != "completed" for review in reviews):
-            raise RuntimeError("Both runs must have cold-verified completed journals")
+        statuses = tuple(review["status"] for review in reviews)
+        if statuses != ("completed", "completed"):
+            if not args.allow_failed_terminal or statuses != ("failed", "failed"):
+                raise RuntimeError("Both runs must have matching cold-verified terminal statuses")
+            print("Diagnostic comparison of failed cutoffs; not Backtest acceptance",
+                  flush=True)
         print("Cold V4 journal verification: passed for both runs", flush=True)
         financial = [{account: {key: value for key, value in row.items()
                                 if key != "source_timestamp_ms"}

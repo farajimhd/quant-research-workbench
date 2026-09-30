@@ -1032,7 +1032,9 @@ class TradingRuntime:
                 # the admission boundary. Periodic synchronization remains a
                 # health/reconciliation mechanism, not sizing authority for a
                 # new exposure-increasing order.
-                await self._refresh_portfolio_from_broker()
+                await self._refresh_portfolio_from_broker(
+                    for_entry_admission=(strategy_one_proposal is not None
+                                         or strategy_one_add_proposal is not None))
             assignment_id = (strategy_one_proposal.assignment_id
                              if strategy_one_proposal is not None
                              else strategy_one_add_proposal.assignment_id
@@ -1561,13 +1563,26 @@ class TradingRuntime:
             return replace(snapshot, as_of=as_of) if as_of is not None else snapshot
         raise RuntimeError("The configured broker does not expose canonical Replay state")
 
-    async def _refresh_portfolio_from_broker(self) -> None:
+    async def _refresh_portfolio_from_broker(
+        self, *, for_entry_admission: bool = False,
+    ) -> None:
         async with self._portfolio_sync_lock:
             if self._canonical_session is not None:
                 if (getattr(self.portfolio, "_typed_recovery", False)
                         and not getattr(self.portfolio, "_typed_backtest_recovery", False)):
                     raise RuntimeError("Typed portfolio canonical broker sync is not wired")
-                await self._canonical_session.reconcile()
+                from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+                incremental_fills = for_entry_admission and (
+                    self.config.mode == RunMode.BACKTEST
+                    and self.config.strategy_id == STRATEGY_ID
+                    and self.config.strategy_revision == STRATEGY_NUMBER
+                )
+                # The 100 ms broker applies each new fill through the canonical
+                # projector before strategy admission. Preserve those fills and
+                # refresh current cash/positions/orders without re-normalizing
+                # every prior execution on every candidate boundary.
+                await self._canonical_session.reconcile(
+                    include_executions=not incremental_fills)
                 self.portfolio.synchronize_canonical(
                     self._canonical_session.projector.snapshot(),
                     persist=not self._review_only,

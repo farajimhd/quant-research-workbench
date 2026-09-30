@@ -163,10 +163,71 @@ def _profile_v7_seeds(enabled: bool):
                   f"max_call_s={slowest:.3f}", flush=True)
 
 
+@contextmanager
+def _profile_entry_path(enabled: bool):
+    """Measure shared admission lanes without changing production control flow."""
+    if not enabled:
+        yield
+        return
+    from src.trading_runtime.runtime import TradingRuntime
+    from src.trading_runtime.portfolio import PortfolioManagementEngine
+    from src.trading_runtime.order_management import OrderManagementEngine
+    from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+
+    targets = (
+        (TradingRuntime, "_refresh_portfolio_from_broker", "portfolio_refresh"),
+        (TradingRuntime, "_synchronize_portfolio_broker", "broker_snapshot_sync"),
+        (PortfolioManagementEngine, "synchronize", "portfolio_sync"),
+        (PortfolioManagementEngine, "_persist_state", "portfolio_state_append"),
+        (PortfolioManagementEngine, "approve", "portfolio_approve"),
+        (OrderManagementEngine, "submit_intent", "oms_submit"),
+        (BacktestMemoryJournal, "append_strategy_one_intent", "intent_append"),
+        (SimulatedBrokerAdapter, "live_orders", "broker_live_orders"),
+        (SimulatedBrokerAdapter, "account_summary", "broker_account_summary"),
+        (SimulatedBrokerAdapter, "account_ledger", "broker_account_ledger"),
+        (SimulatedBrokerAdapter, "positions", "broker_positions"),
+    )
+    original = [(owner, name, getattr(owner, name)) for owner, name, _ in targets]
+    counts: Counter[str] = Counter()
+    seconds: Counter[str] = Counter()
+
+    def timed(label, function):
+        if asyncio.iscoroutinefunction(function):
+            async def call(*args, **kwargs):
+                started = perf_counter()
+                try:
+                    return await function(*args, **kwargs)
+                finally:
+                    counts[label] += 1
+                    seconds[label] += perf_counter() - started
+        else:
+            def call(*args, **kwargs):
+                started = perf_counter()
+                try:
+                    return function(*args, **kwargs)
+                finally:
+                    counts[label] += 1
+                    seconds[label] += perf_counter() - started
+        return call
+
+    for owner, name, label in targets:
+        setattr(owner, name, timed(label, getattr(owner, name)))
+    try:
+        yield
+    finally:
+        for owner, name, function in original:
+            setattr(owner, name, function)
+        for label in (row[2] for row in targets):
+            print(f"Entry path {label}: calls={counts[label]} "
+                  f"wall_s={seconds[label]:.3f}", flush=True)
+
+
 async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
                profile_v7: bool = False, profile_preflight: bool = False,
                repeat_preflight: int = 1,
-               profile_v7_seeds: bool = False) -> None:
+               profile_v7_seeds: bool = False,
+               profile_entry: bool = False) -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -222,6 +283,7 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
     sql_profile = _SqlCallProfile()
     with (_profile_v7_updates(profile_v7),
           _profile_v7_seeds(profile_v7_seeds),
+          _profile_entry_path(profile_entry),
           _profile_sql_calls(sql_profile)):
         began = perf_counter()
         response = await trading_backtest_run_create(request)
@@ -274,6 +336,8 @@ def main() -> None:
                         help="profile completed-second V7 engine calls in memory")
     parser.add_argument("--profile-v7-seeds", action="store_true",
                         help="time V7 seed read, split read, and book construction lanes")
+    parser.add_argument("--profile-entry", action="store_true",
+                        help="measure shared portfolio and OMS entry admission lanes")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="profile the read-only app preflight in memory")
     parser.add_argument("--repeat-preflight", type=int, default=1,
@@ -300,7 +364,8 @@ def main() -> None:
                       flush=True)
             await _run(args.session, args.ticker, args.minutes, args.cash,
                        args.apply, args.profile_v7, args.profile_preflight,
-                       args.repeat_preflight, args.profile_v7_seeds)
+                       args.repeat_preflight, args.profile_v7_seeds,
+                       args.profile_entry)
     asyncio.run(probes())
 
 
