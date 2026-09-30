@@ -27,7 +27,7 @@ from src.trading_runtime.arte_journal_commit_v4 import (
     V4CommittedPrefix, load_verified_v4_prefix,
 )
 from src.trading_runtime.arte_journal_reader import (
-    load_complete_typed_protection_history,
+    CompleteProtectionHistory, load_complete_typed_protection_history,
 )
 from src.trading_runtime.arte_oms_actor_restore import (
     TypedOmsActorImage, attach_typed_oms_observations,
@@ -71,6 +71,7 @@ class V4RunningRecoveryEvidence:
     quotes: dict[str, CompletedBrokerQuote]
     campaign: CampaignSnapshotRows
     oms_observations: OmsObservationSnapshotRows
+    protection_history: CompleteProtectionHistory | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +213,13 @@ def load_v4_running_oms_image(
     root = recovery.broker.snapshot
     cutoff = market_day_boundary(date.fromisoformat(root["session_date"]), 0)
     cutoff += timedelta(milliseconds=int(root["boundary_ms"]))
-    history = load_complete_typed_protection_history(client, recovery.prefix)
+    history = (recovery.protection_history if recovery.protection_history is not None
+               else load_complete_typed_protection_history(client, recovery.prefix))
+    if (not isinstance(history, CompleteProtectionHistory)
+            or history.run_id != recovery.prefix.run_id
+            or history.through_sequence != recovery.prefix.last_sequence
+            or history.committed_batch_ids != recovery.prefix.batch_ids):
+        raise RuntimeError("V4 OMS protection history differs from recovery prefix")
     image = reconstruct_typed_oms_actor_image(
         recovery.oms, history, run_id=recovery.prefix.run_id,
         strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
@@ -345,8 +352,11 @@ def load_v4_running_recovery_evidence(
                                   manager.pending_breaks)
                    for key, _ in family)):
         raise RuntimeError("V4 recovery families differ from pinned accounts or cursor")
+    history = load_complete_typed_protection_history(
+        client, prefix, page_size=1_000)
     oms = load_recovered_strategy_one_oms_lineage(
-        client, prefix, allowed_accounts=frozenset(account_ids))
+        client, prefix, allowed_accounts=frozenset(account_ids),
+        protection_history=history)
     requests = {}
     broker_bindings = {}
     seen_broker_ids = set()
@@ -385,4 +395,4 @@ def load_v4_running_recovery_evidence(
     if load_verified_v4_prefix(client, run_id) != prefix:
         raise RuntimeError("V4 recovery prefix moved across domain reads")
     return V4RunningRecoveryEvidence(prefix, progress, portfolios, manager, evidence, broker, oms,
-                                     quotes, campaign, oms_observations)
+                                     quotes, campaign, oms_observations, history)

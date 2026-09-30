@@ -18,6 +18,7 @@ from typing import Any, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
+from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
 from src.trading_runtime.arte_journal_projection import _exact_decimal
 from src.trading_runtime.arte_journal_writer import (
     VerifiedPrefix, TypedJournalBatch, _CONTRACTS, _canonical_typed_content,
@@ -672,6 +673,7 @@ def load_recovered_strategy_one_oms_lineage(
     allowed_accounts: frozenset[str], page_size: int = 500,
     max_transitions: int = 20_000, max_groups: int = 2_000,
     max_events: int = 100_000,
+    protection_history: CompleteProtectionHistory | None = None,
 ) -> tuple[RecoveredStrategyOneOmsLineage, ...]:
     """Cold-join latest OMS groups to exact intents and complete protection.
 
@@ -700,8 +702,12 @@ def load_recovered_strategy_one_oms_lineage(
     # child; using that full bound avoids five small network round trips for
     # each one that the OMS group join actually needs. Keep the OMS join's
     # tighter page size because its per-group child budget is separate.
-    history = load_complete_typed_protection_history(
-        client, prefix, page_size=1_000, max_events=max_events)
+    if protection_history is not None and not isinstance(
+            protection_history, CompleteProtectionHistory):
+        raise TypeError("Strategy 1 OMS needs verified protection history")
+    history = (protection_history if protection_history is not None
+               else load_complete_typed_protection_history(
+                   client, prefix, page_size=1_000, max_events=max_events))
     if (history.run_id != prefix.run_id
             or history.through_sequence != prefix.last_sequence
             or history.committed_batch_ids != prefix.batch_ids):

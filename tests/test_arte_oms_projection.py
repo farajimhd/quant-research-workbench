@@ -208,6 +208,11 @@ def test_strategy_one_cold_join_uses_exact_intent_and_complete_history(
     assert joined[0].approved_intent.metadata["assignment_id"] == "assignment-1"
     assert joined[0].approved_intent.quantity == 5
     monkeypatch.setattr(reader, "load_complete_typed_protection_history",
+                        lambda *_a, **_k: pytest.fail("verified history loaded twice"))
+    assert load_recovered_strategy_one_oms_lineage(
+        object(), prefix, allowed_accounts=frozenset({"DU1"}),
+        protection_history=history) == joined
+    monkeypatch.setattr(reader, "load_complete_typed_protection_history",
                         lambda *_a, **_k: replace(history, through_sequence=1))
     with pytest.raises(RuntimeError, match="history head differs"):
         load_recovered_strategy_one_oms_lineage(

@@ -60,6 +60,10 @@ def _install(monkeypatch, *, open_orders=(), oms=(), moved=False):
                         lambda *_a, **_k: observations)
     monkeypatch.setattr(subject, "load_recovered_strategy_one_oms_lineage",
                         lambda *_a, **_k: oms)
+    from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
+    monkeypatch.setattr(subject, "load_complete_typed_protection_history",
+                        lambda *_a, **_k: CompleteProtectionHistory(
+                            RUN, PREFIX.last_sequence, PREFIX.batch_ids, ()))
     monkeypatch.setattr(subject, "load_completed_broker_quotes",
                         lambda *_a, **_k: {})
     monkeypatch.setattr(subject, "load_verified_v4_prefix",
@@ -282,10 +286,10 @@ def test_v4_oms_image_joins_complete_protection_and_broker(monkeypatch):
         manager_keeper=object(), broker_keeper=object(), evidence_keeper=object(),
         market_client=object(), market_plan=object())
     calls = []
-    history = object()
+    history = recovery.protection_history
     image = object()
     monkeypatch.setattr(subject, "load_complete_typed_protection_history",
-                        lambda client, prefix: calls.append((client, prefix)) or history)
+                        lambda *_a, **_k: pytest.fail("protection history loaded twice"))
 
     def reconstruct(oms, protection, **kwargs):
         assert oms == recovery.oms and protection is history
