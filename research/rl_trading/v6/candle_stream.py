@@ -23,7 +23,7 @@ class SparseCandleState:
     history: torch.Tensor  # [N,120,D], detached at chunk boundaries.
     encoded: torch.Tensor  # [N,D], most recent completed actual candle.
     seen: torch.Tensor  # [N], actual observed count; not clock seconds.
-    _updates: dict[int, torch.Tensor] = field(default_factory=dict, repr=False)
+    _updates: dict[int, tuple[torch.Tensor, int]] = field(default_factory=dict, repr=False)
 
     def history_for(self, indices: torch.Tensor) -> torch.Tensor:
         """Gather [K,120,D] only, including this BPTT chunk's sparse graph.
@@ -35,7 +35,21 @@ class SparseCandleState:
         keys = indices.detach().cpu().tolist()
         if not any(key in self._updates for key in keys):
             return self.history.index_select(0, indices)
-        return torch.stack([self._updates.get(key, self.history[key]) for key in keys])
+        # Group identity pointers by event tensor. One batched gather/scatter
+        # per event replaces one slice and autograd node per listing.
+        groups = {}
+        for destination, key in enumerate(keys):
+            if key in self._updates:
+                block, source = self._updates[key]
+                group = groups.setdefault(id(block), (block, [], []))
+                group[1].append(destination)
+                group[2].append(source)
+        result = self.history.index_select(0, indices)
+        for block, destinations, sources in groups.values():
+            destination = torch.tensor(destinations, device=indices.device)
+            source = torch.tensor(sources, device=indices.device)
+            result = result.index_copy(0, destination, block.index_select(0, source))
+        return result
 
     @classmethod
     def empty(cls, encoder: ActualCandleEncoder, listings: int, *,
@@ -73,7 +87,7 @@ class SparseCandleState:
         encoded = encoder.norm(F.gelu(weighted))
         if torch.is_grad_enabled():
             for offset, key in enumerate(listing_index.detach().cpu().tolist()):
-                self._updates[key] = updated[offset]
+                self._updates[key] = (updated, offset)
         else:
             self.history[listing_index] = updated
         self.encoded = self.encoded.index_copy(0, listing_index, encoded)
@@ -89,7 +103,7 @@ class SparseCandleState:
             with torch.no_grad():
                 keys = list(self._updates)
                 indices = torch.tensor(keys, device=self.history.device, dtype=torch.long)
-                self.history[indices] = torch.stack([self._updates[key].detach() for key in keys])
+                self.history[indices] = self.history_for(indices).detach()
             self._updates.clear()
         self.history = self.history.detach()
         self.encoded = self.encoded.detach()

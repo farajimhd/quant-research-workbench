@@ -1,4 +1,5 @@
 import torch
+from copy import deepcopy
 
 from research.rl_trading.v6.candle_stream import SparseCandleState
 from research.rl_trading.v6.model import ActualCandleEncoder
@@ -44,6 +45,30 @@ def test_batched_sparse_updates_preserve_independent_listing_histories():
     state.embeddings().sum().backward()
     assert encoder.lag.grad is not None
     assert state.history.data_ptr() == base_pointer
+
+
+def test_grouped_history_gather_preserves_projection_gradients_with_reranking():
+    torch.manual_seed(71)
+    encoder = ActualCandleEncoder(width=8)
+    reference = deepcopy(encoder)
+    state = SparseCandleState.empty(encoder, 3, device=torch.device('cpu'),
+                                   dtype=torch.float32)
+    base_pointer = state.history.data_ptr()
+    scalar, levels = torch.randn(4, 37), torch.randn(4, 2, 5, 11)
+    state.advance(encoder, torch.tensor([0, 2]), scalar[:2], levels[:2])
+    state.advance(encoder, torch.tensor([1, 2]), scalar[2:], levels[2:])
+    selected = torch.tensor([2, 0, 1])
+    actual = state.history_for(selected)
+    projected = reference.project(reference._input(scalar, levels))
+    expected = torch.stack([
+        torch.cat((projected.new_zeros(118, 8), projected[[1, 3]])),
+        torch.cat((projected.new_zeros(119, 8), projected[[0]])),
+        torch.cat((projected.new_zeros(119, 8), projected[[2]]))])
+    torch.testing.assert_close(actual, expected)
+    actual.square().sum().backward()
+    expected.square().sum().backward()
+    torch.testing.assert_close(encoder.project.weight.grad,
+                               reference.project.weight.grad)
     assert state.history.grad_fn is None
     assert state._updates
     state.detach()

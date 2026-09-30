@@ -223,14 +223,14 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                 index = torch.from_numpy(
                     event.listing_index.astype(np.int64)).to(device)
                 rows = event.bank_row
-                scalar = torch.from_numpy(np.asarray(
-                    session.bank.scalar[rows]).copy()).to(device)
+                scalar_cpu = np.asarray(session.bank.scalar[rows]).copy()
+                scalar = torch.from_numpy(scalar_cpu).to(device)
                 levels = torch.from_numpy(np.asarray(
                     session.bank.levels[rows]).copy()).to(device)
                 state.advance(policy.encoder, index, scalar, levels)
                 if ranked:
                     policy.observe_market(state, event.close_us,
-                        event.listing_index, scalar.detach().cpu().numpy())
+                        event.listing_index, scalar_cpu)
                 for item in decision_groups.pop(event.close_us, ()):
                     if ranked:
                         policy.set_pending(pending_entries.values())
