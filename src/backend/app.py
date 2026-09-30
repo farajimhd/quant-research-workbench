@@ -678,9 +678,10 @@ def _qmd_stream_error(error: Exception, *, stream: str) -> dict[str, Any]:
 
 replay_run_service = ReplayRunService()
 backtest_run_service = ReplayRunService(
-    # Keep public resume closed until a cold interrupted Strategy 1 run has
-    # matched an uninterrupted run through the same API and typed journal.
-    runtime_root=backtest_runtime_root(), allow_typed_backtest_resume=False)
+    # A cold interrupted Strategy 1 run now matches an uninterrupted run
+    # through this service's typed journal path. Resume still requires the
+    # verified running V4 anchor, exact run definition, and Keeper lease.
+    runtime_root=backtest_runtime_root(), allow_typed_backtest_resume=True)
 backtest_debug_run_service = ReplayRunService(runtime_root=backtest_debug_runtime_root())
 
 

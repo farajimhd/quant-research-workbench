@@ -21,8 +21,8 @@ def _ready() -> dict:
     }
 
 
-def test_public_backtest_resume_stays_closed_without_interrupted_run_parity() -> None:
-    assert app.backtest_run_service.allow_typed_backtest_resume is False
+def test_public_backtest_resume_uses_verified_typed_path() -> None:
+    assert app.backtest_run_service.allow_typed_backtest_resume is True
 
 
 def test_app_probe_defaults_to_read_only_preflight(monkeypatch) -> None:
