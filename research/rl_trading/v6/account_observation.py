@@ -49,11 +49,10 @@ def observe_account(account: BracketAccount, tickers: tuple[str, ...],
             raise ValueError('Held position lacks a causal positive mark')
         mark_prices[ticker] = price
     equity = account.marked_equity(mark_prices)
-    realized = sum(row['net_pnl'] for row in account.closed)
+    realized = account.realized_net
     exposure = sum(account.positions[ticker].shares*mark_prices[ticker]
                    for ticker in held)
-    last_action_us = max((row['bucket_end_us'] for row in account.orders),
-                         default=close_us)
+    last_action_us = account.latest_order_us if account.latest_order_us is not None else close_us
     if last_action_us > close_us:
         raise ValueError('OMS order lies after observation close')
     state = np.asarray((account.cash, equity, realized,

@@ -62,6 +62,10 @@ class BracketAccount:
         self.orders: list[dict] = []
         self.closed: list[dict] = []
         self.fees = 0.
+        # Append-order aggregates mirror the ledgers without rescanning all
+        # historical executions at every causal account observation.
+        self.realized_net = 0.
+        self.latest_order_us: int | None = None
 
     def _fee(self, shares: int, price: float, side: int) -> float:
         return sum(charges(shares, price, side, self.config).values())
@@ -76,6 +80,7 @@ class BracketAccount:
                        'filled' if filled == requested else 'partial'),
             'reason': reason,
             'fill_scenario': 'optimistic_displayed_liquidity_upper_bound'})
+        self.latest_order_us = clock if self.latest_order_us is None else max(self.latest_order_us, clock)
 
     def enter_long(self, ticker: str, *, decision_us: int,
                    decision_close: float, budget: float,
@@ -163,6 +168,7 @@ class BracketAccount:
             'entry_price': position.entry_price, 'exit_price': price,
             'entry_fee': entry_fee, 'exit_fee': fee,
             'gross_pnl': gross, 'net_pnl': net, 'exit_action': action})
+        self.realized_net += net
         self._record(action=action, ticker=ticker, clock=clock_us,
                      requested=requested, filled=quantity, price=price, fee=fee)
         if position.shares == 0:

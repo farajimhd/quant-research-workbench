@@ -33,6 +33,24 @@ def test_observation_binds_confirmed_holding_and_armed_children():
     assert np.isfinite(armed.account).all()
 
 
+def test_incremental_account_totals_match_partial_and_full_exit_ledgers():
+    account = BracketAccount()
+    queue = CausalOrderQueue(account)
+    for cycle in range(3):
+        at = 10_000_000 * (cycle + 1)
+        account.enter_long('ABC', decision_us=at, decision_close=10., budget=1000.,
+            quote=Quote(at+100_000, at+90_000, 9.99, 10., 500., 500., True))
+        quantity = account.positions['ABC'].shares
+        account._sell('ABC', quantity//2, 10.5, at+200_000, 'exit_long')
+        account._sell('ABC', quantity, 9.8, at+300_000, 'exit_long')
+        assert account.realized_net == sum(row['net_pnl'] for row in account.closed)
+        assert account.latest_order_us == max(row['bucket_end_us'] for row in account.orders)
+        snapshot = observe_account(account, ('ABC',), {}, close_us=at+400_000, queue=queue)
+        assert snapshot.account[2] == np.float32(account.realized_net)
+    with pytest.raises(ValueError, match='after observation'):
+        observe_account(account, ('ABC',), {}, close_us=1, queue=queue)
+
+
 def test_observation_rejects_future_mark_and_missing_identity():
     account = BracketAccount()
     queue = CausalOrderQueue(account)
