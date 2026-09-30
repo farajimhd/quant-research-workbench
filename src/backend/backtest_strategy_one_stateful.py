@@ -6,6 +6,8 @@ facts. This adapter never derives an indicator or submits an order.
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import replace
+from src.trading_runtime.strategy_rising_momentum_witness import RisingMomentumWitness, rising_momentum_entry
 
 from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_strategy_one_entry_product import ActivationFact, CandidateFact
@@ -24,6 +26,7 @@ def propose_certified_strategy_one_entry(
     activation: ActivationFact, financial: StrategyOneFinancialView,
     *, reentry: StrategyOneReentryWitness | None = None,
     strategy_number: int = 1,
+    momentum: RisingMomentumWitness | None = None,
 ) -> StrategyOneEntryDecision:
     """Use only the certified completed row and exact producer-owned scalars."""
     numbered_fixed_strategy(strategy_number)
@@ -55,10 +58,18 @@ def propose_certified_strategy_one_entry(
         raise ValueError("Strategy 1 candidate quote is from the future")
     if reentry is not None and not isinstance(reentry, StrategyOneReentryWitness):
         raise TypeError("Strategy 1 re-entry witness is not typed")
-    if strategy_number == 12 and not recent_bos_entry(
+    if strategy_number in (12, 13) and not recent_bos_entry(
             boundary_ms=fact.boundary_ms,
             bos_break_boundary_ms=fact.bos_break_boundary_ms):
         return StrategyOneEntryDecision("recent_supported_bos_required")
+    if strategy_number == 13:
+        if (not isinstance(momentum, RisingMomentumWitness)
+                or momentum.ticker != fact.ticker or momentum.boundary_ms != fact.boundary_ms):
+            raise ValueError("Strategy 13 requires source-bound momentum witness")
+        if not rising_momentum_entry(momentum):
+            return StrategyOneEntryDecision("rising_completed_momentum_required")
+    elif momentum is not None:
+        raise ValueError("Earlier strategy cannot carry momentum evidence")
     evidence = StrategyOneEntryInput(
         fact.ticker, fact.boundary_ms, fact.episode_start_ms,
         activation.average_gap, fact.bos_break_boundary_ms,
@@ -66,4 +77,7 @@ def propose_certified_strategy_one_entry(
         fact.stop_price, fact.target_price, fact.target_level_id,
         fact.target_ordinal, bid_int, ask_int, now_us - quote_at,
         reentry)
-    return propose_strategy_one_entry(evidence, financial)
+    decision = propose_strategy_one_entry(evidence, financial)
+    if decision.proposal is not None and strategy_number == 13:
+        return replace(decision, proposal=replace(decision.proposal, momentum=momentum))
+    return decision

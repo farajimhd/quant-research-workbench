@@ -8,6 +8,8 @@ behavior change requires a new Strategy number, not an edit to this module.
 """
 from __future__ import annotations
 
+from .strategy_rising_momentum_witness import RisingMomentumWitness
+
 from dataclasses import dataclass
 from math import isfinite
 
@@ -84,6 +86,7 @@ class StrategyOneEntryProposal:
     bos_break_boundary_ms: int
     bos_support_level_id: str
     strategy_number: int = STRATEGY_NUMBER
+    momentum: RisingMomentumWitness | None = None
 
 
 @dataclass(frozen=True, slots=True)

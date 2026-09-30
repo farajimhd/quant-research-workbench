@@ -29,10 +29,11 @@ from .arte_oms_tactic_projection import (
 
 
 from .arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch, seal_followthrough_rows
+from .arte_rising_momentum_entry_v4 import MOMENTUM, seal_rising_momentum_rows
 
 _CHILD_KEYS = (
     "followthrough_failures", "command_lineages",
-    "entry_evidence", "add_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "momentum_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "reconciliation_actions",
@@ -40,7 +41,7 @@ _CHILD_KEYS = (
 )
 _EVENT_PARENT_KEYS = frozenset({
     "followthrough_failures", "command_lineages",
-    "entry_evidence", "add_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "momentum_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "oms_tactics",
@@ -82,7 +83,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
             ("oms_tactic_steps", row) for row in unit.tactic_steps)
     if type(unit) is V4StrategyOneEntryBatch:
         return (tuple(("entry_evidence", row) for row in unit.entry_evidence)
-                + tuple(("add_evidence", row) for row in unit.add_evidence))
+                + tuple(("add_evidence", row) for row in unit.add_evidence)
+                + tuple(("momentum_evidence", row) for row in unit.momentum_evidence))
     if type(unit) is V4PortfolioAllocationBatch:
         return (("allocations", unit.allocation),)
     if type(unit) is V4ReservationReasonBatch:
@@ -184,7 +186,8 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
         return {"oms_tactic_rows": (unit.tactic_state, unit.tactic_steps)}
     if type(unit) is V4StrategyOneEntryBatch:
         return {"strategy_one_entry_rows": unit.entry_evidence,
-                "strategy_one_add_rows": unit.add_evidence}
+                "strategy_one_add_rows": unit.add_evidence,
+                "rising_momentum_rows": unit.momentum_evidence}
     if type(unit) is V4PortfolioAllocationBatch:
         return {"portfolio_allocation_row": unit.allocation}
     if type(unit) is V4ReservationReasonBatch:
@@ -245,6 +248,7 @@ def prepare_compound_v4_families(
         "followthrough_failures": FAILURE.name,
         "command_lineages": V4_ORDER_COMMAND_LINEAGE.name,
         "entry_evidence": ENTRY_EVIDENCE.name,
+        "momentum_evidence": MOMENTUM.name,
         "add_evidence": ADD_EVIDENCE.name,
         "allocations": V4_ALLOCATION.name,
         "reservation_reasons": RESERVATION_REASON.name,
@@ -320,6 +324,11 @@ def prepare_compound_v4_families(
                 {key: value for key, value in row.items() if key != "content_hash"}
                 for row in extra[ENTRY_EVIDENCE.name])):
         raise ValueError("V4 compound entry evidence differs from its parent")
+    if tuple(extra[MOMENTUM.name]) != seal_rising_momentum_rows(
+            tuple(extra[MOMENTUM.name]), tuple(extra[ENTRY_EVIDENCE.name]),
+            dict(base_families)["trading_strategy_intent_v1"],
+            dict(base_families)["trading_event_v1"]):
+        raise ValueError("V4 compound momentum evidence differs from its parent")
     if tuple(extra[ADD_EVIDENCE.name]) != _sealed_strategy_one_add_rows(
             compound.base, base_families, tuple(
                 {key: value for key, value in row.items() if key != "content_hash"}

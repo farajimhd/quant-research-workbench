@@ -26,6 +26,10 @@ from .arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from .signals import StrategyIntent
 from .strategy_one_intent import strategy_one_entry_intent
 from .strategy_one_stateful import StrategyOneEntryProposal
+from .arte_rising_momentum_entry_v4 import (
+    MOMENTUM, momentum_select_columns, decode_momentum_row,
+    seal_rising_momentum_rows, restore_rising_momentum,
+)
 
 
 def project_strategy_one_entry_evidence(
@@ -125,6 +129,18 @@ def load_committed_strategy_one_entry_page(
         f"LIMIT {len(ids) + 1} FORMAT JSONEachRow")
     if len(rows) != len(ids):
         raise RuntimeError("Committed Strategy 1 entry evidence is missing or duplicated")
+    momentum_rows = ()
+    if any(row["strategy_number"] == 13 for row in rows):
+        momentum_rows = tuple(decode_momentum_row(row) for row in _rows(client,
+            f"SELECT {momentum_select_columns()} FROM arte.{MOMENTUM.name} "
+            f"WHERE run_id={_literal(prefix.run_id)} AND parent_record_id IN ({sql_ids}) "
+            f"LIMIT {2 * len(ids) + 1} FORMAT JSONEachRow"))
+        seal_rising_momentum_rows(momentum_rows, rows, tuple(
+            {"record_id": entry.record_id, "ticker": entry.intent.ticker,
+             "reason": entry.intent.reason, "intent_id": entry.intent.intent_id,
+             "account_id": entry.account_id} for entry in selected),
+            tuple({"record_id": entry.record_id, "event_time": entry.intent.event_time.isoformat()}
+                  for entry in selected))
     allowed_batches = set(prefix.batch_ids)
     seen = set()
     result = []
@@ -148,7 +164,7 @@ def load_committed_strategy_one_entry_page(
                 or row["record_id"] != str(uuid5(
                     NAMESPACE_URL, f"{parent}:strategy-one-entry"))
                 or row["event_month"] != session_date.replace(day=1).isoformat()
-                or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)):
+                or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)):
             raise RuntimeError("Committed Strategy 1 entry evidence changed")
         intent = recovered.intent
         if intent.invalidation_price is None or intent.profit_target_price is None:
@@ -160,6 +176,9 @@ def load_committed_strategy_one_entry_page(
             intent.profit_target_price, str(row["target_level_id"]),
             float(row["frozen_gap"]), int(row["bos_break_boundary_ms"]),
             str(row["bos_support_level_id"]), int(row["strategy_number"]),
+            restore_rising_momentum(tuple(r for r in momentum_rows if r["parent_record_id"] == parent),
+                ticker=intent.ticker, boundary_ms=int(row["boundary_ms"]))
+            if row["strategy_number"] == 13 else None,
         )
         if strategy_one_entry_intent(proposal, session_date=session_date) != intent:
             raise RuntimeError("Committed Strategy 1 proposal differs from its intent")
@@ -190,6 +209,17 @@ def load_committed_strategy_one_source(
             or commit["last_sequence"] != entry.sequence
             or commit["event_count"] != 1):
         raise RuntimeError("Strategy 1 source is not its exclusive committed batch")
+    if entry.proposal.strategy_number == 13:
+        companions = tuple(decode_momentum_row(row) for row in _rows(client,
+            f"SELECT {momentum_select_columns()} FROM arte.{MOMENTUM.name} "
+            f"WHERE run_id={_literal(prefix.run_id)} "
+            f"AND batch_id=toUUID({_literal(entry.batch_id)}) "
+            f"AND parent_record_id IN (toUUID({_literal(entry.parent_record_id)})) "
+            "LIMIT 3 FORMAT JSONEachRow"))
+        actual = restore_rising_momentum(companions, ticker=entry.proposal.ticker,
+                                         boundary_ms=entry.proposal.boundary_ms)
+        if actual != entry.proposal.momentum:
+            raise RuntimeError("Strategy 13 source differs from its committed momentum detail")
     columns = ",".join(name for name, _ in _CONTRACTS["trading_event_v1"].columns)
     events = _rows(client,
         f"SELECT {columns} FROM arte.trading_event_v1 "

@@ -189,7 +189,7 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
         V4_ORDER_COMMAND_LINEAGE,
         ENTRY_EVIDENCE, ADD_EVIDENCE,
         V4_ALLOCATION, RESERVATION_REASON,
-        ACKNOWLEDGEMENT, CANCEL, REPRICE, plan.FAILURE,
+        ACKNOWLEDGEMENT, CANCEL, REPRICE, plan.FAILURE, plan.MOMENTUM,
         *RISK_ACTION_TABLES,
         *PROTECTION_CHANGE_TABLES,
         *PROTECTION_RECONCILIATION_TABLES)
@@ -210,6 +210,7 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
                            ADD_EVIDENCE.name,
                            V4_ALLOCATION.name, RESERVATION_REASON.name,
                                ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name, plan.FAILURE.name,
+                           plan.MOMENTUM.name,
                            *(table.name for table in RISK_ACTION_TABLES),
                        *(table.name for table in PROTECTION_CHANGE_TABLES),
                        *(table.name for table in PROTECTION_RECONCILIATION_TABLES))

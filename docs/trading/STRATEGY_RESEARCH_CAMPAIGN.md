@@ -995,3 +995,49 @@ integration tests. Then run all four actual app-route backtests, preserve
 per-position reviews, and refresh backend after each save. No Strategy 13
 release, configuration or backtest exists at this checkpoint, and no Strategy
 1-12 behavior was changed. No worker was spawned or reused in this checkpoint.
+
+### Strategy 13 integration acceptance before publication
+
+The proposed rule now runs through the certified native static filter,
+sequential adapter and guarded Portfolio submission. Exact current/adjacent
+producer values are loaded as Arrow Float64 under the certified technical
+attempt. Build identities are 64-character content hashes; attempts are UUIDs.
+No indicator is recomputed. Two normalized rows per admitted entry preserve
+both resolutions, nullable values and their original source identities in
+`trading_rising_momentum_entry_v4`. Cold reads use IEEE bit projections to
+avoid JSON precision changes. Direct and compound publication require the
+same 2:1 parent relationship and rising rule. Occupied manager snapshots retain
+their existing scalar references and resolve momentum from committed entry
+authority; they do not duplicate or invent market evidence.
+
+Full-population source audit covers 147,362 certified candidate keys, with
+LGHL exclusion and existing rejection bits preserved. New survivor counts:
+PM18 1,215 -> 1,164; AH18 248 -> 244; PM19 1,768 -> 1,634; AH19 359 -> 352.
+The first diagnostic loaded every candidate, taking 42.069 / 48.728 seconds.
+The runnable path first applies inherited Strategy 12 necessary gates and
+reads momentum only for their survivors. Full certification and full candidate
+identity remain intact; absent evidence for any necessary survivor fails
+closed. The second source audit matches every survivor and inherited bit,
+using 14 queries/date and 1.092 / 1.017 seconds for 1,463 / 2,127 requested
+keys. Artifact `strategy13-certified-static-population-audit-v2.json`, SHA256
+`b529495174b64998c5786c03add2d4e5cdf9dfb9ca8ce17957f084273c39a1c4`.
+The slower v1 evidence remains retained.
+
+The combined integration suite passed 535 tests in 44.90 seconds, including
+old release behavior, source mutation rejection, exact nullable Float64
+durability, compound commits, cold manager source recovery, bounded projected
+loading and narrow operator storage/grant plans. Separate durability worker
+suite passed 120 tests; projected-source worker suite passed 64 tests.
+Sixteen modules' reviewed canonical AST observations bind the new authority
+routes; normal run fingerprint validation also pins the complete source tree.
+These are implementation checks, not profitability or interrupted-run
+equivalence acceptance. Live and public interrupted resume remain closed.
+
+Next operational step: commit/push this reviewed source, pin clean laptop and
+workstation checkouts, install only the new normalized table with explicit
+`live_market_ssd` and validate part placement, extend runner grants by its
+exact SELECT/INSERT surface, then publish the exact pinned Strategy 12-derived
+Strategy 13 configuration. Four saved app-route backtests and position audits
+remain required. No Strategy 13 profit is claimed at this checkpoint.
+Two existing workers were reused for independent source/performance and
+durability lanes; both completed, with no newly spawned or interrupted workers.

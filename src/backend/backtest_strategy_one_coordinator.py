@@ -51,6 +51,7 @@ async def run_strategy_one_proposals(
     static_gate: StrategyOneStaticGate | None = None,
     stage_time: Callable[[str, float], None] | None = None,
     strategy_number: int = 1,
+    momentum_plan=None,
 ) -> StrategyOneProposalCounts:
     """Dispatch certified entry proposals after broker liquidity at each clock."""
     if (not isinstance(scheduler, StrategyOneBoundaryScheduler)
@@ -66,6 +67,11 @@ async def run_strategy_one_proposals(
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
+    if strategy_number == 13:
+        from src.backend.backtest_strategy_rising_momentum import CertifiedRisingMomentumPlan
+        if (not isinstance(momentum_plan, CertifiedRisingMomentumPlan)
+                or momentum_plan.source_build_id != entry.source_build_id):
+            raise ValueError("Strategy 13 coordinator lacks certified momentum source")
     activations = {(row.ticker, row.episode_start_ms): row
                    for row in entry.activations}
     if len(activations) != len(entry.activations):
@@ -146,6 +152,8 @@ async def run_strategy_one_proposals(
             decision = propose_certified_strategy_one_entry(
                 candidate, fact, activation, current,
                 strategy_number=strategy_number,
+                momentum=(momentum_plan.lookup(fact.ticker, fact.boundary_ms)
+                          if strategy_number == 13 and momentum_plan is not None else None),
                 reentry=(await timed("strategy_one_reentry", reentry_witness(current, candidate))
                          if current.completed_entries and reentry_witness is not None
                          else None))

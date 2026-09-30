@@ -114,7 +114,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position high lacks its active position")
         sources = dict(state.submitted)
         required = {key for key in keys["positions"]
-                    if sources[key].strategy_number in (9, 10, 11, 12)}
+                    if sources[key].strategy_number in (9, 10, 11, 12, 13)}
         if keys["first_held_boundaries"] != required:
             raise ValueError("Strategy 9 position lacks its first held boundary")
         for key, boundary in state.first_held_boundaries:
@@ -185,6 +185,13 @@ class StrategyOneManagementRunner:
                 or self._first_held_boundaries):
             raise RuntimeError("Strategy 1 manager is already active")
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
+        from src.trading_runtime.strategy_rising_momentum_witness import rising_momentum_entry
+        for _, proposal in state.submitted:
+            if proposal.strategy_number == 13 and (
+                    not rising_momentum_entry(proposal.momentum)
+                    or proposal.momentum.ticker != proposal.ticker
+                    or proposal.momentum.boundary_ms != proposal.boundary_ms):
+                raise ValueError("Strategy 13 manager recovery lacks its committed momentum source")
         self._submitted = dict(state.submitted)
         self._positions = dict(state.positions)
         self._pending_breaks = {key: [ResistanceBreak(
@@ -298,7 +305,7 @@ class StrategyOneManagementRunner:
             # The installed number owns eligibility; old seals retain the
             # original unbounded predicate and first-held checkpoint contract.
             failure_rule = (early_followthrough_failure
-                            if self.contract.strategy_number in (11, 12)
+                            if self.contract.strategy_number in (11, 12, 13)
                             else followthrough_failure)
             witness = failure_rule(FollowThroughFailureInput(
                 boundary_ms, self._first_held_boundaries[key],
