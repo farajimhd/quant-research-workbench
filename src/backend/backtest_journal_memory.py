@@ -472,10 +472,17 @@ class BacktestMemoryJournal:
             raise ValueError("Immutable Backtest review must read a fenced ClickHouse checkpoint")
         return dict(self._checkpoint) if run_id == self.run_id and self._checkpoint else None
 
-    def save_portfolio_state(self, account_id: str, state: dict[str, Any]) -> None:
-        if not account_id:
-            raise ValueError("account_id is required")
-        canonical_json(state)
+    def save_portfolio_state(self, account_id: str, state: dict[str, Any], *,
+                             validate_now: bool = True) -> None:
+        if not account_id or not isinstance(state, dict) or type(validate_now) is not bool:
+            raise ValueError("Portfolio state needs an account, mapping, and validation flag")
+        # The typed Backtest actor can replace this in-memory state thousands
+        # of times between durable checkpoints. The complete command image is
+        # checked for JSON encodability by command_checkpoint() before it is
+        # handed to the writer;
+        # repeated JSON encoding here would block the 100 ms execution loop.
+        if validate_now:
+            canonical_json(state)
         self._portfolio_states[account_id] = dict(state)
 
     def portfolio_states(self) -> dict[str, dict[str, Any]]:

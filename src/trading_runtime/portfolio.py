@@ -2393,6 +2393,7 @@ class PortfolioManagementEngine:
                     if row.account_key == state.profile.account_key
                 ],
             },
+            **({"validate_now": False} if self._typed_backtest_recovery else {}),
         )
 
     def capture_recovery_snapshot(self, account_id: str, *, state_revision: int,
