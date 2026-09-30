@@ -801,8 +801,6 @@ export function TradingJournalPreview({ data, onSymbolSelect, readOnly = false, 
   const [view, setView] = useState<"overview" | "strategies" | "trades" | "execution" | "risk">("overview");
   const [pnlTimeframe, setPnlTimeframe] = useState<PnlCandleTimeframe>("30m");
   const [guideOpen, setGuideOpen] = useState(false);
-  const [selectedLifecycle, setSelectedLifecycle] = useState<string | null>(null);
-  const selectedPosition = (data?.position_lifecycles ?? []).find(row => row.lifecycle_id === selectedLifecycle);
   const openLifecycles = (data?.position_lifecycles ?? []).filter(row => row.status === "open");
   const extrema = data?.performance_snapshot;
   const drawdown = extrema?.maximum_drawdown ?? data?.performance_journal?.summary?.maximum_drawdown;
@@ -874,7 +872,6 @@ export function TradingJournalPreview({ data, onSymbolSelect, readOnly = false, 
       <JournalMetric detail={extrema?.extrema_complete ? "Largest marked-equity decline from a prior peak, including fees and open P&L; never resets on close." : "Closed-trade drawdown only; intratrade history was not recorded in this run."} label={extrema?.extrema_complete ? "Max drawdown" : "Closed-trade drawdown"} tone={Number(drawdown || 0) > 0 ? "negative" : "neutral"} value={drawdown == null ? "—" : money(drawdown)} />
     </div>
     {extrema?.max_unrealized_pnl_basis === "unavailable_historical_path" ? <div className="trading-disclosure">This saved run predates retained intratrade metrics. A new backtest records peak/worst unrealized and marked-equity drawdown.</div> : null}
-    {selectedPosition ? <PositionLifecycleModal row={performanceLifecycleRow(data!,selectedPosition)} onClose={() => setSelectedLifecycle(null)} /> : null}
     <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={tabs} />
     {view === "overview" ? <div className="performance-overview-stack">
       <div className="performance-overview-grid">
@@ -884,7 +881,9 @@ export function TradingJournalPreview({ data, onSymbolSelect, readOnly = false, 
             <div aria-hidden="true" className="performance-position-columns"><span>Ticker</span><span>Opened</span><span>Qty</span><span>Filled</span><span>P&amp;L</span></div>
             {openLifecycles.length ? openLifecycles.map(lifecycle => {
               const {symbol, _position: position} = performanceLifecycleRow(data!, lifecycle);
-              return <button className="performance-active-position" key={String(lifecycle.lifecycle_id)} type="button" aria-label={`View ${symbol} position lifecycle`} onClick={() => setSelectedLifecycle(String(lifecycle.lifecycle_id))}>
+              // Overview ticker clicks share the same navigation authority as
+              // journal tables; never open a separate lifecycle modal here.
+              return <button className="performance-active-position" key={String(lifecycle.lifecycle_id)} type="button" aria-label={`Open ${symbol} Charts & Quotes in a new tab`} disabled={!onSymbolSelect} onClick={() => onSymbolSelect?.(symbol)}>
                 <strong className="performance-position-symbol">{symbol}</strong>
                 <MarketTime className="performance-position-time" includeSeconds showVancouver={false} value={String(lifecycle.opened_at || "")} />
                 <span className="performance-position-number">{formatCell(lifecycle.current_quantity, "quantity")}</span>
