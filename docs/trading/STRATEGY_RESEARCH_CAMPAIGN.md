@@ -946,3 +946,52 @@ retains all rejected positions and session totals. No published strategy was
 changed by this diagnostic. A further numbered increment must preserve
 completed-source causality, native vectorized filtering and normalized entry
 attestation before testing this hypothesis against the remaining losses.
+
+### Strategy 13 work in progress: rising completed momentum
+
+Selected next hypothesis: retain Strategy 12, with one additional necessary
+entry/re-entry condition. At the completed 100 ms proposal clock, the MACD
+histogram must be strictly rising on either the latest completed 1-second
+bucket or the latest completed 10-second bucket, compared with that
+resolution's immediately preceding bucket. An equal histogram rejects that
+branch. A missing/null observation rejects only its branch; forming, stale,
+nonadjacent or invented-value evidence is an integrity failure. Existing
+holding management, sizing, costs, sessions, recent BOS age and V7 warm-up
+remain inherited. This is not a holding-age exit or a timed trailing stop.
+
+Exact producer Float64 bits were independently SELECTed under the four
+certified saved market plans. Artifact
+`strategy12-entry-momentum-diagnostic-exact-v2.json`, SHA256
+`a418644c89b216b6b579d77e4d3d8ff128474aa2dac99d5158a9b327f29b76c6`.
+The resulting direction screen rejects four losses and zero winners among
+the 60 actual Strategy 12 entries: AH18 CAST -135.52 and BIVI -225.61,
+PM18 SGLY -138.46, PM19 CAST -67.496. Historical rejected net is -567.086;
+it is not counterfactual strategy profit. Artifact
+`strategy12-momentum-direction-screen-exact-v2.json`, SHA256
+`7931f69ed7dde3925b4a482cd7f7d3154301002acf0b6c5082cd55f3f7292d33`.
+This screen preserves the AH18 BIVI winner that the strength filter removes.
+It does not reject the original VTIX entry and cannot alone establish the
+four-session goal or repeatable edge.
+
+The proposed reusable pure native mask is implemented in
+`src/trading_runtime/strategy_rising_momentum_entry.py`. Inputs are aligned
+(N, 2) completed source clocks and Float64 MACD line/signal values, ordered
+1s then 10s; output is shape (N,). It calculates no indicator and authorizes
+no order. Exact-source validation agrees on all 60 entries. Three measured
+one-million-row passes took 0.0990, 0.0964 and 0.0980 seconds. Evidence
+`strategy13-pure-rule-real-source-validation-v1.json`, SHA256
+`3c1e0ce041b99b7bd774ead74af8b40e756679b344a74afc1201d291a2dc4946`.
+The focused new-rule plus recent-BOS suite passed 30 tests, including missing
+adjacent source, forming/stale rejection, numeric overflow, empty batches,
+prefix independence and input immutability. This is pure-rule acceptance,
+not runnable Strategy 13 acceptance.
+
+Remaining implementation: bind exact current/adjacent producer bucket values
+and attempt identities to the certified columnar candidate projection; add
+typed normalized entry witnesses and the same scalar admission validation
+before Portfolio and during cold recovery; certify source/dispatch mutations;
+pin the exact Strategy 12 parent and publish immutable Strategy 13 only after
+integration tests. Then run all four actual app-route backtests, preserve
+per-position reviews, and refresh backend after each save. No Strategy 13
+release, configuration or backtest exists at this checkpoint, and no Strategy
+1-12 behavior was changed. No worker was spawned or reused in this checkpoint.
