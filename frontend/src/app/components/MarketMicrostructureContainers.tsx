@@ -220,7 +220,7 @@ export function ChartsQuotesAsOf({ end, savedMode = false }: { end?: string; sav
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [live]);
-  return <span className="backtest-v4-saved-market-state" aria-label="Chart as of" title="Chart as-of time (Eastern Time)">
+  return <span className="backtest-v4-saved-market-state charts-quotes-as-of" aria-label="Chart as of" title="Chart as-of time (Eastern Time)">
     {end || live ? <MarketTime value={end || now} includeDate includeSeconds includeSubseconds={!live} layout="inline" showVancouver={false} /> : "—"}
   </span>;
 }

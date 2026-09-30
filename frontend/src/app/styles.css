@@ -14710,6 +14710,42 @@ button {
   min-width: 0;
 }
 
+/* Stable clock footprint: replay steps and live ticks must not move the quote strip. */
+.charts-quotes-header .charts-quotes-as-of {
+  align-self: stretch;
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-inline: 1px solid var(--border);
+  color: var(--foreground);
+  min-width: 150px;
+}
+
+.charts-quotes-as-of .market-time-primary {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.charts-quotes-as-of .market-time-date {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.charts-quotes-as-of .market-time strong {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .02em;
+}
+
+.charts-quotes-as-of .market-time-zone {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 .charts-quotes-market-state {
   align-items: center;
   border-right: 1px solid var(--charts-quotes-rule);
