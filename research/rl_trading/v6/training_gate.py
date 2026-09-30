@@ -4,6 +4,7 @@ from pathlib import Path
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v6.prepare_training import VERSION
 from research.rl_trading.v6.split import TRAIN, DEVELOPMENT
+from research.rl_trading.v6.teacher_data import VERSION as TEACHER_VERSION
 
 
 def require_dataset(certificate, *, runtime_root):
@@ -51,7 +52,9 @@ def require_dataset(certificate, *, runtime_root):
         for name in ('decisions','outcomes','positions'):
             if file_hash(Path(entry['original_teacher_root'])/f'{name}.parquet')!=original[f'{name}_sha256']:
                 raise ValueError('Original audited teacher file changed')
-        if (cert.get('ranking')!=data['ranking'] or cert.get('execution_evidence')!='none' or
+        if (cert.get('version')!=TEACHER_VERSION or original.get('version')!=TEACHER_VERSION or
+                cert.get('status')!='audited_price_action_teacher' or
+                cert.get('ranking')!=data['ranking'] or cert.get('execution_evidence')!='none' or
                 cert.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or
                 cert.get('coverage_certificate_sha256')!=entry['coverage_sha256']):
             raise ValueError('Prepared teacher does not follow audited ranking/price-action contract')

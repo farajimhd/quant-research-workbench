@@ -6,10 +6,21 @@ import pytest
 from research.rl_trading.v6.bank import SessionBank
 from research.rl_trading.v6.session_data import PackedSession
 from research.rl_trading.v6.training import TeacherDecision
-from research.rl_trading.v6.prepare_training import coverage, choose_rank, select_rank
+from research.rl_trading.v6.prepare_training import coverage, choose_rank, select_rank, ranked_certificate
 from research.rl_trading.v6.teacher_trajectory import Intent, compile_trajectory
 from research.rl_trading.v6.market_attention import MarketAttentionConfig
 from research.rl_trading.v6.features import SCALAR_NAMES
+
+
+def test_ranked_certificate_preserves_teacher_version_namespace():
+    from research.rl_trading.v6.teacher_data import VERSION as teacher_version
+    original={'version':teacher_version,'status':'audited_price_action_teacher'}
+    saved=ranked_certificate(original, {'version':'trajectory-version','completed_positions':2},
+                             {'ranking':{'top_r':1000}}, 'coverage-hash')
+    assert saved['version']==teacher_version
+    assert saved['trajectory_version']=='trajectory-version'
+    assert saved['status']==original['status']
+    assert saved['completed_positions']==2
 
 
 def fixture():

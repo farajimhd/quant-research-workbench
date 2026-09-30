@@ -17,12 +17,22 @@ from research.rl_trading.v1.common import file_hash, digest
 from research.rl_trading.v6.market_attention import MarketAttentionConfig, VolumeRanker
 from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.split import CONTEXT_ONLY, TRAIN, DEVELOPMENT
-from research.rl_trading.v6.teacher_data import load_teacher
+from research.rl_trading.v6.teacher_data import load_teacher, VERSION as TEACHER_VERSION
 from research.rl_trading.v6.teacher_trajectory import bind_intents, compile_trajectory
 from research.rl_trading.v6.build_price_action_teacher import _decisions, _outcomes
 from research.rl_trading.v6.build_price_action_geometry import source_positions
 
 VERSION = 'rl-trading-v6-audited-training-split-1'
+
+
+def ranked_certificate(original, report, expected, coverage_hash):
+    """Keep certificate and trajectory versions in separate namespaces."""
+    if original.get('version') != TEACHER_VERSION:
+        raise ValueError('Ranked teacher needs a certified price-action teacher')
+    return {**original, **report, **expected, 'version': TEACHER_VERSION,
+            'trajectory_version': report['version'],
+            'rank_exclusion_policy': 'ignore_entire_entry_and_recompile_account',
+            'coverage_certificate_sha256': coverage_hash}
 
 
 def coverage(session, decisions, ranks, sort_secs):
@@ -166,7 +176,7 @@ def main(argv=None):
         day = date.fromisoformat(entry['day'])
         source = Path(entry['bank_root'])
         derived = output/'ranked_teacher'/str(rank)/str(day)
-        expected = {'original_teacher_sha256':entry['original_teacher_sha256'],
+        expected = {'version':TEACHER_VERSION, 'original_teacher_sha256':entry['original_teacher_sha256'],
                     'ranking':asdict(ranking),'bank_certificate_sha256':entry['bank_certificate_sha256']}
         if (derived/'complete.json').is_file():
             saved = json.loads((derived/'complete.json').read_text())
@@ -197,8 +207,7 @@ def main(argv=None):
             derived.mkdir(parents=True,exist_ok=True)
             if not ledger:
                 raise ValueError('Ranking eliminated all trainable positions')
-            saved = {**original_cert,**report,**expected,'rank_exclusion_policy':'ignore_entire_entry_and_recompile_account',
-                     'coverage_certificate_sha256':entry['coverage_sha256']}
+            saved = ranked_certificate(original_cert, report, expected, entry['coverage_sha256'])
             for name,frame in (('decisions',_decisions(decisions)),('outcomes',_outcomes(outcomes)),('positions',pl.DataFrame(ledger))):
                 path = derived/f'{name}.parquet'
                 frame.write_parquet(path,compression='zstd')
