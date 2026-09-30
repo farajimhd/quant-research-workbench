@@ -58,6 +58,38 @@ def test_ranked_actor_critic_full_identity_mask_and_attention_gradients():
     assert dist.logits[3] == torch.finfo(torch.float32).min
 
 
+def test_same_clock_market_cache_reuses_attention_and_accumulates_gradients():
+    torch.manual_seed(41)
+    policy = RankedBracketActorCritic(8, config=MarketAttentionConfig(top_r=2, heads=2))
+    policy.reset_market(2)
+    state = SparseCandleState.empty(policy.encoder, 2, device=torch.device('cpu'), dtype=torch.float32)
+    scalar = torch.from_numpy(rows([2, 5]))
+    state.advance(policy.encoder, torch.arange(2), scalar, torch.zeros(2, 2, 5, 11))
+    policy.observe_market(state, 1_000_000, np.arange(2), scalar.numpy())
+    args = (state.encoded, torch.tensor([10000., 10000., 0., 0., 0., 0., 0.]),
+            torch.empty(0, dtype=torch.long), torch.empty(0, 9),
+            policy.initial_action_state(device=torch.device('cpu'), dtype=torch.float32))
+    masks = dict(enter_allowed=torch.ones(2, dtype=torch.bool),
+                 exit_allowed=torch.zeros(0, dtype=torch.bool),
+                 stop_allowed=torch.zeros(0, dtype=torch.bool),
+                 target_allowed=torch.zeros(0, dtype=torch.bool))
+    calls = []
+    hook = policy.market_attention.register_forward_hook(lambda *unused: calls.append(1))
+    first, _ = policy.distribution_and_value(*args, **masks)
+    second, _ = policy.distribution_and_value(*args, **masks)
+    assert len(calls) == 1
+    torch.testing.assert_close(first.logits, second.logits)
+    weight = policy.market_attention.temporal.in_proj_weight
+    loss = first.log_prob(1, torch.tensor(.2))
+    expected = torch.autograd.grad(loss, weight, retain_graph=True)[0] * 2
+    (loss + second.log_prob(1, torch.tensor(.2))).backward()
+    torch.testing.assert_close(weight.grad, expected)
+    policy.observe_market(state, 2_000_000, np.arange(2), scalar.numpy())
+    policy.distribution_and_value(*args, **masks)
+    assert len(calls) == 2
+    hook.remove()
+
+
 def test_attention_masks_padding_and_is_equivariant_to_listing_permutation():
     torch.manual_seed(11)
     attention = RankedMarketAttention(8, MarketAttentionConfig(heads=2))
