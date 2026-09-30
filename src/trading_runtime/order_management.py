@@ -430,6 +430,8 @@ class OrderManagementEngine:
         # Quote processing is per ticker. Keep references to the authoritative
         # mutable groups in insertion order; no duplicate order state is stored.
         self._groups_by_ticker: dict[str, list[_ManagedOrderGroup]] = {}
+        self._group_ordinal: dict[str, int] = {}
+        self._active_adaptive_groups: dict[str, _ManagedOrderGroup] = {}
         self._entry_trade_prices: dict[str, tuple[datetime, float]] = {}
         self._body_entry_group_ids: set[str] = set()
         self._group_by_client_id: dict[str, str] = {}
@@ -553,8 +555,16 @@ class OrderManagementEngine:
             return ()
         at = event_time.astimezone(timezone.utc)
         advanced: list[_ManagedOrderGroup] = []
-        for group in tuple(self._groups.values()):
-            if await self._complete_partial_target(group, at):
+        strategy_one = (self.strategy_id, self.strategy_revision) == (
+            STRATEGY_ID, STRATEGY_NUMBER)
+        # Strategy 1 never uses partial-target completion. Iterate only groups
+        # whose current state can advance, in original admission order. Other
+        # strategies retain the full scan and partial-target behavior.
+        groups = (tuple(sorted(self._active_adaptive_groups.values(),
+                               key=lambda group: self._group_ordinal[group.group_id]))
+                  if strategy_one else tuple(self._groups.values()))
+        for group in groups:
+            if not strategy_one and await self._complete_partial_target(group, at):
                 advanced.append(group)
             if group.tactic is None:
                 continue
@@ -1693,9 +1703,14 @@ class OrderManagementEngine:
             raise RuntimeError("OMS group identity was registered twice")
         assignment_id = str(group.intent.metadata.get("assignment_id") or "")
         self._groups[group.group_id] = group
+        self._group_ordinal[group.group_id] = len(self._group_ordinal)
         self._groups_by_assignment.setdefault(
             (group.account_id, assignment_id), []).append(group)
         self._groups_by_ticker.setdefault(group.intent.ticker.upper(), []).append(group)
+        if (group.tactic is not None
+                and group.state not in TERMINAL_MANAGEMENT_STATES
+                and group.state != OrderManagementState.CANCEL_PENDING):
+            self._active_adaptive_groups[group.group_id] = group
 
     def snapshots_for_assignment(
         self, account_id: str, assignment_id: str,
@@ -4242,6 +4257,12 @@ class OrderManagementEngine:
         payload: dict[str, Any],
     ) -> None:
         group.state = state
+        if group.group_id in self._groups:
+            if (group.tactic is not None and state not in TERMINAL_MANAGEMENT_STATES
+                    and state != OrderManagementState.CANCEL_PENDING):
+                self._active_adaptive_groups[group.group_id] = group
+            else:
+                self._active_adaptive_groups.pop(group.group_id, None)
         group.updated_at = self._causal_group_time(
             group.intent,
             previous=group.updated_at,
