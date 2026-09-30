@@ -174,6 +174,12 @@ def test_100ms_level_projection_reuses_completed_clock_without_shared_mutation(m
         client=Reader(), precomputed_entry_facts=True)
     first = cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, 1100))
     first[0]["lower"] = -1.0
+    sealed = cache.strategy_one_levels_view(
+        "TEST", as_of=market_day_boundary(DAY, 1200))
+    assert sealed is cache.strategy_one_levels_view(
+        "TEST", as_of=market_day_boundary(DAY, 1900))
+    with pytest.raises(TypeError):
+        sealed[0]["lower"] = -1.0
     for boundary in (1200, 1900, 2000):
         rows = cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, boundary))
         assert rows[0]["lower"] == 10.0

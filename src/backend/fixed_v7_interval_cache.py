@@ -10,6 +10,7 @@ from bisect import bisect_left, bisect_right
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date, datetime
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from src.backend.backtest_market_data import (
@@ -58,11 +59,12 @@ class FixedV7IntervalCache:
         # products. A bounded preload replaces scalar SQL reads, but rows
         # remain hidden until their completed causal clock is reached.
         self._activation_seconds: dict[str, dict[int, Mapping[str, Any]]] = {}
-        # Geometry changes only on a certified valid completed second. Keep
-        # one immutable-ish projection per ticker/input clock, but hand every
-        # caller fresh dictionaries so strategy code cannot mutate evidence.
+        # Geometry changes only on a certified valid completed second. Seal
+        # one read-only projection per ticker/input clock. The public method
+        # retains copy-on-read compatibility; the numbered strategy consumes
+        # the sealed view without copying every level on every 100ms bar.
         self._level_projection: dict[
-            str, tuple[int, tuple[dict[str, object], ...]]
+            str, tuple[int, tuple[Mapping[str, object], ...]]
         ] = {}
 
     @property
@@ -265,6 +267,12 @@ class FixedV7IntervalCache:
 
     def strategy_one_levels(self, ticker: str, *,
                             as_of: datetime) -> tuple[Mapping[str, Any], ...]:
+        return tuple(dict(row) for row in self.strategy_one_levels_view(
+            ticker, as_of=as_of))
+
+    def strategy_one_levels_view(self, ticker: str, *,
+                                 as_of: datetime) -> tuple[Mapping[str, Any], ...]:
+        """Read-only causal geometry shared within one completed V7 second."""
         boundary = self._boundary_ms(as_of)
         completed = boundary // 1_000 * 1_000
         self._load_to(ticker, through_ms=completed)
@@ -276,6 +284,6 @@ class FixedV7IntervalCache:
         cached = self._level_projection.get(ticker)
         if cached is None or cached[0] != input_ms:
             rows = self.interval_plan.levels(ticker, boundary_ms=boundary)
-            cached = (input_ms, rows)
+            cached = (input_ms, tuple(MappingProxyType(dict(row)) for row in rows))
             self._level_projection[ticker] = cached
-        return tuple(dict(row) for row in cached[1])
+        return cached[1]

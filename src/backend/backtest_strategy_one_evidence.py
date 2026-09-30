@@ -301,7 +301,7 @@ class StrategyOneCausalEvidence:
                 if row.get("price_valid") != 1:
                     continue
                 ticker = str(row["ticker"])
-                levels = self.v7.strategy_one_levels(ticker, as_of=at)
+                levels = self._level_rows(ticker, at)
                 state, breaks = observe_completed_resistance_second(
                     self._resistance.get(ticker, ResistanceObservation()),
                     row, admitted_levels=levels)
@@ -395,9 +395,14 @@ class StrategyOneCausalEvidence:
     async def _levels(self, ticker: str, boundary_ms: int) -> tuple[Mapping, ...]:
         at = market_day_boundary(self.session, boundary_ms)
         if self.v7.strategy_one_ready_without_read(ticker, as_of=at):
-            return self.v7.strategy_one_levels(ticker, as_of=at)
+            return self._level_rows(ticker, at)
         return await asyncio.to_thread(
-            self.v7.strategy_one_levels, ticker, as_of=at)
+            self._level_rows, ticker, at)
+
+    def _level_rows(self, ticker: str, at: datetime) -> tuple[Mapping, ...]:
+        view = getattr(self.v7, "strategy_one_levels_view", None)
+        return (view if view is not None else self.v7.strategy_one_levels)(
+            ticker, as_of=at)
 
     async def observe_activation(self, activation: StrategyOneActivation) -> FrozenActivation:
         if not isinstance(activation, StrategyOneActivation):
