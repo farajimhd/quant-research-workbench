@@ -8,7 +8,7 @@ import os
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 os.environ.setdefault('POLARS_MAX_THREADS', '1')
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from collections import deque
 from datetime import date
 import json
@@ -212,7 +212,11 @@ def main(argv=None):
             _write(output/'progress.json',{'completed':days,'failed':[], 'active':str(day)})
             # Bound futures as well as arrays; fail without admitting the
             # remaining market after the first broken source/contract.
-            with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            # Per-ticker reference/pause state is CPU-bound Python. Threads
+            # serialize on the GIL; bounded spawned processes use workstation
+            # cores while each query remains SELECT-only and single-threaded.
+            # Packets contain provenance, never secrets or dense feature arrays.
+            with ProcessPoolExecutor(max_workers=args.workers) as pool:
                 try:
                     for report in _bounded(pool,packets,args.workers):
                         reports.append(report)
