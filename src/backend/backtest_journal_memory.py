@@ -6,7 +6,7 @@ fenced ClickHouse adapter; this buffer is not itself a durability authority.
 """
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, timedelta, timezone
 from copy import deepcopy
 from itertools import chain
@@ -48,6 +48,12 @@ class BacktestMemoryJournal:
         self._by_identity: dict[tuple[str, str, str], JournalRecord] = {}
         self._signal_records: list[JournalRecord] = []
         self._protection_records: list[JournalRecord] = []
+        # Effective protection evidence is queried for every OMS transition.
+        # Index by its exact causal owner so unrelated historical amendments
+        # are never rescanned as the Backtest journal grows.
+        self._effective_protection_records: dict[
+            tuple[object, object, str], list[JournalRecord]
+        ] = {}
         self._checkpoint: dict[str, Any] | None = None
         self._portfolio_states: dict[str, dict[str, Any]] = {}
         self._order_states: dict[str, dict[str, Any]] = {}
@@ -260,9 +266,17 @@ class BacktestMemoryJournal:
                     or record.entity_type != "order_group_state"):
                 raise ValueError("OMS protection lookup requires a group transition")
             result: dict[str, JournalRecord] = {}
-            for prior in reversed(self._protection_records):
-                if prior.sequence >= record.sequence:
-                    continue
+            key = (record.entity_id, record.payload.get("intent_id"),
+                   record.account_id)
+            try:
+                hash(key)
+            except TypeError:
+                return {}
+            matching = self._effective_protection_records.get(key, ())
+            end = bisect_left(matching, record.sequence,
+                              key=lambda prior: prior.sequence)
+            for index in range(end - 1, -1, -1):
+                prior = matching[index]
                 payload = prior.payload
                 kind = payload.get("kind")
                 if (kind in {"stop", "target"}
@@ -349,7 +363,24 @@ class BacktestMemoryJournal:
                         (record.category, record.entity_type, record.entity_id), record)
                 if record.category == "protection":
                     self._protection_records.append(record)
+                    self._index_effective_protection(record)
             return result
+
+    def _index_effective_protection(self, record: JournalRecord) -> None:
+        """Register one immutable protection fact in sequence order."""
+        payload = record.payload
+        if (payload.get("kind") not in {"stop", "target"}
+                or payload.get("phase") != "effective"
+                or payload.get("action") not in {
+                    "replace_protective_stop", "replace_profit_target"}):
+            return
+        key = (payload.get("order_group_id"), payload.get("source_intent_id"),
+               record.account_id)
+        try:
+            hash(key)
+        except TypeError:
+            return
+        self._effective_protection_records.setdefault(key, []).append(record)
 
     @property
     def live_counts(self) -> dict[str, int]:
@@ -559,6 +590,7 @@ class BacktestMemoryJournal:
                         (record.category, record.entity_type, record.entity_id), record)
                 else:
                     self._protection_records.append(record)
+                    self._index_effective_protection(record)
 
     def portfolio_reservation(self, account_id: str, reservation_id: str) -> dict[str, Any] | None:
         for reservation in self._portfolio_states.get(account_id, {}).get("reservations") or ():

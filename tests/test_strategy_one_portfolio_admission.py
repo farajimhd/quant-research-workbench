@@ -85,7 +85,7 @@ def test_oms_admission_retains_creation_after_reservation_changes_and_fence():
         run_id=run_id, category="order_management", entity_type="order_group_state",
         entity_id="group-1", account_id="DU1", event_time=at,
         payload={"intent_id": "intent-1"})
-    journal.append(
+    second_stop = journal.append(
         run_id=run_id, category="protection", entity_type="protection_change",
         entity_id="stop-1", account_id="DU1", event_time=at,
         payload={"order_group_id": "group-1", "source_intent_id": "intent-1",
@@ -114,6 +114,9 @@ def test_oms_admission_retains_creation_after_reservation_changes_and_fence():
     assert proofs["target"] == target_two
     assert proofs["target:child-1"] == target_one
     assert proofs["target:child-2"] == target_two
+    resumed = BacktestMemoryJournal(run_id=run_id, initial_sequence=later.sequence)
+    resumed.restore_committed_records([first, second_stop, target_one, target_two])
+    assert resumed.oms_effective_protection_for_record(later) == proofs
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.runtime import RunMode, TradingRuntime
 
