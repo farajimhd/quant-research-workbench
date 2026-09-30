@@ -563,3 +563,47 @@ Backend restarts followed the code increment and each saved backtest.
 The goal remains active. Keep Strategy 8 as the next research reference,
 preserving Strategy 6/7 comparisons and all other trials. Strategy 9 has not
 been specified or published; diagnose remaining losses before another change.
+
+## Development target and Strategy 9 rule checkpoint
+
+The user raised the development objective to **at least +$500 net in each
+of the four sessions**, with $10,000 starting cash, capturing big moves and
+exiting early when follow-through fails. Strategy 8 meets two windows;
+PM19 requires $1,511.174935 improvement and AH18 $1,058.26994. The active
+goal includes the full four-session target and preserves additional-date
+validation as the boundary for any repeatable-edge claim.
+
+Read-only probes use certified saved market plans and completed bars/MACD,
+plus exact co-terminating quote freshness. Original proposal ask supplies the
+entry reference, avoiding future final-acquisition VWAP. A simple below-entry
+negative MACD exit would also flag YJ and BTCT before their large gains.
+The half-original-stop-distance condition narrows the signal: at completed
+five-second boundaries, negative five-second MACD plus this price loss has
+fresh-quote-qualified observations in 24/50 losers and 4/18 winners, excluding
+the six largest winners. This diagnostic is an observed-position screen,
+not a simulated exit, subsequent-fill proof or P&L prediction. Preserve
+`strategy8-early-failure-probe-v1.json`, `v2.json` and `v3.json`; v3 SHA256
+`b857b44f2b886bf15bcd3bf3f06126cc6843425e01aed153a3ab9611149c7ca7`.
+
+The next single change branches from 8. A held position may propose an exit
+at an exact completed five-second boundary when its completed five-second
+close is at/below `(original_reference_ask + initial_stop) / 2`, completed
+five-second MACD line is strictly below signal, and the current fresh bid
+still satisfies that loss threshold. Require a whole five-second bucket
+after the first filled bucket, quote age at most 1,000,000 microseconds,
+positive remaining quantity and no pending exit. Missing data/quotes skips
+that proposal; existing broker protection remains authoritative. No delayed
+retry based on stale evidence. Existing session liquidation takes precedence;
+normal broker consumption happens before strategy evaluation and any new exit
+must wait for later certified liquidity. Initial stop, targets, sizing, costs,
+entry cap and structural ratchets inherit 8.
+
+`strategy_followthrough_failure.py` implements only the pure predicate and
+scalar witness. Twenty-one checks cover missing/forming inputs, first-held
+bucket exclusion, quote recovery and exact freshness, positive/negative
+momentum, half-distance boundary and future-tail independence. It is not
+registered or connected to orders. Before publishing number 9, implement its
+normalized source witness and cold-read validation, persist its first-held
+boundary in the manager contract, route it through shared Portfolio/OMS,
+validate partial-fill acquisition cancellation and protection precedence,
+and seal the complete release. Four-session execution is still pending.
