@@ -48,6 +48,12 @@ def test_columnar_buckets_preserve_missing_invalid_and_order():
     # OMS thresholds retain the original integer-price conversion exactly.
     values=pl.DataFrame([row('A',0,extrema_count=1,high_int=27600,low_int=27600,extremes_valid=1)],schema=EXECUTION_SCHEMA)
     assert _execution_buckets(values,0)[0].high==27600/10000
+    quote=dict(rows[0],extrema_count=0,high_int=None,low_int=None,extremes_valid=None)
+    bar=row('A',0,extrema_count=1,high_int=110000,low_int=90000,extremes_valid=1)
+    merged=_execution_buckets(pl.DataFrame([bar,quote],schema=EXECUTION_SCHEMA),0)
+    assert merged==(result[0],)
+    with pytest.raises(ValueError,match='Duplicate'):
+        _execution_buckets(pl.DataFrame([bar,quote,quote],schema=EXECUTION_SCHEMA),0)
     with pytest.raises(ValueError,match='Duplicate'):
         _execution_buckets(pl.DataFrame(rows+[rows[0]],schema=EXECUTION_SCHEMA),0)
     rows[0]['low_int']=120000
@@ -88,4 +94,4 @@ def test_joined_read_obeys_select_only_contract():
         return pl.DataFrame(schema=EXECUTION_SCHEMA)
     source._frame=read
     assert source._read_buckets(0,100000,['A'])==()
-    assert len(statements)==1 and 'UNION ALL' in statements[0] and 'countIf(lane=1)' in statements[0]
+    assert len(statements)==1 and 'UNION ALL' in statements[0] and '1 AS quote_count' in statements[0]

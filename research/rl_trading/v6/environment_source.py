@@ -40,7 +40,12 @@ def _execution_buckets(rows, origin):
         'last_event_us','quote_timestamp_us','quote_valid','event_count')}
     order=np.lexsort((columns['ticker'],columns['bucket_index']))
     keys_t=columns['ticker'][order]; keys_b=columns['bucket_index'][order]
-    if (np.any((keys_t[1:]==keys_t[:-1]) & (keys_b[1:]==keys_b[:-1])) or
+    starts=np.r_[True,(keys_t[1:]!=keys_t[:-1]) | (keys_b[1:]!=keys_b[:-1])] if len(order) else np.zeros(0,dtype=bool)
+    group=np.cumsum(starts)-1
+    count=int(starts.sum())
+    q=columns['quote_count'][order]==1; b=columns['extrema_count'][order]==1
+    if (np.any(np.bincount(group[q],minlength=count)>1) or
+        np.any(np.bincount(group[b],minlength=count)>1) or
         np.any(columns['quote_count']>1) or np.any(columns['extrema_count']>1)):
         raise ValueError('Duplicate pinned quote or extrema bucket')
     extrema=columns['extremes_valid']==1
@@ -54,17 +59,22 @@ def _execution_buckets(rows, origin):
     # identical to the original OMS path. No per-row dictionaries are built.
     raw=list(rows.iter_rows())
     pos={name:i for i,name in enumerate(rows.columns)}
-    def bucket(i):
+    quote_rows=np.full(count,-1,dtype=np.int64); bar_rows=quote_rows.copy()
+    quote_rows[group[q]]=order[q]; bar_rows[group[b]]=order[b]
+    first=order[starts]
+    def bucket(i,qi,bi):
         r=raw[i]; clock=int(close[i])
         quote=None
-        if columns['quote_count'][i]==1:
-            quote=Quote(clock,int(r[pos['quote_timestamp_us']] or 0),
-                float(r[pos['bid_int']] or 0)/10000,float(r[pos['ask_int']] or 0)/10000,
-                float(r[pos['bid_size']] or 0),float(r[pos['ask_size']] or 0),bool(valid[i]))
+        if qi>=0:
+            qr=raw[qi]
+            quote=Quote(clock,int(qr[pos['quote_timestamp_us']] or 0),
+                float(qr[pos['bid_int']] or 0)/10000,float(qr[pos['ask_int']] or 0)/10000,
+                float(qr[pos['bid_size']] or 0),float(qr[pos['ask_size']] or 0),bool(valid[qi]))
+        br=raw[bi] if bi>=0 else None
         return ExecutionBucket(r[pos['ticker']],clock,quote,
-            r[pos['high_int']]/10000 if extrema[i] else None,
-            r[pos['low_int']]/10000 if extrema[i] else None)
-    return tuple(bucket(int(i)) for i in order)
+            br[pos['high_int']]/10000 if bi>=0 and extrema[bi] else None,
+            br[pos['low_int']]/10000 if bi>=0 and extrema[bi] else None)
+    return tuple(bucket(int(i),int(qi),int(bi)) for i,qi,bi in zip(first,quote_rows,bar_rows))
 
 
 class ArteExecutionSource:
@@ -148,28 +158,21 @@ class ArteExecutionSource:
                      f'session_date=toDate({sql.literal(self.day)}) AND '
                      f'bucket_index BETWEEN {first} AND {last}')
             bar_scope = ','.join(f'({sql.literal(t)},toUUID({sql.literal(self.source["units"][str(self.day)][t]["bars"]["attempt_id"])}))' for t in group)
-            # Coalesce two pinned projections in ClickHouse without a hash join.
-            # Multiplicity is returned explicitly: aggregation never hides a
-            # duplicate source row. Only the final required columns cross HTTP.
-            quote_fields=('quote_timestamp_us','quote_valid','bid_int','ask_int',
-                          'bid_size','ask_size','event_count','last_event_us')
-            bar_fields=('high_int','low_int','extremes_valid')
-            aggregates=','.join(f'maxIf({k},lane=1) AS {k}' for k in quote_fields)+','+ \
-                       ','.join(f'maxIf({k},lane=2) AS {k}' for k in bar_fields)
+            # One request for two sparse source lanes. Null cells encode fields
+            # absent from that lane; no duplicated source values are fetched.
+            # Merge/duplicate checks happen by vectorized integer row indexes.
             rows = self._frame(
-                'SELECT ticker,bucket_index,countIf(lane=1) AS quote_count,'
-                f'countIf(lane=2) AS extrema_count,{aggregates} FROM ('
-                'SELECT ticker,bucket_index,1 AS lane,quote_timestamp_us,quote_valid,'
+                'SELECT ticker,bucket_index,1 AS quote_count,0 AS extrema_count,quote_timestamp_us,quote_valid,'
                 'bid_int,ask_int,bid_size,ask_size,event_count,last_event_us,'
-                '0 AS high_int,0 AS low_int,0 AS extremes_valid '
+                'NULL AS high_int,NULL AS low_int,NULL AS extremes_valid '
                 f'FROM arte.liquidity_100ms_v1 WHERE {where} '
                 f'AND (ticker,attempt_id) IN ({quote_scope}) UNION ALL '
-                'SELECT ticker,bucket_index,2 AS lane,0 AS quote_timestamp_us,'
-                '0 AS quote_valid,0 AS bid_int,0 AS ask_int,0. AS bid_size,0. AS ask_size,'
-                '0 AS event_count,0 AS last_event_us,high_int,low_int,extremes_valid '
+                'SELECT ticker,bucket_index,0 AS quote_count,1 AS extrema_count,NULL AS quote_timestamp_us,'
+                'NULL AS quote_valid,NULL AS bid_int,NULL AS ask_int,NULL AS bid_size,NULL AS ask_size,'
+                'NULL AS event_count,NULL AS last_event_us,high_int,low_int,extremes_valid '
                 f'FROM arte.bars_v1 WHERE {where} AND resolution_ms=100 '
-                f'AND (ticker,attempt_id) IN ({bar_scope})) '
-                'GROUP BY ticker,bucket_index ORDER BY bucket_index,ticker', EXECUTION_SCHEMA)
+                f'AND (ticker,attempt_id) IN ({bar_scope}) '
+                'ORDER BY bucket_index,ticker', EXECUTION_SCHEMA)
             parts.append(rows)
         rows = pl.concat(parts) if parts else pl.DataFrame(schema=EXECUTION_SCHEMA)
         return _execution_buckets(rows, self.origin)
