@@ -159,6 +159,24 @@ class _Runtime:
             stop_confirmed=transition.stop_amendment is not None)
 
 
+def test_unamended_completed_boundary_advances_without_oms_command():
+    async def run():
+        source, runtime = _Evidence(), _Runtime()
+        manager = StrategyOneManagementRunner(
+            runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(_proposal())
+        held = _financial()
+        await manager.on_management(held, {}, 30_100)
+        source.rows[30_200] = replace(
+            _evidence(30_200), price_bearing_bar=False,
+            overhead_levels=())
+        await manager.on_management(held, {}, 30_200)
+        assert manager._positions[("DU1", "A1", "AAA")].boundary_ms == 30_200
+        assert runtime.calls == [("entry", 30_100)]
+
+    asyncio.run(run())
+
+
 def test_breaks_wait_for_fresh_quote_then_commit_only_confirmed_oms_state():
     async def run():
         source, runtime = _Evidence(), _Runtime()

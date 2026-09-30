@@ -18,6 +18,7 @@ from src.trading_runtime.strategy_one_management_evidence import (
 from src.trading_runtime.strategy_one_add import propose_strategy_one_add
 from src.trading_runtime.strategy_one_position import (
     ProtectionState, ResistanceBreak, advance_protection,
+    confirm_protection_transition,
 )
 from src.trading_runtime.strategy_one_stateful import (
     StrategyOneEntryProposal, StrategyOneFinancialView,
@@ -278,8 +279,17 @@ class StrategyOneManagementRunner:
             low_extremes_valid=evidence.low_int is not None,
             breaks=tuple(pending), overhead_levels=evidence.overhead_levels,
             price_bearing_bar=evidence.price_bearing_bar)
-        confirmed = await self.runtime.submit_strategy_one_protection(
-            previous, transition, financial, bid=evidence.bid, ask=evidence.ask)
+        if (transition.stop_amendment is None
+                and transition.target_amendment is None):
+            # No broker command exists to acknowledge. Advance the completed
+            # causal clock through the same pure confirmation used by the
+            # runtime, without an empty OMS coroutine on every 100 ms row.
+            confirmed = confirm_protection_transition(
+                previous, transition, target_confirmed=False,
+                stop_confirmed=False)
+        else:
+            confirmed = await self.runtime.submit_strategy_one_protection(
+                previous, transition, financial, bid=evidence.bid, ask=evidence.ask)
         if not isinstance(confirmed, ProtectionState):
             raise RuntimeError("Strategy 1 OMS did not return confirmed protection")
         if (confirmed.boundary_ms != boundary_ms
