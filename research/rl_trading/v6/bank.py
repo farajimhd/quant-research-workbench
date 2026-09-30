@@ -50,6 +50,24 @@ class SessionBank:
         item.validate()
         return item
 
+    def listing_tail(self, identity: str, *, length: int = CONTEXT_CANDLES) -> CandleFeatures:
+        """Validate and reference only the bounded prior-session context.
+
+        Full bank provenance and byte hashes are verified by open_bank;
+        warm-up need not repeatedly scan all earlier candles of each listing.
+        """
+        if not 1 <= length <= CONTEXT_CANDLES:
+            raise ValueError('Invalid actual-candle history length')
+        try:
+            start, stop = self.manifest['offsets'][identity]
+        except KeyError as error:
+            raise KeyError(f'Listing {identity} is absent from certified bank') from error
+        start = max(start, stop - length)
+        item = CandleFeatures(self.close_us[start:stop], self.scalar[start:stop],
+                              self.levels[start:stop])
+        item.validate()
+        return item
+
     def history(self, identity: str, current_index: int,
                 previous: 'SessionBank | None' = None,
                 *, length: int = CONTEXT_CANDLES) -> CandleFeatures:

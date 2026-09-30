@@ -124,7 +124,7 @@ def seed_previous_session(state: SparseCandleState,
         for offset, identity in enumerate(identities):
             if identity not in previous.manifest['offsets']:
                 continue
-            item = previous.listing(identity)
+            item = previous.listing_tail(identity, length=length)
             count = min(length, len(item.close_us))
             if count:
                 scalar[offset, -count:] = item.scalar[-count:]

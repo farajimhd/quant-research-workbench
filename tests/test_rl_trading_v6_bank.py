@@ -54,3 +54,27 @@ def test_packed_bank_rejects_changed_partial_plan(tmp_path):
         write_bank(root, {'A': 1, 'B': 1}, interrupted(), source_hash='first')
     with pytest.raises(ValueError, match='different source or census'):
         write_bank(root, {'A': 1, 'B': 1}, (), source_hash='second')
+
+
+def test_listing_tail_validates_only_required_candles_without_copy(tmp_path, monkeypatch):
+    root = tmp_path / 'bank'
+    write_bank(root, {'A': 1000}, [('A', _item(1_000_000, 1000))],
+               source_hash='source')
+    bank = open_bank(root)
+    original = CandleFeatures.validate
+    validated = []
+
+    def record(item):
+        validated.append(len(item.close_us))
+        return original(item)
+
+    monkeypatch.setattr(CandleFeatures, 'validate', record)
+    tail = bank.listing_tail('A')
+    assert validated == [120]
+    np.testing.assert_array_equal(tail.close_us, bank.close_us[-120:])
+    assert np.shares_memory(tail.scalar, bank.scalar)
+    assert np.shares_memory(tail.levels, bank.levels)
+    with pytest.raises(ValueError, match='history length'):
+        bank.listing_tail('A', length=121)
+    with pytest.raises(KeyError, match='absent'):
+        bank.listing_tail('missing')
