@@ -99,7 +99,7 @@ def test_publication_withholds_coverage_when_source_changes(monkeypatch):
             if sql.startswith('INSERT'):
                 writes.append(sql)
                 return ''
-            if 'identity_coverage_v2' in sql: return ''
+            if 'identity_coverage_' in sql: return ''
             return '\n'.join(json.dumps(r) for r in resolved[1])
     with pytest.raises(ReferenceIdentityError, match='changed during'):
         subject.publish_reference_identity(Client(), Client(), market, pin)
@@ -131,3 +131,20 @@ def test_v2_reader_checks_pin_and_full_child_hash(monkeypatch):
     facts[0]['ibkr_conid'] += 1
     with pytest.raises(ReferenceIdentityError, match='publication seal'):
         subject.certify_reference_identity(market, client=Client(), pin=pin)
+
+
+def test_reader_and_provisioner_share_reference_grants(monkeypatch):
+    from src.backend import backtest_fixed_v3_preflight as preflight
+    from scripts.clickhouse.provision_fixed_backtest_v3_principals import desired_plan
+    from src.trading_runtime.historical_reference_identity import TABLES
+    seen = {}
+    monkeypatch.setattr(preflight, 'storage_preflight', lambda c, **kw: seen.update(storage=kw['tables']))
+    monkeypatch.setattr(preflight, 'journal_permission_preflight', lambda c, **kw: seen.update(kw))
+    monkeypatch.setattr(preflight, '_exact_grants', lambda *a: None)
+    preflight.read_v3_preflight(object())
+    desired = next(p for p in desired_plan() if p.role == 'read')
+    for table in TABLES:
+        assert table in seen['storage']
+        assert table.name in seen['read_only_tables']
+        assert table.name in desired.select_arte
+        assert table.name not in desired.insert_arte

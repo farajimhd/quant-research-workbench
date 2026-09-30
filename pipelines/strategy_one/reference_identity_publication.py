@@ -96,6 +96,14 @@ def publish_reference_identity(client, reader, market, pin):
     digest = identity_content_hash(expected)
     predicate = (f'source_build_id={literal(market.build_id)} '
                  f'AND session_date=toDate({literal(market.sessions[0])})')
+    legacy = rows(reader, 'SELECT identity_attempt_id FROM arte.strategy_one_identity_coverage_v1 '
+                  f'WHERE {predicate}')
+    if legacy:
+        from src.backend.backtest_strategy_one_identity import certify_identity_plan
+        old = certify_identity_plan(market, client=reader)
+        if old.content_hash != digest:
+            raise ReferenceIdentityError('Existing V1 identities differ from pinned reference; migration withheld')
+        return 'skipped_existing_v1'
     existing = rows(reader, f'SELECT identity_attempt_id FROM arte.{COVERAGE.name} WHERE {predicate}')
     if existing:
         sealed = certify_reference_identity(market, client=reader, pin=pin)

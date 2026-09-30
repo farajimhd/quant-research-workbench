@@ -155,6 +155,7 @@ def terminal_v3_preflight(client: Any) -> None:
 
 def read_v3_preflight(client: Any) -> None:
     """A separate cold-audit principal must have no arte INSERT grant."""
+    from src.trading_runtime.historical_reference_identity import TABLES as reference_tables
     contracts = terminal_v3_contracts()
     certificate_names = frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES)
     candidate_names = frozenset(table.split(".", 1)[1] for table in (
@@ -162,11 +163,12 @@ def read_v3_preflight(client: Any) -> None:
         HOD_CONTEXT_TABLE, HOD_COVERAGE_TABLE,
         ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE, EVIDENCE_TABLE,
         ENTRY_COVERAGE_TABLE, IDENTITY_TABLE, IDENTITY_COVERAGE_TABLE,
-        'arte.strategy_one_identity_v2', 'arte.strategy_one_identity_coverage_v2',
+        *(f'arte.{table.name}' for table in reference_tables),
         STRATEGY_ONE_CONFIG_NODE_TABLE, STRATEGY_ONE_CONFIG_RELEASE_TABLE,
         f"arte.{STRATEGY_ONE_APPROVAL_TABLE.name}",
         V7_LINEAGE_TABLE, *STRATEGY_ONE_V7_INTERVAL_TABLES))
-    storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES + (SESSION_SEAL,))
+    storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES +
+                      (SESSION_SEAL,) + reference_tables)
     journal_permission_preflight(
         client, journal_tables=frozenset(),
         read_only_tables=frozenset(table.name for table in contracts) |

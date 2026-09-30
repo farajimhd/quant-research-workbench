@@ -105,6 +105,7 @@ class PrincipalPlan:
 
 def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
     """Derive exact table names from the same contracts as V3 preflight."""
+    from src.trading_runtime.historical_reference_identity import TABLES as reference_tables
     from src.backend.backtest_squeeze_episode_schema import (
         PORTFOLIO_CONTROL, RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
         SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
@@ -134,8 +135,7 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
         PrincipalPlan("read", PRINCIPALS["read"],
                       terminal | MARKET_READ_TABLES |
                       frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES) |
-                      {SESSION_SEAL.name, 'strategy_one_identity_v2',
-                       'strategy_one_identity_coverage_v2'} |
+                      {SESSION_SEAL.name} | {table.name for table in reference_tables} |
                       PRICE_READ_TABLES |
                       frozenset(table.split(".", 1)[1] for table in (
                           CANDIDATE_TABLE, COVERAGE_TABLE,
