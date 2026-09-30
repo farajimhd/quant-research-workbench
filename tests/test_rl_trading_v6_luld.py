@@ -23,11 +23,11 @@ def test_trade_arithmetic_reference_prefix_and_tier_width():
     start=_midnight_us(date(2026,7,31))+34200_000_000
     trades,quotes=evidence(start,price=11,bid=10,ask=10.01)
     full,report=project(start,start+40_000_000,trades,quotes,previous_close=10,tier=2)
-    prefix,_=project(start,start+20_000_000,trades.head(40),quotes.head(40),previous_close=10,tier=2)
+    prefix,_=project(start,start+20_000_000,trades.head(20_000_000//STEP),quotes.head(20_000_000//STEP),previous_close=10,tier=2)
     assert full.head(1).equals(prefix)
     assert full['upper'][0]==11 and full['lower'][0]==9
     assert full.filter(pl.col('available_us')==start+30_000_000)['upper'][0]==12.1
-    assert report['eligible_trades']==80
+    assert report['eligible_trades']==40_000_000//STEP
 
 
 def test_quote_limit_not_price_touch_and_stale_breaks_timer():
@@ -36,18 +36,30 @@ def test_quote_limit_not_price_touch_and_stale_breaks_timer():
     frame,report=project(start,600_000_000,trades,quotes,previous_close=10,tier=2)
     assert report['modeled_pauses']==1
     first=frame.filter('paused')['available_us'][0]
-    assert first==15_500_000  # 15 seconds of observed consecutive limit state.
+    assert first==15_000_000+STEP  # 15 seconds of observed consecutive limit state.
     # A crossed bid is not equality and must not fabricate a limit pause.
     crossed=quotes.with_columns(pl.lit(11.1).alias('bid'),pl.lit(11.2).alias('ask'))
     _,other=project(start,600_000_000,trades,crossed,previous_close=10,tier=2)
     assert other['modeled_pauses']==0
     missing=quotes.with_columns(pl.when(pl.col('bucket_us')==10_000_000)
         .then(0).otherwise(pl.col('quote_us')).alias('quote_us'))
-    _,broken=project(start,20_000_000,trades.head(40),missing.head(40),previous_close=10,tier=2)
+    _,broken=project(start,20_000_000,trades.head(20_000_000//STEP),missing.head(20_000_000//STEP),previous_close=10,tier=2)
     assert broken['modeled_pauses']==0
     book=LuldBook({'A':frame},end_us=600_000_000)
     assert not book.blocked('A',first-1) and book.blocked('A',first)
     assert book.state('A',600_000_000) is None
+
+
+def test_pause_trade_audit_uses_bucket_open_state_not_onset_close():
+    trades, quotes = evidence(0, seconds=20, price=10, bid=11, ask=11.01)
+    onset = 15_000_000+STEP
+    before = trades.filter(pl.col('bucket_us') <= onset)
+    _, report = project(0, 20_000_000, before, quotes, previous_close=10, tier=2)
+    assert report['modeled_pauses'] == 1
+    assert report['trade_buckets_during_modeled_pause'] == 0
+    inside = trades.filter(pl.col('bucket_us') <= onset+STEP)
+    _, report = project(0, 20_000_000, inside, quotes, previous_close=10, tier=2)
+    assert report['trade_buckets_during_modeled_pause'] == 1
 
 
 def test_halt_blocks_exit_cost_once_and_terminal_cost_not_pnl():

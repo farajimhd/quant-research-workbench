@@ -9,12 +9,12 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
-VERSION = 'rl-v6-modeled-luld-500ms-v1'
-STEP = 500_000
+VERSION = 'rl-v6-modeled-luld-100ms-v2'
+STEP = 100_000
 
 
 def project(start_us, end_us, trades, quotes, *, previous_close, tier):
-    """Vectorized rolling trade mean on [T] half-second slots; sparse output.
+    """Vectorized rolling trade mean on [T] 100ms slots; sparse output.
 
     trades: bucket_us, price_sum (dollars), count. quotes: bucket_us,
     quote_us, bid, ask. Inputs contain completed buckets, with unique keys.
@@ -49,7 +49,7 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
                 (clocks[positions]-quote_us <= STEP) & (bid[positions] > 0) &
                 (ask[positions] >= bid[positions]))
     cs, cc = np.r_[0., np.cumsum(sums)], np.r_[0, np.cumsum(counts)]
-    left = np.maximum(np.arange(n)+1-600, 0)
+    left = np.maximum(np.arange(n)+1-300_000_000//STEP, 0)
     rolling_count = cc[1:]-cc[left]
     means = np.divide(cs[1:]-cs[left], rolling_count,
                       out=np.full(n, np.nan), where=rolling_count > 0)
@@ -57,8 +57,9 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
     current, refreshed = float(previous_close), start_us
     frozen = False
     # 30s reference checks, 1% refresh threshold; no future prices.
-    for begin in range(0, n, 60):
-        stop = min(begin+60, n)
+    refresh_slots = 30_000_000//STEP
+    for begin in range(0, n, refresh_slots):
+        stop = min(begin+refresh_slots, n)
         for i in range(begin, stop):
             if not frozen and clocks[i]-refreshed >= 30_000_000 and np.isfinite(means[i]) and abs(means[i]/current-1) >= .01:
                 current, refreshed = float(means[i]), int(clocks[i])
@@ -94,7 +95,7 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
     intervals, last_end = [], start_us
     for index in candidates:
         begin = int(clocks[index])
-        if begin < last_end:
+        if begin < last_end or begin >= end_us:
             continue
         finish = min(begin+300_000_000, end_us)
         if begin >= end_us-600_000_000:
@@ -109,8 +110,12 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
                     (paused[1:] != paused[:-1])]
     changes = pl.DataFrame({'available_us': clocks[changed], 'lower': lower[changed],
         'upper': upper[changed], 'paused': paused[changed], 'pause_start_us': pause_start[changed]})
+    # Counts in the onset bucket describe trades *before* the newly available
+    # pause state. Audit only buckets whose opening boundary was already
+    # paused, retaining the reopening bucket because it includes prior trades.
+    prior_paused = np.r_[False, paused[:-1]]
     return changes, {'eligible_trades': int(counts.sum()), 'quote_slots': int(fresh.sum()),
-        'modeled_pauses': len(intervals), 'trade_buckets_during_modeled_pause': int(np.count_nonzero(counts[paused])),
+        'modeled_pauses': len(intervals), 'trade_buckets_during_modeled_pause': int(np.count_nonzero(counts[prior_paused])),
         'prior_close_kind': 'pinned_previous_regular_last_sale', 'tier': tier,
         'official_halt_evidence': False}
 

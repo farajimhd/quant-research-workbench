@@ -40,8 +40,8 @@ def _client():
     return ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(),
         default_clickhouse_password(), persistent=True, timeout_seconds=180,
         default_query_params={'readonly':1, 'max_threads':1, 'max_execution_time':150,
-            'max_memory_usage':1073741824, 'max_result_rows':100000,
-            'max_result_bytes':30000000, 'result_overflow_mode':'throw'})
+            'max_memory_usage':1073741824, 'max_result_rows':300000,
+            'max_result_bytes':64000000, 'result_overflow_mode':'throw'})
 
 
 def _rows(client, sql):
@@ -103,20 +103,20 @@ def _worker(packet):
                 arrayFilter(t->t>0,[toUInt16(condition_token_1),toUInt16(condition_token_2),
                   toUInt16(condition_token_3),toUInt16(condition_token_4),toUInt16(condition_token_5)]) AS tokens,
                 ({form}) AS form_ok FROM ({canonical_source(day,ticker)})
-              ) SELECT toInt64((intDiv(sip_timestamp_us-{start},500000)+1)*500000+{start}) AS bucket_us,
+              ) SELECT toInt64((intDiv(sip_timestamp_us-{start},100000)+1)*100000+{start}) AS bucket_us,
                 sum(price) AS price_sum,count() AS count FROM decoded
               WHERE sip_timestamp_us>={start} AND sip_timestamp_us<{end} AND kind=1
                 AND bitAnd(event_meta,128)=0 AND price>0 AND size_primary>0 AND {last}
               GROUP BY bucket_us ORDER BY bucket_us'''
             trades=pl.DataFrame(_rows(client,statement),schema={'bucket_us':pl.Int64,
                 'price_sum':pl.Float64,'count':pl.Int64})
-            quote_sql=('SELECT toInt64((intDiv(bucket_index,5)+1)*500000+'+str(origin)+') AS bucket_us,'
-                'argMax(quote_timestamp_us,bucket_index) AS quote_us,'
-                'argMax(bid_int,bucket_index)/10000. AS bid,argMax(ask_int,bucket_index)/10000. AS ask '
+            quote_sql=('SELECT toInt64((bucket_index+1)*100000+'+str(origin)+') AS bucket_us,'
+                'quote_timestamp_us AS quote_us,'
+                'bid_int/10000. AS bid,ask_int/10000. AS ask '
                 f'FROM arte.liquidity_100ms_v1 WHERE build_id={literal(source["build_id"])} '
                 f'AND session_date=toDate({literal(day)}) AND ticker={literal(ticker)} '
                 f'AND attempt_id=toUUID({literal(attempt)}) AND bucket_index>=342000 AND bucket_index<576000 '
-                'AND quote_valid=1 GROUP BY bucket_us ORDER BY bucket_us')
+                'AND quote_valid=1 ORDER BY bucket_us')
             quotes=pl.DataFrame(_rows(client,quote_sql),schema={'bucket_us':pl.Int64,'quote_us':pl.Int64,
                 'bid':pl.Float64,'ask':pl.Float64})
             changes,report=project(start,end,trades,quotes,previous_close=prior_close,tier=tier)
