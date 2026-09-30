@@ -1,8 +1,20 @@
 import torch
+import pytest
 from copy import deepcopy
 
 from research.rl_trading.v6.candle_stream import SparseCandleState
 from research.rl_trading.v6.model import ActualCandleEncoder
+
+
+@pytest.mark.parametrize('indices', [[0, 0], [-1, 0], [0, 3]])
+def test_invalid_identity_axis_rejected_before_state_mutation(indices):
+    encoder = ActualCandleEncoder(width=8)
+    state = SparseCandleState.empty(encoder, 3, device=torch.device('cpu'), dtype=torch.float32)
+    with pytest.raises(ValueError, match='listing axis'):
+        state.advance(encoder, torch.tensor(indices), torch.zeros(2, 37),
+                      torch.zeros(2, 2, 5, 11))
+    assert not state._updates
+    assert not state.history.any() and not state.seen.any()
 
 
 def test_sparse_training_state_matches_actual_candle_encoder_and_detaches():

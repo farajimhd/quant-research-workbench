@@ -33,6 +33,10 @@ class SparseCandleState:
         batched tensor operations over the requested rows.
         """
         keys = indices.detach().cpu().tolist()
+        return self._history_for_keys(indices, keys)
+
+    def _history_for_keys(self, indices: torch.Tensor, keys: list[int]) -> torch.Tensor:
+        """Internal gather with CPU identities derived from the same index tensor."""
         if not any(key in self._updates for key in keys):
             return self.history.index_select(0, indices)
         # Group identity pointers by event tensor. One batched gather/scatter
@@ -72,21 +76,24 @@ class SparseCandleState:
         listing. The full state is detached at the chunk boundary.
         """
         if (listing_index.ndim != 1 or listing_index.dtype != torch.long or
-                listing_index.numel() != scalar.shape[0] or
-                listing_index.unique().numel() != listing_index.numel() or
-                (listing_index.numel() and
-                 (listing_index.min() < 0 or
-                  listing_index.max() >= self.history.shape[0]))):
+                listing_index.numel() != scalar.shape[0]):
             raise ValueError('Invalid sparse close event listing axis')
-        if not listing_index.numel():
+        # History bookkeeping already requires CPU identities. Copy once and
+        # validate there rather than synchronizing GPU unique/min/max results
+        # and copying the identical axis again for graph bookkeeping.
+        keys = listing_index.detach().cpu().tolist()
+        if len(set(keys)) != len(keys) or (keys and
+                (min(keys) < 0 or max(keys) >= self.history.shape[0])):
+            raise ValueError('Invalid sparse close event listing axis')
+        if not keys:
             return
-        previous = self.history_for(listing_index)
+        previous = self._history_for_keys(listing_index, keys)
         projected = encoder.project(encoder._input(scalar, levels))
         updated = torch.cat((previous[:, 1:], projected[:, None]), dim=1)
         weighted = (updated * encoder.lag[:, 0, :].T[None]).sum(dim=1)
         encoded = encoder.norm(F.gelu(weighted))
         if torch.is_grad_enabled():
-            for offset, key in enumerate(listing_index.detach().cpu().tolist()):
+            for offset, key in enumerate(keys):
                 self._updates[key] = (updated, offset)
         else:
             self.history[listing_index] = updated
@@ -103,7 +110,7 @@ class SparseCandleState:
             with torch.no_grad():
                 keys = list(self._updates)
                 indices = torch.tensor(keys, device=self.history.device, dtype=torch.long)
-                self.history[indices] = self.history_for(indices).detach()
+                self.history[indices] = self._history_for_keys(indices, keys).detach()
             self._updates.clear()
         self.history = self.history.detach()
         self.encoded = self.encoded.detach()
