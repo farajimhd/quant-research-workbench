@@ -40,6 +40,11 @@ class RankedBracketActorCritic(BracketActorCritic):
 
     def decide(self, listing_embeddings, account, held_index, held_features,
                action_state, **masks):
+        full, masks = self.prepare_market(listing_embeddings, held_index, masks)
+        return super().decide(full, account, held_index, held_features, action_state, **masks)
+
+    def prepare_market(self, listing_embeddings, held_index, masks):
+        """Capture this clock's causal attention before deferred decoder work."""
         if self.candle_state is None:
             raise ValueError('Attention requires observed V6 candle state')
         selected_np = self.ranker.select(self.clock_us,
@@ -64,7 +69,7 @@ class RankedBracketActorCritic(BracketActorCritic):
         selected_mask[selected] = True
         masks = dict(masks)
         masks['enter_allowed'] = masks['enter_allowed'] & selected_mask
-        return super().decide(full, account, held_index, held_features, action_state, **masks)
+        return full, masks
 
     def critic_market_embeddings(self, listings):
         if self._critic_market is None:

@@ -57,6 +57,8 @@ def main(argv=None):
     parser.add_argument('--teacher-clocks', type=int, default=128)
     parser.add_argument('--ppo-clocks', type=int, default=32)
     parser.add_argument('--clocks-per-chunk', type=int, default=8)
+    parser.add_argument('--decoder-batch-size', type=int, default=1,
+                        help='Bounded PPO-only decoder batching; default preserves reference path')
     parser.add_argument('--max-orders-per-second', type=int, default=4)
     parser.add_argument('--day', type=date.fromisoformat,
                         help='Audited training day only; defaults to first training day')
@@ -152,7 +154,8 @@ def main(argv=None):
             result['reconstruction'] = audit_reconstruction(policy, session, frames, device=device)
             started = time.perf_counter()
             result['ppo'] = update_session(policy, optimizer, session, frames, steps,
-                device=device, epochs=1, clocks_per_chunk=args.clocks_per_chunk)
+                device=device, epochs=1, clocks_per_chunk=args.clocks_per_chunk,
+                decoder_batch_size=args.decoder_batch_size)
             torch.cuda.synchronize()
             result['timings']['ppo_update_seconds'] = time.perf_counter()-started
             if result['ppo'].get('update_epochs',0) < 1:

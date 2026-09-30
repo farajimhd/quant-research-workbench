@@ -97,6 +97,41 @@ class BracketActorCritic(BracketPolicy):
     def critic_market_embeddings(self, listings):
         return listings
 
+    def prepare_market(self, listings, held_index, masks):
+        return listings, masks
+
+    def decode_batch(self, packets):
+        """Decode a bounded group of causal packets with equal listing/held axes.
+
+        Each packet contains captured market [N,D], account [7], holdings [H],
+        features [H,11], action memory [D], and masks. Sequential state was
+        already advanced by the caller; batching does not advance it again.
+        """
+        markets, accounts, indices, features, memories, masks = zip(*packets)
+        market = torch.stack(markets)
+        account = torch.stack(accounts)
+        held_index = torch.stack(indices)
+        held_features = torch.stack(features)
+        memory = torch.stack(memories)
+        logits, sizes, stops, targets = self.decoder.forward_batch(
+            market + memory[:, None], account, held_index, held_features,
+            **{name: torch.stack([m[name] for m in masks]) for name in masks[0]})
+        b, n = sizes.shape
+        h = stops.shape[1]
+        locations = torch.cat((logits.new_zeros(b, 1), torch.logit(sizes.clamp(1e-6, 1-1e-6)),
+                               logits.new_zeros(b, h), stops, targets), dim=1)
+        scale = self.log_scale.clamp(-5, 2).exp()
+        scales = torch.cat((scale[0].expand(1+n+h), scale[1].expand(h), scale[2].expand(h)))
+        risk = account.new_zeros(b, 2)
+        if h and held_features.shape[2] >= 11:
+            weights = held_features[:, :, 0]*held_features[:, :, 1]/account[:, 1:2].clamp_min(1)
+            risk = (held_features[:, :, 9:11]*weights[:, :, None]).sum(1)
+        critic_input = torch.cat((market.mean(1).detach(), memory.detach(),
+            (account.sign()*torch.log1p(account.abs())).detach(), risk.detach()), dim=1)
+        values = self.critic(critic_input).squeeze(-1)
+        return [(HybridDistribution(logits[i], locations[i], scales, n, h), values[i])
+                for i in range(b)]
+
 
 def elapsed_gae(rewards, values, terminated, elapsed_seconds, *, bootstrap,
                 gamma: float = .999, trace_decay: float = .95):

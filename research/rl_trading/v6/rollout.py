@@ -66,7 +66,7 @@ def _advance(policy,state,session,frame,device):
     return scalar_np
 
 
-def _distribution(policy,state,memory,step,indices,scalar,device):
+def _distribution(policy,state,memory,step,indices,scalar,device, *, prepare=False):
     obs = step.observation
     pending = np.asarray(step.pending_indices,dtype=np.int64)
     enter = causal_enter_mask(len(state.encoded),indices,scalar,
@@ -76,10 +76,14 @@ def _distribution(policy,state,memory,step,indices,scalar,device):
         enter[np.asarray(step.blocked_indices,dtype=np.int64)] = False
     policy.set_pending(step.pending_indices)
     tensor = lambda x,dtype=None: torch.as_tensor(x,dtype=dtype,device=device)
-    return policy.distribution_and_value(state.embeddings(),tensor(obs.account),
-        tensor(obs.held_index,torch.long),tensor(obs.held_features),memory,
-        enter_allowed=tensor(enter,torch.bool),exit_allowed=tensor(obs.exit_allowed,torch.bool),
+    held_index = tensor(obs.held_index,torch.long)
+    masks = dict(enter_allowed=tensor(enter,torch.bool),exit_allowed=tensor(obs.exit_allowed,torch.bool),
         stop_allowed=tensor(obs.stop_allowed,torch.bool),target_allowed=tensor(obs.target_allowed,torch.bool))
+    if prepare:
+        market, masks = policy.prepare_market(state.embeddings(), held_index, masks)
+        return market, tensor(obs.account), held_index, tensor(obs.held_features), memory.memory, masks
+    return policy.distribution_and_value(state.embeddings(),tensor(obs.account),
+        held_index,tensor(obs.held_features),memory,**masks)
 
 
 @torch.no_grad()
@@ -194,13 +198,14 @@ def collect_session(policy, session, environment, *, device,
 
 def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
                    clocks_per_chunk=32,gamma=.999,trace_decay=.95,clip=.2,
-                   entropy_coefficient=.01,target_kl=.02,progress_callback=None):
+                   entropy_coefficient=.01,target_kl=.02,progress_callback=None,
+                   decoder_batch_size=1):
     """Rebuild from session warm-up per PPO epoch; backprop bounded chunks.
 
     Gradients accumulate over chunks; weights change only after reconstruction
     finishes. No stale hidden-state shortcut and no shuffled market seconds.
     """
-    if epochs<1 or clocks_per_chunk<1 or not steps:
+    if epochs<1 or clocks_per_chunk<1 or decoder_batch_size<1 or not steps:
         raise ValueError('Invalid chronological PPO bounds')
     rewards = torch.tensor([s.reward for s in steps],device=device)
     old_values = torch.tensor([s.old_value for s in steps],device=device)
@@ -220,17 +225,37 @@ def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
         iterator = iter(frames)
         while chunk := tuple(islice(iterator,clocks_per_chunk)):
             likelihoods,values,entropies = [],[],[]
-            for frame in chunk:
-                memory = _remember(policy,state,memory,frame.outcomes)
-                scalar = _advance(policy,state,session,frame,device)
-                for step in frame.steps:
-                    dist,value = _distribution(policy,state,memory,step,frame.indices,scalar,device)
+            pending = []
+            def flush():
+                if not pending:
+                    return
+                decoded = policy.decode_batch([packet for packet, _ in pending])
+                for (dist, value), (_, step) in zip(decoded, pending):
                     latent = dist.logits.new_tensor(step.latent)
                     likelihoods.append(dist.log_prob(step.token,latent))
                     values.append(value)
                     entropies.append(dist.categorical.entropy())
+                pending.clear()
+            for frame in chunk:
+                memory = _remember(policy,state,memory,frame.outcomes)
+                scalar = _advance(policy,state,session,frame,device)
+                for step in frame.steps:
+                    if decoder_batch_size > 1:
+                        packet = _distribution(policy,state,memory,step,frame.indices,scalar,device,prepare=True)
+                        if pending and pending[0][0][2].shape != packet[2].shape:
+                            flush()  # Preserve each original action-token axis.
+                        pending.append((packet,step))
+                        if len(pending) >= decoder_batch_size:
+                            flush()
+                    else:
+                        dist,value = _distribution(policy,state,memory,step,frame.indices,scalar,device)
+                        latent = dist.logits.new_tensor(step.latent)
+                        likelihoods.append(dist.log_prob(step.token,latent))
+                        values.append(value)
+                        entropies.append(dist.categorical.entropy())
                     if step.immediate_outcome is not None:
                         memory = _remember(policy,state,memory,(step.immediate_outcome,))
+            flush()
             if likelihoods:
                 likelihoods,values = torch.stack(likelihoods),torch.stack(values)
                 stop = cursor+len(likelihoods)

@@ -194,6 +194,47 @@ class BracketActionDecoder(nn.Module):
         target_distance = self.target_distance_head(held).flatten()
         return logits, size, stop_distance, target_distance
 
+    def forward_batch(self, listings, account, held_index, held_features, *,
+                      enter_allowed, exit_allowed, stop_allowed, target_allowed):
+        """Decode independent causal observations [B,N,D], with equal H per batch.
+
+        Only the leading observation axis is batched. No reduction mixes
+        observations, time, account state, or holding identities.
+        """
+        b, n, d = listings.shape
+        h = held_index.shape[1]
+        if held_features.shape == (b, h, 9):
+            held_features = F.pad(held_features, (0, 2))
+        if (d != self.width or account.shape != (b, 7) or
+                held_index.shape != (b, h) or held_index.dtype != torch.long or
+                held_features.shape != (b, h, HELD_FEATURE_WIDTH) or
+                enter_allowed.shape != (b, n) or
+                any(m.shape != (b, h) for m in (exit_allowed, stop_allowed, target_allowed)) or
+                (h and (held_index.min() < 0 or held_index.max() >= n))):
+            raise ValueError('Invalid batched market action axes')
+        if not all(m.dtype == torch.bool for m in
+                   (enter_allowed, exit_allowed, stop_allowed, target_allowed)):
+            raise ValueError('Action masks must be boolean')
+        scaled = torch.cat((account[:, :3].sign()*torch.log1p(account[:, :3].abs()),
+            account[:, 3:4], torch.log1p(account[:, 4:5].clamp_min(0))/10,
+            torch.log1p(account[:, 5:7].clamp_min(0))), dim=1)
+        held_scaled = held_features.clone()
+        held_scaled[:, :, :2] = torch.log1p(held_features[:, :, :2].clamp_min(0))
+        held_scaled[:, :, 2] = torch.log1p(held_features[:, :, 2].clamp_min(0))/10
+        context = listings.mean(dim=1) + self.account(scaled)  # [B,D]
+        listed = torch.tanh(listings + context[:, None])  # [B,N,D]
+        identities = held_index[:, :, None].expand(b, h, d)
+        held = torch.tanh(self.holding(torch.cat((listings.gather(1, identities),
+            held_scaled), dim=2)) + context[:, None])  # [B,H,D]
+        logits = torch.cat((self.hold_head(context), self.enter_head(listed).squeeze(-1),
+            self.exit_head(held).squeeze(-1), self.stop_head(held).squeeze(-1),
+            self.target_head(held).squeeze(-1)), dim=1)
+        mask = torch.cat((torch.ones(b, 1, device=listings.device, dtype=torch.bool),
+            enter_allowed, exit_allowed, stop_allowed, target_allowed), dim=1)
+        logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
+        return (logits, self.size_head(listed).squeeze(-1).sigmoid(),
+                self.stop_distance_head(held).squeeze(-1), self.target_distance_head(held).squeeze(-1))
+
 
 @dataclass(frozen=True)
 class ExecutedActionState:
