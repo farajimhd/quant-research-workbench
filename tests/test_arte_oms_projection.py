@@ -171,8 +171,12 @@ def test_strategy_one_cold_join_uses_exact_intent_and_complete_history(
         (source_batch, group_batch))
     history = CompleteProtectionHistory(
         run_id, 2, prefix.batch_ids, ())
+    history_pages = []
+    def complete_history(*_args, **kwargs):
+        history_pages.append(kwargs["page_size"])
+        return history
     monkeypatch.setattr(reader, "load_complete_typed_protection_history",
-                        lambda *_a, **_k: history)
+                        complete_history)
     monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
                         lambda *_a, **_k: (group,))
     reservation = {"account_id": "DU1", "intent_id": source.intent_id,
@@ -197,6 +201,7 @@ def test_strategy_one_cold_join_uses_exact_intent_and_complete_history(
                         exact_intent)
     joined = load_recovered_strategy_one_oms_lineage(
         object(), prefix, allowed_accounts=frozenset({"DU1"}))
+    assert history_pages == [1_000]
     assert requested == [(1, (record_id,))]
     assert joined[0].through_sequence == 2
     assert joined[0].orders[0].raw["canonical_run_id"] == run_id

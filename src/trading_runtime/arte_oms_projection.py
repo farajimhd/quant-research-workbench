@@ -694,8 +694,13 @@ def load_recovered_strategy_one_oms_lineage(
             or type(max_groups) is not int or not 1 <= max_groups <= max_transitions
             or type(max_events) is not int or max_events < 1):
         raise ValueError("Strategy 1 OMS cold join needs bounded V4 authority")
+    # Protection history scans the entire committed event prefix. Its reader
+    # independently bounds each page at 1,000 events and verifies every typed
+    # child; using that full bound avoids five small network round trips for
+    # each one that the OMS group join actually needs. Keep the OMS join's
+    # tighter page size because its per-group child budget is separate.
     history = load_complete_typed_protection_history(
-        client, prefix, page_size=page_size, max_events=max_events)
+        client, prefix, page_size=1_000, max_events=max_events)
     if (history.run_id != prefix.run_id
             or history.through_sequence != prefix.last_sequence
             or history.committed_batch_ids != prefix.batch_ids):
