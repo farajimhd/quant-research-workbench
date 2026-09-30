@@ -11,8 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from zoneinfo import ZoneInfo
 
-from src.trading_runtime.ibkr_schema import OrderRequest
-from src.trading_runtime.ibkr_normalizer import normalize_order
+from src.trading_runtime.ibkr_schema import Execution, OrderRequest
+from src.trading_runtime.ibkr_normalizer import normalize_execution, normalize_order
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
@@ -72,6 +72,32 @@ def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,
 
 
 class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_canonical_execution_cache_normalizes_each_fill_once_and_resets_on_restore(self):
+        broker = SimulatedBrokerAdapter(
+            ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
+            fixed_bar_mode=True,
+        )
+        await broker.initialize()
+        first = Execution(
+            execution_id="SIM-1", symbol="AAPL", side="B", order_ref="one",
+            trade_time=START, trade_time_r=int(START.timestamp() * 1_000),
+            size=2, price=10.0, order_id="1", account="TEST", conid=1,
+        )
+        broker._executions.append(first)
+        with patch("src.trading_runtime.simulated_broker.normalize_execution",
+                   wraps=normalize_execution) as projection:
+            initial = await broker.canonical_executions("TEST")
+            self.assertIs((await broker.canonical_executions("TEST"))[0], initial[0])
+            self.assertEqual(projection.call_count, 1)
+            broker._executions.append(replace(
+                first, execution_id="SIM-2", trade_time=START + timedelta(seconds=1),
+                trade_time_r=int((START + timedelta(seconds=1)).timestamp() * 1_000)))
+            self.assertEqual(len(await broker.canonical_executions("TEST")), 2)
+            self.assertEqual(projection.call_count, 2)
+            broker.restore_checkpoint_state(broker.checkpoint_state())
+            self.assertEqual(len(await broker.canonical_executions("TEST")), 2)
+            self.assertEqual(projection.call_count, 4)
+
     async def test_fixed_bar_canonical_orders_reuse_only_unchanged_projections(self):
         broker = SimulatedBrokerAdapter(
             ["TEST"], mode=RunMode.BACKTEST, initial_time=START,

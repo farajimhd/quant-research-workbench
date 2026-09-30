@@ -244,6 +244,12 @@ class SimulatedBrokerAdapter:
         self._position_conids_by_ticker: dict[str, set[int]] = {}
         self._order_ids_by_coid: dict[str, str] = {}
         self._executions: list[Execution] = []
+        # Canonical reconciliation rereads the growing fill history. Cache
+        # immutable normalized facts by source object and fallback account so
+        # 100 ms Backtest admission does not normalize old fills quadratically.
+        self._canonical_execution_cache: dict[
+            tuple[str, str], tuple[Execution, CanonicalExecution]
+        ] = {}
         self._quotes: dict[int, QuoteEvent] = {}
         self._trades: dict[int, TradeEvent] = {}
         self._quotes_by_ticker: dict[str, QuoteEvent] = {}
@@ -457,6 +463,7 @@ class SimulatedBrokerAdapter:
                         position.ticker.upper(), set()).add(position.conid)
         self._order_ids_by_coid = order_ids_by_coid
         self._executions = executions
+        self._canonical_execution_cache.clear()
         self._quotes = {
             int(conid): _quote_from_checkpoint(dict(row))
             for conid, row in dict(payload.get("quotes") or {}).items()
@@ -735,7 +742,20 @@ class SimulatedBrokerAdapter:
         return [execution for execution in self._executions if execution.trade_time >= start]
 
     async def canonical_executions(self, account_id: str = "", days: int = 7) -> list[CanonicalExecution]:
-        rows = [normalize_execution(execution.to_cpapi(), account_id) for execution in await self.trades(days)]
+        if not self._bar_mode:
+            rows = [normalize_execution(execution.to_cpapi(), account_id)
+                    for execution in await self.trades(days)]
+            return [row for row in rows if not account_id or row.account_id == account_id]
+        rows = []
+        for execution in await self.trades(days):
+            key = (execution.execution_id, account_id)
+            cached = self._canonical_execution_cache.get(key)
+            if cached is None or cached[0] is not execution:
+                normalized = normalize_execution(execution.to_cpapi(), account_id)
+                self._canonical_execution_cache[key] = (execution, normalized)
+            else:
+                normalized = cached[1]
+            rows.append(normalized)
         return [row for row in rows if not account_id or row.account_id == account_id]
 
     async def positions(self, account_id: str) -> list[PortfolioPosition]:
