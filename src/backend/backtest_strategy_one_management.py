@@ -287,7 +287,8 @@ class StrategyOneManagementRunner:
             low_price_valid=evidence.low_int is not None,
             low_extremes_valid=evidence.low_int is not None,
             breaks=tuple(pending), overhead_levels=evidence.overhead_levels,
-            price_bearing_bar=evidence.price_bearing_bar)
+            price_bearing_bar=evidence.price_bearing_bar,
+            allows_completed_30s_trailing=self.contract.allows_completed_30s_trailing)
         if (transition.stop_amendment is None
                 and transition.target_amendment is None):
             # No broker command exists to acknowledge. Advance the completed

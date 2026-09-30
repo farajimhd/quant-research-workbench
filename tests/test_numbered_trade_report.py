@@ -8,8 +8,10 @@ from scripts.clickhouse import report_strategy_one_trades as report
 from src.backend import backtest_strategy_one_configuration as configuration
 
 
-@pytest.mark.parametrize("number", (2, 3, 4))
+@pytest.mark.parametrize("number", (2, 3, 4, 5))
 def test_numbered_report_requires_pinned_configuration_and_labels_number(monkeypatch, number):
+    monkeypatch.setattr(report, "load_broker_observed_drawdown", lambda *_:
+                        {"maximum_drawdown": 12.0, "verified_terminal_sequence": 1})
     context = {"strategy_revision": number, "configuration_hash": "a" * 64, "initial_cash": 10000}
     monkeypatch.setattr(report, "load_v4_terminal_review_page", lambda *_a, **_kw: {"status": "completed"})
     monkeypatch.setattr(report, "certified_saved_run_plan", lambda *_a, **_kw:
@@ -23,7 +25,7 @@ def test_numbered_report_requires_pinned_configuration_and_labels_number(monkeyp
                         calls.append(number) or release)
     result = report.build_report(object(), object(), "run")
     assert calls == [number]
-    assert result["schema_version"] == "numbered-fixed-research-trades-v3"
+    assert result["schema_version"] == "numbered-fixed-research-trades-v4"
     assert result["configuration_release_token"] == "sealed-token"
     assert report.markdown(result).startswith(f"# Strategy {number} positions:")
     release.payload_hash = "c" * 64

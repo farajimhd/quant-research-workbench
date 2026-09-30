@@ -29,6 +29,7 @@ from src.backend.backtest_v3_clients import v3_client
 from src.backend.backtest_v4_chart import certified_saved_run_plan
 from src.backend.backtest_v4_saved_review import load_v4_performance_report, load_v4_terminal_review_page
 from src.backend.strategy_one_entry_context import pinned_entry_volume
+from src.backend.backtest_v4_performance_evidence import load_broker_observed_drawdown
 from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
 from src.trading_runtime.domain import json_safe
 
@@ -65,7 +66,7 @@ def build_report(journal, market, run_id: str) -> dict:
     session, context, _, plan = certified_saved_run_plan(journal, market, run_id=run_id)
     number = int(context["strategy_revision"])
     numbered_evidence = {}
-    if number in (2, 3, 4):
+    if number in (2, 3, 4, 5):
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
         release = certify_numbered_configuration(market, number)
         if release.payload_hash != context["configuration_hash"]:
@@ -74,6 +75,9 @@ def build_report(journal, market, run_id: str) -> dict:
                              "numbered_release": release.payload["strategy"]["numbered_release"],
                              "configuration_release_token": release.token}
     page = load_v4_performance_report(journal, run_id)
+    marked_drawdown = load_broker_observed_drawdown(journal, run_id)
+    if marked_drawdown["verified_terminal_sequence"] != page["verified_sequence"]:
+        raise RuntimeError("Report and broker drawdown committed heads differ")
     open_count = sum(row["status"] != "closed" for row in page["position_lifecycles"])
     if open_count:
         raise RuntimeError(f"Optimization report requires flat terminal positions; open lifecycles={open_count}")
@@ -97,18 +101,23 @@ def build_report(journal, market, run_id: str) -> dict:
                  and unit.ticker == ticker and unit.session_date == session.isoformat()]
         reason = lifecycle.get("exit_reason") or lifecycle.get("presentation_exit_reason")
         rows.append({**episode, "run_id": run_id, "ticker": ticker,
+                     "peak_quantity": lifecycle["peak_quantity"],
                      "entry_et": et(episode["opened_at"]),
                      "exit_et": et(episode["closed_at"]),
                      "causal_exit_reason": reason or "unavailable",
                      "exit_reason_source": "journal" if lifecycle.get("exit_reason")
-                     else "effective_protection_order" if reason else "unavailable",
+                     else lifecycle.get("presentation_exit_reason_source", "effective_protection_order") if reason else "unavailable",
+                     "exit_components": lifecycle.get("exit_components", []),
                      "protection_timeline": lifecycle.get("protection_timeline", []),
                      "bars_attempt_id": units[0].attempt_id,
                      "entry_completed_volume": volumes,
                      "float_shares": None,
                      "float_status": "unavailable: no dedicated as-of reference reader configured"})
-    return json_safe({"schema_version": "strategy-one-research-trades-v2" if number == 1
-                      else "numbered-fixed-research-trades-v3", **numbered_evidence,
+    return json_safe({"schema_version": "numbered-fixed-research-trades-v4",
+                      "report_source_hashes": {str(path.relative_to(ROOT)): sha256(path.read_bytes()).hexdigest()
+                          for path in (Path(__file__), ROOT / "src/backend/backtest_v4_saved_review.py",
+                                       ROOT / "src/backend/backtest_v4_performance_evidence.py")},
+                      "broker_observed_drawdown": marked_drawdown, **numbered_evidence,
                       "run_id": run_id, "session_date": session.isoformat(),
                       "status": terminal["status"], "open_lifecycle_count": open_count,
                       "initial_cash": context["initial_cash"],
@@ -127,7 +136,9 @@ def markdown(report: dict) -> str:
              f"Status: {report['status']}; open lifecycles: {report['open_lifecycle_count']}; initial cash: {report['initial_cash']}.", "",
              "Sorted by net P&L ascending, then episode ID. Times are America/New_York with UTC offset.",
              "Quantity is peak position quantity; prices are weighted execution averages.",
-             "Drawdown covers closed episodes only, not intratrade or mark-to-market equity.",
+             "The original report drawdown covers closed episodes only.",
+             f"Broker-observed marked-equity maximum drawdown: {report['broker_observed_drawdown']['maximum_drawdown']:,.2f}. "
+             "Marks update asynchronously and can be stale without an age limit; this is not synchronized equity or liquidation value.",
              "Float is unavailable: no dedicated as-of reference reader is configured.", "",
              "| Episode | Ticker | Entry ET | Exit ET | Entry price | Exit price | Peak qty | Fees | Net P&L | Causal exit | Session volume at entry | Last 60s volume |",
              "|---|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|"]
@@ -137,7 +148,7 @@ def markdown(report: dict) -> str:
             return f"{Decimal(str(value)):,.{places}f}"
         values = [row["episode_id"], row["ticker"], row["entry_et"], row["exit_et"],
                   number(row["entry_price"], 4), number(row["exit_price"], 4),
-                  number(row["quantity"], 0), number(row["fees"], 2),
+                  number(row["peak_quantity"], 0), number(row["fees"], 2),
                   number(row["net_pnl"], 2), row["causal_exit_reason"],
                   number(volume["session_volume"], 0), number(volume["last_minute_volume"], 0)]
         lines.append("| " + " | ".join(str(value).replace("|", "\\|") for value in values) + " |")
@@ -182,7 +193,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", action="append", help="run UUID; repeat for a bounded batch")
     parser.add_argument("--output", type=Path,
-                        default=RUNTIME_ROOT / "strategy_one_research" / "baseline_20260818_19_v2")
+                        default=RUNTIME_ROOT / "strategy-optimization-20260930" / "verified_reports_v4")
     args = parser.parse_args()
     completed = 0
     try:

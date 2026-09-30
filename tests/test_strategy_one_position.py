@@ -41,6 +41,30 @@ def test_entry_requires_completed_low_and_original_third_overhead_target():
     assert opening(overhead_levels=[level(1, 10.1), level(2, 10.2)]) is None
 
 
+def test_five_disables_only_later_low_trailing_and_retains_structural_target_paths():
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    opened = opening()
+    baseline = advancing(opened.state, low_int=99_500)
+    assert baseline.state.stop == 9.94
+    for number in (1, 2, 3, 4):
+        assert advancing(opened.state, low_int=99_500,
+            allows_completed_30s_trailing=numbered_fixed_strategy(number).allows_completed_30s_trailing) == baseline
+    five = advancing(opened.state, low_int=99_500, allows_completed_30s_trailing=False)
+    assert five.stop_amendment is None and five.state.stop == opened.state.stop == 9.69
+    assert five.target_amendment == baseline.target_amendment
+    breaks = [ResistanceBreak(31_000, level(index, center))
+              for index, center in ((1, 9.8), (2, 9.9), (3, 10.1))]
+    structural = advancing(opened.state, low_int=99_500, breaks=breaks,
+                           allows_completed_30s_trailing=False)
+    assert structural.stop_amendment["source"] == "three_resistance_step_stop"
+    assert structural.state.stop == 9.78
+    later = advancing(structural.state, now_ms=31_100, low_int=99_900,
+                      allows_completed_30s_trailing=False)
+    assert later.stop_amendment is None and later.state.stop == 9.78
+    with pytest.raises(ValueError):
+        advancing(opened.state, allows_completed_30s_trailing=0)
+
+
 def test_three_distinct_breaks_win_over_simultaneous_higher_low():
     opened = opening()
     breaks = [ResistanceBreak(31_000, level(index, center))

@@ -263,3 +263,92 @@ committed cursor were checked; Keeper was not independently attested in this
 diagnostic. A separate scoped report field is planned; do not overwrite the
 older reports or confuse this metric with a synchronized equity curve.
 Evidence: `strategy-optimization-20260930/diagnostic-findings-v1.json`.
+
+## Strategy 4 publication and execution continuity
+
+Published 914 normalized nodes from source commit
+`90bfb9cabc9e73b16d808a38c0edad63a076b093`, configuration
+`strategy-one-4:192cc325-9e9b-473d-913d-619b8c5665a7`, payload hash
+`12eaccdc9c86a63b8534430ddd5fa0a6f671a71dce70a6ab512fb58f6a4a6b56`.
+August 19 PM run `85c73e70-7db7-4b85-828c-3414a599df0f` completed with
+32 trades, -$1,548.96358 net, $301.715 fees and $1,878.332645 closed-episode
+drawdown in 58.481 execution seconds. The backend was restarted and its
+history API confirmed the saved Strategy 4 review is available.
+
+A concurrent task committed transport change `4a6b50a91`. Two subsequent
+laptop preflights correctly rejected source-fingerprint drift before creating
+runs. Execution was moved to the already-pinned workstation checkout
+`D:/TradingML/codes/quant-research-workbench-strategy4-90bfb9cab`; both attempts
+failed before processing market rows because the original workstation listener
+probe reported no reachable private IPv4 endpoint. Their terminal persistence
+also lacked an initialized manager checkpoint. Preserve these attempts as
+incomplete infrastructure failures, not financial results:
+`722c2daf-5a24-49bf-9470-32564d28f3d5` (PM18) and
+`e88500bb-4719-4e8d-9cc5-1f31154be363` (AH19).
+Bounded CLI diagnostics are saved under `strategy-optimization-20260930`.
+
+To retain the exact approved source without reverting concurrent work, a
+managed laptop checkout was created at
+`C:/Users/g835l/.codex/worktrees/strategy4-reproduction/quant-research-workbench`,
+pinned to `90bfb9cabc9e73b16d808a38c0edad63a076b093`. Remaining Strategy 4
+runs use that checkout. Generated artifacts remain under the runtime root.
+
+## Exit and liquidity hypotheses
+
+The user asked to examine 30-second trailing, rising targets during pullbacks,
+failed resistance, and declining liquidity/trade counts. A verified 58-position
+premarket audit found 107 acknowledged completed-30-second-low stop updates,
+17 three-resistance updates and 50 target increases. YJ's worst loss used the
+unchanged initial stop (reference ask 6.03, stop 5.43); its two winners used
+30-second trailing. Its three target increases did not precede an observed
+touch of the original targets, so they do not explain those particular losses.
+The target rule can rerank on any price-bearing 100 ms bar without a new
+resistance break; that is a testable design choice, not a proven execution bug.
+
+No explicit declining-activity or failed-resistance exit exists. A descriptive
+12-position sample found a past-only five-second volume/trade-count decline
+with later trading opportunity in three of six losers and four of six winners.
+This is not a discriminating exit rule, and later volume does not guarantee
+liquidation at an assumed price. Exact evidence and limitations are in
+`entry-risk-and-acknowledged-protection-audit-v1.json` and
+`liquidity-fade-diagnostic-v2.json` under the campaign runtime directory.
+The earlier liquidity v1 artifact is retained but superseded by v2's exclusion
+of the entry-straddling one-second bucket.
+
+## Strategy 4 completed comparison
+
+| Session | Run | Closed | Net P&L | Closed-episode max drawdown | Execution seconds |
+|---|---|---:|---:|---:|---:|
+| August 18 PM | `4556ef68-92fb-4434-97fb-aa6410139e58` | 26 | -$340.41 | $946.68 | 49.871 |
+| August 19 PM | `85c73e70-7db7-4b85-828c-3414a599df0f` | 32 | -$1,548.96 | $1,878.33 | 58.481 |
+| August 18 AH | `afae0755-80d0-4be8-b1b7-4d7747bec436` | 11 | $53.44 | $619.70 | 31.758 |
+| August 19 AH | `c3982672-a27c-4df9-94f3-fdd77c7533d2` | 10 | -$319.13 | $526.29 | 34.930 |
+
+All four completed flat with zero journal-writer failures; reports are under
+`strategy_one_research/strategy4_sessions_v1`. The backend was refreshed after
+saved results and the app API confirmed all four completed reviews. Removing
+adds improves the sum of independent-session P&Ls by $1,079.713165 versus
+Strategy 3, but the sum remains -$2,155.05846. This sum is not a compounded
+multi-session account return. Both August 18 windows lose profitable add
+contributions; both August 19 windows improve. Closed-episode drawdown falls
+in every window. Retain the no-add ablation as a useful control, not a profitable
+strategy or a claim that all adds should permanently be removed.
+
+## Strategy 5 research specification
+
+Starting from Strategy 4, disable only subsequent completed-30-second-low
+stop trailing. Retain the initial completed-30-second-low stop, three-resistance
+stop steps, all target behavior, no-add policy, entry/reentry, sizing and session
+constraints. This directly tests whether fixed-duration bar lows cut useful
+pullbacks too early. It may also retain losers longer and increase drawdown;
+the earlier audit does not establish that the trailing rule is defective.
+Do not combine this test with target gating or a liquidity-fade exit. Those
+remain separate hypotheses requiring their own executable causal evidence.
+
+Strategy 5 execution validation passed 291 tests across 20 files; the
+configuration/report lane passed 115 combined checks. The prior numbered
+release/compiler/publisher files remain unchanged. The new read-only report
+projection preserves old outputs, attributes exits through exact causal journal
+sequence and command/intent lineage, and reports broker-observed drawdown
+separately with asynchronous/stale-mark limitations. Saved-performance cache
+keys include the new projection version.

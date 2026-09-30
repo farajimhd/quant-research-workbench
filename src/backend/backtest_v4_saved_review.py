@@ -81,7 +81,7 @@ def _terminal_attestation(client, normalized: str,
             or not is_numbered_fixed_strategy(context["strategy_id"], int(context["strategy_revision"]))
             or context["evaluation_interval_ms"] != 100):
         raise ValueError("Saved review accepts only installed immutable numbered strategies at 100 ms")
-    if int(context["strategy_revision"]) in (2, 3, 4):
+    if int(context["strategy_revision"]) in (2, 3, 4, 5):
         from contextlib import closing
         from src.backend.backtest_market_data import readonly_clickhouse_client
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
@@ -439,45 +439,8 @@ def load_v4_performance_report(client, run_id: str, *,
     # evidence but cannot be drawn as position-specific rails.
     attach_protection_timelines(
         lifecycles, protection_events, executions, datetime.max.replace(tzinfo=UTC))
-    executions_by_id = {execution.execution_id: execution for execution in executions}
-    for lifecycle in lifecycles:
-        # A stop/target label requires the exact closing broker order to have
-        # been effective before its fill. Price proximity is never evidence.
-        closing_at = lifecycle.get("closed_at")
-        if not closing_at or lifecycle.get("exit_reason"):
-            continue
-        closing_time = _utc_timestamp(closing_at)
-        opening_side = "BUY" if lifecycle["side"] == "LONG" else "SELL"
-        exit_executions = [executions_by_id[str(identity)] for identity in lifecycle["execution_ids"]
-                           if str(identity) in executions_by_id
-                           and executions_by_id[str(identity)].side != opening_side]
-        terminal = [execution for execution in exit_executions
-                    if execution.source_event_time == closing_time]
-        if not terminal:
-            continue
-        kinds = set()
-        first_fill_by_order = {}
-        for execution in exit_executions:
-            previous = first_fill_by_order.get(execution.broker_order_id)
-            if previous is None or execution.journal_sequence < previous.journal_sequence:
-                first_fill_by_order[execution.broker_order_id] = execution
-        for order_id in {execution.broker_order_id for execution in terminal}:
-            execution = first_fill_by_order[order_id]
-            states = [event for event in lifecycle["protection_timeline"]
-                      if event["phase"] == "effective"
-                      and event["order_id"] == execution.broker_order_id
-                      and (datetime.fromisoformat(event["event_time"]), int(event["sequence"]))
-                      <= (execution.source_event_time, execution.journal_sequence)]
-            if not states:
-                break
-            latest = max(states, key=lambda event: (event["event_time"], event["sequence"]))
-            if not latest["active"]:
-                break
-            kinds.add(latest["kind"])
-        else:
-            if len(kinds) == 1:
-                lifecycle["presentation_exit_reason"] = (
-                    "stop_hit" if kinds == {"stop"} else "target_hit")
+    from src.backend.backtest_v4_performance_evidence import attach_exit_evidence
+    attach_exit_evidence(client, prefix, lifecycles, executions)
     if not _head_matches(client, normalized, prefix):
         raise RuntimeError("Saved Canvas terminal head changed during chart projection")
     # No order lifecycle projection has been asserted yet. Do not turn an
@@ -485,7 +448,7 @@ def load_v4_performance_report(client, run_id: str, *,
     report["execution"]["order_count"] = None
     report["execution"]["rejected_order_count"] = None
     return {
-        "schema_version": "strategy-one-v4-performance-report-v1",
+        "schema_version": "strategy-one-v4-performance-report-v2",
         "run_id": normalized,
         "verified_sequence": prefix.last_sequence,
         "report": report,
@@ -514,7 +477,8 @@ def load_cached_v4_performance_report(client, run_id: str, *,
         raise ValueError("Strategy 1 performance cache is invalid")
     attestation = _terminal_attestation(client, normalized, None)
     prefix = attestation["prefix"]
-    key = _cache_key(client, normalized, attestation["context"], prefix)
+    key = _cache_key(client, normalized, {**attestation["context"],
+        "performance_projection": "strategy-one-v4-performance-report-v2"}, prefix)
     cached = selected_cache.get(key)
     if cached is not None and _head_matches(client, normalized, prefix):
         return cached["report"]

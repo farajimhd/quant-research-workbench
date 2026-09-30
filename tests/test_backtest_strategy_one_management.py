@@ -147,6 +147,31 @@ def test_four_retains_three_protection_state_but_never_submits_adds():
     assert ("protection", 31_000) in four_calls
 
 
+def test_five_manager_keeps_initial_stop_until_structural_ratchet():
+    from types import SimpleNamespace
+    async def run(number):
+        source, runtime = _Evidence(), _Runtime()
+        runtime.config = SimpleNamespace(strategy_revision=number)
+        manager = StrategyOneManagementRunner(runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(replace(_proposal(), strategy_number=number))
+        await manager.on_management(_financial(), {}, 30_100)
+        source.rows[31_000] = replace(_evidence(31_000), low_boundary_ms=30_000, low_int=99_500)
+        await manager.on_management(_financial(), _add_rows(), 31_000)
+        key = ("DU1", "A1", "AAA")
+        first = manager._positions[key]
+        breaks = tuple(ResistanceBreak(32_000, _level(f"B{i}", center))
+                       for i, center in enumerate((9.8, 9.9, 10.1), 1))
+        source.rows[32_000] = replace(_evidence(32_000, breaks=breaks), low_boundary_ms=30_000, low_int=99_500)
+        await manager.on_management(_financial(), _add_rows(32_000), 32_000)
+        return first, manager._positions[key], runtime.calls
+    four, _, _ = asyncio.run(run(4))
+    five, structural, calls = asyncio.run(run(5))
+    assert four.stop == 9.94 and five.stop == 9.69
+    assert five.target == four.target
+    assert structural.stop == 9.78 and len(structural.accepted_ids) == 3
+    assert not any(call[0] == "add" for call in calls)
+
+
 class _Evidence:
     def __init__(self):
         self.rows = {}

@@ -151,7 +151,8 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
                        low_price_valid: bool, low_extremes_valid: bool,
                        breaks: Sequence[ResistanceBreak],
                        overhead_levels: Sequence[Mapping],
-                       price_bearing_bar: bool) -> ProtectionTransition:
+                       price_bearing_bar: bool,
+                       allows_completed_30s_trailing: bool = True) -> ProtectionTransition:
     """Ratchet a filled position without looking beyond its completed clock.
 
     Distinct accepted resistances belong to this position, not the ticker's
@@ -161,7 +162,8 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
     ordinal rule; a quote-only boundary cannot create a price crossing.
     """
     _quote(bid=bid, ask=ask, tick=tick)
-    if (not isinstance(state, ProtectionState) or type(now_ms) is not int
+    if (type(allows_completed_30s_trailing) is not bool
+            or not isinstance(state, ProtectionState) or type(now_ms) is not int
             or now_ms <= state.boundary_ms or now_ms % 100
             or not 0 < state.stop < state.target
             or not isinstance(state.accepted_ids, frozenset)
@@ -212,9 +214,9 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
                 earned_group = pending_group
                 pending_group = ()
                 earned_groups += 1
-    swing = _low(boundary_ms=low_boundary_ms, low_int=low_int,
+    swing = (_low(boundary_ms=low_boundary_ms, low_int=low_int,
                  price_valid=low_price_valid, extremes_valid=low_extremes_valid,
-                 now_ms=now_ms, tick=tick)
+                 now_ms=now_ms, tick=tick) if allows_completed_30s_trailing else None)
     resistance = None
     if earned_groups > state.applied_groups:
         proposal = resistance_group_stop(
