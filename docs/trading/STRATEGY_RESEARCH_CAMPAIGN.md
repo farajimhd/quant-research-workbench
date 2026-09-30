@@ -876,3 +876,73 @@ public interrupted resume remain closed. No table or grant migration is
 needed. Two reused worker lanes completed, with no failed or interrupted
 workers and no newly spawned agents in this increment. Publication and four
 actual backtests remain pending at this source checkpoint.
+
+### Strategy 12 publication and four-session results (2026-09-30)
+
+Strategy 12 is published from committed/pushed source
+`6502720526611e019fe677e436155d82b05bdad2`, source fingerprint
+`b48ff006b0bd132b7c0e1c325a563ddb85ba4c53e600e49674c4bbfab4951365`.
+Exact configuration `strategy-one-12:322bd3bf-bfd5-4c47-be38-fb77c9f15444`
+has 970 typed nodes, payload SHA256
+`ad3a9bae8615d43c24d6de4bb8d68869c7aa02cb1512f1c541ddab0586c1fb87`,
+certified token `d16ac993442af18b3a52774fa09284576c06509edacae621860a47a63f8bb0cc`.
+Pinned clean laptop/workstation reproduction checkouts retain this exact source.
+
+| Session | Run ID | Net P&L | Change from 11 | Marked drawdown | Positions | Execution seconds |
+|---|---|---:|---:|---:|---:|---:|
+| Aug 18 PM | 314e4e00-410f-4849-97b8-fa09a48a221f | +1394.54187 | +98.10094 | 1218.190215 | 21 | 54.207 |
+| Aug 19 PM | 586e144c-65df-4a12-80de-8b5142c27335 | -425.668395 | +459.603275 | 2012.850445 | 20 | 62.447 |
+| Aug 18 AH | 1e57886b-e64d-4ea4-a0bc-1984fc529923 | -502.153 | 0 | 974.737925 | 13 | 36.846 |
+| Aug 19 AH | 6ded21b1-84bd-4567-9281-01d8f4b71fca | +723.352565 | +8.881285 | 710.71233 | 6 | 47.012 |
+
+Total net +1190.07304, improvement +566.58550 over 11. Two of four sessions
+exceed +500; the full objective is not achieved. The worst-session observed
+marked drawdown falls by 365.456635, but PM18/AH19 individual marked drawdowns
+increase slightly. AH18 is unchanged: no otherwise eligible candidate in that
+session was rejected. Drawdown remains asynchronously marked with the previously
+recorded stale-mark limits. This is an exploratory improvement, not a validated
+repeatable edge or an all-session accepted strategy.
+
+All four runs completed, drained eight journal units each with zero failed
+units, finished flat from independently initialized $10,000 accounts, and
+match retained market build/plan tokens from 11. Positions/fills are verified
+within the selected extended-session windows. Backend/frontend refreshes
+completed after source change and every saved backtest. The app history API
+returns all four as completed with V4 review available; proof artifact
+`strategy12-app-history-verification-v1.json`.
+
+Cold normalized entry auditing verifies all 60 actual proposals, their exact
+source links to all 60 filled positions, and the new maximum BOS age. Observed
+maximum ages per run are PM18 27000, PM19 24900, AH18 23400, AH19 20700 ms.
+Artifact `strategy12-actual-entry-clock-audit-v1.json`, SHA256
+`cd326b019a0c9391837ade2ce8fc8b7cc2e3c47b0860d680bc2db679fd861d30`.
+The original VTIX case still qualifies because its BOS was only 11.2 seconds
+old; its late, weak MACD timing is a separate unresolved entry hypothesis.
+
+Immutable per-position reports and input-volume/trade-count tables are under
+`D:/TradingML/runtimes/strategy-optimization-20260930/strategy12_reports_v4`.
+The full comparison `strategy12-four-session-comparison-v1.json` has SHA256
+`da86a1fc3d4d180d8cce71a2ac2208f57801981da39204282a068a4548812302`.
+Float remains explicitly unavailable without a dedicated as-of reference
+reader. No current float or uncertified data was substituted. The next
+increment must address remaining admission/management losses while retaining
+big-move winners; the campaign goal stays active.
+
+### Strategy 12 completed-entry momentum screen
+
+The next read-only screen uses the 60 actual Strategy 12 proposals and their
+certified completed 5-second MACD values. Requiring histogram greater than
+0.1 times the absolute MACD line would reject 16 losing and two winning
+positions, including the VTIX entry. Their historical net totals -1525.600185,
+but the rejected winners include BIVI +422.47 and WFF +172.90. Increasing the
+ratio to 0.25 rejects five winners, including PFSA +754.34, GNPX +343.825 and
+SLE +335.80. Neither screen is a counterfactual portfolio backtest: changed
+cash, subsequent admissions and execution can change results. These
+development-day screens do not establish an optimal threshold or an edge.
+
+Artifact `strategy12-5s-momentum-strength-diagnostic-v1.json`, SHA256
+`23fc6c3f049178a322b6dfc96f99410b8e0ba9d6a0b9886dc3d63c43bb6d6ac3`,
+retains all rejected positions and session totals. No published strategy was
+changed by this diagnostic. A further numbered increment must preserve
+completed-source causality, native vectorized filtering and normalized entry
+attestation before testing this hypothesis against the remaining losses.
