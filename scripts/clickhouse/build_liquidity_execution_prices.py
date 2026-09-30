@@ -127,11 +127,11 @@ def _layout(client, *, apply: bool) -> tuple[int, int]:
 
 
 def _plan(runtime: Path, build_id: str, day: date,
-          tickers: tuple[str, ...] = ()):
-    prepared, requested = prepare_saved_build(runtime, build_id)
+          tickers: tuple[str, ...] = (), archive_directory: Path | None = None):
+    prepared, requested = prepare_saved_build(runtime, build_id, archive_directory=archive_directory)
     if day.isoformat() not in requested:
         raise ValueError("Session is outside the certified market-day request")
-    manifest = json.loads((runtime.resolve() / "market-day" /
+    manifest = json.loads(((archive_directory or runtime.resolve() / "market-day") /
                            f"{build_id}.json").read_text(encoding="utf-8"))
     definition = manifest["definition"]
     rules = definition["plan"]["rules"]
@@ -157,8 +157,9 @@ def _plan(runtime: Path, build_id: str, day: date,
 
 
 def run(*, runtime: Path, build_id: str, day: date, workers: int,
-        apply: bool, tickers: tuple[str, ...] = ()) -> dict[str, int]:
-    scopes, rules = _plan(runtime, build_id, day, tickers)
+        apply: bool, tickers: tuple[str, ...] = (),
+        archive_directory: Path | None = None) -> dict[str, int]:
+    scopes, rules = _plan(runtime, build_id, day, tickers, archive_directory)
     counts = {"total": len(scopes), "completed": 0, "skipped": 0,
               "failed": 0, "created_tables": 0}
     print(f"Eligible prices | {day} | {len(scopes)} certified ticker-days | "
@@ -266,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-id", required=True)
     parser.add_argument("--date", type=date.fromisoformat, required=True)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
+    parser.add_argument("--archive-directory", type=Path,
+                        help="original build archive inside --runtime; default: market-day")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--tickers", default="",
                         help="Comma-separated certified symbols for a bounded canary; default all")
@@ -284,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run(runtime=args.runtime, build_id=args.build_id,
             day=args.date, workers=args.workers, apply=args.apply,
-            tickers=tickers)
+            tickers=tickers, archive_directory=args.archive_directory)
     except KeyboardInterrupt:
         print("Interrupted; admitted workers drained, rerun to resume.",
               file=sys.stderr)

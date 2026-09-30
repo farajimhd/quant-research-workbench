@@ -38,7 +38,7 @@ def test_layout_refuses_wrong_policy_before_ddl():
 
 
 def test_requested_canary_must_belong_to_certified_scope(monkeypatch):
-    monkeypatch.setattr(command, "prepare_saved_build", lambda *_: ({
+    monkeypatch.setattr(command, "prepare_saved_build", lambda *_, **__: ({
         "market_day_planned_scope_v1": [
             {"session_date": "2026-08-18", "ticker": "ABCD",
              "source_event_count": 100}],
