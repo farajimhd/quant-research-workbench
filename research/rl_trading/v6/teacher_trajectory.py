@@ -368,7 +368,7 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
                 skipped_cash += 1
                 continue
             key = snapshot(1+intent.listing_index,
-                size_fraction=spend/max(cash-reserved, 1e-9))
+                size_fraction=budget/max(cash-reserved, 1e-9))
             pending_buys[ticker] = (intent, shares, spend, key)
             reserved = math.fsum(row[2] for row in pending_buys.values())
         if index == 0 and event_number % hold_sample_seconds == 0:

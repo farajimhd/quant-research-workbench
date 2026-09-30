@@ -34,3 +34,14 @@ def test_invalid_conditional_label_fails_closed():
     with pytest.raises(ValueError):
         bracket_loss(logits, torch.zeros(2), torch.zeros(0),
                      torch.zeros(0), token=1)
+
+
+def test_full_cash_boundary_allows_only_one_float64_rounding_step():
+    args = (torch.zeros(3), torch.zeros(2), torch.zeros(0), torch.zeros(0))
+    exact, _ = bracket_loss(*args, token=1, size_fraction=1.)
+    rounded = math.nextafter(1., math.inf)
+    adjusted, _ = bracket_loss(*args, token=1, size_fraction=rounded)
+    assert torch.equal(exact, adjusted)
+    for invalid in (math.nextafter(rounded, math.inf), 1.01, -.01, math.nan):
+        with pytest.raises(ValueError, match='cash fraction'):
+            bracket_loss(*args, token=1, size_fraction=invalid)

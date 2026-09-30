@@ -41,8 +41,13 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
             (oracle_log_distance is not None)):
         raise ValueError('Conditional bracket label is missing or misplaced')
     if (size_fraction is not None and
-            (not math.isfinite(size_fraction) or not 0 <= size_fraction <= 1)):
+            (not math.isfinite(size_fraction) or
+             not 0 <= size_fraction <= math.nextafter(1., math.inf))):
         raise ValueError('Invalid realized cash fraction')
+    # Certified older labels multiply rounded shares back into cash. Permit
+    # exactly one float64 ULP at the fully allocated boundary, not oversizing.
+    if size_fraction is not None:
+        size_fraction = min(size_fraction, 1.)
     if (oracle_log_distance is not None and
             (not math.isfinite(oracle_log_distance) or
              oracle_log_distance <= 0)):
