@@ -58,6 +58,8 @@ def main(argv=None):
     parser.add_argument('--ppo-clocks', type=int, default=32)
     parser.add_argument('--clocks-per-chunk', type=int, default=8)
     parser.add_argument('--max-orders-per-second', type=int, default=4)
+    parser.add_argument('--day', type=date.fromisoformat,
+                        help='Audited training day only; defaults to first training day')
     args = parser.parse_args(argv)
     from src.runtime_paths import runtime_root
     runtime = runtime_root().resolve()
@@ -67,7 +69,11 @@ def main(argv=None):
            (args.dataset, args.output, args.luld_root, args.early_manifest, args.late_manifest, args.ledger)):
         raise ValueError('Profile inputs and output must stay under runtime')
     dataset = require_dataset(args.dataset, runtime_root=runtime)
-    entry = next(e for e in dataset['days'] if e['role'] == 'train')
+    eligible = [e for e in dataset['days'] if e['role'] == 'train' and
+                (args.day is None or e['day'] == str(args.day))]
+    if not eligible:
+        raise ValueError('Profile day must belong to the audited training split')
+    entry = eligible[0]
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if (output/'complete.json').exists():
