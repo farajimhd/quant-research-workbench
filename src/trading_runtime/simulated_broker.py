@@ -233,6 +233,11 @@ class SimulatedBrokerAdapter:
         self._realized_pnl = {account_id: 0.0 for account_id in account_ids}
         self._positions: dict[str, dict[int, _Position]] = {account_id: {} for account_id in account_ids}
         self._orders: dict[str, _OrderState] = {}
+        # Completed-bar Backtest admission repeatedly reads the full order book.
+        # Cache only immutable canonical projections, never mutable broker state.
+        self._canonical_order_cache: dict[
+            str, tuple[OrderRequest, tuple[object, ...], CanonicalOrderState]
+        ] = {}
         # Bar matching touches every active ticker boundary. These are
         # derived indexes, rebuilt on restore, never checkpoint authorities.
         self._orders_by_ticker: dict[str, list[_OrderState]] = {}
@@ -439,6 +444,7 @@ class SimulatedBrokerAdapter:
         self._realized_pnl = realized
         self._positions = positions
         self._orders = orders
+        self._canonical_order_cache.clear()
         self._orders_by_ticker = {}
         for state in orders.values():
             if state.status in OPEN_ORDER_STATUSES:
@@ -589,6 +595,12 @@ class SimulatedBrokerAdapter:
                 order_id = str(self._next_order_id)
                 self._next_order_id += 1
                 status = OrderStatus.INACTIVE if resolved.parentId else OrderStatus.SUBMITTED
+                # Own nested request metadata before caching its canonical
+                # projection: callers may retain their OrderRequest objects.
+                resolved = replace(
+                    resolved, raw=deepcopy(resolved.raw),
+                    strategyParameters=deepcopy(resolved.strategyParameters),
+                )
                 state = _OrderState(
                     resolved,
                     order_id,
@@ -658,7 +670,10 @@ class SimulatedBrokerAdapter:
                 if not self._orders_by_ticker[previous_ticker]:
                     del self._orders_by_ticker[previous_ticker]
                 self._orders_by_ticker.setdefault(next_ticker, []).append(state)
-            state.request = order
+            state.request = replace(
+                order, raw=deepcopy(order.raw),
+                strategyParameters=deepcopy(order.strategyParameters),
+            )
             state.status = OrderStatus.INACTIVE if order.parentId and not self._parent_filled(order.parentId) else OrderStatus.SUBMITTED
             return [{"order_id": order_id, "order_status": state.status.value, "local_order_id": order.cOID}]
 
@@ -686,6 +701,27 @@ class SimulatedBrokerAdapter:
         return [state.snapshot() for state in self._sorted_orders()]
 
     async def canonical_orders(self, account_id: str = "") -> list[CanonicalOrderState]:
+        if self._bar_mode:
+            self._require_initialized()
+            rows: list[CanonicalOrderState] = []
+            for state in self._sorted_orders():
+                if account_id and state.request.acctId != account_id:
+                    continue
+                signature = (
+                    state.status, state.filled, state.avg_price, state.status_description,
+                    state.submitted_at, state.oca_group,
+                )
+                cached = self._canonical_order_cache.get(state.order_id)
+                if (cached is None or cached[0] is not state.request
+                        or cached[1] != signature):
+                    normalized = normalize_order(
+                        state.snapshot().to_cpapi(), account_id)
+                    self._canonical_order_cache[state.order_id] = (
+                        state.request, signature, normalized)
+                    rows.append(normalized)
+                else:
+                    rows.append(cached[2])
+            return rows
         rows = [normalize_order(order.to_cpapi(), account_id) for order in await self.live_orders()]
         return [row for row in rows if not account_id or row.account_id == account_id]
 

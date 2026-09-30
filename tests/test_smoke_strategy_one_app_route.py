@@ -93,6 +93,27 @@ def test_seed_diagnostic_restores_wrapped_worker_functions(monkeypatch, capsys) 
     assert "V7 seed seed_select_decode: calls=1" in capsys.readouterr().out
 
 
+def test_journal_profile_reports_worker_cost_without_payloads(capsys) -> None:
+    controller = SimpleNamespace(_journal_writer_final_metrics={
+        "committed_units": 2, "committed_event_rows": 31,
+        "failed_units": 0, "publish_ns_total": 2_500_000_000,
+        "publish_ns_max": 2_000_000_000,
+        "publish_by_unit": {
+            "V4CompoundBatch": {"units": 1, "publish_ns_total": 2_000_000_000,
+                                "publish_ns_max": 2_000_000_000},
+            "_TerminalBacktestUnit": {"units": 1, "publish_ns_total": 500_000_000,
+                                      "publish_ns_max": 500_000_000},
+        },
+        "compound_publish_stages_ns": {"stage_detail_insert": 1_000_000_000},
+    })
+    probe._print_journal_writer_profile(controller)
+    output = capsys.readouterr().out
+    assert "Journal writer: units=2 rows=31 failed=0 publish_s=2.500" in output
+    assert "Journal unit V4CompoundBatch: units=1 publish_s=2.000" in output
+    assert "Journal compound stage_detail_insert: worker_s=1.000" in output
+    assert "payload" not in output
+
+
 def test_v7_diagnostic_reports_cache_use_and_restores_methods(monkeypatch, capsys) -> None:
     from src.backend.fixed_v7_stream import FixedV7Cache, FixedV7Stream
     from src.backend.fixed_v7_interval_cache import FixedV7IntervalCache

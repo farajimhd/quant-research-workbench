@@ -31,6 +31,40 @@ from scripts.clickhouse.smoke_strategy_one_backtest import (  # noqa: E402
 )
 
 
+def _print_journal_writer_profile(controller: object) -> None:
+    """Report bounded worker timings without putting persistence on the engine thread."""
+    metrics = getattr(controller, "_journal_writer_final_metrics", None)
+    if not isinstance(metrics, dict):
+        return
+    print(
+        "Journal writer: "
+        f"units={metrics.get('committed_units', 0)} "
+        f"rows={metrics.get('committed_event_rows', 0)} "
+        f"failed={metrics.get('failed_units', 0)} "
+        f"publish_s={int(metrics.get('publish_ns_total', 0)) / 1e9:.3f} "
+        f"max_unit_s={int(metrics.get('publish_ns_max', 0)) / 1e9:.3f}",
+        flush=True,
+    )
+    by_unit = metrics.get("publish_by_unit", {})
+    if isinstance(by_unit, dict):
+        for name, row in sorted(
+            by_unit.items(),
+            key=lambda item: int(item[1].get("publish_ns_total", 0)),
+            reverse=True,
+        )[:20]:
+            print(
+                f"Journal unit {name}: units={int(row.get('units', 0))} "
+                f"publish_s={int(row.get('publish_ns_total', 0)) / 1e9:.3f} "
+                f"max_s={int(row.get('publish_ns_max', 0)) / 1e9:.3f}",
+                flush=True,
+            )
+    stages = metrics.get("compound_publish_stages_ns", {})
+    if isinstance(stages, dict):
+        for name, duration in sorted(stages.items()):
+            print(f"Journal compound {name}: worker_s={int(duration) / 1e9:.3f}",
+                  flush=True)
+
+
 @contextmanager
 def _profile_v7_updates(enabled: bool):
     """Profile only completed-second engine CPU, keeping output off disk."""
@@ -303,6 +337,7 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
     print(f"App result: run_id={controller.run_id} status={controller.status} "
           f"execution_s={execution_s:.3f} processed_rows={controller.processed_events} "
           f"error={controller.error[:300]}", flush=True)
+    _print_journal_writer_profile(controller)
     if controller.status != "completed" or controller.run_dir.exists():
         # A failed full-session probe is still performance evidence. Keep its
         # bounded stage/SQL breakdown visible before the fail-closed error.

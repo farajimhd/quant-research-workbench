@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.ibkr_normalizer import normalize_order
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
@@ -70,6 +71,67 @@ def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,
 
 
 class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fixed_bar_canonical_orders_reuse_only_unchanged_projections(self):
+        broker = SimulatedBrokerAdapter(
+            ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
+            fixed_bar_mode=True,
+        )
+        await broker.initialize()
+        request = OrderRequest(
+            acctId="TEST", conid=1, orderType="LMT", side="BUY",
+            quantity=10, ticker="AAPL", price=10, cOID="cache-test",
+            raw={"canonical_strategy_id": "strategy-one"},
+        )
+        placed = await broker.place_orders("TEST", [request])
+        order_id = placed[0]["order_id"]
+        with patch("src.trading_runtime.simulated_broker.normalize_order",
+                   wraps=normalize_order) as projection:
+            first = await broker.canonical_orders("TEST")
+            second = await broker.canonical_orders("TEST")
+            self.assertEqual(projection.call_count, 1)
+            self.assertIs(first[0], second[0])
+            request.raw["canonical_strategy_id"] = "external-mutation"
+            self.assertEqual((await broker.canonical_orders("TEST"))[0], first[0])
+
+            await broker.modify_order("TEST", order_id,
+                                      replace(request, price=10.5))
+            modified = await broker.canonical_orders("TEST")
+            self.assertEqual(projection.call_count, 2)
+            expected_modified = normalize_order(
+                broker._orders[order_id].snapshot().to_cpapi(), "TEST")
+            self.assertEqual(replace(modified[0], received_at=expected_modified.received_at),
+                             expected_modified)
+            self.assertNotEqual(modified[0], first[0])
+
+            await broker.modify_order(
+                "TEST", order_id, replace(request, price=10.5,
+                                          raw={"canonical_strategy_id": "new-lineage"}))
+            replaced_request = await broker.canonical_orders("TEST")
+            self.assertEqual(projection.call_count, 3)
+            self.assertEqual(replaced_request[0].limit_price, modified[0].limit_price)
+            self.assertEqual(replaced_request[0].raw["canonical_strategy_id"],
+                             "new-lineage")
+
+            restored = SimulatedBrokerAdapter(
+                ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
+                fixed_bar_mode=True,
+            )
+            await restored.initialize()
+            restored.restore_checkpoint_state(broker.broker_match_snapshot_state())
+            self.assertEqual(restored._canonical_order_cache, {})
+            self.assertEqual((await restored.canonical_orders("TEST"))[0].limit_price,
+                             replaced_request[0].limit_price)
+
+            before_cancel_calls = projection.call_count
+            await broker.cancel_order("TEST", order_id)
+            cancelled = await broker.canonical_orders("TEST")
+            self.assertEqual(projection.call_count, before_cancel_calls + 1)
+            self.assertTrue(cancelled[0].terminal)
+            expected_cancelled = normalize_order(
+                broker._orders[order_id].snapshot().to_cpapi(), "TEST")
+            self.assertEqual(replace(cancelled[0], received_at=expected_cancelled.received_at),
+                             expected_cancelled)
+
     async def test_empty_fixed_bar_horizon_has_checkpoint_without_market_rows(self):
         broker = SimulatedBrokerAdapter(
             ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
