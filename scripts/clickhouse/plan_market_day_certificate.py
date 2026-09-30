@@ -53,11 +53,14 @@ class ReadOnlyLedger:
                          "prior_build_id", "prior_state_hash"), row)) if row else None
 
 
-def prepare_saved_build(runtime: Path, build_id: str) -> tuple[dict[str, Any], tuple[str, ...]]:
+def prepare_saved_build(runtime: Path, build_id: str, *, archive_directory: Path | None = None) -> tuple[dict[str, Any], tuple[str, ...]]:
     """Read a completed producer archive; never use this in Backtest."""
     runtime = runtime.resolve(strict=True)
     ledger_path = runtime / "build-ledger-v2.sqlite3"
-    manifest_path = runtime / "market-day" / f"{build_id}.json"
+    archive = (archive_directory or runtime / "market-day").resolve(strict=True)
+    if not archive.is_relative_to(runtime):
+        raise ValueError("Market-day archive must be inside the producer runtime root")
+    manifest_path = archive / f"{build_id}.json"
     if not ledger_path.is_file() or not manifest_path.is_file():
         raise ValueError("Market-day ledger or archived build manifest is unavailable")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -85,9 +88,9 @@ def prepare_saved_build(runtime: Path, build_id: str) -> tuple[dict[str, Any], t
     return prepared, tuple(definition["plan"]["requested"])
 
 
-def audit_saved_build(runtime: Path, build_id: str) -> dict[str, Any]:
+def audit_saved_build(runtime: Path, build_id: str, *, archive_directory: Path | None = None) -> dict[str, Any]:
     """Prepare and internally cold-verify every typed family without side effects."""
-    prepared, sessions = prepare_saved_build(runtime, build_id)
+    prepared, sessions = prepare_saved_build(runtime, build_id, archive_directory=archive_directory)
     fence = prepared["market_day_build_fence_v1"][0]
     return {
         "build_id": build_id,
@@ -106,9 +109,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-id", required=True)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
+    parser.add_argument("--archive-directory", type=Path,
+                        help="original build archive inside --runtime; default: market-day")
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(audit_saved_build(args.runtime, args.build_id), sort_keys=True))
+        print(json.dumps(audit_saved_build(args.runtime, args.build_id,
+                         archive_directory=args.archive_directory), sort_keys=True))
     except (OSError, ValueError, RuntimeError, sqlite3.Error, KeyError, TypeError) as exc:
         print(f"Market-day certificate audit failed: {exc}", file=sys.stderr)
         return 1

@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
-from ipaddress import IPv4Address
 import json
 import os
 from pathlib import Path
 import platform
 import re
-import socket
 import sys
 from uuid import uuid4
 
@@ -38,6 +36,7 @@ from src.trading_runtime.arte_market_day_publisher import (
     MarketDayCertificateClient, _exact, publish_market_day_certificate,
 )
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
+from scripts.clickhouse.install_market_day_certificate_layout import workstation_clickhouse_url
 
 
 class CanonicalSourceReader:
@@ -74,17 +73,15 @@ def _workstation_clickhouse_url() -> str:
     # Windows may resolve this machine's name to a link-local IPv6 address
     # even though the managed WSL ClickHouse port is exposed only over IPv4.
     # Resolve at launch rather than pinning a potentially changing LAN address.
-    address = IPv4Address(socket.gethostbyname("DESKTOP-SAAI85T"))
-    if not address.is_private:
-        raise RuntimeError("Workstation ClickHouse resolved outside the private network")
-    return f"http://{address}:18123"
+    return workstation_clickhouse_url()
 
 
 def publish_saved_build(runtime: Path, build_id: str, *, apply: bool,
+                        archive_directory: Path | None = None,
                         client_factory=_certificate_admin_client,
                         keeper_session_factory=open_workstation_keeper_session) -> dict:
     """Prepare exact archive rows; publish only under an explicit producer call."""
-    prepared, sessions = prepare_saved_build(runtime, build_id)
+    prepared, sessions = prepare_saved_build(runtime, build_id, archive_directory=archive_directory)
     counts = {name: len(rows) for name, rows in prepared.items()}
     if not apply:
         return {"build_id": build_id, "sessions": sessions,
@@ -120,13 +117,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-id", required=True)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
+    parser.add_argument("--archive-directory", type=Path,
+                        help="original build archive inside --runtime; default: market-day")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-market-certificate-publication", action="store_true")
     args = parser.parse_args(argv)
     if args.apply and not args.confirm_market_certificate_publication:
         parser.error("--apply requires --confirm-market-certificate-publication")
     try:
-        result = publish_saved_build(args.runtime, args.build_id, apply=args.apply)
+        result = publish_saved_build(args.runtime, args.build_id, apply=args.apply,
+                                     archive_directory=args.archive_directory)
         print(f"Market-day certificate {result['status']}: {result['build_id']}; "
               f"{sum(result['family_rows'].values())} typed rows")
     except KeyboardInterrupt:

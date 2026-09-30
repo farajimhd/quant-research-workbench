@@ -78,7 +78,7 @@ def test_certificate_publisher_plan_is_read_only_and_apply_is_explicit(tmp_path,
 
     import scripts.clickhouse.publish_market_day_certificate as module
     monkeypatch.setattr(module.platform, "node", lambda: "DESKTOP-SAAI85T")
-    monkeypatch.setattr(module.socket, "gethostbyname", lambda _host: "192.168.1.218")
+    monkeypatch.setattr(module, "workstation_clickhouse_url", lambda: "http://192.168.1.218:18123")
     class Resource:
         closed = False
         def close(self):
@@ -117,9 +117,31 @@ def test_certificate_publisher_plan_is_read_only_and_apply_is_explicit(tmp_path,
 
 def test_certificate_endpoint_rejects_nonprivate_dns(monkeypatch):
     import scripts.clickhouse.publish_market_day_certificate as module
-    monkeypatch.setattr(module.socket, "gethostbyname", lambda _host: "8.8.8.8")
+    def blocked():
+        raise RuntimeError("outside private network")
+    monkeypatch.setattr(module, "workstation_clickhouse_url", blocked)
     with pytest.raises(RuntimeError, match="private network"):
         module._workstation_clickhouse_url()
+
+
+def test_original_custom_archive_preserves_hash_and_ledger_checks(tmp_path):
+    build_id = _saved_build(tmp_path)
+    archive = tmp_path / "earlier-campaign"
+    (tmp_path / "market-day").rename(archive)
+    result = audit_saved_build(tmp_path, build_id, archive_directory=archive)
+    assert result["definition_hash"] == build_id
+    manifest_path = archive / f"{build_id}.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["definition"]["rules_hash"] = "tampered"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="exact core-complete"):
+        audit_saved_build(tmp_path, build_id, archive_directory=archive)
+
+
+def test_archive_outside_runtime_is_rejected(tmp_path):
+    build_id = _saved_build(tmp_path)
+    with pytest.raises(ValueError, match="inside the producer runtime"):
+        audit_saved_build(tmp_path, build_id, archive_directory=tmp_path.parent)
 
 
 def test_source_verifier_adapter_is_select_only_and_returns_typed_rows():
