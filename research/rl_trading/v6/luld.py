@@ -2,14 +2,15 @@
 
 This is not official SIP band/halt evidence. Opening uses a pinned prior
 regular-session last sale (not an auction), tier is supplied explicitly, and
-reopening uses a modeled five-minute timer. Raw source arrays never enter the
+reopening uses a modeled five-minute timer capped by observed eligible trade
+evidence. Raw source arrays never enter the
 actor. Only changes whose availability clock has passed may be read.
 """
 from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
-VERSION = 'rl-v6-modeled-luld-100ms-v2'
+VERSION = 'rl-v6-modeled-luld-100ms-v3'
 STEP = 100_000
 QUOTE_FRESHNESS_US = 500_000  # Evidence freshness is independent of grid resolution.
 
@@ -29,6 +30,7 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
     clocks = np.arange(start_us+STEP, end_us+1, STEP, dtype=np.int64)
     n = len(clocks)
     sums, counts = np.zeros(n), np.zeros(n, dtype=np.int64)
+    first_trade = np.zeros(n, dtype=np.int64)
     bid, ask, fresh = np.zeros(n), np.zeros(n), np.zeros(n, dtype=bool)
     for frame, names in ((trades, ('price_sum', 'count')),
                          (quotes, ('bid', 'ask'))):
@@ -41,6 +43,13 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
         if frame is trades:
             sums[positions] = frame[names[0]].to_numpy()
             counts[positions] = frame[names[1]].to_numpy()
+            # A raw eligible event can causally contradict a timer-only
+            # reopening assumption. Production requires its actual SIP clock.
+            first_trade[positions] = (frame['first_trade_us'].to_numpy()
+                if 'first_trade_us' in frame.columns else clocks[positions]-STEP+1)
+            if np.any((first_trade[positions] < clocks[positions]-STEP) |
+                      (first_trade[positions] >= clocks[positions])):
+                raise ValueError('Trade event clock does not belong to its bucket')
             if np.any(sums < 0) or np.any(counts < 0) or not np.isfinite(sums).all():
                 raise ValueError('Malformed eligible trade aggregate')
         else:
@@ -94,13 +103,31 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
     paused = np.zeros(n, dtype=bool)
     pause_start = np.zeros(n, dtype=np.int64)
     intervals, last_end = [], start_us
+    resume_events = []
+    contradicted_timers = 0
+    last_observed_resume = 0
     for index in candidates:
         begin = int(clocks[index])
         if begin < last_end or begin >= end_us:
             continue
+        if last_observed_resume and clocks[max(0,int(run_starts[index]))] <= last_observed_resume:
+            continue  # Require a new limit-state run after observed reopening.
         finish = min(begin+300_000_000, end_us)
         if begin >= end_us-600_000_000:
             finish = end_us
+        evidence = np.flatnonzero((counts > 0) & (first_trade >= begin) & (first_trade < finish))
+        if len(evidence):
+            finish = int(first_trade[evidence[0]])
+            contradicted_timers += 1
+            last_observed_resume = finish
+            if finish <= begin:
+                last_end = finish
+                continue  # Contemporaneous eligible trade vetoes a new pause.
+            # This change is available at the observed event, never at the
+            # earlier pause onset. Do not look back and erase the pause.
+            prior_index = int(np.searchsorted(clocks,finish,side='right'))-1
+            resume_events.append({'available_us':finish,'lower':float(lower[prior_index]),
+                'upper':float(upper[prior_index]),'paused':False,'pause_start_us':0})
         right = np.searchsorted(clocks, finish)
         paused[index:right] = True
         pause_start[index:right] = begin
@@ -111,12 +138,16 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
                     (paused[1:] != paused[:-1])]
     changes = pl.DataFrame({'available_us': clocks[changed], 'lower': lower[changed],
         'upper': upper[changed], 'paused': paused[changed], 'pause_start_us': pause_start[changed]})
+    if resume_events:
+        changes = pl.concat([changes, pl.DataFrame(resume_events, schema=changes.schema)]).sort('available_us')
     # Counts in the onset bucket describe trades *before* the newly available
     # pause state. Audit only buckets whose opening boundary was already
     # paused, retaining the reopening bucket because it includes prior trades.
-    prior_paused = np.r_[False, paused[:-1]]
+    conflicts = sum(int(np.count_nonzero((counts>0) & (first_trade>=begin) & (first_trade<finish)))
+                    for begin,finish in intervals)
     return changes, {'eligible_trades': int(counts.sum()), 'quote_slots': int(fresh.sum()),
-        'modeled_pauses': len(intervals), 'trade_buckets_during_modeled_pause': int(np.count_nonzero(counts[prior_paused])),
+        'modeled_pauses': len(intervals), 'trade_buckets_during_modeled_pause': conflicts,
+        'timer_reopenings_corrected_by_observed_trade': contradicted_timers,
         'prior_close_kind': 'pinned_previous_regular_last_sale', 'tier': tier,
         'official_halt_evidence': False}
 

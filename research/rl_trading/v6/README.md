@@ -217,14 +217,18 @@ Modeled LULD sidecar and risk shaping
 -----------------------------------
 
 `build_luld.py` performs SELECT-only canonical trade-price aggregation and
-pinned ARTE quote projection, then saves only 500ms band/pause changes under
+pinned ARTE quote projection, then saves only native 100ms band/pause changes under
 the runtime root. Rolling means use transaction counts, never candle-close
 averages or VWAP. The prior regular-session last sale is split-adjusted and
 identity-bound; it is not asserted to be the official primary opening price.
 An unavailable prior price stays explicitly unknown. Tier membership must be
 supplied with `--tier-map`; `--tier2-scenario` is an explicitly labeled research
 fallback. Neither output is official exchange halt evidence. Five-minute
-reopening is modeled; late pauses remain blocked through the regular close.
+reopening is modeled. An observed eligible canonical trade ends an inferred
+pause at its actual SIP timestamp; corrections to the timer are counted, and
+a new limit-state run is required before another inferred pause. The event
+never erases earlier pause history or enters earlier policy observations.
+Absent such evidence, late pauses remain blocked through the regular close.
 Regular-session bands stop applying at 16:00. News halts require source status
 events and cannot be inferred by this estimator. A modeled pause conflicting
 with observed eligible trades fails the execution audit and blocks training.

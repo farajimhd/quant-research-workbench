@@ -33,6 +33,7 @@ def test_trade_arithmetic_reference_prefix_and_tier_width():
 def test_quote_limit_not_price_touch_and_stale_breaks_timer():
     start=0
     trades,quotes=evidence(start,price=10,bid=11,ask=11.01)
+    trades=trades.head(0)  # Limit-state timer scenario has no observed reopening.
     frame,report=project(start,600_000_000,trades,quotes,previous_close=10,tier=2)
     assert report['modeled_pauses']==1
     first=frame.filter('paused')['available_us'][0]
@@ -59,7 +60,20 @@ def test_pause_trade_audit_uses_bucket_open_state_not_onset_close():
     assert report['trade_buckets_during_modeled_pause'] == 0
     inside = trades.filter(pl.col('bucket_us') <= onset+STEP)
     _, report = project(0, 20_000_000, inside, quotes, previous_close=10, tier=2)
-    assert report['trade_buckets_during_modeled_pause'] == 1
+    assert report['trade_buckets_during_modeled_pause'] == 0
+    assert report['timer_reopenings_corrected_by_observed_trade'] == 1
+
+
+def test_observed_trade_ends_inferred_pause_only_when_event_arrives():
+    _, quotes = evidence(0, seconds=20, bid=11, ask=11.01)
+    trade_us = 17_050_000
+    trades = pl.DataFrame({'bucket_us':[17_100_000], 'price_sum':[10.],
+                          'count':[1], 'first_trade_us':[trade_us]})
+    frame, report = project(0,20_000_000,trades,quotes,previous_close=10,tier=2)
+    book = LuldBook({'A':frame},end_us=20_000_000)
+    assert book.blocked('A',trade_us-1)
+    assert not book.blocked('A',trade_us)
+    assert report['timer_reopenings_corrected_by_observed_trade'] == 1
 
 
 def test_halt_blocks_exit_cost_once_and_terminal_cost_not_pnl():

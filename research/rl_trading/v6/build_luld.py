@@ -104,12 +104,12 @@ def _worker(packet):
                   toUInt16(condition_token_3),toUInt16(condition_token_4),toUInt16(condition_token_5)]) AS tokens,
                 ({form}) AS form_ok FROM ({canonical_source(day,ticker)})
               ) SELECT toInt64((intDiv(sip_timestamp_us-{start},100000)+1)*100000+{start}) AS bucket_us,
-                sum(price) AS price_sum,count() AS count FROM decoded
+                sum(price) AS price_sum,count() AS count,min(toInt64(sip_timestamp_us)) AS first_trade_us FROM decoded
               WHERE sip_timestamp_us>={start} AND sip_timestamp_us<{end} AND kind=1
                 AND bitAnd(event_meta,128)=0 AND price>0 AND size_primary>0 AND {last}
               GROUP BY bucket_us ORDER BY bucket_us'''
             trades=pl.DataFrame(_rows(client,statement),schema={'bucket_us':pl.Int64,
-                'price_sum':pl.Float64,'count':pl.Int64})
+                'price_sum':pl.Float64,'count':pl.Int64,'first_trade_us':pl.Int64})
             quote_sql=('SELECT toInt64((bucket_index+1)*100000+'+str(origin)+') AS bucket_us,'
                 'quote_timestamp_us AS quote_us,'
                 'bid_int/10000. AS bid,ask_int/10000. AS ask '
