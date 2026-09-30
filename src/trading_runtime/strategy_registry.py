@@ -106,11 +106,52 @@ class StrategyExecutorRegistration:
         return definition
 
 
+@dataclass(frozen=True, slots=True)
+class FixedStrategyExecutorRegistration:
+    """Installed completed-boundary executor, deliberately outside legacy callbacks.
+
+    This is a code catalog entry, not publication or live approval. Selection
+    still requires the independently sealed normalized configuration release.
+    """
+
+    strategy_id: str
+    revision: int
+    evaluation_interval: str
+    contract_factory: Callable[[], Any]
+    strategy_factory: StrategyFactory
+    mode: str = "backtest"
+
+    @property
+    def key(self) -> tuple[str, int]:
+        return self.strategy_id, self.revision
+
+    def verify(self) -> None:
+        if (not self.strategy_id or type(self.revision) is not int or self.revision < 1
+                or self.mode != "backtest" or not callable(self.contract_factory)
+                or not callable(self.strategy_factory)):
+            raise ValueError("Fixed executor needs an installed Backtest-only contract")
+        contract = self.contract_factory()
+        if (contract.strategy_id, contract.strategy_number, contract.execution_interval) != (
+                self.strategy_id, self.revision, self.evaluation_interval):
+            raise ValueError("Fixed executor identity differs from its installed contract")
+
+    def build(self, assignments: list[Any], *, mode: str) -> Any:
+        self.verify()
+        if mode != self.mode:
+            raise ValueError("Numbered fixed executor is Backtest-only")
+        if not assignments or any((row.strategy_id, row.strategy_revision) != self.key
+                                  for row in assignments):
+            raise ValueError("Fixed executor assignments differ from the installed identity")
+        return self.strategy_factory(assignments)
+
+
 _LOCK = RLock()
 _REGISTRY: dict[tuple[str, int], StrategyExecutorRegistration] = {}
 _NUMBERED_RELEASES: dict[int, NumberedStrategyRelease] = {}
 _BUILTIN_REGISTRY: dict[tuple[str, int], StrategyExecutorRegistration] = {}
 _BUILTINS_REGISTERED = False
+_FIXED_REGISTRY: dict[tuple[str, int], FixedStrategyExecutorRegistration] = {}
+_NUMBERED_FIXED_REGISTERED = False
 
 
 def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
@@ -124,8 +165,13 @@ def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
     _ensure_builtin_executors()
     with _LOCK:
         key = (release.executor_strategy_id.strip(), release.executor_revision)
-        if key not in _REGISTRY:
+        if key not in _REGISTRY and key not in _FIXED_REGISTRY:
             raise ValueError("Numbered Strategy release lacks an installed executor")
+        if key in _FIXED_REGISTRY:
+            fixed = _FIXED_REGISTRY[key]
+            fixed.verify()
+            if fixed.evaluation_interval != release.evaluation_interval:
+                raise ValueError("Numbered release differs from installed fixed execution clock")
         prior = _NUMBERED_RELEASES.get(release.number)
         if prior is not None and prior != release:
             raise ValueError(f"Strategy {release.number} is immutable; assign a new number")
@@ -133,12 +179,66 @@ def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
 
 
 def numbered_strategy(number: int) -> NumberedStrategyRelease:
+    if number == 2:
+        initialize_numbered_fixed_strategies()
     with _LOCK:
         release = _NUMBERED_RELEASES.get(number)
     if release is None:
         raise ValueError(f"Strategy {number} is not published")
     release.verify()
     return release
+
+
+def register_fixed_strategy_executor(registration: FixedStrategyExecutorRegistration) -> None:
+    """Install once without a replace API or any legacy callback fabrication."""
+    registration.verify()
+    with _LOCK:
+        if registration.key in _REGISTRY:
+            raise ValueError("Fixed executor identity collides with a legacy executor")
+        prior = _FIXED_REGISTRY.get(registration.key)
+        if prior is not None and prior != registration:
+            raise ValueError("Installed fixed executor cannot be replaced")
+        _FIXED_REGISTRY[registration.key] = registration
+
+
+def fixed_strategy_executor(strategy_id: str, revision: int) -> FixedStrategyExecutorRegistration:
+    initialize_numbered_fixed_strategies()
+    with _LOCK:
+        registration = _FIXED_REGISTRY.get((strategy_id, revision))
+    if registration is None:
+        raise ValueError("No installed fixed Strategy executor matches the selected identity")
+    registration.verify()
+    return registration
+
+
+def _strategy_two_contract():
+    from .numbered_fixed_strategy import numbered_fixed_strategy
+    return numbered_fixed_strategy(2)
+
+
+def _strategy_two_factory(assignments):
+    from .strategy_one_runtime import AssignedStrategyOne
+    return AssignedStrategyOne(assignments)
+
+
+def initialize_numbered_fixed_strategies() -> None:
+    """Load installed source seals independently of any database publication.
+
+    Called by lookups/preflight; it neither publishes configuration nor enables
+    a runtime. Delayed imports avoid registry/runtime import cycles.
+    """
+    global _NUMBERED_FIXED_REGISTERED
+    with _LOCK:
+        if _NUMBERED_FIXED_REGISTERED:
+            return
+        from .strategy_two_release import release_contract
+        release = release_contract()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=release.executor_strategy_id, revision=release.executor_revision,
+            evaluation_interval=release.evaluation_interval,
+            contract_factory=_strategy_two_contract, strategy_factory=_strategy_two_factory))
+        register_numbered_strategy(release)
+        _NUMBERED_FIXED_REGISTERED = True
 
 
 def register_strategy_executor(
@@ -151,6 +251,8 @@ def register_strategy_executor(
     if not registration.implementation:
         raise ValueError("Strategy executor implementation identity is required")
     with _LOCK:
+        if registration.key in _FIXED_REGISTRY:
+            raise ValueError("Installed fixed executor cannot be replaced by a legacy executor")
         existing = _REGISTRY.get(registration.key)
         if existing is not registration and any(
             (release.executor_strategy_id.strip(), release.executor_revision)

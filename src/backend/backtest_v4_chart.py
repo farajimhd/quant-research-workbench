@@ -24,11 +24,12 @@ from src.backend.backtest_market_data import (
     certified_market_plan_from_arte, market_day_boundary, project_market_day_plan,
 )
 from src.backend.backtest_strategy_one_configuration import (
-    certify_strategy_one_configuration,
+    certify_strategy_one_configuration, certify_numbered_configuration,
 )
 from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page
 from src.trading_runtime.arte_backtest_definition import load_backtest_definition
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
 
 
 # A terminal saved run and its market-plan token are immutable. Keep only a
@@ -152,13 +153,13 @@ def certified_saved_run_plan(
             or not review["market_cursor_verified"]
             or not isinstance(cursor, dict)
             or context["mode"] != "backtest"
-            or context["strategy_id"] != STRATEGY_ID
-            or int(context["strategy_revision"]) != STRATEGY_NUMBER
+            or not is_numbered_fixed_strategy(context["strategy_id"], int(context["strategy_revision"]))
             or context["evaluation_interval_ms"] != 100):
         raise ValueError("Saved Strategy 1 chart needs a terminal verified cursor")
     definition = load_backtest_definition(
         journal_client, normalized, run_context=context)
-    release = certify_strategy_one_configuration(market_client)
+    release = (certify_strategy_one_configuration(market_client) if int(context["strategy_revision"]) == 1
+                   else certify_numbered_configuration(market_client, int(context["strategy_revision"])))
     if (release.payload_hash != context["configuration_hash"]
             or release.revision()["revision_id"]
             != definition["definition"]["configuration_revision_id"]):
@@ -285,7 +286,8 @@ def cold_v4_chart_page(
     if end_ms <= 0:
         raise ValueError("Saved Strategy 1 chart has no completed boundary")
     if context_frame:
-        release = certify_strategy_one_configuration(market_client)
+        release = (certify_strategy_one_configuration(market_client) if int(run_context["strategy_revision"]) == 1
+                   else certify_numbered_configuration(market_client, int(run_context["strategy_revision"])))
         if release.payload_hash != run_context["configuration_hash"]:
             raise RuntimeError("Saved context release differs from market plan")
         page = context_chart_page(
@@ -432,7 +434,8 @@ def cold_v4_chart_context_pair(
         plan_loader=plan_loader)
     if symbol not in plan.tickers:
         raise ValueError("Saved context ticker is outside the run")
-    release = certify_strategy_one_configuration(market_client)
+    release = (certify_strategy_one_configuration(market_client) if int(context["strategy_revision"]) == 1
+                   else certify_numbered_configuration(market_client, int(context["strategy_revision"])))
     if release.payload_hash != context["configuration_hash"]:
         raise RuntimeError("Saved context release differs from run")
     pages = context_chart_pages(

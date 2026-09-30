@@ -17,6 +17,12 @@ class AssignedStrategyOne:
     automatic = True
 
     def __init__(self, assignments: list[StrategyAssignment]) -> None:
+        from .numbered_fixed_strategy import resolve_numbered_fixed_strategy
+        if not isinstance(assignments, list) or not assignments:
+            raise ValueError("Strategy 1 needs numbered assignments")
+        self.contract = resolve_numbered_fixed_strategy(
+            assignments[0].strategy_id, assignments[0].strategy_revision)
+        self.revision = self.contract.strategy_number
         if (not isinstance(assignments, list) or not assignments
                 or any(not isinstance(row, StrategyAssignment)
                        or (row.strategy_id, row.strategy_revision)

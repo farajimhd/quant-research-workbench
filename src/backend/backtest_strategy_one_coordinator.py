@@ -8,7 +8,7 @@ tickers still receive management callbacks.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 from typing import Awaitable, Callable, Mapping
 
@@ -50,6 +50,7 @@ async def run_strategy_one_proposals(
                               Awaitable[StrategyOneReentryWitness | None]] | None = None,
     static_gate: StrategyOneStaticGate | None = None,
     stage_time: Callable[[str, float], None] | None = None,
+    strategy_number: int = 1,
 ) -> StrategyOneProposalCounts:
     """Dispatch certified entry proposals after broker liquidity at each clock."""
     if (not isinstance(scheduler, StrategyOneBoundaryScheduler)
@@ -63,6 +64,8 @@ async def run_strategy_one_proposals(
                 on_management, position_source_owned, financially_active_tickers, finish_boundary,
                 observe_activation, observe_completed_seconds))):
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    contract = numbered_fixed_strategy(strategy_number)
     activations = {(row.ticker, row.episode_start_ms): row
                    for row in entry.activations}
     if len(activations) != len(entry.activations):
@@ -134,6 +137,11 @@ async def run_strategy_one_proposals(
                         raise ValueError("Strategy 1 assignment roster changed within boundary")
                     current_by_id = refreshed
                 continue
+            if not contract.entry_allowed(boundary):
+                if current.position_quantity > 0 or current.pending_entry or current.pending_exit:
+                    management_count += 1
+                    await timed("strategy_one_management", on_management(current, resolutions, boundary))
+                continue
             decision = propose_certified_strategy_one_entry(
                 candidate, fact, activation, current,
                 reentry=(await timed("strategy_one_reentry", reentry_witness(current, candidate))
@@ -142,7 +150,8 @@ async def run_strategy_one_proposals(
             candidate_count += 1
             if decision.proposal is not None:
                 proposal_count += 1
-                await timed("strategy_one_entry_proposal", on_entry_proposal(decision.proposal))
+                await timed("strategy_one_entry_proposal", on_entry_proposal(
+                    replace(decision.proposal, strategy_number=strategy_number)))
             elif current.position_quantity > 0 or ticker in scheduler.active_tickers:
                 management_count += 1
                 await timed("strategy_one_management", on_management(current, resolutions, boundary))

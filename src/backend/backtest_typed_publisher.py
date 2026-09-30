@@ -389,6 +389,9 @@ class BacktestTypedJournalPublisher:
                               and len(source_batch.events) == 1):
                             intent = self.journal.strategy_one_protection_for_record(
                                 source_batch.events[0]["record_id"])
+                            if intent is None:
+                                intent = self.journal.numbered_session_exit_for_record(
+                                    source_batch.events[0]["record_id"])
                             if intent is not None:
                                 self._committed_strategy_intents[intent.intent_id] = (
                                     _committed_intent_source(

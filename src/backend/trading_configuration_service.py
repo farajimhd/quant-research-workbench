@@ -399,22 +399,15 @@ def configuration_candidate(candidate_id: str = "", *, required: bool = False) -
 
 
 def backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
-    """Expose one numbered release, never the old SQLite candidate catalog."""
-    from src.backend.backtest_strategy_one_configuration import (
-        selected_strategy_one_revision,
-    )
-
-    revision = selected_strategy_one_revision(revision_id=candidate_id)
-    return {
-        "candidates": [{"candidate_id": revision["revision_id"],
-                        "candidate_revision": 1,
-                        "label": "Strategy 1",
-                        "content_hash": revision["content_hash"]}],
-        "candidate_id": revision["revision_id"],
-        "run_plan_id": revision["run_plan_id"],
-        "available_run_plans": revision["available_run_plans"],
-        "error": "",
-    }
+    """Expose immutable numbered ARTE releases without a candidate-store fallback."""
+    from src.backend.backtest_strategy_one_configuration import selected_numbered_revision, numbered_configuration_options
+    revision = selected_numbered_revision(revision_id=candidate_id)
+    options = numbered_configuration_options()
+    return {"candidates": [{"candidate_id": row["revision_id"],
+                            "candidate_revision": row["revision"], "label": row["label"],
+                            "content_hash": row["content_hash"]} for row in options],
+            "candidate_id": revision["revision_id"], "run_plan_id": revision["run_plan_id"],
+            "available_run_plans": revision["available_run_plans"], "error": ""}
 
 
 def approved_configuration(*, required: bool = False) -> dict[str, Any] | None:
@@ -753,9 +746,9 @@ def backtest_configuration_snapshot(
     # The old SQLite candidate is read only by the one-time publisher, never
     # by a Backtest selection or execution path.
     from src.backend.backtest_strategy_one_configuration import (
-        selected_strategy_one_revision,
+        selected_numbered_revision,
     )
-    return selected_strategy_one_revision(
+    return selected_numbered_revision(
         revision_id=candidate_id, run_plan_id=run_plan_id)
 
 
@@ -5968,14 +5961,17 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
     base = deepcopy(dict(configuration["strategy"].get("parameters") or {}))
     _deep_merge(base, dict(assignment.get("parameters") or {}))
     identity = dict(configuration.get("strategy") or {})
-    if identity.get("strategy_number") == 1:
+    from src.backend.backtest_strategy_one_configuration import is_numbered_fixed_configuration
+    if is_numbered_fixed_configuration(configuration):
         from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
         if (identity.get("strategy_id") != STRATEGY_ID
-                or identity.get("revision") != STRATEGY_NUMBER
+                or identity.get("revision") != identity.get("strategy_number")
                 or dict(base.get("execution") or {}).get("tick_size")
                 != dict(dict(identity.get("parameters") or {}).get("execution") or {}).get("tick_size")):
             raise ValueError("Numbered Strategy 1 parameters differ from its sealed inputs")
+        if identity.get("strategy_number") == 2 and base != dict(identity.get("parameters") or {}):
+            raise ValueError("Strategy 2 assignment parameters cannot override its release")
         # The fixed-bar coordinator owns these numbered rules. Do not invoke
         # a legacy event executor or overwrite the sealed tick with OMS defaults.
         return base

@@ -548,7 +548,8 @@ def test_public_resume_uses_typed_v4_without_disk_manifest_or_sqlite(monkeypatch
 
     service = ReplayRunService(
         runtime_root=tmp_path, allow_typed_backtest_resume=True)
-    definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    definition = SimpleNamespace(mode=RunMode.BACKTEST, configuration_revision={
+        "payload": {"strategy": {"strategy_number": 1}}})
     calls = []
 
     class Recovered:

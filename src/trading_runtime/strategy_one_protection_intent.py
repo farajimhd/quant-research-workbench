@@ -27,7 +27,7 @@ _STOP_REASONS = {"completed_30s_bar_low", "three_resistance_step_stop"}
 def strategy_one_protection_intents(
     previous: ProtectionState, transition: ProtectionTransition,
     financial: StrategyOneFinancialView, *,
-    session_date: date, bid: float, ask: float,
+    session_date: date, bid: float, ask: float, strategy_number: int = 1,
 ) -> tuple[StrategyIntent, ...]:
     """Project approved price amendments, target first, at one causal clock."""
     if (not isinstance(previous, ProtectionState)
@@ -50,6 +50,8 @@ def strategy_one_protection_intents(
         raise ValueError("Strategy 1 protection intent lacks completed position authority")
     confirm_protection_transition(
         previous, transition, target_confirmed=False, stop_confirmed=False)
+    from .numbered_fixed_strategy import numbered_fixed_strategy
+    numbered_fixed_strategy(strategy_number)
     boundary = (datetime.combine(session_date, time(4), tzinfo=_NEW_YORK)
                 + timedelta(milliseconds=transition.state.boundary_ms))
     outside_rth = boundary.time() < time(9, 30) or boundary.time() >= time(16)
@@ -69,7 +71,7 @@ def strategy_one_protection_intents(
         if (action == "replace_protective_stop" and reason not in _STOP_REASONS):
             raise ValueError("Strategy 1 stop has an unknown numbered rule")
         identity = (
-            f"strategy-1-protection:{session_date.isoformat()}:"
+            f"strategy-{strategy_number}-protection:{session_date.isoformat()}:"
             f"{financial.account_id}:{financial.assignment_id}:"
             f"{financial.ticker}:{transition.state.boundary_ms}:{action}:{price}"
         )

@@ -74,6 +74,9 @@ class StrategyOneManagementRunner:
                 or not 1 <= max_pending_breaks <= 65_536):
             raise ValueError("Strategy 1 manager needs bounded OMS and causal inputs")
         self.runtime = runtime
+        from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+        self.contract = numbered_fixed_strategy(
+            getattr(getattr(runtime, "config", None), "strategy_revision", 1))
         self.evidence = evidence
         self.tick_for_ticker = tick_for_ticker
         self.max_pending_breaks = max_pending_breaks
@@ -196,6 +199,9 @@ class StrategyOneManagementRunner:
     async def on_entry_proposal(self, proposal: StrategyOneEntryProposal) -> None:
         if not isinstance(proposal, StrategyOneEntryProposal):
             raise TypeError("Strategy 1 manager needs a numbered entry proposal")
+        if (proposal.strategy_number != self.contract.strategy_number
+                or not self.contract.entry_allowed(proposal.boundary_ms)):
+            raise ValueError("Numbered entry crossed its strategy/session contract")
         key = (proposal.account_id, proposal.assignment_id, proposal.ticker)
         if key in self._submitted:
             raise RuntimeError("Strategy 1 assignment already owns an entry")
@@ -223,6 +229,9 @@ class StrategyOneManagementRunner:
                 self._positions.pop(key, None)
                 self._pending_breaks.pop(key, None)
                 self._submitted.pop(key, None)
+            return
+        if self.contract.liquidation_due(boundary_ms):
+            await self.runtime.submit_numbered_session_exit(financial, resolutions, boundary_ms)
             return
         source = self._submitted.get(key)
         if source is None:
@@ -301,7 +310,8 @@ class StrategyOneManagementRunner:
         # This 1s boundary and its co-terminating 100ms row are both closed.
         # Resistances become actionable only after protection has been
         # acknowledged. A rejection consumes this crossing, not a future one.
-        if financial.pending_entry or financial.current_purchase_groups >= 3:
+        if (financial.pending_entry or financial.current_purchase_groups >= 3
+                or not self.contract.entry_allowed(boundary_ms)):
             return
         purchase_ordinal = financial.current_purchase_groups + 1
         for resistance in sorted(
@@ -322,7 +332,8 @@ class StrategyOneManagementRunner:
                 prior_accepted_ids=previous.accepted_ids)
             if proposal is None:
                 continue
-            results = await self.runtime.submit_strategy_one_add(proposal)
+            results = await self.runtime.submit_strategy_one_add(
+                replace(proposal, strategy_number=self.contract.strategy_number))
             if (len(results) != 1
                     or results[0].get("order_group") is None
                     or results[0].get("decision", {}).get("status")

@@ -17,6 +17,7 @@ from src.trading_runtime.portfolio import (
     PortfolioAccountProfile, PortfolioGroupPolicy, portfolio_policy_from_payload,
 )
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
 
 
 _MAX_UINT32 = 2**32 - 1
@@ -121,8 +122,7 @@ def fixed_v4_context_rows(config: RunConfig, *, execution_interval: Any,
     """Prepare typed Strategy 1 run/config rows before creating a Keeper gate."""
     if (not isinstance(config, RunConfig)
             or config.mode != RunMode.BACKTEST
-            or (config.strategy_id, config.strategy_revision)
-            != (STRATEGY_ID, STRATEGY_NUMBER)
+            or not is_numbered_fixed_strategy(config.strategy_id, config.strategy_revision)
             or started_at.tzinfo is None
             or any(re.fullmatch(r"[0-9a-f]{64}", value or "") is None
                    for value in (configuration_hash, code_hash,

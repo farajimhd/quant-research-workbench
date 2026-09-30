@@ -253,13 +253,13 @@ def test_v4_publisher_routes_numbered_entry_with_exact_child_off_hot_path():
         record = journal.append_strategy_one_intent(
             intent=intent, proposal=proposal, session_date=DAY,
             account_id="DU1", strategy_id="early-squeeze-strategy",
-            strategy_revision=0)
+            strategy_revision=1)
         writer = V4Writer(automatic=False)
         publisher = BacktestTypedJournalPublisher(
             journal, writer, attempt_id=ATTEMPT, run_month=DAY.replace(day=1),
             expected_config={"mode": "backtest",
                              "strategy_id": "early-squeeze-strategy",
-                             "strategy_revision": 0})
+                             "strategy_revision": 1})
         task = publisher.enqueue_pending()
         for _ in range(100):
             if writer.receipts:

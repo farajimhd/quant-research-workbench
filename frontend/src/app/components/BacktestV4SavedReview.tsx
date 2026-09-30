@@ -100,7 +100,7 @@ export function BacktestV4SavedReview({ runId, onClose, initialPage }: {
 
   const accounts = Object.entries(page?.financial_accounts ?? {});
   return <section className="backtest-v4-review" aria-labelledby="backtest-v4-review-heading" aria-busy={loading}>
-    <header><div><h3 id="backtest-v4-review-heading">Verified Strategy 1 journal · {runId.slice(0, 8)}</h3>
+    <header><div><h3 id="backtest-v4-review-heading">Verified Strategy {page?.run.strategy_revision ?? "unknown"} journal · {runId.slice(0, 8)}</h3>
       <p>Read-only ClickHouse evidence. This view does not resume execution or reconstruct the legacy Canvas.</p></div>
       <button className="button secondary compact" type="button" onClick={onClose}>Close review</button></header>
     {loading ? <p role="status">{page ? "Loading journal page…" : "Verifying the complete journal and terminal account snapshots…"}</p> : null}

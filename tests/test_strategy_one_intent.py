@@ -42,7 +42,7 @@ def test_entry_intent_rejects_wrong_number_and_invalid_session():
     from dataclasses import replace
 
     with pytest.raises(ValueError, match="exact numbered proposal"):
-        strategy_one_entry_intent(replace(_proposal(), strategy_number=2),
+        strategy_one_entry_intent(replace(_proposal(), strategy_number=3),
                                   session_date=date(2026, 8, 18))
     with pytest.raises(ValueError, match="exact numbered proposal"):
         strategy_one_entry_intent(_proposal(),

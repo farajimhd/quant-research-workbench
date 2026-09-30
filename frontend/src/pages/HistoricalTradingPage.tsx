@@ -179,7 +179,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           signal: controller.signal, timeoutMs: 60_000,
         });
         if (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== selectedRunId) {
-          throw new Error("Saved Strategy 1 review identity differs from the selected run.");
+          throw new Error("Saved numbered strategy review identity differs from the selected run.");
         }
         if (!controller.signal.aborted) setV4ReviewPage(page);
       };
@@ -354,7 +354,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       }).then((page) => {
         if (controller.signal.aborted) return;
         if (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== run.run_id) {
-          throw new Error("Saved Strategy 1 review identity differs from the completed run.");
+          throw new Error("Saved numbered strategy review identity differs from the completed run.");
         }
         setV4ReviewPage(page);
         setCompletedTiming(run);
@@ -559,12 +559,12 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   return (
     <TradingModeLaunch
       actionLabel={fullMarket ? 'Run Full-market Backtest' : 'Run Backtest'}
-      actionSummary={launchReady ? <><strong>{fullMarket ? 'Strategy 1’s signal-admitted market' : normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and immutable Strategy <strong>{selectedPlan?.strategy_revision}</strong>.</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionSummary={launchReady ? <><strong>{fullMarket ? 'The signal-admitted market' : normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and immutable Strategy <strong>{selectedPlan?.strategy_revision}</strong>.</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || loadingOptions}
       checkingLabel={loadingOptions ? "Loading strategy settings…" : "Checking persisted market products…"}
       checks={launchChecks}
-      description="Evaluate immutable Strategy 1 using certified ARTE market products, one shared simulated portfolio, and normalized trading records."
+      description="Evaluate a published strategy using certified market data and one shared simulated portfolio."
       error={optionsError || error}
       eyebrow="Backtest"
       icon={Gauge}
@@ -579,7 +579,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     >
               <TradingModeSelectField
                 label="Strategy" disabled={loadingOptions || !configurationOptions?.candidates.length}
-                help="The sole immutable numbered Strategy 1 release, reconstructed from typed ARTE configuration rows."
+                help="Select the immutable strategy version to evaluate."
                 onChange={(value) => { setPreflight(null); setRunPlanId(""); setCandidateId(value); }}
                 options={configurationOptions?.candidates.length ? configurationOptions.candidates.map((row) => ({ value: row.candidate_id, label: row.label })) : [{ value: "", label: loadingOptions ? "Loading strategy…" : "No published strategy" }]}
                 value={candidateId}
@@ -594,7 +594,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <TradingModeSelectField label="Ticker scope" value={tickerPreset} onChange={chooseTickerPreset}
                 options={[{value:'market',label:'Full market · shared portfolio',description:'Certified signals admit tickers causally into one portfolio'},
                   {value:'custom',label:'Selected tickers · shared portfolio'}]} help="Both scopes use one shared simulated portfolio and automatic certified V7 inputs." />
-              {fullMarket ? <p className="configuration-help">Tickers enter causally through Strategy 1's certified ARTE candidates and share portfolio cash. Missing market products or V7 coverage block preflight; Backtest does not build them.</p> : null}
+              {fullMarket ? <p className="configuration-help">Tickers enter causally through the selected strategy's certified candidates and share portfolio cash. Missing market products or V7 coverage block preflight; Backtest does not build them.</p> : null}
               {tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea aria-label="Tickers" value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
               <label className="configuration-field"><span>Trading date</span><input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} /><small>Must be an exchange trading session; weekends and holidays fail closed.</small></label>
               <TradingModeSelectField help="Presets bound the decision window while retaining causal warm-up evidence." label="Time period" onChange={(value) => applyPeriodPreset(value as BacktestPeriodPreset, setPeriodPreset, setStartTime, setEndTime)} options={[{ label: "Premarket · 04:00–09:30 ET", value: "premarket" }, { label: "Regular session · 09:30–16:00 ET", value: "regular" }, { label: "After hours · 16:00–20:00 ET", value: "after_hours" }, { label: "Whole extended session · 04:00–20:00 ET", value: "extended" }, { label: "Custom period", value: "custom" }]} value={periodPreset} />

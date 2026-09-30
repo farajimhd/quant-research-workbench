@@ -23,6 +23,7 @@ from src.trading_runtime.arte_journal_writer import (
     load_committed_order_transition_page, load_typed_run_context,
 )
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
 from src.backend.backtest_terminal_v2_fence import _verify_rows, _verify_v1_rows
 from src.backend.typed_backtest_review_core import (
     AuditedSessionCache, _cache_key, _client_scope, _head_matches,
@@ -77,10 +78,17 @@ def _terminal_attestation(client, normalized: str,
     selected_cache = cache if cache is not None else _V4_CACHE
     context = load_typed_run_context(client, normalized)
     if (context["mode"] != "backtest"
-            or context["strategy_id"] != STRATEGY_ID
-            or int(context["strategy_revision"]) != STRATEGY_NUMBER
+            or not is_numbered_fixed_strategy(context["strategy_id"], int(context["strategy_revision"]))
             or context["evaluation_interval_ms"] != 100):
         raise ValueError("Saved review accepts only immutable Strategy 1 at 100 ms")
+    if int(context["strategy_revision"]) == 2:
+        from contextlib import closing
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
+        with closing(readonly_clickhouse_client(v3_read_principal=True)) as market:
+            release = certify_numbered_configuration(market, 2)
+        if release.payload_hash != context["configuration_hash"]:
+            raise ValueError("Saved Strategy 2 configuration differs from its sealed release")
     attestation = None
     for key in selected_cache.candidate_keys(_client_scope(client), normalized):
         candidate = selected_cache.get(key)

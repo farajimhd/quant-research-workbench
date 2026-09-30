@@ -279,6 +279,7 @@ class StrategyOneBoundaryScheduler:
         # A durable checkpoint commits the entire global boundary. Its source
         # rows must never be delivered twice to the broker or strategy.
         self._boundary_ms = start_after_boundary_ms
+        self._session_clocks: list[int] = []
         self._closed = False
         self._advance_candidate()
         self._advance_activation()
@@ -288,6 +289,14 @@ class StrategyOneBoundaryScheduler:
         while (self._activation is not None
                and self._activation.boundary_ms <= start_after_boundary_ms):
             self._advance_activation()
+
+    def install_session_clocks(self, boundaries: tuple[int, ...]) -> None:
+        """Merge policy clocks without inventing a market row or broker fill."""
+        if (self._session_clocks or any(type(value) is not int or value % 100
+                or not self._boundary_ms < value <= 57_600_000 for value in boundaries)
+                or tuple(sorted(set(boundaries))) != boundaries):
+            raise ValueError("Session policy clocks must be distinct causal boundaries")
+        self._session_clocks = list(boundaries)
 
     def _advance_activation(self) -> None:
         row = next(self._activations, None)
@@ -540,10 +549,13 @@ class StrategyOneBoundaryScheduler:
         activation_at = (self._activation.boundary_ms
                          if self._activation is not None else None)
         active_at = self._heads[0][0] if self._heads else None
-        if candidate_at is None and active_at is None and activation_at is None:
+        clock_at = self._session_clocks[0] if self._session_clocks else None
+        if candidate_at is None and active_at is None and activation_at is None and clock_at is None:
             return None
-        boundary = min(value for value in (candidate_at, active_at, activation_at)
+        boundary = min(value for value in (candidate_at, active_at, activation_at, clock_at)
                        if value is not None)
+        if clock_at == boundary:
+            self._session_clocks.pop(0)
         if boundary <= self._boundary_ms:
             raise ValueError("Strategy 1 scheduler moved backward")
         self._boundary_ms = boundary

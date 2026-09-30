@@ -1,4 +1,4 @@
-"""Read certified Strategy 1 runs and persist immutable research reports.
+"""Read certified numbered fixed Backtests and persist immutable research reports.
 
 No database mutations. Repeating a run verifies identical output; a different
 projection requires a new output directory rather than replacing evidence.
@@ -63,6 +63,16 @@ def build_report(journal, market, run_id: str) -> dict:
     if terminal["status"] != "completed":
         raise RuntimeError("Optimization report requires a completed run")
     session, context, _, plan = certified_saved_run_plan(journal, market, run_id=run_id)
+    number = int(context["strategy_revision"])
+    numbered_evidence = {}
+    if number == 2:
+        from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
+        release = certify_numbered_configuration(market, 2)
+        if release.payload_hash != context["configuration_hash"]:
+            raise RuntimeError("Strategy 2 report differs from the sealed run configuration")
+        numbered_evidence = {"strategy_number": number,
+                             "numbered_release": release.payload["strategy"]["numbered_release"],
+                             "configuration_release_token": release.token}
     page = load_v4_performance_report(journal, run_id)
     open_count = sum(row["status"] != "closed" for row in page["position_lifecycles"])
     if open_count:
@@ -97,7 +107,8 @@ def build_report(journal, market, run_id: str) -> dict:
                      "entry_completed_volume": volumes,
                      "float_shares": None,
                      "float_status": "unavailable: no dedicated as-of reference reader configured"})
-    return json_safe({"schema_version": "strategy-one-research-trades-v2",
+    return json_safe({"schema_version": "strategy-one-research-trades-v2" if number == 1
+                      else "numbered-fixed-research-trades-v3", **numbered_evidence,
                       "run_id": run_id, "session_date": session.isoformat(),
                       "status": terminal["status"], "open_lifecycle_count": open_count,
                       "initial_cash": context["initial_cash"],
@@ -110,7 +121,8 @@ def build_report(journal, market, run_id: str) -> dict:
 
 
 def markdown(report: dict) -> str:
-    lines = [f"# Strategy 1 positions: {report['session_date']}", "",
+    number = report.get("strategy_number", 1)
+    lines = [f"# Strategy {number} positions: {report['session_date']}", "",
              f"Run: `{report['run_id']}`; verified sequence: {report['verified_sequence']}.", "",
              f"Status: {report['status']}; open lifecycles: {report['open_lifecycle_count']}; initial cash: {report['initial_cash']}.", "",
              "Sorted by net P&L ascending, then episode ID. Times are America/New_York with UTC offset.",

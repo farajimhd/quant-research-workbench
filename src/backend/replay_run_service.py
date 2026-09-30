@@ -5,6 +5,7 @@ from src.trading_runtime.quote_geometry import QuoteGeometryTracker
 from src.trading_runtime.trade_volume import TradeVolumeTracker
 from src.trading_runtime.session_relative_volume import SessionVolumeTracker
 from src.backend.session_relative_volume import BaselineStore
+from src.backend.backtest_strategy_one_configuration import is_numbered_fixed_configuration
 from src.backend.prepared_frame_reuse import (
     frame_identity, register_identity, compatible_artifacts, revalidate,
     copy_completed_streams, joined_thread,
@@ -34,6 +35,7 @@ from typing import Any, Awaitable, Callable, Iterable, Iterator, Mapping, Sequen
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 from zoneinfo import ZoneInfo
+
 
 import websockets
 from websockets.exceptions import ConnectionClosedError
@@ -109,6 +111,16 @@ from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 from src.trading_runtime.strategy_campaign import campaign_state
 from src.trading_runtime.strategy_activation import run_plan_accepts_signal
 from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
+
+
+def _require_numbered_session_window(strategy: Mapping[str, Any],
+                                     start: clock_time, end: clock_time) -> None:
+    """Strategy 2 runs one flat extended-hours window, never regular hours."""
+    if strategy.get("strategy_number") != 2:
+        return
+    if not ((clock_time(4) <= start < end <= clock_time(9, 30))
+            or (clock_time(16) <= start < end <= clock_time(20))):
+        raise ValueError("Strategy 2 requires one premarket or after-hours window; regular hours are warm-up only")
 
 
 _STRATEGY_ONE_PREFLIGHT_POOL = ThreadPoolExecutor(
@@ -467,7 +479,8 @@ class ReplayRunDefinition:
             if plan_interval != str(resolved_interval.milliseconds):
                 raise ValueError("Backtest market-data plan does not match execution_interval")
             strategy = dict(self.configuration_revision.get("payload", {}).get("strategy") or {})
-            if strategy.get("strategy_number") == 1:
+            if is_numbered_fixed_configuration({"strategy": strategy}):
+                _require_numbered_session_window(strategy, self.start_time, self.end_time)
                 empty_candidate_token = str(self.market_data_plan.get(
                     "strategy_one_empty_candidate_token") or "")
                 empty_candidate = bool(empty_candidate_token)
@@ -1148,9 +1161,13 @@ def _backtest_launch_blocker(definition: ReplayRunDefinition) -> str:
     interval = ExecutionInterval.parse(definition.execution_interval)
     strategy = dict(dict(getattr(definition, "configuration_revision", {}).get("payload") or {}).get(
         "strategy") or {})
+    try:
+        numbered = is_numbered_fixed_configuration({"strategy": strategy})
+    except (ValueError, TypeError):
+        numbered = False
     if (interval.kind == "fixed" and interval.milliseconds == 100
-            and strategy.get("strategy_number") == 1
-            and strategy.get("revision") == 1
+            and numbered
+            and strategy.get("revision") == strategy.get("strategy_number")
             and strategy.get("execution_interval") == "100ms"):
         return ""
     return FIXED_EXECUTION_BLOCKER if interval.kind == "fixed" else EVENT_EXECUTION_BLOCKER
@@ -3276,6 +3293,7 @@ class ReplayRunController:
         )
         from src.backend.backtest_fixed_v4_certification import (
             certify_strategy_one_v4_projection,
+            certify_numbered_fixed_v4_projection,
         )
         from src.backend.backtest_journal_clickhouse import backtest_code_hash
         from src.backend.backtest_v4_run_context import (
@@ -3295,10 +3313,17 @@ class ReplayRunController:
         )
 
         configuration = self.definition.configuration_revision["payload"]
+        try:
+            numbered = is_numbered_fixed_configuration(configuration)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run with a sealed numbered release") from exc
         if (self.definition.mode != RunMode.BACKTEST or self._journal is not None
                 or self._resume_state is not None
-                or dict(configuration.get("strategy") or {}).get("strategy_number") != 1):
+                or not numbered):
             raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
+        strategy_number = configuration["strategy"]["strategy_number"]
+        projection_certifier = (certify_strategy_one_v4_projection if strategy_number == 1
+                                else lambda: certify_numbered_fixed_v4_projection(strategy_number))
         plans_started = time.perf_counter()
         try:
             plans = await self._fixed_strategy_one_plans()
@@ -3353,7 +3378,7 @@ class ReplayRunController:
                         fixed_market_parent_plan=plans.market,
                         fixed_market_execution_plan=plans.execution_market,
                         expected_market_start=self.definition.session_start,
-                        projection_certifier=certify_strategy_one_v4_projection,
+                        projection_certifier=projection_certifier,
                         writer_factory=ArteJournalWriter,
                         batch_size=4096)
                     bootstrap_timings["strategy_one_journal_assembly"] = (
@@ -3430,7 +3455,7 @@ class ReplayRunController:
             self.definition.configuration_revision.get("payload") or {})
         strategy = dict(configuration.get("strategy") or {})
         kwargs = {}
-        if strategy.get("strategy_number") == 1:
+        if is_numbered_fixed_configuration({"strategy": strategy}):
             kwargs = {"journal_profile": "backtest_v4"}
         return load_fixed_running_prefix_anchor(
             client, run_id=self.run_id, plan=plan,
@@ -3716,8 +3741,7 @@ class ReplayRunController:
                 self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
             configuration = self.definition.configuration_revision["payload"]
             if (self.definition.mode == RunMode.BACKTEST
-                    and dict(configuration.get("strategy") or {}).get(
-                        "strategy_number") == 1):
+                    and is_numbered_fixed_configuration(configuration)):
                 # Strategy 1 has a certified ARTE candidate/activation tape.
                 # Legacy signal occurrence, Watchlist, frame, and event
                 # preparation are not its execution authority.
@@ -4137,7 +4161,7 @@ class ReplayRunController:
         from src.backend.structural_v7_seed import certified_seed_plan
 
         configuration = self.definition.configuration_revision["payload"]
-        if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+        if is_numbered_fixed_configuration(configuration):
             plans = await self._fixed_strategy_one_plans()
             if (self._runtime is None
                     or not isinstance(self._journal, BacktestMemoryJournal)):
@@ -4622,20 +4646,26 @@ class ReplayRunController:
                 for assignment in assignments
             }
             if (self.definition.mode == RunMode.BACKTEST
-                    and strategy_configuration.get("strategy_number") == 1):
+                    and is_numbered_fixed_configuration({"strategy": strategy_configuration})):
                 from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
-                from src.trading_runtime.strategy_one_contract import (
-                    STRATEGY_ID, STRATEGY_NUMBER,
+                from src.trading_runtime.numbered_fixed_strategy import (
+                    resolve_numbered_fixed_strategy,
                 )
-                if ((str(strategy_configuration.get("strategy_id") or ""),
-                     int(strategy_configuration.get("revision") or 0))
-                        != (STRATEGY_ID, STRATEGY_NUMBER)
-                        or assignment_identities != {(STRATEGY_ID, STRATEGY_NUMBER)}):
-                    raise ValueError("Strategy 1 assignments differ from numbered runtime")
+                contract = resolve_numbered_fixed_strategy(
+                    str(strategy_configuration.get("strategy_id") or ""),
+                    int(strategy_configuration.get("revision") or 0))
+                if assignment_identities != {(contract.strategy_id, contract.strategy_number)}:
+                    raise ValueError("Assignments differ from the sealed numbered runtime")
                 # This is a fixed-bar runtime identity, not a published legacy
                 # event executor. The sparse coordinator owns its decisions.
                 self._strategy_registration = None
-                self._strategy = AssignedStrategyOne(assignments)
+                if contract.strategy_number == 1:
+                    self._strategy = AssignedStrategyOne(assignments)
+                else:
+                    from src.trading_runtime.strategy_registry import fixed_strategy_executor
+                    self._strategy = fixed_strategy_executor(
+                        contract.strategy_id, contract.strategy_number).build(
+                            assignments, mode=self.definition.mode.value)
             else:
                 self._strategy_registration = strategy_executor(
                     str(strategy_configuration["strategy_id"]),
@@ -4684,7 +4714,7 @@ class ReplayRunController:
                 event_time=self.definition.requested_start,
             )
         if (self.definition.mode == RunMode.BACKTEST
-                and strategy_configuration.get("strategy_number") == 1):
+                and is_numbered_fixed_configuration({"strategy": strategy_configuration})):
             from src.backend.backtest_v4_run_context import (
                 historical_strategy_one_portfolio_profiles,
             )
@@ -7639,7 +7669,7 @@ class ReplayRunController:
         from src.backend.backtest_market_data import ExecutionInterval
         if (self.definition.mode == RunMode.BACKTEST
                 and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
-                and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
+                and is_numbered_fixed_configuration(configuration)):
             # STRATEGY CREATION RULE: fixed Strategy 1 assignments inherit
             # only the sealed dated ARTE identity. QMD/Watchlist and current
             # conid lookup are never a historical fallback.
@@ -9485,6 +9515,10 @@ class ReplayRunService:
                 self._load_typed_backtest_resume_definition, normalized)
             if definition is None:
                 raise KeyError(run_id)
+            if dict(definition.configuration_revision.get("payload", {}).get(
+                    "strategy") or {}).get("strategy_number") == 2:
+                raise RuntimeError(
+                    "Strategy 2 resume awaits interrupted-run equivalence acceptance; start a new run")
             controller = await self._prepare_typed_v4_resume(
                 normalized, definition)
             try:
@@ -9665,6 +9699,7 @@ class ReplayRunService:
         )
         from src.backend.backtest_fixed_v4_certification import (
             certify_strategy_one_v4_projection,
+            certify_numbered_fixed_v4_projection,
         )
         from src.backend.backtest_journal_clickhouse import backtest_code_hash
         from src.backend.backtest_v3_clients import v3_client
@@ -9706,6 +9741,9 @@ class ReplayRunService:
         plans = await controller._fixed_strategy_one_plans()
         plan_seconds = time.perf_counter() - plans_started
         configuration = definition.configuration_revision["payload"]
+        strategy_number = configuration["strategy"]["strategy_number"]
+        projection_certifier = (certify_strategy_one_v4_projection if strategy_number == 1
+                                else lambda: certify_numbered_fixed_v4_projection(strategy_number))
         profiles, _ = historical_strategy_one_portfolio_profiles(configuration)
         account_ids = tuple(row.account_id for row in profiles)
         configuration_hash = definition.configuration_revision["content_hash"]
@@ -9743,6 +9781,7 @@ class ReplayRunService:
                     mark_stage("resume_anchor")
                     recovery = load_v4_running_recovery_evidence(
                         reader, run_id=run_id, account_ids=account_ids,
+                        strategy_number=configuration["strategy"]["strategy_number"],
                         manager_keeper=ManagedManagerSnapshotHeadReader(keeper),
                         broker_keeper=ManagedBrokerMatchHeadReader(keeper),
                         evidence_keeper=ManagedEvidenceSnapshotHeadReader(keeper),
@@ -9756,14 +9795,15 @@ class ReplayRunService:
                         expected_start=definition.session_start)
                     mark_stage("resume_market_authority")
                     image = load_v4_fixed_runtime_image(
-                        reader, recovery, anchor, profiles)
+                        reader, recovery, anchor, profiles,
+                        strategy_number=configuration["strategy"]["strategy_number"])
                     mark_stage("resume_actor_image")
                     token = prepare_fixed_v4_journal_token(
                         reader, writer_client, terminal, run_id=run_id,
                         account_ids=account_ids,
                         configuration_hash=configuration_hash,
                         market_plan_token=plans.market.token,
-                        projection_certifier=certify_strategy_one_v4_projection)
+                        projection_certifier=projection_certifier)
                     mark_stage("resume_journal_token")
                     # The projector consumes the committed flat RunConfig, not
                     # the nested Strategy Studio revision payload. Reuse the
@@ -9923,14 +9963,14 @@ class ReplayRunService:
             for controller in self._runs.values()
         }
         if strategy_one_only:
-            from src.trading_runtime.strategy_one_contract import (
-                STRATEGY_ID, STRATEGY_NUMBER,
+            from src.trading_runtime.numbered_fixed_strategy import (
+                is_numbered_fixed_strategy,
             )
             rows = {
                 run_id: row for run_id, row in rows.items()
                 if (row.get("mode") == RunMode.BACKTEST.value
-                    and row.get("strategy_id") == STRATEGY_ID
-                    and row.get("strategy_revision") == STRATEGY_NUMBER)
+                    and is_numbered_fixed_strategy(
+                        row.get("strategy_id"), row.get("strategy_revision")))
             }
         if include_durable and (os.environ.get("BACKTEST_V4_RUNNER_CREDENTIAL_FILE")
                                 or os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER")):
@@ -11694,7 +11734,7 @@ def _fixed_market_evidence_gaps(configuration: Mapping[str, Any]) -> tuple[str, 
     A completed quote and aggregate volume cannot reconstruct intrabucket
     trade classification, NBBO extrema, or an event-fed RVOL baseline.
     """
-    if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+    if is_numbered_fixed_configuration(configuration):
         # Numbered Strategy 1 does not execute the legacy profile or QMD
         # stream. Its declared ARTE inputs and producer seals are checked by
         # the fixed Strategy 1 preflight and launch certificate instead.
@@ -11817,16 +11857,17 @@ def backtest_preflight(
         and str(row.get("signal_stream_id") or "") in selected_signal_stream_ids
     ]
     selected_strategy = dict(configuration.get("strategy") or {})
+    _require_numbered_session_window(selected_strategy, start_time, end_time)
     strategy_one_fixed = (
         execution_interval.kind == "fixed"
         and execution_interval.milliseconds == 100
-        and selected_strategy.get("strategy_number") == 1
-        and selected_strategy.get("revision") == 1
+        and is_numbered_fixed_configuration({"strategy": selected_strategy})
+        and selected_strategy.get("revision") == selected_strategy.get("strategy_number")
         and selected_strategy.get("execution_interval") == "100ms"
     )
     version_future = None
     if (execution_interval.kind == "fixed"
-            and selected_strategy.get("strategy_number") == 1):
+            and is_numbered_fixed_configuration({"strategy": selected_strategy})):
         # This source/projection check is independent of the ARTE market-day
         # certificate. Await it before readiness; no stale or skipped proof is
         # allowed just because both control-plane reads run concurrently.
@@ -12244,7 +12285,7 @@ def backtest_preflight(
                     project_market_day_plan, readonly_clickhouse_client,
                 )
                 from src.backend.structural_v7_seed import certified_seed_plan
-                if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+                if is_numbered_fixed_configuration(configuration):
                     # STRATEGY CREATION RULE: candidates are producer-owned,
                     # immutable, and certified before Backtest launch. Never
                     # regenerate a missing strategy input inside Backtest.
@@ -12289,7 +12330,7 @@ def backtest_preflight(
                     with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
                         seed_plan = certified_seed_plan(projected, reader)
                 causal_v7_plan = seed_plan.payload()
-                if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+                if is_numbered_fixed_configuration(configuration):
                     from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
                     from src.trading_runtime.strategy_one_v7_interval_schema import (
                         PRODUCT_DIGEST as V7_INTERVAL_DIGEST,
@@ -12375,7 +12416,7 @@ def backtest_preflight(
                 empty_candidate_token or causal_v7_plan.get("token", "")
                 if seed_ready else causal_v7_error)
     if (execution_interval.kind == "fixed"
-            and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
+            and is_numbered_fixed_configuration(configuration)):
         identity_token = str((market_data_plan or {}).get(
             "strategy_one_identity_token") or "")
         checks.append({

@@ -10,6 +10,7 @@ from uuid import UUID
 
 from src.trading_runtime.arte_journal_writer import _literal, _rows
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
 
 
 def _utc(value: str) -> str:
@@ -40,7 +41,7 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
           ON d.run_id=df.run_id AND d.run_month=df.run_month
           AND d.content_hash=df.definition_hash
         WHERE r.mode='backtest' AND r.evaluation_interval_ms=100
-          AND c.strategy_id={strategy_id} AND c.strategy_revision={revision}
+          AND c.strategy_id={strategy_id} AND c.strategy_revision IN (1,2)
         ORDER BY r.started_at DESC,r.run_id DESC
         LIMIT {limit_plus_one} FORMAT JSONEachRow
     """.format(strategy_id=_literal(STRATEGY_ID), revision=STRATEGY_NUMBER,
@@ -50,8 +51,7 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
     ids: list[str] = []
     for row in contexts:
         run_id = str(UUID(str(row["run_id"])))
-        if (run_id in ids or str(row["strategy_id"]) != STRATEGY_ID
-                or int(row["strategy_revision"]) != STRATEGY_NUMBER
+        if (run_id in ids or not is_numbered_fixed_strategy(str(row["strategy_id"]), int(row["strategy_revision"]))
                 or not str(row["session_date"])
                 or float(row["initial_cash"]) <= 0):
             raise RuntimeError("V4 Backtest history has duplicate or invalid run context")
@@ -93,12 +93,12 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
             "updated_at": _utc(head["committed_at"]) if head else _utc(row["started_at"]),
             "current_time": None,
             "configuration_content_hash": str(row["configuration_hash"]),
-            "configuration_label": "Strategy 1",
+            "configuration_label": f"Strategy {row['strategy_revision']}",
             "strategy_id": STRATEGY_ID,
-            "strategy_name": "Strategy 1",
-            "strategy_revision": STRATEGY_NUMBER,
+            "strategy_name": f"Strategy {row['strategy_revision']}",
+            "strategy_revision": int(row["strategy_revision"]),
             "initial_cash": float(row["initial_cash"]),
-            "configuration_revision": STRATEGY_NUMBER,
+            "configuration_revision": int(row["strategy_revision"]),
             "resident": False,
             "journal_backend": "arte_typed_journal_v4",
             "journal_verification": "inventory_only",

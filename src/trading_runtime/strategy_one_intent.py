@@ -51,7 +51,7 @@ def strategy_one_entry_intent(
     if (not isinstance(proposal, StrategyOneEntryProposal)
             or not isinstance(session_date, date)
             or isinstance(session_date, datetime)
-            or proposal.strategy_number != 1
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2)
             or type(proposal.boundary_ms) is not int
             or not 0 < proposal.boundary_ms <= 57_600_000
             or proposal.boundary_ms % 100
@@ -69,7 +69,7 @@ def strategy_one_entry_intent(
     boundary = (datetime.combine(session_date, time(4), tzinfo=_NEW_YORK)
                 + timedelta(milliseconds=proposal.boundary_ms))
     identity = (
-        f"strategy-1:{session_date.isoformat()}:{proposal.assignment_id}:"
+        f"strategy-{proposal.strategy_number}:{session_date.isoformat()}:{proposal.assignment_id}:"
         f"{proposal.account_id}:{proposal.ticker}:{proposal.boundary_ms}:"
         f"{proposal.episode_start_ms}"
     )
@@ -118,7 +118,7 @@ def strategy_one_add_intent(
     if (not isinstance(proposal, StrategyOneAddProposal)
             or not isinstance(session_date, date)
             or isinstance(session_date, datetime)
-            or proposal.strategy_number != 1
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2)
             or proposal.purchase_ordinal not in (2, 3)
             or type(proposal.boundary_ms) is not int
             or not 0 < proposal.boundary_ms <= 57_600_000
@@ -136,7 +136,7 @@ def strategy_one_add_intent(
     boundary = (datetime.combine(session_date, time(4), tzinfo=_NEW_YORK)
                 + timedelta(milliseconds=proposal.boundary_ms))
     identity = (
-        f"strategy-1-add:{session_date.isoformat()}:{proposal.assignment_id}:"
+        f"strategy-{proposal.strategy_number}-add:{session_date.isoformat()}:{proposal.assignment_id}:"
         f"{proposal.account_id}:{proposal.ticker}:{proposal.boundary_ms}:"
         f"{proposal.resistance_id}"
     )

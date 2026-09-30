@@ -78,7 +78,7 @@ export function BacktestV4RunningWorkspace({ boundaries, committedRows, liveCoun
   return <TradingWorkspace clockLabel="" commandBarVisible={false} compact
     definitionsOverride={DEFINITIONS} defaultOpenIds={REVIEW_CONTAINERS}
     excludedContainerIds={EXCLUDED} initialStateOverride={savedLayout}
-    layoutPreset="focus" historicalSourceReady mode="backtest" runLabel="Strategy 1"
+    layoutPreset="focus" historicalSourceReady mode="backtest" runLabel="Backtest"
     runStatus="running" sourceLabel="ARTE typed journal" showHealth={false}
     metaForContainer={() => ({ sourceLabel: "ARTE V4", status: "connecting", freshness: "At run clock" })}
     storageKeyOverride={V4_LAYOUT_KEY} persistState={false}
@@ -219,7 +219,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
     strategy_activity: [], activity: [],
   } : undefined;
   return <div className="canvas-config-page canvas-focus-page backtest-v4-canvas-review">
-    <SavedV4CanvasHeader initialPage={initialPage} onClose={onClose} title="Backtest Canvas · Strategy 1"
+    <SavedV4CanvasHeader initialPage={initialPage} onClose={onClose} title={`Backtest Canvas · Strategy ${initialPage.run.strategy_revision ?? "unknown"}`}
       managementOpen={managementOpen} onManage={() => setManagementOpen(value => !value)} />
     {timing ? <div className="backtest-v4-completed-timing" aria-label="Completed Backtest timing">
       <strong>Total {timing.totalSeconds.toFixed(2)}s</strong>
@@ -230,7 +230,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
       definitionsOverride={DEFINITIONS} defaultOpenIds={REVIEW_CONTAINERS}
       excludedContainerIds={EXCLUDED}
       initialStateOverride={savedLayout} layoutPreset="focus"
-      historicalSourceReady mode="backtest" runLabel="Strategy 1" runStatus="completed"
+      historicalSourceReady mode="backtest" runLabel={`Strategy ${initialPage.run.strategy_revision ?? "unknown"}`} runStatus="completed"
       sourceLabel="ARTE typed journal" showHealth={false}
       metaForContainer={() => ({ sourceLabel: "ARTE verified V4", status: "ready", freshness: "Saved run" })}
       managementOpen={managementOpen} onManagementClose={() => setManagementOpen(false)}

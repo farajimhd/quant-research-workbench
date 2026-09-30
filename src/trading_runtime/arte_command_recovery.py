@@ -237,8 +237,8 @@ def load_committed_strategy_one_command_page(
     )
     if not commands:
         return ()
-    if any((str(command["strategy_id"]), int(command["strategy_revision"])) != (
-            STRATEGY_ID, STRATEGY_NUMBER) for command in commands):
+    from .numbered_fixed_strategy import is_numbered_fixed_strategy
+    if any(not is_numbered_fixed_strategy(str(command["strategy_id"]), int(command["strategy_revision"])) for command in commands):
         raise RuntimeError("Command page contains a non-Strategy-1 command")
     contexts = load_committed_order_context_page(
         client, prefix, commands, include_source=True,
@@ -289,7 +289,7 @@ def load_committed_strategy_one_command_page(
         )
         raw = canonical_runtime_order_raw(
             flat, source.intent, run_id=prefix.run_id,
-            strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+            strategy_id=str(command["strategy_id"]), strategy_revision=int(command["strategy_revision"]),
         )
         kind, proof, state, history, admission, decision = lineages.get(
             str(command["record_id"]),

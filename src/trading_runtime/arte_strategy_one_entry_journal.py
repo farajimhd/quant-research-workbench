@@ -148,7 +148,7 @@ def load_committed_strategy_one_entry_page(
                 or row["record_id"] != str(uuid5(
                     NAMESPACE_URL, f"{parent}:strategy-one-entry"))
                 or row["event_month"] != session_date.replace(day=1).isoformat()
-                or row["strategy_number"] != 1):
+                or row["strategy_number"] not in (1, 2)):
             raise RuntimeError("Committed Strategy 1 entry evidence changed")
         intent = recovered.intent
         if intent.invalidation_price is None or intent.profit_target_price is None:
@@ -159,7 +159,7 @@ def load_committed_strategy_one_entry_page(
             intent.reference_price, intent.invalidation_price,
             intent.profit_target_price, str(row["target_level_id"]),
             float(row["frozen_gap"]), int(row["bos_break_boundary_ms"]),
-            str(row["bos_support_level_id"]), 1,
+            str(row["bos_support_level_id"]), int(row["strategy_number"]),
         )
         if strategy_one_entry_intent(proposal, session_date=session_date) != intent:
             raise RuntimeError("Committed Strategy 1 proposal differs from its intent")

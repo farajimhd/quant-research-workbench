@@ -95,7 +95,7 @@ async def read_strategy_one_financial_views(
         if current_purchase_groups > 3:
             raise RuntimeError("Strategy 1 position exceeded three purchase groups")
         pending_exit = any(
-            row.action in {"exit_long", "reduce_long"}
+            row.action in {"exit", "exit_long", "reduce_long"}
             and row.state not in TERMINAL_MANAGEMENT_STATES for row in groups)
         state = assignment.state
         if (not isinstance(state, dict)

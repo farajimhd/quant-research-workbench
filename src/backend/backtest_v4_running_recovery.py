@@ -105,6 +105,7 @@ def load_v4_fixed_runtime_image(
     client: Any, recovery: V4RunningRecoveryEvidence,
     anchor: FixedRunningPrefixAnchor,
     profiles: tuple[PortfolioAccountProfile, ...],
+    *, strategy_number: int = 1,
 ) -> V4FixedRuntimeImage:
     """Read all mutable actor families at one verified checkpoint, no writes."""
     controller = reconstruct_v4_controller_image(recovery, anchor)
@@ -121,7 +122,7 @@ def load_v4_fixed_runtime_image(
                    for revision in portfolio.revisions.values())):
         raise RuntimeError("V4 runtime portfolio image differs from pinned cursor")
     broker = load_v4_running_broker_image(client, recovery)
-    oms = load_v4_running_oms_image(client, recovery)
+    oms = load_v4_running_oms_image(client, recovery, strategy_number=strategy_number)
     if load_verified_v4_prefix(client, anchor.run_id) != recovery.prefix:
         raise RuntimeError("V4 runtime image prefix moved during actor reads")
     return V4FixedRuntimeImage(
@@ -206,8 +207,11 @@ def verify_v4_recovery_at_anchor(
 
 def load_v4_running_oms_image(
     client: Any, recovery: V4RunningRecoveryEvidence,
+    *, strategy_number: int = 1,
 ) -> TypedOmsActorImage:
     """Recover and cross-audit OMS from complete committed protection history."""
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    numbered_fixed_strategy(strategy_number)
     if not isinstance(recovery, V4RunningRecoveryEvidence):
         raise TypeError("V4 OMS recovery requires joined evidence")
     root = recovery.broker.snapshot
@@ -222,7 +226,7 @@ def load_v4_running_oms_image(
         raise RuntimeError("V4 OMS protection history differs from recovery prefix")
     image = reconstruct_typed_oms_actor_image(
         recovery.oms, history, run_id=recovery.prefix.run_id,
-        strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        strategy_id=STRATEGY_ID, strategy_revision=strategy_number,
         through_sequence=recovery.prefix.last_sequence, cutoff_at=cutoff)
     image = attach_typed_oms_observations(
         image, recovery.oms_observations,
@@ -310,8 +314,11 @@ def load_v4_running_recovery_evidence(
     manager_keeper: Any, broker_keeper: Any, evidence_keeper: Any,
     market_client: Any, market_plan: CertifiedMarketDayPlan,
     campaign_keeper: Any = None, oms_observation_keeper: Any = None,
+    strategy_number: int = 1,
 ) -> V4RunningRecoveryEvidence:
     """Join every available recovery family at the same committed cursor."""
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    numbered_fixed_strategy(strategy_number)
     prefix, portfolios = load_v4_running_portfolio_images(
         client, run_id=run_id, account_ids=account_ids)
     progress = load_committed_backtest_progress(client, prefix, required=True)
@@ -347,6 +354,7 @@ def load_v4_running_recovery_evidence(
             or len(broker.accounts) != len(account_ids)
             or manager.boundary_ms != broker.snapshot.get("boundary_ms")
             or evidence.boundary_ms != manager.boundary_ms
+            or any(proposal.strategy_number != strategy_number for _, proposal in manager.submitted)
             or any(key[0] not in portfolios
                    for family in (manager.submitted, manager.positions,
                                   manager.pending_breaks)
@@ -356,7 +364,7 @@ def load_v4_running_recovery_evidence(
         client, prefix, page_size=1_000)
     oms = load_recovered_strategy_one_oms_lineage(
         client, prefix, allowed_accounts=frozenset(account_ids),
-        protection_history=history)
+        protection_history=history, strategy_number=strategy_number)
     requests = {}
     broker_bindings = {}
     seen_broker_ids = set()

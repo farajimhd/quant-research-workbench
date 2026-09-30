@@ -33,6 +33,7 @@ from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 
 
@@ -478,8 +479,7 @@ class OrderManagementEngine:
 
     def on_market_snapshot(self, snapshot: ExecutionMarketSnapshot) -> None:
         self.execution_market_data.update(snapshot)
-        strategy_one = (self.strategy_id, self.strategy_revision) == (
-            STRATEGY_ID, STRATEGY_NUMBER)
+        strategy_one = is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision)
         for group in self._groups_by_ticker.get(snapshot.ticker.upper(), ()):
             group.reprice_event.set()
             group.high_water_price = max(group.high_water_price, snapshot.bid)
@@ -561,8 +561,7 @@ class OrderManagementEngine:
             return ()
         at = event_time.astimezone(timezone.utc)
         advanced: list[_ManagedOrderGroup] = []
-        strategy_one = (self.strategy_id, self.strategy_revision) == (
-            STRATEGY_ID, STRATEGY_NUMBER)
+        strategy_one = is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision)
         # Strategy 1 never uses partial-target completion. Iterate only groups
         # whose current state can advance, in original admission order. Other
         # strategies retain the full scan and partial-target behavior.
@@ -612,7 +611,7 @@ class OrderManagementEngine:
 
     async def _complete_partial_target(self, group: _ManagedOrderGroup, at: datetime) -> bool:
         """Complete only the touched target allocation; preserve its paired stop and runner."""
-        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+        if is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):
             return False  # Strategy 1 owns its full-target amendment at completed boundaries.
         if not group.intent.metadata.get('complete_partial_target') or group.protection_delegated:
             return False
@@ -1637,8 +1636,7 @@ class OrderManagementEngine:
                     "Emergency flatten returned an unresolved broker warning; existing protection was retained"
                 )
             if (self.causal_execution_clock
-                    and (self.strategy_id, self.strategy_revision)
-                    == (STRATEGY_ID, STRATEGY_NUMBER)):
+                    and is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision)):
                 # A rejected simulated OCA pair cannot replace existing
                 # protection. Validate both exact replies before recording or
                 # cancelling any working strategy stop/target.
@@ -1822,7 +1820,7 @@ class OrderManagementEngine:
         broker_order_id: str, response: list[dict[str, Any]],
     ) -> None:
         """Retain one exact simulated reply per numbered protection amendment."""
-        if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER):
+        if not is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):
             return
         if (len(response) != 1 or type(response[0]) is not dict
                 or set(response[0]) != {"order_id", "order_status", "local_order_id"}
@@ -2092,7 +2090,7 @@ class OrderManagementEngine:
             )
             if self.state_callback is not None:
                 await self.state_callback(group.snapshot(self.policy.version))
-        if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER):
+        if not is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):
             self._record(
                 "broker", "profit_target_replaced", intent.intent_id,
                 account_id, intent.event_time,
@@ -2112,7 +2110,7 @@ class OrderManagementEngine:
         plan: StrategyOrderPlan,
         tactic: ExecutionTactic | None,
     ) -> OrderGroupSnapshot | None:
-        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+        if is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):
             return None  # Strategy 1 uses broker-held stop/target, not managed exits.
         action = str(intent.action)
         if action not in {"exit", "take_profit", "reduce_long", "cover", "reduce_short"}:
@@ -2770,6 +2768,18 @@ class OrderManagementEngine:
         """Cancel acquisition even when no share has filled yet."""
         await self._cancel_pending_acquisition_before_exit(intent, account_id=account_id)
 
+    async def cancel_numbered_session_acquisitions(self, *, at: datetime) -> None:
+        """Cancel open acquisition roots through typed command/state receipts."""
+        if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, 2) or not self.causal_execution_clock:
+            raise ValueError("Session cutoff needs the numbered fixed OMS")
+        changed = False
+        for group in tuple(self._groups.values()):
+            if group.intent.action in {"enter_long", "add_long"} and _open_entry_roots(group):
+                group.updated_at = max(group.updated_at, at)
+                changed = await self._cancel_open_entry_roots(group, "strategy_two_session_cutoff") or changed
+        if changed:
+            await self.reconcile()
+
     def working_exit_quantity(self, ticker: str, account_id: str) -> float:
         """Use acknowledged OMS state without a broker query on every trade."""
         return sum(
@@ -2871,7 +2881,7 @@ class OrderManagementEngine:
                     'momentum_stop_advanced':True, 'stop_exit_reason':reason})
             group.updated_at = intent.event_time
             self._transition(group, group.state, {"event": "support_stop_replaced", "stop": desired})
-            if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER):
+            if not is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):
                 self._record(
                     "broker", "protective_stop_replaced", str(order.orderId),
                     account_id, intent.event_time,
@@ -2898,7 +2908,7 @@ class OrderManagementEngine:
         managed-exit path after the parent cancellation.
         """
 
-        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+        if is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):
             return  # Strategy 1 never submits a legacy reduction intent.
 
         action = str(intent.action)
@@ -3888,7 +3898,7 @@ class OrderManagementEngine:
         return actions
 
     async def apply_profit_pocket_transition(self, group: _ManagedOrderGroup) -> list[dict[str, Any]]:
-        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+        if is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):
             return []  # Strategy 1 has no legacy pocket policy or partial target.
         profile = group.intent.resolved_protection_profile()
         if profile is None or profile.profit_pocket_transition in {
@@ -4079,7 +4089,7 @@ class OrderManagementEngine:
         group: _ManagedOrderGroup,
         snapshot: ExecutionMarketSnapshot,
     ) -> None:
-        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+        if is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):
             return  # Strategy 1 confirms its own bar-causal stop/target amendments.
         if not self.causal_execution_clock:
             await self._complete_partial_target(group, snapshot.observed_at)

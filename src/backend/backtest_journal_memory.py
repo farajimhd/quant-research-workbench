@@ -35,6 +35,7 @@ class BacktestMemoryJournal:
         self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
         self._strategy_one_adds: dict[str, tuple[Any, date]] = {}
         self._strategy_one_protection: dict[str, Any] = {}
+        self._numbered_session_exits: dict[str, Any] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
         self._order_requests: dict[str, Any] = {}
@@ -87,7 +88,7 @@ class BacktestMemoryJournal:
 
         if (intent != strategy_one_entry_intent(proposal, session_date=session_date)
                 or account_id != proposal.account_id or not strategy_id
-                or type(strategy_revision) is not int or strategy_revision < 0):
+                or type(strategy_revision) is not int or strategy_revision != proposal.strategy_number):
             raise ValueError("Strategy 1 journal intent differs from its numbered proposal")
         with self._lock:
             record = self.append(
@@ -113,7 +114,7 @@ class BacktestMemoryJournal:
 
         if (intent != strategy_one_add_intent(proposal, session_date=session_date)
                 or account_id != proposal.account_id or not strategy_id
-                or strategy_revision != 1):
+                or strategy_revision != proposal.strategy_number):
             raise ValueError("Strategy 1 add journal differs from numbered proposal")
         with self._lock:
             record = self.append(
@@ -165,7 +166,7 @@ class BacktestMemoryJournal:
                     "replace_protective_stop", "replace_profit_target"}
                 or intent.metadata or not account_id
                 or strategy_id != STRATEGY_ID
-                or type(strategy_revision) is not int or strategy_revision != 1
+                or type(strategy_revision) is not int or strategy_revision not in (1, 2)
                 or (intent.action == "replace_profit_target"
                     and (intent.reason != "ordinal_resistance_target"
                          or intent.profit_target_price is None
@@ -189,6 +190,27 @@ class BacktestMemoryJournal:
     def strategy_one_protection_for_record(self, record_id: str) -> Any | None:
         with self._lock:
             return self._strategy_one_protection.get(record_id)
+
+    def append_numbered_session_exit_intent(self, *, intent, account_id, strategy_id,
+                                           strategy_revision):
+        from src.trading_runtime.signals import StrategyIntent
+        if (not isinstance(intent, StrategyIntent) or intent.action != "exit"
+                or intent.reason != "strategy_two_session_exit" or intent.metadata
+                or strategy_id != "early-squeeze-strategy" or strategy_revision != 2
+                or not account_id):
+            raise ValueError("Session exit requires Strategy 2 normalized scalar source")
+        with self._lock:
+            record = self.append(run_id=self.run_id, category="strategy",
+                entity_type="strategy_intent", entity_id=intent.intent_id,
+                account_id=account_id, event_time=intent.event_time,
+                payload={**intent.payload(), "strategy_id": strategy_id,
+                         "strategy_revision": strategy_revision})
+            self._numbered_session_exits[record.record_id] = intent
+            return record
+
+    def numbered_session_exit_for_record(self, record_id):
+        with self._lock:
+            return self._numbered_session_exits.get(record_id)
 
     def append_strategy_order_command(
         self, *, order_request: Any, run_id: str, category: str,
@@ -417,6 +439,7 @@ class BacktestMemoryJournal:
                     self._strategy_one_entries.pop(record.record_id, None)
                     self._strategy_one_adds.pop(record.record_id, None)
                     self._strategy_one_protection.pop(record.record_id, None)
+                    self._numbered_session_exits.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
                     self._order_requests.pop(record.record_id, None)

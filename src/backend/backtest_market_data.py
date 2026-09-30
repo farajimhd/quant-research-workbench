@@ -211,9 +211,8 @@ def compile_required_resolutions(
     if execution_interval.kind == "fixed":
         required.add(int(execution_interval.milliseconds or 100))
     strategy = configuration.get("strategy")
-    if (isinstance(strategy, Mapping)
-            and type(strategy.get("strategy_number")) is int
-            and strategy["strategy_number"] == 1):
+    from src.backend.backtest_strategy_one_configuration import is_numbered_fixed_configuration
+    if is_numbered_fixed_configuration(configuration):
         # Strategy 1 consumes completed MACD at all four clocks and the last
         # completed 30s low. The dependency compiler must pin these products
         # even when a saved UI rule-set omits an explicit timeframe label.

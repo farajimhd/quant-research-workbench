@@ -57,6 +57,7 @@ from src.trading_runtime.runtime import RunMode
 from src.trading_runtime.strategy_engine import StrategyAssignment
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
+from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
 
 
 def pinned_strategy_one_ticks(
@@ -69,8 +70,9 @@ def pinned_strategy_one_ticks(
     for assignment in assignments:
         if (not isinstance(assignment, StrategyAssignment)
                 or (assignment.strategy_id, assignment.strategy_revision)
-                != (STRATEGY_ID, STRATEGY_NUMBER)):
+                != (STRATEGY_ID, assignments[0].strategy_revision)):
             raise ValueError("Strategy 1 execution tick has a foreign assignment")
+        resolve_numbered_fixed_strategy(assignment.strategy_id, assignment.strategy_revision)
         execution = assignment.parameters.get("execution")
         raw = execution.get("tick_size") if isinstance(execution, dict) else None
         if type(raw) not in (int, float) or not isfinite(raw) or raw <= 0:
@@ -227,6 +229,12 @@ async def run_certified_strategy_one_session(
         client_factory=client_factory, max_workers=max_workers,
         activation_source_candidates=visible, stage_time=stage_time,
         start_after_boundary_ms=start_after_boundary_ms)
+    contract = resolve_numbered_fixed_strategy(
+        assignments[0].strategy_id, assignments[0].strategy_revision)
+    if contract.allows_session_exit:
+        scheduler.install_session_clocks(tuple(boundary for boundary in (
+            19_500_000, 19_740_000, 19_800_000, 57_000_000, 57_300_000, 57_600_000)
+            if start_after_boundary_ms < boundary <= through_boundary_ms))
     if stage_time is not None:
         stage_time("strategy_one_sparse_load", sparse_started)
     try:
@@ -335,7 +343,7 @@ async def run_strategy_one_fixed_session(
             or not isinstance(getattr(runtime, "journal", None), BacktestMemoryJournal)
             or config is None or config.mode != RunMode.BACKTEST
             or config.strategy_id != STRATEGY_ID
-            or config.strategy_revision != STRATEGY_NUMBER
+            or config.strategy_revision not in (1, 2)
             or not callable(getattr(runtime, "process_liquidity_boundary", None))
             or not callable(getattr(broker, "financially_active_tickers", None))
             or not callable(getattr(broker, "positions", None))
@@ -345,7 +353,7 @@ async def run_strategy_one_fixed_session(
             or not isinstance(assignments, (tuple, list)) or not assignments
             or any(not isinstance(row, StrategyAssignment)
                    or (row.strategy_id, row.strategy_revision)
-                   != (STRATEGY_ID, STRATEGY_NUMBER)
+                   != (STRATEGY_ID, config.strategy_revision)
                    for row in assignments)):
         raise ValueError("Strategy 1 fixed session lacks numbered shared authorities")
     by_ticker: dict[str, list[StrategyAssignment]] = defaultdict(list)
@@ -369,6 +377,20 @@ async def run_strategy_one_fixed_session(
         if rows:
             await runtime.process_liquidity_boundary(
                 rows, at=market_day_boundary(session, work.boundary_ms))
+
+    async def observe_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
+        # Consume the bucket ending at the cutoff first. Cancel acquisition
+        # remainder at its completed clock before any later bucket can fill.
+        if config.strategy_revision == 2:
+            await runtime.advance_numbered_session_clock(work.boundary_ms)
+        await evidence.observe_completed_seconds(work)
+
+    async def finish_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
+        if config.strategy_revision == 2 and work.boundary_ms in (19_800_000, 57_600_000):
+            active = broker.financially_active_tickers()
+            if active:
+                raise RuntimeError(f"Strategy 2 session ended with residual exposure/orders: {active}")
+        await finish_boundary(work)
 
     async def financial_views(ticker: str, _boundary_ms: int):
         selected = by_ticker.get(ticker)
@@ -445,10 +467,11 @@ async def run_strategy_one_fixed_session(
             reentry_witness=reentry_witness,
             position_source_owned=manager.owns_position_source,
             financially_active_tickers=financially_active_tickers,
-            finish_boundary=finish_boundary,
+            finish_boundary=finish_numbered_boundary,
             observe_activation=evidence.observe_activation,
-            observe_completed_seconds=evidence.observe_completed_seconds,
-            static_gate=static_gate, stage_time=stage_time)
+            observe_completed_seconds=observe_numbered_boundary,
+            static_gate=static_gate, stage_time=stage_time,
+            strategy_number=config.strategy_revision)
     finally:
         try:
             if prior_close_reader is not None:

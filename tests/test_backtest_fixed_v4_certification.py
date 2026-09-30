@@ -186,7 +186,7 @@ def test_numbered_protection_bypasses_legacy_oms_managers(tmp_path):
     with pytest.raises(ValueError, match="legacy OMS event may be reachable"):
         certify_strategy_one_legacy_protection_unreachable(**copies)
     oms.write_text(sources["oms_path"].read_text(encoding="utf-8").replace(
-        "if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER):\n"
+        "if not is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):\n"
         "            self._record(\n"
         "                \"broker\", \"profit_target_replaced\"",
         "if True:\n"

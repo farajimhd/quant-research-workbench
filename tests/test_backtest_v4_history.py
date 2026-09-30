@@ -28,6 +28,15 @@ def _head():
     }
 
 
+def test_history_preserves_number_two_identity_without_claiming_audited_review(monkeypatch):
+    monkeypatch.setattr(history, "_rows", lambda _client, sql:
+                        [{**_context(), "strategy_revision": 2}] if "trading_run_v1 AS r" in sql else [_head()])
+    row = history.load_strategy_one_v4_history(object())[0]
+    assert row["strategy_revision"] == row["configuration_revision"] == 2
+    assert row["strategy_name"] == row["configuration_label"] == "Strategy 2"
+    assert row["journal_verification"] == "inventory_only"
+
+
 def test_history_lists_normalized_record_without_claiming_review(monkeypatch):
     queries = []
 

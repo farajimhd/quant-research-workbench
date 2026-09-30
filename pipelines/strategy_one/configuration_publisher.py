@@ -14,7 +14,8 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from src.backend.backtest_strategy_one_configuration import (
-    certify_strategy_one_configuration,
+    certify_strategy_one_configuration, certify_numbered_configuration,
+    is_numbered_fixed_configuration, _validate_strategy_two_payload,
 )
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.strategy_one_configuration_tree import (
@@ -100,30 +101,45 @@ def publish_configuration(client: Any, keeper: Any,
     An ambiguous node INSERT leaves an invisible orphan attempt. An ambiguous
     release INSERT must be resolved by the release reader, never blind retry.
     """
-    payload, nodes = _verified_envelope(envelope)
+    number = dict(dict(envelope.get("payload") or {}).get("strategy") or {}).get("strategy_number")
+    if number == 1:
+        payload, nodes = _verified_envelope(envelope)
+    elif type(number) is int and number == 2:
+        payload, nodes = _verified_numbered_envelope(envelope)
+        from pipelines.strategy_one.strategy_two_configuration import compile_strategy_two_configuration
+        source = certify_strategy_one_configuration(client)
+        manifest = payload["strategy"]["numbered_release"]
+        expected = compile_strategy_two_configuration(source,
+            approved_code_commit=manifest["approved_code_commit"],
+            approved_code_fingerprint=manifest["approved_code_fingerprint"],
+            approval_reference=manifest["approval_reference"])
+        if dict(envelope) != expected:
+            raise ValueError("Strategy 2 publication differs from certified inheritance")
+    else:
+        raise ValueError("Unknown numbered configuration publication")
     try:
         verify_tables(client)
     except Exception as exc:
         raise PublicationStageError("layout", exc) from exc
-    lock_path = "/trading/ownership/v1/strategy_one_configuration/1"
+    lock_path = f"/trading/ownership/v1/strategy_one_configuration/{number}"
     try:
         keeper.create(lock_path, uuid4().hex.encode("ascii"),
                       ephemeral=True, makepath=True)
     except Exception as exc:
         if type(exc).__name__ == "NodeExistsError":
-            raise RuntimeError("Another Strategy 1 configuration publisher owns the release") from exc
+            raise RuntimeError(f"Another Strategy {number} configuration publisher owns the release") from exc
         raise
     stage = "existing_release"
     try:
         existing = _rows(client, "SELECT release_attempt_id,payload_hash "
-                         f"FROM {RELEASE_TABLE} WHERE strategy_number=1")
+                         f"FROM {RELEASE_TABLE} WHERE strategy_number={number}")
         if existing:
             if len(existing) == 1 and existing[0]["payload_hash"] == envelope["payload_hash"]:
-                certified = certify_strategy_one_configuration(client)
+                certified = certify_numbered_configuration(client, number)
                 if certified.source_candidate_hash != envelope["source_candidate_hash"]:
-                    raise RuntimeError("Strategy 1 existing source differs")
+                    raise RuntimeError(f"Strategy {number} existing source differs")
                 return certified.token
-            raise RuntimeError("Strategy 1 already has a different immutable release")
+            raise RuntimeError(f"Strategy {number} already has a different immutable release")
         attempt = str(uuid4())
         columns = ("strategy_number", "release_attempt_id", "node_id",
                    "parent_node_id", "child_key", "child_ordinal", "value_kind",
@@ -131,8 +147,8 @@ def publish_configuration(client: Any, keeper: Any,
         for start in range(0, len(nodes), 500):
             stage = "node_insert"
             if not keeper.connected:
-                raise RuntimeError("Strategy 1 Keeper claim was lost")
-            batch = [dict(strategy_number=STRATEGY_NUMBER,
+                raise RuntimeError(f"Strategy {number} Keeper claim was lost")
+            batch = [dict(strategy_number=number,
                           release_attempt_id=attempt, **row)
                      for row in nodes[start:start + 500]]
             _insert_rows(client, NODE_TABLE, columns, batch)
@@ -140,7 +156,7 @@ def publish_configuration(client: Any, keeper: Any,
         readback = _rows(client,
             "SELECT node_id,parent_node_id,child_key,child_ordinal,value_kind,"
             "text_value,int_value,float_value,bool_value "
-            f"FROM {NODE_TABLE} WHERE strategy_number=1 "
+            f"FROM {NODE_TABLE} WHERE strategy_number={number} "
             f"AND release_attempt_id=toUUID('{attempt}') ORDER BY node_id")
         if len(readback) != len(nodes):
             raise RuntimeError(
@@ -156,9 +172,9 @@ def publish_configuration(client: Any, keeper: Any,
         if decode_nodes(readback) != payload:
             raise RuntimeError("node_payload_mismatch")
         if not keeper.connected:
-            raise RuntimeError("Strategy 1 Keeper claim was lost before release")
+            raise RuntimeError(f"Strategy {number} Keeper claim was lost before release")
         release = {
-            "strategy_number": STRATEGY_NUMBER,
+            "strategy_number": number,
             "release_attempt_id": attempt,
             "strategy_id": STRATEGY_ID,
             "source_candidate_id": envelope["source_candidate_id"],
@@ -171,9 +187,9 @@ def publish_configuration(client: Any, keeper: Any,
         stage = "release_insert"
         _insert_rows(client, RELEASE_TABLE, tuple(release), [release])
         stage = "release_readback"
-        certified = certify_strategy_one_configuration(client)
+        certified = certify_numbered_configuration(client, number)
         if certified.attempt_id != attempt or certified.payload != payload:
-            raise RuntimeError("Strategy 1 released rows differ from typed transfer")
+            raise RuntimeError(f"Strategy {number} released rows differ from typed transfer")
         return certified.token
     except Exception as exc:
         if isinstance(exc, PublicationStageError):
@@ -200,3 +216,22 @@ class PublicationStageError(RuntimeError):
                and str(cause).startswith(("node_count:", "node_hash:",
                                            "node_payload_mismatch")) else ""))
         super().__init__(self.safe_diagnostic)
+
+
+def _verified_numbered_envelope(envelope: Mapping[str, Any]) -> tuple[dict, tuple[dict, ...]]:
+    """Number 2 has independent approval and source identity; no Candidate 350 reuse."""
+    if set(envelope) != {"source_candidate_id", "source_candidate_hash", "payload_hash", "node_hash", "node_count", "payload"}:
+        raise ValueError("Numbered configuration envelope shape differs")
+    payload = envelope["payload"]
+    if not is_numbered_fixed_configuration(payload) or payload["strategy"]["strategy_number"] != 2:
+        raise ValueError("Numbered publisher requires sealed Strategy 2")
+    _validate_strategy_two_payload(payload)
+    manifest = payload["strategy"]["numbered_release"]
+    if (envelope["source_candidate_id"] != f"strategy-two-from:{manifest['source_revision_id']}"
+            or envelope["source_candidate_hash"] != manifest["source_payload_hash"]):
+        raise ValueError("Strategy 2 source provenance differs")
+    nodes = encode_nodes(payload)
+    if (sha256(canonical_json(payload).encode()).hexdigest() != envelope["payload_hash"]
+            or node_hash(nodes) != envelope["node_hash"] or len(nodes) != envelope["node_count"]):
+        raise ValueError("Strategy 2 typed content seal differs")
+    return payload, nodes

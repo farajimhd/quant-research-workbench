@@ -230,9 +230,9 @@ class BacktestMarketDataTests(unittest.TestCase):
             ExecutionInterval.parse("100ms"),
         )
         self.assertEqual(required, (100, 1_000, 5_000, 10_000, 30_000))
-        self.assertEqual(compile_required_resolutions(
-            {"strategy": {"strategy_number": True}},
-            ExecutionInterval.parse("100ms")), (100, 1_000))
+        with self.assertRaisesRegex(ValueError, "Unknown numbered"):
+            compile_required_resolutions({"strategy": {"strategy_number": True}},
+                                         ExecutionInterval.parse("100ms"))
 
     def test_catalogue_pins_all_three_read_only_products(self) -> None:
         plan = self._plan()

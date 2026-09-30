@@ -54,6 +54,15 @@ def _loaded_strategy_one_projection(certificate_fn: Any, source_fingerprint: str
     return certificate_fn()
 
 
+@lru_cache(maxsize=2)
+def _loaded_numbered_projection(certificate_fn: Any, source_fingerprint: str,
+                               strategy_number: int) -> str:
+    """A different numbered capability requires its own source-bound proof."""
+    if source_fingerprint != LOADED_BACKEND_FINGERPRINT:
+        raise RuntimeError("Backend source changed after startup")
+    return certificate_fn(strategy_number)
+
+
 def expected_structure_checkpoint_set() -> str:
     configured = os.environ.get("QMD_STRUCTURE_CHECKPOINT_SET_ID", "").strip()
     if configured and configured != "live":
@@ -102,13 +111,12 @@ def runtime_version_check(configuration: dict[str, Any], health: dict[str, Any])
 def fixed_strategy_one_runtime_version_check(
     configuration: dict[str, Any],
 ) -> dict[str, Any]:
-    """Certify the ARTE-only Strategy 1 executor without contacting QMD."""
+    """Certify the selected ARTE-only numbered executor without contacting QMD."""
     from src.backend.backtest_fixed_v4_certification import (
         certify_strategy_one_v4_projection,
     )
-    from src.trading_runtime.strategy_one_contract import (
-        STRATEGY_ID as ONE_ID, STRATEGY_NUMBER,
-    )
+    from src.backend.backtest_strategy_one_configuration import is_numbered_fixed_configuration
+    from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
 
     strategy = dict(configuration.get("strategy") or {})
     selected = [(strategy.get("strategy_id"), strategy.get("revision"))]
@@ -116,24 +124,38 @@ def fixed_strategy_one_runtime_version_check(
                     for row in configuration.get("assignments") or []
                     if row.get("status") not in {"disabled", "completed", "error"})
     problems = []
-    if strategy.get("strategy_number") != STRATEGY_NUMBER or any(
-            identity != (ONE_ID, STRATEGY_NUMBER) for identity in selected):
-        problems.append("Selected Strategy and active assignments must all be immutable Strategy 1.")
+    number = strategy.get("strategy_number")
+    try:
+        if not is_numbered_fixed_configuration(configuration):
+            raise ValueError("A sealed numbered fixed strategy is required")
+        contract = resolve_numbered_fixed_strategy(strategy.get("strategy_id"), number)
+        if any(identity != (contract.strategy_id, number) for identity in selected):
+            raise ValueError(f"Selected Strategy {number} and assignments differ from the numbered release")
+    except (TypeError, ValueError, RuntimeError) as exc:
+        problems.append(str(exc))
     current = backend_source_fingerprint()
     if current != LOADED_BACKEND_FINGERPRINT:
         problems.append("Backend source changed after startup; restart the backend.")
+    if number == 2 and dict(strategy.get("numbered_release") or {}).get(
+            "approved_code_fingerprint") != current:
+        problems.append("Strategy 2 approved code fingerprint differs from the loaded source.")
     certificate = ""
     if not problems:
         try:
-            certificate = _loaded_strategy_one_projection(
-                certify_strategy_one_v4_projection, current)
+            if number == 1:
+                certificate = _loaded_strategy_one_projection(
+                    certify_strategy_one_v4_projection, current)
+            else:
+                from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
+                certificate = _loaded_numbered_projection(
+                    certify_numbered_fixed_v4_projection, current, number)
         except (OSError, RuntimeError, ValueError) as exc:
-            problems.append(f"Strategy 1 journal projection is incomplete: {exc}")
+            problems.append(f"Strategy {number} journal projection is incomplete: {exc}")
     return {
         "id": "runtime_versions", "label": "Current execution code and strategy",
         "status": "blocked" if problems else "ready", "required": True,
         "summary": " ".join(problems) if problems else
-                   "Strategy 1 executor and typed journal projection match the loaded source.",
+                   f"Strategy {number} executor and typed journal projection match the loaded source.",
         "evidence": {
             "strategy_id": strategy.get("strategy_id"),
             "strategy_revision": strategy.get("revision"),

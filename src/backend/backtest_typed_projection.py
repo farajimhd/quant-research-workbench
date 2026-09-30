@@ -176,7 +176,7 @@ def project_pending_backtest_v4_prefix(
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
         if (kind == ("command", "order")
-                and (expected_config or {}).get("strategy_revision") == 1
+                and (expected_config or {}).get("strategy_revision") in (1, 2)
                 and (expected_config or {}).get("strategy_id") ==
                     "early-squeeze-strategy"):
             from src.trading_runtime.arte_journal_projection import order_command_batch
@@ -190,7 +190,7 @@ def project_pending_backtest_v4_prefix(
                     or record.entity_id != request.cOID
                     or record.account_id != request.acctId
                     or payload.get("strategy_id") != "early-squeeze-strategy"
-                    or payload.get("strategy_revision") != 1
+                    or payload.get("strategy_revision") != expected_config["strategy_revision"]
                     or payload.get("intent_id") != source[1].intent_id
                     or payload.get("ticker") != request.ticker
                     or any(payload.get(key) != value
@@ -212,7 +212,7 @@ def project_pending_backtest_v4_prefix(
                 source_cursor=cursor, run_status="running",
                 command_id=record.entity_id, created_at=record.event_time,
                 recorded_at=record.recorded_at,
-                strategy_id="early-squeeze-strategy", strategy_revision=1,
+                strategy_id="early-squeeze-strategy", strategy_revision=expected_config["strategy_revision"],
                 strategy_intent_id=source[1].intent_id,
                 order_group_id=str(payload.get("order_group_id") or ""),
                 policy_version=policy_version,
@@ -385,6 +385,11 @@ def project_pending_backtest_v4_prefix(
             add_sidecar = journal.strategy_one_add_for_record(record.record_id)
             protection_source = journal.strategy_one_protection_for_record(
                 record.record_id)
+            session_exit_source = journal.numbered_session_exit_for_record(record.record_id)
+            if session_exit_source is not None:
+                if protection_source is not None:
+                    raise RuntimeError("Session exit has conflicting source authorities")
+                protection_source = session_exit_source
             if sum(value is not None for value in (
                     sidecar, add_sidecar, protection_source)) > 1:
                 raise RuntimeError("Strategy 1 intent has two source authorities")
@@ -395,7 +400,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("strategy_id") == "early-squeeze-strategy"
-                        and record.payload.get("strategy_revision") == 1
+                        and record.payload.get("strategy_revision") in (1, 2)
                         and record.payload.get("action") in {
                             "replace_protective_stop", "replace_profit_target"}
                         and protection_source is None):
@@ -456,7 +461,8 @@ def project_pending_backtest_v4_prefix(
                 or base.prior_batch_id != previous):
             raise ValueError("V4 projector changed the exclusive batch identity")
         if isinstance(unit, TypedJournalBatch):
-            if journal.strategy_one_protection_for_record(record.record_id) is not None:
+            if (journal.strategy_one_protection_for_record(record.record_id) is not None
+                    or journal.numbered_session_exit_for_record(record.record_id) is not None):
                 if ordinary:
                     units.append(_coalesce_unpublished(tuple(ordinary)))
                     ordinary.clear()

@@ -26,6 +26,7 @@ from src.trading_runtime.ibkr_schema import Execution, OrderRequest
 from src.trading_runtime.journal_contract import JournalRecord, canonical_json
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent, StrategySignal
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID as STRATEGY_ONE_ID, STRATEGY_NUMBER
+from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
 from src.trading_runtime.strategy_orders import canonical_runtime_order_raw
 
 
@@ -1554,7 +1555,7 @@ def order_command_batch(
     Exact Strategy 1 lineage may be derived from its typed source intent and
     this flat order; arbitrary metadata and broker algo parameters still fail.
     """
-    if ((strategy_id, strategy_revision) == (STRATEGY_ONE_ID, STRATEGY_NUMBER)
+    if (is_numbered_fixed_strategy(strategy_id, strategy_revision)
             and not request.raw):
         raise ValueError("Strategy 1 command requires exact typed intent lineage")
     if request.strategyParameters:
@@ -1564,7 +1565,7 @@ def order_command_batch(
         if (source_intent is None or source_intent.metadata
                 or not strategy_intent_record_id or not strategy_intent_content_hash
                 or not source_intent_batch_id
-                or (strategy_id, strategy_revision) != (STRATEGY_ONE_ID, STRATEGY_NUMBER)
+                or not is_numbered_fixed_strategy(strategy_id, strategy_revision)
                 or source_intent.intent_id != strategy_intent_id
                 or source_intent.ticker.upper() != request.ticker.upper()
                 or not order_group_id or not policy_version):
@@ -1623,7 +1624,7 @@ def order_command_batch(
                              + ",".join(mismatched[:8]))
         request = flat
     if emit_v4_lineage:
-        if (strategy_id, strategy_revision) != (STRATEGY_ONE_ID, STRATEGY_NUMBER):
+        if not is_numbered_fixed_strategy(strategy_id, strategy_revision):
             raise ValueError("V4 command lineage applies only to Strategy 1")
         if amended_oms_lineage and not v4_lineage_oms_record_id:
             raise ValueError("V4 OMS command requires one exact group revision")

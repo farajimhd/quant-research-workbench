@@ -197,6 +197,11 @@ class TradingRuntime:
             if config.mode != RunMode.BACKTEST or not isinstance(journal, BacktestMemoryJournal):
                 raise RuntimeError("Strategy 1 requires the typed fixed Backtest journal")
         self.config = config
+        from .numbered_fixed_strategy import is_numbered_fixed_strategy
+        if is_numbered_fixed_strategy(config.strategy_id, config.strategy_revision):
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            if config.mode != RunMode.BACKTEST or not isinstance(journal, BacktestMemoryJournal):
+                raise RuntimeError("Numbered fixed strategy requires typed Backtest")
         self.run_id = config.resolved_run_id()
         self.broker = broker
         self.strategy = strategy
@@ -896,6 +901,7 @@ class TradingRuntime:
         *, strategy_one_proposal: Any | None = None,
         strategy_one_add_proposal: Any | None = None,
         strategy_one_assignment_id: str | None = None,
+        numbered_exit_assignment_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -906,6 +912,20 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
+        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision == 2:
+            from .strategy_one_intent import require_no_replacement_capital
+            require_no_replacement_capital(evaluation.intents)
+            if any(intent.action not in {"enter_long", "add_long", "replace_protective_stop",
+                                         "replace_profit_target", "exit"}
+                   for intent in evaluation.intents):
+                raise ValueError("Strategy 2 action is outside its sealed contract")
+        if numbered_exit_assignment_id is not None:
+            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision != 2
+                    or not numbered_exit_assignment_id or event is not None
+                    or any(intent.action != "exit" or intent.metadata
+                           or intent.reason != "strategy_two_session_exit"
+                           for intent in evaluation.intents)):
+                raise ValueError("Strategy 2 session exit lacks typed source authority")
         if strategy_one_assignment_id is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
 
@@ -982,6 +1002,11 @@ class TradingRuntime:
                     intent=intent, account_id=account_id,
                     strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
+            elif numbered_exit_assignment_id is not None:
+                self.journal.append_numbered_session_exit_intent(
+                    intent=intent, account_id=account_id,
+                    strategy_id=self.config.strategy_id,
+                    strategy_revision=self.config.strategy_revision)
             else:
                 self.journal.append(
                     run_id=self.run_id,
@@ -1039,7 +1064,9 @@ class TradingRuntime:
                              if strategy_one_proposal is not None
                              else strategy_one_add_proposal.assignment_id
                              if strategy_one_add_proposal is not None
-                             else strategy_one_assignment_id)
+                             else strategy_one_assignment_id
+                             if strategy_one_assignment_id is not None
+                             else numbered_exit_assignment_id)
             if assignment_id is None:
                 decision, approved_intent = await self.portfolio.approve(
                     intent, account_id=account_id)
@@ -1158,6 +1185,54 @@ class TradingRuntime:
                 raise
         return results
 
+    async def advance_numbered_session_clock(self, boundary_ms: int) -> None:
+        """Cancel remaining acquisitions after the completed cutoff bucket."""
+        from .numbered_fixed_strategy import resolve_numbered_fixed_strategy
+        from src.backend.backtest_market_data import market_day_boundary
+        contract = resolve_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)
+        if self.config.mode != RunMode.BACKTEST or not contract.allows_session_exit:
+            raise ValueError("Session clock requires Strategy 2 fixed Backtest")
+        if contract.acquisition_cutoff(boundary_ms):
+            cutoff = 19_500_000 if boundary_ms <= 19_800_000 else 57_000_000
+            completed = getattr(self, "_numbered_completed_cutoffs", set())
+            if cutoff in completed:
+                return
+            await self.order_manager.cancel_numbered_session_acquisitions(
+                at=market_day_boundary(self.config.anchor_date, boundary_ms))
+            # This cache suppresses repeated scans, not recovery authority.
+            # A restored actor safely checks its first cutoff boundary again.
+            self._numbered_completed_cutoffs = completed | {cutoff}
+
+    async def submit_numbered_session_exit(self, financial, resolutions, boundary_ms):
+        """Submit once per live exit; fills belong to later broker liquidity."""
+        from .numbered_session_exit import numbered_session_exit_intent
+        from .numbered_fixed_strategy import resolve_numbered_fixed_strategy
+        from src.backend.backtest_market_data import market_day_boundary
+        contract = resolve_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)
+        if (self.config.mode != RunMode.BACKTEST or not contract.allows_session_exit
+                or not contract.liquidation_due(boundary_ms)):
+            raise ValueError("Strategy 2 liquidation is outside its session contract")
+        if financial.position_quantity <= 0 or financial.pending_exit or financial.pending_entry:
+            return
+        row = resolutions.get(100)
+        if (row is None or row.get("quote_valid") != 1
+                or row.get("ticker") != financial.ticker
+                or row.get("boundary_ms") != boundary_ms):
+            return
+        at = market_day_boundary(self.config.anchor_date, boundary_ms)
+        quote_us = row.get("quote_timestamp_us")
+        bid, ask = row.get("bid_int"), row.get("ask_int")
+        if (type(quote_us) is not int or not 0 <= int(at.timestamp() * 1_000_000) - quote_us <= 1_000_000
+                or type(bid) is not int or type(ask) is not int or not 0 < bid <= ask):
+            return
+        intent = numbered_session_exit_intent(
+            session_date=self.config.anchor_date, account_id=financial.account_id,
+            assignment_id=financial.assignment_id, ticker=financial.ticker,
+            boundary_ms=boundary_ms, quantity=float(financial.position_quantity), bid=bid / 10_000)
+        await self._execute_intents(StrategyEvaluation(intents=(intent,)),
+                                   financial.account_id, None,
+                                   numbered_exit_assignment_id=financial.assignment_id)
+
     async def submit_strategy_one_proposal(self, proposal: Any) -> list[dict[str, Any]]:
         """Route numbered entry evidence through the shared Portfolio/OMS path.
 
@@ -1172,13 +1247,17 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision != STRATEGY_NUMBER
+                or self.config.strategy_revision not in (1, 2)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneEntryProposal)
+                or proposal.strategy_number != self.config.strategy_revision
                 or proposal.account_id not in self.config.account_ids):
             raise ValueError("Strategy 1 submission requires its numbered Backtest runtime")
         intent = strategy_one_entry_intent(
             proposal, session_date=self.config.anchor_date)
+        from .numbered_fixed_strategy import numbered_fixed_strategy
+        if not numbered_fixed_strategy(proposal.strategy_number).entry_allowed(proposal.boundary_ms):
+            raise ValueError("Numbered entry is after its acquisition cutoff")
         if self.last_event_time is not None and intent.event_time < self.last_event_time:
             raise ValueError("Strategy 1 proposal precedes the completed broker boundary")
         return await self._execute_intents(
@@ -1194,13 +1273,17 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision != STRATEGY_NUMBER
+                or self.config.strategy_revision not in (1, 2)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneAddProposal)
+                or proposal.strategy_number != self.config.strategy_revision
                 or proposal.account_id not in self.config.account_ids):
             raise ValueError("Strategy 1 add requires its numbered Backtest runtime")
         intent = strategy_one_add_intent(
             proposal, session_date=self.config.anchor_date)
+        from .numbered_fixed_strategy import numbered_fixed_strategy
+        if not numbered_fixed_strategy(proposal.strategy_number).entry_allowed(proposal.boundary_ms):
+            raise ValueError("Numbered add is after its acquisition cutoff")
         if self.last_event_time is not None and intent.event_time < self.last_event_time:
             raise ValueError("Strategy 1 add precedes the completed broker boundary")
         return await self._execute_intents(
@@ -1219,13 +1302,14 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision != STRATEGY_NUMBER
+                or self.config.strategy_revision not in (1, 2)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or getattr(financial, "account_id", None) not in self.config.account_ids):
             raise ValueError("Strategy 1 protection needs its numbered Backtest runtime")
         intents = strategy_one_protection_intents(
             previous, transition, financial,
-            session_date=self.config.anchor_date, bid=bid, ask=ask)
+            session_date=self.config.anchor_date, bid=bid, ask=ask,
+            strategy_number=self.config.strategy_revision)
         target_confirmed = stop_confirmed = False
         for intent in intents:
             if self.last_event_time is not None and intent.event_time < self.last_event_time:

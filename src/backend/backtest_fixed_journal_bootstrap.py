@@ -39,6 +39,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.trading_runtime.arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, _V4PreflightSeal, _v4_preflight, load_typed_run_context,
@@ -606,8 +607,7 @@ def publish_and_assemble_fixed_v4_journal(
     # expected_config is the flat RunConfig projection emitted into the typed
     # journal, not the full Strategy Studio payload. The two authorities were
     # accidentally conflated here, blocking every real V4 launch.
-    if (expected_config.get("strategy_id") != STRATEGY_ID
-            or expected_config.get("strategy_revision") != STRATEGY_NUMBER
+    if (not is_numbered_fixed_strategy(expected_config.get("strategy_id"), expected_config.get("strategy_revision"))
             or run["evaluation_interval_ms"] != 100
             or run["market_plan_token"] != fixed_market_parent_plan.token
             or expected_market_start.tzinfo is None):

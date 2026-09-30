@@ -29,7 +29,7 @@ def test_fixed_runtime_holds_numbered_assignments_without_legacy_evaluation():
 def test_fixed_runtime_rejects_unpinned_or_duplicate_assignments():
     with pytest.raises(ValueError, match="numbered assignments"):
         AssignedStrategyOne([])
-    with pytest.raises(ValueError, match="numbered assignments"):
-        AssignedStrategyOne([_assignment(revision=2)])
+    with pytest.raises(ValueError, match="installed numbered"):
+        AssignedStrategyOne([_assignment(revision=3)])
     with pytest.raises(ValueError, match="duplicated"):
         AssignedStrategyOne([_assignment(), _assignment()])

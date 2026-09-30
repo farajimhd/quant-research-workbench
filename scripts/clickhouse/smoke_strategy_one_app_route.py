@@ -265,7 +265,8 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
                repeat_preflight: int = 1,
                profile_v7_seeds: bool = False,
                profile_entry: bool = False,
-               start_time: time = time(4)) -> None:
+               start_time: time = time(4),
+               configuration_revision_id: str = "") -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -283,6 +284,7 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
         mode="backtest", anchor_date=anchor, session_count=1,
         initial_cash=cash, start_time=start_time.isoformat(),
         end_time=end.isoformat(), tickers=list(selected),
+        configuration_revision_id=configuration_revision_id,
     )
     def load_preflight():
         if not profile_preflight:
@@ -373,6 +375,8 @@ def main() -> None:
                         help="whole minutes from --start-time; must end by 20:00 ET")
     parser.add_argument("--start-time", type=time.fromisoformat, default=time(4),
                         help="flat account start in ET; default 04:00; after-hours 16:00")
+    parser.add_argument("--configuration-revision-id", default="",
+                        help="exact published numbered release; default retains Strategy 1")
     parser.add_argument("--cash", type=float, default=100_000.0,
                         help="initial simulated cash; default matches the app")
     parser.add_argument("--apply", action="store_true",
@@ -410,7 +414,8 @@ def main() -> None:
             await _run(args.session, args.ticker, args.minutes, args.cash,
                        args.apply, args.profile_v7, args.profile_preflight,
                        args.repeat_preflight, args.profile_v7_seeds,
-                       args.profile_entry, args.start_time)
+                       args.profile_entry, args.start_time,
+                       args.configuration_revision_id)
     asyncio.run(probes())
 
 

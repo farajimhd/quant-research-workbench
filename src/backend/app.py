@@ -6667,7 +6667,8 @@ def trading_canvas_live_chart_history(
             strategy = dict(dict(
                 controller.definition.configuration_revision.get('payload') or {}
             ).get('strategy') or {})
-            if strategy.get('strategy_number') == 1:
+            from src.backend.backtest_strategy_one_configuration import is_numbered_fixed_configuration
+            if is_numbered_fixed_configuration({'strategy': strategy}):
                 pinned_market_plan = getattr(controller, '_fixed_market_plan', None)
                 if (not isinstance(pinned_market_plan, CertifiedMarketDayPlan)
                         or pinned_market_plan.token != controller.definition.market_data_plan.get('token')):

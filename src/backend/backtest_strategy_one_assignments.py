@@ -17,10 +17,14 @@ def certified_strategy_one_assignments(
     *, candidate_tickers: Sequence[str], account_keys: Sequence[str],
 ) -> list[dict[str, Any]]:
     """No QMD, Watchlist, external-signal, disk, or current-identity fallback."""
+    from src.backend.backtest_strategy_one_configuration import is_numbered_fixed_configuration
+    if not is_numbered_fixed_configuration(configuration):
+        raise ValueError("Assignments require a numbered fixed release")
     strategy = dict(configuration.get("strategy") or {})
+    number = strategy["strategy_number"]
     if (strategy.get("strategy_id") != STRATEGY_ID
-            or strategy.get("strategy_number") != STRATEGY_NUMBER
-            or strategy.get("revision") != STRATEGY_NUMBER):
+            or strategy.get("strategy_number") != number
+            or strategy.get("revision") != number):
         raise ValueError("Fixed Strategy 1 assignment needs its immutable identity")
     execution = dict(dict(strategy.get("parameters") or {}).get("execution") or {})
     tick = execution.get("tick_size")
@@ -37,7 +41,7 @@ def certified_strategy_one_assignments(
         key = (str(row.get("account_key") or ""), str(row.get("ticker") or ""))
         if (key in configured or key[0] not in accounts or key[1] not in candidates
                 or row.get("strategy_id", STRATEGY_ID) != STRATEGY_ID
-                or row.get("strategy_revision", STRATEGY_NUMBER) != STRATEGY_NUMBER):
+                or row.get("strategy_revision", number) != number):
             raise ValueError("Fixed Strategy 1 has a foreign or duplicate assignment")
         if row.get("status") in {"disabled", "completed", "error"}:
             raise ValueError("Fixed Strategy 1 cannot disable a certified candidate")
@@ -53,7 +57,7 @@ def certified_strategy_one_assignments(
             rows.append({
                 **source,
                 "assignment_id": source.get("assignment_id")
-                                 or f"strategy-1:{account}:{ticker}",
+                                 or f"strategy-{number}:{account}:{ticker}",
                 "account_key": account, "ticker": ticker, "conid": conid,
                 "status": source.get("status") or "watching",
                 "permissions": source.get("permissions") or dict(_PERMISSIONS),

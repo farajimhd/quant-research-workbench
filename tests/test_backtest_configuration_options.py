@@ -45,27 +45,30 @@ class BacktestConfigurationOptionsTests(unittest.TestCase):
 
     def test_only_numbered_release_is_listed_without_sqlite_candidate_reads(self):
         release = {"revision_id": "strategy-one-1:attempt", "content_hash": "a" * 64,
-                   "run_plan_id": "balanced-replay",
+                   "run_plan_id": "balanced-replay", "revision": 1, "label": "Strategy 1",
                    "available_run_plans": [{"run_plan_id": "balanced-replay",
                                             "name": "Strategy 1", "profile_id": "strategy-one-1",
                                             "strategy_id": "early-squeeze-strategy",
                                             "strategy_revision": 1}]}
         with patch.object(TradingJournal, "trading_configuration_candidate_summaries",
                           side_effect=AssertionError("SQLite candidate read")), patch(
-            "src.backend.backtest_strategy_one_configuration.selected_strategy_one_revision",
-            return_value=release) as selected:
+            "src.backend.backtest_strategy_one_configuration.selected_numbered_revision",
+            return_value=release) as selected, patch(
+            "src.backend.backtest_strategy_one_configuration.numbered_configuration_options",
+            return_value=[release, {**release, "revision_id": "strategy-one-2:attempt", "revision": 2, "label": "Strategy 2"}]):
             result = backtest_configuration_options()
         selected.assert_called_once_with(revision_id="")
         self.assertEqual(result["candidate_id"], release["revision_id"])
         self.assertEqual(result["run_plan_id"], "balanced-replay")
-        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(len(result["candidates"]), 2)
+        self.assertEqual(result["candidates"][1]["label"], "Strategy 2")
         self.assertEqual(result["candidates"][0]["label"], "Strategy 1")
         self.assertNotIn("payload", result["candidates"][0])
 
     def test_foreign_revision_fails_closed(self):
         with patch("src.backend.backtest_strategy_one_configuration.selected_strategy_one_revision",
                    side_effect=ValueError("Only the immutable Strategy 1 configuration can Backtest")):
-            with self.assertRaisesRegex(ValueError, "immutable Strategy 1"):
+            with self.assertRaisesRegex(ValueError, "immutable numbered"):
                 backtest_configuration_options("old")
 
     def test_journal_summaries_do_not_decode_configuration_payloads(self):

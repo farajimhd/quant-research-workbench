@@ -526,6 +526,20 @@ def _approved_strategy_one_oms_intent(
                 or not decision.get("policy_id")
                 or int(decision.get("policy_revision") or 0) < 1):
             raise ValueError("Strategy 1 OMS admission differs from typed source")
+        if approved_intent.action == "exit":
+            from zoneinfo import ZoneInfo
+            from datetime import datetime, time
+            from .numbered_session_exit import numbered_session_exit_intent
+            local = approved_intent.event_time.astimezone(ZoneInfo("America/New_York"))
+            delta = local - datetime.combine(local.date(), time(4), local.tzinfo)
+            boundary_ms = (delta.days * 86_400_000 + delta.seconds * 1_000 + delta.microseconds // 1_000)
+            expected_exit = numbered_session_exit_intent(
+                session_date=local.date(), account_id=account,
+                assignment_id=reservation["assignment_id"], ticker=approved_intent.ticker,
+                boundary_ms=boundary_ms, quantity=approved_intent.quantity,
+                bid=approved_intent.reference_price)
+            if state.group.get("strategy_revision") != 2 or expected_exit != approved_intent:
+                raise ValueError("Session exit recovery differs from sealed scalar source")
         metadata = {
             "assignment_id": reservation["assignment_id"],
             "portfolio_account_key": reservation["account_key"],
@@ -604,7 +618,7 @@ def reconstruct_strategy_one_oms_lineage(
     if (
             not isinstance(group, dict)
             or group.get("strategy_id") != STRATEGY_ID
-            or group.get("strategy_revision") != STRATEGY_NUMBER
+            or group.get("strategy_revision") not in (1, 2)
             or group.get("run_id") != protection_history.run_id
             or group.get("batch_id") not in protection_history.committed_batch_ids
             or source_intent.batch_id not in protection_history.committed_batch_ids
@@ -616,7 +630,9 @@ def reconstruct_strategy_one_oms_lineage(
             # A resistance add is a new, independently admitted OMS group.
             # Its immutable source intent is add_long, not the first entry's
             # enter_long. Both require the same exact typed lineage proof.
-            or source_intent.intent.action not in {"enter_long", "add_long"}
+            or source_intent.intent.action not in (
+                {"enter_long", "add_long", "exit"} if group.get("strategy_revision") == 2
+                else {"enter_long", "add_long"})
             or not state.orders or len(state.orders) > 65_535
             or len({order.cOID for order in state.orders}) != len(state.orders)):
         raise ValueError("Strategy 1 OMS lineage lacks one complete typed authority")
@@ -654,7 +670,7 @@ def reconstruct_strategy_one_oms_lineage(
             if (proof.sequence <= source_intent.sequence
                     or proof.payload.get("ticker") != source_intent.intent.ticker.upper()
                     or proof.payload.get("strategy_id") != STRATEGY_ID
-                    or proof.payload.get("strategy_revision") != STRATEGY_NUMBER
+                    or proof.payload.get("strategy_revision") != group["strategy_revision"]
                     or _target_proof_failures(view, order, proof)):
                 raise ValueError("Strategy 1 target amendment proof differs")
             proofs[f"target:{order.cOID}"] = proof
@@ -662,7 +678,7 @@ def reconstruct_strategy_one_oms_lineage(
         rebuilt.append(replace(order, raw={
             "canonical_run_id": protection_history.run_id,
             "canonical_strategy_id": STRATEGY_ID,
-            "canonical_strategy_revision": STRATEGY_NUMBER,
+            "canonical_strategy_revision": group["strategy_revision"],
             "canonical_metadata": metadata,
         }))
     return tuple(rebuilt)
@@ -674,12 +690,15 @@ def load_recovered_strategy_one_oms_lineage(
     max_transitions: int = 20_000, max_groups: int = 2_000,
     max_events: int = 100_000,
     protection_history: CompleteProtectionHistory | None = None,
+    strategy_number: int = 1,
 ) -> tuple[RecoveredStrategyOneOmsLineage, ...]:
     """Cold-join latest OMS groups to exact intents and complete protection.
 
     This returns diagnostic, fully typed lineage only. It does not reconstruct
     broker state or grant permission to resume an OMS actor or send an order.
     """
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    numbered_fixed_strategy(strategy_number)
     from src.trading_runtime.arte_intent_projection import (
         load_committed_strategy_intent_page,
     )
@@ -715,7 +734,7 @@ def load_recovered_strategy_one_oms_lineage(
     groups = load_latest_committed_oms_groups(
         client, prefix, page_size=page_size,
         max_transitions=max_transitions, allowed_accounts=allowed_accounts,
-        strategy_identity=(STRATEGY_ID, STRATEGY_NUMBER), require_tactic=True)
+        strategy_identity=(STRATEGY_ID, strategy_number), require_tactic=True)
     if len(groups) > max_groups:
         raise RuntimeError("Strategy 1 OMS cold group inventory exceeds bound")
     if not groups:

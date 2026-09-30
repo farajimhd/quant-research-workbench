@@ -28,36 +28,43 @@ class CertifiedStrategyOneConfiguration:
     token: str
     payload: dict[str, Any]
 
+    @property
+    def strategy_number(self) -> int:
+        return int(self.payload["strategy"]["strategy_number"])
+
     def revision(self) -> dict[str, Any]:
         """App-facing identity without consulting an old SQLite candidate."""
+        number = self.strategy_number
         plan = dict(self.payload.get("run_plan") or {})
         return {
-            "revision_id": f"strategy-one-{STRATEGY_NUMBER}:{self.attempt_id}",
-            "revision": STRATEGY_NUMBER,
-            "label": f"Strategy {STRATEGY_NUMBER}",
+            "revision_id": f"strategy-one-{number}:{self.attempt_id}",
+            "revision": number,
+            "label": f"Strategy {number}",
             "release_state": "test_candidate",
             "content_hash": self.payload_hash,
             "run_plan_id": str(plan.get("run_plan_id") or ""),
             "available_run_plans": [{
                 "run_plan_id": str(plan.get("run_plan_id") or ""),
-                "name": "Strategy 1",
+                "name": f"Strategy {number}",
                 "strategy_id": STRATEGY_ID,
-                "strategy_revision": STRATEGY_NUMBER,
-                "profile_id": "strategy-one-1",
+                "strategy_revision": number,
+                "profile_id": f"strategy-one-{number}",
             }],
             "payload": self.payload,
         }
 
 
-def certify_strategy_one_configuration(client: Any) -> CertifiedStrategyOneConfiguration:
+def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> CertifiedStrategyOneConfiguration:
     """Exactly one coverage-last release may own immutable Strategy number 1."""
+    if type(strategy_number) is not int or strategy_number not in (1, 2):
+        raise ValueError("Unsupported numbered fixed strategy")
     releases = [json.loads(line) for line in client.execute(
         "SELECT release_attempt_id,strategy_id,source_candidate_id,"
         "source_candidate_hash,payload_hash,node_count,node_hash "
-        f"FROM {RELEASE_TABLE} WHERE strategy_number={STRATEGY_NUMBER} "
+        f"FROM {RELEASE_TABLE} WHERE strategy_number={strategy_number} "
         "FORMAT JSONEachRow").splitlines() if line.strip()]
     if len(releases) != 1:
-        raise RuntimeError("Strategy 1 needs exactly one immutable typed configuration release")
+        raise RuntimeError(f"Strategy {strategy_number} needs exactly one immutable typed configuration release")
     release = releases[0]
     attempt = str(release.get("release_attempt_id") or "")
     if (release.get("strategy_id") != STRATEGY_ID
@@ -67,25 +74,37 @@ def certify_strategy_one_configuration(client: Any) -> CertifiedStrategyOneConfi
             or not 1 <= release["node_count"] <= 10_000
             or any(not _HEX.fullmatch(str(release.get(key) or ""))
                    for key in ("source_candidate_hash", "payload_hash", "node_hash"))):
-        raise RuntimeError("Strategy 1 typed release seal is invalid")
+        raise RuntimeError(f"Strategy {strategy_number} typed release seal is invalid")
     rows = [json.loads(line) for line in client.execute(
         "SELECT node_id,parent_node_id,child_key,child_ordinal,value_kind,"
         "text_value,int_value,float_value,bool_value "
-        f"FROM {NODE_TABLE} WHERE strategy_number={STRATEGY_NUMBER} "
+        f"FROM {NODE_TABLE} WHERE strategy_number={strategy_number} "
         f"AND release_attempt_id=toUUID('{attempt}') "
         "ORDER BY node_id FORMAT JSONEachRow").splitlines() if line.strip()]
     if len(rows) != release["node_count"] or node_hash(rows) != release["node_hash"]:
-        raise RuntimeError("Strategy 1 typed nodes differ from release seal")
+        raise RuntimeError(f"Strategy {strategy_number} typed nodes differ from release seal")
     payload = decode_nodes(rows)
     digest = sha256(canonical_json(payload).encode("utf-8")).hexdigest()
     strategy = dict(payload.get("strategy") or {})
     if (digest != release["payload_hash"]
             or strategy.get("strategy_id") != STRATEGY_ID
-            or strategy.get("revision") != STRATEGY_NUMBER
-            or strategy.get("strategy_number") != STRATEGY_NUMBER
+            or strategy.get("revision") != strategy_number
+            or strategy.get("strategy_number") != strategy_number
             or strategy.get("execution_interval") != "100ms"):
-        raise RuntimeError("Strategy 1 typed configuration is not the numbered 100ms contract")
-    token = sha256(canonical_json((STRATEGY_NUMBER, attempt, digest,
+        raise RuntimeError(f"Strategy {strategy_number} typed configuration is not the numbered 100ms contract")
+    if strategy_number == 2:
+        is_numbered_fixed_configuration(payload)
+        _validate_strategy_two_payload(payload)
+        source = certify_strategy_one_configuration(client)
+        from src.trading_runtime.strategy_two_release import derive_strategy_two_configuration
+        manifest = strategy["numbered_release"]
+        expected = derive_strategy_two_configuration(source,
+            approved_code_commit=manifest["approved_code_commit"],
+            approved_code_fingerprint=manifest["approved_code_fingerprint"],
+            approval_reference=manifest["approval_reference"])
+        if expected["payload"] != payload or release["source_candidate_id"] != expected["source_candidate_id"] or release["source_candidate_hash"] != expected["source_candidate_hash"]:
+            raise RuntimeError("Strategy 2 differs from its certified inheritance and approved policy")
+    token = sha256(canonical_json((strategy_number, attempt, digest,
                                    release["node_hash"])).encode("utf-8")).hexdigest()
     return CertifiedStrategyOneConfiguration(
         attempt, digest, release["node_hash"], release["source_candidate_id"],
@@ -114,3 +133,65 @@ def selected_strategy_one_revision(*, revision_id: str = "",
     if not selected_plan or run_plan_id and run_plan_id != selected_plan:
         raise ValueError("Backtest Run Plan differs from the Strategy 1 release")
     return revision
+
+
+def certify_strategy_one_configuration(client: Any) -> CertifiedStrategyOneConfiguration:
+    """Grandfathered Strategy 1 reader; its seal and identity remain unchanged."""
+    return certify_numbered_configuration(client, 1)
+
+
+def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
+    """Route legacy separately; number 2 requires its complete installed seal."""
+    strategy = dict(configuration.get("strategy") or {})
+    number = strategy.get("strategy_number")
+    if number is None:
+        return False
+    if type(number) is not int or number not in (1, 2):
+        raise ValueError("Unknown numbered fixed strategy")
+    if number == 1:
+        return True  # Existing full-release boundaries retain exact identity checks.
+    from src.trading_runtime.strategy_two_release import verify_strategy_two_manifest
+    verify_strategy_two_manifest(strategy)
+    return True
+
+
+def _validate_strategy_two_payload(payload: dict[str, Any]) -> None:
+    strategy = payload["strategy"]
+    if payload.get("assignments"):
+        raise ValueError("Strategy 2 release must not embed mutable assignments")
+    if set(strategy.get("parameters") or {}) != {"execution", "sizing"}:
+        raise ValueError("Strategy 2 parameters differ from inherited sealed inputs")
+    behavior = payload.get("strategy_profile", {}).get("lifecycle", {}).get("trading_behavior", {})
+    if behavior.get("eligible_sessions") != ["premarket", "afterhours"]:
+        raise ValueError("Strategy 2 profile differs from its sealed sessions")
+
+
+def selected_numbered_revision(*, revision_id: str = "", run_plan_id: str = "",
+                               client: Any | None = None) -> dict[str, Any]:
+    if not revision_id or revision_id.startswith("strategy-one-1:"):
+        kwargs = {"revision_id": revision_id, "run_plan_id": run_plan_id}
+        if client is not None:
+            kwargs["client"] = client
+        return selected_strategy_one_revision(**kwargs)
+    if not re.fullmatch(r"strategy-one-2:[0-9a-fA-F-]{36}", revision_id):
+        raise ValueError("Unknown immutable numbered configuration identity")
+    if client is None:
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+            return selected_numbered_revision(revision_id=revision_id, run_plan_id=run_plan_id, client=reader)
+    release = certify_numbered_configuration(client, 2)
+    revision = release.revision()
+    if revision_id != revision["revision_id"] or (run_plan_id and run_plan_id != revision["run_plan_id"]):
+        raise ValueError("Selected Strategy 2 differs from its immutable release")
+    return revision
+
+
+def numbered_configuration_options(client: Any | None = None) -> list[dict[str, Any]]:
+    if client is None:
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+            return numbered_configuration_options(reader)
+    numbers = [json.loads(line)["strategy_number"] for line in client.execute(
+        f"SELECT DISTINCT strategy_number FROM {RELEASE_TABLE} ORDER BY strategy_number FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    return [certify_numbered_configuration(client, number).revision() for number in numbers]

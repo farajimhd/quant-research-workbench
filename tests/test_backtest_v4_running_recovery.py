@@ -160,8 +160,10 @@ def test_v4_runtime_image_reads_one_fenced_actor_set(monkeypatch):
     monkeypatch.setattr(subject, "recover_portfolio_engine_state", recover)
     monkeypatch.setattr(subject, "load_v4_running_broker_image",
                         lambda *_a: expected_broker)
-    monkeypatch.setattr(subject, "load_v4_running_oms_image",
-                        lambda *_a: expected_oms)
+    def recover_oms(*_args, strategy_number):
+        assert strategy_number == 1
+        return expected_oms
+    monkeypatch.setattr(subject, "load_v4_running_oms_image", recover_oms)
     image = subject.load_v4_fixed_runtime_image(
         object(), recovery, anchor, (profile,))
     assert image.anchor is anchor

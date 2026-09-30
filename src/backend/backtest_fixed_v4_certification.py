@@ -53,6 +53,70 @@ _STRATEGY_ONE_INTENT = Path(__file__).parents[1] / "trading_runtime" / "strategy
 _STRATEGY_ONE_CONTRACT = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_contract.py"
 _STRATEGY_ONE_RUNTIME = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_runtime.py"
 _STRATEGY_ONE_EXECUTION = Path(__file__).with_name("backtest_strategy_one_execution.py")
+_NUMBERED_FIXED_CONTRACT = Path(__file__).parents[1] / "trading_runtime" / "numbered_fixed_strategy.py"
+
+
+def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    predicates = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "is_numbered_fixed_strategy"]
+    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2))"
+    if (len(predicates) != 1 or len(predicates[0].body) != 1
+            or ast.unparse(predicates[0].body[0]) != expected):
+        raise ValueError("Numbered fixed identity whitelist changed")
+    return sha256(source.encode()).hexdigest()
+
+
+def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
+    """Extend the full inventory proof with Strategy 2's explicit session lane."""
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    contract = numbered_fixed_strategy(strategy_number)
+    base = certify_strategy_one_v4_projection()
+    if strategy_number == 1:
+        return base
+    paths = (_NUMBERED_FIXED_CONTRACT, _STRATEGY_ONE_EXECUTION,
+             Path(__file__).parents[1] / "trading_runtime" / "runtime.py",
+             Path(__file__).parents[1] / "trading_runtime" / "order_management.py",
+             Path(__file__).parents[1] / "trading_runtime" / "numbered_session_exit.py")
+    sources = tuple(path.read_text(encoding="utf-8") for path in paths)
+    trees = tuple(ast.parse(source) for source in sources)
+    def named(tree, name):
+        nodes = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and node.name == name]
+        if len(nodes) != 1:
+            raise ValueError(f"Strategy 2 source lane missing or ambiguous: {name}")
+        return nodes[0]
+    def calls(node):
+        return {item.func.attr if isinstance(item.func, ast.Attribute) else item.func.id
+                for item in ast.walk(node) if isinstance(item, ast.Call)
+                and isinstance(item.func, (ast.Name, ast.Attribute))}
+    clock = named(trees[2], "advance_numbered_session_clock")
+    exit_source = named(trees[2], "submit_numbered_session_exit")
+    cutoff = named(trees[3], "cancel_numbered_session_acquisitions")
+    before = named(trees[1], "observe_numbered_boundary")
+    finish = named(trees[1], "finish_numbered_boundary")
+    intent = named(trees[4], "numbered_session_exit_intent")
+    if (not contract.allows_session_exit
+            or "cancel_numbered_session_acquisitions" not in calls(clock)
+            or "acquisition_cutoff" not in calls(clock)
+            or not {"numbered_session_exit_intent", "_execute_intents", "liquidation_due"} <= calls(exit_source)
+            or not {"_cancel_open_entry_roots", "reconcile"} <= calls(cutoff)
+            or calls(cutoff) & {"_record", "submit_order", "on_liquidity_bar"}
+            or "advance_numbered_session_clock" not in calls(before)
+            or "financially_active_tickers" not in calls(finish)
+            or not any(isinstance(node, ast.Raise) for node in ast.walk(finish))):
+        raise ValueError("Strategy 2 session command ordering proof failed")
+    intents = [node for node in ast.walk(intent) if isinstance(node, ast.Call)
+               and isinstance(node.func, ast.Name) and node.func.id == "StrategyIntent"]
+    keywords = {key.arg: ast.unparse(key.value) for key in intents[0].keywords} if len(intents) == 1 else {}
+    if (keywords.get("action") != "'exit'" or keywords.get("metadata") != "{}"
+            or keywords.get("reason") != "'strategy_two_session_exit'"):
+        raise ValueError("Strategy 2 liquidation source is not a normalized scalar exit")
+    return sha256(json.dumps({"strategy_number": 2, "inventory": base,
+        "identity": _certify_numbered_identity(), "sources": tuple(
+            sha256(source.encode()).hexdigest() for source in sources)},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 _LEGACY_PROTECTION_FAMILIES = {
     ("order_management", "partial_target_completion"): "_complete_partial_target",
     ("order_management", "profit_pocket_transition"): "apply_profit_pocket_transition",
@@ -229,7 +293,8 @@ def certify_strategy_one_legacy_protection_unreachable(
     if (keyword_values.get("strategy_id") != "config.strategy_id"
             or keyword_values.get("strategy_revision") != "config.strategy_revision"):
         raise ValueError("Strategy 1 identity is not forwarded to OMS")
-    guard = "if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):"
+    numbered_proof = _certify_numbered_identity()
+    guard = "if is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision):"
     returns = {
         "_complete_partial_target": "return False",
         "apply_profit_pocket_transition": "return []",
@@ -286,13 +351,12 @@ def certify_strategy_one_legacy_protection_unreachable(
                              for keyword in node.keywords)]
         if (len(emitters) != 1 or len(guards) != 1
                 or ast.unparse(guards[0].test) !=
-                "(self.strategy_id, self.strategy_revision) != "
-                "(STRATEGY_ID, STRATEGY_NUMBER)"
+                "not is_numbered_fixed_strategy(self.strategy_id, self.strategy_revision)"
                 or len(acknowledgements) != 1 or len(effective) != 1
                 or not acknowledgements[0].lineno < effective[0].lineno
                        < emitters[0].lineno):
             raise ValueError(f"Strategy 1 modification summary may be reachable: {family}")
-    return sha256(json.dumps({"version": 1, "sources": tuple(
+    return sha256(json.dumps({"version": 1, "numbered_identity": numbered_proof, "sources": tuple(
         sha256(source.encode()).hexdigest() for source in sources)},
         sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
