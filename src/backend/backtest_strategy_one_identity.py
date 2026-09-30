@@ -71,6 +71,9 @@ def certify_identity_plan(
         f"FROM {COVERAGE_TABLE} WHERE source_build_id='{build_id}' "
         f"AND session_date='{session_date}' FORMAT JSONEachRow").splitlines()
         if line.strip()]
+    if not coverage:
+        from src.backend.backtest_reference_identity import certify_reference_identity
+        return certify_reference_identity(market, client=client)
     if len(coverage) != 1:
         raise RuntimeError("Strategy 1 requires one committed dated identity attempt")
     seal = coverage[0]

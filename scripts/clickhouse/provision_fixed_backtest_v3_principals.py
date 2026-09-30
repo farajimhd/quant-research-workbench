@@ -134,7 +134,8 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
         PrincipalPlan("read", PRINCIPALS["read"],
                       terminal | MARKET_READ_TABLES |
                       frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES) |
-                      {SESSION_SEAL.name} |
+                      {SESSION_SEAL.name, 'strategy_one_identity_v2',
+                       'strategy_one_identity_coverage_v2'} |
                       PRICE_READ_TABLES |
                       frozenset(table.split(".", 1)[1] for table in (
                           CANDIDATE_TABLE, COVERAGE_TABLE,

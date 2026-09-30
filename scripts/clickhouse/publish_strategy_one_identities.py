@@ -20,7 +20,10 @@ sys.path.insert(0, str(REPO_ROOT))
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
-from pipelines.strategy_one.identity_publication import publish_identity
+from pipelines.strategy_one.reference_identity_publication import publish_reference_identity
+from src.trading_runtime.historical_reference_identity import (
+    load_reference_pin, verify_tables as verify_reference_tables, ReferenceIdentityError,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient
 from scripts.clickhouse.provision_strategy_one_candidate_producer import (
     PRINCIPAL, WORKSTATION_IPV4, _GRANTS, _credential, _grant_set,
@@ -34,6 +37,8 @@ def publish_session(*, session_date: str, build_id: str) -> str:
     market = _certified_plan(session_date=session_date, build_id=build_id)
     with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
         verify_tables(reader)
+        verify_reference_tables(reader)
+        pin = load_reference_pin(reader, market)
     password = _credential(account_exists=True)
     with closing(ClickHouseHttpClient(
             f"http://{WORKSTATION_IPV4}:18123", PRINCIPAL, password,
@@ -41,7 +46,8 @@ def publish_session(*, session_date: str, build_id: str) -> str:
         if (writer.execute("SELECT currentUser()").strip() != PRINCIPAL
                 or _grant_set(writer) != _GRANTS):
             raise RuntimeError("Strategy 1 identity producer lacks exact grants")
-        return publish_identity(writer, market)
+        with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+            return publish_reference_identity(writer, reader, market, pin)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,6 +74,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = publish_session(session_date=day, build_id=args.build_id)
     except Exception as exc:
+        if isinstance(exc, ReferenceIdentityError):
+            print(f"Identity publication blocked: {exc}", file=sys.stderr)
+            return 1
         frames = traceback.extract_tb(exc.__traceback__)
         stage = next((f"{frame.name}:{frame.lineno}" for frame in reversed(frames)
                       if frame.filename == __file__), "identity_dependency")

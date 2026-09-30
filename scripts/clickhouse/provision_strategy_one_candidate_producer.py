@@ -50,6 +50,9 @@ from src.trading_runtime.strategy_one_v7_interval_schema import (
     TABLES as V7_INTERVAL_TABLES,
     verify_tables as verify_v7_interval_tables,
 )
+from src.trading_runtime.historical_reference_identity import (
+    TABLES as REFERENCE_IDENTITY_TABLES, install_tables as install_reference_identity_tables,
+)
 
 
 URL = "http://DESKTOP-SAAI85T:18123"
@@ -62,10 +65,12 @@ _TABLES = (CANDIDATE_TABLE, COVERAGE_TABLE,
            ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE,
            EVIDENCE_TABLE, ENTRY_COVERAGE_TABLE,
            IDENTITY_TABLE, IDENTITY_COVERAGE_TABLE,
-           *V7_INTERVAL_TABLES)
+           *V7_INTERVAL_TABLES,
+           *(f"arte.{table.name}" for table in REFERENCE_IDENTITY_TABLES))
 _GRANTS = frozenset((privilege, table) for privilege in ("SELECT", "INSERT")
                     for table in _TABLES) | frozenset({
-    ("SELECT", "q_live.feature_tradable_universe_v1")})
+    ("SELECT", "q_live.feature_tradable_universe_v1"),
+    ("SELECT", "q_live.feature_tradable_universe_snapshot_v2")})
 _GRANT_PATTERN = re.compile(
     rf"GRANT ([A-Z ,]+) ON ((?:arte|q_live)\.[A-Za-z_][A-Za-z0-9_]*) TO {PRINCIPAL}\Z")
 
@@ -127,6 +132,7 @@ def provision(admin, *, credential, client_factory) -> None:
     verify_entry_evidence_tables(admin)
     verify_v7_interval_tables(admin)
     install_identity_tables(admin)
+    install_reference_identity_tables(admin)
     present = admin.execute(
         "SELECT count() FROM system.users "
         f"WHERE name='{PRINCIPAL}' FORMAT TabSeparated").strip()
