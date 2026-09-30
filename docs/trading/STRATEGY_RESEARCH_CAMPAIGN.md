@@ -739,3 +739,81 @@ predicates retain unbounded eligibility. A 316-test integration selection
 passed, including original releases, forged late sources, manager restoration,
 shared Portfolio/OMS routing, source-guard mutations and normalized journal
 recovery. Publication and four actual session backtests remain pending.
+
+### Strategy 11 publication, results and entry audit (2026-09-30)
+
+The preceding implementation checkpoints are superseded by completed publication
+and four full-session runs. Exact source commit:
+`6c660db9a9b18a7a7ee9a450f434d023c335057e`; configuration
+`strategy-one-11:895d462c-df55-41df-95a4-b066c14cc6e9`; payload SHA256
+`6af195caed51284948e8809e53d0b679ab79b8064ff1fa736f3733d05a150dc2`.
+All four start independently at $10,000, remain extended-hours only, exclude
+LGHL under the repaired certified scope, finish flat, and expose V4 review
+in the application. Backend/frontend managed refreshes completed after saves.
+
+| Session | Run ID | Net P&L | Change from 10 | Broker marked drawdown |
+|---|---|---:|---:|---:|
+| Aug 18 PM | ea12956f-315c-41d7-91ab-bd1fdf0263d4 | +1296.44093 | +501.36075 | 1207.076355 |
+| Aug 19 PM | 73f51391-9285-47db-9b3e-f88b3116b860 | -885.27167 | -52.98089 | 2378.30708 |
+| Aug 18 AH | 6ff8c4d9-a716-4d03-b0f3-21c81670746e | -502.15300 | -37.454735 | 974.737925 |
+| Aug 19 AH | ca9852eb-30b2-4548-aaca-a1374795fb98 | +714.47128 | 0 | 710.00055 |
+
+Total net +623.48754; two of four sessions exceed +500. Strategy 11 improves
+aggregate P&L but worsens observed marked drawdown in three sessions; it is
+not an accepted all-session solution. The asynchronous retained-mark limits
+above still apply. Four-session comparison SHA256:
+`9b418c6d27bfcb8adcbbd5752de8fd4ab183003b6b5c2dc1585878a61de2c779`.
+Reports are under the campaign runtime root `strategy11_reports_v4`;
+`strategy11-app-history-verification-v1.json` verifies application availability.
+
+The user's Strategy 10 VTIX example was audited before another rule change.
+On Aug 19 AH, proposal 17:42:45.2 ET filled 1,541 shares at 17:42:45.3 for
+2.36; stop 2.21 and third-overhead target 2.66 match certified producer facts.
+Completed 1s BOS occurred at 17:42:34, closing 2.285 above the confirmed
+2.27 swing high. The supported break persists; a green entry candle and
+clearing every visible V7 resistance are not requirements. Entry was inside
+an unchanged resistance band 2.34909–2.38835, consistent with those rules.
+
+The 161 earlier nearby static candidates lacked the required persisted
+late-HOD V7 gate, so their protection/entry was invalid; ten also closed at
+or above prior HOD. Completed 5s MACD was bearish at 17:42:40, briefly bullish
+at 17:42:45 (histogram +0.00005108), and bearish again at 17:42:50. The actual
+proposal passed all four completed MACD gates. The 22 subsequent static
+candidates through 17:42:49.8 occurred while holding the position; adds are
+disabled. Failure exit filled 17:43:00.1 at 2.28, net -138.69 including fees.
+This is evidence of late-entry weakness rather than an identified fill bug.
+
+Cold source checks recertified original candidate, activation, pivot, HOD,
+entry content, prior-day seed and causal V7 interval seals. Independent
+necessary gates, proposal clocks, nearby protection geometry and late-HOD
+admission reconcile. VTIX's Aug 18 seed has 116 levels; the covered stream
+includes 238 valid completed RTH price seconds before AH. Charts label
+candles/indicators by bucket start: at proposal the completed 1s sample ends
+17:42:45 and plots at 17:42:44; candle 17:42:45 is still forming.
+
+The acquisition audit covers all 69 Strategy 11 positions / 230 individual
+BUY fills plus the Strategy 10 VTIX fill. Zero configured-model violations
+were found in source/command/fill causality, later-bucket activation, original
+ask caps, successful reprices, initial protection, certified execution prices
+and volume budgets. Maximum first-fill delay is 5.1 seconds; partial fill
+delay is 31.9 seconds. Real exchange queues, sell/stop execution and independent
+recomputation of producer pivot derivation remain outside this audit.
+
+Authoritative artifacts under `D:/TradingML/runtimes/strategy-optimization-20260930`:
+
+- `strategy10-vtix-entry-audit.md`: concise timeline and audit limits.
+- `strategy10-vtix-market-entry-audit-v1.json`, SHA256
+  `014dbf74a74858cfdcc89b00b902cbeea01df70b9a076098e1114ab44084c372`.
+- `strategy10-vtix-source-geometry-audit-v3.json`, SHA256
+  `c873653c7c25d0773ad58687a4b0994e5378951204148f95f882b388ea325d8f`;
+  supersedes v2's nonspecific late-HOD reason labels.
+- `strategy11-entry-execution-audit-v4.json`, SHA256
+  `447dd2399bd2ad1c8710e3066588e196cd21582452bd3945e97603c35c26542a`;
+  v1–v3 retained but superseded after fixing audit decimal/clock conversion
+  and incorporating valid preceding limit reprices.
+
+No runtime trading rule changed during this audit. The next incremental
+hypothesis should address weak or late momentum admission, measured against
+all four sessions and big-move winners. The +500-per-session goal stays active;
+repeated development on these two days still requires new certified sessions
+for independent validation.
