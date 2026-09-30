@@ -130,6 +130,7 @@ def _terminal_attestation(client, normalized: str,
 def load_v4_terminal_review_page(client, run_id: str, *,
                                  after_sequence: int = 0,
                                  limit: int = 250,
+                                 metadata_only: bool = False,
                                  cache: AuditedSessionCache | None = None) -> dict:
     """Cold-audit once; recheck the terminal head before each bounded page."""
     try:
@@ -146,8 +147,8 @@ def load_v4_terminal_review_page(client, run_id: str, *,
     cursor = attestation["cursor"]
     if after_sequence > prefix.last_sequence:
         raise ValueError("Saved review cursor exceeds the verified journal")
-    page = load_typed_event_page(
-        client, prefix, after_sequence=after_sequence, limit=limit)
+    page = (() if metadata_only else load_typed_event_page(
+        client, prefix, after_sequence=after_sequence, limit=limit))
     if not _head_matches(client, normalized, prefix):
         raise RuntimeError("Saved review terminal head changed during page read")
     next_sequence = int(page[-1].event["sequence"]) if page else after_sequence
@@ -345,7 +346,7 @@ def load_v4_performance_report(client, run_id: str, *,
     This is a read-only presentation projection, not a journal or market writer.
     Fees must be final for every fill before net P&L can be shown.
     """
-    from src.trading_runtime.domain import Execution, InstrumentContract
+    from src.trading_runtime.domain import Execution, InstrumentContract, serialize_rows
     from src.trading_runtime.performance import (
         build_performance_report, derive_position_lifecycles,
         derive_trade_episodes,
@@ -481,6 +482,8 @@ def load_v4_performance_report(client, run_id: str, *,
         "verified_sequence": prefix.last_sequence,
         "report": report,
         "position_lifecycles": lifecycles,
+        # Position Manager is deliberately eager, independently of query tables.
+        "position_executions": serialize_rows(executions),
         "fill_count": len(executions),
         "fee_count": len(fee_by_execution),
     }

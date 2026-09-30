@@ -5,7 +5,7 @@ import { TradingWorkspace } from "./TradingWorkspace";
 import { BacktestV4SavedChart, SAVED_CHART_FRAMES, type ChartPage } from "./BacktestV4SavedChart";
 import { ChartsQuotesMarketLayout, type SavedChartsQuote, type ChartsQuotesLayoutSettings } from "./MarketMicrostructureContainers";
 import { MarketStatusBadge, historicalMarketStatus } from "./MarketStatusBadge";
-import { StrategyActivityContainer } from "./MarketScreenerContainers";
+import { SavedJournalQuery } from "./SavedJournalQuery";
 import { dateInTimeZone } from "../timeZones";
 import { strategyActionLabel, strategyExitReason } from "../strategyPresentationContract";
 import { normalizeTicker } from "../tickerNavigation";
@@ -15,22 +15,15 @@ import { canvasRuntimeWorkspaceStorageKey, readCanvasRegistry,
 import { TRADING_WORKSPACE_CONTAINERS, type WorkspaceContainerId } from "../tradingWorkspace";
 import type { PerformanceJournalReport } from "../../features/canvas/contracts";
 import { instanceSettings } from "../../features/canvas/settings";
-import { ExecutionsPreview, PositionsPreview, TradingDataTable, TradingJournalPreview } from "../../features/canvas/tradingPresentation";
+import { PositionsPreview, TradingDataTable, TradingJournalPreview } from "../../features/canvas/tradingPresentation";
 import { previewClockReadings, strategyReplayCanvasState } from "../../pages/CanvasConfigurationPage";
 import type { ChartPayload } from "./ChartPanel";
 
-type TradePage = {
-  schema_version: "strategy-one-v4-trade-history-page-v1";
-  fills: Array<Record<string, unknown>>;
-  commissions: Array<Record<string, unknown>>;
-  next_fill_sequence: number;
-  next_commission_sequence: number;
-  complete: boolean;
-};
 type PerformancePage = {
   schema_version: "strategy-one-v4-performance-report-v1";
   report: PerformanceJournalReport;
   position_lifecycles: Array<Record<string, unknown>>;
+  position_executions?: Array<Record<string, unknown>>;
   fill_count: number;
   fee_count: number;
 };
@@ -41,14 +34,6 @@ type ChartTradesPage = {
   verified_sequence: number;
   position_lifecycles: Array<Record<string, unknown>>;
   issued_intents: Array<Record<string, unknown>>;
-};
-type OrderPage = {
-  schema_version: "strategy-one-v4-order-history-page-v1";
-  commands: Array<Record<string, unknown>>;
-  transitions: Array<Record<string, unknown>>;
-  next_command_sequence: number;
-  next_transition_sequence: number;
-  complete: boolean;
 };
 type ContextPair = { schema_version: "strategy-one-v4-chart-context-pair-v1";
   run_id: string; ticker: string; daily: ChartPage; monthly: ChartPage };
@@ -153,46 +138,21 @@ export function SavedV4CanvasHeader({ initialPage, onClose, managementOpen, onMa
   </header>;
 }
 
-function EvidenceTable({ rows, columns, empty, onSymbolSelect }: {
-  rows: Array<Record<string, unknown>>; columns: Array<[string, string]>; empty: string;
-  onSymbolSelect?: (symbol: string) => void;
-}) {
-  return rows.length ? <TradingDataTable columns={columns.map(([key]) => key)}
-    defaultSort={columns[0][0]} onSymbolSelect={onSymbolSelect} rows={rows} searchPlaceholder="Search verified evidence…" />
-    : <p className="trading-disclosure">{empty}</p>;
-}
 
 /** Saved Backtest uses the certified Canvas container system, but never its
  * legacy SQLite preview readers. Every rendered fact is from a verified V4
  * ClickHouse prefix; unprojected legacy domains remain explicitly unavailable.
  */
+function EvidenceTable({ rows, columns, empty }: { rows: Array<Record<string, unknown>>; columns: Array<[string, string]>; empty: string }) {
+  return rows.length ? <TradingDataTable rows={rows} columns={columns.map(([key]) => key)} defaultSort={columns[0][0]} searchPlaceholder="Search verified evidence…" /> : <p>{empty}</p>;
+}
+
 export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: {
   runId: string; initialPage: V4Page; onClose: () => void;
   timing?: { totalSeconds: number; executionSeconds?: number; finalizationSeconds?: number };
 }) {
-  // Keep the certified Canvas interactive while paging the typed journal.
-  // Larger runs stay bounded and expose explicit manual continuation.
-  const [loadCompleteActivity, setLoadCompleteActivity] = useState(false);
-  const automaticEventLimit = loadCompleteActivity
-    ? Math.min(initialPage.verified_sequence, 100_000) : 5_000;
-  const [events, setEvents] = useState(initialPage.events);
-  const [nextSequence, setNextSequence] = useState(initialPage.next_sequence);
-  const [eventsComplete, setEventsComplete] = useState(initialPage.complete);
-  const [trade, setTrade] = useState<TradePage | null>(null);
-  const [fillRows, setFillRows] = useState<TradePage["fills"]>([]);
-  const [commissionRows, setCommissionRows] = useState<TradePage["commissions"]>([]);
-  const [tradeError, setTradeError] = useState("");
   const [performance, setPerformance] = useState<PerformancePage | null>(null);
   const [performanceError, setPerformanceError] = useState("");
-  const [orders, setOrders] = useState<OrderPage | null>(null);
-  const [orderError, setOrderError] = useState("");
-  const [orderCommands, setOrderCommands] = useState<OrderPage["commands"]>([]);
-  const [orderTransitions, setOrderTransitions] = useState<OrderPage["transitions"]>([]);
-  const [loadingOrders, setLoadingOrders] = useState(false);
-  const [eventError, setEventError] = useState("");
-  const [loadingTrades, setLoadingTrades] = useState(false);
-  const [loadingEvents, setLoadingEvents] = useState(false);
-  const eventRequestInFlight = useRef(false);
   const [managementOpen, setManagementOpen] = useState(false);
   const [savedLayout] = useState<CanvasWorkspaceState | null>(() =>
     readCanvasWorkspaceStateByStorageKey(V4_LAYOUT_KEY)
@@ -206,7 +166,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
       activity: instanceSettings(registry, "strategy_activity").strategy_activity,
     };
   });
-  const [activitySettings, setActivitySettings] = useState(presentationSettings.activity);
+  const [activitySettings] = useState(presentationSettings.activity);
 
   function openV4Ticker(value: string) {
     const symbol = normalizeTicker(value);
@@ -228,85 +188,6 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
     return () => controller.abort();
   }, [runId]);
 
-  useEffect(() => {
-    if (!performance && !performanceError) return;
-    const controller = new AbortController();
-    setLoadingOrders(true);
-    void savedReviewPage<OrderPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-order-history?limit=500`, controller.signal).then(page => {
-      if (controller.signal.aborted) return;
-      setOrders(page);
-      setOrderCommands(page.commands);
-      setOrderTransitions(page.transitions);
-    }).catch(error => {
-      if (!controller.signal.aborted) setOrderError(error instanceof Error ? error.message : String(error));
-    }).finally(() => { if (!controller.signal.aborted) setLoadingOrders(false); });
-    return () => controller.abort();
-  }, [runId, Boolean(performance), Boolean(performanceError)]);
-
-  useEffect(() => {
-    if (!performance && !performanceError) return;
-    const controller = new AbortController();
-    setLoadingTrades(true);
-    void savedReviewPage<TradePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-trade-history?limit=500`, controller.signal).then(page => {
-      if (controller.signal.aborted) return;
-      setTrade(page);
-      setFillRows(page.fills);
-      setCommissionRows(page.commissions);
-    }).catch(error => {
-      if (!controller.signal.aborted) setTradeError(error instanceof Error ? error.message : String(error));
-    }).finally(() => { if (!controller.signal.aborted) setLoadingTrades(false); });
-    return () => controller.abort();
-  }, [runId, Boolean(performance), Boolean(performanceError)]);
-
-  async function loadMoreTrades() {
-    if (!trade || trade.complete || loadingTrades) return;
-    setLoadingTrades(true);
-    setTradeError("");
-    try {
-      const page = await api<TradePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-trade-history?after_fill_sequence=${trade.next_fill_sequence}&after_commission_sequence=${trade.next_commission_sequence}&limit=500`, { timeoutMs: 60_000 });
-      setFillRows(current => [...current, ...page.fills]);
-      setCommissionRows(current => [...current, ...page.commissions]);
-      setTrade(page);
-    } catch (error) { setTradeError(error instanceof Error ? error.message : String(error)); }
-    finally { setLoadingTrades(false); }
-  }
-
-  async function loadMoreOrders() {
-    if (!orders || orders.complete || loadingOrders) return;
-    setLoadingOrders(true);
-    setOrderError("");
-    try {
-      const page = await api<OrderPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-order-history?after_command_sequence=${orders.next_command_sequence}&after_transition_sequence=${orders.next_transition_sequence}&limit=500`, { timeoutMs: 60_000 });
-      setOrderCommands(current => [...current, ...page.commands]);
-      setOrderTransitions(current => [...current, ...page.transitions]);
-      setOrders(page);
-    } catch (error) { setOrderError(error instanceof Error ? error.message : String(error)); }
-    finally { setLoadingOrders(false); }
-  }
-
-  async function loadMoreEvents() {
-    if (eventsComplete || eventRequestInFlight.current) return;
-    eventRequestInFlight.current = true;
-    setLoadingEvents(true);
-    setEventError("");
-    try {
-      const page = await api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=${nextSequence}&limit=500`, { timeoutMs: 60_000 });
-      if (!page.complete && (page.events.length === 0 || page.next_sequence <= nextSequence)) {
-        throw new Error("Verified journal page did not advance");
-      }
-      setEvents(current => [...current, ...page.events]);
-      setNextSequence(page.next_sequence);
-      setEventsComplete(page.complete);
-    } catch (error) { setEventError(error instanceof Error ? error.message : String(error)); }
-    finally { eventRequestInFlight.current = false; setLoadingEvents(false); }
-  }
-
-  useEffect(() => {
-    if (!eventsComplete && !loadingEvents && !eventError && events.length < automaticEventLimit) {
-      void loadMoreEvents();
-    }
-  }, [eventsComplete, loadingEvents, eventError, events.length, nextSequence, loadCompleteActivity]);
-
   const accounts = Object.entries(initialPage.financial_accounts).map(([account_id, account]) => ({ account_id, ...account }));
   const financialAccounts = accounts.map(account => ({
     account_id: account.account_id, currency: account.currency,
@@ -316,31 +197,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
     buying_power: money(account.buying_power, account.currency),
     expected_position_count: account.expected_position_count,
   }));
-  const feeByExecution = new Map(commissionRows.map(row => [display(row.execution_id), row]));
-  const fills: Array<Record<string, unknown>> = fillRows.map(row => ({ ...row, commission: feeByExecution.get(display(row.execution_id))?.commission ?? null }));
-  const canonicalFills = fills.map(row => ({ ...row,
-    source_event_time: utcJournalTime(row.source_event_time),
-    instrument: { instrument_id: Number(row.conid) ? `conid:${row.conid}` : `ticker:${row.ticker}`,
-      conid: row.conid, symbol: row.ticker },
-    side: row.side === "B" ? "BUY" : row.side === "S" ? "SELL" : row.side,
-    commission_status: feeByExecution.get(display(row.execution_id))?.status ?? "pending",
-  }));
-  const activityCategories = new Set(["strategy", "portfolio_management", "protection", "order_management", "execution", "broker", "command"]);
-  const activityRows = events.filter(({ event }) => activityCategories.has(event.category)).map(({ event, detail_family, detail }) => ({
-    run_id: runId, sequence: event.sequence, record_id: "",
-    event_time: utcJournalTime(event.event_time), recorded_at: utcJournalTime(event.recorded_at),
-    event_type: event.category === "strategy" ? "decision" : event.category,
-    ticker: detail?.ticker ?? "", action: detail?.action ?? event.entity_type,
-    state: detail?.status ?? detail?.state ?? "", reason: detail?.reason ?? "",
-    reason_code: detail?.reason_code ?? "", reference_price: detail?.reference_price ?? null,
-    strategy_id: initialPage.run.strategy_id ?? "",
-    strategy_revision: initialPage.run.strategy_revision ?? null,
-    source: detail_family ?? "", entity_id: event.entity_id,
-    event_evidence: { ...(detail ?? {}), journal_record_id: event.record_id ?? "", detail_family },
-  }));
-  const openLifecycles = (performance?.position_lifecycles ?? []).filter(row => row.status === "open");
-  const commandRows = orderCommands.map(row => ({ ...row, created_at: utcJournalTime(row.created_at) }));
-  const chartTicker = display(fillRows[0]?.ticker ?? events.find(item => typeof item.detail?.ticker === "string")?.detail?.ticker).replace("—", "");
+  const chartTicker = String((performance?.position_lifecycles[0]?.instrument as { symbol?: string } | undefined)?.symbol ?? "");
   // The certified journal is complete for fills/fees, not for every old
   // Canvas broker view. Keep the performance projection honest about that.
   const performanceTrading = performance ? {
@@ -358,7 +215,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
     stale_reason: "Verified fill-derived lifecycles; current marks, unrealized P&L, and order state are unavailable.",
     as_of: accounts[0] ? new Date(accounts[0].source_timestamp_ms).toISOString() : "",
     position_lifecycles: performance.position_lifecycles,
-    positions: [], orders: [], executions: trade?.complete ? canonicalFills : [],
+    positions: [], orders: [], executions: performance.position_executions ?? [],
     strategy_activity: [], activity: [],
   } : undefined;
   return <div className="canvas-config-page canvas-focus-page backtest-v4-canvas-review">
@@ -379,41 +236,18 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
       managementOpen={managementOpen} onManagementClose={() => setManagementOpen(false)}
       storageKeyOverride={V4_LAYOUT_KEY}
       renderContainer={definition => {
+        if (["strategy_activity", "orders", "fills"].includes(definition.id)) return <SavedJournalQuery
+          runId={runId} domain={definition.id === "strategy_activity" ? "activity" : definition.id as "orders" | "fills"}
+          strategyId={initialPage.run.strategy_id} strategyRevision={initialPage.run.strategy_revision}
+          asOf={new Date(dateInTimeZone(initialPage.market_cursor?.session_date || initialPage.run.session_date || "1970-01-01", "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()}
+          onTickerSelect={openV4Ticker} activitySettings={activitySettings} fillSettings={presentationSettings.fills} />;
         switch (definition.id) {
           case "performance_journal": return <>{performanceError ? <p role="alert">Performance unavailable: {performanceError}</p> : null}
             <TradingJournalPreview data={performanceTrading} onSymbolSelect={openV4Ticker} readOnly settings={presentationSettings.journal} />
           </>;
-          case "strategy_activity": return <section className="trading-preview">
-            {openLifecycles.length ? <div className="trading-disclosure" role="status">Open at saved cutoff: {openLifecycles.map(row => {
-              const symbol = String((row.instrument as { symbol?: string } | undefined)?.symbol ?? "");
-              return <button className="button secondary compact" key={String(row.episode_id ?? symbol)} onClick={() => openV4Ticker(symbol)} type="button">{symbol} · {String(row.current_quantity ?? row.quantity)} shares · Chart &amp; Quote</button>;
-            })}</div> : null}
-            {!eventsComplete ? <div className="trading-disclosure" role="status">Activity search covers only {events.length.toLocaleString()} loaded journal events, not the complete run. <button className="button secondary compact" disabled={loadingEvents} onClick={() => setLoadCompleteActivity(true)} type="button">{loadCompleteActivity ? "Loading activity…" : "Load more activity for search"}</button></div> : null}
-            <StrategyActivityContainer
-            asOf={new Date(dateInTimeZone(initialPage.market_cursor?.session_date || initialPage.run.session_date || "1970-01-01", "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()}
-            historicalRows={activityRows} historicalPage={{ complete: true }}
-            onSearchChange={query => { if (query) setLoadCompleteActivity(true); }}
-            onSettingsChange={patch => setActivitySettings(current => ({ ...current, ...patch }))}
-            onTickerSelect={openV4Ticker} runId={runId} settings={activitySettings} />
-            {!eventsComplete ? <p className="trading-disclosure" role="status">{events.length.toLocaleString()} verified journal events loaded{loadingEvents ? "; loading more…" : "; more available."}</p> : null}
-            {eventError ? <p role="alert">Journal page unavailable: {eventError}</p> : null}
-            {!eventsComplete && (events.length >= automaticEventLimit || eventError) ? <button className="button secondary compact" disabled={loadingEvents} onClick={() => void loadMoreEvents()} type="button">Load more events</button> : null}
-          </section>;
           case "positions": return positionTrading ? <PositionsPreview data={positionTrading}
             onSymbolSelect={openV4Ticker} openRowsInChart orderEvidenceComplete={false} settings={presentationSettings.positions} />
-            : <div className="trading-disclosure" role="status">{performanceError || tradeError || "Loading complete verified position lifecycles…"}</div>;
-          case "orders": return <section className="trading-preview trading-order-manager"><p className="trading-disclosure">{orders ? `${orderCommands.length.toLocaleString()} verified order commands. ` : "Loading verified order commands. "}{orderTransitions.length ? `${orderTransitions.length.toLocaleString()} state transitions are retained.` : "Lifecycle status is unavailable; commands are not assumed filled or working."}</p>
-            <EvidenceTable rows={commandRows} onSymbolSelect={openV4Ticker} columns={[["created_at", "Submitted"], ["ticker", "Ticker"], ["side", "Side"], ["order_type", "Type"], ["quantity", "Quantity"], ["limit_price", "Limit"], ["client_order_id", "Client order"]]} empty={loadingOrders ? "Loading verified order commands…" : "No verified order command."} />
-            {orderError ? <p role="alert">Orders unavailable: {orderError}</p> : null}
-            {orders && !orders.complete ? <button className="button secondary compact" disabled={loadingOrders} onClick={() => void loadMoreOrders()} type="button">Load more orders</button> : null}
-          </section>;
-          case "fills": return trade?.complete ? <ExecutionsPreview data={{ executions: canonicalFills,
-            stale: true, complete: false, provider: "arte_typed_journal_v4", mode: "backtest",
-            as_of: accounts[0] ? new Date(accounts[0].source_timestamp_ms).toISOString() : "",
-            stale_reason: "Complete verified fills and final fees; other broker domains are not projected." }} onSymbolSelect={openV4Ticker} settings={presentationSettings.fills} />
-            : <section className="trading-preview"><p className="trading-disclosure">{loadingTrades ? "Loading complete verified fill history…" : "Complete fill history is not loaded yet."}</p>
-              {tradeError ? <p role="alert">Fills unavailable: {tradeError}</p> : null}
-              {trade && !trade.complete ? <button className="button secondary compact" disabled={loadingTrades} onClick={() => void loadMoreTrades()} type="button">Load more fills</button> : null}</section>;
+            : <div className="trading-disclosure" role="status">{performanceError || "Loading complete verified position lifecycles…"}</div>;
           // The journal's Chart affordance must open the certified multi-panel
           // Charts & Quotes focus canvas, not introduce a second single-chart UI.
           case "chart": return chartTicker ? <div className="trading-preview">

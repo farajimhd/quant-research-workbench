@@ -1466,7 +1466,7 @@ export function SavedBacktestChartFocus({ runId, ticker }: { runId: string; tick
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=0&limit=100`, {
+    void api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=0&limit=100&metadata_only=true`, {
       signal: controller.signal, timeoutMs: 60_000,
     }).then(value => {
       if (controller.signal.aborted) return;

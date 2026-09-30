@@ -217,6 +217,7 @@ def _verified_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
 def load_typed_event_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
+    selected_sequences: tuple[int, ...] | None = None,
 ) -> tuple[TypedJournalEvent, ...]:
     """Read one typed page with one batched detail query per present family."""
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
@@ -226,11 +227,20 @@ def load_typed_event_page(
         raise ValueError("Typed event page requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Typed event page bounds are invalid")
+    if selected_sequences is not None and (
+            not selected_sequences or len(selected_sequences) > limit
+            or tuple(sorted(set(selected_sequences))) != selected_sequences
+            or any(type(value) is not int or not after_sequence < value <= prefix.last_sequence
+                   for value in selected_sequences)):
+        raise ValueError("Selected event sequences are invalid")
+    selection = ("AND sequence IN (" + ",".join(map(str, selected_sequences)) + ") "
+                 if selected_sequences is not None else "")
     event_columns = ",".join(column for column, _ in _CONTRACTS["trading_event_v1"].columns)
     events = _rows(client,
         f"SELECT {event_columns} FROM arte.trading_event_v1 "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND sequence>{after_sequence} AND sequence<={prefix.last_sequence} "
+        f"{selection}"
         f"{_committed_batch_filter(prefix)}"
         f"ORDER BY sequence LIMIT {limit} FORMAT JSONEachRow")
     if not events:
@@ -245,7 +255,8 @@ def load_typed_event_page(
         event = _verified_row("trading_event_v1", raw)
         sequence = int(event["sequence"])
         record_id = str(UUID(str(event["record_id"])))
-        if (event["run_id"] != prefix.run_id or sequence != previous + 1
+        if (event["run_id"] != prefix.run_id
+                or (sequence != previous + 1 if selected_sequences is None else sequence <= previous)
                 or sequence > prefix.last_sequence
                 or str(UUID(str(event["batch_id"]))) not in allowed_batches):
             raise RuntimeError("Typed event page differs from its committed prefix")
@@ -258,7 +269,9 @@ def load_typed_event_page(
         if family is not None:
             by_family.setdefault(family, set()).add(record_id)
         sealed_events.append((record_id, event, family))
-    if len(events) < limit and previous != prefix.last_sequence:
+    if selected_sequences is not None and tuple(int(row[1]["sequence"]) for row in sealed_events) != selected_sequences:
+        raise RuntimeError("Selected event page is missing committed rows")
+    if selected_sequences is None and len(events) < limit and previous != prefix.last_sequence:
         raise RuntimeError("Typed event page ends before the committed prefix")
     details: dict[tuple[str, str], dict[str, Any]] = {}
     for family, identities in by_family.items():

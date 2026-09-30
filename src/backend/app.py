@@ -5870,9 +5870,31 @@ async def trading_backtest_typed_financial_page(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/backtest/runs/{run_id}/v4-journal-query")
+async def trading_backtest_v4_journal_query(
+    run_id: str, domain: str = "activity", facets: bool = False,
+    ticker: str = "", event_type: str = "", start: str = "", end: str = "",
+    after_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=250, ge=1, le=500),
+) -> dict[str, Any]:
+    def read_query():
+        from contextlib import closing
+        from src.backend.backtest_v4_query import query_saved_journal
+        from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            return query_saved_journal(client, run_id, domain=domain, facets=facets,
+                                      ticker=ticker, event_type=event_type, start=start, end=end,
+                                      after_sequence=after_sequence, limit=limit)
+    try:
+        return await asyncio.to_thread(read_query)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/backtest/runs/{run_id}/v4-terminal-page")
 async def trading_backtest_v4_terminal_page(
     run_id: str,
+    metadata_only: bool = False,
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=250, ge=1, le=1000),
 ) -> dict[str, Any]:
@@ -5890,7 +5912,8 @@ async def trading_backtest_v4_terminal_page(
         )
         with closing(backtest_v4_operator_client_from_env()) as client:
             return load_v4_terminal_review_page(
-                client, normalized, after_sequence=after_sequence, limit=limit)
+                client, normalized, after_sequence=after_sequence, limit=limit,
+                metadata_only=metadata_only)
 
     try:
         return await asyncio.to_thread(read_page)
