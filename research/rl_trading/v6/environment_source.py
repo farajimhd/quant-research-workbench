@@ -43,7 +43,7 @@ def _execution_buckets(rows, origin):
         (~((pl.col('low_int') > 0) & (pl.col('high_int') >= pl.col('low_int'))).fill_null(False)))
     if invalid.height:
         raise ValueError('Malformed certified bucket extrema')
-    joined = rows.with_columns(
+    joined = rows.lazy().with_columns(
         (pl.col('quote_count').fill_null(0)==1).alias('has_quote'),
         *[pl.col(k).fill_null(0) for k in ('quote_timestamp_us','quote_valid',
             'bid_int','ask_int','bid_size','ask_size','event_count','last_event_us')],
@@ -57,7 +57,7 @@ def _execution_buckets(rows, origin):
         pl.when(pl.col('extremes_valid') == 1).then(pl.col('high_int')).alias('high'),
         pl.when(pl.col('extremes_valid') == 1).then(pl.col('low_int')).alias('low'))
     projected = joined.sort('close_us','ticker').select('ticker','close_us','has_quote',
-        'quote_timestamp_us','bid_int','ask_int','bid_size','ask_size','valid','high','low')
+        'quote_timestamp_us','bid_int','ask_int','bid_size','ask_size','valid','high','low').collect()
     return tuple(ExecutionBucket(t,clock,
         Quote(clock,quoted,bid/10000,ask/10000,bs,ass,valid) if present else None,
         high/10000 if high is not None else None,low/10000 if low is not None else None)
@@ -145,8 +145,8 @@ class ArteExecutionSource:
                      f'session_date=toDate({sql.literal(self.day)}) AND '
                      f'bucket_index BETWEEN {first} AND {last}')
             bar_scope = ','.join(f'({sql.literal(t)},toUUID({sql.literal(self.source["units"][str(self.day)][t]["bars"]["attempt_id"])}))' for t in group)
-            # One sparse joined projection, with explicit multiplicity witnesses.
-            # FULL ALL retains gaps and duplicates; ANY could hide source errors.
+            # FULL ALL retains gaps and duplicate keys. Presence witnesses avoid
+            # a window-count pass; repeated joined keys still fail validation.
             rows = self._frame(
                 'SELECT if(ifNull(q.quote_count,0)>0,q.ticker,b.ticker) AS ticker,'
                 'if(ifNull(q.quote_count,0)>0,q.bucket_index,b.bucket_index) AS bucket_index,'
@@ -155,11 +155,11 @@ class ArteExecutionSource:
                 'b.high_int,b.low_int,b.extremes_valid FROM '
                 '(SELECT ticker,bucket_index,quote_timestamp_us,quote_valid,bid_int,ask_int,'
                 'bid_size,ask_size,event_count,last_event_us,'
-                'count() OVER (PARTITION BY ticker,bucket_index) AS quote_count '
+                '1 AS quote_count '
                 f'FROM arte.liquidity_100ms_v1 WHERE {where} '
                 f'AND (ticker,attempt_id) IN ({quote_scope})) q FULL ALL JOIN '
                 '(SELECT ticker,bucket_index,high_int,low_int,extremes_valid,'
-                'count() OVER (PARTITION BY ticker,bucket_index) AS extrema_count '
+                '1 AS extrema_count '
                 f'FROM arte.bars_v1 WHERE {where} AND resolution_ms=100 '
                 f'AND (ticker,attempt_id) IN ({bar_scope})) b '
                 'ON q.ticker=b.ticker AND q.bucket_index=b.bucket_index '
