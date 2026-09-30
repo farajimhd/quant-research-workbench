@@ -176,7 +176,7 @@ def project_pending_backtest_v4_prefix(
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
         if (kind == ("command", "order")
-                and (expected_config or {}).get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9)
+                and (expected_config or {}).get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
                 and (expected_config or {}).get("strategy_id") ==
                     "early-squeeze-strategy"):
             from src.trading_runtime.arte_journal_projection import order_command_batch
@@ -405,7 +405,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("strategy_id") == "early-squeeze-strategy"
-                        and record.payload.get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9)
+                        and record.payload.get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
                         and record.payload.get("action") in {
                             "replace_protective_stop", "replace_profit_target"}
                         and protection_source is None):
@@ -480,7 +480,7 @@ def project_pending_backtest_v4_prefix(
                 raise RuntimeError("Failure source has no normalized assignment evidence")
             failure = project_followthrough_failure(witness, intent, source_entry_id,
                 run_id=batch.run_id, batch_id=batch.batch_id, parent_record_id=record.record_id,
-                assignment_id=assignment_id)
+                assignment_id=assignment_id, strategy_number=record.payload["strategy_revision"])
             unit = V4FollowThroughFailureBatch(batch, failure)
             sources[intent.intent_id] = (batch, intent)
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit

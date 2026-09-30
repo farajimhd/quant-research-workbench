@@ -627,3 +627,34 @@ selection passed, including manager routing, cold witness graph recovery,
 checkpoint publication and shared OMS partial-entry cancellation. Database
 layout/grant acceptance, publication and four certified session runs remain
 pending; these checks establish implementation behavior, not profitability.
+
+## Strategy 9 publication and dated scope repair
+
+Strategy 9 was committed and pushed as `adb2f3d2f64d19385f4125a8d4beb21e1cd43a8c`.
+Its immutable configuration is
+`strategy-one-9:a9249a01-2049-4745-a61c-8e245a9be127`, payload
+`76965e35cd33a9bfdd1f7d6ad1ad5b41efd18084d03d946c4524a0e273715293`.
+The new witness and manager checkpoint tables were installed through managed
+layout commands; exact runner grants and SSD placement passed before launch.
+The backend and frontend restarted successfully.
+
+Both PM launch attempts stopped before creating a run: a newly introduced
+dated LGHL exclusion changed global candidate/activation/HOD tokens, while
+occupied entry coverage still correctly pinned its original full-source
+tokens. This is a certification mismatch, not Strategy 9 P&L evidence.
+Preserve `strategy9-PM18-v1.log` and `strategy9-PM19-v1.log` as failed preflight
+attempts. No Strategy 9 session result exists.
+
+The user explicitly chose to apply LGHL exclusion and repair certification.
+Read-only candidate certification proves LGHL has zero candidate boundaries
+on both dates (empty-row hash
+`533f299d0a601074820f3339b1fd12347da5bdff14e3c2a700004ba67fd2693a`).
+The repair verifies the original full candidate, activation, HOD and entry
+products, then binds an exact empty-candidate scope projection and exclusion
+list into a distinct execution entry token. It neither overwrites producer
+coverage nor certifies missing structural data. Retained candidate arrays,
+activation prices and HOD contexts must match exactly; removal of nonempty
+candidate boundaries fails closed pending a separately certified product.
+Live read-only August 18 preflight now reports both V7 seed and entry evidence
+ready. Strategy 9 source remains immutable; Strategy 10 will pin this repaired
+source while inheriting the same early-failure trading behavior.

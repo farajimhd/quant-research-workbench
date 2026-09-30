@@ -42,7 +42,7 @@ class AncestryMemoryClient(MemoryClient):
         return super().execute(sql)
 
 
-def fixture():
+def fixture(strategy_number=9):
     witness = FollowThroughFailure(40000, 31100, 10.01, 9.89, 99400,
                                   -.02, -.01, 9.94, 9.95, 100000)
     financial = StrategyOneFinancialView('assignment-1', 'DU1', 'AAA',
@@ -57,13 +57,14 @@ def fixture():
         run_status='running', recorded_at=intent.event_time)
     row = project_followthrough_failure(witness, intent, source_id,
         run_id=base.run_id, batch_id=base.batch_id,
-        parent_record_id=base.events[0]['record_id'], assignment_id=financial.assignment_id)
+        parent_record_id=base.events[0]['record_id'], assignment_id=financial.assignment_id,
+        strategy_number=strategy_number)
     families = dict(_sealed_families(base))
     source = {**families['trading_strategy_intent_v1'][0],
         'record_id': str(UUID(int=10)), 'intent_id': source_id, 'action': 'enter_long',
         'reason': 'strategy_one_entry', 'reference_price': 10.01, 'invalidation_price': 9.89}
     source_event = {**base.events[0], 'record_id': source['record_id'], 'sequence': 1}
-    entry = {'parent_record_id': source['record_id'], 'strategy_number': 9,
+    entry = {'parent_record_id': source['record_id'], 'strategy_number': strategy_number,
              'assignment_id': financial.assignment_id, 'boundary_ms': 31000}
     return witness, intent, base, row, source, source_event, entry
 
@@ -101,11 +102,33 @@ def test_missing_or_duplicate_witness_fails_closed():
             seal_followthrough_rows(None, rows, intents, (source_event, *base.events), (entry,))
 
 
-def test_memory_retry_preserves_exact_witness():
-    witness, intent, base, _, *_ = fixture()
+@pytest.mark.parametrize('strategy_number', [9, 10])
+def test_failure_source_binds_its_exact_successor_number(strategy_number):
+    _, _, base, row, source, source_event, entry = fixture(strategy_number)
+    intents = (source, *dict(_sealed_families(base))['trading_strategy_intent_v1'])
+    assert seal_followthrough_rows(None, (row,), intents, (source_event, *base.events), (entry,))
+    other_number = 10 if strategy_number == 9 else 9
+    with pytest.raises(ValueError, match='original entry or exit'):
+        seal_followthrough_rows(None, ({**row, 'strategy_number': other_number},),
+            intents, (source_event, *base.events), (entry,))
+
+
+@pytest.mark.parametrize('strategy_number', [8, 11, True])
+def test_projector_rejects_unapproved_failure_consumers(strategy_number):
+    witness, intent, base, *_ = fixture()
+    with pytest.raises(ValueError, match='Strategy 9'):
+        project_followthrough_failure(witness, intent, str(UUID(int=77)),
+            run_id=base.run_id, batch_id=base.batch_id,
+            parent_record_id=base.events[0]['record_id'], assignment_id='assignment-1',
+            strategy_number=strategy_number)
+
+
+@pytest.mark.parametrize("strategy_number", [9, 10])
+def test_memory_retry_preserves_exact_witness(strategy_number):
+    witness, intent, base, _, *_ = fixture(strategy_number)
     journal = BacktestMemoryJournal(run_id=base.run_id)
     kwargs = dict(intent=intent, witness=witness, source_entry_intent_id=str(UUID(int=77)),
-                  account_id='DU1', strategy_id='early-squeeze-strategy', strategy_revision=9)
+                  account_id='DU1', strategy_id='early-squeeze-strategy', strategy_revision=strategy_number)
     record = journal.append_followthrough_exit(**kwargs)
     assert journal.followthrough_exit_for_record(record.record_id) == (intent, witness, str(UUID(int=77)))
     with pytest.raises(ValueError, match='immutable witness'):
@@ -113,7 +136,8 @@ def test_memory_retry_preserves_exact_witness():
 
 
 @pytest.mark.parametrize("compound_mode", [True, False])
-def test_compound_publishes_full_graph_and_cold_verifies_witness(compound_mode):
+@pytest.mark.parametrize("strategy_number", [9, 10])
+def test_compound_publishes_full_graph_and_cold_verifies_witness(compound_mode, strategy_number):
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
     from src.trading_runtime.arte_strategy_one_entry_journal import project_strategy_one_entry_evidence
@@ -123,7 +147,7 @@ def test_compound_publishes_full_graph_and_cold_verifies_witness(compound_mode):
     from src.trading_runtime.arte_followthrough_failure_v4 import load_followthrough_failure
     from tests.test_arte_journal_commit_v4 import attached_v4_client
     proposal = StrategyOneEntryProposal('assignment-1', 'DU1', 'AAA', 31000, 30000,
-        10.01, 9.89, 12., 'R4', .5, 30000, 'support', 9)
+        10.01, 9.89, 12., 'R4', .5, 30000, 'support', strategy_number)
     day = date(2026, 8, 18)
     original = strategy_one_entry_intent(proposal, session_date=day)
     witness, _, prior, _, *_ = fixture()
@@ -141,7 +165,7 @@ def test_compound_publishes_full_graph_and_cold_verifies_witness(compound_mode):
         run_id=first.run_id, batch_id=first.batch_id, parent_record_id=first.events[0]['record_id'])
     failure = project_followthrough_failure(witness, exit_intent, original.intent_id,
         run_id=second.run_id, batch_id=second.batch_id, parent_record_id=second.events[0]['record_id'],
-        assignment_id=financial.assignment_id)
+        assignment_id=financial.assignment_id, strategy_number=strategy_number)
     compound = coalesce_v4_units((V4StrategyOneEntryBatch(first, (entry,)),
                                  V4FollowThroughFailureBatch(second, failure)))
     client = attached_v4_client(AncestryMemoryClient())
@@ -155,6 +179,7 @@ def test_compound_publishes_full_graph_and_cold_verifies_witness(compound_mode):
     assert prefix.last_sequence == 2
     recovered, restored = load_followthrough_failure(client, prefix, second.events[0]['record_id'])
     assert restored == witness and recovered['source_entry_intent_id'] == original.intent_id
+    assert recovered['strategy_number'] == strategy_number
 
 
 @pytest.mark.parametrize('count', [1, 3, 512])

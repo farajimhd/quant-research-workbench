@@ -104,7 +104,7 @@ def publish_configuration(client: Any, keeper: Any,
     number = dict(dict(envelope.get("payload") or {}).get("strategy") or {}).get("strategy_number")
     if number == 1:
         payload, nodes = _verified_envelope(envelope)
-    elif type(number) is int and number in (2, 3, 4, 5, 6, 7, 8, 9):
+    elif type(number) is int and number in (2, 3, 4, 5, 6, 7, 8, 9, 10):
         payload, nodes = _verified_numbered_envelope(envelope)
         if number == 2:
             from pipelines.strategy_one.strategy_two_configuration import compile_strategy_two_configuration as compile_configuration
@@ -120,8 +120,10 @@ def publish_configuration(client: Any, keeper: Any,
             from pipelines.strategy_one.strategy_seven_configuration import compile_strategy_seven_configuration as compile_configuration
         elif number == 8:
             from pipelines.strategy_one.strategy_eight_configuration import compile_strategy_eight_configuration as compile_configuration
-        else:
+        elif number == 9:
             from pipelines.strategy_one.strategy_nine_configuration import compile_strategy_nine_configuration as compile_configuration
+        else:
+            from pipelines.strategy_one.strategy_ten_configuration import compile_strategy_ten_configuration as compile_configuration
         from src.trading_runtime.strategy_registry import numbered_strategy_parent
         source = certify_numbered_configuration(client, numbered_strategy_parent(number))
         manifest = payload["strategy"]["numbered_release"]
@@ -239,11 +241,11 @@ def _verified_numbered_envelope(envelope: Mapping[str, Any]) -> tuple[dict, tupl
     if set(envelope) != {"source_candidate_id", "source_candidate_hash", "payload_hash", "node_hash", "node_count", "payload"}:
         raise ValueError("Numbered configuration envelope shape differs")
     payload = envelope["payload"]
-    if not is_numbered_fixed_configuration(payload) or payload["strategy"]["strategy_number"] not in (2, 3, 4, 5, 6, 7, 8, 9):
-        raise ValueError("Numbered publisher requires sealed Strategy 2, 3, 4, 5, 6, 7, 8 or 9")
+    if not is_numbered_fixed_configuration(payload) or payload["strategy"]["strategy_number"] not in (2, 3, 4, 5, 6, 7, 8, 9, 10):
+        raise ValueError("Numbered publisher requires sealed Strategy 2, 3, 4, 5, 6, 7, 8, 9 or 10")
     _validate_strategy_two_payload(payload)
     manifest = payload["strategy"]["numbered_release"]
-    source_prefix = {2: "strategy-two-from", 3: "strategy-three-from", 4: "strategy-four-from", 5: "strategy-five-from", 6: "strategy-six-from", 7: "strategy-seven-from", 8: "strategy-eight-from", 9: "strategy-nine-from"}[payload["strategy"]["strategy_number"]]
+    source_prefix = {2: "strategy-two-from", 3: "strategy-three-from", 4: "strategy-four-from", 5: "strategy-five-from", 6: "strategy-six-from", 7: "strategy-seven-from", 8: "strategy-eight-from", 9: "strategy-nine-from", 10: "strategy-ten-from"}[payload["strategy"]["strategy_number"]]
     if (envelope["source_candidate_id"] != f"{source_prefix}:{manifest['source_revision_id']}"
             or envelope["source_candidate_hash"] != manifest["source_payload_hash"]):
         raise ValueError("Numbered source provenance differs")

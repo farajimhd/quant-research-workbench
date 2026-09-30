@@ -38,15 +38,17 @@ class V4FollowThroughFailureBatch:
 
 
 def project_followthrough_failure(witness, intent, source_entry_intent_id, *,
-                                run_id, batch_id, parent_record_id, assignment_id):
+                                run_id, batch_id, parent_record_id, assignment_id, strategy_number=9):
     validate_witness(witness)
     UUID(source_entry_intent_id)
+    if type(strategy_number) is not int or strategy_number not in (9, 10):
+        raise ValueError("Failure evidence requires Strategy 9 or its Strategy 10 successor")
     if intent.reason != REASON or intent.action != "exit" or intent.metadata or not assignment_id:
         raise ValueError("Failure witness requires a metadata-free Strategy 9 exit")
     return dict(record_id=str(uuid5(NAMESPACE_URL, f"{run_id}:{parent_record_id}:followthrough")),
         parent_record_id=parent_record_id, run_id=run_id,
         event_month=intent.event_time.astimezone(timezone.utc).strftime("%Y-%m-01"),
-        batch_id=batch_id, strategy_number=9, source_entry_intent_id=source_entry_intent_id,
+        batch_id=batch_id, strategy_number=strategy_number, source_entry_intent_id=source_entry_intent_id,
         assignment_id=assignment_id, **{f.name: getattr(witness, f.name) for f in fields(witness)})
 
 
@@ -160,7 +162,8 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
             if len(matches) != 1:
                 raise ValueError("Follow-through original entry has no exact typed evidence")
             source_child = matches[0]
-        if (row['strategy_number'] != 9 or source_child['strategy_number'] != 9
+        if (row['strategy_number'] not in (9, 10)
+                or source_child['strategy_number'] != row['strategy_number']
                 or row['assignment_id'] != source_child['assignment_id']
                 or row['run_id'] != parent['run_id'] or row['batch_id'] != parent['batch_id']
                 or row['event_month'] != parent['event_month']

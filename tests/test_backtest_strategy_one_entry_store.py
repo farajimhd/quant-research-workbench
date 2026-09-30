@@ -116,6 +116,68 @@ def test_entry_store_certifies_exact_rows_without_any_write(monkeypatch):
         result.lookup("AAA", 31_100)
 
 
+def _empty_exclusion_fixture(monkeypatch):
+    from src.backend import backtest_strategy_one_candidate_store as candidates_module
+    from src.backend import backtest_strategy_one_activation as activations_module
+    from src.backend import backtest_strategy_one_hod_store as hod_module
+    plans = list(_plans())
+    full = plans[1]
+    empty = replace(full.coverage[0], ticker="EMPTY", candidate_count=0)
+    full = replace(full, coverage=(*full.coverage, empty))
+    full = replace(full, token=candidates_module._token(full.source_build_id,
+        full.candidate_rule_digest, full.scan_query_sha256, full.coverage))
+    plans[1] = full
+    reader = Reader(plans)
+    scoped = list(plans)
+    scoped[1] = candidates_module.exclude_candidate_tickers(full, ("EMPTY",))
+    scoped[2] = replace(plans[2], token="b" * 64)
+    scoped[4] = replace(plans[4], token="e" * 64)
+    monkeypatch.setattr(candidates_module, "certify_candidate_plan", lambda *a, **k: full)
+    monkeypatch.setattr(activations_module, "load_strategy_one_activations", lambda *a, **k: plans[2])
+    monkeypatch.setattr(hod_module, "certify_hod_plan", lambda *a, **k: plans[4])
+    monkeypatch.setattr("src.backend.backtest_strategy_one_entry_store.verify_tables", lambda c: None)
+    return plans, scoped, reader
+
+
+def test_empty_exclusion_verifies_original_rows_and_binds_scoped_token(monkeypatch):
+    original, scoped, reader = _empty_exclusion_fixture(monkeypatch)
+    parent = certify_entry_evidence_plan(*original, client=reader)
+    result = certify_entry_evidence_plan(*scoped, client=reader)
+    assert result.candidates == parent.candidates and result.activations == parent.activations
+    assert result.coverage == parent.coverage and result.token != parent.token
+    assert result.lookup("AAA", 31_000) == reader.candidate
+    # Scope projection never rewrites or accepts the scoped token as producer authority.
+    reader.coverage["candidate_plan_token"] = scoped[1].token
+    with pytest.raises(RuntimeError, match="coverage differs"):
+        certify_entry_evidence_plan(*scoped, client=reader)
+
+
+def test_empty_exclusion_rejects_modified_retained_candidate_arrays(monkeypatch):
+    _, scoped, reader = _empty_exclusion_fixture(monkeypatch)
+    modified = replace(scoped[1].prepared[0], boundary_ms=np.array([31_100]))
+    scoped[1] = replace(scoped[1], prepared=(modified,))
+    with pytest.raises(RuntimeError, match="fully certified parent"):
+        certify_entry_evidence_plan(*scoped, client=reader)
+
+
+def test_empty_exclusion_rejects_modified_retained_activation_rows(monkeypatch):
+    _, scoped, reader = _empty_exclusion_fixture(monkeypatch)
+    scoped[2] = replace(scoped[2], rows=(replace(scoped[2].rows[0], price_int=100_001),))
+    with pytest.raises(RuntimeError, match="retained entry inputs"):
+        certify_entry_evidence_plan(*scoped, client=reader)
+
+
+def test_nonempty_exclusion_cannot_reuse_original_entry_product(monkeypatch):
+    from src.backend import backtest_strategy_one_candidate_store as candidates_module
+    original, scoped, reader = _empty_exclusion_fixture(monkeypatch)
+    full = original[1]
+    full = replace(full, coverage=(full.coverage[0], replace(full.coverage[1], candidate_count=1)))
+    monkeypatch.setattr(candidates_module, "certify_candidate_plan", lambda *a, **k: full)
+    with pytest.raises(RuntimeError, match="Nonempty candidate exclusion"):
+        certify_entry_evidence_plan(*scoped, client=reader)
+    assert reader.queries == []
+
+
 def test_entry_plan_reuses_only_stable_verified_parts(monkeypatch):
     from research.mlops import clickhouse
     from src.backend import backtest_market_plan_cache as cache_module

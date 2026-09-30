@@ -170,7 +170,7 @@ class BacktestMemoryJournal:
                     "replace_protective_stop", "replace_profit_target"}
                 or intent.metadata or not account_id
                 or strategy_id != STRATEGY_ID
-                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
+                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
                 or (intent.action == "replace_profit_target"
                     and (intent.reason != "ordinal_resistance_target"
                          or intent.profit_target_price is None
@@ -199,8 +199,8 @@ class BacktestMemoryJournal:
                                            strategy_revision):
         from src.trading_runtime.signals import StrategyIntent
         if (not isinstance(intent, StrategyIntent) or intent.action != "exit"
-                or intent.reason != ("strategy_two_session_exit" if strategy_revision == 2 else "strategy_three_session_exit" if strategy_revision == 3 else "strategy_four_session_exit" if strategy_revision == 4 else "strategy_five_session_exit" if strategy_revision == 5 else "strategy_six_session_exit" if strategy_revision == 6 else "strategy_seven_session_exit" if strategy_revision == 7 else "strategy_eight_session_exit" if strategy_revision == 8 else "strategy_nine_session_exit") or intent.metadata
-                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9)
+                or intent.reason != ("strategy_two_session_exit" if strategy_revision == 2 else "strategy_three_session_exit" if strategy_revision == 3 else "strategy_four_session_exit" if strategy_revision == 4 else "strategy_five_session_exit" if strategy_revision == 5 else "strategy_six_session_exit" if strategy_revision == 6 else "strategy_seven_session_exit" if strategy_revision == 7 else "strategy_eight_session_exit" if strategy_revision == 8 else "strategy_nine_session_exit" if strategy_revision == 9 else "strategy_ten_session_exit") or intent.metadata
+                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10)
                 or not account_id):
             raise ValueError("Session exit requires Strategy 2 normalized scalar source")
         with self._lock:
@@ -223,7 +223,7 @@ class BacktestMemoryJournal:
         from uuid import UUID
         validate_witness(witness)
         UUID(source_entry_intent_id)
-        if (strategy_revision != 9 or strategy_id != "early-squeeze-strategy"
+        if (type(strategy_revision) is not int or strategy_revision not in (9, 10) or strategy_id != "early-squeeze-strategy"
                 or not account_id or intent.action != "exit" or intent.reason != REASON
                 or intent.metadata or intent.reference_price != witness.bid):
             raise ValueError("Follow-through exit lacks exact numbered scalar authority")
@@ -239,7 +239,8 @@ class BacktestMemoryJournal:
             prior_intent = self._followthrough_intents.get(intent.intent_id)
             if prior_intent is not None:
                 prior_record, prior_source = prior_intent
-                if prior_source != source or prior_record.account_id != account_id:
+                if (prior_source != source or prior_record.account_id != account_id
+                        or prior_record.payload.get("strategy_revision") != strategy_revision):
                     raise ValueError("Follow-through retry changed immutable witness")
                 return prior_record
             record = self.append(run_id=self.run_id, category="strategy",

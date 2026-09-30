@@ -172,7 +172,8 @@ def test_numbered_proposal_uses_shared_runtime_portfolio_and_oms_path():
     runtime.journal.close()
 
 
-def test_nine_failure_exit_uses_typed_source_and_shared_assignment_admission():
+@pytest.mark.parametrize("number", (9, 10))
+def test_nine_failure_exit_uses_typed_source_and_shared_assignment_admission(number):
     from src.trading_runtime.strategy_followthrough_failure import FollowThroughFailure
     from src.trading_runtime.strategy_followthrough_exit import followthrough_exit_intent
     from src.trading_runtime.strategy_one_stateful import StrategyOneFinancialView
@@ -194,7 +195,7 @@ def test_nine_failure_exit_uses_typed_source_and_shared_assignment_admission():
     decision = SimpleNamespace(payload=lambda: {"status": "approved"})
     runtime = object.__new__(TradingRuntime)
     runtime.config = SimpleNamespace(mode=RunMode.BACKTEST,
-        strategy_id="early-squeeze-strategy", strategy_revision=9,
+        strategy_id="early-squeeze-strategy", strategy_revision=number,
         account_ids=("DU1",), anchor_date=session)
     runtime.run_id = str(UUID(int=122))
     runtime.journal = BacktestMemoryJournal(run_id=runtime.run_id)

@@ -146,6 +146,10 @@ def certify_entry_evidence_plan(
     """Fail closed on missing, duplicate, orphan, stale, or mismatched rows."""
     session, source = _identities(
         market, candidates, activations, pivots, hod, seeds)
+    if candidates.excluded_tickers:
+        return _certify_empty_candidate_exclusion_scope(
+            market, candidates, activations, pivots, hod, seeds,
+            client=client, batch_size=batch_size, max_rows=max_rows)
     if (type(batch_size) is not int or not 1 <= batch_size <= 256
             or type(max_rows) is not int or max_rows < 1
             or sum(len(unit[0].boundary_ms) for unit in source.values()) > max_rows):
@@ -334,3 +338,56 @@ def certify_entry_evidence_plan(
             and product_inventory_fingerprint(client, _ENTRY_TABLE_NAMES) == before):
         ENTRY_PLAN_CACHE.put(cache_key, before, result)
     return result
+
+
+def _certify_empty_candidate_exclusion_scope(
+    market, candidates, activations, pivots, hod, seeds, *, client,
+    batch_size, max_rows,
+):
+    """Verify the original producer seal before projecting an empty exclusion.
+
+    Removing a certified zero-candidate ticker changes global source tokens
+    but cannot change any entry fact. Occupied producer coverage is immutable.
+    A scope that removes actual candidate boundaries requires its own certified
+    producer product; this path never substitutes missing structural evidence.
+    """
+    from dataclasses import fields
+    import numpy as np
+    from src.backend.backtest_strategy_one_candidate_store import (
+        certify_candidate_plan, exclude_candidate_tickers,
+    )
+    from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
+    from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
+
+    full = certify_candidate_plan(
+        market, candidate_rule_digest=candidates.candidate_rule_digest,
+        through_boundary_ms=57_600_000, client=client)
+    removed = [row for row in full.coverage
+               if row.ticker in candidates.excluded_tickers]
+    if any(row.candidate_count != 0 for row in removed):
+        raise RuntimeError("Nonempty candidate exclusion requires separately certified entry products")
+    expected = exclude_candidate_tickers(full, candidates.excluded_tickers)
+    if (expected.token != candidates.token or expected.coverage != candidates.coverage
+            or len(expected.prepared) != len(candidates.prepared)
+            or any(not all(np.array_equal(getattr(left, field.name), getattr(right, field.name))
+                           if isinstance(getattr(left, field.name), np.ndarray)
+                           else getattr(left, field.name) == getattr(right, field.name)
+                           for field in fields(left))
+                   for left, right in zip(expected.prepared, candidates.prepared))):
+        raise RuntimeError("Excluded candidate scope differs from its fully certified parent")
+    original_activations = load_strategy_one_activations(market, full, client=client)
+    original_hod = certify_hod_plan(market, full, seeds, client=client)
+    if original_activations.rows != activations.rows or original_hod.contexts != hod.contexts:
+        raise RuntimeError("Empty candidate exclusion changed retained entry inputs")
+    original = certify_entry_evidence_plan(
+        market, full, original_activations, pivots, original_hod, seeds,
+        client=client, batch_size=batch_size, max_rows=max_rows)
+    # Bind both the original verified producer seal and the current explicit
+    # execution scope. No normalized source row or coverage token is rewritten.
+    token = sha256(json.dumps((
+        "strategy-one-empty-exclusion-entry-scope-v1", original.token,
+        candidates.token, activations.token, hod.token,
+        candidates.excluded_tickers), separators=(",", ":")).encode()).hexdigest()
+    return CertifiedEntryEvidencePlan(
+        original.source_build_id, original.session_date, original.coverage,
+        original.activations, original.candidates, token)
