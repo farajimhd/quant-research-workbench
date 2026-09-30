@@ -1,0 +1,187 @@
+"""Causal policy-driven V6 research environment with explicit fill scenarios."""
+from dataclasses import dataclass
+import math
+from research.rl_trading.v6.oms import BracketAccount, Quote
+from research.rl_trading.v6.account_observation import observe_account
+from research.rl_trading.v6.replay_metrics import ReplayJournal
+
+
+@dataclass(frozen=True)
+class ObservedOutcome:
+    listing: int
+    action: int
+    requested_fraction: float
+    filled_fraction: float
+    net_over_equity: float
+
+
+class BracketEnvironment:
+    """Only source evidence updates holdings. Actor receives completed marks.
+
+    `source` is an execution-only provider, never passed to the actor. Entry
+    is a first-following-100ms IOC attempt; no fresh quote means non-fill.
+    Manual/stop exits retry across observed quotes, preserving remainders.
+    """
+    def __init__(self, tickers, source, *, config=None, price_increment=.0001):
+        from research.rl_trading.v2.config import Config
+        self.account = BracketAccount(config=config or Config())
+        self.source, self.tickers = source, tuple(tickers)
+        self.by_ticker = {t:i for i,t in enumerate(tickers)}
+        if len(self.by_ticker)!=len(tickers) or price_increment<=0:
+            raise ValueError('Ambiguous market identity or research price grid')
+        self.price_increment = price_increment
+        self.entries, self.exits = {}, {}
+        self.clock_us = None
+        self.marks = {}
+        self.journal = ReplayJournal(self.account)
+        self.missing_bracket_extrema = 0
+        self.consumed_display = {}
+
+    def _quote_capacity(self, ticker, quote, side):
+        if not quote.fresh():
+            return quote,None
+        price = quote.ask if side=='ask' else quote.bid
+        key = (ticker,quote.quote_us,side,price)
+        consumed = self.consumed_display.get(key,0)
+        if side=='ask':
+            return Quote(quote.bucket_end_us,quote.quote_us,quote.bid,quote.ask,
+                         quote.bid_size,max(0.,quote.ask_size-consumed),quote.valid),key
+        return Quote(quote.bucket_end_us,quote.quote_us,quote.bid,quote.ask,
+                     max(0.,quote.bid_size-consumed),quote.ask_size,quote.valid),key
+
+    @property
+    def pending_entries(self):
+        return frozenset(self.entries)
+
+    @property
+    def pending_exits(self):
+        return frozenset(self.exits)
+
+    @property
+    def reserved_cash(self):
+        return math.fsum(order[2] for order in self.entries.values())
+
+    def observation(self, clock_us):
+        return observe_account(self.account,self.tickers,self.marks,
+                               close_us=clock_us,queue=self)
+
+    def _equity(self):
+        return self.account.marked_equity({t:p for t,(p,_) in self.marks.items()})
+
+    def advance(self, clock_us):
+        if self.clock_us is None:
+            self.clock_us = clock_us
+            return ()
+        if clock_us <= self.clock_us:
+            raise ValueError('Environment clocks must advance')
+        touched = set(self.entries)|set(self.account.positions)
+        buckets = self.source.buckets(self.clock_us,clock_us,touched) if touched else ()
+        outcomes = []
+        def outcome(ticker, action, fraction, before_orders, before_closed, equity):
+            new_orders = self.account.orders[before_orders:]
+            fills = sum(r['filled_shares'] for r in new_orders)
+            requested = sum(r['requested_shares'] for r in new_orders)
+            net = sum(r['net_pnl'] for r in self.account.closed[before_closed:])
+            outcomes.append(ObservedOutcome(self.by_ticker[ticker],action,fraction,
+                fills/max(requested,1),net/max(equity,1e-9)))
+        # First-bucket IOC attempts also exist when that bucket has no row.
+        arrivals = {(item.close_us,item.ticker):item for item in buckets}
+        for ticker,(decision,close,budget,fraction) in self.entries.items():
+            arrival = ((decision//100_000)+1)*100_000
+            if arrival <= clock_us and (arrival,ticker) not in arrivals:
+                from research.rl_trading.v6.environment_source import ExecutionBucket
+                arrivals[(arrival,ticker)] = ExecutionBucket(ticker,arrival,None,None,None)
+        for (clock,ticker), bucket in sorted(arrivals.items()):
+            before_orders,before_closed = len(self.account.orders),len(self.account.closed)
+            equity = self._equity()
+            order = self.entries.get(ticker)
+            if order is not None and clock == ((order[0]//100_000)+1)*100_000:
+                decision,close,budget,fraction = self.entries.pop(ticker)
+                quote = bucket.quote or Quote(clock,0,0,0,0,0,False)
+                quote,capacity_key = self._quote_capacity(ticker,quote,'ask')
+                filled = self.account.enter_long(ticker,decision_us=decision,decision_close=close,
+                                        budget=budget,quote=quote)
+                if capacity_key is not None:
+                    self.consumed_display[capacity_key] = self.consumed_display.get(capacity_key,0)+filled
+                outcome(ticker,1,fraction,before_orders,before_closed,equity)
+                continue  # Cannot trigger a child in entry bucket.
+            if ticker not in self.account.positions:
+                continue
+            position = self.account.positions[ticker]
+            exit_order = self.exits.get(ticker)
+            if exit_order is not None and bucket.quote is not None and clock>exit_order[0]:
+                quote,capacity_key = self._quote_capacity(ticker,bucket.quote,'bid')
+                if capacity_key is not None and quote.bid_size<=0:
+                    filled = 0
+                    self.account._record(action=exit_order[1],ticker=ticker,clock=clock,
+                        requested=position.shares,filled=0,price=None,fee=0.,
+                        reason='displayed_bid_already_consumed_at_quote_timestamp')
+                else:
+                    filled = self.account.exit_long(ticker,decision_us=max(exit_order[0],position.last_action_us),
+                        quote=quote,action=exit_order[1])
+                if capacity_key is not None:
+                    self.consumed_display[capacity_key] = self.consumed_display.get(capacity_key,0)+filled
+                outcome(ticker,2,1.,before_orders,before_closed,equity)
+                if ticker not in self.account.positions:
+                    self.exits.pop(ticker)
+                continue
+            if exit_order is not None or clock<=position.last_action_us:
+                continue
+            if bucket.high is None or bucket.low is None:
+                if position.stop is not None or position.target is not None:
+                    self.missing_bracket_extrema += 1
+                continue
+            stop = position.stop is not None and bucket.low <= position.stop
+            target = position.target is not None and bucket.high >= position.target
+            if target and stop:
+                self.account.target_bucket(ticker,clock_us=clock,price_level_volume_cap=0,stop_touched=True)
+                self.exits[ticker] = (clock,'stop_market')
+                outcome(ticker,2,1.,before_orders,before_closed,equity)
+            elif stop:
+                self.account.stop_trigger(ticker,clock_us=clock)
+                self.exits[ticker] = (clock,'stop_market')
+                outcome(ticker,2,1.,before_orders,before_closed,equity)
+            elif target:
+                capacity = self.source.target_capacity(ticker,clock,position.target)
+                self.account.target_bucket(ticker,clock_us=clock,price_level_volume_cap=capacity)
+                outcome(ticker,2,1.,before_orders,before_closed,equity)
+        self.clock_us = clock_us
+        self.consumed_display = {k:v for k,v in self.consumed_display.items() if k[1]>=clock_us-1_000_000}
+        return tuple(outcomes)
+
+    def submit(self, token, parameter, *, clock_us, order_index, holdings):
+        n,h = len(self.tickers),len(holdings)
+        if token==0:
+            return None
+        if token<=n:
+            ticker = self.tickers[token-1]
+            if ticker in self.entries or ticker in self.account.positions:
+                raise ValueError('Policy entry bypassed held/pending mask')
+            budget = max(0.,self.account.cash-self.reserved_cash)*parameter
+            self.entries[ticker] = (clock_us,self.marks[ticker][0],budget,parameter)
+            return None
+        action,slot = divmod(token-1-n,h)
+        ticker = self.tickers[int(holdings[slot])]
+        if action==0:
+            self.force_exit(ticker,clock_us)
+            return None
+        position = self.account.positions[ticker]
+        try:
+            raw = position.entry_price*math.exp(-parameter if action==1 else parameter)
+            price = math.floor(raw/self.price_increment+1e-9)*self.price_increment
+            if action==1:
+                self.account.set_stop(ticker,price=price,clock_us=clock_us)
+            else:
+                self.account.set_target(ticker,price=price,clock_us=clock_us)
+            filled = 1.
+        except (ValueError,OverflowError):
+            self.account._record(action='rejected_bracket',ticker=ticker,clock=clock_us,
+                requested=0,filled=0,price=None,fee=0.,reason='invalid_predicted_price_geometry')
+            filled = 0.
+        return ObservedOutcome(self.by_ticker[ticker],action+2,1.,filled,0.)
+
+    def force_exit(self, ticker, clock_us):
+        if ticker not in self.exits:
+            self.exits[ticker] = (clock_us,'exit_long')
+            self.account.positions[ticker].target = None
+            self.account.positions[ticker].stop_pending = True

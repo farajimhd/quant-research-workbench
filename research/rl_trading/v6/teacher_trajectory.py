@@ -136,7 +136,8 @@ def bind_intents(allocations: pl.DataFrame, brackets: pl.DataFrame,
 
 def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
                        initial_cash: float = INITIAL_CASH,
-                       hold_sample_seconds: int = HOLD_SAMPLE_SECONDS
+                       hold_sample_seconds: int = HOLD_SAMPLE_SECONDS,
+                       ranking_config=None,
                        ) -> tuple[tuple[TeacherDecision, ...],
                                   tuple[ExecutionOutcome, ...], dict]:
     """Build chronological idealized decisions with original-bankroll sizing.
@@ -182,6 +183,12 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
     skipped_cash = skipped_duplicate = 0
     max_open = 0
     events = iter(session.candle_events())
+    if ranking_config is not None:
+        from research.rl_trading.v6.market_attention import VolumeRanker
+        ranker = VolumeRanker(listings, ranking_config)
+    else:
+        ranker = None
+    ignored_rank_entries = 0
     event = next(events, None)
     if event is None:
         raise ValueError('Certified bank has no market event')
@@ -235,6 +242,9 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
             del holdings[ticker]
             del pending_sells[ticker]
         changed = np.asarray(session.bank.scalar[event.bank_row])
+        if ranker is not None:
+            ranker.observe(clock, event.listing_index, changed)
+            allowed_rank = set(ranker.select(clock).tolist())
         for listing_index, row in zip(event.listing_index, changed):
             if row[PRICE_VALID] != 1.:
                 continue
@@ -339,6 +349,9 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
             holding.exit_pending = True
             pending_sells[intent.ticker] = (holding, key, pre_exit_equity)
         for intent in entry_by_clock.get(clock, ()):
+            if ranker is not None and intent.listing_index not in allowed_rank:
+                ignored_rank_entries += 1
+                continue
             ticker = intent.ticker
             if ticker in holdings or ticker in pending_buys or (
                     ticker in pending_sells):
@@ -383,6 +396,7 @@ def compile_trajectory(session: PackedSession, intents: tuple[Intent, ...], * ,
         'target_setting_actions': sum(item.action == 4 for item in outcomes),
         'max_open_positions': max_open,
         'skipped_cash': skipped_cash,
+        'ignored_outside_rank_entries': ignored_rank_entries,
         'skipped_held_or_pending_ticker': skipped_duplicate,
         'rejected_no_later_market_clock': rejected_terminal,
         'unresolved_positions': len(holdings),

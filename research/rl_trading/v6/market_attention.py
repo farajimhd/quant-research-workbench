@@ -94,8 +94,9 @@ class RankedMarketAttention(nn.Module):
         self.norm = nn.LayerNorm(width)
         self.summary = nn.Linear(width, width)
 
-    def forward(self, history, seen, embeddings, selected):
-        rows = history[selected]  # [R,120,D], ordered oldest to latest.
+    def forward(self, history, seen, embeddings, selected, *, selected_history=None):
+        rows = history[selected] if selected_history is None else selected_history
+        # [R,120,D], ordered oldest to latest; sparse training graph only.
         counts = seen[selected].clamp(max=120)
         valid = torch.arange(120, device=rows.device)[None] >= (120-counts[:, None])
         if not len(selected) or (counts <= 0).any():

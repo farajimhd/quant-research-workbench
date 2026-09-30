@@ -32,6 +32,7 @@ def test_batched_sparse_updates_preserve_independent_listing_histories():
     encoder = ActualCandleEncoder(width=8)
     state = SparseCandleState.empty(encoder, 3, device=torch.device('cpu'),
                                    dtype=torch.float32)
+    base_pointer = state.history.data_ptr()
     scalar = torch.randn(5, 37)
     levels = torch.randn(5, 2, 5, 11)
     state.advance(encoder, torch.tensor([0, 2]), scalar[:2], levels[:2])
@@ -42,3 +43,9 @@ def test_batched_sparse_updates_preserve_independent_listing_histories():
         assert torch.allclose(state.embeddings()[listing], expected, atol=1e-5)
     state.embeddings().sum().backward()
     assert encoder.lag.grad is not None
+    assert state.history.data_ptr() == base_pointer
+    assert state.history.grad_fn is None
+    assert state._updates
+    state.detach()
+    assert not state._updates
+    assert state.history.data_ptr() == base_pointer

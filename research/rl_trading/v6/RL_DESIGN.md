@@ -5,8 +5,10 @@ The current attention implementation is `RankedBracketActorCritic`; the
 earlier convolution/mean-pooling actor remains an explicit baseline.
 `BracketActorCritic` adds a stochastic hybrid actor and a separate value head.
 `rl_training.update_on_policy` performs clipped PPO updates from actual policy
-rollouts. These components do not yet constitute a production OMS collector
-or an audited full-campaign launcher. Production training remains blocked.
+rollouts. `run_train` integrates teacher initialization, execution collection,
+chronological PPO updates, checkpoint/resume and online W&B replay ledgers.
+Production training remains blocked until the complete dataset and real
+execution/reconstruction launch audits pass.
 
 ## Architecture
 
@@ -22,21 +24,25 @@ tokens. A lightweight summary of every observed listing enters the tokens.
 There is no N-by-N market attention. Execution-outcome GRU carries history.
 
 Ranking uses the sum of V6 `expm1(log_volume)` over the last 15 clock seconds,
-not 15 observed bars and not dollar volume. `top_r=100`, `sort_secs=1`, eight
-tokens and four heads are configurable; benchmark 100/500 before deployment.
+not 15 observed bars and not dollar volume. `prepare_training` evaluates
+R=500/1000/2000 and chooses the smallest candidate covering at least 99% of
+original teacher entries on every training day (an explicit configurable
+engineering threshold). Development coverage is reported, not used to choose R.
+`sort_secs=1`, eight tokens and four heads are configurable.
 Held and pending listings are added to R, so R is neither an absolute compute
 cap nor a maximum position count. Ties use the certified identity axis.
 Refreshes never rekey action tokens or reset context. The attention query has
 no future keys because it receives only the completed ring; no future candle
 or teacher score can participate in ranking. Teacher actions outside the
-ranked universe fail explicitly, requiring a coverage audit or an explicit
-configuration change. They are not silently discarded or force-included.
+ranked universe are excluded only by the audited preparation step. It removes
+the entire entry and recompiles cash, holdings, exits and bracket actions;
+filtering loss rows alone would leave an impossible teacher account.
 
 The chronological teacher trainer resets ranking per session, updates it from
 the existing bank, tracks pending entry identities until outcomes, and invokes
 the attention policy. Quote-aware rollout collectors must likewise call
 `reset_market`, `observe_market`, and `set_pending` before decisions; this is
-not a replacement for the still-required full OMS collector integration.
+the same ranking and identity history contract is used in the collector.
 `benchmark_attention` measures synthetic forward/backward capacity and does
 not measure complete rollout throughput or profitability.
 
@@ -78,10 +84,23 @@ is a subsequent measured architecture comparison, not an assumed improvement.
    exit behavior; report representative train replay as in-sample. Only then
    perform one sealed heldout replay. No launch on incomplete audits.
 
-The implemented update core takes a chronological reconstruction callback;
-it does not certify an arbitrary callback or supply missing OMS integration.
-Full market collector, audit certificate binding and runnable production
-launcher must be integrated and validated before declaring RL training ready.
+`rollout.update_session` accumulates bounded chronological chunks and changes
+weights only after reconstruction finishes. The 120-candle bank is retained
+without copying the full listing history into each gradient graph. Resume is
+from a completed session boundary, including pending epoch validation.
+
+Execution reads pinned quote/extrema fields only for submitted or held tickers.
+Entries use the first following 100ms IOC bucket; missing quotes are nonfills.
+Passive targets require the certified execution-price sidecar; missing evidence
+fails closed. Displayed capacity cannot be reused at the same quote timestamp.
+This remains a modeled execution scenario, not proof of exchange fills.
+The 64-order-per-clock compute bound is recorded when reached and is not a
+position-count cap. Price rounding uses canonical 0.0001 research precision,
+not an asserted exchange tick. No sealed-test replay occurs in training.
+
+Runnable modules: `prepare_training --help`, `run_train --help`.
+`run_train --audit-only` performs no optimizer steps; it still requires the
+complete forward audit certificate. No incomplete-data training switch exists.
 
 ## Research basis and limits
 

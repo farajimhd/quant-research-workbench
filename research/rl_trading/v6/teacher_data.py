@@ -45,11 +45,11 @@ def _hash(path: Path) -> str:
 
 
 def load_teacher(root: Path, session: PackedSession, *,
-                 runtime_root: Path) -> tuple[tuple[TeacherDecision, ...],
+                 runtime_root: Path, audit_development: bool = False) -> tuple[tuple[TeacherDecision, ...],
                                               tuple[ExecutionOutcome, ...]]:
     """Bind hypothetical teacher actions to one certified train bank."""
     root, runtime = Path(root).resolve(), Path(runtime_root).resolve()
-    if (session.role != 'train' or not runtime.is_dir() or
+    if (session.role not in (('train','development') if audit_development else ('train',)) or not runtime.is_dir() or
             not root.is_relative_to(runtime) or root == session.root):
         raise ValueError('V6 training teacher needs a distinct runtime root')
     certificate = json.loads((root / 'complete.json').read_text())

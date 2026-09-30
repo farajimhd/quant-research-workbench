@@ -161,12 +161,33 @@ books fills at later buckets and retries partial exits while the source has
 certified evidence. The August 5 single-attempt diagnostic left eleven
 positions open; a bounded follow-up check found fresh bids for all eleven
 within 60 seconds. This is a diagnosis, not a completed replay result.
-No V6 price-action teacher certificate, quote-aware policy rollout, or
-environment-learning campaign is available yet; these modules must not be
-presented as a trained V6 model.
+Price-action teacher certificates are generated independently of quote fills.
+`environment.py` and `rollout.py` now collect actual policy trajectories and
+reconstruct chronological likelihoods for bounded-memory PPO. These modules
+must not be presented as a trained V6 model before a campaign is completed.
 `replay_metrics.py` separates realized P&L, unrealized marked P&L, fees,
 period-by-period marked P&L, drawdown, turnover, holding time, stale marks,
 and terminal open positions. `replay_artifacts.py` persists immutable order,
 closed-position, and equity ledgers bound to the checkpoint, bank and quote
 evidence. A sealed-test replay requires a prior development-selection
-certificate. The live quote/price-level policy rollout remains to be built.
+certificate. `environment_source.py` projects pinned quote/extrema evidence
+only for submitted/held tickers, and reads target price-level evidence lazily.
+
+## Audited training launcher
+
+Run `python -m research.rl_trading.v6.prepare_training --help` for the coverage
+audit and ranked-teacher preparation command. It tests R=500/1000/2000,
+chooses the smallest meeting 99% entry coverage on every training day, and
+recompiles the account after excluding entire outside-R entries. Original
+feature banks and teachers stay immutable. An incomplete campaign produces
+only a blocked audit state, never a training-ready certificate.
+
+Run `python -m research.rl_trading.v6.run_train --help` for the Python launcher.
+Required arguments are the complete dataset certificate, runtime run root,
+pinned early/late ARTE manifests and ledger. `--audit-only` checks causal
+encoding and real rollout reconstruction without optimizer updates. Normal
+launch performs teacher initialization followed by on-policy PPO, logs W&B
+metrics and immutable replay ledgers, and checkpoints completed sessions.
+Resume requires the same source/configuration and explicit `--resume`.
+Development replays and a representative in-sample replay run each epoch;
+August26 stays unopened. See `RL_DESIGN.md` for execution assumptions.

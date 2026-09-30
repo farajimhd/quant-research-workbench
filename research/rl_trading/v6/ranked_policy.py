@@ -29,6 +29,7 @@ class RankedBracketActorCritic(BracketActorCritic):
         if self.ranker is None or len(self.ranker.seen) != len(state.encoded):
             raise ValueError('Market must be reset to certified session population')
         self.ranker.observe(close_us, indices, scalar)
+        self.ranker.select(close_us)  # Identical refresh clock in audit/train/replay.
         self.candle_state, self.clock_us = state, close_us
 
     def set_pending(self, indices):
@@ -42,7 +43,8 @@ class RankedBracketActorCritic(BracketActorCritic):
             held=held_index.detach().cpu().tolist(), pending=self.pending_indices)
         selected = torch.as_tensor(selected_np, device=listing_embeddings.device, dtype=torch.long)
         enriched = self.market_attention(self.candle_state.history,
-            self.candle_state.seen, listing_embeddings, selected)
+            self.candle_state.seen, listing_embeddings, selected,
+            selected_history=self.candle_state.history_for(selected))
         # Keep [N,D] and the original token IDs. Sorting never rekeys holdings.
         full = listing_embeddings.index_copy(0, selected, enriched)
         self._critic_market = full

@@ -119,7 +119,7 @@ class BracketAccount:
     def set_stop(self, ticker: str, *, price: float, clock_us: int) -> None:
         position = self.positions[ticker]
         if (position.stop is not None or position.stop_pending or
-                clock_us <= position.last_action_us or not math.isfinite(price) or
+                clock_us < position.last_action_us or clock_us <= position.entry_us or not math.isfinite(price) or
                 not 0 < price < position.entry_price):
             raise ValueError('Stop can be set once, only after a confirmed fill')
         position.stop = price
@@ -130,7 +130,7 @@ class BracketAccount:
 
     def set_target(self, ticker: str, *, price: float, clock_us: int) -> None:
         position = self.positions[ticker]
-        if (position.target is not None or clock_us <= position.last_action_us or
+        if (position.target is not None or clock_us < position.last_action_us or clock_us <= position.entry_us or
                 not math.isfinite(price) or price <= position.entry_price):
             raise ValueError('Target can be set once, only after a confirmed fill')
         position.target = price
