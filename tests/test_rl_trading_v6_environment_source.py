@@ -69,3 +69,19 @@ def test_target_batch_certifies_and_reads_once(monkeypatch):
     source.price_plans={}; source.read_hash=sha256(); source.query_count=source.rows_read=0
     assert source.target_capacities(100000,{'A':10.5,'B':12.})=={'A':3.,'B':4.}
     assert calls==[('certify',('A','B')),('read',('A','B'))]
+
+
+def test_joined_read_obeys_select_only_contract():
+    from research.rl_trading.v1.arte_sql import _approved
+    from research.rl_trading.v6.environment_source import EXECUTION_SCHEMA
+    source=ArteExecutionSource.__new__(ArteExecutionSource)
+    source.origin=0; source.end_us=1_000_000; source.day=date(2026,7,31)
+    source.attempts={'A':'00000000-0000-0000-0000-000000000001'}
+    source.source={'build_id':'build','units':{'2026-07-31':{'A':{'bars':{'attempt_id':source.attempts['A']}}}}}
+    statements=[]
+    def read(statement,schema):
+        statements.append(_approved(statement))
+        return pl.DataFrame(schema=EXECUTION_SCHEMA)
+    source._frame=read
+    assert source._read_buckets(0,100000,['A'])==()
+    assert len(statements)==1 and 'FULL ALL JOIN' in statements[0]

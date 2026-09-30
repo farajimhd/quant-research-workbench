@@ -147,8 +147,8 @@ class ArteExecutionSource:
             # One sparse joined projection, with explicit multiplicity witnesses.
             # FULL ALL retains gaps and duplicates; ANY could hide source errors.
             rows = self._frame(
-                'SELECT coalesce(q.ticker,b.ticker) AS ticker,'
-                'coalesce(q.bucket_index,b.bucket_index) AS bucket_index,'
+                'SELECT if(ifNull(q.quote_count,0)>0,q.ticker,b.ticker) AS ticker,'
+                'if(ifNull(q.quote_count,0)>0,q.bucket_index,b.bucket_index) AS bucket_index,'
                 'q.quote_count AS quote_count,b.extrema_count AS extrema_count,q.quote_timestamp_us,q.quote_valid,'
                 'q.bid_int,q.ask_int,q.bid_size,q.ask_size,q.event_count,q.last_event_us,'
                 'b.high_int,b.low_int,b.extremes_valid FROM '
@@ -156,13 +156,13 @@ class ArteExecutionSource:
                 'bid_size,ask_size,event_count,last_event_us,'
                 'count() OVER (PARTITION BY ticker,bucket_index) AS quote_count '
                 f'FROM arte.liquidity_100ms_v1 WHERE {where} '
-                f'AND (ticker,attempt_id) IN ({quote_scope})) q FULL OUTER JOIN '
+                f'AND (ticker,attempt_id) IN ({quote_scope})) q FULL ALL JOIN '
                 '(SELECT ticker,bucket_index,high_int,low_int,extremes_valid,'
                 'count() OVER (PARTITION BY ticker,bucket_index) AS extrema_count '
                 f'FROM arte.bars_v1 WHERE {where} AND resolution_ms=100 '
                 f'AND (ticker,attempt_id) IN ({bar_scope})) b '
                 'ON q.ticker=b.ticker AND q.bucket_index=b.bucket_index '
-                "ORDER BY bucket_index,ticker SETTINGS join_use_nulls=1,join_default_strictness='ALL'", EXECUTION_SCHEMA)
+                'ORDER BY bucket_index,ticker', EXECUTION_SCHEMA)
             parts.append(rows)
         rows = pl.concat(parts) if parts else pl.DataFrame(schema=EXECUTION_SCHEMA)
         return _execution_buckets(rows, self.origin)
