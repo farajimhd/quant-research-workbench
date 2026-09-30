@@ -4,7 +4,7 @@ import asyncio
 import copy
 import math
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from time import monotonic
@@ -244,6 +244,19 @@ class PortfolioReconciliationDifference:
     attributed_quantity: float
     unattributed_quantity: float
     observed_at: datetime
+
+
+# These checkpoint rows contain only immutable scalar and datetime fields.
+# A fresh flat dict preserves the journal contract without dataclasses.asdict's
+# recursive deepcopy cost at every broker/Portfolio synchronization.
+_RESERVATION_FIELD_NAMES = tuple(row.name for row in fields(PortfolioReservation))
+_ALLOCATION_FIELD_NAMES = tuple(row.name for row in fields(PortfolioAllocationLot))
+_DIFFERENCE_FIELD_NAMES = tuple(
+    row.name for row in fields(PortfolioReconciliationDifference))
+
+
+def _flat_checkpoint_row(row: Any, names: tuple[str, ...]) -> dict[str, Any]:
+    return {name: getattr(row, name) for name in names}
 
 
 @dataclass(frozen=True, slots=True)
@@ -2365,17 +2378,17 @@ class PortfolioManagementEngine:
                 ),
                 "pending_entry_requests": dict(state.pending_entry_requests),
                 "reservations": [
-                    asdict(row)
+                    _flat_checkpoint_row(row, _RESERVATION_FIELD_NAMES)
                     for row in self.reservations.values()
                     if row.account_id == state.profile.account_id
                 ],
                 "allocations": [
-                    asdict(row)
+                    _flat_checkpoint_row(row, _ALLOCATION_FIELD_NAMES)
                     for row in self.allocations.values()
                     if row.account_id == state.profile.account_id
                 ],
                 "reconciliation": [
-                    asdict(row)
+                    _flat_checkpoint_row(row, _DIFFERENCE_FIELD_NAMES)
                     for row in self.differences.values()
                     if row.account_key == state.profile.account_key
                 ],
