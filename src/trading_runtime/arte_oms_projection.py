@@ -669,7 +669,7 @@ def reconstruct_strategy_one_oms_lineage(
 
 def load_recovered_strategy_one_oms_lineage(
     client: Any, prefix: VerifiedPrefix, *,
-    allowed_accounts: frozenset[str], page_size: int = 200,
+    allowed_accounts: frozenset[str], page_size: int = 500,
     max_transitions: int = 20_000, max_groups: int = 2_000,
     max_events: int = 100_000,
 ) -> tuple[RecoveredStrategyOneOmsLineage, ...]:
@@ -690,7 +690,7 @@ def load_recovered_strategy_one_oms_lineage(
     if (not isinstance(prefix, V4CommittedPrefix)
             or type(allowed_accounts) is not frozenset or not allowed_accounts
             or any(type(value) is not str or not value for value in allowed_accounts)
-            or type(page_size) is not int or not 1 <= page_size <= 200
+            or type(page_size) is not int or not 1 <= page_size <= 500
             or type(max_transitions) is not int or max_transitions < page_size
             or type(max_groups) is not int or not 1 <= max_groups <= max_transitions
             or type(max_events) is not int or max_events < 1):
@@ -753,7 +753,7 @@ def load_recovered_strategy_one_oms_lineage(
 
 
 def load_latest_committed_oms_groups(
-    client: Any, prefix: VerifiedPrefix, *, page_size: int = 200,
+    client: Any, prefix: VerifiedPrefix, *, page_size: int = 500,
     max_transitions: int = 20_000,
     allowed_accounts: frozenset[str] | None = None,
     strategy_identity: tuple[str, int] | None = None,
@@ -783,10 +783,23 @@ def load_latest_committed_oms_groups(
     first_sequences: dict[tuple[str, str], int] = {}
     after = 0
     transitions = 0
+    current_page_size = page_size
     while True:
-        page = load_committed_oms_group_state_page(
-            client, prefix, after_sequence=after, limit=page_size,
-            require_tactic=require_tactic)
+        try:
+            page = load_committed_oms_group_state_page(
+                client, prefix, after_sequence=after, limit=current_page_size,
+                require_tactic=require_tactic)
+        except RuntimeError as exc:
+            # A dense group can exceed the independently bounded child count.
+            # Retry the *same* cursor with fewer parents; never skip or relax
+            # verification. Other integrity errors must still fail closed.
+            if (current_page_size == 1 or not any(message in str(exc) for message in (
+                    "exceeds its total child budget",
+                    "exceeds its child budget",
+                    "exceeds its row budget"))):
+                raise
+            current_page_size = max(1, current_page_size // 2)
+            continue
         if not page:
             break
         for item in page:
@@ -808,7 +821,7 @@ def load_latest_committed_oms_groups(
             transitions += 1
             if transitions > max_transitions:
                 raise RuntimeError("OMS cold inventory exceeds its transition bound")
-        if len(page) < page_size:
+        if len(page) < current_page_size:
             break
     return tuple(sorted(latest.values(), key=lambda item: item.sequence))
 

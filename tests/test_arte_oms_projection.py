@@ -277,6 +277,36 @@ def test_latest_oms_cold_inventory_rejects_foreign_earlier_revision(monkeypatch)
             strategy_identity=("strategy-1", 1))
 
 
+def test_latest_oms_cold_inventory_splits_dense_page_without_skipping(monkeypatch):
+    from src.trading_runtime import arte_oms_projection as projection
+
+    identity = str(uuid4())
+    prefix = CommittedPrefix("live:oms", 4, identity, "bar:4", "running",
+                             (identity,))
+    calls = []
+    def page(_client, _prefix, *, after_sequence, limit, require_tactic):
+        calls.append((after_sequence, limit))
+        if limit > 2:
+            raise RuntimeError("Committed OMS page exceeds its total child budget")
+        return tuple(RecoveredOmsGroupState(
+            sequence, None, {"account_id": "DU1", "group_id": str(sequence)},
+            (), (), (), (), (), ())
+            for sequence in range(after_sequence + 1,
+                                  min(after_sequence + limit, 4) + 1))
+    monkeypatch.setattr(projection, "load_committed_oms_group_state_page", page)
+    rows = load_latest_committed_oms_groups(
+        object(), prefix, page_size=4, max_transitions=4)
+    assert [row.sequence for row in rows] == [1, 2, 3, 4]
+    assert calls == [(0, 4), (0, 2), (2, 2), (4, 2)]
+
+    def corrupt(*_args, **_kwargs):
+        raise RuntimeError("Committed OMS page has missing group states")
+    monkeypatch.setattr(projection, "load_committed_oms_group_state_page", corrupt)
+    with pytest.raises(RuntimeError, match="missing group states"):
+        load_latest_committed_oms_groups(
+            object(), prefix, page_size=4, max_transitions=4)
+
+
 def test_cold_oms_admission_joins_only_one_fenced_normalized_reservation() -> None:
     run_id, batch_id, record_id = "backtest:admission-read", str(uuid4()), str(uuid4())
     intent_id = "intent-1"
