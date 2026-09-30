@@ -249,8 +249,9 @@ def test_fixed_v4_runtime_installs_typed_images_without_legacy_recovery(monkeypa
 
 
 @pytest.mark.parametrize("stop_requested", [False, True])
+@pytest.mark.parametrize("after_hours", [False, True])
 def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
-    monkeypatch, stop_requested,
+    monkeypatch, stop_requested, after_hours,
 ):
     from src.backend import backtest_strategy_one_execution
     from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
@@ -260,10 +261,14 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
 
     controller = object.__new__(ReplayRunController)
+    start_ms = 43_200_000 if after_hours else 0
+    terminal_ms = 57_600_000 if after_hours else 19_800_000
     controller.definition = SimpleNamespace(
         execution_interval="100ms",
-        requested_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc),
-        session_end=datetime(2026, 8, 18, 13, 30, tzinfo=timezone.utc))
+        requested_start=datetime(2026, 8, 18, 20 if after_hours else 8,
+                                 tzinfo=timezone.utc),
+        session_end=(datetime(2026, 8, 19, tzinfo=timezone.utc) if after_hours
+                     else datetime(2026, 8, 18, 13, 30, tzinfo=timezone.utc)))
     controller._journal = BacktestMemoryJournal(run_id=RUN)
     controller._strategy = AssignedStrategyOne([StrategyAssignment(
         "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
@@ -277,26 +282,31 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     controller._data_authority = {}
     controller._record_data_authority = lambda key, value: controller._data_authority.update(
         {key: value})
-    controller._fixed_through_boundary_ms = lambda: 19_800_000
+    controller._fixed_through_boundary_ms = lambda: terminal_ms
     controller._publish = AsyncMock()
     controller._after_event = AsyncMock()
     controller._finish = AsyncMock()
     controller._wait_until_active = AsyncMock()
     controller._process_strategy_frame = AsyncMock(side_effect=AssertionError(
         "legacy frame evaluation"))
-    work = StrategyOneBoundaryWork(100, (("AAA", {100: {}}),), ())
+    work = StrategyOneBoundaryWork(start_ms + 100, (("AAA", {100: {}}),), ())
 
     async def sparse_session(**kwargs):
-        assert kwargs["through_boundary_ms"] == 19_800_000
+        assert kwargs["through_boundary_ms"] == terminal_ms
+        assert kwargs["flat_start_boundary_ms"] == start_ms
+        assert kwargs["start_after_boundary_ms"] == 0
+        assert kwargs["resume_evidence_state"] is None
+        assert kwargs["resume_manager_state"] is None
         assert kwargs["assignments"] == controller._strategy.assignments()
         def advance_empty(boundary):
-            assert boundary == 19_800_000
+            assert boundary == terminal_ms
         kwargs["manager_ready"](SimpleNamespace(evidence=SimpleNamespace(
             advance_empty_boundary=advance_empty)))
         controller._stop_requested = stop_requested
         await kwargs["before_boundary"](work)
         assert controller.current_time == datetime(
-            2026, 8, 18, 8, 0, 0, 100_000, tzinfo=timezone.utc)
+            2026, 8, 18, 20 if after_hours else 8, 0, 0, 100_000,
+            tzinfo=timezone.utc)
         await kwargs["finish_boundary"](work)
 
     monkeypatch.setattr(backtest_strategy_one_execution,
@@ -311,7 +321,7 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
         v7_intervals=object(),
         entry=object(), prices=object()))
     assert controller._source_cursor == ({
-        "session_date": DAY, "boundary_ms": 19_800_000, "sequence": 1}
+        "session_date": DAY, "boundary_ms": terminal_ms, "sequence": 1}
         if not stop_requested else {})
     assert controller.processed_events == (0 if stop_requested else 1)
     assert controller._data_authority["fixed_market_data"]["frame_spool"] is False

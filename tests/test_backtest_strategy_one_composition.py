@@ -38,20 +38,28 @@ def test_execution_ticks_are_pinned_and_consistent_across_accounts():
         subject.pinned_strategy_one_ticks((assignment("DU1", 0),))
 
 
-@pytest.mark.parametrize("resume", [False, True])
-def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, resume):
+@pytest.mark.parametrize("mode", ["open", "resume", "flat"])
+def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, mode):
+    resume = mode == "resume"
+    flat = mode == "flat"
+    cutoff = 43_200_000
     market = CertifiedMarketDayPlan(
         ExecutionInterval.fixed(100), "build", "d" * 64,
         ("2026-08-18",), ("AAA",), (), (100,), "m" * 64)
     candidates = CertifiedCandidatePlan(
         "build", "r" * 64, "s" * 64, (),
         (SimpleNamespace(ticker="AAA"),), "c" * 64)
-    activations = CertifiedActivationPlan((), "a" * 64)
+    old_activation = SimpleNamespace(ticker="AAA", boundary_ms=cutoff - 100)
+    stale_activation = SimpleNamespace(ticker="AAA", boundary_ms=30_000)
+    activations = CertifiedActivationPlan(
+        (stale_activation, old_activation), "a" * 64)
     entry = CertifiedEntryEvidencePlan("build", "2026-08-18", (), (), (), "e" * 64)
     prices = PriceLevelPlan("build", (), "p" * 64)
     calls = []
-    fact_a, fact_b = (SimpleNamespace(boundary_ms=30_000),
-                      SimpleNamespace(boundary_ms=31_000))
+    fact_a, fact_b = (SimpleNamespace(ticker="AAA", boundary_ms=cutoff,
+                                    episode_start_ms=30_000),
+                      SimpleNamespace(ticker="AAA", boundary_ms=cutoff + 100,
+                                      episode_start_ms=cutoff - 100))
     full_gate = StrategyOneStaticGate(
         (fact_a, fact_b), np.array([0, 0], dtype=np.uint8),
         np.array([0, 1], dtype=np.int64))
@@ -70,7 +78,7 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
 
     def build(_market, _survivors, *, activation_source_candidates, **_kwargs):
         assert activation_source_candidates is candidates
-        assert _kwargs["start_after_boundary_ms"] == (30_000 if resume else 0)
+        assert _kwargs["start_after_boundary_ms"] == (cutoff if resume or flat else 0)
         calls.append("scheduler_built")
         return scheduler
 
@@ -82,16 +90,32 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
         calls.append("seed_preloaded")
 
     async def restore(state, *, financially_active_tickers):
-        assert state.boundary_ms == 30_000
+        assert state.boundary_ms == cutoff
         assert financially_active_tickers == ("AAA",)
         calls.append("evidence_restored")
 
+    async def observe_activation(row):
+        assert row is old_activation
+        calls.append("activation_warmed")
+
+    def preload_activation_seconds(clocks, **_kwargs):
+        if flat:
+            assert clocks == (("AAA", cutoff - 100), ("AAA", cutoff + 100))
+        calls.append("seconds_preloaded")
+
+    def advance_empty_boundary(boundary):
+        assert boundary == cutoff
+        calls.append("flat_clock")
+
     monkeypatch.setattr(subject, "StrategyOneCausalEvidence",
                         lambda **_kwargs: SimpleNamespace(
-                            v7=SimpleNamespace(preload_seeds=preload_seeds),
+                            v7=SimpleNamespace(preload_seeds=preload_seeds,
+                                preload_activation_seconds=preload_activation_seconds),
+                            observe_activation=observe_activation,
+                            advance_empty_boundary=advance_empty_boundary,
                             restore_recovery_state=restore))
     def restore_manager(state):
-        assert state.boundary_ms == 30_000
+        assert state.boundary_ms == cutoff
         calls.append("manager_restored")
 
     monkeypatch.setattr(subject, "StrategyOneManagementRunner",
@@ -99,8 +123,8 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
 
     async def run(_scheduler, _entry, _evidence, _manager, *, static_gate,
                   **_kwargs):
-        assert static_gate.facts == ((fact_b,) if resume else (fact_a, fact_b))
-        assert static_gate.rejection_mask.tolist() == ([0] if resume else [0, 0])
+        assert static_gate.facts == ((fact_b,) if resume or flat else (fact_a, fact_b))
+        assert static_gate.rejection_mask.tolist() == ([0] if resume or flat else [0, 0])
         calls.append("executed")
         return "complete"
 
@@ -114,13 +138,14 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
         pivots=CertifiedPivotPlan("build", "2026-08-18", (), (), "i" * 64),
         hod=CertifiedHodPlan("build", "2026-08-18", (), "h" * 64),
         seeds=CertifiedSeedPlan("build", "v" * 64, (), "z" * 64, True),
-        entry=entry, prices=prices, through_boundary_ms=19_800_000,
+        entry=entry, prices=prices, through_boundary_ms=57_600_000,
         runtime=SimpleNamespace(broker=SimpleNamespace(
-            financially_active_tickers=lambda: ("AAA",))),
-        start_after_boundary_ms=30_000 if resume else 0,
-        resume_evidence_state=(StrategyOneEvidenceState(30_000, (), (), ())
+            financially_active_tickers=lambda: () if flat else ("AAA",))),
+        start_after_boundary_ms=cutoff if resume else 0,
+        flat_start_boundary_ms=cutoff if flat else 0,
+        resume_evidence_state=(StrategyOneEvidenceState(cutoff, (), (), ())
                                if resume else None),
-        resume_manager_state=(StrategyOneManagementState(30_000, (), (), ())
+        resume_manager_state=(StrategyOneManagementState(cutoff, (), (), ())
                               if resume else None),
         assignments=(StrategyAssignment(
             "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
@@ -129,16 +154,18 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, re
         client_factory=lambda: reader, before_boundary=boundary,
         finish_boundary=boundary))
     assert result == "complete"
-    assert calls == ["scheduler_built", "seed_preloaded",
+    assert calls == ["scheduler_built", "seconds_preloaded", "seed_preloaded",
                      *(("evidence_restored", "manager_restored") if resume else ()),
+                     *(("activation_warmed", "flat_clock") if flat else ()),
                      "executed",
                      "scheduler_closed", "reader_closed"]
 
 
 @pytest.mark.parametrize("active", [(), ("AAA",)])
 @pytest.mark.parametrize("no_derived_products", [False, True])
+@pytest.mark.parametrize("flat_start", [0, 43_200_000])
 def test_empty_causal_horizon_never_reads_market_or_invents_boundary(
-        monkeypatch, active, no_derived_products):
+        monkeypatch, active, no_derived_products, flat_start):
     market = CertifiedMarketDayPlan(
         ExecutionInterval.fixed(100), "build", "d" * 64,
         ("2026-08-18",), ("AAA",), (), (100,), "m" * 64)
@@ -164,7 +191,8 @@ def test_empty_causal_horizon_never_reads_market_or_invents_boundary(
         seeds=CertifiedSeedPlan("build", "v" * 64, (), "z" * 64, True),
         entry=CertifiedEntryEvidencePlan("build", "2026-08-18", (), (), (), "e" * 64),
         prices=PriceLevelPlan("build", (), "p" * 64),
-        through_boundary_ms=60_000, runtime=runtime,
+        through_boundary_ms=57_600_000, runtime=runtime,
+        flat_start_boundary_ms=flat_start,
         assignments=(StrategyAssignment(
             "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
             AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
@@ -181,6 +209,8 @@ def test_empty_causal_horizon_never_reads_market_or_invents_boundary(
         result = asyncio.run(subject.run_certified_strategy_one_session(**args))
         assert result == subject.StrategyOneProposalCounts(0, 0, 0, 0)
         assert len(managers) == 1
-        managers[0].evidence.advance_empty_boundary(60_000)
+        if flat_start:
+            assert managers[0].evidence.capture_recovery_state().boundary_ms == flat_start
+        managers[0].evidence.advance_empty_boundary(57_600_000)
         assert managers[0].evidence.capture_recovery_state() == (
-            StrategyOneEvidenceState(60_000, (), (), ()))
+            StrategyOneEvidenceState(57_600_000, (), (), ()))

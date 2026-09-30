@@ -97,6 +97,7 @@ async def run_certified_strategy_one_session(
     stage_time: Callable[[str, float], None] | None = None,
     interval_plan: CertifiedV7IntervalPlan | None = None,
     start_after_boundary_ms: int = 0,
+    flat_start_boundary_ms: int = 0,
     resume_evidence_state: StrategyOneEvidenceState | None = None,
     resume_manager_state: StrategyOneManagementState | None = None,
 ) -> StrategyOneProposalCounts:
@@ -133,6 +134,10 @@ async def run_certified_strategy_one_session(
             or type(start_after_boundary_ms) is not int
             or not 0 <= start_after_boundary_ms <= through_boundary_ms
             or start_after_boundary_ms % 100
+            or type(flat_start_boundary_ms) is not int
+            or not 0 <= flat_start_boundary_ms < through_boundary_ms
+            or flat_start_boundary_ms % 100
+            or flat_start_boundary_ms and start_after_boundary_ms != 0
             or (start_after_boundary_ms == 0) != (resume_evidence_state is None)
             or (start_after_boundary_ms == 0) != (resume_manager_state is None)
             or resume_evidence_state is not None and (
@@ -146,6 +151,14 @@ async def run_certified_strategy_one_session(
                 client_factory, before_boundary, finish_boundary))
             or manager_ready is not None and not callable(manager_ready)):
         raise ValueError("Strategy 1 session lacks pinned 100ms inputs")
+    if flat_start_boundary_ms:
+        active = getattr(getattr(runtime, "broker", None),
+                         "financially_active_tickers", None)
+        if not callable(active) or active() != ():
+            raise RuntimeError("Strategy 1 flat start has active broker state")
+    # A fresh intraday account skips financial history; a recovered account
+    # instead carries the verified evidence and manager images above.
+    start_after_boundary_ms = max(start_after_boundary_ms, flat_start_boundary_ms)
     ticks = pinned_strategy_one_ticks(assignments)
     visible = project_candidate_plan(
         candidates, through_boundary_ms=through_boundary_ms)
@@ -162,6 +175,8 @@ async def run_certified_strategy_one_session(
         evidence = StrategyOneEmptyEvidence()
         if resume_evidence_state is not None:
             evidence.restore_recovery_state(resume_evidence_state)
+        elif flat_start_boundary_ms:
+            evidence.advance_empty_boundary(flat_start_boundary_ms)
         manager = StrategyOneManagementRunner(
             runtime=runtime, evidence=evidence,
             tick_for_ticker=ticks.__getitem__)
@@ -189,6 +204,15 @@ async def run_certified_strategy_one_session(
     surviving_gate = StrategyOneStaticGate(
         surviving_facts, np.zeros(len(surviving_facts), dtype=np.uint8),
         np.arange(len(surviving_facts), dtype=np.int64))
+    # Only episodes with a surviving future candidate need historical
+    # activation evidence. Their original timestamps and certified expiry
+    # facts remain intact; warming evidence never reactivates an episode.
+    future_episodes = ({(fact.ticker, fact.episode_start_ms)
+                        for fact in surviving_facts}
+                       if flat_start_boundary_ms else set())
+    warm_activations = tuple(row for row in activation_schedule.rows
+                            if row.boundary_ms <= flat_start_boundary_ms
+                            and (row.ticker, row.boundary_ms) in future_episodes)
     selected = tuple(row.ticker for row in visible.prepared)
     if set(selected) - ticks.keys():
         raise ValueError("Strategy 1 candidate lacks a pinned execution tick")
@@ -234,6 +258,7 @@ async def run_certified_strategy_one_session(
                 tuple((row.ticker, row.boundary_ms)
                       for row in activation_schedule.rows
                       if row.boundary_ms > start_after_boundary_ms) +
+                tuple((row.ticker, row.boundary_ms) for row in warm_activations) +
                 tuple((fact.ticker, fact.boundary_ms)
                       for fact in surviving_gate.facts
                       if fact.boundary_ms > start_after_boundary_ms),
@@ -255,6 +280,13 @@ async def run_certified_strategy_one_session(
                 active = runtime.broker.financially_active_tickers()
                 await evidence.restore_recovery_state(
                     resume_evidence_state, financially_active_tickers=active)
+            elif flat_start_boundary_ms:
+                # Certified V7 intervals already include prior-session seeds
+                # and completed intraday bars. Read their causal geometry at
+                # each activation; never run broker/strategy warmup trades.
+                for activation in warm_activations:
+                    await evidence.observe_activation(activation)
+                evidence.advance_empty_boundary(flat_start_boundary_ms)
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)

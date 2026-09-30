@@ -3573,8 +3573,13 @@ class ReplayRunController:
             pass
 
         day = market.sessions[0]
-        if self.definition.requested_start != market_day_boundary(day, 0):
-            raise ValueError("Strategy 1 requires a flat start at the 04:00 session boundary")
+        start_delta = self.definition.requested_start - market_day_boundary(day, 0)
+        requested_start_ms = (start_delta.days * 86_400_000
+                              + start_delta.seconds * 1_000
+                              + start_delta.microseconds // 1_000)
+        if (start_delta.microseconds % 1_000 or requested_start_ms % 100
+                or not 0 <= requested_start_ms < self._fixed_through_boundary_ms()):
+            raise ValueError("Strategy 1 flat start must be an in-session 100ms boundary")
         start_after = 0
         if fixed_restore is not None:
             clock = fixed_restore.controller
@@ -3589,7 +3594,7 @@ class ReplayRunController:
                     # A durable checkpoint may already be at the requested
                     # session end while its terminal V4 commit is still pending.
                     # Recover that empty suffix and seal it without replaying a bar.
-                    or not 0 < start_after <= self._fixed_through_boundary_ms()
+                    or not requested_start_ms < start_after <= self._fixed_through_boundary_ms()
                     or fixed_restore.manager.boundary_ms != start_after
                     or fixed_restore.evidence.boundary_ms != start_after):
                 raise RuntimeError("Strategy 1 resumed cursor differs from its causal actors")
@@ -3653,6 +3658,8 @@ class ReplayRunController:
                 before_boundary=before, finish_boundary=finish,
                 manager_ready=manager_ready,
                 start_after_boundary_ms=start_after,
+                flat_start_boundary_ms=(requested_start_ms
+                                        if fixed_restore is None else 0),
                 resume_evidence_state=(fixed_restore.evidence
                                        if fixed_restore is not None else None),
                 resume_manager_state=(fixed_restore.manager

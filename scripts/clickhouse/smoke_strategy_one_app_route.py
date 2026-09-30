@@ -264,7 +264,8 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
                profile_v7: bool = False, profile_preflight: bool = False,
                repeat_preflight: int = 1,
                profile_v7_seeds: bool = False,
-               profile_entry: bool = False) -> None:
+               profile_entry: bool = False,
+               start_time: time = time(4)) -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -272,11 +273,15 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
     )
 
     selected = (ticker,) if ticker else ()
-    end = (datetime.combine(day, time(4)) + timedelta(minutes=minutes)).time()
+    end_at = datetime.combine(day, start_time) + timedelta(minutes=minutes)
+    if (start_time.tzinfo is not None or not time(4) <= start_time < time(20)
+            or minutes < 1 or end_at > datetime.combine(day, time(20))):
+        raise ValueError("App probe must remain within 04:00-20:00 ET")
+    end = end_at.time()
     anchor = day + timedelta(days=1)
     preflight_request = HistoricalPreflightRequest(
         mode="backtest", anchor_date=anchor, session_count=1,
-        initial_cash=cash, start_time="04:00:00",
+        initial_cash=cash, start_time=start_time.isoformat(),
         end_time=end.isoformat(), tickers=list(selected),
     )
     def load_preflight():
@@ -313,7 +318,7 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
     request = BacktestRunCreateRequest(
         anchor_date=anchor, session_count=1, initial_cash=cash,
         configuration_revision_id=preflight["configuration_revision_id"],
-        run_plan_id=preflight["run_plan_id"], start_time="04:00:00",
+        run_plan_id=preflight["run_plan_id"], start_time=start_time.isoformat(),
         end_time=end.isoformat(), tickers=list(selected),
         experimental_structure_book="level-book-v7",
     )
@@ -365,7 +370,9 @@ def main() -> None:
     parser.add_argument("--ticker", default="",
                         help="optional single-symbol scope; omit for all tradable tickers")
     parser.add_argument("--minutes", type=int, default=10,
-                        help="whole minutes after 04:00 ET; maximum 960 (20:00 ET)")
+                        help="whole minutes from --start-time; must end by 20:00 ET")
+    parser.add_argument("--start-time", type=time.fromisoformat, default=time(4),
+                        help="flat account start in ET; default 04:00; after-hours 16:00")
     parser.add_argument("--cash", type=float, default=100_000.0,
                         help="initial simulated cash; default matches the app")
     parser.add_argument("--apply", action="store_true",
@@ -403,7 +410,7 @@ def main() -> None:
             await _run(args.session, args.ticker, args.minutes, args.cash,
                        args.apply, args.profile_v7, args.profile_preflight,
                        args.repeat_preflight, args.profile_v7_seeds,
-                       args.profile_entry)
+                       args.profile_entry, args.start_time)
     asyncio.run(probes())
 
 

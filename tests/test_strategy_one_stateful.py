@@ -52,6 +52,24 @@ def test_completed_certified_entry_proposes_to_portfolio_without_order():
     assert result.proposal.target_level_id == "R4"
 
 
+def test_after_hours_flat_start_does_not_renew_expired_regular_hours_episode():
+    candidate, fact, activation, financial = _facts()
+    boundary = 43_200_100  # First completed 100ms bucket after 16:00 New York.
+    episode = boundary - 300_100
+    row = dict(candidate.market_row, boundary_ms=boundary,
+               quote_timestamp_us=int(market_day_boundary(
+                   date(2026, 8, 18), boundary).timestamp() * 1_000_000))
+    candidate = replace(candidate, market_row=row, evidence=replace(
+        candidate.evidence, boundary_ms=boundary, episode_start_ms=episode))
+    fact = replace(fact, boundary_ms=boundary, episode_start_ms=episode,
+                   bos_break_boundary_ms=boundary - 100)
+    activation = replace(activation, episode_start_ms=episode)
+    decision = propose_certified_strategy_one_entry(
+        candidate, fact, activation, financial)
+    assert decision.reason == "squeeze_episode_expired"
+    assert decision.proposal is None
+
+
 @pytest.mark.parametrize("change,reason", [
     ({"position_quantity": 5.}, "position_requires_management"),
     ({"pending_entry": True}, "entry_fill_pending"),
