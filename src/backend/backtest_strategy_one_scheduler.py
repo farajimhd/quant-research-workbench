@@ -490,12 +490,16 @@ class StrategyOneBoundaryScheduler:
         """Only the refill boundary must enter a worker thread."""
         if self._closed:
             raise RuntimeError("Strategy 1 scheduler is closed")
-        valid = [head for head in self._heads
-                 if head[1] in self._active
-                 and head[2] == self._generation[head[1]]]
-        if not valid:
+        # The heap root is the earliest valid source after stale generations
+        # are removed. Avoid rebuilding and reducing the entire head list on
+        # every 100 ms boundary; pop_next performs the same stale cleanup.
+        while self._heads and (
+                self._heads[0][1] not in self._active
+                or self._heads[0][2] != self._generation[self._heads[0][1]]):
+            heappop(self._heads)
+        if not self._heads:
             return False
-        active_at = min(head[0] for head in valid)
+        active_at = self._heads[0][0]
         candidate_at = (int(self._candidate.market_row["boundary_ms"])
                         if self._candidate is not None else None)
         activation_at = (self._activation.boundary_ms
@@ -503,9 +507,12 @@ class StrategyOneBoundaryScheduler:
         if any(boundary is not None and boundary < active_at
                for boundary in (candidate_at, activation_at)):
             return False
-        return any(not isinstance(self._active[ticker], _BufferedMarketIterator)
-                   or not self._active[ticker].has_buffered_next
-                   for boundary, ticker, _, _ in valid if boundary == active_at)
+        return any(
+            (not isinstance(self._active[ticker], _BufferedMarketIterator)
+             or not self._active[ticker].has_buffered_next)
+            for boundary, ticker, generation, _ in self._heads
+            if (boundary == active_at and ticker in self._active
+                and generation == self._generation[ticker]))
 
     def pop_next(self) -> StrategyOneBoundaryWork | None:
         if self._closed:

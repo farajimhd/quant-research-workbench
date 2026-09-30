@@ -651,6 +651,9 @@ def test_reactivation_cannot_replay_stale_prefetched_liquidity():
     assert clock.pop_next().boundary_ms == 200
     clock.deactivate("AAA")
     clock.activate("AAA")
+    # The refill check may remove the stale generation's earlier heap root;
+    # it must still preserve the current generation's next causal boundary.
+    assert clock.pop_next_may_block()
     resumed = clock.pop_next()
     assert resumed.boundary_ms == 400
     assert [ticker for ticker, _ in resumed.broker_rows] == ["AAA"]
