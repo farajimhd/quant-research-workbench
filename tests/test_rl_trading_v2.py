@@ -477,13 +477,46 @@ def test_completed_session_run_continues_exact_state_in_new_versioned_run(tmp_pa
         torch.testing.assert_close(child['policy'][key],uninterrupted['policy'][key],rtol=0,atol=0)
     assert read(extended/'run_manifest.json')['lineage']['parent_iteration'] == 5
     assert (extended/'checkpoint_best.pt').is_file()
-    with pytest.raises(ValueError,match='only increase'):
+    with pytest.raises(ValueError,match='approved session/epoch target'):
         train.main(common+['--run-name','bad-target','--min-completed-episodes','3',
                           '--iterations','10','--continue-from-run',str(pilot)])
     with pytest.raises(ValueError,match='Continuation changes parent contract'):
         train.main(common+['--run-name','bad-contract','--min-completed-episodes','6',
                           '--iterations','10','--continue-from-run',str(pilot),
                           '--extra-venue-fee-per-share','.02'])
+
+
+def test_more_epoch_continuation_verifies_latest_checkpoint_and_pins_other_settings(tmp_path):
+    parent_root = tmp_path/'parent'
+    parent_root.mkdir()
+    controller = str(train.Path('research/rl_trading/v2/train.py'))
+    parent = dict(version='v8',job='train',config=dict(version='v8'),
+        arguments=dict(epochs=4,min_completed_episodes=3,learning_rate=3e-5),
+        model=dict(features=3),feature_names=['a'],train=[dict(date='2026-08-19')],
+        validation=[dict(date='2026-08-24')],teacher_supervision=False,
+        torch_version=torch.__version__,numpy_version=np.__version__,
+        wandb=dict(mode='online'),code=dict(files={controller:
+            train.V8_TRAIN_HASH,'research/rl_trading/v2/model.py':'unchanged'}))
+    parent['contract_hash'] = digest(parent)
+    write(parent_root/'run_manifest.json',parent)
+    write(parent_root/'status.json',dict(status='no_valid_checkpoint',iteration=338,
+                                         completed_episodes=3))
+    torch.save(dict(contract_hash=parent['contract_hash'],iteration=338,
+                    completed_episodes=3,best=-float('inf')),
+               parent_root/'checkpoint_latest.pt')
+    child = json.loads(json.dumps(parent))
+    child.pop('contract_hash')
+    child['arguments'].update(epochs=12,min_completed_episodes=6)
+    child['code']['files'][controller] = 'new-controller'
+    lineage,saved,best = train._continuation(parent_root,child,
+        run_root=tmp_path/'child',device='cpu',more_epochs=True)
+    assert lineage['parent_iteration'] == saved['iteration'] == 338
+    assert lineage['optimization_change'] == dict(ppo_epochs_from=4,ppo_epochs_to=12)
+    assert best is None
+    child['arguments']['learning_rate'] = 1e-4
+    with pytest.raises(ValueError,match='approved session/epoch target'):
+        train._continuation(parent_root,child,run_root=tmp_path/'child',
+                            device='cpu',more_epochs=True)
 
 
 def test_early_exit_window_blocks_late_entries_and_forces_existing_holds():
