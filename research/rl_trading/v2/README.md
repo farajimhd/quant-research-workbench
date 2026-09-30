@@ -65,6 +65,15 @@ number of sessions. Repeated passes use `--session-order cycle` and remain
 subject to later-date validation, since training return alone cannot establish
 convergence or generalization.
 
+To continue a completed V8 run with **more PPO epochs per rollout**, use a new
+versioned run and `--continue-with-more-epochs-from-run <completed-run-root>`.
+This narrowly permits an increased `--epochs` and completed-session target.
+It verifies the latest checkpoint and preserves its policy, optimizer, account,
+session cursor, and RNG, while recording the optimization change and parent
+checkpoint hash in the new manifest. All data, model, execution, and other
+training settings must match. More epochs can still be cut short by target-KL
+stopping and do not by themselves establish validation improvement.
+
 ## Market and observation contract
 
 `build_data.py` reads the full population of a certified ARTE market-day build,

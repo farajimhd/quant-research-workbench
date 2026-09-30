@@ -31,6 +31,13 @@ from research.mlops.wandb_utils import init_wandb
 # source bytes must still match exactly; this is its certified controller hash.
 PILOT_TRAIN_HASH = 'c814a0a450b7688f9561f922fa443eab7e5a1fbbe3cbe308fc0debd3046067ed'
 EARLY_EXIT_TRAIN_HASH = '0153e08463a748574c0f221bbbc47b00b3781290bdcf6628c06bf7867e70cdb5'
+# V8 controller bytes are the only accepted parent for a changed-epoch
+# continuation. All model, data, and execution source files remain identical.
+V8_TRAIN_HASH = 'c5dcf14ad1456313a69c99a254e2c86acf34a1cd6a5573d7a9a5773f8bbeeb94'
+PRE_EARLY_EXIT_HASHES = {
+    str(Path('research/rl_trading/v2/config.py')): '42141072c818fbea0fc164d6cdf08f5d3079fec7fbb42aaeeb0fab8cbe8b97b5',
+    str(Path('research/rl_trading/v2/train.py')): 'f65b8861c8533a8f666471d560cff9ae24bb0c5b75c1d50ca73a3a996e54b50c',
+}
 BALANCED_ACTION_PARENT_HASHES = {
     str(Path('research/rl_trading/v2/config.py')): '19c996d072e91872a61826580b99934dec0ebecd874fb30da4f72a5812f5f047',
     str(Path('research/rl_trading/v2/model.py')): '4adbe145cce55244396509bff2d8e89dcc7ea46e3e989d4ed6dafc597afc2362',
@@ -79,6 +86,7 @@ def parser():
     p.add_argument('--stream-sessions',action='store_true')
     p.add_argument('--resume',action='store_true')
     p.add_argument('--continue-from-run',type=Path)
+    p.add_argument('--continue-with-more-epochs-from-run',type=Path)
     p.add_argument('--initialize-from-best',type=Path)
     p.add_argument('--initialize-policy-from-best',type=Path)
     p.add_argument('--initialize-hierarchical-from-best',type=Path)
@@ -204,7 +212,8 @@ def train(args):
     if not args.run_name or Path(args.run_name).name != args.run_name or args.run_name in ('.','..'):
         raise ValueError('Run name must be a single directory name')
     if sum(bool(x) for x in (args.initialize_from_best,args.initialize_policy_from_best,
-                             args.initialize_hierarchical_from_best,args.continue_from_run)) > 1:
+                             args.initialize_hierarchical_from_best,args.continue_from_run,
+                             args.continue_with_more_epochs_from_run)) > 1:
         raise ValueError('Choose one checkpoint initialization or continuation')
     config = Config(**{field.name:getattr(args,field.name) for field in fields(Config)})
     root = output_root()/'train'/args.run_name
@@ -226,7 +235,7 @@ def _session_reference(path, *, allow_segment):
     return SimpleNamespace(root=root,plan=plan,seconds=plan['rows'])
 
 
-def _continuation(parent_root, manifest, *, run_root, device):
+def _continuation(parent_root, manifest, *, run_root, device, more_epochs=False):
     parent_root = Path(parent_root).resolve()
     manifest = json.loads(json.dumps(manifest))
     if parent_root == run_root.resolve():
@@ -242,15 +251,19 @@ def _continuation(parent_root, manifest, *, run_root, device):
         if parent.get(key) != manifest.get(key):
             raise ValueError('Continuation changes parent contract: ' + key)
     old_args, new_args = parent['arguments'], manifest['arguments']
-    if ({k:v for k,v in old_args.items() if k != 'min_completed_episodes'} !=
-            {k:v for k,v in new_args.items() if k != 'min_completed_episodes'} or
+    allowed = {'min_completed_episodes','epochs'} if more_epochs else {'min_completed_episodes'}
+    if ({k:v for k,v in old_args.items() if k not in allowed} !=
+            {k:v for k,v in new_args.items() if k not in allowed} or
             new_args['min_completed_episodes'] <= old_args['min_completed_episodes']):
-        raise ValueError('Continuation may only increase completed-session target')
+        raise ValueError('Continuation changes settings beyond the approved session/epoch target')
+    if more_epochs and new_args['epochs'] <= old_args['epochs']:
+        raise ValueError('Epoch-changing continuation must increase PPO epochs')
     changed = str(Path('research/rl_trading/v2/train.py'))
     old_code, new_code = parent['code']['files'], manifest['code']['files']
     if (set(old_code) != set(new_code) or
             any(old_code[name] != new_code[name] for name in old_code if name != changed) or
-            (old_code[changed] != new_code[changed] and old_code[changed] != PILOT_TRAIN_HASH)):
+            (old_code[changed] != new_code[changed] and
+             old_code[changed] != (V8_TRAIN_HASH if more_epochs else PILOT_TRAIN_HASH))):
         raise ValueError('Continuation changed model, data, or execution source')
     checkpoint = parent_root/'checkpoint_latest.pt'
     saved = torch.load(checkpoint,map_location=device,weights_only=False)
@@ -262,6 +275,9 @@ def _continuation(parent_root, manifest, *, run_root, device):
                    parent_checkpoint_hash=file_hash(checkpoint),
                    parent_iteration=saved['iteration'],
                    parent_completed_episodes=saved['completed_episodes'])
+    if more_epochs:
+        lineage['optimization_change'] = dict(ppo_epochs_from=old_args['epochs'],
+                                               ppo_epochs_to=new_args['epochs'])
     inherited_best = None
     if saved['best'] > -float('inf'):
         best_path = parent_root/'checkpoint_best.pt'
@@ -441,7 +457,7 @@ def _train_locked(args, config, root):
             for i in range(args.min_completed_episodes))
         if args.iterations*args.rollout_steps < required:
             raise ValueError(f'Iteration budget cannot complete {args.min_completed_episodes} sessions; require at least {required} steps')
-    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run','initialize_from_best','initialize_policy_from_best','initialize_hierarchical_from_best')}
+    contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions','continue_from_run','continue_with_more_epochs_from_run','initialize_from_best','initialize_policy_from_best','initialize_hierarchical_from_best')}
     manifest = dict(version=VERSION,job='train',config=config.manifest(),arguments=contract_args,
         model=dict(features=len(sessions[0].plan['feature_names']),width=args.width,heads=args.heads),
         feature_names=sessions[0].plan['feature_names'],code=code_identity(),
@@ -454,6 +470,13 @@ def _train_locked(args, config, root):
     if args.continue_from_run:
         lineage, inherited, inherited_best = _continuation(args.continue_from_run,manifest,
                                                             run_root=root,device=args.device)
+        manifest['lineage'] = lineage
+        if inherited['iteration'] >= args.iterations:
+            raise ValueError('Continuation iteration budget must exceed parent checkpoint')
+    if args.continue_with_more_epochs_from_run:
+        lineage, inherited, inherited_best = _continuation(
+            args.continue_with_more_epochs_from_run,manifest,run_root=root,
+            device=args.device,more_epochs=True)
         manifest['lineage'] = lineage
         if inherited['iteration'] >= args.iterations:
             raise ValueError('Continuation iteration budget must exceed parent checkpoint')
