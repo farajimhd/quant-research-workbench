@@ -35,27 +35,36 @@ EXECUTION_SCHEMA = {'ticker':pl.String, 'bucket_index':pl.Int64,
 
 def _execution_buckets(rows, origin):
     """Validate joined columns in bulk; materialize objects only for OMS use."""
-    keys = ['ticker', 'bucket_index']
-    if (rows.select(*keys).n_unique() != rows.height or rows.filter(
-        (pl.col('quote_count').fill_null(0)>1) |
-        (pl.col('extrema_count').fill_null(0)>1)).height):
+    columns={name:rows[name].to_numpy() for name in ('ticker','bucket_index',
+        'quote_count','extrema_count','extremes_valid','low_int','high_int',
+        'last_event_us','quote_timestamp_us','quote_valid','event_count')}
+    order=np.lexsort((columns['ticker'],columns['bucket_index']))
+    keys_t=columns['ticker'][order]; keys_b=columns['bucket_index'][order]
+    if (np.any((keys_t[1:]==keys_t[:-1]) & (keys_b[1:]==keys_b[:-1])) or
+        np.any(columns['quote_count']>1) or np.any(columns['extrema_count']>1)):
         raise ValueError('Duplicate pinned quote or extrema bucket')
-    rows=rows.fill_null(0).sort('bucket_index','ticker')
-    columns={name:rows[name].to_numpy() for name in EXECUTION_SCHEMA if name!='ticker'}
     extrema=columns['extremes_valid']==1
-    if np.any(extrema & ((columns['low_int']<=0) | (columns['high_int']<columns['low_int']))):
+    if np.any(extrema & ~((columns['low_int']>0) & (columns['high_int']>=columns['low_int']))):
         raise ValueError('Malformed certified bucket extrema')
     close=origin+(columns['bucket_index']+1)*100_000
     event=columns['last_event_us']; quoted=columns['quote_timestamp_us']
     valid=((columns['quote_valid']==1) & (columns['event_count']>0) &
            (event>=close-100_000) & (event<close) & (quoted>0) & (quoted<=event))
-    projected=rows.select('ticker','quote_count','quote_timestamp_us','bid_int','ask_int',
-                         'bid_size','ask_size','high_int','low_int').iter_rows()
-    return tuple(ExecutionBucket(t,clock,
-        Quote(clock,quoted,bid/10000,ask/10000,bs,ass,valid) if present else None,
-        high/10000 if has_extrema else None,low/10000 if has_extrema else None)
-        for (t,present,quoted,bid,ask,bs,ass,high,low),clock,valid,has_extrema
-        in zip(projected,close.tolist(),valid.tolist(),extrema.tolist()))
+    # Polars iter_rows gives native Python integers: price division stays bit
+    # identical to the original OMS path. No per-row dictionaries are built.
+    raw=list(rows.iter_rows())
+    pos={name:i for i,name in enumerate(rows.columns)}
+    def bucket(i):
+        r=raw[i]; clock=int(close[i])
+        quote=None
+        if columns['quote_count'][i]==1:
+            quote=Quote(clock,int(r[pos['quote_timestamp_us']] or 0),
+                float(r[pos['bid_int']] or 0)/10000,float(r[pos['ask_int']] or 0)/10000,
+                float(r[pos['bid_size']] or 0),float(r[pos['ask_size']] or 0),bool(valid[i]))
+        return ExecutionBucket(r[pos['ticker']],clock,quote,
+            r[pos['high_int']]/10000 if extrema[i] else None,
+            r[pos['low_int']]/10000 if extrema[i] else None)
+    return tuple(bucket(int(i)) for i in order)
 
 
 class ArteExecutionSource:
