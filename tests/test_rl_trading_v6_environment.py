@@ -88,13 +88,18 @@ def test_collection_and_actual_ppo_reconstruction_optimizer_path():
     torch.manual_seed(9)
     policy=RankedBracketActorCritic(8,config=MarketAttentionConfig(top_r=1,heads=2))
     env=BracketEnvironment(('A',),Evidence(origin))
-    frames,steps,metrics=collect_session(policy,session,env,device=torch.device('cpu'),max_clocks=5,max_orders_per_second=4)
+    collected=[]
+    frames,steps,metrics=collect_session(policy,session,env,device=torch.device('cpu'),max_clocks=5,
+        max_orders_per_second=4,progress_callback=collected.append)
+    assert collected and collected[-1]['policy_steps']>0
     assert steps[-1].terminal
     assert sum(s.elapsed for s in steps)==5
     assert metrics['equity_mark_count']==6
     old=policy.decoder.enter_head.weight.detach().clone()
+    reconstructed=[]
     result=update_session(policy,torch.optim.Adam(policy.parameters(),lr=1e-4),session,frames,steps,
-        device=torch.device('cpu'),epochs=2,clocks_per_chunk=2)
+        device=torch.device('cpu'),epochs=2,clocks_per_chunk=2,progress_callback=reconstructed.append)
+    assert reconstructed[-1]['processed_policy_steps']==len(steps)
     assert result['update_epochs']>=1
     assert np.isfinite(result['loss'])
     assert not torch.equal(old,policy.decoder.enter_head.weight)

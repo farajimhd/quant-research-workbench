@@ -158,7 +158,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   decisions: tuple[TeacherDecision, ...],
                   outcomes: tuple[ExecutionOutcome, ...], *,
                   device: torch.device, clocks_per_chunk: int = 32,
-                  grad_clip: float = 1.) -> TrainingMetrics:
+                  grad_clip: float = 1., progress_callback=None) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Decisions use current completed candles and outcomes up to that close.
@@ -290,6 +290,10 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     conditional_count[slot] += len(values)
         state.detach()
         action_state = action_state.detach()
+        if progress_callback:
+            progress_callback({'close_us':chunk[-1].close_us,
+                'observed_decisions':observed_decisions,'optimizer_updates':updates,
+                'loss':loss_sum/observed_decisions if observed_decisions else None})
     if decision_groups or observed_decisions != len(decisions):
         raise ValueError('Teacher decision clock absent from certified candles')
     if next_outcome != len(outcomes):

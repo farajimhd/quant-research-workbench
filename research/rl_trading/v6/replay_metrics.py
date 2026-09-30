@@ -82,6 +82,18 @@ class ReplayJournal:
             for row in self.account.closed)
         closed_shares = sum(row['shares'] for row in self.account.closed)
         realized = sum(row['net_pnl'] for row in self.account.closed)
+        # Partial exits are tranches, not independent trades. Only count a
+        # ticker/entry pair once its entire holding is closed.
+        open_keys={(ticker,position.entry_us) for ticker,position in self.account.positions.items()}
+        trades={}
+        for row in self.account.closed:
+            key=(row['ticker'],row['entry_us'])
+            if key not in open_keys:
+                trades.setdefault(key,[]).append(row['net_pnl'])
+        trade_net=[math.fsum(parts) for parts in trades.values()]
+        wins=sum(net>1e-8 for net in trade_net)
+        losses=sum(net< -1e-8 for net in trade_net)
+        breakeven=len(trade_net)-wins-losses
         final_equity = values[-1]
         result = {'version': VERSION,
             'execution_scenario': 'optimistic_displayed_quote_and_price_level_upper_bound',
@@ -94,6 +106,10 @@ class ReplayJournal:
             'max_drawdown_fraction': drawdown,
             'buy_fill_orders': len(buy), 'sell_fill_orders': len(sell),
             'completed_position_tranches': len(self.account.closed),
+            'fully_closed_positions':len(trade_net),
+            'winning_positions':wins,'losing_positions':losses,
+            'breakeven_positions':breakeven,
+            'win_rate':wins/len(trade_net) if trade_net else None,
             'open_positions': len(self.account.positions),
             'max_open_positions': self._max_open,
             'terminally_flat': not self.account.positions,

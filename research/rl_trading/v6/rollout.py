@@ -82,7 +82,8 @@ def _distribution(policy,state,memory,step,indices,scalar,device):
 
 @torch.no_grad()
 def collect_session(policy, session, environment, *, device,
-                    max_orders_per_second=64, deterministic=False, max_clocks=None):
+                    max_orders_per_second=64, deterministic=False, max_clocks=None,
+                    progress_callback=None):
     """Fresh on-policy proposals, 1s decisions, later quote-bound execution.
 
     Terminal exit is submitted one second before known session end. Unfilled
@@ -160,6 +161,11 @@ def collect_session(policy, session, environment, *, device,
             if token==0:
                 break
         frames.append(frame)
+        if progress_callback:
+            progress_callback({'close_us':clock,'policy_steps':len(steps),
+                'open_positions':len(environment.account.positions),
+                'modeled_net_profit':equity-environment.account.initial_cash,
+                'modeled_fees':environment.account.fees})
     state.detach()
     if not steps:
         raise ValueError('No policy proposals in rollout')
@@ -172,7 +178,7 @@ def collect_session(policy, session, environment, *, device,
 
 def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
                    clocks_per_chunk=32,gamma=.999,trace_decay=.95,clip=.2,
-                   entropy_coefficient=.01,target_kl=.02):
+                   entropy_coefficient=.01,target_kl=.02,progress_callback=None):
     """Rebuild from session warm-up per PPO epoch; backprop bounded chunks.
 
     Gradients accumulate over chunks; weights change only after reconstruction
@@ -226,6 +232,10 @@ def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
                 cursor = stop
             state.detach()
             memory = memory.detach()
+            if progress_callback:
+                progress_callback({'update_epoch':epoch+1,'processed_policy_steps':cursor,
+                    'total_policy_steps':len(steps),'accumulated_loss':loss_sum,
+                    'approximate_kl':kl_sum/cursor if cursor else None})
         if cursor!=len(steps):
             raise ValueError('PPO reconstruction lost policy events')
         kl = kl_sum/len(steps)

@@ -33,6 +33,7 @@ from research.rl_trading.v6.environment import BracketEnvironment
 from research.rl_trading.v6.rollout import collect_session, update_session, audit_reconstruction
 from research.rl_trading.v6.replay_artifacts import save_replay
 from research.rl_trading.v6.prepare_training import _write_json
+from research.rl_trading.v6.telemetry import PeriodicProgress
 
 
 def _commit():
@@ -90,6 +91,7 @@ def main(argv=None):
     parser.add_argument('--clocks-per-chunk',type=int,default=32)
     parser.add_argument('--max-orders-per-second',type=int,default=64)
     parser.add_argument('--replay-every',type=int,default=1)
+    parser.add_argument('--log-every-seconds',type=float,default=60.)
     parser.add_argument('--seed',type=int,default=17)
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--audit-only',action='store_true')
@@ -102,7 +104,7 @@ def main(argv=None):
             not p.resolve().is_relative_to(runtime) for p in (args.early_manifest,args.late_manifest,args.ledger)):
         raise ValueError('Training input/output roots must be under configured runtime')
     if min(args.teacher_epochs,args.ppo_epochs,args.ppo_updates,args.clocks_per_chunk,
-           args.max_orders_per_second,args.replay_every)<1 or args.learning_rate<=0:
+           args.max_orders_per_second,args.replay_every)<1 or args.learning_rate<=0 or args.log_every_seconds<=0:
         raise ValueError('Positive training/rollout limits required')
     dataset=require_dataset(args.dataset,runtime_root=runtime)
     ranking=MarketAttentionConfig(**dataset['ranking'])
@@ -172,6 +174,9 @@ def main(argv=None):
             print(json.dumps({'phase':prefix,'metrics':metrics},default=str),flush=True)
             with (run/'metrics.jsonl').open('a',encoding='utf-8') as out:
                 out.write(json.dumps({'step':progress['wandb_step'],'phase':prefix,'metrics':metrics},default=str)+'\n')
+        def pulse(prefix,day,epoch):
+            return PeriodicProgress(lambda values:log(prefix,{**values,'day':str(day),'epoch':epoch+1}),
+                                    seconds=args.log_every_seconds)
         try:
             audit=_model_causality_audit(policy,device)
             # Fresh non-learning smoke verifies the real quote collector and
@@ -193,6 +198,10 @@ def main(argv=None):
             import wandb
             logger=wandb.init(project=args.wandb_project,name=run.name,id=manifest['hash'][:16],
                               resume='allow',mode='online',dir=str(run),config=manifest)
+            (run/'metrics.jsonl').touch(exist_ok=True)
+            logger.save(str(run/'metrics.jsonl'),base_path=str(run),policy='live')
+            for filename in ('manifest.json','model-audit.json'):
+                logger.save(str(run/filename),base_path=str(run),policy='now')
             # Smoke sampling is diagnostic; production starts at exact seed
             # (or saved RNG) regardless of how often audit-only was invoked.
             if args.resume:
@@ -209,20 +218,24 @@ def main(argv=None):
                     day_start=progress['day_index'] if progress['phase']==phase and epoch==epoch_start else 0
                     for day_index,entry in enumerate(train_days[day_start:],start=day_start):
                         started=time.perf_counter()
+                        log('progress/session_start',{'day':entry['day'],'phase':phase,'epoch':epoch+1})
                         session=open_day(entry)
                         if phase=='teacher':
                             decisions,outcomes=load_teacher(Path(entry['teacher_root']),session,runtime_root=runtime)
                             result=asdict(train_session(policy,optimizer,session,decisions,outcomes,
-                                device=device,clocks_per_chunk=args.clocks_per_chunk))
+                                device=device,clocks_per_chunk=args.clocks_per_chunk,
+                                progress_callback=pulse('progress/teacher',session.day,epoch)))
                             del decisions,outcomes
                         else:
                             provider,tickers=evidence(session)
                             try:
                                 env=BracketEnvironment(tickers,provider)
                                 frames,steps,result=collect_session(policy,session,env,device=device,
-                                    max_orders_per_second=args.max_orders_per_second)
+                                    max_orders_per_second=args.max_orders_per_second,
+                                    progress_callback=pulse('progress/rollout',session.day,epoch))
                                 result['ppo']=update_session(policy,optimizer,session,frames,steps,device=device,
-                                    epochs=args.ppo_updates,clocks_per_chunk=args.clocks_per_chunk)
+                                    epochs=args.ppo_updates,clocks_per_chunk=args.clocks_per_chunk,
+                                    progress_callback=pulse('progress/ppo',session.day,epoch))
                                 result['execution_evidence']=provider.certificate()
                                 del frames,steps,env
                             finally: provider.reader.close()
@@ -245,7 +258,8 @@ def main(argv=None):
                             try:
                                 env=BracketEnvironment(tickers,provider)
                                 frames,steps,summary=collect_session(policy,session,env,device=device,
-                                    max_orders_per_second=args.max_orders_per_second,deterministic=True)
+                                    max_orders_per_second=args.max_orders_per_second,deterministic=True,
+                                    progress_callback=pulse('progress/replay',session.day,epoch))
                                 quote_cert=run/'quote-evidence'/checkpoint.stem/f'{session.day}.json'
                                 _write_json(quote_cert,provider.certificate())
                                 replay_root,_=save_replay(env.journal,session,checkpoint,runtime_root=runtime,

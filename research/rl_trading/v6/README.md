@@ -195,3 +195,19 @@ metrics and immutable replay ledgers, and checkpoints completed sessions.
 Resume requires the same source/configuration and explicit `--resume`.
 Development replays and a representative in-sample replay run each epoch;
 August26 stays unopened. See `RL_DESIGN.md` for execution assumptions.
+
+Replay runs after every completed teacher/PPO epoch by default
+(`--replay-every 1`): Aug24/25 development and Jul31 training diagnostic.
+PPO also collects environment trajectories on every training day for learning;
+these are distinct from the deterministic checkpoint replays. Win rate is the
+fraction of fully closed ticker/entry positions with positive net P&L after
+fees. Partial exits are combined, open remainders excluded, and breakeven
+positions remain in the denominator (absolute net <=1e-8 is numerical zero).
+No closed positions yields null win rate rather than an artificial zero.
+
+Progress metrics are emitted every 60 seconds at safe processing boundaries
+(`--log-every-seconds`), plus session start/end and each finished replay.
+The local `metrics.jsonl` is registered for W&B live file upload; immutable
+order/position/equity artifacts upload after each replay. W&B uploads are
+asynchronous and depend on connectivity; blocking source reads can delay the
+next processing-boundary progress event. Local evidence is preserved.

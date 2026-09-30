@@ -39,5 +39,32 @@ def test_replay_period_pnl_fees_stale_marks_and_terminal_reconcile():
     assert report['modeled_fees'] > 0
     assert report['stale_equity_mark_count'] == 1
     assert report['buy_fill_orders'] == report['sell_fill_orders'] == 1
+    assert report['win_rate']==1 and report['winning_positions']==1
     assert sum(report['period_marked_net_profit'].values()) == pytest.approx(
         report['modeled_net_profit'])
+
+
+def test_win_rate_combines_partial_exits_and_excludes_open_remainder():
+    from types import SimpleNamespace
+    account=BracketAccount()
+    account.closed=[{'ticker':ticker,'entry_us':entry,'exit_us':entry+1_000_000,
+                    'shares':1,'net_pnl':net}
+        for ticker,entry,net in [('A',1,4.),('A',1,-5.),('B',2,2.),
+                                 ('C',3,0.),('D',4,50.)]]
+    account.positions={'D':SimpleNamespace(entry_us=4)}
+    journal=ReplayJournal(account)
+    # Isolate trade grouping from the existing marked-equity accounting tests.
+    journal.equity_marks=[{'equity':10000.,'period':'regular','stale_held_marks':0,
+                          'oldest_held_mark_age_us':0}]
+    result=journal.summary()
+    assert result['completed_position_tranches']==5
+    assert result['fully_closed_positions']==3
+    assert result['winning_positions']==result['losing_positions']==result['breakeven_positions']==1
+    assert result['win_rate']==pytest.approx(1/3)
+
+
+def test_win_rate_is_undefined_without_fully_closed_positions():
+    account=BracketAccount()
+    journal=ReplayJournal(account)
+    journal.mark(_clock(9,30,0),{}, {})
+    assert journal.summary()['win_rate'] is None
