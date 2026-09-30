@@ -65,6 +65,33 @@ def test_five_disables_only_later_low_trailing_and_retains_structural_target_pat
         advancing(opened.state, allows_completed_30s_trailing=0)
 
 
+def test_six_freezes_target_with_new_and_repeated_resistance_and_preserves_defaults():
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    opened = opening()
+    overhead = [level(index, 11 + index * .1) for index in range(1, 8)]
+    baseline = advancing(opened.state, overhead_levels=overhead)
+    assert baseline.state.target > opened.state.target
+    for number in (1, 2, 3, 4, 5):
+        assert advancing(opened.state, overhead_levels=overhead,
+            allows_target_escalation=numbered_fixed_strategy(number).allows_target_escalation) == baseline
+    breaks = [ResistanceBreak(31_000, level(index, center))
+              for index, center in ((1, 9.8), (2, 9.9), (3, 10.1))]
+    six = advancing(opened.state, overhead_levels=overhead, breaks=breaks,
+                    allows_completed_30s_trailing=False, allows_target_escalation=False)
+    assert six.target_amendment is None and six.state.target == opened.state.target
+    assert six.state.stop == 9.78
+    repeated = [ResistanceBreak(32_000, row.level) for row in breaks]
+    later = advancing(six.state, now_ms=32_000, overhead_levels=overhead, breaks=repeated,
+                      allows_completed_30s_trailing=False, allows_target_escalation=False)
+    assert later.state.accepted_ids == six.state.accepted_ids
+    assert later.target_amendment is None and later.state.target == opened.state.target
+    quote_only = advancing(later.state, now_ms=32_100, overhead_levels=overhead,
+                           price_bearing_bar=False, allows_target_escalation=False)
+    assert quote_only.target_amendment is None
+    with pytest.raises(ValueError):
+        advancing(opened.state, allows_target_escalation=0)
+
+
 def test_three_distinct_breaks_win_over_simultaneous_higher_low():
     opened = opening()
     breaks = [ResistanceBreak(31_000, level(index, center))

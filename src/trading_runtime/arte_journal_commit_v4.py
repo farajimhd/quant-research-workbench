@@ -1058,7 +1058,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or parent["action"] != "enter_long"
             or parent["protection_profile_id"]
                != "early-squeeze-fixed-stop-full-target"
-            or row["strategy_number"] not in (1, 2, 3, 4, 5)
+            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6)
             or row["boundary_ms"] != boundary_ms
             or elapsed.microseconds % 1_000
             or Decimal(str(row["frozen_gap"])) <= 0
@@ -1478,7 +1478,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     strategy_one_commands = {
         str(UUID(str(row["record_id"]))) for row in command_rows
         if str(row["strategy_id"]) == "early-squeeze-strategy"
-        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5)
+        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6)
     }
     lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)
                          for row in batch.v4_command_lineages)

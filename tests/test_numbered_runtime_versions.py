@@ -27,17 +27,24 @@ def configuration(fingerprint, number=2):
         envelope = compile_strategy_four_configuration(
             certify_numbered_configuration(reader, 3), approved_code_commit="c" * 40,
             approved_code_fingerprint=fingerprint, approval_reference="test-fourth-source-seal")
-    if number == 5:
+    if number >= 5:
         from pipelines.strategy_one.strategy_five_configuration import compile_strategy_five_configuration
         reader.payloads[4] = envelope["payload"]
         reader.sources[4] = (envelope["source_candidate_id"], envelope["source_candidate_hash"])
         envelope = compile_strategy_five_configuration(
             certify_numbered_configuration(reader, 4), approved_code_commit="d" * 40,
             approved_code_fingerprint=fingerprint, approval_reference="test-fifth-source-seal")
+    if number == 6:
+        from pipelines.strategy_one.strategy_six_configuration import compile_strategy_six_configuration
+        reader.payloads[5] = envelope["payload"]
+        reader.sources[5] = (envelope["source_candidate_id"], envelope["source_candidate_hash"])
+        envelope = compile_strategy_six_configuration(
+            certify_numbered_configuration(reader, 5), approved_code_commit="e" * 40,
+            approved_code_fingerprint=fingerprint, approval_reference="test-sixth-source-seal")
     return envelope["payload"]
 
 
-@pytest.mark.parametrize("number", [2, 3, 4, 5])
+@pytest.mark.parametrize("number", [2, 3, 4, 5, 6])
 def test_numbered_release_requires_its_own_projection_and_approved_source(monkeypatch, number):
     current = versions.LOADED_BACKEND_FINGERPRINT
     monkeypatch.setattr(versions, "backend_source_fingerprint", lambda: current)
@@ -54,7 +61,7 @@ def test_numbered_release_requires_its_own_projection_and_approved_source(monkey
     assert calls == [number]
 
 
-@pytest.mark.parametrize("number", [2, 3, 4, 5])
+@pytest.mark.parametrize("number", [2, 3, 4, 5, 6])
 def test_numbered_release_rejects_cross_number_assignment(monkeypatch, number):
     current = versions.LOADED_BACKEND_FINGERPRINT
     monkeypatch.setattr(versions, "backend_source_fingerprint", lambda: current)

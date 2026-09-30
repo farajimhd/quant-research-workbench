@@ -103,7 +103,7 @@ def compile_static_entry_gate(
                | (~bos).astype(np.uint8) * MISSING_COMPLETED_BOS
                | (~support).astype(np.uint8) * MISSING_BOS_SUPPORT
                | (~protection).astype(np.uint8) * MISSING_INITIAL_PROTECTION)
-    if strategy_number in (3, 4, 5):
+    if strategy_number in (3, 4, 5, 6):
         # Shape (candidate_count,): compare original sealed episode clocks.
         # The completed opening bucket belongs to the preceding session.
         boundaries = np.fromiter((fact.boundary_ms for fact in facts), dtype=np.int64)

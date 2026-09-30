@@ -343,7 +343,7 @@ async def run_strategy_one_fixed_session(
             or not isinstance(getattr(runtime, "journal", None), BacktestMemoryJournal)
             or config is None or config.mode != RunMode.BACKTEST
             or config.strategy_id != STRATEGY_ID
-            or config.strategy_revision not in (1, 2, 3, 4, 5)
+            or config.strategy_revision not in (1, 2, 3, 4, 5, 6)
             or not callable(getattr(runtime, "process_liquidity_boundary", None))
             or not callable(getattr(broker, "financially_active_tickers", None))
             or not callable(getattr(broker, "positions", None))
@@ -381,13 +381,13 @@ async def run_strategy_one_fixed_session(
     async def observe_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
         # Consume the bucket ending at the cutoff first. Cancel acquisition
         # remainder at its completed clock before any later bucket can fill.
-        if config.strategy_revision in (2, 3, 4, 5):
+        if config.strategy_revision in (2, 3, 4, 5, 6):
             await runtime.advance_numbered_session_clock(work.boundary_ms)
         await evidence.observe_completed_seconds(work)
 
     async def finish_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
         await finish_boundary(work)
-        if config.strategy_revision in (2, 3, 4, 5) and work.boundary_ms in (19_800_000, 57_600_000):
+        if config.strategy_revision in (2, 3, 4, 5, 6) and work.boundary_ms in (19_800_000, 57_600_000):
             active = broker.financially_active_tickers()
             if active:
                 raise RuntimeError(f"Strategy {config.strategy_revision} session ended with residual exposure/orders: {active}")

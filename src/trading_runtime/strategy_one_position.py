@@ -152,7 +152,8 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
                        breaks: Sequence[ResistanceBreak],
                        overhead_levels: Sequence[Mapping],
                        price_bearing_bar: bool,
-                       allows_completed_30s_trailing: bool = True) -> ProtectionTransition:
+                       allows_completed_30s_trailing: bool = True,
+                       allows_target_escalation: bool = True) -> ProtectionTransition:
     """Ratchet a filled position without looking beyond its completed clock.
 
     Distinct accepted resistances belong to this position, not the ticker's
@@ -163,6 +164,7 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
     """
     _quote(bid=bid, ask=ask, tick=tick)
     if (type(allows_completed_30s_trailing) is not bool
+            or type(allows_target_escalation) is not bool
             or not isinstance(state, ProtectionState) or type(now_ms) is not int
             or now_ms <= state.boundary_ms or now_ms % 100
             or not 0 < state.stop < state.target
@@ -228,7 +230,7 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
     target_amendment = (ordinal_target(
         rows=overhead_levels, ask=ask, tick=tick,
         broken_count=len(seen), previous_target=state.target)
-        if price_bearing_bar else None)
+        if price_bearing_bar and allows_target_escalation else None)
     effective_target = (target_amendment["price"] if target_amendment
                         else state.target)
     # A still-working target may be above or below the latest bid after a

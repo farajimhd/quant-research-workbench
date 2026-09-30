@@ -172,6 +172,28 @@ def test_five_manager_keeps_initial_stop_until_structural_ratchet():
     assert not any(call[0] == "add" for call in calls)
 
 
+def test_six_manager_keeps_initial_target_through_quote_gap_and_higher_overhead():
+    from types import SimpleNamespace
+    async def run(number):
+        source, runtime = _Evidence(), _Runtime()
+        runtime.config = SimpleNamespace(strategy_revision=number)
+        manager = StrategyOneManagementRunner(runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(replace(_proposal(), strategy_number=number))
+        await manager.on_management(_financial(), {}, 30_100)
+        source.rows[31_000] = _evidence(31_000, quote=False)
+        await manager.on_management(_financial(), {}, 31_000)
+        assert runtime.calls == [("entry", 30_100)]
+        source.rows[31_100] = replace(_evidence(31_100), overhead_levels=tuple(
+            _level(f"H{i}", 11 + i * .1) for i in range(1, 8)))
+        await manager.on_management(_financial(), {}, 31_100)
+        return manager._positions[("DU1", "A1", "AAA")], runtime.calls
+    five, _ = asyncio.run(run(5))
+    six, calls = asyncio.run(run(6))
+    assert five.target > six.target == _proposal().initial_target
+    assert five.stop == six.stop == _proposal().initial_stop
+    assert calls == [("entry", 30_100)]
+
+
 class _Evidence:
     def __init__(self):
         self.rows = {}

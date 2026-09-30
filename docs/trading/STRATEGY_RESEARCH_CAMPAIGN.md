@@ -352,3 +352,54 @@ projection preserves old outputs, attributes exits through exact causal journal
 sequence and command/intent lineage, and reports broker-observed drawdown
 separately with asynchronous/stale-mark limitations. Saved-performance cache
 keys include the new projection version.
+
+## Strategy 5 completed comparison and Strategy 6 hypothesis
+
+Published 920 normalized nodes from source commit
+`17dbfc517ddc39db6e22ff6af4c560ca8de3ae51`, configuration
+`strategy-one-5:6005fe00-ed35-4ff0-901f-21bee324b968`, payload hash
+`4eed607b0a66740b90fe2e66508e23adb32f17660bd266cad9c5e7b6e5eb92ca`.
+All four full sessions ran from the pinned laptop reproduction checkout,
+completed flat, and published with zero journal-writer failures. Backend
+restarts and the history API confirmed all four saved reviews are available.
+
+| Session | Run | Closed | Net P&L | Closed-episode DD | Broker-observed DD | Execution seconds |
+|---|---|---:|---:|---:|---:|---:|
+| August 18 PM | `4f4ec7a1-658e-44d6-9c9c-b392c501ec62` | 19 | $70.63 | $1,074.34 | $1,878.41 | 59.196 |
+| August 19 PM | `53f255ce-4a13-42cd-b8e0-699fb6bbe61a` | 26 | -$1,353.12 | $2,731.26 | $2,707.89 | 73.316 |
+| August 18 AH | `96345a55-b8a4-47fa-acd8-c4c25f1366f6` | 11 | -$800.33 | $1,168.99 | $1,387.10 | 40.427 |
+| August 19 AH | `57f21ce3-196a-41ec-ae6f-af10657009d9` | 7 | $166.12 | $291.66 | $828.32 | 50.367 |
+
+Independent-session net sums improve from Strategy 4's -$2,155.05846 to
+-$1,916.69530, a $238.36316 gain, but broker-observed drawdown worsens in
+every session. Strategy 4's corresponding broker-observed values were
+$1,531.58 / $2,254.23 / $842.37 / $596.13. These asynchronous extrema retain
+stale marks without an age limit and are not synchronized liquidation equity.
+Removing fixed-bar trailing alone is therefore not an accepted improvement.
+Longer holding increases processed market rows, while execution remains under
+74 seconds per session in this run; fewer journal events do not imply less
+market evaluation work. Keeper disconnect warnings occurred, but terminal
+completion, journal writes and subsequent verified report reads succeeded.
+
+Immutable Strategy 5 reports are under
+`strategy-optimization-20260930/strategy5_reports_v4`. The separate
+`verified_reports_v4/refresh-index.json` records refreshed reports for all
+14 prior completed runs (300 positions), zero unavailable final exit reasons,
+unchanged economics and saved contexts, and old/new source hashes. One
+attestation read failed closed and succeeded on a fresh-process retry.
+
+Strategy 6 will inherit Strategy 5 and freeze only the initial profit target.
+Initial protection, structural stop ratchets, the working-target stop ceiling,
+entry/reentry, sizing and session policies remain unchanged. This isolates
+target escalation without introducing resistance-failure or liquidity exits.
+It can truncate large winners and alter later cash allocation; neither the
+earlier YJ audit nor these aggregate results establish that target escalation
+is defective. All results remain development evidence from two dates.
+
+Strategy 6 execution checks passed 304 tests across 22 files, plus three
+registry checks. Configuration/publisher/report checks passed 123 tests;
+root integration checks passed 129. Review also extended the approved-source,
+extended-session-window and disabled-public-resume guards to number 6;
+66 focused checks passed after that correction. The real OMS test retains
+the initial target and fills only on a later certified liquidity bucket.
+Prior numbered release/compiler/publisher files remain unchanged.
