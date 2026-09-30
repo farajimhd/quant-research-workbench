@@ -65,7 +65,7 @@ def build_report(journal, market, run_id: str) -> dict:
     session, context, _, plan = certified_saved_run_plan(journal, market, run_id=run_id)
     number = int(context["strategy_revision"])
     numbered_evidence = {}
-    if number in (2, 3):
+    if number in (2, 3, 4):
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
         release = certify_numbered_configuration(market, number)
         if release.payload_hash != context["configuration_hash"]:

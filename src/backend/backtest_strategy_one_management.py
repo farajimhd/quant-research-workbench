@@ -310,7 +310,8 @@ class StrategyOneManagementRunner:
         # This 1s boundary and its co-terminating 100ms row are both closed.
         # Resistances become actionable only after protection has been
         # acknowledged. A rejection consumes this crossing, not a future one.
-        if (financial.pending_entry or financial.current_purchase_groups >= 3
+        if (not self.contract.allows_adds
+                or financial.pending_entry or financial.current_purchase_groups >= 3
                 or not self.contract.entry_allowed(boundary_ms)):
             return
         purchase_ordinal = financial.current_purchase_groups + 1

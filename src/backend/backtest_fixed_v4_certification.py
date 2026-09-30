@@ -61,7 +61,7 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
     tree = ast.parse(source)
     predicates = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                   and node.name == "is_numbered_fixed_strategy"]
-    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3))"
+    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4))"
     if (len(predicates) != 1 or len(predicates[0].body) != 1
             or ast.unparse(predicates[0].body[0]) != expected):
         raise ValueError("Numbered fixed identity whitelist changed")
@@ -79,7 +79,8 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
              Path(__file__).parents[1] / "trading_runtime" / "runtime.py",
              Path(__file__).parents[1] / "trading_runtime" / "order_management.py",
              Path(__file__).parents[1] / "trading_runtime" / "numbered_session_exit.py",
-             Path(__file__).with_name("backtest_strategy_one_static_gate.py"))
+             Path(__file__).with_name("backtest_strategy_one_static_gate.py"),
+             Path(__file__).with_name("backtest_strategy_one_management.py"))
     sources = tuple(path.read_text(encoding="utf-8") for path in paths)
     trees = tuple(ast.parse(source) for source in sources)
     def named(tree, name):
@@ -112,7 +113,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
             and isinstance(finish.body[0].value, ast.Await)
             and ast.unparse(finish.body[0].value.value) == "finish_boundary(work)"):
         raise ValueError("Numbered terminal cursor must complete before residual failure")
-    if strategy_number == 3:
+    if strategy_number in (3, 4):
         gate = named(trees[5], "compile_static_entry_gate")
         if not {"fromiter", "flatnonzero"} <= calls(gate):
             raise ValueError("Strategy 3 activation gate must remain vectorized")
@@ -128,11 +129,31 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                 and ast.unparse(key.value) == "runtime.config.strategy_revision"
                 for key in gates[0].keywords)):
             raise ValueError("Strategy 3 static gate is not bound to its selected contract")
+    if strategy_number == 4:
+        management = named(trees[6], "on_management")
+        guard = [node for node in management.body if isinstance(node, ast.If)
+                 and "not self.contract.allows_adds" in ast.unparse(node.test)]
+        confirmations = [node for node in management.body if isinstance(node, ast.Assign)
+                         and any(ast.unparse(target) == "self._positions[key]" for target in node.targets)]
+        add_source = named(trees[2], "submit_strategy_one_add")
+        submission_guards = [node for node in add_source.body if isinstance(node, ast.If)
+            and ast.unparse(node.test) == "not numbered_fixed_strategy(proposal.strategy_number).allows_adds"
+            and len(node.body) == 1 and isinstance(node.body[0], ast.Raise)]
+        submissions = [node for node in ast.walk(add_source) if isinstance(node, ast.Call)
+                       and isinstance(node.func, (ast.Name, ast.Attribute))
+                       and (node.func.id if isinstance(node.func, ast.Name) else node.func.attr)
+                       in {"strategy_one_add_intent", "_execute_intents"}]
+        if (len(guard) != 1 or len(guard[0].body) != 1
+                or not isinstance(guard[0].body[0], ast.Return)
+                or not confirmations or confirmations[-1].lineno >= guard[0].lineno
+                or len(submission_guards) != 1 or not submissions
+                or any(node.lineno <= submission_guards[0].lineno for node in submissions)):
+            raise ValueError("Strategy 4 must prohibit adds after confirmed protection")
     intents = [node for node in ast.walk(intent) if isinstance(node, ast.Call)
                and isinstance(node.func, ast.Name) and node.func.id == "StrategyIntent"]
     keywords = {key.arg: ast.unparse(key.value) for key in intents[0].keywords} if len(intents) == 1 else {}
     if (keywords.get("action") != "'exit'" or keywords.get("metadata") != "{}"
-            or keywords.get("reason") != "'strategy_two_session_exit' if strategy_number == 2 else 'strategy_three_session_exit'"):
+            or keywords.get("reason") != "'strategy_two_session_exit' if strategy_number == 2 else 'strategy_three_session_exit' if strategy_number == 3 else 'strategy_four_session_exit'"):
         raise ValueError("Strategy 2 liquidation source is not a normalized scalar exit")
     return sha256(json.dumps({"strategy_number": strategy_number, "inventory": base,
         "identity": _certify_numbered_identity(), "sources": tuple(

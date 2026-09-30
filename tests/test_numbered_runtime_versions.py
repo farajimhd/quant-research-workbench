@@ -13,17 +13,24 @@ def configuration(fingerprint, number=2):
         certify_strategy_one_configuration(reader), approved_code_commit="a" * 40,
         approved_code_fingerprint=fingerprint,
         approval_reference="test-numbered-source-seal")
-    if number == 3:
+    if number >= 3:
         from pipelines.strategy_one.strategy_three_configuration import compile_strategy_three_configuration
         reader.payloads[2] = envelope["payload"]
         reader.sources[2] = (envelope["source_candidate_id"], envelope["source_candidate_hash"])
         envelope = compile_strategy_three_configuration(
             certify_numbered_configuration(reader, 2), approved_code_commit="b" * 40,
             approved_code_fingerprint=fingerprint, approval_reference="test-third-source-seal")
+    if number == 4:
+        from pipelines.strategy_one.strategy_four_configuration import compile_strategy_four_configuration
+        reader.payloads[3] = envelope["payload"]
+        reader.sources[3] = (envelope["source_candidate_id"], envelope["source_candidate_hash"])
+        envelope = compile_strategy_four_configuration(
+            certify_numbered_configuration(reader, 3), approved_code_commit="c" * 40,
+            approved_code_fingerprint=fingerprint, approval_reference="test-fourth-source-seal")
     return envelope["payload"]
 
 
-@pytest.mark.parametrize("number", [2, 3])
+@pytest.mark.parametrize("number", [2, 3, 4])
 def test_numbered_release_requires_its_own_projection_and_approved_source(monkeypatch, number):
     current = versions.LOADED_BACKEND_FINGERPRINT
     monkeypatch.setattr(versions, "backend_source_fingerprint", lambda: current)
@@ -40,7 +47,7 @@ def test_numbered_release_requires_its_own_projection_and_approved_source(monkey
     assert calls == [number]
 
 
-@pytest.mark.parametrize("number", [2, 3])
+@pytest.mark.parametrize("number", [2, 3, 4])
 def test_numbered_release_rejects_cross_number_assignment(monkeypatch, number):
     current = versions.LOADED_BACKEND_FINGERPRINT
     monkeypatch.setattr(versions, "backend_source_fingerprint", lambda: current)

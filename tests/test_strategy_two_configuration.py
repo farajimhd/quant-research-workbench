@@ -90,7 +90,7 @@ def test_resealed_hidden_inherited_parameter_override_is_rejected_by_reader():
 
 def test_unknown_unsealed_and_wrong_selected_identity_rejected():
     reader, _, _ = prepared()
-    for number in (0, 4, True, "2"):
+    for number in (0, 5, True, "2"):
         with pytest.raises(ValueError):
             is_numbered_fixed_configuration({"strategy": {"strategy_number": number}})
     with pytest.raises(ValueError):

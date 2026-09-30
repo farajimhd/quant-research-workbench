@@ -33,7 +33,7 @@ def test_separate_session_policy(boundary, entry, cancel, exit_due):
     assert not baseline.liquidation_due(boundary)
 
 
-@pytest.mark.parametrize("number", [True, 0, 4, 2.0, "2"])
+@pytest.mark.parametrize("number", [True, 0, 5, 2.0, "2"])
 def test_registry_rejects_uninstalled_or_ambiguous_numbers(number):
     assert not is_numbered_fixed_strategy("early-squeeze-strategy", number)
     with pytest.raises(ValueError):
@@ -106,8 +106,28 @@ def test_cutoff_scan_occurs_once_and_is_safe_to_repeat_after_recovery():
 
 def test_numbered_projection_proof_includes_session_lane():
     from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
-    one, two = (certify_numbered_fixed_v4_projection(number) for number in (1, 2))
-    assert len(one) == len(two) == 64 and one != two
+    proofs = [certify_numbered_fixed_v4_projection(number) for number in (1, 2, 3, 4)]
+    assert all(len(proof) == 64 for proof in proofs) and len(set(proofs)) == 4
+
+
+def test_four_blocks_add_submission_before_journal_and_portfolio():
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.trading_runtime.strategy_one_add import StrategyOneAddProposal
+    from src.trading_runtime.signals import StrategyIntent, StrategyEvaluation
+    runtime = object.__new__(TradingRuntime)
+    runtime.config = SimpleNamespace(strategy_id="early-squeeze-strategy", strategy_revision=4,
+        mode=RunMode.BACKTEST, account_ids=("DU1",), anchor_date=date(2026, 8, 18))
+    runtime.journal = BacktestMemoryJournal(run_id="test-four")
+    proposal = StrategyOneAddProposal("DU1", "A1", "AAA", 31_000, "B1", 10., 10.01, 9.8, 12., 2, 4)
+    async def run():
+        with pytest.raises(ValueError, match="forbids add"):
+            await runtime.submit_strategy_one_add(proposal)
+        with pytest.raises(ValueError, match="forbids add"):
+            await runtime._execute_intents(StrategyEvaluation(intents=(StrategyIntent(
+                intent_id="forbidden", ticker="AAA", event_time=market_day_boundary(date(2026, 8, 18), 31_000),
+                action="add_long", quantity=1., reference_price=10.),)), "DU1", None)
+    asyncio.run(run())
+    assert runtime.journal.pending_record_count == 0
 
 
 def test_pending_semantic_exit_blocks_duplicate_liquidation():
@@ -175,7 +195,7 @@ def test_empty_liquidity_tail_cannot_claim_flat_terminal_success():
     scheduler.close()
 
 
-@pytest.mark.parametrize("number", [2, 3])
+@pytest.mark.parametrize("number", [2, 3, 4])
 def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity(number):
     from uuid import UUID
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -279,7 +299,7 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
             scalar_exits = [intent for unit in units
                 for intent in (unit.base if hasattr(unit, "base") else unit).intents
                 if intent["action"] == "exit"]
-            assert len(scalar_exits) == 1 and scalar_exits[0]["reason"] == ("strategy_two_session_exit" if number == 2 else "strategy_three_session_exit")
+            assert len(scalar_exits) == 1 and scalar_exits[0]["reason"] == ("strategy_two_session_exit" if number == 2 else "strategy_three_session_exit" if number == 3 else "strategy_four_session_exit")
             from tests.test_arte_journal_commit_v4 import attached_v4_client
             from src.trading_runtime.arte_journal_commit_v4 import _publish_typed_batch_v4, load_verified_v4_prefix
             from src.trading_runtime.arte_journal_compound_v4 import _publication_kwargs
@@ -312,7 +332,7 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("number", [2, 3])
+@pytest.mark.parametrize("number", [2, 3, 4])
 def test_residual_failure_completes_real_controller_cursor_and_terminal_journal(monkeypatch, number):
     import numpy as np
     from src.backend import backtest_strategy_one_execution as execution

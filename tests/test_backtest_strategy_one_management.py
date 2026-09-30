@@ -125,6 +125,28 @@ def test_manager_submits_at_most_two_distinct_add_groups_after_entry():
     asyncio.run(run())
 
 
+def test_four_retains_three_protection_state_but_never_submits_adds():
+    from types import SimpleNamespace
+    async def run(number):
+        source, runtime = _Evidence(), _Runtime()
+        runtime.config = SimpleNamespace(strategy_revision=number)
+        manager = StrategyOneManagementRunner(runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(replace(_proposal(), strategy_number=number))
+        await manager.on_management(_financial(), {}, 30_100)
+        breaks = tuple(ResistanceBreak(31_000, _level(f"B{i}", center))
+                       for i, center in enumerate((9.8, 9.9, 10.1), 1))
+        source.rows[31_000] = _evidence(31_000, breaks=breaks)
+        await manager.on_management(_financial(), _add_rows(), 31_000)
+        return runtime.calls, manager._positions[("DU1", "A1", "AAA")]
+    three_calls, three_state = asyncio.run(run(3))
+    four_calls, four_state = asyncio.run(run(4))
+    assert three_state == four_state
+    assert four_state.stop == 9.78
+    assert [call for call in three_calls if call[0] == "add"] == [("add", "B1"), ("add", "B2")]
+    assert four_calls == [call for call in three_calls if call[0] != "add"]
+    assert ("protection", 31_000) in four_calls
+
+
 class _Evidence:
     def __init__(self):
         self.rows = {}

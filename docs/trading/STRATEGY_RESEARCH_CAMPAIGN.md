@@ -201,3 +201,65 @@ session-window, source-seal, activation and real-controller tests. The
 activation policy applies to new entries, including reentry; held-position
 management and adds remain inherited. These checks precede full-session
 Strategy 3 acceptance and do not establish profitability.
+
+## Strategy 3 full-session evidence
+
+Published 910 normalized nodes from source commit
+`bded1dfac7a60145e57553a48e70d560a1558ed0`, configuration
+`strategy-one-3:3d0bac17-d306-4163-821f-db70fa417804`, payload hash
+`3ad54031a8b0d1fb65e7552aad0d5134c4207b18f9b11fff089f619b8b28ffcb`.
+Pinned workstation checkout:
+`D:/TradingML/codes/quant-research-workbench-strategy3-bded1dfac`.
+
+| Session | Run | Closed | Net P&L | Closed-episode max drawdown | Execution seconds |
+|---|---|---:|---:|---:|---:|
+| August 18 PM | `3a89c954-f344-498d-acfc-b75ec78b624e` | 26 | $154.38 | $1,126.02 | 65.046 |
+| August 19 PM | `84b996f8-6184-44a8-9bfc-b0069868a47e` | 32 | -$2,689.70 | $2,771.29 | 65.738 |
+| August 18 AH | `c20dfbac-9cff-4bb8-92e6-3ece4dda01f2` | 11 | $130.32 | $1,007.07 | 39.555 |
+| August 19 AH | `3bec6b8a-9afa-42b2-bbfc-ffff9cebfecb` | 10 | -$829.78 | $888.25 | 37.626 |
+
+All four sessions completed flat with zero failed journal-writer units.
+Reports are immutable under `strategy_one_research/strategy3_sessions_v1`.
+Premarket aggregate economics are unchanged. August 19 after-hours worsened
+by $255.77318 versus Strategy 2; removing early proposals changed available
+cash and later position sizes. August 18 after-hours now completes, but ten
+losses totaling $1,007.07 precede one BIVI winner of $1,137.39. This is fragile
+in-sample evidence, not an established edge. Timings include concurrent
+research/read activity and are not isolated performance benchmarks.
+
+The user requested backend refresh after completed changes or saved backtests.
+Managed backend restart also refreshed its active frontend dependent. The
+app API was verified to list all four Strategy 2 attempts and all four
+completed Strategy 3 runs; the incomplete Strategy 2 attempt remains explicitly
+uncommitted, without a verified review.
+
+## Strategy 4 research specification
+
+Disable position adds only. Preserve Strategy 3 entry, reentry, session-origin
+activation, initial sizing, stop/target management and session exits. Continue
+protection confirmation before declining adds, with a runtime guard against
+direct add submissions. Preserve all preceding numbered releases.
+
+YJ's nine August 19 premarket episodes netted -$780.31. Allocation of the
+observed fills to their actual exits attributes about -$246.83 to seed lots
+and -$533.49 to add lots. One winning episode benefited from adds, so removing
+adds has an upside cost as well as a risk hypothesis. These allocations are
+not counterfactual P&L: only a complete shared-cash rerun can test the change.
+The worst YJ loss lasted 6.4 seconds without crossing a completed 30-second
+boundary; loosening the 30-second trailing rule would not address that trigger.
+Read-only mechanics evidence is retained at
+`strategy-optimization-20260930/yj-next-increment-mechanics-research.json`.
+
+Strategy 4 implementation validation: 274 execution/journal regressions,
+97 configuration/publication/saved-reader checks and 102 integrated checks
+passed before publication. Tests preserve Strategy 3 protection state while
+blocking Strategy 4 add submission before journal or Portfolio side effects.
+
+Risk diagnostic correction: closed-episode drawdown omits unrealized swings.
+Verified broker-match V5 snapshots for the completed baseline sessions contain
+complete cumulative marked-equity extrema: PM August 18 $2,964.00312; PM
+August 19 $3,451.01126; AH August 19 $662.40217. Root/child hashes and terminal
+committed cursor were checked; Keeper was not independently attested in this
+diagnostic. A separate scoped report field is planned; do not overwrite the
+older reports or confuse this metric with a synchronized equity curve.
+Evidence: `strategy-optimization-20260930/diagnostic-findings-v1.json`.

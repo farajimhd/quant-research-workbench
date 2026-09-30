@@ -148,7 +148,7 @@ def load_committed_strategy_one_entry_page(
                 or row["record_id"] != str(uuid5(
                     NAMESPACE_URL, f"{parent}:strategy-one-entry"))
                 or row["event_month"] != session_date.replace(day=1).isoformat()
-                or row["strategy_number"] not in (1, 2, 3)):
+                or row["strategy_number"] not in (1, 2, 3, 4)):
             raise RuntimeError("Committed Strategy 1 entry evidence changed")
         intent = recovered.intent
         if intent.invalidation_price is None or intent.profit_target_price is None:

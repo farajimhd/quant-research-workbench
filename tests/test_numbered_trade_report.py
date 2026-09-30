@@ -8,7 +8,7 @@ from scripts.clickhouse import report_strategy_one_trades as report
 from src.backend import backtest_strategy_one_configuration as configuration
 
 
-@pytest.mark.parametrize("number", (2, 3))
+@pytest.mark.parametrize("number", (2, 3, 4))
 def test_numbered_report_requires_pinned_configuration_and_labels_number(monkeypatch, number):
     context = {"strategy_revision": number, "configuration_hash": "a" * 64, "initial_cash": 10000}
     monkeypatch.setattr(report, "load_v4_terminal_review_page", lambda *_a, **_kw: {"status": "completed"})
