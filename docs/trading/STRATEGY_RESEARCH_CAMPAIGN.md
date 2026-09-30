@@ -658,3 +658,74 @@ candidate boundaries fails closed pending a separately certified product.
 Live read-only August 18 preflight now reports both V7 seed and entry evidence
 ready. Strategy 9 source remains immutable; Strategy 10 will pin this repaired
 source while inheriting the same early-failure trading behavior.
+
+## Strategy 10 results and next failure-window experiment
+
+Strategy 10 was committed/pushed as `95865abbeb066780dbbfdacdca1fc1c55010bac3`,
+published as `strategy-one-10:e3ba035b-bad3-483f-b446-0be227ef9831`, payload
+`2298535fcef63b1a0b81a9ed2a1ddaff33a40f4cfe2a04f078e0eeca470c405e`.
+All four full-universe app-route runs completed with $10,000 initial cash,
+zero open lifecycles and zero failed journal units. The backend was restarted
+after saved runs, and the app history exposes all four completed V4 reviews.
+Actual position timestamps were converted to America/New_York before checking
+the PM/AH windows; no regular-hours entry or exit was observed.
+
+| Session | Run ID | Net P&L | Broker-observed marked drawdown |
+|---|---|---:|---:|
+| PM18 | `bdbd0487-bc09-4a97-a450-a25fd4a9a792` | 795.08018 | 1123.26780 |
+| PM19 | `5a6b99ed-ad8e-4978-94b4-c4cb00bdfe4e` | -832.29078 | 2365.25656 |
+| AH18 | `16849ab4-3576-4a5b-b4a4-c41966717e08` | -464.698265 | 938.20319 |
+| AH19 | `e7ba3b14-5c05-4b4a-93c2-b9269d352389` | 714.47128 | 710.00055 |
+
+Total net is 212.562415, up 175.46216 from Strategy 8, but only two sessions
+reach the $500 objective. AH drawdown increased despite improved AH P&L.
+Drawdown uses asynchronous broker-observed marks that can be retained without
+an age limit; it is not synchronized equity or guaranteed liquidation value.
+The comparison verifies identical retained market build/plan tokens versus 8;
+the new exclusion scope separately binds LGHL's certified zero candidates.
+Immutable comparison and per-position reports are under
+`D:/TradingML/runtimes/strategy-optimization-20260930/strategy10-four-session-comparison-v1.json`
+and `strategy10_reports_v4`. Float remains unavailable without a dedicated
+as-of reference reader; reports include completed entry volume/trade counts.
+
+Read-only entry diagnostics reject broad positive-MACD and minimum
+reward-to-risk gates as the next experiment: both screen out meaningful
+winners. The rising 10s histogram screen rejects 21 historical losers and
+three winners, including PFSA +754.34, so it also risks damaging big moves.
+Evidence files `strategy10-entry-momentum-diagnostic-v1.json` (SHA256
+`59b4db741809e4d522447f4a834230563d4cd1b8aa2f14b95fad7f7dd6d3fedb`)
+and `strategy10-entry-reward-risk-diagnostic-v1.json` (SHA256
+`a42d9f5839271a470cdea32f414a15b9989bedc906c9ef3510271b037b6aa100`)
+use exact completed producer indicators and original typed proposal prices.
+Their outcome-selected screens are not simulated counterfactual returns.
+
+XOS PM18 lost 488.009745 versus 8, mainly because two same-time entries exited
+on failure after approximately 255 and 155 seconds, whereas 8 later closed
+those holdings for +91.89823 and +231.20. Five additional XOS entries explain
+only -46.844765 of observed P&L. A stricter reentry rule therefore does not
+address the dominant observed damage. Reentry evidence is retained as
+`strategy10-reentry-xos-evidence-20260930T220441Z.json`, SHA256
+`7b022e5227d90b4ce52fbfe793718584ee2c2fbd61cad993ce509969dac7d6bb`.
+
+The next single-change experiment derives from exact Strategy 10. Limit its
+unchanged half-original-stop-distance/negative-completed-5s-MACD/fresh-bid
+failure exit to the first **60,000 ms inclusive after first held boundary**.
+No exit follows from elapsed time alone; later positions retain existing
+broker stop, fixed target, structural ratchets and session liquidation.
+First held means the first completed broker bucket containing quantity,
+not order submission, signal time or final fill VWAP. Reuse the existing
+normalized witness fields and checkpointed first-held state, with a new
+number-specific source seal. Missing data skips only the current proposal.
+The 60s bound is a fixed research hypothesis, not a selected optimal value.
+
+In the older observational Strategy 8 probe, the narrowed window qualifies
+17 losers and one winner (WFF), versus 24 losers/four winners without the
+window. That probe does not establish whole-post-fill-bar and current-bid
+parity with actual exit execution, nor predict P&L. Only a new full-session
+Strategy 11 run can establish the resulting allocation and fills.
+
+`strategy_early_followthrough_failure.py` contains the pure, unpublished rule;
+37 focused tests passed across it and the unchanged original rule. Strategy
+11 is not registered or published yet. Its manifest, runtime dispatch,
+normalized source sealing/cold recovery and four-session results remain
+required before adoption. The four-session goal stays active.
