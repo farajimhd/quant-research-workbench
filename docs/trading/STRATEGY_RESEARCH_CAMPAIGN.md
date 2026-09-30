@@ -447,3 +447,38 @@ release/compiler/publisher files remain unchanged. Strategy 6's detailed
 comparison is `strategy6-vs5-four-session-comparison-v1.json`: the same-price,
 same-quantity MSS entry gained from a 407-share target fill before its final
 602-share stop. Final exit labels alone do not describe partial-exit economics.
+
+## Strategy 7 completed comparison and research checkpoint
+
+Published 925 normalized nodes from commit
+`849070be672bb0f44049a48b48a2d8a397cc1240`, configuration
+`strategy-one-7:b536692f-9ef6-4f49-befd-a228bd073d4f`, payload hash
+`7e97fbb6eec5980383c46765f3b3725982b4965448022893a6be9e2e038d1cfa`.
+All four pinned-laptop sessions completed flat with zero writer failures.
+Restarts and the app history API confirmed all four saved reviews. Verified
+reports and `strategy7-four-session-manifest-v1.json` retain source hashes,
+timing, matching certified market plans and extended-window timestamp checks.
+
+| Session | Run | Closed | Net P&L | Closed-episode DD | Broker-observed DD | Execution seconds |
+|---|---|---:|---:|---:|---:|---:|
+| August 18 PM | `6821c5b5-40fd-4362-8710-bcf3a98d7d5f` | 29 | -$293.84 | $959.67 | $1,171.60 | 51.721 |
+| August 19 PM | `02f0d9f8-f62d-4ae6-b398-16efc27a4c20` | 33 | -$1,476.33 | $1,895.88 | $2,173.89 | 53.805 |
+| August 18 AH | `61ca1dcf-cee0-49b0-afbc-58edb3a34c5c` | 12 | -$352.89 | $502.92 | $726.58 | 31.144 |
+| August 19 AH | `c01c54a5-f0d2-4beb-9bff-f2a467ad9c3b` | 10 | -$319.13 | $526.29 | $596.13 | 30.677 |
+
+Strategy 7 sums to -$2,442.189585, $1,952.385815 below Strategy 6, despite
+lower broker-observed drawdown in every window. It improves P&L only in
+August 18 AH versus 6. Across the controlled target/trailing matrix, independent
+session sums are Strategy 4 -$2,155.06; 5 -$1,916.70; 6 -$489.80;
+7 -$2,442.19. Therefore retain 6 as the P&L research reference and 7 as a
+lower-drawdown comparison, not as accepted profitable strategies. Fixed targets
+helped without the fixed-bar trail but did not universally help with it.
+
+Next work should diagnose Strategy 6's initial-risk and failed-resistance
+losses before selecting another single change. A branch from 6 must record
+that explicit parent rather than pretend to inherit 7 or change prior seals.
+The naive liquidity-fade signal remains unaccepted because it also triggers
+on winners. No Strategy 8 implementation or publication exists at this
+checkpoint. Both reusable subagents completed; no child processes remain.
+The research goal remains active and additional certified dates are pending
+the user's notification. Task-history CSV updates have not been requested.
