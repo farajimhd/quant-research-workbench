@@ -292,6 +292,12 @@ def test_cold_oms_admission_joins_only_one_fenced_normalized_reservation() -> No
     name = "trading_portfolio_reservation_event_v1"
     client = MemoryClient()
     client.tables[name] = [_wire_row(name, typed_row(name, row))]
+    # Full-session portfolios can amend the same reservation thousands of
+    # times. Cold OMS admission needs only its one created revision, so the
+    # query must filter before applying the bounded page limit.
+    client.tables[name].extend({**client.tables[name][0],
+                                "event": "reservation_updated"}
+                               for _ in range(4100))
     client.tables["trading_event_v1"] = [{
         "record_id": record_id, "run_id": run_id, "batch_id": batch_id,
         "sequence": 1, "account_id": "DU1", "entity_id": "reservation-1",

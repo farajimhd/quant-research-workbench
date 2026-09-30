@@ -704,7 +704,7 @@ class MemoryClient:
                                 ("order_management", "order_command"),
                                 ("command", "order"),
                             }]
-            for field in ("account_id", "execution_id", "category", "entity_type"):
+            for field in ("account_id", "execution_id", "category", "entity_type", "event"):
                 if (fault_pair_filter or command_pair_filter) and field in {
                         "category", "entity_type"}:
                     continue

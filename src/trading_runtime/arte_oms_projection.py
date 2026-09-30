@@ -835,6 +835,7 @@ def load_committed_oms_admission_page(
     rows = _verified_rows(name, _rows(client,
         f"SELECT {columns} FROM arte.{name} "
         f"WHERE run_id={_literal(prefix.run_id)} AND intent_id IN ({ids}) "
+        "AND event='reservation_created' "
         f"{_committed_batch_filter(prefix)}"
         f"LIMIT {max_rows + 1} FORMAT JSONEachRow"))
     if len(rows) > max_rows:
