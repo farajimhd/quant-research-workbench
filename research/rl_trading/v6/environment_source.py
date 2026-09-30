@@ -7,6 +7,7 @@ require the existing certified execution-price sidecar, not candle volume.
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import numpy as np
 import polars as pl
 from research.rl_trading.v1 import arte_sql as sql
 from research.rl_trading.v1.arte_source import frame
@@ -39,29 +40,22 @@ def _execution_buckets(rows, origin):
         (pl.col('quote_count').fill_null(0)>1) |
         (pl.col('extrema_count').fill_null(0)>1)).height):
         raise ValueError('Duplicate pinned quote or extrema bucket')
-    invalid = rows.filter((pl.col('extremes_valid') == 1) &
-        (~((pl.col('low_int') > 0) & (pl.col('high_int') >= pl.col('low_int'))).fill_null(False)))
-    if invalid.height:
+    rows=rows.fill_null(0).sort('bucket_index','ticker')
+    columns={name:rows[name].to_numpy() for name in EXECUTION_SCHEMA if name!='ticker'}
+    extrema=columns['extremes_valid']==1
+    if np.any(extrema & ((columns['low_int']<=0) | (columns['high_int']<columns['low_int']))):
         raise ValueError('Malformed certified bucket extrema')
-    joined = rows.lazy().with_columns(
-        (pl.col('quote_count').fill_null(0)==1).alias('has_quote'),
-        *[pl.col(k).fill_null(0) for k in ('quote_timestamp_us','quote_valid',
-            'bid_int','ask_int','bid_size','ask_size','event_count','last_event_us')],
-        (origin+(pl.col('bucket_index')+1)*100_000).alias('close_us'))
-    joined = joined.with_columns(
-        ((pl.col('quote_valid') == 1) & (pl.col('event_count') > 0) &
-         (pl.col('last_event_us') >= pl.col('close_us')-100_000) &
-         (pl.col('last_event_us') < pl.col('close_us')) &
-         (pl.col('quote_timestamp_us') > 0) &
-         (pl.col('quote_timestamp_us') <= pl.col('last_event_us'))).fill_null(False).alias('valid'),
-        pl.when(pl.col('extremes_valid') == 1).then(pl.col('high_int')).alias('high'),
-        pl.when(pl.col('extremes_valid') == 1).then(pl.col('low_int')).alias('low'))
-    projected = joined.sort('close_us','ticker').select('ticker','close_us','has_quote',
-        'quote_timestamp_us','bid_int','ask_int','bid_size','ask_size','valid','high','low').collect()
+    close=origin+(columns['bucket_index']+1)*100_000
+    event=columns['last_event_us']; quoted=columns['quote_timestamp_us']
+    valid=((columns['quote_valid']==1) & (columns['event_count']>0) &
+           (event>=close-100_000) & (event<close) & (quoted>0) & (quoted<=event))
+    projected=rows.select('ticker','quote_count','quote_timestamp_us','bid_int','ask_int',
+                         'bid_size','ask_size','high_int','low_int').iter_rows()
     return tuple(ExecutionBucket(t,clock,
         Quote(clock,quoted,bid/10000,ask/10000,bs,ass,valid) if present else None,
-        high/10000 if high is not None else None,low/10000 if low is not None else None)
-        for t,clock,present,quoted,bid,ask,bs,ass,valid,high,low in projected.iter_rows())
+        high/10000 if has_extrema else None,low/10000 if has_extrema else None)
+        for (t,present,quoted,bid,ask,bs,ass,high,low),clock,valid,has_extrema
+        in zip(projected,close.tolist(),valid.tolist(),extrema.tolist()))
 
 
 class ArteExecutionSource:
