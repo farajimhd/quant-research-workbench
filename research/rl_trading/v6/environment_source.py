@@ -50,7 +50,8 @@ class ArteExecutionSource:
         """Prefetch execution-only evidence in bounded 15s ticker chunks.
 
         Future cached rows never leave this provider before their clock.
-        New/held listings share batched queries; abandoned cache is evicted.
+        New/held listings share batched queries. Recently closed listings retain
+        their already fetched rows until expiry, so reentries do not refetch.
         No quote cache is saved or exposed to the policy.
         """
         if not self.origin <= start_us < end_us <= self.end_us:
@@ -58,7 +59,16 @@ class ArteExecutionSource:
         tickers = sorted(set(tickers))
         if set(tickers)-set(self.attempts):
             raise ValueError('Execution listing absent from pinned broker population')
-        self.bucket_cache={t:v for t,v in self.bucket_cache.items() if t in tickers}
+        # Keep only unexpired evidence, bounded to 1,024 inactive listings.
+        # Requested listings are never evicted. Cached future rows remain private
+        # and the searchsorted interval below still enforces the decision clock.
+        active=set(tickers)
+        inactive=sorted(((t,v) for t,v in self.bucket_cache.items()
+                         if t not in active and v[1]>start_us),
+                        key=lambda item:item[1][1],reverse=True)[:1024]
+        retained={t:v for t,v in self.bucket_cache.items() if t in active}
+        self.bucket_cache=dict(inactive)
+        self.bucket_cache.update(retained)
         missing=[t for t in tickers if t not in self.bucket_cache or
                  self.bucket_cache[t][0]>start_us or self.bucket_cache[t][1]<end_us]
         if missing:

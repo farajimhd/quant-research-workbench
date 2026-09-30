@@ -116,6 +116,25 @@ def test_execution_prefetch_filters_future_and_reuses_batch():
     assert min(row.close_us for row in provider.buckets(1_000_000,2_000_000,['A']))>1_000_000
     assert len(calls)==1
 
+    # A closed position can reenter within the already fetched interval.
+    assert provider.buckets(2_000_000,3_000_000,[])==()
+    assert max(row.close_us for row in provider.buckets(3_000_000,4_000_000,['A']))==4_000_000
+    assert len(calls)==1
+    # Expiry causes a fresh bounded read, without returning expired rows.
+    assert provider.buckets(15_000_000,16_000_000,[])==()
+    assert not provider.bucket_cache
+    assert min(row.close_us for row in provider.buckets(16_000_000,17_000_000,['A']))>16_000_000
+    assert len(calls)==2
+
+
+def test_execution_cache_bounds_inactive_evidence():
+    provider=object.__new__(ArteExecutionSource)
+    provider.origin=0; provider.end_us=30_000_000
+    provider.attempts={}; provider.bucket_cache={str(i):(0,15_000_000,(),None)
+                                               for i in range(2000)}
+    assert provider.buckets(0,1_000_000,[])==()
+    assert len(provider.bucket_cache)==1024
+
 
 def test_risk_coefficients_are_explicit_finite():
     with pytest.raises(ValueError): RiskPenalty(halt_entry=float('nan'))
