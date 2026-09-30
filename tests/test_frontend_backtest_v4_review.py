@@ -16,7 +16,7 @@ def _performance_page():
 
 @unittest.skipUnless(os.environ.get("BACKTEST_REVIEW_UI"), "opt-in managed browser check")
 class BacktestV4ReviewUITests(unittest.TestCase):
-    def test_saved_ticker_uses_certified_canvas_with_backtest_progress(self):
+    def test_saved_ticker_uses_compact_certified_canvas_without_run_header(self):
         from playwright.sync_api import sync_playwright
 
         evidence = Path(os.environ["BACKTEST_REVIEW_EVIDENCE"])
@@ -67,8 +67,10 @@ class BacktestV4ReviewUITests(unittest.TestCase):
 
                 page.route("**/api/trading/**", handle)
                 page.goto(f"http://127.0.0.1:5173/?backtest_run={run_id}&backtest_ticker=WFF#canvas-focus")
-                page.get_by_role("progressbar", name="Backtest progress").wait_for()
-                self.assertEqual(page.get_by_role("progressbar", name="Backtest progress").get_attribute("aria-valuenow"), "100")
+                page.get_by_text("Charts & Quotes").wait_for()
+                self.assertEqual(page.get_by_role("progressbar", name="Backtest progress").count(), 0)
+                self.assertEqual(page.get_by_role("button", name="Return to journal").count(), 0)
+                self.assertEqual(page.get_by_role("button", name="Load earlier bars").count(), 0)
                 page.get_by_role("button", name="Restore chart panels").wait_for()
                 self.assertEqual(page.get_by_role("button", name="Resize upper and lower chart rows").count(), 0)
                 page.get_by_role("button", name="Restore chart panels").click()

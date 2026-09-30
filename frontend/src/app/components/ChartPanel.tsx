@@ -8084,12 +8084,39 @@ function drawTradeAnnotationPrimitiveGeometry(
     }
     // Broker-effective paths own protection geometry. A request is never
     // treated as a successful replacement, and each child order has its own rail.
-    annotation.protectionPath?.forEach((point, index, path) => {
+    // Keep every broker-effective rail and price transition, but bound text
+    // to the first and last visible state of each kind. Repeated labels on
+    // every OCA amendment obscure the candles and are not new information.
+    const protectionLabels = new Set<number>();
+    const nextProtectionPoint = new Map<number, NonNullable<typeof annotation.protectionPath>[number]>();
+    if (annotation.protectionPath) {
+      const nextByOrder = new Map<string, NonNullable<typeof annotation.protectionPath>[number]>();
+      for (let index = annotation.protectionPath.length - 1; index >= 0; index--) {
+        const point = annotation.protectionPath[index];
+        const next = nextByOrder.get(point.orderId);
+        if (next) nextProtectionPoint.set(index, next);
+        nextByOrder.set(point.orderId, point);
+      }
+      for (const kind of ["stop", "target"] as const) {
+        const visible: number[] = [];
+        annotation.protectionPath.forEach((point, index) => {
+          if (!point.active || point.kind !== kind) return;
+          const start = Math.max(annotation.entryTime, point.time);
+          const finish = Math.min(endTime, nextProtectionPoint.get(index)?.time ?? endTime);
+          if (finish >= firstTime && start <= lastTime && finish >= start) visible.push(index);
+        });
+        if (visible.length) {
+          protectionLabels.add(visible[0]);
+          protectionLabels.add(visible[visible.length - 1]);
+        }
+      }
+    }
+    annotation.protectionPath?.forEach((point, index) => {
       if (!point.active) return;
       const lineStyle = point.kind === "stop" ? elements.stopLine : elements.targetLine;
       const labelStyle = point.kind === "stop" ? elements.stopLabel : elements.targetLabel;
       if (!lineStyle.visible && !labelStyle.visible) return;
-      const next = path.slice(index + 1).find(candidate => candidate.orderId === point.orderId);
+      const next = nextProtectionPoint.get(index);
       const start = Math.max(annotation.entryTime, point.time);
       const finish = Math.min(endTime, next?.time ?? endTime);
       if (finish < firstTime || start > lastTime || finish < start) return;
@@ -8102,7 +8129,8 @@ function drawTradeAnnotationPrimitiveGeometry(
       if (right < 0 || left > width || right < left) return;
       drawCanvasTradeGuide(context, Math.max(0, left), Math.min(width, right), y, color,
         `${point.kind === "stop" ? "SL" : "TP"} ${formatPrice(point.price)}`, chartBackground, width, height,
-        lineStyle, labelStyle, labelLayout, elements.connector);
+        lineStyle, protectionLabels.has(index) ? labelStyle : { ...labelStyle, visible: false },
+        labelLayout, elements.connector);
       if (lineStyle.visible && next?.active && next.time <= endTime) {
         const nextY = priceSeries.priceToCoordinate(next.price);
         if (nextY !== null) {
