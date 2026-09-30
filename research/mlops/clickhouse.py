@@ -27,6 +27,30 @@ DEFAULT_DATABASE = "market_sip_raw"
 
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
 
+
+class _CoalescedRequestMixin:
+    """Send small SQL requests with their headers to avoid split-write latency.
+
+    Keep streaming, chunked, and large INSERT bodies on the standard-library
+    path. Combining small byte bodies does not change HTTP framing or retries.
+    """
+
+    def _send_output(self, message_body=None, encode_chunked=False):
+        if isinstance(message_body, bytes) and len(message_body) <= 65536 and not encode_chunked:
+            packet = b"\r\n".join(self._buffer) + b"\r\n\r\n" + message_body
+            self._buffer.clear()
+            self.send(packet)
+        else:
+            super()._send_output(message_body, encode_chunked=encode_chunked)
+
+
+class _CoalescedHTTPConnection(_CoalescedRequestMixin, http.client.HTTPConnection):
+    pass
+
+
+class _CoalescedHTTPSConnection(_CoalescedRequestMixin, http.client.HTTPSConnection):
+    pass
+
 CLICKHOUSE_URL_ENV = "CLICKHOUSE_URL"
 
 CLICKHOUSE_WORKSTATION_PASSWORD_ENV = "CLICKHOUSE_WORKSTATION_PASSWORD"
@@ -433,9 +457,9 @@ class ClickHouseHttpClient:
 
     def _new_connection(self) -> http.client.HTTPConnection:
         connection_type = (
-            http.client.HTTPSConnection
+            _CoalescedHTTPSConnection
             if self._parsed_url.scheme == "https"
-            else http.client.HTTPConnection
+            else _CoalescedHTTPConnection
         )
         return connection_type(
             self._parsed_url.hostname,
