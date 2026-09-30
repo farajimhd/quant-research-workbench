@@ -19,7 +19,8 @@ from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
     TABLES as BROKER_MATCH_TABLES, project_broker_match_snapshot,
-    BrokerMatchHead, verify_broker_match_snapshot,
+    BrokerMatchHead, float64_bits, float64_from_bits,
+    verify_broker_match_snapshot,
     load_attested_broker_match_snapshot,
     load_unattested_broker_match_snapshot,
 )
@@ -293,18 +294,20 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows.snapshot["position_count"], 1)
         self.assertEqual(rows.snapshot["open_order_count"], 1)
         self.assertEqual(rows.snapshot["ticker_count"], 1)
-        self.assertEqual(rows.open_orders[0]["filled"], 4.0)
+        self.assertEqual(float64_from_bits(rows.open_orders[0]["filled_f64_bits"], "filled"), 4.0)
         self.assertEqual(rows.tickers[0]["last_boundary_ms"], boundary_ms)
         self.assertEqual(verify_broker_match_snapshot(rows), rows)
-        # Float64 checkpoint columns must retain simulator residuals below a
-        # fixed Decimal scale; cold recovery cannot silently quantize them.
+        # Named UInt64 bit columns retain simulator residuals and ordinary
+        # decimal-looking floats through ClickHouse JSON transport exactly.
+        for value in (2.78, 1.61, 8.526512829121202e-14):
+            self.assertEqual(float64_from_bits(float64_bits(value, "test"), "test"), value)
         precision_state = self.broker.broker_match_snapshot_state()
         precision_state["performance_extrema"]["unrealized"] = 8.526512829121202e-14
         precise_rows = project_broker_match_snapshot(
             run_id="backtest:one", session_date=day,
             checkpoint_sequence=43, boundary_ms=boundary_ms,
             state=precision_state)
-        self.assertEqual(precise_rows.snapshot["unrealized"], 8.526512829121202e-14)
+        self.assertEqual(float64_from_bits(precise_rows.snapshot["unrealized_f64_bits"], "unrealized"), 8.526512829121202e-14)
         self.assertEqual(verify_broker_match_snapshot(precise_rows), precise_rows)
         class Reader:
             def execute(self, sql):
@@ -415,7 +418,7 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verify_broker_match_snapshot(stored), rows)
         with self.assertRaisesRegex(ValueError, "child hash differs"):
             verify_broker_match_snapshot(replace(
-                stored, open_orders=({**stored.open_orders[0], "filled": 5.0},)))
+                stored, open_orders=({**stored.open_orders[0], "filled_f64_bits": float64_bits(5.0, "filled")},)))
         with self.assertRaisesRegex(ValueError, "family seal"):
             verify_broker_match_snapshot(replace(stored, open_orders=()))
         class Reader:

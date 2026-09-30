@@ -4,8 +4,9 @@ This is only the simulator state that cannot be rebuilt from the committed V4
 OMS/fill journal and pinned ARTE liquidity bars. It deliberately does not store
 JSON, market quotes, executions, or expired same-bucket liquidity consumption.
 Projection is pure; a separate fenced writer publishes these rows before the
-cold-resume gate may use them. V4 keeps simulator Float64 state lossless while
-retaining separate, typed, normalized child tables.
+cold-resume gate may use them. V5 stores simulator Float64 bit patterns as
+named UInt64 scalars: ClickHouse 26.3 JSON Float64 parsing can change one ULP,
+which would corrupt an exact resume even though the table is normalized.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
 from math import isfinite
+from struct import pack, unpack
 from typing import Any, Mapping, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -25,7 +27,7 @@ from src.trading_runtime.strategy_one_protection_snapshot import _digest
 
 
 ROOT = TableContract(
-    "trading_strategy_one_broker_match_snapshot_v4",
+    "trading_strategy_one_broker_match_snapshot_v5",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("session_date", "Date"),
      ("checkpoint_sequence", "UInt64"), ("boundary_ms", "UInt32"),
@@ -33,11 +35,12 @@ ROOT = TableContract(
      ("next_order_id", "UInt64"), ("next_execution_id", "UInt64"),
      ("performance_complete", "UInt8"),
      ("performance_as_of", "Nullable(DateTime64(6, 'UTC'))"),
-     # These are simulator Float64 accumulators. A Decimal scale can reject
-     # valid binary-float residuals and cannot reproduce the resumed state.
-     ("unrealized", "Float64"), ("market_value", "Float64"),
-     ("peak_unrealized", "Float64"), ("worst_unrealized", "Float64"),
-     ("equity_peak", "Float64"), ("maximum_drawdown", "Float64"),
+     # Checkpoint internals must be bit-exact, not financially rounded.
+     ("unrealized_f64_bits", "UInt64"), ("market_value_f64_bits", "UInt64"),
+     ("peak_unrealized_f64_bits", "UInt64"),
+     ("worst_unrealized_f64_bits", "UInt64"),
+     ("equity_peak_f64_bits", "UInt64"),
+     ("maximum_drawdown_f64_bits", "UInt64"),
      ("account_count", "UInt32"), ("account_hash", "FixedString(64)"),
      ("position_count", "UInt32"), ("position_hash", "FixedString(64)"),
      ("open_order_count", "UInt32"), ("open_order_hash", "FixedString(64)"),
@@ -47,62 +50,62 @@ ROOT = TableContract(
     "toYYYYMM(snapshot_month)", "run_id, checkpoint_sequence, snapshot_id",
 )
 ACCOUNT = TableContract(
-    "trading_strategy_one_broker_match_account_v4",
+    "trading_strategy_one_broker_match_account_v5",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
-     ("account_id", "String"), ("cash", "Float64"),
-     ("realized_pnl", "Float64"), ("content_hash", "FixedString(64)")),
+     ("account_id", "String"), ("cash_f64_bits", "UInt64"),
+     ("realized_pnl_f64_bits", "UInt64"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, account_id",
 )
 POSITION = TableContract(
-    "trading_strategy_one_broker_match_position_v4",
+    "trading_strategy_one_broker_match_position_v5",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("account_id", "String"), ("conid", "UInt64"),
      ("ticker", "LowCardinality(String)"),
-     ("quantity", "Float64"), ("avg_cost", "Float64"),
-     ("realized_pnl", "Float64"), ("content_hash", "FixedString(64)")),
+     ("quantity_f64_bits", "UInt64"), ("avg_cost_f64_bits", "UInt64"),
+     ("realized_pnl_f64_bits", "UInt64"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, account_id, conid",
 )
 OPEN_ORDER = TableContract(
-    "trading_strategy_one_broker_match_open_order_v4",
+    "trading_strategy_one_broker_match_open_order_v5",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("broker_order_id", "String"), ("account_id", "String"),
      ("client_order_id", "String"), ("conid", "UInt64"),
      ("ticker", "LowCardinality(String)"), ("status", "String"),
      ("submitted_at", "DateTime64(6, 'UTC')"),
-     ("oca_group", "String"), ("filled", "Float64"),
-     ("effective_quantity", "Nullable(Float64)"),
-     ("effective_cash_quantity", "Nullable(Float64)"),
+     ("oca_group", "String"), ("filled_f64_bits", "UInt64"),
+     ("effective_quantity_f64_bits", "Nullable(UInt64)"),
+     ("effective_cash_quantity_f64_bits", "Nullable(UInt64)"),
      ("effective_request_hash", "FixedString(64)"),
-     ("avg_price", "Float64"), ("commission_paid", "Float64"),
-     ("stop_triggered", "UInt8"), ("trailing_reference", "Float64"),
+     ("avg_price_f64_bits", "UInt64"), ("commission_paid_f64_bits", "UInt64"),
+     ("stop_triggered", "UInt8"), ("trailing_reference_f64_bits", "UInt64"),
      ("status_description", "String"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, broker_order_id",
 )
 TICKER = TableContract(
-    "trading_strategy_one_broker_match_ticker_v4",
+    "trading_strategy_one_broker_match_ticker_v5",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("ticker", "LowCardinality(String)"), ("last_boundary_ms", "UInt32"),
-     ("has_mark", "UInt8"), ("mark", "Float64"),
+     ("has_mark", "UInt8"), ("mark_f64_bits", "UInt64"),
      ("has_quote", "UInt8"), ("quote_timestamp_us", "UInt64"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, ticker",
 )
 MARK = TableContract(
-    "trading_strategy_one_broker_match_performance_mark_v4",
+    "trading_strategy_one_broker_match_performance_mark_v5",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
-     ("conid", "UInt64"), ("mark", "Float64"),
+     ("conid", "UInt64"), ("mark_f64_bits", "UInt64"),
      ("has_performance_path", "UInt8"),
-     ("unrealized", "Float64"), ("market_value", "Float64"),
+     ("unrealized_f64_bits", "UInt64"), ("market_value_f64_bits", "UInt64"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, conid",
@@ -146,7 +149,7 @@ class ManagedBrokerMatchHeadReader:
         if (type(run_id) is not str or not run_id
                 or any(char in run_id for char in "\r\n\x00")):
             raise ValueError("Broker match head run is invalid")
-        return ("/trading/strategy-one-broker-match/v4/"
+        return ("/trading/strategy-one-broker-match/v5/"
                 + sha256(run_id.encode()).hexdigest() + "/head")
 
     def read_head(self, *, run_id: str) -> BrokerMatchHead:
@@ -180,6 +183,20 @@ def _float(value: Any, label: str) -> float:
     # ClickHouse's Float64 JSON renderer need not preserve a negative zero
     # spelling; canonicalize it before sealing on both write and cold read.
     return 0.0 if value == 0 else float(value)
+
+
+def float64_bits(value: Any, label: str) -> int:
+    """Encode one finite simulator float without a text-parser round trip."""
+    return int.from_bytes(pack(">d", _float(value, label)), "big")
+
+
+def float64_from_bits(bits: Any, label: str) -> float:
+    if type(bits) is not int or not 0 <= bits < 1 << 64:
+        raise ValueError(f"Broker match {label} bits are invalid")
+    value = unpack(">d", bits.to_bytes(8, "big"))[0]
+    if not isfinite(value) or bits == (1 << 63):
+        raise ValueError(f"Broker match {label} float is invalid")
+    return value
 
 
 def _time(value: Any, label: str) -> datetime:
@@ -236,7 +253,7 @@ def project_broker_match_snapshot(
     if initial.timestamp() > global_at:
         raise ValueError("Broker initial time is after checkpoint")
     snapshot_id = str(uuid5(NAMESPACE_URL,
-                            f"strategy-one-broker-match-v4:{run_id}:{checkpoint_sequence}"))
+                            f"strategy-one-broker-match-v5:{run_id}:{checkpoint_sequence}"))
     common = dict(snapshot_id=snapshot_id, run_id=run_id,
                   snapshot_month=session_date.replace(day=1).isoformat(),
                   checkpoint_sequence=checkpoint_sequence)
@@ -249,8 +266,9 @@ def project_broker_match_snapshot(
             or set(cash) != set(source_positions)):
         raise ValueError("Broker match snapshot account identities differ")
     accounts = tuple(_sealed(common, account_id=account,
-                             cash=_float(cash[account], "cash"),
-                             realized_pnl=_float(realized[account], "realized P&L"))
+                             cash_f64_bits=float64_bits(cash[account], "cash"),
+                             realized_pnl_f64_bits=float64_bits(
+                                 realized[account], "realized P&L"))
                      for account in sorted(account_ids))
     positions = []
     for account in sorted(account_ids):
@@ -263,9 +281,12 @@ def project_broker_match_snapshot(
             positions.append(_sealed(
                 common, account_id=account, conid=conid,
                 ticker=str(position["ticker"]),
-                quantity=_float(position["quantity"], "position quantity"),
-                avg_cost=_float(position["avg_cost"], "average cost"),
-                realized_pnl=_float(position["realized_pnl"], "position P&L")))
+                 quantity_f64_bits=float64_bits(
+                     position["quantity"], "position quantity"),
+                 avg_cost_f64_bits=float64_bits(
+                     position["avg_cost"], "average cost"),
+                 realized_pnl_f64_bits=float64_bits(
+                     position["realized_pnl"], "position P&L")))
     positions.sort(key=lambda row: (row["account_id"], row["conid"]))
     open_orders = []
     seen_orders = set()
@@ -274,8 +295,7 @@ def project_broker_match_snapshot(
         if status not in OPEN_ORDER_STATUSES:
             continue
         request = dict(order["request"])
-        # Normalize negative zero before sealing so a typed Float64
-        # ClickHouse round-trip and OrderRequest reconstruction hash alike.
+        # Normalize negative zero before sealing the effective request hash.
         for key in ("quantity", "cashQty"):
             if request.get(key) is not None:
                 request[key] = _float(request[key], key)
@@ -297,16 +317,20 @@ def project_broker_match_snapshot(
             status=status.value,
             submitted_at=_utc_text(submitted, "order submission"),
             oca_group=str(order.get("oca_group") or ""),
-            filled=_float(order["filled"], "filled quantity"),
-            effective_quantity=(_float(request["quantity"], "effective quantity")
-                                if request.get("quantity") is not None else None),
-            effective_cash_quantity=(_float(request["cashQty"], "effective cash quantity")
-                                     if request.get("cashQty") is not None else None),
-            effective_request_hash=_digest(request),
-            avg_price=_float(order["avg_price"], "fill average"),
-            commission_paid=_float(order["commission_paid"], "commission"),
-            stop_triggered=int(bool(order["stop_triggered"])),
-            trailing_reference=_float(order["trailing_reference"], "trailing reference"),
+             filled_f64_bits=float64_bits(order["filled"], "filled quantity"),
+             effective_quantity_f64_bits=(float64_bits(
+                 request["quantity"], "effective quantity")
+                 if request.get("quantity") is not None else None),
+             effective_cash_quantity_f64_bits=(float64_bits(
+                 request["cashQty"], "effective cash quantity")
+                 if request.get("cashQty") is not None else None),
+             effective_request_hash=_digest(request),
+             avg_price_f64_bits=float64_bits(order["avg_price"], "fill average"),
+             commission_paid_f64_bits=float64_bits(
+                 order["commission_paid"], "commission"),
+             stop_triggered=int(bool(order["stop_triggered"])),
+             trailing_reference_f64_bits=float64_bits(
+                 order["trailing_reference"], "trailing reference"),
             status_description=str(order.get("status_description") or "")))
     open_orders.sort(key=lambda row: row["broker_order_id"])
     boundaries = dict(state.get("bar_boundaries") or {})
@@ -330,7 +354,7 @@ def project_broker_match_snapshot(
         tickers.append(_sealed(
             common, ticker=ticker, last_boundary_ms=elapsed_ms,
             has_mark=int(ticker in bar_marks),
-            mark=_float(bar_marks.get(ticker, 0), "bar mark"),
+             mark_f64_bits=float64_bits(bar_marks.get(ticker, 0), "bar mark"),
             has_quote=int(quote is not None), quote_timestamp_us=quote_us))
     performance_marks = dict(state.get("performance_marks") or {})
     conid_marks = dict(state.get("marks") or {})
@@ -342,10 +366,12 @@ def project_broker_match_snapshot(
         if len(path) != 2 or int(conid) < 1:
             raise ValueError("Broker performance path is invalid")
         marks.append(_sealed(common, conid=int(conid),
-                             mark=_float(value, "mark"),
+                             mark_f64_bits=float64_bits(value, "mark"),
                              has_performance_path=int(conid in performance_marks),
-                             unrealized=_float(path[0], "unrealized mark"),
-                             market_value=_float(path[1], "market value mark")))
+                             unrealized_f64_bits=float64_bits(
+                                 path[0], "unrealized mark"),
+                             market_value_f64_bits=float64_bits(
+                                 path[1], "market value mark")))
     performance = dict(state.get("performance_extrema") or {})
     as_of = performance.get("as_of") or None
     if as_of is not None and _time(as_of, "performance time").timestamp() > global_at:
@@ -362,7 +388,7 @@ def project_broker_match_snapshot(
         raise ValueError("Broker counters are invalid")
     for name in ("unrealized", "market_value", "peak_unrealized",
                  "worst_unrealized", "equity_peak", "maximum_drawdown"):
-        root[name] = _float(performance[name], name)
+        root[f"{name}_f64_bits"] = float64_bits(performance[name], name)
     families = (tuple(accounts), tuple(positions), tuple(open_orders),
                 tuple(tickers), tuple(marks))
     for name, rows in zip(("account", "position", "open_order", "ticker", "mark"),
@@ -385,11 +411,12 @@ def _canonical_row(contract: TableContract, value: Mapping[str, Any]) -> dict[st
             row[name] = None
         elif "DateTime64(" in kind:
             row[name] = _utc_text(item, name, from_clickhouse=True)
-        elif kind in ("Float64", "Nullable(Float64)"):
-            row[name] = _float(item, name)
-        elif kind.startswith("UInt"):
-            if type(item) is not int or item < 0:
+        elif kind.startswith("UInt") or kind == "Nullable(UInt64)":
+            if type(item) is not int or item < 0 or name.endswith("_f64_bits") \
+                    and item >= 1 << 64:
                 raise ValueError("Broker match integer is invalid")
+            if name.endswith("_f64_bits"):
+                float64_from_bits(item, name)
             row[name] = item
         elif kind == "UUID":
             row[name] = str(UUID(str(item)))
@@ -440,7 +467,7 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
             or not 0 < root["boundary_ms"] <= 57_600_000
             or root["boundary_ms"] % 100
             or root["snapshot_id"] != str(uuid5(
-                NAMESPACE_URL, f"strategy-one-broker-match-v4:"
+                NAMESPACE_URL, f"strategy-one-broker-match-v5:"
                 f"{root['run_id']}:{root['checkpoint_sequence']}"))
             or root["snapshot_month"] != root["session_date"][:7] + "-01"
             or root["next_order_id"] < 1 or root["next_execution_id"] < 1
@@ -465,17 +492,24 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
     for row in orders:
         if (OrderStatus(row["status"]) not in OPEN_ORDER_STATUSES
                 or not row["client_order_id"] or not row["ticker"]
-                or row["conid"] < 1 or row["filled"] < 0
-                or row["commission_paid"] < 0
+                or row["conid"] < 1
+                or float64_from_bits(row["filled_f64_bits"], "filled") < 0
+                or float64_from_bits(
+                    row["commission_paid_f64_bits"], "commission") < 0
                 or _time(row["submitted_at"], "order time") > cutoff):
             raise ValueError("Broker match open order is invalid")
-        effective_qty = row["effective_quantity"]
-        effective_cash = row["effective_cash_quantity"]
+        effective_qty = (float64_from_bits(row["effective_quantity_f64_bits"],
+                           "effective quantity")
+                         if row["effective_quantity_f64_bits"] is not None else None)
+        effective_cash = (float64_from_bits(row["effective_cash_quantity_f64_bits"],
+                            "effective cash quantity")
+                          if row["effective_cash_quantity_f64_bits"] is not None else None)
         request_hash = row["effective_request_hash"]
         if ((effective_qty is None) == (effective_cash is None)
                 or effective_qty is not None and effective_qty <= 0
                 or effective_cash is not None and effective_cash <= 0
-                or effective_qty is not None and effective_qty < row["filled"]
+                or effective_qty is not None and effective_qty <
+                   float64_from_bits(row["filled_f64_bits"], "filled")
                 or len(request_hash) != 64
                 or any(char not in "0123456789abcdef" for char in request_hash)):
             raise ValueError("Broker match effective request is invalid")
@@ -484,7 +518,7 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
                 or row["last_boundary_ms"] % 100
                 or row["has_mark"] not in (0, 1)
                 or row["has_quote"] not in (0, 1)
-                or not row["has_mark"] and row["mark"] != 0
+                or not row["has_mark"] and row["mark_f64_bits"] != 0
                 or bool(row["quote_timestamp_us"]) != bool(row["has_quote"])):
             raise ValueError("Broker match ticker boundary is invalid")
         at = market_day_boundary(date.fromisoformat(root["session_date"]),
@@ -494,7 +528,8 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
     if (any(row["conid"] < 1 for row in (*positions, *marks))
             or any(row["has_performance_path"] not in (0, 1)
                    or not row["has_performance_path"]
-                   and (row["unrealized"] != 0 or row["market_value"] != 0)
+                   and (row["unrealized_f64_bits"] != 0
+                        or row["market_value_f64_bits"] != 0)
                    for row in marks)):
         raise ValueError("Broker match conid is invalid")
     if root["content_hash"] != _digest({

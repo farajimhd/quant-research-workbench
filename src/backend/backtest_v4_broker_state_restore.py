@@ -13,7 +13,7 @@ from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_v4_broker_quote_restore import CompletedBrokerQuote
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
-    BrokerMatchSnapshotRows, verify_broker_match_snapshot,
+    BrokerMatchSnapshotRows, float64_from_bits, verify_broker_match_snapshot,
 )
 from src.trading_runtime.strategy_one_protection_snapshot import _digest
 
@@ -51,7 +51,7 @@ def reconstruct_broker_match_state(
         at = origin + timedelta(milliseconds=int(row["last_boundary_ms"]))
         boundaries[ticker] = at.astimezone(timezone.utc).isoformat()
         if row["has_mark"]:
-            bar_marks[ticker] = float(row["mark"])
+            bar_marks[ticker] = float64_from_bits(row["mark_f64_bits"], "bar mark")
         if row["has_quote"]:
             quote = quotes[ticker]
             if (quote.ticker != ticker
@@ -80,10 +80,12 @@ def reconstruct_broker_match_state(
             raise RuntimeError("Broker restoration OMS request differs")
         request = replace(
             request,
-            quantity=(float(row["effective_quantity"])
-                      if row["effective_quantity"] is not None else None),
-            cashQty=(float(row["effective_cash_quantity"])
-                     if row["effective_cash_quantity"] is not None else None),
+            quantity=(float64_from_bits(row["effective_quantity_f64_bits"],
+                                        "effective quantity")
+                      if row["effective_quantity_f64_bits"] is not None else None),
+            cashQty=(float64_from_bits(row["effective_cash_quantity_f64_bits"],
+                                       "effective cash quantity")
+                     if row["effective_cash_quantity_f64_bits"] is not None else None),
         )
         request_payload = request.to_cpapi()
         request_payload.update({key: value for key, value in request.raw.items()
@@ -93,11 +95,14 @@ def reconstruct_broker_match_state(
         orders.append(dict(
             request=request_payload, order_id=row["broker_order_id"],
             status=row["status"], submitted_at=row["submitted_at"],
-            oca_group=row["oca_group"], filled=float(row["filled"]),
-            avg_price=float(row["avg_price"]),
-            commission_paid=float(row["commission_paid"]),
+            oca_group=row["oca_group"],
+            filled=float64_from_bits(row["filled_f64_bits"], "filled"),
+            avg_price=float64_from_bits(row["avg_price_f64_bits"], "average price"),
+            commission_paid=float64_from_bits(
+                row["commission_paid_f64_bits"], "commission"),
             stop_triggered=bool(row["stop_triggered"]),
-            trailing_reference=float(row["trailing_reference"]),
+            trailing_reference=float64_from_bits(
+                row["trailing_reference_f64_bits"], "trailing reference"),
             status_description=row["status_description"],
         ))
     performance = {
@@ -106,25 +111,32 @@ def reconstruct_broker_match_state(
     }
     for name in ("unrealized", "market_value", "peak_unrealized",
                  "worst_unrealized", "equity_peak", "maximum_drawdown"):
-        performance[name] = float(root[name])
+        performance[name] = float64_from_bits(root[f"{name}_f64_bits"], name)
     return dict(
         schema_version=4, initial_time=root["initial_time"],
         account_ids=account_ids,
-        cash={row["account_id"]: float(row["cash"]) for row in verified.accounts},
-        realized_pnl={row["account_id"]: float(row["realized_pnl"])
+        cash={row["account_id"]: float64_from_bits(row["cash_f64_bits"], "cash")
+              for row in verified.accounts},
+        realized_pnl={row["account_id"]: float64_from_bits(
+                          row["realized_pnl_f64_bits"], "realized P&L")
                       for row in verified.accounts},
         positions={account: [dict(
             conid=row["conid"], ticker=row["ticker"],
-            quantity=float(row["quantity"]), avg_cost=float(row["avg_cost"]),
-            realized_pnl=float(row["realized_pnl"]))
+            quantity=float64_from_bits(row["quantity_f64_bits"], "position quantity"),
+            avg_cost=float64_from_bits(row["avg_cost_f64_bits"], "average cost"),
+            realized_pnl=float64_from_bits(
+                row["realized_pnl_f64_bits"], "position P&L"))
             for row in verified.positions if row["account_id"] == account]
             for account in account_ids},
         orders=orders, liquidity_consumed={}, bar_mode=True,
         bar_boundaries=boundaries, bar_marks_by_ticker=bar_marks,
         quotes_by_ticker=quote_states,
-        marks={str(row["conid"]): float(row["mark"]) for row in verified.marks},
-        performance_marks={str(row["conid"]): [float(row["unrealized"]),
-                          float(row["market_value"])] for row in verified.marks
+        marks={str(row["conid"]): float64_from_bits(row["mark_f64_bits"], "mark")
+               for row in verified.marks},
+        performance_marks={str(row["conid"]): [
+            float64_from_bits(row["unrealized_f64_bits"], "unrealized mark"),
+            float64_from_bits(row["market_value_f64_bits"], "market value mark")]
+            for row in verified.marks
                           if row["has_performance_path"]},
         performance_extrema=performance,
         next_order_id=root["next_order_id"],
