@@ -17,6 +17,7 @@ from heapq import heappop, heappush
 from itertools import islice
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, Mapping
+from urllib.error import URLError
 
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, iter_market_boundary_groups,
@@ -205,19 +206,31 @@ def persisted_active_market_source(
                     end = min(cursor + span, through_boundary_ms)
                     if end <= cursor:
                         break
-                    rows = iter_market_day_rows(
-                        scoped, client=reader, after_boundary_ms=cursor,
-                        through_boundary_ms=end, price_plan=prices)
-                    try:
-                        for day, boundary, symbol, resolutions in iter_market_boundary_groups(rows):
-                            if day != plan.sessions[0] or symbol != ticker:
-                                raise ValueError("Active Strategy 1 market row changed ticker scope")
-                            if not first_recorded and stage_time is not None:
-                                stage_time("strategy_one_active_first_row", started)
-                                first_recorded = True
-                            yield boundary, resolutions
-                    finally:
-                        rows.close()
+                    for attempt in range(2):
+                        emitted = False
+                        rows = iter_market_day_rows(
+                            scoped, client=reader, after_boundary_ms=cursor,
+                            through_boundary_ms=end, price_plan=prices)
+                        try:
+                            for day, boundary, symbol, resolutions in iter_market_boundary_groups(rows):
+                                if day != plan.sessions[0] or symbol != ticker:
+                                    raise ValueError("Active Strategy 1 market row changed ticker scope")
+                                if not first_recorded and stage_time is not None:
+                                    stage_time("strategy_one_active_first_row", started)
+                                    first_recorded = True
+                                emitted = True
+                                yield boundary, resolutions
+                        except (URLError, TimeoutError, ConnectionResetError,
+                                ConnectionAbortedError, BrokenPipeError):
+                            # This is one pinned, read-only SELECT. It is safe
+                            # to retry only when no boundary escaped the
+                            # iterator; a partial stream must fail closed.
+                            if emitted or attempt:
+                                raise
+                        else:
+                            break
+                        finally:
+                            rows.close()
                     cursor = end
                     if cursor == through_boundary_ms:
                         break

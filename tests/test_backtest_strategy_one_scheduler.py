@@ -890,7 +890,10 @@ def test_active_source_reads_persisted_window_and_closes_on_deactivation():
     clock.close()
 
 
-def test_active_source_expands_horizon_without_duplicate_or_missing_boundaries(monkeypatch):
+@pytest.mark.parametrize("transient_first", [False, True])
+def test_active_source_expands_horizon_without_duplicate_or_missing_boundaries(
+    monkeypatch, transient_first,
+):
     build = "a" * 64
     attempt = "00000000-0000-0000-0000-000000000001"
     units = tuple(MarketDayUnit(build, DAY, "AAA", stage, attempt,
@@ -908,10 +911,15 @@ def test_active_source_expands_horizon_without_duplicate_or_missing_boundaries(m
                     client, price_plan):
         assert price_plan is not None and client is reader
         windows.append((after_boundary_ms, through_boundary_ms))
-        return (dict(session_date=DAY, ticker="AAA", resolution_ms=100,
-                     boundary_ms=boundary)
-                for boundary in boundaries
-                if after_boundary_ms < boundary <= through_boundary_ms)
+        def stream():
+            if transient_first and len(windows) == 1:
+                from urllib.error import URLError
+                raise URLError("transient pre-yield read failure")
+            yield from (dict(session_date=DAY, ticker="AAA", resolution_ms=100,
+                             boundary_ms=boundary)
+                        for boundary in boundaries
+                        if after_boundary_ms < boundary <= through_boundary_ms)
+        return stream()
 
     monkeypatch.setattr(scheduler_module, "iter_market_day_rows", market_rows)
     reader = SimpleNamespace(closed=False)
@@ -920,6 +928,47 @@ def test_active_source_expands_horizon_without_duplicate_or_missing_boundaries(m
         plan, price_plan=prices, through_boundary_ms=9_400_000,
         client_factory=lambda: reader)
     assert [boundary for boundary, _ in source("AAA", 0)] == list(boundaries)
-    assert windows == [(0, 300_000), (300_000, 2_100_000),
+    assert windows == ([(0, 300_000)] if transient_first else []) + [
+                       (0, 300_000), (300_000, 2_100_000),
                        (2_100_000, 9_300_000), (9_300_000, 9_400_000)]
+    assert reader.closed
+
+
+def test_active_source_never_retries_after_a_completed_boundary(monkeypatch):
+    from urllib.error import URLError
+
+    build = "a" * 64
+    attempt = "00000000-0000-0000-0000-000000000001"
+    units = tuple(MarketDayUnit(build, DAY, "AAA", stage, attempt,
+                                "b" * 64, 1, "c" * 64)
+                  for stage in ("bars", "technical", "broker_100ms"))
+    plan = CertifiedMarketDayPlan(
+        ExecutionInterval.parse("100ms"), build, "d" * 64,
+        (DAY,), ("AAA",), units, (100, 1_000), "e" * 64)
+    prices = PriceLevelPlan(build, (PriceLevelUnit(
+        DAY, "AAA", attempt, attempt, 0, 0, 0., "f" * 64),), "g" * 64)
+    calls = []
+
+    def market_rows(_plan, *, after_boundary_ms, through_boundary_ms,
+                    client, price_plan):
+        calls.append((after_boundary_ms, through_boundary_ms))
+        def stream():
+            for boundary in (100, 200):
+                yield dict(session_date=DAY, ticker="AAA", resolution_ms=100,
+                           boundary_ms=boundary)
+            raise URLError("partial stream")
+        return stream()
+
+    monkeypatch.setattr(scheduler_module, "iter_market_day_rows", market_rows)
+    reader = SimpleNamespace(closed=False)
+    reader.close = lambda: setattr(reader, "closed", True)
+    source = persisted_active_market_source(
+        plan, price_plan=prices, through_boundary_ms=300_000,
+        client_factory=lambda: reader)
+    stream = source("AAA", 0)
+    with pytest.raises(URLError, match="partial stream"):
+        next(stream)
+    # The buffered scheduler consumed one completed group internally before
+    # the transport failed; replaying this window could duplicate that group.
+    assert calls == [(0, 300_000)]
     assert reader.closed
