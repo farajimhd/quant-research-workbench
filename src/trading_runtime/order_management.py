@@ -423,6 +423,10 @@ class OrderManagementEngine:
             else asyncio.Lock()
         )
         self._groups: dict[str, _ManagedOrderGroup] = {}
+        # Strategy execution asks for one assignment at each completed market
+        # boundary. Index the authoritative mutable groups once at admission;
+        # never sort/snapshot every historical group for each 100 ms read.
+        self._groups_by_assignment: dict[tuple[str, str], list[_ManagedOrderGroup]] = {}
         self._entry_trade_prices: dict[str, tuple[datetime, float]] = {}
         self._body_entry_group_ids: set[str] = set()
         self._group_by_client_id: dict[str, str] = {}
@@ -755,7 +759,7 @@ class OrderManagementEngine:
                 ),
                 protection_delegated=bool(payload.get("protection_delegated")),
             )
-            self._groups[group_id] = group
+            self._remember_group(group)
             if group.intent.metadata.get('entry_body_trigger'):
                 self._body_entry_group_ids.add(group_id)
             for request in group.orders:
@@ -1009,7 +1013,7 @@ class OrderManagementEngine:
             remaining_quantity=float(working_intent.quantity),
             current_limit_price=(tactic.steps[0].price if tactic and tactic.steps else None),
         )
-        self._groups[group.group_id] = group
+        self._remember_group(group)
         if group.intent.metadata.get('entry_body_trigger'):
             self._body_entry_group_ids.add(group.group_id)
         for order in group.orders:
@@ -1197,7 +1201,7 @@ class OrderManagementEngine:
             orders=[],
             remaining_quantity=0.0,
         )
-        self._groups[group.group_id] = group
+        self._remember_group(group)
         self._record(
             "order_management",
             "protected_exit_already_satisfied",
@@ -1679,6 +1683,34 @@ class OrderManagementEngine:
         return [
             group.snapshot(self.policy.version)
             for group in sorted(self._groups.values(), key=lambda item: item.created_at)
+        ]
+
+    def _remember_group(self, group: _ManagedOrderGroup) -> None:
+        """Register one authoritative group in both exact-identity views."""
+        if group.group_id in self._groups:
+            raise RuntimeError("OMS group identity was registered twice")
+        assignment_id = str(group.intent.metadata.get("assignment_id") or "")
+        self._groups[group.group_id] = group
+        self._groups_by_assignment.setdefault(
+            (group.account_id, assignment_id), []).append(group)
+
+    def snapshots_for_assignment(
+        self, account_id: str, assignment_id: str,
+    ) -> list[OrderGroupSnapshot]:
+        """Snapshot only one assignment without scanning unrelated groups.
+
+        The index holds the same mutable groups as ``_groups``; order state
+        transitions need no duplicate write and the global snapshots API is
+        retained for recovery, journals, and other consumers.
+        """
+        if not account_id or not assignment_id:
+            raise ValueError("OMS assignment snapshot needs exact identities")
+        return [
+            group.snapshot(self.policy.version)
+            for group in sorted(
+                self._groups_by_assignment.get((account_id, assignment_id), ()),
+                key=lambda item: item.created_at,
+            )
         ]
 
     def capture_observed_broker_states(self) -> dict[str, object]:
@@ -2195,7 +2227,7 @@ class OrderManagementEngine:
             group.decision_to_submit_ms = (perf_counter() - started) * 1000.0
             group.submitted_at = self._causal_group_time(
                 group.intent, previous=group.updated_at)
-            self._groups[group.group_id] = group
+            self._remember_group(group)
             for broker_order_id in broker_order_ids:
                 self._group_by_broker_id[broker_order_id] = group.group_id
             for protected in source_groups.values():
@@ -2296,7 +2328,7 @@ class OrderManagementEngine:
                 },
                 remaining_quantity=float(intent.quantity),
             )
-            self._groups[group.group_id] = group
+            self._remember_group(group)
             self._group_by_broker_id[broker_order_id] = group.group_id
             # The replacement can fill synchronously (the simulator does this,
             # and a live broker may publish the fill before modify_order

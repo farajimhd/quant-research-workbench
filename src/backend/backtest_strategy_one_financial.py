@@ -43,10 +43,21 @@ async def read_strategy_one_financial_views(
         by_account[account_id] = await broker.positions(account_id)
     wanted = {(row.account_id, row.assignment_id): row for row in assignments}
     by_assignment = {key: [] for key in wanted}
-    for group in order_manager.snapshots():
-        key = (group.account_id, group.assignment_id)
-        if key in by_assignment:
-            by_assignment[key].append(group)
+    indexed_snapshots = getattr(order_manager, "snapshots_for_assignment", None)
+    if callable(indexed_snapshots):
+        for key in wanted:
+            groups = indexed_snapshots(*key)
+            if any((group.account_id, group.assignment_id) != key
+                   for group in groups):
+                raise RuntimeError("Indexed OMS snapshot crossed its assignment")
+            by_assignment[key] = groups
+    else:
+        # Lightweight test doubles and older non-Strategy-1 managers retain
+        # the global API; the numbered runtime uses the indexed OMS owner.
+        for group in order_manager.snapshots():
+            key = (group.account_id, group.assignment_id)
+            if key in by_assignment:
+                by_assignment[key].append(group)
     result = []
     for assignment in assignments:
         positions = by_account[assignment.account_id]

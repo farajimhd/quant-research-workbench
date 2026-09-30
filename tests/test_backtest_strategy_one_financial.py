@@ -109,6 +109,33 @@ def test_same_ticker_assignments_share_one_account_read_and_oms_snapshot():
     assert reads == {"positions": 1, "groups": 1}
 
 
+def test_financial_view_uses_exact_indexed_oms_snapshot_when_available():
+    async def positions(_account):
+        return [SimpleNamespace(conid=123, contractDesc="AAA", position=5.)]
+
+    requested = []
+
+    def indexed(account_id, assignment_id):
+        requested.append((account_id, assignment_id))
+        return [_group(filled=5., closed=True)]
+
+    def global_snapshot():
+        pytest.fail("Strategy 1 scanned the global OMS history")
+
+    manager = SimpleNamespace(
+        snapshots_for_assignment=indexed, snapshots=global_snapshot)
+    view = asyncio.run(read_strategy_one_financial_view(
+        _assignment(), SimpleNamespace(positions=positions), manager))
+    assert view.position_quantity == 5.
+    assert requested == [("DU1", "assignment-1")]
+
+    manager.snapshots_for_assignment = lambda *_: [
+        SimpleNamespace(**{**vars(_group()), "assignment_id": "foreign"})]
+    with pytest.raises(RuntimeError, match="crossed its assignment"):
+        asyncio.run(read_strategy_one_financial_view(
+            _assignment(), SimpleNamespace(positions=positions), manager))
+
+
 @pytest.mark.parametrize("state", [
     {"pending_capital_request": {"request_id": "r1"}},
     {"pending_capital_request": False},
