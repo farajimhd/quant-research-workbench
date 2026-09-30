@@ -7,12 +7,15 @@ sealed interval geometry supplies the strategy-facing V7 projection.
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import date, datetime
 from typing import Any, Callable, Mapping, Sequence
 
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS,
-    iter_persisted_v7_seconds, market_day_boundary,
+    _literal, _unit_map, assert_select_only, iter_persisted_v7_seconds,
+    market_day_boundary,
 )
 from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
 
@@ -51,6 +54,10 @@ class FixedV7IntervalCache:
         self._last_loaded_ms: dict[str, int] = {}
         self._last_observed_ms: dict[str, int] = {}
         self._last_completed_price: dict[str, Mapping[str, Any]] = {}
+        # Exact activation clocks are known from the certified product. A
+        # bounded preload replaces one SQL round trip per completed second;
+        # rows remain hidden until their causal clock is reached.
+        self._activation_seconds: dict[str, dict[int, Mapping[str, Any]]] = {}
         # Geometry changes only on a certified valid completed second. Keep
         # one immutable-ish projection per ticker/input clock, but hand every
         # caller fresh dictionaries so strategy code cannot mutate evidence.
@@ -72,6 +79,76 @@ class FixedV7IntervalCache:
                 or not 1 <= max_workers <= 16):
             raise ValueError("V7 interval preload scope is invalid")
         return 0
+
+    def preload_activation_seconds(
+        self, clocks: Sequence[tuple[str, int]], *,
+        client_factory: Callable[[], Any], max_workers: int = 8,
+    ) -> int:
+        """SELECT exact pinned 1s activation inputs in bounded ticker lanes."""
+        if (not callable(client_factory) or type(max_workers) is not int
+                or not 1 <= max_workers <= 16 or self._activation_seconds):
+            raise ValueError("V7 activation preload needs a fresh bounded cache")
+        requested: dict[str, set[int]] = {}
+        for ticker, boundary in clocks:
+            if (ticker not in self._coverage or type(boundary) is not int
+                    or not 0 < boundary <= 57_600_000 or boundary % 100):
+                raise ValueError("V7 activation clock is outside sealed coverage")
+            completed = boundary // 1_000 * 1_000
+            valid = self._clocks[ticker]
+            at = bisect_left(valid, completed)
+            if at < len(valid) and valid[at] == completed:
+                requested.setdefault(ticker, set()).add(completed)
+        units = _unit_map(self.market_plan, "bars")
+
+        def load_one(item: tuple[str, set[int]]) -> tuple[str, dict[int, Mapping[str, Any]]]:
+            ticker, seconds = item
+            unit = units.get((self.session.isoformat(), ticker))
+            if unit is None:
+                raise ValueError("V7 activation lacks a pinned bar attempt")
+            found: dict[int, Mapping[str, Any]] = {}
+            ordered = tuple(sorted(seconds))
+            reader = client_factory()
+            if reader is None or not callable(getattr(reader, "close", None)) \
+                    or not callable(getattr(reader, "iter_json_each_row", None)):
+                raise TypeError("V7 activation preload needs a closable read client")
+            with closing(reader):
+                for offset in range(0, len(ordered), 512):
+                    selected = ordered[offset:offset + 512]
+                    indexes = tuple(
+                        (second + SESSION_OPEN_OFFSET_MS) // 1_000 - 1
+                        for second in selected)
+                    query = assert_select_only(
+                        "SELECT ticker,resolution_ms,bucket_index,price_valid,"
+                        "extremes_valid,open_int,high_int,low_int,close_int,volume "
+                        "FROM arte.bars_v1 "
+                        f"WHERE build_id={_literal(self.market_plan.build_id)} "
+                        f"AND session_date=toDate({_literal(self.session.isoformat())}) "
+                        f"AND ticker={_literal(ticker)} "
+                        f"AND attempt_id=toUUID({_literal(unit.attempt_id)}) "
+                        "AND resolution_ms=1000 AND bucket_index IN ("
+                        + ",".join(str(index) for index in indexes)
+                        + ") ORDER BY bucket_index FORMAT JSONEachRow"
+                    )
+                    rows = tuple(reader.iter_json_each_row(query))
+                    if len(rows) != len(selected):
+                        raise RuntimeError("V7 activation preload omitted a pinned second")
+                    for second, index, row in zip(selected, indexes, rows):
+                        if (row.get("ticker") != ticker
+                                or row.get("resolution_ms") != 1_000
+                                or row.get("bucket_index") != index
+                                or row.get("price_valid") != 1
+                                or row.get("extremes_valid") != 1):
+                            raise RuntimeError("V7 activation second differs from pinned bar")
+                        found[second] = row
+            return ticker, found
+
+        prepared: dict[str, dict[int, Mapping[str, Any]]] = {}
+        with ThreadPoolExecutor(max_workers=max_workers,
+                                thread_name_prefix="s1-v7-activation") as pool:
+            for ticker, rows in pool.map(load_one, sorted(requested.items())):
+                prepared[ticker] = rows
+        self._activation_seconds = prepared
+        return sum(len(rows) for rows in prepared.values())
 
     def _boundary_ms(self, at: datetime) -> int:
         if at.tzinfo is None:
@@ -136,10 +213,12 @@ class FixedV7IntervalCache:
             clocks = self._clocks[ticker]
             at = bisect_left(clocks, through_ms)
             if at < len(clocks) and clocks[at] == through_ms:
-                rows = tuple(iter_persisted_v7_seconds(
-                    self.market_plan, session_date=self.session.isoformat(),
-                    ticker=ticker, after_boundary_ms=through_ms - 1_000,
-                    through_boundary_ms=through_ms, client=self.client))
+                prefetched = self._activation_seconds.get(ticker, {}).get(through_ms)
+                rows = ((prefetched,) if prefetched is not None else tuple(
+                    iter_persisted_v7_seconds(
+                        self.market_plan, session_date=self.session.isoformat(),
+                        ticker=ticker, after_boundary_ms=through_ms - 1_000,
+                        through_boundary_ms=through_ms, client=self.client)))
                 if (len(rows) != 1 or type(rows[0].get("bucket_index")) is not int
                         or (rows[0]["bucket_index"] + 1) * 1_000
                            - SESSION_OPEN_OFFSET_MS != through_ms):

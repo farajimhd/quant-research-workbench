@@ -112,6 +112,47 @@ def test_precomputed_entry_facts_load_only_exact_latest_completed_second(monkeyp
     assert cache.last_completed_price_second("TEST") is None
 
 
+def test_activation_seconds_preload_reuses_exact_certified_bar(monkeypatch):
+    market, product = fixtures()
+    source = {"ticker": "TEST", "resolution_ms": 1000,
+              "bucket_index": 14_400, "price_valid": 1,
+              "extremes_valid": 1, "open_int": 100_000,
+              "high_int": 101_000, "low_int": 99_000,
+              "close_int": 101_000, "volume": 10}
+    readers = []
+
+    class BatchReader:
+        def __init__(self):
+            self.queries = []
+            self.closed = False
+
+        def iter_json_each_row(self, sql):
+            self.queries.append(sql)
+            yield source
+
+        def close(self):
+            self.closed = True
+
+    def factory():
+        reader = BatchReader()
+        readers.append(reader)
+        return reader
+
+    cache = subject.FixedV7IntervalCache(
+        market_plan=market, interval_plan=product, session=DAY,
+        client=Reader(), precomputed_entry_facts=True)
+    assert cache.preload_activation_seconds(
+        (("TEST", 1100), ("TEST", 1200)),
+        client_factory=factory, max_workers=2) == 1
+    assert len(readers) == 1 and readers[0].closed
+    assert "attempt_id=toUUID('00000000-0000-0000-0000-000000000001')" in readers[0].queries[0]
+    assert "bucket_index IN (14400)" in readers[0].queries[0]
+    monkeypatch.setattr(subject, "iter_persisted_v7_seconds",
+                        lambda *_args, **_kwargs: pytest.fail("reopened a prefetched second"))
+    cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, 1100))
+    assert cache.last_completed_price_second("TEST")["close_int"] == 101_000
+
+
 def test_100ms_level_projection_reuses_completed_clock_without_shared_mutation(monkeypatch):
     market, product = fixtures()
     source = {"ticker": "TEST", "resolution_ms": 1000,

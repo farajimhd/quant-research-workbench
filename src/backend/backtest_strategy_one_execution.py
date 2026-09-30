@@ -228,6 +228,15 @@ async def run_certified_strategy_one_session(
                 stage_time=stage_time)
             if stage_time is not None:
                 stage_time("strategy_one_evidence_init", evidence_started)
+            activation_started = perf_counter() if stage_time is not None else 0.0
+            await asyncio.to_thread(
+                evidence.v7.preload_activation_seconds,
+                tuple((row.ticker, row.boundary_ms)
+                      for row in activation_schedule.rows
+                      if row.boundary_ms > start_after_boundary_ms),
+                client_factory=client_factory, max_workers=8)
+            if stage_time is not None:
+                stage_time("strategy_one_v7_activation_preload", activation_started)
             if len(selected) <= 64:
                 seed_started = perf_counter() if stage_time is not None else 0.0
                 await asyncio.to_thread(
