@@ -76,7 +76,12 @@ def observe_account(account: BracketAccount, tickers: tuple[str, ...],
             (position.target-price)/price if position.target is not None else 0.,
             float(position.stop is not None),
             float(position.target is not None),
-            float(position.stop_pending))
+            float(position.stop_pending), 0., 0.)
+        book = getattr(queue, 'luld', None)
+        restriction = book.state(ticker, close_us) if book is not None else None
+        if restriction and restriction['paused']:
+            features[row,9] = 1.
+            features[row,10] = math.log1p((close_us-restriction['pause_start_us'])/1_000_000)/10
         exit_mask[row] = not position.stop_pending and not exit_pending
         stop_mask[row] = (position.stop is None and
                           not position.stop_pending and not exit_pending)

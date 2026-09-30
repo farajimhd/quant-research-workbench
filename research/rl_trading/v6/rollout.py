@@ -27,6 +27,7 @@ class PolicyStep:
     reward: float = 0.
     elapsed: float = 0.
     terminal: bool = False
+    blocked_indices: tuple = ()  # Causal mask retained for exact PPO rebuild.
 
 
 @dataclass
@@ -72,6 +73,8 @@ def _distribution(policy,state,memory,step,indices,scalar,device):
     enter = causal_enter_mask(len(state.encoded),indices,scalar,
         cash=float(obs.account[0]),reserved_cash=float(obs.account[5]),
         held_index=obs.held_index,pending_index=pending)
+    if step.blocked_indices:
+        enter[np.asarray(step.blocked_indices,dtype=np.int64)] = False
     policy.set_pending(step.pending_indices)
     tensor = lambda x,dtype=None: torch.as_tensor(x,dtype=dtype,device=device)
     return policy.distribution_and_value(state.embeddings(),tensor(obs.account),
@@ -106,6 +109,7 @@ def collect_session(policy, session, environment, *, device,
         end = min(end,event.close_us+max_clocks*1_000_000)
     frames,steps = [],[]
     previous_equity = environment.account.initial_cash
+    previous_penalty = environment.shaping_penalty
     for clock in range(event.close_us,end+1,1_000_000):
         outcomes = environment.advance(clock)
         memory = _remember(policy,state,memory,outcomes)
@@ -123,10 +127,18 @@ def collect_session(policy, session, environment, *, device,
         environment.journal.mark(clock,{t:p for t,(p,_) in environment.marks.items()},
                                   {t:c for t,(_,c) in environment.marks.items()})
         equity = environment.journal.equity_marks[-1]['equity']
+        if clock == end and end == bounds(session.day)[1]:
+            environment.terminal_cost()  # Never charge a bounded canary cutoff.
+        penalty = environment.shaping_penalty
         if steps:
-            steps[-1].reward += (equity-previous_equity)/environment.account.initial_cash
+            steps[-1].reward += (equity-previous_equity)/environment.account.initial_cash-(penalty-previous_penalty)
             steps[-1].elapsed += (clock-frames[-1].clock)/1_000_000
         previous_equity = equity
+        previous_penalty = penalty
+        blocked_indices = ()
+        if environment.luld is not None:
+            blocked_indices=tuple(environment.by_ticker[t]
+                for t in environment.luld.paused_tickers(clock) if t in environment.by_ticker)
         if clock==end:
             if steps:
                 steps[-1].terminal = True
@@ -138,6 +150,8 @@ def collect_session(policy, session, environment, *, device,
         for order_index in range(max_orders_per_second):
             obs = environment.observation(clock)
             step = PolicyStep(obs,tuple(environment.by_ticker[t] for t in environment.pending_entries),0,0.,0.,0.)
+            if environment.luld is not None:
+                step.blocked_indices = blocked_indices
             dist,value = _distribution(policy,state,memory,step,indices,scalar,device)
             if clock>=end-1_000_000:
                 # Known terminal liquidation period is part of the causal mask.
@@ -170,6 +184,9 @@ def collect_session(policy, session, environment, *, device,
     if not steps:
         raise ValueError('No policy proposals in rollout')
     metrics = environment.journal.summary()
+    metrics.update(environment.risk_metrics)
+    metrics['risk_shaping_penalty'] = environment.shaping_penalty
+    metrics['luld_sidecar_enabled'] = environment.luld is not None
     metrics['missing_bracket_extrema_buckets'] = environment.missing_bracket_extrema
     metrics['policy_steps'] = len(steps)
     metrics['order_bound_clock_count'] = sum(len(f.steps)==max_orders_per_second and f.steps[-1].token!=0 for f in frames)

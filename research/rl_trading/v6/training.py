@@ -93,7 +93,7 @@ def _validate(decisions: tuple[TeacherDecision, ...],
                 item.close_us <= 0 or item.order_index < 0 or
                 item.account.shape != (7,) or
                 item.held_index.shape != (held,) or
-                item.held_features.shape != (held, HELD_FEATURE_WIDTH) or
+                item.held_features.shape not in ((held, 9), (held, HELD_FEATURE_WIDTH)) or
                 item.enter_allowed.shape != (listings,) or
                 any(mask.shape != (held,) for mask in
                     (item.exit_allowed, item.stop_allowed,

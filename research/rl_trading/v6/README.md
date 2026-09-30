@@ -197,7 +197,8 @@ Development replays and a representative in-sample replay run each epoch;
 August26 stays unopened. See `RL_DESIGN.md` for execution assumptions.
 
 Replay runs after every completed teacher/PPO epoch by default
-(`--replay-every 1`): Aug24/25 development and Jul31 training diagnostic.
+(`--replay-every 1`): Aug24/25 development and Jul31, Aug10, Aug21 training
+diagnostics (`--train-replay-days`). These three training days are in-sample.
 PPO also collects environment trajectories on every training day for learning;
 these are distinct from the deterministic checkpoint replays. Win rate is the
 fraction of fully closed ticker/entry positions with positive net P&L after
@@ -211,3 +212,43 @@ The local `metrics.jsonl` is registered for W&B live file upload; immutable
 order/position/equity artifacts upload after each replay. W&B uploads are
 asynchronous and depend on connectivity; blocking source reads can delay the
 next processing-boundary progress event. Local evidence is preserved.
+
+Modeled LULD sidecar and risk shaping
+-----------------------------------
+
+`build_luld.py` performs SELECT-only canonical trade-price aggregation and
+pinned ARTE quote projection, then saves only 500ms band/pause changes under
+the runtime root. Rolling means use transaction counts, never candle-close
+averages or VWAP. The prior regular-session last sale is split-adjusted and
+identity-bound; it is not asserted to be the official primary opening price.
+An unavailable prior price stays explicitly unknown. Tier membership must be
+supplied with `--tier-map`; `--tier2-scenario` is an explicitly labeled research
+fallback. Neither output is official exchange halt evidence. Five-minute
+reopening is modeled; late pauses remain blocked through the regular close.
+Regular-session bands stop applying at 16:00. News halts require source status
+events and cannot be inferred by this estimator. A modeled pause conflicting
+with observed eligible trades fails the execution audit and blocks training.
+
+Example, from an immutable source snapshot with runtime environment loaded:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.rl_trading.v6.build_luld --early-manifest D:\TradingML\runtimes\market-day-jul30-aug17\latest.json --late-manifest D:\TradingML\runtimes\market-day\latest.json --ledger D:\TradingML\runtimes\build-ledger-v2.sqlite3 --output D:\TradingML\runtimes\rl-v6-modeled-luld --workers 8 --tier2-scenario
+```
+
+Training requires `--luld-root` and validates every train/development sidecar
+before the optimizer is created. Teacher initialization defaults to and
+requires at least 10 epochs. Existing price-action teachers remain unchanged;
+their nine holding fields are padded in memory with two zero risk channels.
+The new actor receives causal pause status and elapsed pause age for holdings;
+the critic receives detached exposure-weighted risk channels. New checkpoints
+are intentionally incompatible with the older nine-field architecture.
+
+The reward subtracts separately recorded risk shaping: 0.10 of trapped marked
+notional / initial bankroll once per position/pause, plus 0.01 per trapped
+minute, and 0.25 of residual marked notional / initial bankroll once at 20:00.
+These are explicit, uncalibrated research defaults, exposed by CLI arguments.
+They are never booked as fees or financial P&L. A canary cutoff incurs no
+terminal-close cost. Never fabricate liquidation prices for stuck positions.
+Quote reads prefetch bounded 15-second chunks per active ticker; filtering
+prevents future cached evidence reaching execution or policy observations.

@@ -33,6 +33,7 @@ class ArteExecutionSource:
         self.price_plans = {}
         self.read_hash = sha256()
         self.query_count = self.rows_read = 0
+        self.bucket_cache = {}
         assert_liquidity_storage(reader)
         from research.rl_trading.v1.arte_source import storage_check
         storage_check(reader)
@@ -46,6 +47,39 @@ class ArteExecutionSource:
         return rows
 
     def buckets(self, start_us, end_us, tickers):
+        """Prefetch execution-only evidence in bounded 15s ticker chunks.
+
+        Future cached rows never leave this provider before their clock.
+        New/held listings share batched queries; abandoned cache is evicted.
+        No quote cache is saved or exposed to the policy.
+        """
+        if not self.origin <= start_us < end_us <= self.end_us:
+            raise ValueError('Execution read escaped certified session clock')
+        tickers = sorted(set(tickers))
+        if set(tickers)-set(self.attempts):
+            raise ValueError('Execution listing absent from pinned broker population')
+        self.bucket_cache={t:v for t,v in self.bucket_cache.items() if t in tickers}
+        missing=[t for t in tickers if t not in self.bucket_cache or
+                 self.bucket_cache[t][0]>start_us or self.bucket_cache[t][1]<end_us]
+        if missing:
+            stop=min(self.end_us,max(end_us,start_us+15_000_000))
+            rows=self._read_buckets(start_us,stop,missing)
+            grouped={t:[] for t in missing}
+            for row in rows: grouped[row.ticker].append(row)
+            for t in missing:
+                values=tuple(grouped[t])
+                import numpy as np
+                self.bucket_cache[t]=(start_us,stop,values,
+                    np.asarray([v.close_us for v in values],dtype=np.int64))
+        result=[]
+        for t in tickers:
+            _,_,values,clocks=self.bucket_cache[t]
+            left=clocks.searchsorted(start_us,side='right')
+            right=clocks.searchsorted(end_us,side='right')
+            result.extend(values[left:right])
+        return tuple(sorted(result,key=lambda row:(row.close_us,row.ticker)))
+
+    def _read_buckets(self, start_us, end_us, tickers):
         if not self.origin <= start_us < end_us <= self.end_us:
             raise ValueError('Execution read escaped certified session clock')
         tickers = sorted(set(tickers))
@@ -122,6 +156,7 @@ class ArteExecutionSource:
 
     def certificate(self):
         return {'status':'complete','day':str(self.day),'source_build_id':self.source['build_id'],
+                'modeled_luld_certificate_sha256':getattr(self,'luld_certificate',None),
                 'broker_attempts_sha256':sha256(json.dumps(self.attempts,sort_keys=True).encode()).hexdigest(),
                 'execution_read_sha256':self.read_hash.hexdigest(),
                 'query_count':self.query_count,'rows_read':self.rows_read,

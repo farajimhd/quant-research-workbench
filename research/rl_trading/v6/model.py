@@ -17,7 +17,7 @@ from research.rl_trading.v6.features import (CONTEXT_CANDLES, LEVEL_NAMES,
 
 
 INPUT_WIDTH = len(SCALAR_NAMES) + 2 * LEVELS_PER_SIDE * len(LEVEL_NAMES)
-HELD_FEATURE_WIDTH = 9
+HELD_FEATURE_WIDTH = 11  # Nine price/action fields plus modeled pause flag/age.
 
 
 @dataclass
@@ -149,6 +149,10 @@ class BracketActionDecoder(nn.Module):
         mark, stop/target armed flags, and stop pending. Raw prediction heads
         are converted to valid prices by the OMS adapter.
         """
+        # Price-action teacher artifacts deliberately contain only their nine
+        # causal fields. Adapt in memory; do not rewrite audited teacher data.
+        if held_features.shape == (len(held_index), 9):
+            held_features = torch.nn.functional.pad(held_features, (0, 2))
         if (listings.ndim != 2 or listings.shape[1] != self.width or
                 account.shape != (7,) or held_index.ndim != 1 or
                 held_index.dtype != torch.long or

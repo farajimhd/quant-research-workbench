@@ -17,7 +17,8 @@ def test_observation_binds_confirmed_holding_and_armed_children():
         {'ABC': (10.5, 2_000_000)}, close_us=2_000_000,
         queue=queue)
     assert snapshot.held_index.tolist() == [1]
-    assert snapshot.held_features.shape == (1, 9)
+    assert snapshot.held_features.shape == (1, 11)
+    assert snapshot.held_features[0,9:].tolist() == [0.,0.]
     assert snapshot.held_features[0, 6:9].tolist() == [0., 0., 0.]
     assert snapshot.stop_allowed.tolist() == [True]
     assert snapshot.target_allowed.tolist() == [True]

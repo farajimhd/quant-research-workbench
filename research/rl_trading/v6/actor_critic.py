@@ -61,7 +61,7 @@ class BracketActorCritic(BracketPolicy):
     def __init__(self, width: int = 128):
         super().__init__(width)
         self.log_scale = nn.Parameter(torch.full((3,), -1.0))
-        self.critic = nn.Sequential(nn.Linear(2 * width + 7, width), nn.Tanh(), nn.Linear(width, 1))
+        self.critic = nn.Sequential(nn.Linear(2 * width + 9, width), nn.Tanh(), nn.Linear(width, 1))
 
     def distribution_and_value(self, listing_embeddings, account, held_index,
                                held_features, action_state, **masks):
@@ -74,9 +74,13 @@ class BracketActorCritic(BracketPolicy):
         scale = self.log_scale.clamp(-5, 2).exp()
         scales = torch.cat((scale[0].expand(1+n+h), scale[1].expand(h), scale[2].expand(h)))
         critic_market = self.critic_market_embeddings(listing_embeddings)
+        risk = account.new_zeros(2)
+        if len(held_index) and held_features.shape[1] >= 11:
+            weights = held_features[:,0]*held_features[:,1]/account[1].clamp_min(1)
+            risk = (held_features[:,9:11]*weights[:,None]).sum(0)
         critic_input = torch.cat((critic_market.mean(0).detach(),
                                   action_state.memory.detach(),
-                                  (account.sign()*torch.log1p(account.abs())).detach()))
+                                  (account.sign()*torch.log1p(account.abs())).detach(),risk.detach()))
         value = self.critic(critic_input).squeeze(-1)
         return HybridDistribution(logits, locations, scales, n, h), value
 

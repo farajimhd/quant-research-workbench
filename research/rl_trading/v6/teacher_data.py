@@ -86,7 +86,7 @@ def load_teacher(root: Path, session: PackedSession, *,
     for row in rows.iter_rows(named=True):
         held = np.asarray(row['held_listing_indices'], dtype=np.int64)
         features = np.asarray(row['held_features_flat'], dtype=np.float32)
-        if features.size != held.size * HELD_FEATURE_WIDTH:
+        if features.size != held.size * 9:
             raise ValueError('Teacher holding snapshot shape changed')
         enter = np.zeros(listings, dtype=np.bool_)
         candidates = np.asarray(row['enter_allowed_indices'], dtype=np.int64)
@@ -101,7 +101,7 @@ def load_teacher(root: Path, session: PackedSession, *,
                         row['seconds_since_action'],
                         row['pending_reserved_cash'],
                         row['pending_entry_count']], dtype=np.float32),
-            held, features.reshape(-1, HELD_FEATURE_WIDTH), enter,
+            held, np.pad(features.reshape(-1, 9), ((0,0),(0,2))), enter,
             np.asarray(row['exit_allowed'], dtype=np.bool_),
             np.asarray(row['stop_allowed'], dtype=np.bool_),
             np.asarray(row['target_allowed'], dtype=np.bool_),

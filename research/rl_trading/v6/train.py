@@ -84,7 +84,7 @@ def main(argv=None):
     parser.add_argument('--late-manifest',type=Path,required=True)
     parser.add_argument('--ledger',type=Path,required=True)
     parser.add_argument('--device',default='cuda')
-    parser.add_argument('--teacher-epochs',type=int,default=5)
+    parser.add_argument('--teacher-epochs',type=int,default=10)
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
     parser.add_argument('--learning-rate',type=float,default=3e-4)
@@ -92,6 +92,13 @@ def main(argv=None):
     parser.add_argument('--max-orders-per-second',type=int,default=64)
     parser.add_argument('--replay-every',type=int,default=1)
     parser.add_argument('--log-every-seconds',type=float,default=60.)
+    parser.add_argument('--luld-root',type=Path,required=True,
+        help='Certified modeled LULD sidecar required before training')
+    parser.add_argument('--halt-onset-penalty',type=float,default=.10)
+    parser.add_argument('--halt-per-minute-penalty',type=float,default=.01)
+    parser.add_argument('--terminal-exposure-penalty',type=float,default=.25)
+    parser.add_argument('--train-replay-days',type=date.fromisoformat,nargs='+',
+        default=[date(2026,7,31),date(2026,8,10),date(2026,8,21)])
     parser.add_argument('--seed',type=int,default=17)
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--audit-only',action='store_true')
@@ -107,6 +114,25 @@ def main(argv=None):
            args.max_orders_per_second,args.replay_every)<1 or args.learning_rate<=0 or args.log_every_seconds<=0:
         raise ValueError('Positive training/rollout limits required')
     dataset=require_dataset(args.dataset,runtime_root=runtime)
+    if args.teacher_epochs < 10:
+        raise ValueError('Teacher initialization must run at least 10 epochs')
+    from research.rl_trading.v6.luld import RiskPenalty
+    from research.rl_trading.v6.build_luld import open_sidecar
+    risk=RiskPenalty(args.halt_onset_penalty,args.halt_per_minute_penalty,args.terminal_exposure_penalty)
+    if not args.luld_root.resolve().is_relative_to(runtime):
+        raise ValueError('LULD sidecar must be under configured runtime')
+    # Require complete sidecars for every train/development day before any
+    # optimizer step, including days not selected for replay diagnostics.
+    luld_certificates={str(entry['day']):file_hash(args.luld_root/str(entry['day'])/'complete.json')
+                       for entry in dataset['days']}
+    for entry in dataset['days']:
+        day=date.fromisoformat(str(entry['day']))
+        plan=json.loads((Path(entry['bank_root'])/'plan.json').read_text())
+        # Validate every day's contents and execution audit before creating
+        # an optimizer. Only one sparse sidecar is resident during this audit.
+        book,_=open_sidecar(args.luld_root,day,{'build_id':plan['source_build_id'],
+            'definition_hash':plan['source_definition_hash']})
+        del book
     ranking=MarketAttentionConfig(**dataset['ranking'])
     device=torch.device(args.device)
     torch.manual_seed(args.seed)
@@ -118,9 +144,12 @@ def main(argv=None):
     optimizer=torch.optim.Adam(policy.parameters(),lr=args.learning_rate)
     manifest={'version':'rl-trading-v6-attention-ppo-run-1','dataset_sha256':file_hash(args.dataset),
         'ranking':asdict(ranking),'source_commit':_commit(),
-        'config':{k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items() if k not in ('resume','audit_only')},
+        'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
+                  for k,v in vars(args).items() if k not in ('resume','audit_only')},
         'teacher_role':'candle_only_actor_initialization',
-        'reward':'actual_quote_modeled_delta_marked_equity_over_initial_equity',
+        'reward':'quote_delta_equity_minus_separate_modeled_halt_and_terminal_exposure_shaping_v2',
+        'risk_penalty':asdict(risk),'luld_certificates':luld_certificates,
+        'holding_observation_version':'11_fields_modeled_halt_flag_and_age',
         'research_price_increment':.0001,'price_increment_authority':'canonical_precision_scenario_not_exchange_tick',
         'wandb_key_present':bool(os.environ.get('WANDB_API_KEY'))}
     manifest['hash']=digest(manifest)
@@ -165,6 +194,7 @@ def main(argv=None):
                     certify_identity_map(session,population,proof['snapshot_hash'],identity,runtime_root=runtime)
                 tickers=open_identity_map(identity,session,runtime_root=runtime)
                 provider=ArteExecutionSource(reader,source,args.ledger,session.day,end_us=bounds(session.day)[1])
+                provider.luld,provider.luld_certificate = open_sidecar(args.luld_root,session.day,source)
                 return provider,tickers
             except Exception:
                 reader.close(); raise
@@ -184,7 +214,7 @@ def main(argv=None):
             session=open_day(dataset['days'][0])
             provider,tickers=evidence(session)
             try:
-                env=BracketEnvironment(tickers,provider)
+                env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
                 frames,steps,smoke=collect_session(policy,session,env,device=device,max_clocks=5,max_orders_per_second=4)
                 audit.update(real_reconstruction=audit_reconstruction(policy,session,frames,device=device),
                              smoke_metrics=smoke,execution_evidence=provider.certificate())
@@ -211,6 +241,9 @@ def main(argv=None):
                 torch.manual_seed(args.seed)
             train_days=[e for e in dataset['days'] if e['role']=='train']
             dev_days=[e for e in dataset['days'] if e['role']=='development']
+            diagnostics=[e for e in train_days if date.fromisoformat(str(e['day'])) in args.train_replay_days]
+            if len(diagnostics)!=len(set(args.train_replay_days)):
+                raise ValueError('Training replay diagnostics must select audited training days')
             for phase,epochs in (('teacher',args.teacher_epochs),('ppo',args.ppo_epochs)):
                 if phase=='teacher' and progress['phase']=='ppo': continue
                 epoch_start=progress['epoch'] if progress['phase']==phase else 0
@@ -229,7 +262,7 @@ def main(argv=None):
                         else:
                             provider,tickers=evidence(session)
                             try:
-                                env=BracketEnvironment(tickers,provider)
+                                env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
                                 frames,steps,result=collect_session(policy,session,env,device=device,
                                     max_orders_per_second=args.max_orders_per_second,
                                     progress_callback=pulse('progress/rollout',session.day,epoch))
@@ -252,11 +285,11 @@ def main(argv=None):
                     _checkpoint(last,policy,optimizer,manifest,progress)
                     if (epoch+1)%args.replay_every==0:
                         summaries=[]
-                        for entry in dev_days+[train_days[0]]:
+                        for entry in dev_days+diagnostics:
                             session=open_day(entry)
                             provider,tickers=evidence(session)
                             try:
-                                env=BracketEnvironment(tickers,provider)
+                                env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
                                 frames,steps,summary=collect_session(policy,session,env,device=device,
                                     max_orders_per_second=args.max_orders_per_second,deterministic=True,
                                     progress_callback=pulse('progress/replay',session.day,epoch))

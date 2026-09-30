@@ -22,7 +22,8 @@ class BracketEnvironment:
     is a first-following-100ms IOC attempt; no fresh quote means non-fill.
     Manual/stop exits retry across observed quotes, preserving remainders.
     """
-    def __init__(self, tickers, source, *, config=None, price_increment=.0001):
+    def __init__(self, tickers, source, *, config=None, price_increment=.0001,
+                 luld=None, risk_penalty=None):
         from research.rl_trading.v2.config import Config
         self.account = BracketAccount(config=config or Config())
         self.source, self.tickers = source, tuple(tickers)
@@ -36,6 +37,42 @@ class BracketEnvironment:
         self.journal = ReplayJournal(self.account)
         self.missing_bracket_extrema = 0
         self.consumed_display = {}
+        from research.rl_trading.v6.luld import RiskPenalty
+        self.luld = luld
+        self.risk_penalty = risk_penalty or RiskPenalty()
+        self.risk_metrics = {'halt_onset_penalty':0., 'halt_duration_penalty':0.,
+            'terminal_exposure_penalty':0., 'trapped_position_seconds':0.,
+            'trapped_position_events':0, 'luld_blocked_execution_buckets':0}
+        self._charged_halts = set()
+        self._terminal_charged = False
+        self.journal.risk_metrics = self.risk_metrics
+
+    @property
+    def shaping_penalty(self):
+        return sum(self.risk_metrics[key] for key in
+            ('halt_onset_penalty','halt_duration_penalty','terminal_exposure_penalty'))
+
+    def _halt_cost(self, begin, end):
+        if self.luld is None:
+            return
+        for ticker,position in self.account.positions.items():
+            price=self.marks.get(ticker,(position.entry_price,begin))[0]
+            exposure=position.shares*price/self.account.initial_cash
+            for pause_start,seconds in self.luld.trapped_intervals(ticker,begin,end):
+                key=(ticker,position.entry_us,pause_start)
+                if key not in self._charged_halts:
+                    self.risk_metrics['halt_onset_penalty'] += self.risk_penalty.halt_entry*exposure
+                    self.risk_metrics['trapped_position_events'] += 1
+                    self._charged_halts.add(key)
+                self.risk_metrics['halt_duration_penalty'] += self.risk_penalty.halt_per_minute*exposure*seconds/60
+                self.risk_metrics['trapped_position_seconds'] += seconds
+
+    def terminal_cost(self):
+        if not self._terminal_charged:
+            exposure=sum(p.shares*self.marks.get(t,(p.entry_price,0))[0]
+                         for t,p in self.account.positions.items())/self.account.initial_cash
+            self.risk_metrics['terminal_exposure_penalty'] += self.risk_penalty.terminal_exposure*exposure
+            self._terminal_charged = True
 
     def _quote_capacity(self, ticker, quote, side):
         if not quote.fresh():
@@ -74,6 +111,7 @@ class BracketEnvironment:
             return ()
         if clock_us <= self.clock_us:
             raise ValueError('Environment clocks must advance')
+        self._halt_cost(self.clock_us,clock_us)
         touched = set(self.entries)|set(self.account.positions)
         buckets = self.source.buckets(self.clock_us,clock_us,touched) if touched else ()
         outcomes = []
@@ -94,6 +132,21 @@ class BracketEnvironment:
         for (clock,ticker), bucket in sorted(arrivals.items()):
             before_orders,before_closed = len(self.account.orders),len(self.account.closed)
             equity = self._equity()
+            if self.luld is not None:
+                # Never use stale quotes through a modeled pause or permit a
+                # fill outside its causal band. Pending exits keep remainders.
+                order=self.entries.get(ticker)
+                price=(bucket.quote.ask if order is not None else bucket.quote.bid) if bucket.quote else None
+                blocked=self.luld.blocked(ticker,clock) or (
+                    price is not None and not self.luld.executable(ticker,clock,price))
+                if blocked:
+                    self.risk_metrics['luld_blocked_execution_buckets'] += 1
+                    if order is not None and clock == ((order[0]//100_000)+1)*100_000:
+                        self.entries.pop(ticker)
+                        self.account._record(action='enter_long',ticker=ticker,clock=clock,
+                            requested=0,filled=0,price=None,fee=0.,reason='modeled_luld_restriction')
+                        outcome(ticker,1,order[3],before_orders,before_closed,equity)
+                    continue
             order = self.entries.get(ticker)
             if order is not None and clock == ((order[0]//100_000)+1)*100_000:
                 decision,close,budget,fraction = self.entries.pop(ticker)
@@ -142,6 +195,9 @@ class BracketEnvironment:
                 self.exits[ticker] = (clock,'stop_market')
                 outcome(ticker,2,1.,before_orders,before_closed,equity)
             elif target:
+                if self.luld is not None and not self.luld.executable(ticker,clock,position.target):
+                    self.risk_metrics['luld_blocked_execution_buckets'] += 1
+                    continue
                 capacity = self.source.target_capacity(ticker,clock,position.target)
                 self.account.target_bucket(ticker,clock_us=clock,price_level_volume_cap=capacity)
                 outcome(ticker,2,1.,before_orders,before_closed,equity)

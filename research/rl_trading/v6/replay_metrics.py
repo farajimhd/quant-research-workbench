@@ -126,4 +126,8 @@ class ReplayJournal:
         if not math.isclose(sum(period_net.values()),
                             result['modeled_net_profit'], abs_tol=1e-6):
             raise ValueError('Market-period P&L does not reconcile to equity')
+        if hasattr(self, 'risk_metrics'):
+            result.update(self.risk_metrics)
+            result['risk_shaping_penalty'] = sum(self.risk_metrics[key] for key in
+                ('halt_onset_penalty','halt_duration_penalty','terminal_exposure_penalty'))
         return result
