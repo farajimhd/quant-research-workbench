@@ -6,6 +6,7 @@ import { LoadingState } from "./LoadingState";
 import { usePollingTask } from "../hooks/usePollingTask";
 import { CompactTapeQuoteCharts, QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
 import { Modal } from "./Modal";
+import { MarketTime } from "./MarketTime";
 import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
 
 export type MarketEventSettings = { limit: number };
@@ -208,6 +209,22 @@ export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: Mark
   </section>;
 }
 
+// Replay/saved views use the causal Canvas cutoff, never the last quote time.
+// Isolate the live timer so clock ticks cannot reload or rescale chart children.
+export function ChartsQuotesAsOf({ end, savedMode = false }: { end?: string; savedMode?: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  const live = !end && !savedMode;
+  useEffect(() => {
+    if (!live) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [live]);
+  return <span className="backtest-v4-saved-market-state" aria-label="Chart as of" title="Chart as-of time (Eastern Time)">
+    {end || live ? <MarketTime value={end || now} includeDate includeSeconds includeSubseconds={!live} layout="inline" showVancouver={false} /> : "—"}
+  </span>;
+}
+
 export function ChartsQuotesMarketLayout({
   contextLabels = { left: "monthly chart", right: "daily chart" },
   dailyChart,
@@ -336,7 +353,7 @@ export function ChartsQuotesMarketLayout({
       <div className="charts-quotes-identity">
         <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
       </div>
-      {savedMode ? <span className="backtest-v4-saved-market-state">Saved ARTE quote · {savedQuote ? `${savedQuote.age_ms.toLocaleString()} ms old${savedQuote.fresh ? "" : " · stale"}` : "unavailable"}</span> : <MicrostructureHeaderMarketState marketState={marketState} />}
+      <ChartsQuotesAsOf end={end} savedMode={savedMode} />
       <section aria-label="Current quote and tape decision metrics" className="charts-quotes-market-strip">
         {!savedMode ? <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting"} help="Most recent eligible trade at or before the displayed time." label="Last" marketRole="last" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} /> : null}
         <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} sh · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" marketRole="bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
