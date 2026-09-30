@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import date
 from dataclasses import replace
+from copy import deepcopy
+from pickle import dumps, loads
 from uuid import UUID
 
 import pytest
@@ -180,6 +182,8 @@ def test_100ms_level_projection_reuses_completed_clock_without_shared_mutation(m
         "TEST", as_of=market_day_boundary(DAY, 1900))
     with pytest.raises(TypeError):
         sealed[0]["lower"] = -1.0
+    assert deepcopy(sealed)[0] is sealed[0]
+    assert dict(loads(dumps(sealed))[0]) == dict(sealed[0])
     for boundary in (1200, 1900, 2000):
         rows = cache.strategy_one_levels("TEST", as_of=market_day_boundary(DAY, boundary))
         assert rows[0]["lower"] == 10.0

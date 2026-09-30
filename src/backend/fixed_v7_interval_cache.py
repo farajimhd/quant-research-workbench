@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date, datetime
 from types import MappingProxyType
+from collections.abc import Iterator
 from typing import Any, Callable, Mapping, Sequence
 
 from src.backend.backtest_market_data import (
@@ -19,6 +20,30 @@ from src.backend.backtest_market_data import (
     market_day_boundary,
 )
 from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
+
+
+class _FrozenLevel(Mapping[str, object]):
+    """Immutable in-memory level that survives evidence snapshot copying."""
+
+    __slots__ = ("_data",)
+
+    def __init__(self, row: Mapping[str, object]) -> None:
+        self._data = MappingProxyType(dict(row))
+
+    def __getitem__(self, key: str) -> object:
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _FrozenLevel:
+        return self
+
+    def __reduce__(self):
+        return (_FrozenLevel, (dict(self._data),))
 
 
 class FixedV7IntervalCache:
@@ -284,6 +309,6 @@ class FixedV7IntervalCache:
         cached = self._level_projection.get(ticker)
         if cached is None or cached[0] != input_ms:
             rows = self.interval_plan.levels(ticker, boundary_ms=boundary)
-            cached = (input_ms, tuple(MappingProxyType(dict(row)) for row in rows))
+            cached = (input_ms, tuple(_FrozenLevel(row) for row in rows))
             self._level_projection[ticker] = cached
         return cached[1]
