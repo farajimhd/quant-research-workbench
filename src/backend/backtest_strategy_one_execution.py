@@ -194,7 +194,7 @@ async def run_certified_strategy_one_session(
         return StrategyOneProposalCounts(0, 0, 0, 0)
     visible_activations = project_activation_plan(
         activations, candidates, through_boundary_ms=through_boundary_ms)
-    full_gate = compile_static_entry_gate(visible, entry)
+    full_gate = compile_static_entry_gate(visible, entry, strategy_number=runtime.config.strategy_revision)
     survivors, activation_schedule = project_static_survivors(
         visible, visible_activations, full_gate)
     # The scheduler sees only survivors. Its local gate must index exactly
@@ -343,7 +343,7 @@ async def run_strategy_one_fixed_session(
             or not isinstance(getattr(runtime, "journal", None), BacktestMemoryJournal)
             or config is None or config.mode != RunMode.BACKTEST
             or config.strategy_id != STRATEGY_ID
-            or config.strategy_revision not in (1, 2)
+            or config.strategy_revision not in (1, 2, 3)
             or not callable(getattr(runtime, "process_liquidity_boundary", None))
             or not callable(getattr(broker, "financially_active_tickers", None))
             or not callable(getattr(broker, "positions", None))
@@ -381,16 +381,16 @@ async def run_strategy_one_fixed_session(
     async def observe_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
         # Consume the bucket ending at the cutoff first. Cancel acquisition
         # remainder at its completed clock before any later bucket can fill.
-        if config.strategy_revision == 2:
+        if config.strategy_revision in (2, 3):
             await runtime.advance_numbered_session_clock(work.boundary_ms)
         await evidence.observe_completed_seconds(work)
 
     async def finish_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
-        if config.strategy_revision == 2 and work.boundary_ms in (19_800_000, 57_600_000):
+        await finish_boundary(work)
+        if config.strategy_revision in (2, 3) and work.boundary_ms in (19_800_000, 57_600_000):
             active = broker.financially_active_tickers()
             if active:
-                raise RuntimeError(f"Strategy 2 session ended with residual exposure/orders: {active}")
-        await finish_boundary(work)
+                raise RuntimeError(f"Strategy {config.strategy_revision} session ended with residual exposure/orders: {active}")
 
     async def financial_views(ticker: str, _boundary_ms: int):
         selected = by_ticker.get(ticker)

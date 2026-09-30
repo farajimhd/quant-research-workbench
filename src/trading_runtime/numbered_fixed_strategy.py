@@ -27,6 +27,17 @@ def session_policy_payload() -> dict:
     return {**SESSION_POLICY, "windows": [dict(window) for window in SESSION_POLICY["windows"]]}
 
 
+def activation_policy_payload() -> dict:
+    """Strategy 3 entry-origin policy; held-position management is unchanged."""
+    return {
+        "clock": "milliseconds_since_04:00_America/New_York",
+        "premarket_open_ms": 0,
+        "afterhours_open_ms": 43_200_000,
+        "comparison": "current_session_open_ms < episode_start_ms <= boundary_ms",
+        "scope": "new_entry",
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class NumberedFixedStrategyContract:
     strategy_number: int
@@ -35,23 +46,30 @@ class NumberedFixedStrategyContract:
 
     @property
     def allows_session_exit(self) -> bool:
-        return self.strategy_number == 2
+        return self.strategy_number in (2, 3)
 
     def entry_allowed(self, boundary_ms: int) -> bool:
         return (self.strategy_number == 1 or 0 < boundary_ms < 19_500_000
                 or 43_200_000 < boundary_ms < 57_000_000)
 
+    def activation_allowed(self, boundary_ms: int, episode_start_ms: int) -> bool:
+        """Strategy 3 requires an episode born in this extended session."""
+        if self.strategy_number != 3:
+            return True
+        return (0 < episode_start_ms <= boundary_ms < 19_500_000
+                or 43_200_000 < episode_start_ms <= boundary_ms < 57_000_000)
+
     def acquisition_cutoff(self, boundary_ms: int) -> bool:
-        return self.strategy_number == 2 and (
+        return self.strategy_number in (2, 3) and (
             19_500_000 <= boundary_ms <= 19_800_000 or 57_000_000 <= boundary_ms <= 57_600_000)
 
     def liquidation_due(self, boundary_ms: int) -> bool:
-        return self.strategy_number == 2 and (
+        return self.strategy_number in (2, 3) and (
             19_740_000 <= boundary_ms <= 19_800_000 or 57_300_000 <= boundary_ms <= 57_600_000)
 
 
 def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
-    if type(number) is not int or number not in (1, 2):
+    if type(number) is not int or number not in (1, 2, 3):
         raise ValueError("No installed numbered fixed Backtest contract")
     return NumberedFixedStrategyContract(number)
 
@@ -63,4 +81,4 @@ def resolve_numbered_fixed_strategy(strategy_id: str, revision: int) -> Numbered
 
 
 def is_numbered_fixed_strategy(strategy_id: str, revision: int) -> bool:
-    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2)
+    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3)

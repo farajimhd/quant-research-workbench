@@ -65,11 +65,11 @@ def build_report(journal, market, run_id: str) -> dict:
     session, context, _, plan = certified_saved_run_plan(journal, market, run_id=run_id)
     number = int(context["strategy_revision"])
     numbered_evidence = {}
-    if number == 2:
+    if number in (2, 3):
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
-        release = certify_numbered_configuration(market, 2)
+        release = certify_numbered_configuration(market, number)
         if release.payload_hash != context["configuration_hash"]:
-            raise RuntimeError("Strategy 2 report differs from the sealed run configuration")
+            raise RuntimeError("Numbered report differs from the sealed run configuration")
         numbered_evidence = {"strategy_number": number,
                              "numbered_release": release.payload["strategy"]["numbered_release"],
                              "configuration_release_token": release.token}

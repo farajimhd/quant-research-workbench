@@ -115,12 +115,12 @@ from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
 
 def _require_numbered_session_window(strategy: Mapping[str, Any],
                                      start: clock_time, end: clock_time) -> None:
-    """Strategy 2 runs one flat extended-hours window, never regular hours."""
-    if strategy.get("strategy_number") != 2:
+    """Extended-session releases run one flat window, never regular hours."""
+    if strategy.get("strategy_number") not in (2, 3):
         return
     if not ((clock_time(4) <= start < end <= clock_time(9, 30))
             or (clock_time(16) <= start < end <= clock_time(20))):
-        raise ValueError("Strategy 2 requires one premarket or after-hours window; regular hours are warm-up only")
+        raise ValueError(f"Strategy {strategy['strategy_number']} requires one premarket or after-hours window; regular hours are warm-up only")
 
 
 _STRATEGY_ONE_PREFLIGHT_POOL = ThreadPoolExecutor(
@@ -9516,9 +9516,9 @@ class ReplayRunService:
             if definition is None:
                 raise KeyError(run_id)
             if dict(definition.configuration_revision.get("payload", {}).get(
-                    "strategy") or {}).get("strategy_number") == 2:
+                    "strategy") or {}).get("strategy_number") in (2, 3):
                 raise RuntimeError(
-                    "Strategy 2 resume awaits interrupted-run equivalence acceptance; start a new run")
+                    "This numbered strategy resume awaits interrupted-run equivalence acceptance; start a new run")
             controller = await self._prepare_typed_v4_resume(
                 normalized, definition)
             try:

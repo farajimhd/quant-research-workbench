@@ -98,10 +98,10 @@ def test_terminal_page_fails_closed_before_event_exposure(monkeypatch):
 
 def test_terminal_page_rejects_unknown_numbered_strategy(monkeypatch):
     monkeypatch.setattr(review, "load_typed_run_context", lambda *_a:
-                        {**_context(), "strategy_revision": 3})
+                        {**_context(), "strategy_revision": 4})
     monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_a:
                         pytest.fail("Read unrelated run"))
-    with pytest.raises(ValueError, match="only immutable Strategy 1"):
+    with pytest.raises(ValueError, match="only installed immutable numbered"):
         _read()
 
 

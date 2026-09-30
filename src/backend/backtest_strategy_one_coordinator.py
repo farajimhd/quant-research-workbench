@@ -137,7 +137,8 @@ async def run_strategy_one_proposals(
                         raise ValueError("Strategy 1 assignment roster changed within boundary")
                     current_by_id = refreshed
                 continue
-            if not contract.entry_allowed(boundary):
+            if (not contract.entry_allowed(boundary)
+                    or not contract.activation_allowed(boundary, fact.episode_start_ms)):
                 if current.position_quantity > 0 or current.pending_entry or current.pending_exit:
                     management_count += 1
                     await timed("strategy_one_management", on_management(current, resolutions, boundary))

@@ -166,7 +166,7 @@ class BacktestMemoryJournal:
                     "replace_protective_stop", "replace_profit_target"}
                 or intent.metadata or not account_id
                 or strategy_id != STRATEGY_ID
-                or type(strategy_revision) is not int or strategy_revision not in (1, 2)
+                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3)
                 or (intent.action == "replace_profit_target"
                     and (intent.reason != "ordinal_resistance_target"
                          or intent.profit_target_price is None
@@ -195,8 +195,8 @@ class BacktestMemoryJournal:
                                            strategy_revision):
         from src.trading_runtime.signals import StrategyIntent
         if (not isinstance(intent, StrategyIntent) or intent.action != "exit"
-                or intent.reason != "strategy_two_session_exit" or intent.metadata
-                or strategy_id != "early-squeeze-strategy" or strategy_revision != 2
+                or intent.reason != ("strategy_two_session_exit" if strategy_revision == 2 else "strategy_three_session_exit") or intent.metadata
+                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3)
                 or not account_id):
             raise ValueError("Session exit requires Strategy 2 normalized scalar source")
         with self._lock:

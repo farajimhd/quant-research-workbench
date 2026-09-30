@@ -537,8 +537,8 @@ def _approved_strategy_one_oms_intent(
                 session_date=local.date(), account_id=account,
                 assignment_id=reservation["assignment_id"], ticker=approved_intent.ticker,
                 boundary_ms=boundary_ms, quantity=approved_intent.quantity,
-                bid=approved_intent.reference_price)
-            if state.group.get("strategy_revision") != 2 or expected_exit != approved_intent:
+                bid=approved_intent.reference_price, strategy_number=state.group["strategy_revision"])
+            if state.group.get("strategy_revision") not in (2, 3) or expected_exit != approved_intent:
                 raise ValueError("Session exit recovery differs from sealed scalar source")
         metadata = {
             "assignment_id": reservation["assignment_id"],
@@ -618,7 +618,7 @@ def reconstruct_strategy_one_oms_lineage(
     if (
             not isinstance(group, dict)
             or group.get("strategy_id") != STRATEGY_ID
-            or group.get("strategy_revision") not in (1, 2)
+            or group.get("strategy_revision") not in (1, 2, 3)
             or group.get("run_id") != protection_history.run_id
             or group.get("batch_id") not in protection_history.committed_batch_ids
             or source_intent.batch_id not in protection_history.committed_batch_ids
@@ -631,7 +631,7 @@ def reconstruct_strategy_one_oms_lineage(
             # Its immutable source intent is add_long, not the first entry's
             # enter_long. Both require the same exact typed lineage proof.
             or source_intent.intent.action not in (
-                {"enter_long", "add_long", "exit"} if group.get("strategy_revision") == 2
+                {"enter_long", "add_long", "exit"} if group.get("strategy_revision") in (2, 3)
                 else {"enter_long", "add_long"})
             or not state.orders or len(state.orders) > 65_535
             or len({order.cOID for order in state.orders}) != len(state.orders)):

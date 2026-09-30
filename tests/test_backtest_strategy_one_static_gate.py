@@ -32,6 +32,30 @@ def test_static_gate_compiles_eligible_prefix_without_market_query():
         compiled.rejection_mask[0] = 1
 
 
+@pytest.mark.parametrize("boundary,start,allowed", [
+    (100, 0, False), (100, 100, True),
+    (19_499_900, 19_499_000, True), (19_500_000, 19_499_000, False),
+    (43_200_100, 43_199_900, False), (43_200_100, 43_200_000, False),
+    (43_200_100, 43_200_100, True), (43_200_100, 43_200_200, False),
+    (56_999_900, 56_999_000, True), (57_000_000, 56_999_000, False),
+])
+def test_strategy_three_activation_mask_matches_scalar_and_preserves_baselines(boundary, start, allowed):
+    from src.backend.backtest_strategy_one_static_gate import SESSION_ACTIVATION_REQUIRED
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    plans = _plans()
+    entry = _entry(plans)
+    prepared = replace(plans[1].prepared[0], boundary_ms=np.array([boundary]),
+                       episode_start_ms=np.array([start]))
+    candidates = replace(plans[1], prepared=(prepared,))
+    changed = replace(entry, candidates=(replace(entry.candidates[0],
+        boundary_ms=boundary, episode_start_ms=start),), activations=(replace(
+            entry.activations[0], episode_start_ms=start),))
+    for number in (1, 2, 3):
+        gate = compile_static_entry_gate(candidates, changed, strategy_number=number)
+        assert gate.rejection_mask.tolist() == [0 if number != 3 or allowed else SESSION_ACTIVATION_REQUIRED]
+        assert numbered_fixed_strategy(number).activation_allowed(boundary, start) is (allowed if number == 3 else True)
+
+
 def test_static_gate_reports_independent_rejection_bits():
     plans = _plans()
     entry = _entry(plans)
@@ -58,6 +82,33 @@ def test_static_gate_rejects_episode_drift_not_as_a_normal_rejection():
         entry.candidates[0], episode_start_ms=29_900),))
     with pytest.raises(ValueError, match="changed candidate episode"):
         compile_static_entry_gate(plans[1], altered)
+
+
+def test_strategy_three_future_episode_cannot_change_rejected_prefix_or_drop_activation():
+    from src.backend.backtest_strategy_one_static_gate import SESSION_ACTIVATION_REQUIRED
+    plans = _plans()
+    entry = _entry(plans)
+    row = plans[1].prepared[0]
+    boundaries, starts = np.array([43_200_100, 43_300_100]), np.array([43_199_900, 43_300_000])
+    prepared = replace(row, source_rows=2, row_index=np.array([0, 1]),
+        boundary_ms=boundaries, episode_start_ms=starts,
+        macd_boundary_ms=np.array([[43_200_000] * 4, [43_300_000] * 4]),
+        stop_bar_boundary_ms=np.array([43_200_000, 43_290_000]),
+        stop_low_int=np.array([99_000, 99_000]))
+    candidates = replace(plans[1], prepared=(prepared,))
+    facts = tuple(replace(entry.candidates[0], boundary_ms=int(boundary), episode_start_ms=int(start))
+                  for boundary, start in zip(boundaries, starts))
+    frozen = tuple(replace(entry.activations[0], episode_start_ms=int(start)) for start in starts)
+    changed = replace(entry, candidates=facts, activations=frozen)
+    full = compile_static_entry_gate(candidates, changed, strategy_number=3)
+    prefix = replace(prepared, boundary_ms=boundaries[:1], episode_start_ms=starts[:1])
+    prefix_gate = compile_static_entry_gate(replace(candidates, prepared=(prefix,)), changed, strategy_number=3)
+    assert full.rejection_mask.tolist() == [SESSION_ACTIVATION_REQUIRED, 0]
+    assert prefix_gate.rejection_mask.tolist() == full.rejection_mask[:1].tolist()
+    activations = replace(plans[2], rows=tuple(replace(plans[2].rows[0], boundary_ms=int(start)) for start in starts))
+    survivors, activation_schedule = project_static_survivors(candidates, activations, full)
+    assert survivors.prepared[0].boundary_ms.tolist() == [43_300_100]
+    assert activation_schedule is activations  # Active management keeps both causal episodes.
 
 
 def test_static_survivors_remove_unneeded_market_reads_not_parent_seals():

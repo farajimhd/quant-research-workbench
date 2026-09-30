@@ -139,3 +139,65 @@ layout issues, and the real saved August 19 after-hours view rendered its
 13 closed positions and -$574.00 net result. The latest full-market Strategy 1
 app preflight passed in 21.3 seconds with no blockers. These checks do not yet
 establish a successful Strategy 2 full-session run or profitable edge.
+
+## Strategy 2 full-session evidence
+
+Published 903 normalized nodes from source commit
+`a6c2d7709f2017bbed5cf1c548f3be03c69bf25e`, configuration
+`strategy-one-2:19235772-4956-446b-805e-9fe01969d399`, payload hash
+`5b6c7caacdbbd911e8cbf33eff625e2f28c44f24ec07342b8dcf019d9fae4ed3`.
+The matching workstation checkout is
+`D:/TradingML/codes/quant-research-workbench-strategy2-a6c2d7709`.
+
+| Session | Run | Result | Net P&L | Execution seconds |
+|---|---|---|---:|---:|
+| August 18 PM | `11883b78-2ad4-42a8-881a-9085bd878beb` | Completed; 26 closed | $154.38 | 58.860 |
+| August 19 PM | `d85c15dc-0098-4eb1-8498-c4a347c6d134` | Completed; 32 closed | -$2,689.70 | 58.089 |
+| August 18 AH | `d2bac302-a8ba-4310-9f64-c30da59514bb` | Failed; terminal persistence incomplete | unavailable | 17.625 |
+| August 19 AH | `719d1d41-2194-462a-9ecf-e3e0b5f2c75a` | Completed; 13 closed | -$574.00 | 36.132 |
+
+Both premarket runs match Strategy 1 exactly on ticker, entry/exit timestamps,
+weighted prices, quantity, fees and net P&L for every episode. After-hours
+August 19 differs only for GO: the exit average and fees changed, with net P&L
+worse by $0.00407. Strategy 2 therefore has no measured profitability improvement.
+Completed reports are in `strategy_one_research/strategy2_sessions_v1` under
+the runtime root. Their drawdown remains closed-episode drawdown.
+
+The August 18 failure has two distinct causes. Residual exposure is real:
+MRVI has no certified liquidity rows after 19:50, and BBNX has one fresh quote
+at 19:55:01 but no subsequent bucket to fill a newly submitted exit. The
+failure-recording path also raised before advancing the final controller
+cursor; terminal persistence failed with a cursor/clock mismatch. Its observed
+writer inventory was zero, so there is no complete economic journal to report.
+The failed attempt is retained in ClickHouse's run inventory, and its CLI
+diagnostic is preserved in
+`strategy-optimization-20260930/strategy2-20260818-afterhours-failed.json`.
+Do not recreate missing financial facts or label this a completed run.
+
+## Strategy 3 research specification
+
+Preserve Strategy 2 sizing, management and session cutoffs, but require the
+entry's certified activation strictly after the current extended-session open:
+after 04:00 for premarket and after 16:00 for after-hours. An activation
+completing exactly at 16:00 still contains the last regular-session bucket and
+is excluded. Implement this as an additional vectorized necessary-condition
+mask before survivor market I/O. Do not reset or fabricate episodes, rebuild
+producer products, or change the V7 prior-checkpoint/regular-session warm-up.
+
+Cold-verified Strategy 1 entry evidence shows BBNX and MRVI activated at
+15:57:36 and 15:57:33.200; GO, URG and QS activated at 15:59:56.400,
+15:59:50.100 and 15:59:27. Those first after-hours proposals will be ineligible,
+but their losses cannot simply be subtracted: freed cash changes later trades.
+Pinned SELECTs, attempts, hashes and activation facts are retained in
+`strategy-optimization-20260930/pinned-session-exit-activation-diagnosis.json`.
+
+Correct completed-boundary failure persistence before this next campaign.
+Strategy 2's published source and results remain unchanged. Strategy 3 needs
+new publication, four full-session runs, and its own persisted review evidence.
+
+Implementation checks passed: 270 execution/journal regressions, 90
+configuration/publication/saved-reader checks, and 76 final integrated
+session-window, source-seal, activation and real-controller tests. The
+activation policy applies to new entries, including reentry; held-position
+management and adds remain inherited. These checks precede full-session
+Strategy 3 acceptance and do not establish profitability.

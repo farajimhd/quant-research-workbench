@@ -80,15 +80,15 @@ def _terminal_attestation(client, normalized: str,
     if (context["mode"] != "backtest"
             or not is_numbered_fixed_strategy(context["strategy_id"], int(context["strategy_revision"]))
             or context["evaluation_interval_ms"] != 100):
-        raise ValueError("Saved review accepts only immutable Strategy 1 at 100 ms")
-    if int(context["strategy_revision"]) == 2:
+        raise ValueError("Saved review accepts only installed immutable numbered strategies at 100 ms")
+    if int(context["strategy_revision"]) in (2, 3):
         from contextlib import closing
         from src.backend.backtest_market_data import readonly_clickhouse_client
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
         with closing(readonly_clickhouse_client(v3_read_principal=True)) as market:
-            release = certify_numbered_configuration(market, 2)
+            release = certify_numbered_configuration(market, int(context["strategy_revision"]))
         if release.payload_hash != context["configuration_hash"]:
-            raise ValueError("Saved Strategy 2 configuration differs from its sealed release")
+            raise ValueError("Saved numbered configuration differs from its sealed release")
     attestation = None
     for key in selected_cache.candidate_keys(_client_scope(client), normalized):
         candidate = selected_cache.get(key)

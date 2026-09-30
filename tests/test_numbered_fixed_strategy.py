@@ -33,7 +33,7 @@ def test_separate_session_policy(boundary, entry, cancel, exit_due):
     assert not baseline.liquidation_due(boundary)
 
 
-@pytest.mark.parametrize("number", [True, 0, 3, 2.0, "2"])
+@pytest.mark.parametrize("number", [True, 0, 4, 2.0, "2"])
 def test_registry_rejects_uninstalled_or_ambiguous_numbers(number):
     assert not is_numbered_fixed_strategy("early-squeeze-strategy", number)
     with pytest.raises(ValueError):
@@ -169,13 +169,14 @@ def test_empty_liquidity_tail_cannot_claim_flat_terminal_success():
             evidence, manager, runtime=runtime,
             static_gate=StrategyOneStaticGate((), np.array([], dtype=np.uint8), np.array([], dtype=np.int64)),
             assignments=(assignment,), before_boundary=AsyncMock(), finish_boundary=finished))
-    finished.assert_not_awaited()
+    finished.assert_awaited_once()
     runtime.submit_numbered_session_exit.assert_not_awaited()
     assert runtime.broker.held
     scheduler.close()
 
 
-def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity():
+@pytest.mark.parametrize("number", [2, 3])
+def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity(number):
     from uuid import UUID
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.trading_runtime.domain import TradingMode, InstrumentContract
@@ -204,7 +205,7 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
         portfolio = PortfolioManagementEngine(
             [PortfolioAccountProfile("cash", "DU1", "backtest", "simulated", policy)],
             journal=journal, run_id=run_id, strategy_id="early-squeeze-strategy",
-            strategy_revision=2, event_clock=lambda: at)
+            strategy_revision=number, event_clock=lambda: at)
         portfolio.synchronize_snapshot("DU1", summary=AccountSummary(
             account_id="DU1", netliquidation=9000, totalcashvalue=9000, buyingpower=9000,
             grosspositionvalue=0, availablefunds=9000, excessliquidity=9000, timestamp=at),
@@ -213,11 +214,11 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
                 timestamp=at), positions=[])
         planner = RuntimeIbkrStrategyOrderPlanner(
             {"AAA": InstrumentContract("AAA", 123, "AAA", "STK", "USD")},
-            strategy_id="early-squeeze-strategy", strategy_revision=2, run_id=run_id)
+            strategy_id="early-squeeze-strategy", strategy_revision=number, run_id=run_id)
         manager = OrderManagementEngine(broker=broker,
             planner=lambda item, account_id, event: planner.plan(account_id=account_id, intent=item, event=event),
             risk=risk, journal=journal, run_id=run_id, strategy_id="early-squeeze-strategy",
-            strategy_revision=2, policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
+            strategy_revision=number, policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
         def bar(boundary, volume):
             at_bar = market_day_boundary(date(2026, 8, 18), boundary)
             last_us = int(at_bar.timestamp() * 1_000_000) - 1
@@ -229,10 +230,10 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
         try:
             manager.on_market_snapshot(ExecutionMarketSnapshot("AAA", 10., 10.01, .01, at, "qmd-history"))
             proposal = StrategyOneEntryProposal("A1", "DU1", "AAA", 19_499_800, 19_499_000,
-                                                10.01, 9.89, 12., "R4", .5, 19_499_000, "S1", 2)
+                                                10.01, 9.89, 12., "R4", .5, 19_499_000, "S1", number)
             intent = strategy_one_entry_intent(proposal, session_date=date(2026, 8, 18))
             journal.append_strategy_one_intent(intent=intent, proposal=proposal, session_date=date(2026, 8, 18),
-                account_id="DU1", strategy_id="early-squeeze-strategy", strategy_revision=2)
+                account_id="DU1", strategy_id="early-squeeze-strategy", strategy_revision=number)
             _, approved = await portfolio.approve(intent, account_id="DU1", assignment_id="A1")
             assert approved is not None
             await manager.submit_intent(approved, account_id="DU1", event=None)
@@ -253,9 +254,9 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
                 ledger=await broker.account_ledger("DU1"), positions=await broker.positions("DU1"))
             exit_intent = numbered_session_exit_intent(session_date=date(2026, 8, 18),
                 account_id="DU1", assignment_id="A1", ticker="AAA", boundary_ms=19_740_000,
-                quantity=held, bid=10.)
+                quantity=held, bid=10., strategy_number=number)
             journal.append_numbered_session_exit_intent(intent=exit_intent,
-                account_id="DU1", strategy_id="early-squeeze-strategy", strategy_revision=2)
+                account_id="DU1", strategy_id="early-squeeze-strategy", strategy_revision=number)
             decision, exit_approved = await portfolio.approve(exit_intent, account_id="DU1", assignment_id="A1")
             assert exit_approved is not None, decision.reasons
             await manager.submit_intent(exit_approved, account_id="DU1", event=None)
@@ -273,12 +274,12 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
             units = project_pending_backtest_v4_prefix(
                 journal, attempt_id=str(UUID(int=223)), run_month=date(2026, 8, 1),
                 prior_sequence=0, prior_batch_id=str(UUID(int=0)), source_cursor="2026-08-18:19740100",
-                expected_config={"strategy_id": "early-squeeze-strategy", "strategy_revision": 2},
+                expected_config={"strategy_id": "early-squeeze-strategy", "strategy_revision": number},
                 through_sequence=journal.records(run_id)[-1].sequence)
             scalar_exits = [intent for unit in units
                 for intent in (unit.base if hasattr(unit, "base") else unit).intents
                 if intent["action"] == "exit"]
-            assert len(scalar_exits) == 1 and scalar_exits[0]["reason"] == "strategy_two_session_exit"
+            assert len(scalar_exits) == 1 and scalar_exits[0]["reason"] == ("strategy_two_session_exit" if number == 2 else "strategy_three_session_exit")
             from tests.test_arte_journal_commit_v4 import attached_v4_client
             from src.trading_runtime.arte_journal_commit_v4 import _publish_typed_batch_v4, load_verified_v4_prefix
             from src.trading_runtime.arte_journal_compound_v4 import _publication_kwargs
@@ -290,13 +291,13 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
                                         **_publication_kwargs(unit))
             prefix = load_verified_v4_prefix(client, run_id)
             recovered = load_recovered_strategy_one_oms_lineage(
-                client, prefix, allowed_accounts=frozenset({"DU1"}), strategy_number=2)
+                client, prefix, allowed_accounts=frozenset({"DU1"}), strategy_number=number)
             exits = [item for item in recovered if item.source_intent.intent.action == "exit"]
             assert len(exits) == 1
             assert float(exits[0].state.group["remaining_quantity"]) == remaining
-            assert all(order.raw["canonical_strategy_revision"] == 2 for order in exits[0].orders)
+            assert all(order.raw["canonical_strategy_revision"] == number for order in exits[0].orders)
             commands = load_committed_strategy_one_command_page(client, prefix)
-            assert commands and all(item.request.raw["canonical_strategy_revision"] == 2 for item in commands)
+            assert commands and all(item.request.raw["canonical_strategy_revision"] == number for item in commands)
             row, at = bar(19_740_200, 0)
             row["bid_size"] = 0
             assert not await broker.on_liquidity_bar(row, at=at)
@@ -309,3 +310,96 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
             await manager.close()
             journal.close()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("number", [2, 3])
+def test_residual_failure_completes_real_controller_cursor_and_terminal_journal(monkeypatch, number):
+    import numpy as np
+    from src.backend import backtest_strategy_one_execution as execution
+    from src.backend.replay_run_service import ReplayRunController
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
+    from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
+    from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
+    from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
+    from src.trading_runtime.strategy_engine import StrategyAssignment, AssignmentStatus, StrategyPermissions
+    from src.trading_runtime.arte_journal_projection import backtest_cursor_record_fields
+    from tests.test_backtest_strategy_one_execution import _Runtime, _Evidence
+
+    day = "2026-08-18"
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = "00000000-0000-0000-0000-000000000333"
+    controller.definition = SimpleNamespace(execution_interval="100ms", session_date=day,
+        requested_start=market_day_boundary(day, 43_200_000), session_end=market_day_boundary(day, 57_600_000))
+    controller._journal = BacktestMemoryJournal(run_id=controller.run_id)
+    assignment = StrategyAssignment("A1", "early-squeeze-strategy", number, "DU1", "AAA", 123,
+        AssignmentStatus.MANAGING, StrategyPermissions(enter=True), {"execution": {"tick_size": .01}})
+    controller._strategy = AssignedStrategyOne([assignment])
+    runtime = _Runtime([])
+    runtime.config.strategy_revision = number
+    runtime.advance_numbered_session_clock = AsyncMock()
+    runtime.submit_numbered_session_exit = AsyncMock()
+    controller._runtime = runtime
+    controller._resume_state = None
+    controller._stop_requested = False
+    controller.processed_events = 0
+    controller._source_cursor = {}
+    controller._frame_cursor = {}
+    controller._data_authority = {}
+    controller._record_data_authority = lambda *_: None
+    controller._fixed_through_boundary_ms = lambda: 57_600_000
+    controller._publish = AsyncMock()
+    controller._after_event = AsyncMock()
+    controller._wait_until_active = AsyncMock()
+    controller._runtime_finished = False
+    controller._account_map = {"primary": "DU1"}
+    controller._record_stage_time = lambda *_: None
+    published = []
+    publisher = SimpleNamespace(writer=SimpleNamespace(journal_profile="backtest_v4"), _source_cursor=None)
+    controller._journal_publisher = publisher
+    async def checkpoint(at, **kwargs):
+        assert kwargs == {"checkpoint_status": "running"}
+        publisher._source_cursor, _ = backtest_cursor_record_fields(
+            controller._source_cursor, controller._frame_cursor, completed_at=at)
+    controller._save_restart_checkpoint_responsive = checkpoint
+    async def runtime_finish(*, status):
+        controller._journal.append(run_id=controller.run_id, category="lifecycle", entity_type="run",
+            entity_id=controller.run_id, payload={"status": status}, event_time=controller.current_time)
+    runtime.finish = runtime_finish
+    runtime.portfolio = SimpleNamespace(capture_recovery_snapshot=lambda *args, **kwargs: kwargs)
+    def enqueue_terminal(captures):
+        async def publish():
+            published.extend(controller._journal.unfenced_records())
+            assert captures[0]["snapshot_at"] == controller.definition.session_end
+        return asyncio.create_task(publish())
+    publisher.enqueue_terminal = enqueue_terminal
+    async def execute(**kwargs):
+        evidence = _Evidence([])
+        manager = StrategyOneManagementRunner(runtime=runtime, evidence=evidence, tick_for_ticker=lambda _: .01)
+        kwargs["manager_ready"](manager)
+        scheduler = StrategyOneBoundaryScheduler(session_date=day, candidate_rows=iter(()),
+            active_source=lambda *_: iter(()), start_after_boundary_ms=57_300_000)
+        scheduler.install_session_clocks((57_600_000,))
+        try:
+            await execution.run_strategy_one_fixed_session(scheduler,
+                CertifiedEntryEvidencePlan("b" * 16, day, (), (), (), "e" * 64), evidence, manager,
+                runtime=runtime, static_gate=StrategyOneStaticGate((), np.array([], dtype=np.uint8), np.array([], dtype=np.int64)),
+                assignments=(assignment,), before_boundary=kwargs["before_boundary"], finish_boundary=kwargs["finish_boundary"])
+        finally:
+            scheduler.close()
+    monkeypatch.setattr(execution, "run_certified_strategy_one_session", execute)
+    market = CertifiedMarketDayPlan(ExecutionInterval.fixed(100), "build-1", "a" * 64,
+        (day,), ("AAA",), (), (100, 1000, 30000), "b" * 64)
+    async def run():
+        with pytest.raises(RuntimeError, match="residual exposure/orders"):
+            await controller._run_strategy_one_fixed_days(market=market, execution_market=market,
+                candidates=object(), activations=object(), pivots=object(), hod=object(), seeds=object(),
+                v7_intervals=object(), entry=object(), prices=object())
+        assert controller._source_cursor["boundary_ms"] == 57_600_000
+        assert controller.current_time == controller.definition.session_end
+        await controller._finish_fixed_v4("failed")
+    asyncio.run(run())
+    assert controller._runtime_finished
+    assert published[-1].payload["status"] == "failed"
+    assert runtime.broker.held  # Failure retains exposure; no synthetic flattening.

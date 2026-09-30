@@ -24,6 +24,7 @@ MISSING_FROZEN_GAP = 1 << 0
 MISSING_COMPLETED_BOS = 1 << 1
 MISSING_BOS_SUPPORT = 1 << 2
 MISSING_INITIAL_PROTECTION = 1 << 3
+SESSION_ACTIVATION_REQUIRED = 1 << 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +35,8 @@ class StrategyOneStaticGate:
 
     def __post_init__(self) -> None:
         known_bits = (MISSING_FROZEN_GAP | MISSING_COMPLETED_BOS
-                      | MISSING_BOS_SUPPORT | MISSING_INITIAL_PROTECTION)
+                      | MISSING_BOS_SUPPORT | MISSING_INITIAL_PROTECTION
+                      | SESSION_ACTIVATION_REQUIRED)
         if (self.rejection_mask.dtype != np.uint8
                 or self.eligible_indices.dtype != np.int64
                 or self.rejection_mask.shape != (len(self.facts),)
@@ -51,6 +53,7 @@ class StrategyOneStaticGate:
 
 def compile_static_entry_gate(
     candidates: CertifiedCandidatePlan, entry: CertifiedEntryEvidencePlan,
+    *, strategy_number: int = 1,
 ) -> StrategyOneStaticGate:
     """Vectorize only position-independent rules over a certified run prefix.
 
@@ -59,6 +62,8 @@ def compile_static_entry_gate(
     producer/rule contract, not this mask's Strategy 1-specific thresholds.
     This output is eligibility evidence; Portfolio/OMS alone authorizes orders.
     """
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    numbered_fixed_strategy(strategy_number)
     if (not isinstance(candidates, CertifiedCandidatePlan)
             or not isinstance(entry, CertifiedEntryEvidencePlan)
             or candidates.source_build_id != entry.source_build_id
@@ -98,6 +103,15 @@ def compile_static_entry_gate(
                | (~bos).astype(np.uint8) * MISSING_COMPLETED_BOS
                | (~support).astype(np.uint8) * MISSING_BOS_SUPPORT
                | (~protection).astype(np.uint8) * MISSING_INITIAL_PROTECTION)
+    if strategy_number == 3:
+        # Shape (candidate_count,): compare original sealed episode clocks.
+        # The completed opening bucket belongs to the preceding session.
+        boundaries = np.fromiter((fact.boundary_ms for fact in facts), dtype=np.int64)
+        starts = np.fromiter((fact.episode_start_ms for fact in facts), dtype=np.int64)
+        same_session = ((starts <= boundaries) & (
+            ((starts > 0) & (boundaries < 19_500_000))
+            | ((starts > 43_200_000) & (boundaries < 57_000_000))))
+        reasons |= (~same_session).astype(np.uint8) * SESSION_ACTIVATION_REQUIRED
     return StrategyOneStaticGate(
         tuple(facts), reasons, np.flatnonzero(reasons == 0).astype(np.int64))
 

@@ -179,7 +179,7 @@ def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
 
 
 def numbered_strategy(number: int) -> NumberedStrategyRelease:
-    if number == 2:
+    if number in (2, 3):
         initialize_numbered_fixed_strategies()
     with _LOCK:
         release = _NUMBERED_RELEASES.get(number)
@@ -216,6 +216,11 @@ def _strategy_two_contract():
     return numbered_fixed_strategy(2)
 
 
+def _strategy_three_contract():
+    from .numbered_fixed_strategy import numbered_fixed_strategy
+    return numbered_fixed_strategy(3)
+
+
 def _strategy_two_factory(assignments):
     from .strategy_one_runtime import AssignedStrategyOne
     return AssignedStrategyOne(assignments)
@@ -238,6 +243,13 @@ def initialize_numbered_fixed_strategies() -> None:
             evaluation_interval=release.evaluation_interval,
             contract_factory=_strategy_two_contract, strategy_factory=_strategy_two_factory))
         register_numbered_strategy(release)
+        from .strategy_three_release import release_contract as third_release_contract
+        third = third_release_contract()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=third.executor_strategy_id, revision=third.executor_revision,
+            evaluation_interval=third.evaluation_interval,
+            contract_factory=_strategy_three_contract, strategy_factory=_strategy_two_factory))
+        register_numbered_strategy(third)
         _NUMBERED_FIXED_REGISTERED = True
 
 

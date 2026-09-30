@@ -68,7 +68,7 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, mo
     monkeypatch.setattr(subject, "project_activation_plan",
                         lambda source, *_args, **_kwargs: source)
     monkeypatch.setattr(subject, "compile_static_entry_gate",
-                        lambda *_args: full_gate)
+                        lambda *_args, **_kwargs: full_gate)
     monkeypatch.setattr(subject, "project_static_survivors",
                         lambda *_args: (candidates, activations))
     monkeypatch.setattr(subject, "project_market_day_plan",
@@ -139,7 +139,7 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch, mo
         hod=CertifiedHodPlan("build", "2026-08-18", (), "h" * 64),
         seeds=CertifiedSeedPlan("build", "v" * 64, (), "z" * 64, True),
         entry=entry, prices=prices, through_boundary_ms=57_600_000,
-        runtime=SimpleNamespace(broker=SimpleNamespace(
+        runtime=SimpleNamespace(config=SimpleNamespace(strategy_revision=1), broker=SimpleNamespace(
             financially_active_tickers=lambda: () if flat else ("AAA",))),
         start_after_boundary_ms=cutoff if resume else 0,
         flat_start_boundary_ms=cutoff if flat else 0,

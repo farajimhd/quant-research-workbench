@@ -104,17 +104,20 @@ def publish_configuration(client: Any, keeper: Any,
     number = dict(dict(envelope.get("payload") or {}).get("strategy") or {}).get("strategy_number")
     if number == 1:
         payload, nodes = _verified_envelope(envelope)
-    elif type(number) is int and number == 2:
+    elif type(number) is int and number in (2, 3):
         payload, nodes = _verified_numbered_envelope(envelope)
-        from pipelines.strategy_one.strategy_two_configuration import compile_strategy_two_configuration
-        source = certify_strategy_one_configuration(client)
+        if number == 2:
+            from pipelines.strategy_one.strategy_two_configuration import compile_strategy_two_configuration as compile_configuration
+        else:
+            from pipelines.strategy_one.strategy_three_configuration import compile_strategy_three_configuration as compile_configuration
+        source = certify_numbered_configuration(client, number - 1)
         manifest = payload["strategy"]["numbered_release"]
-        expected = compile_strategy_two_configuration(source,
+        expected = compile_configuration(source,
             approved_code_commit=manifest["approved_code_commit"],
             approved_code_fingerprint=manifest["approved_code_fingerprint"],
             approval_reference=manifest["approval_reference"])
         if dict(envelope) != expected:
-            raise ValueError("Strategy 2 publication differs from certified inheritance")
+            raise ValueError("Numbered publication differs from certified inheritance")
     else:
         raise ValueError("Unknown numbered configuration publication")
     try:
@@ -219,19 +222,20 @@ class PublicationStageError(RuntimeError):
 
 
 def _verified_numbered_envelope(envelope: Mapping[str, Any]) -> tuple[dict, tuple[dict, ...]]:
-    """Number 2 has independent approval and source identity; no Candidate 350 reuse."""
+    """Later numbers have independent approval and source identity; no Candidate 350 reuse."""
     if set(envelope) != {"source_candidate_id", "source_candidate_hash", "payload_hash", "node_hash", "node_count", "payload"}:
         raise ValueError("Numbered configuration envelope shape differs")
     payload = envelope["payload"]
-    if not is_numbered_fixed_configuration(payload) or payload["strategy"]["strategy_number"] != 2:
-        raise ValueError("Numbered publisher requires sealed Strategy 2")
+    if not is_numbered_fixed_configuration(payload) or payload["strategy"]["strategy_number"] not in (2, 3):
+        raise ValueError("Numbered publisher requires sealed Strategy 2 or 3")
     _validate_strategy_two_payload(payload)
     manifest = payload["strategy"]["numbered_release"]
-    if (envelope["source_candidate_id"] != f"strategy-two-from:{manifest['source_revision_id']}"
+    source_prefix = {2: "strategy-two-from", 3: "strategy-three-from"}[payload["strategy"]["strategy_number"]]
+    if (envelope["source_candidate_id"] != f"{source_prefix}:{manifest['source_revision_id']}"
             or envelope["source_candidate_hash"] != manifest["source_payload_hash"]):
-        raise ValueError("Strategy 2 source provenance differs")
+        raise ValueError("Numbered source provenance differs")
     nodes = encode_nodes(payload)
     if (sha256(canonical_json(payload).encode()).hexdigest() != envelope["payload_hash"]
             or node_hash(nodes) != envelope["node_hash"] or len(nodes) != envelope["node_count"]):
-        raise ValueError("Strategy 2 typed content seal differs")
+        raise ValueError("Numbered typed content seal differs")
     return payload, nodes
