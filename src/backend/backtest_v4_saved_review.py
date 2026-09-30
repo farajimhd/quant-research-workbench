@@ -587,7 +587,7 @@ def load_v4_chart_trades(client, run_id: str, ticker: str) -> dict:
             "instrument": {"symbol": instrument["symbol"]},
             **{key: row.get(key) for key in (
                 "account_id", "requested_at", "opened_at", "entry_price", "closed_at", "exit_price",
-                "side", "quantity", "status", "exit_reason",
+                "side", "quantity", "current_quantity", "status", "exit_reason",
                 "presentation_exit_reason", "net_pnl")},
             "protection_timeline": rails,
         })

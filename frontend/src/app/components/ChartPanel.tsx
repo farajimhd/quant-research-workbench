@@ -145,6 +145,8 @@ type TradeAnnotation = {
   resistancePrices?: number[];
   pnl?: number;
   positionSide?: "LONG" | "SHORT";
+  currentQuantity?: number;
+  openMarkPrice?: number;
   selected?: boolean;
   status?: "open" | "closed";
   stopPrice?: number;
@@ -7949,12 +7951,13 @@ function drawTradeAnnotationPrimitiveGeometry(
     const guideX = (time: number) => xForAnnotationTime(chart, Math.max(firstTime, Math.min(lastTime, time)), timeline);
     const entryX = guideX(annotation.entryTime);
     const recordedEndTime = annotation.endTime ?? annotation.exitTime ?? annotation.entryTime;
-    if (recordedEndTime < firstTime || annotation.entryTime > lastTime) return;
+    if ((annotation.status !== "open" && recordedEndTime < firstTime)
+        || annotation.entryTime > lastTime) return;
     // The replay clock can lead the latest candle (closed-bar publication or
     // a quiet market). Keep the open protection path visible through the last
     // loaded candle; never change the actual journal endpoint or viewport.
     const endTime = annotation.status === 'open'
-      ? Math.min(recordedEndTime, timeline[timeline.length - 1].time)
+      ? timeline[timeline.length - 1].time
       : recordedEndTime;
     const resolvedEndX = guideX(endTime);
     // Lifecycle geometry is always owned by event time. Tying an open
@@ -8016,6 +8019,17 @@ function drawTradeAnnotationPrimitiveGeometry(
     };
     if (elements.entryLine.visible) {
       drawCanvasTradeLine(context, span.left, span.right, entryY, entryLineColor, annotation.selected ? Math.min(5, elements.entryLine.lineWidth + 1) : elements.entryLine.lineWidth, elements.entryLine.lineStyle, elements.entryLine.opacity);
+    }
+    if (annotation.status === "open" && elements.entryLabel.visible) {
+      const quantity = annotation.currentQuantity;
+      const mark = annotation.openMarkPrice;
+      const estimate = Number.isFinite(quantity) && Number.isFinite(mark)
+        ? ((mark as number) - annotation.entryPrice) * (quantity as number)
+          * (annotation.positionSide === "SHORT" ? -1 : 1) : null;
+      const label = `${Number.isFinite(quantity) ? `${quantity} shares` : "Open"} · ${formatPrice(annotation.entryPrice)} · ${estimate === null ? "P&L —" : `Est. P&L ${estimate >= 0 ? "+" : ""}${estimate.toFixed(2)}`}`;
+      drawCanvasTradeLabel(context, label, span.left, entryY + 6,
+        entryLabelColor, chartBackground, "left", width, height,
+        elements.entryLabel, labelLayout, elements.connector);
     }
     if (elements.exitLine.visible && annotation.status !== "open" && exitY !== null) {
       drawCanvasTradeLine(context, span.left, span.right, exitY, exitLineColor, annotation.selected ? Math.min(5, elements.exitLine.lineWidth + 1) : elements.exitLine.lineWidth, elements.exitLine.lineStyle, elements.exitLine.opacity);
@@ -8156,10 +8170,18 @@ function drawTradeAnnotationPrimitiveGeometry(
       // Do not turn an already-ended off-screen order into a visible minimum
       // width guide at the chart edge. Protection rails follow effective time.
       if (right < 0 || left > width || right < left) return;
+      const isCurrentOpenRail = annotation.status === "open" && !next;
+      const railLabel = `${point.kind === "stop" ? "SL" : "TP"} ${formatPrice(point.price)}`;
       drawCanvasTradeGuide(context, Math.max(0, left), Math.min(width, right), y, color,
-        `${point.kind === "stop" ? "SL" : "TP"} ${formatPrice(point.price)}`, chartBackground, width, height,
+        railLabel, chartBackground, width, height,
         lineStyle, protectionLabels.has(index) ? labelStyle : { ...labelStyle, visible: false },
         labelLayout, elements.connector);
+      if (isCurrentOpenRail && labelStyle.visible) {
+        drawCanvasTradeLabel(context,
+          `${railLabel}${Number.isFinite(annotation.currentQuantity) ? ` · ${annotation.currentQuantity} shares` : ""}`,
+          Math.min(width, right), y + 3, color, chartBackground, "right",
+          width, height, labelStyle, labelLayout, elements.connector);
+      }
       if (lineStyle.visible && next?.active && next.time <= endTime) {
         const nextY = priceSeries.priceToCoordinate(next.price);
         if (nextY !== null) {

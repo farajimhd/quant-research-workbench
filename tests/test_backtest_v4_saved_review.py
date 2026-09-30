@@ -229,6 +229,27 @@ def test_trade_history_rejects_head_change_after_rows(monkeypatch):
         review.load_v4_trade_history_page(Client(), RUN)
 
 
+def test_saved_chart_keeps_verified_open_position_quantity(monkeypatch):
+    monkeypatch.setattr(review, "load_cached_v4_performance_report", lambda *_a: {
+        "run_id": RUN, "verified_sequence": 2,
+        "position_lifecycles": [{
+            "episode_id": "episode-1", "instrument": {"symbol": "BBNX"},
+            "account_id": "SIM-01-A", "opened_at": "2026-08-18T12:00:00+00:00",
+            "entry_price": 3.0, "side": "LONG", "quantity": 100,
+            "current_quantity": 75, "status": "open", "protection_timeline": [],
+        }],
+    })
+    monkeypatch.setattr(review, "_terminal_attestation", lambda *_a: {"prefix": _prefix()})
+    monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
+    monkeypatch.setattr(
+        "src.trading_runtime.arte_intent_projection.load_committed_strategy_intent_page",
+        lambda *_a, **_k: (),
+    )
+    result = review.load_v4_chart_trades(Client(), RUN, "BBNX")
+    assert result["position_lifecycles"][0]["current_quantity"] == 75
+    assert result["position_lifecycles"][0]["status"] == "open"
+
+
 def test_order_history_reads_independent_verified_pages(monkeypatch):
     monkeypatch.setattr(review, "_terminal_attestation", lambda *_a:
                         {"prefix": _prefix()})

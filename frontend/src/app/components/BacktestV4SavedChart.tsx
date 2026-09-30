@@ -88,9 +88,11 @@ function pageBoundary(page: ChartPage): number | null {
   return Number.isFinite(boundary) && boundary > 0 ? boundary : null;
 }
 
-export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false, initialFrame = "1s", onQuoteChange, toolbarAction, panelLabel, enabled = true, allowedFrames = SAVED_CHART_FRAMES, initialShowMacd = true, prefetchedPage, tradeAnnotations = [], tradeError = "" }: {
+export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false, initialFrame = "1s", onQuoteChange, onMarkChange, toolbarAction, panelLabel, enabled = true, allowedFrames = SAVED_CHART_FRAMES, initialShowMacd = true, prefetchedPage, tradeAnnotations = [], tradeError = "" }: {
   runId: string; ticker: string; onClose?: () => void; embedded?: boolean;
-  initialFrame?: (typeof FRAMES)[number]; onQuoteChange?: (quote: ChartPage["quote"]) => void; toolbarAction?: ReactNode; panelLabel?: string; enabled?: boolean;
+  initialFrame?: (typeof FRAMES)[number]; onQuoteChange?: (quote: ChartPage["quote"]) => void;
+  onMarkChange?: (mark: { price: number; barEnd: string } | null) => void;
+  toolbarAction?: ReactNode; panelLabel?: string; enabled?: boolean;
   allowedFrames?: readonly (typeof FRAMES)[number][]; initialShowMacd?: boolean;
   prefetchedPage?: ChartPage;
   tradeAnnotations?: NonNullable<ChartPayload["trade_annotations"]>;
@@ -175,6 +177,11 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   }, [prefetchedPage, canUsePrefetch]);
 
   useEffect(() => { onQuoteChange?.(latestPage?.quote); }, [onQuoteChange, latestPage?.quote]);
+  useEffect(() => {
+    const last = latestPage?.bars.at(-1);
+    onMarkChange?.(last && Number.isFinite(last.close) && last.close > 0
+      ? { price: last.close, barEnd: last.bar_end } : null);
+  }, [onMarkChange, latestPage]);
 
   function changeScope(next: { symbol?: string; frame?: (typeof FRAMES)[number]; macd?: boolean }) {
     if (next.symbol !== undefined) setSymbol(next.symbol);

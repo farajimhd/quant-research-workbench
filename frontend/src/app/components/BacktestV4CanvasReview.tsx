@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Clock3, Globe2, MapPin, PanelRightOpen, Maximize2, Minimize2 } from "lucide-react";
-import { api } from "../../api/client";
+import { api, type ApiError } from "../../api/client";
 import { TradingWorkspace } from "./TradingWorkspace";
 import { BacktestV4SavedChart, SAVED_CHART_FRAMES, type ChartPage } from "./BacktestV4SavedChart";
 import { ChartsQuotesMarketLayout, type SavedChartsQuote, type ChartsQuotesLayoutSettings } from "./MarketMicrostructureContainers";
@@ -52,6 +52,24 @@ type OrderPage = {
 };
 type ContextPair = { schema_version: "strategy-one-v4-chart-context-pair-v1";
   run_id: string; ticker: string; daily: ChartPage; monthly: ChartPage };
+
+async function savedReviewPage<T>(path: string, signal: AbortSignal): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await api<T>(path, { signal, timeoutMs: 60_000 }); }
+    catch (error) {
+      const response = error as ApiError;
+      if (signal.aborted || response.status !== 429 || response.retryable !== true || attempt >= 3) throw error;
+      // The saved run is immutable. Bounded retry is safe after the backend's
+      // read-workload budget rejects concurrent Canvas projections.
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, 750 * (attempt + 1));
+        const abort = () => { window.clearTimeout(timer); reject(signal.reason ?? new Error("Saved review canceled")); };
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
+    }
+  }
+}
 
 const REVIEW_CONTAINERS: WorkspaceContainerId[] = [
   "performance_journal", "strategy_activity", "positions", "orders", "fills",
@@ -154,7 +172,8 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
 }) {
   // Keep the certified Canvas interactive while paging the typed journal.
   // Larger runs stay bounded and expose explicit manual continuation.
-  const automaticEventLimit = 5_000;
+  const [loadCompleteActivity, setLoadCompleteActivity] = useState(false);
+  const automaticEventLimit = loadCompleteActivity ? Number.POSITIVE_INFINITY : 5_000;
   const [events, setEvents] = useState(initialPage.events);
   const [nextSequence, setNextSequence] = useState(initialPage.next_sequence);
   const [eventsComplete, setEventsComplete] = useState(initialPage.complete);
@@ -200,9 +219,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
 
   useEffect(() => {
     const controller = new AbortController();
-    void api<PerformancePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-performance`, {
-      signal: controller.signal, timeoutMs: 60_000,
-    }).then(page => {
+    void savedReviewPage<PerformancePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-performance`, controller.signal).then(page => {
       if (!controller.signal.aborted) setPerformance(page);
     }).catch(error => {
       if (!controller.signal.aborted) setPerformanceError(error instanceof Error ? error.message : String(error));
@@ -211,11 +228,10 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
   }, [runId]);
 
   useEffect(() => {
+    if (!performance && !performanceError) return;
     const controller = new AbortController();
     setLoadingOrders(true);
-    void api<OrderPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-order-history?limit=500`, {
-      signal: controller.signal, timeoutMs: 60_000,
-    }).then(page => {
+    void savedReviewPage<OrderPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-order-history?limit=500`, controller.signal).then(page => {
       if (controller.signal.aborted) return;
       setOrders(page);
       setOrderCommands(page.commands);
@@ -224,14 +240,13 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
       if (!controller.signal.aborted) setOrderError(error instanceof Error ? error.message : String(error));
     }).finally(() => { if (!controller.signal.aborted) setLoadingOrders(false); });
     return () => controller.abort();
-  }, [runId]);
+  }, [runId, Boolean(performance), Boolean(performanceError)]);
 
   useEffect(() => {
+    if (!performance && !performanceError) return;
     const controller = new AbortController();
     setLoadingTrades(true);
-    void api<TradePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-trade-history?limit=500`, {
-      signal: controller.signal, timeoutMs: 60_000,
-    }).then(page => {
+    void savedReviewPage<TradePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-trade-history?limit=500`, controller.signal).then(page => {
       if (controller.signal.aborted) return;
       setTrade(page);
       setFillRows(page.fills);
@@ -240,7 +255,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
       if (!controller.signal.aborted) setTradeError(error instanceof Error ? error.message : String(error));
     }).finally(() => { if (!controller.signal.aborted) setLoadingTrades(false); });
     return () => controller.abort();
-  }, [runId]);
+  }, [runId, Boolean(performance), Boolean(performanceError)]);
 
   async function loadMoreTrades() {
     if (!trade || trade.complete || loadingTrades) return;
@@ -289,7 +304,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
     if (!eventsComplete && !loadingEvents && !eventError && events.length < automaticEventLimit) {
       void loadMoreEvents();
     }
-  }, [eventsComplete, loadingEvents, eventError, events.length, nextSequence]);
+  }, [eventsComplete, loadingEvents, eventError, events.length, nextSequence, loadCompleteActivity]);
 
   const accounts = Object.entries(initialPage.financial_accounts).map(([account_id, account]) => ({ account_id, ...account }));
   const financialAccounts = accounts.map(account => ({
@@ -322,6 +337,7 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
     source: detail_family ?? "", entity_id: event.entity_id,
     event_evidence: { ...(detail ?? {}), journal_record_id: event.record_id ?? "", detail_family },
   }));
+  const openLifecycles = (performance?.position_lifecycles ?? []).filter(row => row.status === "open");
   const commandRows = orderCommands.map(row => ({ ...row, created_at: utcJournalTime(row.created_at) }));
   const chartTicker = display(fillRows[0]?.ticker ?? events.find(item => typeof item.detail?.ticker === "string")?.detail?.ticker).replace("—", "");
   // The certified journal is complete for fills/fees, not for every old
@@ -336,12 +352,12 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
     orders: [], executions: [],
     performance_journal: performance.report,
   } : undefined;
-  const positionTrading = performance && trade?.complete && accounts.length > 0 && accounts.every(account => account.expected_position_count === 0) ? {
+  const positionTrading = performance && accounts.length > 0 ? {
     mode: "backtest", provider: "arte_typed_journal_v4", complete: false, stale: true,
-    stale_reason: "Verified flat-to-flat lifecycles and fills; order state and intratrade marks unavailable.",
+    stale_reason: "Verified fill-derived lifecycles; current marks, unrealized P&L, and order state are unavailable.",
     as_of: accounts[0] ? new Date(accounts[0].source_timestamp_ms).toISOString() : "",
     position_lifecycles: performance.position_lifecycles,
-    positions: [], orders: [], executions: canonicalFills,
+    positions: [], orders: [], executions: trade?.complete ? canonicalFills : [],
     strategy_activity: [], activity: [],
   } : undefined;
   return <div className="canvas-config-page canvas-focus-page backtest-v4-canvas-review">
@@ -366,7 +382,13 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
           case "performance_journal": return <>{performanceError ? <p role="alert">Performance unavailable: {performanceError}</p> : null}
             <TradingJournalPreview data={performanceTrading} onSymbolSelect={openV4Ticker} readOnly settings={presentationSettings.journal} />
           </>;
-          case "strategy_activity": return <section className="trading-preview"><StrategyActivityContainer
+          case "strategy_activity": return <section className="trading-preview">
+            {openLifecycles.length ? <div className="trading-disclosure" role="status">Open at saved cutoff: {openLifecycles.map(row => {
+              const symbol = String((row.instrument as { symbol?: string } | undefined)?.symbol ?? "");
+              return <button className="button secondary compact" key={String(row.episode_id ?? symbol)} onClick={() => openV4Ticker(symbol)} type="button">{symbol} · {String(row.current_quantity ?? row.quantity)} shares · Chart &amp; Quote</button>;
+            })}</div> : null}
+            {!eventsComplete ? <div className="trading-disclosure" role="status">Activity search covers only {events.length.toLocaleString()} loaded journal events, not the complete run. <button className="button secondary compact" disabled={loadingEvents} onClick={() => setLoadCompleteActivity(true)} type="button">{loadCompleteActivity ? "Loading complete activity…" : "Load complete activity for search"}</button></div> : null}
+            <StrategyActivityContainer
             asOf={new Date(dateInTimeZone(initialPage.market_cursor?.session_date || initialPage.run.session_date || "1970-01-01", "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()}
             historicalRows={activityRows} historicalPage={{ complete: true }}
             onSettingsChange={patch => setActivitySettings(current => ({ ...current, ...patch }))}
@@ -376,10 +398,8 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
             {!eventsComplete && (events.length >= automaticEventLimit || eventError) ? <button className="button secondary compact" disabled={loadingEvents} onClick={() => void loadMoreEvents()} type="button">Load more events</button> : null}
           </section>;
           case "positions": return positionTrading ? <PositionsPreview data={positionTrading}
-            onSymbolSelect={openV4Ticker} orderEvidenceComplete={false} settings={presentationSettings.positions} />
-            : <div className="trading-disclosure" role="status">{performanceError || tradeError || (accounts.some(account => account.expected_position_count > 0)
-              ? "Open positions require marks not retained by this saved review; lifecycle presentation is unavailable."
-              : "Loading complete verified position lifecycles…")}</div>;
+            onSymbolSelect={openV4Ticker} openRowsInChart orderEvidenceComplete={false} settings={presentationSettings.positions} />
+            : <div className="trading-disclosure" role="status">{performanceError || tradeError || "Loading complete verified position lifecycles…"}</div>;
           case "orders": return <section className="trading-preview trading-order-manager"><p className="trading-disclosure">{orders ? `${orderCommands.length.toLocaleString()} verified order commands. ` : "Loading verified order commands. "}{orderTransitions.length ? `${orderTransitions.length.toLocaleString()} state transitions are retained.` : "Lifecycle status is unavailable; commands are not assumed filled or working."}</p>
             <EvidenceTable rows={commandRows} onSymbolSelect={openV4Ticker} columns={[["created_at", "Submitted"], ["ticker", "Ticker"], ["side", "Side"], ["order_type", "Type"], ["quantity", "Quantity"], ["limit_price", "Limit"], ["client_order_id", "Client order"]]} empty={loadingOrders ? "Loading verified order commands…" : "No verified order command."} />
             {orderError ? <p role="alert">Orders unavailable: {orderError}</p> : null}
@@ -421,15 +441,14 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
   // container supplies only the typed V4 market adapter to that window.
   const chartFrame = SAVED_CHART_FRAMES.find(frame => frame === mainFrame) ?? "10s";
   const [quote, setQuote] = useState<SavedChartsQuote | null>(null);
+  const [mark, setMark] = useState<{ price: number; barEnd: string } | null>(null);
   const [tradeAnnotations, setTradeAnnotations] = useState<NonNullable<ChartPayload["trade_annotations"]>>([]);
   const [tradeError, setTradeError] = useState("");
   const [contextPair, setContextPair] = useState<ContextPair | null>(null);
   const [contextError, setContextError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void api<ChartTradesPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart-trades?ticker=${encodeURIComponent(ticker)}`, {
-      signal: controller.signal, timeoutMs: 60_000,
-    }).then(value => {
+    void savedReviewPage<ChartTradesPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart-trades?ticker=${encodeURIComponent(ticker)}`, controller.signal).then(value => {
       if (controller.signal.aborted) return;
       if (value.schema_version !== "strategy-one-v4-chart-trades-v1"
           || value.run_id !== runId || value.ticker !== ticker.toUpperCase()
@@ -501,6 +520,7 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
           : [];
         annotations.push({ id: String(row.lifecycle_id ?? row.episode_id), color: "var(--chart-strategy-entry)",
           entryTime, entryPrice,
+          currentQuantity: row.status === "open" ? Number(row.current_quantity) : undefined,
           entryIntentTime: entryIntent?.time, entryIntentPrice: entryIntent?.price,
           entryLabelParts: entryIntent ? strategyActionLabel({ kind: "entry", side, quantity, price: entryIntent.price }) : [],
           exitIntents,
@@ -547,7 +567,10 @@ export function BacktestV4ChartsQuotesContent({ runId, ticker, initialPage, layo
   return <div className="backtest-v4-chart-focus">
     <ChartsQuotesMarketLayout symbol={ticker} end={savedAsOf} savedQuote={quote} layout={layout} onLayoutChange={onLayoutChange}
         mainChartMaximized={maximized}
-        mainChart={<BacktestV4SavedChart embedded initialFrame={chartFrame} runId={runId} ticker={ticker} tradeAnnotations={tradeAnnotations} tradeError={tradeError} onQuoteChange={value => setQuote(value ?? null)}
+        mainChart={<BacktestV4SavedChart embedded initialFrame={chartFrame} runId={runId} ticker={ticker} tradeAnnotations={tradeAnnotations.map(annotation => annotation.status === "open" ? {
+          ...annotation, openMarkPrice: quote?.fresh && quote.bid > 0 && quote.ask >= quote.bid
+            ? (quote.bid + quote.ask) / 2 : mark?.price,
+        } : annotation)} tradeError={tradeError} onQuoteChange={value => setQuote(value ?? null)} onMarkChange={setMark}
           toolbarAction={<button aria-label={maximized ? "Restore chart panels" : "Maximize main chart"} className="toolbar-button" onClick={() => setMaximized(value => !value)} title={maximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} />}
         monthChart={contextPair ? <BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1mo" allowedFrames={["1mo"]} initialShowMacd={false} panelLabel="Monthly context · limited ARTE history" prefetchedPage={contextPair.monthly} runId={runId} ticker={ticker} /> : <div className="trading-disclosure" role={contextError ? "alert" : "status"}>{contextError || "Loading certified monthly context…"}</div>}
         dailyChart={contextPair ? <BacktestV4SavedChart embedded enabled={!maximized} initialFrame="1d" allowedFrames={["1d"]} initialShowMacd={false} panelLabel="Daily context · limited ARTE history" prefetchedPage={contextPair.daily} runId={runId} ticker={ticker} /> : <div className="trading-disclosure" role={contextError ? "alert" : "status"}>{contextError || "Loading certified daily context…"}</div>}
