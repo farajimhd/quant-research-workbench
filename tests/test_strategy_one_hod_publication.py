@@ -108,3 +108,30 @@ def test_100ms_source_is_bounded_by_nonoverlapping_pinned_bucket_ranges():
         assert f"bucket_index>={start} AND bucket_index<{end}" in sql
         assert "attempt_id=toUUID" in sql
         assert "ORDER BY bucket_index FORMAT JSONEachRow" in sql
+
+
+def test_second_chunks_close_before_cpu_consumer_receives_rows(monkeypatch):
+    calls = []
+    closed = []
+    def source(_market, **kwargs):
+        calls.append((kwargs["after_boundary_ms"], kwargs["through_boundary_ms"]))
+        try:
+            yield {"boundary": kwargs["through_boundary_ms"]}
+        finally:
+            closed.append(kwargs["through_boundary_ms"])
+    monkeypatch.setattr(subject, "iter_persisted_v7_seconds", source)
+    stream = subject._seconds_1s(None, None, SCOPE, 2_001_000)
+    assert next(stream) == {"boundary": 1_000_000}
+    assert closed == [1_000_000]
+    assert list(stream) == [{"boundary": 2_000_000}, {"boundary": 2_001_000}]
+    assert calls == [(0, 1_000_000), (1_000_000, 2_000_000), (2_000_000, 2_001_000)]
+
+
+def test_incomplete_second_chunk_does_not_emit_partial_rows(monkeypatch):
+    def source(*_args, **_kwargs):
+        yield {"partial": True}
+        raise IncompleteRead(b"partial", 100)
+    monkeypatch.setattr(subject, "iter_persisted_v7_seconds", source)
+    stream = subject._seconds_1s(None, None, SCOPE, 1_000)
+    with pytest.raises(IncompleteRead):
+        next(stream)

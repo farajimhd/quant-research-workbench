@@ -164,7 +164,23 @@ def _bars_100ms(client: Any, scope: HodPublicationScope) -> Iterator[dict]:
           AND bucket_index>={start} AND bucket_index<{end}
           ORDER BY bucket_index FORMAT JSONEachRow"""
         with closing(client.iter_json_each_row(sql)) as rows:
-            yield from rows
+            buffered = tuple(rows)
+        # Finish the bounded HTTP response before the consumer performs V7
+        # fits. An incomplete chunk contributes no partially read rows.
+        yield from buffered
+
+
+def _seconds_1s(client: Any, market: CertifiedMarketDayPlan,
+                scope: HodPublicationScope, through: int) -> Iterator[dict]:
+    """Detach bounded completed-second reads from CPU-heavy V7 consumption."""
+    for after in range(0, through, 1_000_000):
+        end = min(after + 1_000_000, through)
+        with closing(iter_persisted_v7_seconds(
+                market, session_date=scope.session_date, ticker=scope.ticker,
+                after_boundary_ms=after, through_boundary_ms=end,
+                client=client)) as rows:
+            buffered = tuple(rows)
+        yield from buffered
 
 
 def _derive(reader_100ms: Any, reader_1s: Any,
@@ -184,9 +200,7 @@ def _derive(reader_100ms: Any, reader_1s: Any,
                          splits=splits, consume_seed=True)
     through = scope.candidate_boundaries[-1] // 1_000 * 1_000
     with closing(_bars_100ms(reader_100ms, scope)) as bars, closing(
-            iter_persisted_v7_seconds(
-                market, session_date=scope.session_date, ticker=scope.ticker,
-                through_boundary_ms=through, client=reader_1s)) as seconds:
+            _seconds_1s(reader_1s, market, scope, through)) as seconds:
         values = derive_hod_context(
             bars, seconds, ticker=scope.ticker,
             session_date=scope.session_date,
