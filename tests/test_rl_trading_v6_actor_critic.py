@@ -25,6 +25,26 @@ def test_hybrid_sampling_masks_and_recomputed_likelihood():
     assert value.ndim == 0
 
 
+def test_shared_categorical_matches_separate_likelihood_entropy_gradients():
+    from research.rl_trading.v6.actor_critic import HybridDistribution
+    from torch.distributions import Categorical
+    logits = torch.tensor([.1, -.7, .8, -1e30], requires_grad=True)
+    reference = logits.detach().clone().requires_grad_()
+    dist = HybridDistribution(logits, torch.zeros(4), torch.ones(4), 3, 0)
+    categorical = dist.categorical
+    assert dist.categorical is categorical
+    actual = dist.log_prob(0, torch.tensor(0.)) - .01 * categorical.entropy()
+    expected = Categorical(logits=reference).log_prob(torch.tensor(0)) - .01 * Categorical(
+        logits=reference).entropy()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    actual.backward(); expected.backward()
+    torch.testing.assert_close(logits.grad, reference.grad)
+    torch.manual_seed(41)
+    sampled = [int(categorical.sample()) for _ in range(20)]
+    torch.manual_seed(41)
+    assert sampled == [int(Categorical(logits=reference).sample()) for _ in range(20)]
+
+
 def test_critic_cannot_update_actor_and_ppo_updates_both_heads():
     model = BracketActorCritic(8)
     dist, value = model.distribution_and_value(*observation(model),

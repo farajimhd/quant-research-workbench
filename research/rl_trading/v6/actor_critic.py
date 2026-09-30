@@ -6,6 +6,7 @@ OMS rounding/partial fills are environmental outcomes, not policy samples.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 import torch
 from torch import nn
 from torch.distributions import Categorical, Normal
@@ -21,6 +22,15 @@ class HybridDistribution:
     listings: int
     holdings: int
 
+    @cached_property
+    def categorical(self):
+        """Normalize this decision's immutable logits once for sample/loss/entropy.
+
+        The object lives for one decision and retains its autograd graph; it is
+        never reused after a policy update or across different observations.
+        """
+        return Categorical(logits=self.logits)
+
     def parameter_kind(self, token: int) -> int:
         if not 0 <= token < self.logits.numel():
             raise ValueError('Token outside action axis')
@@ -32,7 +42,7 @@ class HybridDistribution:
 
     def log_prob(self, token: int, latent: torch.Tensor) -> torch.Tensor:
         kind = self.parameter_kind(token)
-        result = Categorical(logits=self.logits).log_prob(
+        result = self.categorical.log_prob(
             self.logits.new_tensor(token, dtype=torch.long))
         if kind:
             result = result + Normal(self.locations[token], self.scales[token]).log_prob(latent)
@@ -43,7 +53,7 @@ class HybridDistribution:
         return result
 
     def sample(self) -> tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
-        token = int(Categorical(logits=self.logits).sample())
+        token = int(self.categorical.sample())
         kind = self.parameter_kind(token)
         latent = (Normal(self.locations[token], self.scales[token]).sample()
                   if kind else self.logits.new_zeros(()))

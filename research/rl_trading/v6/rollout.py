@@ -8,7 +8,6 @@ from itertools import islice
 import math
 import numpy as np
 import torch
-from torch.distributions import Categorical
 from research.rl_trading.v6.candle_stream import SparseCandleState, seed_previous_session
 from research.rl_trading.v6.features import SCALAR_NAMES
 from research.rl_trading.v6.eligibility import causal_enter_mask
@@ -229,7 +228,7 @@ def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
                     latent = dist.logits.new_tensor(step.latent)
                     likelihoods.append(dist.log_prob(step.token,latent))
                     values.append(value)
-                    entropies.append(Categorical(logits=dist.logits).entropy())
+                    entropies.append(dist.categorical.entropy())
                     if step.immediate_outcome is not None:
                         memory = _remember(policy,state,memory,(step.immediate_outcome,))
             if likelihoods:
