@@ -9,6 +9,7 @@ tickers still receive management callbacks.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Awaitable, Callable, Mapping
 
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
@@ -72,6 +73,14 @@ async def run_strategy_one_proposals(
                        candidate) -> None:
         nonlocal candidate_count, proposal_count, management_count
         boundary = next(iter(resolutions.values()))["boundary_ms"]
+        async def timed(stage: str, operation):
+            if stage_time is None:
+                return await operation
+            started = perf_counter()
+            try:
+                return await operation
+            finally:
+                stage_time(stage, started)
         # One market row can serve several account assignments. The broker
         # runs once globally; financial decisions serialize by stable account
         # and assignment identity so shared cash cannot race across workers.
@@ -85,7 +94,7 @@ async def run_strategy_one_proposals(
                 raise ValueError("Strategy 1 ticker lacks distinct typed financial views")
             return {(view.account_id, view.assignment_id): view for view in views}
 
-        current_by_id = await current_views()
+        current_by_id = await timed("strategy_one_financial_views", current_views())
         ordered_ids = tuple(sorted(current_by_id))
         if candidate is None:
             for index, identity in enumerate(ordered_ids):
@@ -94,9 +103,9 @@ async def run_strategy_one_proposals(
                         or current.position_quantity > 0 or current.pending_entry
                         or current.pending_exit or current.pending_capital_request):
                     management_count += 1
-                    await on_management(current, resolutions, boundary)
+                    await timed("strategy_one_management", on_management(current, resolutions, boundary))
                     if index + 1 < len(ordered_ids):
-                        refreshed = await current_views()
+                        refreshed = await timed("strategy_one_financial_views", current_views())
                         if set(refreshed) != set(ordered_ids):
                             raise ValueError("Strategy 1 assignment roster changed within boundary")
                         current_by_id = refreshed
@@ -118,29 +127,29 @@ async def run_strategy_one_proposals(
                 raise TypeError("Strategy 1 source ownership must be boolean")
             if owned:
                 management_count += 1
-                await on_management(current, resolutions, boundary)
+                await timed("strategy_one_management", on_management(current, resolutions, boundary))
                 if index + 1 < len(ordered_ids):
-                    refreshed = await current_views()
+                    refreshed = await timed("strategy_one_financial_views", current_views())
                     if set(refreshed) != set(ordered_ids):
                         raise ValueError("Strategy 1 assignment roster changed within boundary")
                     current_by_id = refreshed
                 continue
             decision = propose_certified_strategy_one_entry(
                 candidate, fact, activation, current,
-                reentry=(await reentry_witness(current, candidate)
+                reentry=(await timed("strategy_one_reentry", reentry_witness(current, candidate))
                          if current.completed_entries and reentry_witness is not None
                          else None))
             candidate_count += 1
             if decision.proposal is not None:
                 proposal_count += 1
-                await on_entry_proposal(decision.proposal)
+                await timed("strategy_one_entry_proposal", on_entry_proposal(decision.proposal))
             elif current.position_quantity > 0 or ticker in scheduler.active_tickers:
                 management_count += 1
-                await on_management(current, resolutions, boundary)
+                await timed("strategy_one_management", on_management(current, resolutions, boundary))
             else:
                 continue
             if index + 1 < len(ordered_ids):
-                refreshed = await current_views()
+                refreshed = await timed("strategy_one_financial_views", current_views())
                 if set(refreshed) != set(ordered_ids):
                     raise ValueError("Strategy 1 assignment roster changed within boundary")
                 current_by_id = refreshed

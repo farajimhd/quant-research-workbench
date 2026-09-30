@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from functools import lru_cache
 from hashlib import sha256
+from http.client import RemoteDisconnected
 import json
 import logging
 import math
@@ -20,7 +21,7 @@ import os
 import re
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
-from time import perf_counter_ns
+from time import perf_counter_ns, sleep
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 from uuid import UUID
@@ -1476,7 +1477,19 @@ def _wire_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _rows(client: Any, sql: str) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
+    # Only a read may be replayed after an ambiguous HTTP disconnect. The
+    # dedicated journal worker owns this retry; the trading loop never waits
+    # for it, and INSERTs must retain their separate idempotent protocol.
+    read_query = sql.lstrip().upper().startswith(("SELECT", "(SELECT", "WITH"))
+    for attempt in range(2):
+        try:
+            body = client.execute(sql)
+            return [json.loads(line) for line in body.splitlines() if line.strip()]
+        except (RemoteDisconnected, ConnectionResetError, TimeoutError):
+            if not read_query or attempt:
+                raise
+            sleep(0.1)
+    raise AssertionError("unreachable journal read retry")
 
 
 def _identity(rows: tuple[Mapping[str, Any], ...] | list[dict[str, Any]]) -> list[tuple[str, str]]:

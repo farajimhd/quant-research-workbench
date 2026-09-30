@@ -54,9 +54,9 @@ class FixedV7IntervalCache:
         self._last_loaded_ms: dict[str, int] = {}
         self._last_observed_ms: dict[str, int] = {}
         self._last_completed_price: dict[str, Mapping[str, Any]] = {}
-        # Exact activation clocks are known from the certified product. A
-        # bounded preload replaces one SQL round trip per completed second;
-        # rows remain hidden until their causal clock is reached.
+        # Exact activation and candidate clocks are known from certified
+        # products. A bounded preload replaces scalar SQL reads, but rows
+        # remain hidden until their completed causal clock is reached.
         self._activation_seconds: dict[str, dict[int, Mapping[str, Any]]] = {}
         # Geometry changes only on a certified valid completed second. Keep
         # one immutable-ish projection per ticker/input clock, but hand every
@@ -84,7 +84,7 @@ class FixedV7IntervalCache:
         self, clocks: Sequence[tuple[str, int]], *,
         client_factory: Callable[[], Any], max_workers: int = 8,
     ) -> int:
-        """SELECT exact pinned 1s activation inputs in bounded ticker lanes."""
+        """SELECT exact pinned 1s activation/candidate inputs in bounded lanes."""
         if (not callable(client_factory) or type(max_workers) is not int
                 or not 1 <= max_workers <= 16 or self._activation_seconds):
             raise ValueError("V7 activation preload needs a fresh bounded cache")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, fields, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from http.client import RemoteDisconnected
 import json
 import re
 from threading import Event, Thread
@@ -41,6 +42,28 @@ ATTEMPT = "00000000-0000-0000-0000-000000000011"
 BATCH = "00000000-0000-0000-0000-000000000012"
 RECORD = "00000000-0000-0000-0000-000000000013"
 ZERO = "00000000-0000-0000-0000-000000000000"
+
+
+def test_journal_read_retries_disconnect_but_never_replays_write(monkeypatch):
+    monkeypatch.setattr(writer_module, "sleep", lambda _: None)
+
+    class Client:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, sql):
+            self.calls += 1
+            if self.calls == 1:
+                raise RemoteDisconnected("remote closed")
+            return '{"ok":1}\n'
+
+    reader = Client()
+    assert writer_module._rows(reader, "(SELECT 1) FORMAT JSONEachRow") == [{"ok": 1}]
+    assert reader.calls == 2
+    writer = Client()
+    with pytest.raises(RemoteDisconnected):
+        writer_module._rows(writer, "INSERT INTO arte.example VALUES (1)")
+    assert writer.calls == 1
 
 
 def test_clickhouse_wire_time_preserves_utc_nanoseconds() -> None:

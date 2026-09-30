@@ -233,7 +233,10 @@ async def run_certified_strategy_one_session(
                 evidence.v7.preload_activation_seconds,
                 tuple((row.ticker, row.boundary_ms)
                       for row in activation_schedule.rows
-                      if row.boundary_ms > start_after_boundary_ms),
+                      if row.boundary_ms > start_after_boundary_ms) +
+                tuple((fact.ticker, fact.boundary_ms)
+                      for fact in surviving_gate.facts
+                      if fact.boundary_ms > start_after_boundary_ms),
                 client_factory=client_factory, max_workers=8)
             if stage_time is not None:
                 stage_time("strategy_one_v7_activation_preload", activation_started)

@@ -232,7 +232,11 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
         if controller._task is None:
             raise RuntimeError("App route did not schedule Backtest execution")
         began = perf_counter()
-        await controller._task
+        task_error = None
+        try:
+            await controller._task
+        except Exception as exc:
+            task_error = exc
         execution_s = perf_counter() - began
     print(f"App result: run_id={controller.run_id} status={controller.status} "
           f"execution_s={execution_s:.3f} processed_rows={controller.processed_events} "
@@ -245,7 +249,11 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
                   f"wall_s={row['seconds']:.3f} "
                   f"max_call_s={row['maximum_seconds']:.3f}", flush=True)
         sql_profile.print_summary()
+        if task_error is not None:
+            raise task_error
         raise RuntimeError("App Backtest failed or created a run-local directory")
+    if task_error is not None:
+        raise task_error
     _print_completed_profile(controller)
     sql_profile.print_summary()
 
