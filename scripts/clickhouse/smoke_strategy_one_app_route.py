@@ -216,11 +216,14 @@ def _profile_entry_path(enabled: bool):
         (PortfolioManagementEngine, "_persist_state", "portfolio_state_append"),
         (PortfolioManagementEngine, "approve", "portfolio_approve"),
         (OrderManagementEngine, "submit_intent", "oms_submit"),
+        (OrderManagementEngine, "expire_entry_deadlines", "oms_deadline_expiry"),
+        (OrderManagementEngine, "advance_adaptive_execution", "oms_adaptive_advance"),
         (BacktestMemoryJournal, "append_strategy_one_intent", "intent_append"),
         (SimulatedBrokerAdapter, "live_orders", "broker_live_orders"),
         (SimulatedBrokerAdapter, "account_summary", "broker_account_summary"),
         (SimulatedBrokerAdapter, "account_ledger", "broker_account_ledger"),
         (SimulatedBrokerAdapter, "positions", "broker_positions"),
+        (SimulatedBrokerAdapter, "_on_validated_liquidity_bar", "broker_bar_match"),
     )
     original = [(owner, name, getattr(owner, name)) for owner, name, _ in targets]
     counts: Counter[str] = Counter()

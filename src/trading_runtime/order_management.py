@@ -432,6 +432,10 @@ class OrderManagementEngine:
         self._groups_by_ticker: dict[str, list[_ManagedOrderGroup]] = {}
         self._group_ordinal: dict[str, int] = {}
         self._active_adaptive_groups: dict[str, _ManagedOrderGroup] = {}
+        # Expiry is checked on every completed 100 ms broker boundary. Keep
+        # only nonterminal entry roots here; historical groups stay in _groups
+        # for audit and recovery but must not be rescanned all session.
+        self._entry_deadline_groups: dict[str, _ManagedOrderGroup] = {}
         self._entry_trade_prices: dict[str, tuple[datetime, float]] = {}
         self._body_entry_group_ids: set[str] = set()
         self._group_by_client_id: dict[str, str] = {}
@@ -505,14 +509,10 @@ class OrderManagementEngine:
 
         at = event_time.astimezone(timezone.utc)
         expired: list[_ManagedOrderGroup] = []
-        for group in tuple(self._groups.values()):
-            if str(group.intent.action) not in {
-                "enter_long",
-                "enter_short",
-                "add_long",
-                "add_short",
-            }:
-                continue
+        for group in tuple(sorted(
+            self._entry_deadline_groups.values(),
+            key=lambda item: self._group_ordinal[item.group_id],
+        )):
             if (
                 group.state in TERMINAL_MANAGEMENT_STATES
                 or group.state == OrderManagementState.CANCEL_PENDING
@@ -1717,6 +1717,11 @@ class OrderManagementEngine:
                 and group.state not in TERMINAL_MANAGEMENT_STATES
                 and group.state != OrderManagementState.CANCEL_PENDING):
             self._active_adaptive_groups[group.group_id] = group
+        if (str(group.intent.action) in {
+                "enter_long", "enter_short", "add_long", "add_short"}
+                and group.state not in TERMINAL_MANAGEMENT_STATES
+                and group.state != OrderManagementState.CANCEL_PENDING):
+            self._entry_deadline_groups[group.group_id] = group
 
     def snapshots_for_assignment(
         self, account_id: str, assignment_id: str,
@@ -4269,6 +4274,13 @@ class OrderManagementEngine:
                 self._active_adaptive_groups[group.group_id] = group
             else:
                 self._active_adaptive_groups.pop(group.group_id, None)
+            if (str(group.intent.action) in {
+                    "enter_long", "enter_short", "add_long", "add_short"}
+                    and state not in TERMINAL_MANAGEMENT_STATES
+                    and state != OrderManagementState.CANCEL_PENDING):
+                self._entry_deadline_groups[group.group_id] = group
+            else:
+                self._entry_deadline_groups.pop(group.group_id, None)
         group.updated_at = self._causal_group_time(
             group.intent,
             previous=group.updated_at,

@@ -857,6 +857,8 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(len(expired), 1)
                 self.assertEqual(expired[0].state, OrderManagementState.CANCELLED)
+                self.assertIn(expired[0].group_id, manager._groups)
+                self.assertNotIn(expired[0].group_id, manager._entry_deadline_groups)
                 orders = await broker.live_orders()
                 self.assertEqual(orders[0].order_status, OrderStatus.CANCELLED)
                 records = [
