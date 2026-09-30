@@ -238,6 +238,13 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
           f"execution_s={execution_s:.3f} processed_rows={controller.processed_events} "
           f"error={controller.error[:300]}", flush=True)
     if controller.status != "completed" or controller.run_dir.exists():
+        # A failed full-session probe is still performance evidence. Keep its
+        # bounded stage/SQL breakdown visible before the fail-closed error.
+        for name, row in sorted(controller._stage_timings.items()):
+            print(f"Stage {name}: calls={row['calls']} "
+                  f"wall_s={row['seconds']:.3f} "
+                  f"max_call_s={row['maximum_seconds']:.3f}", flush=True)
+        sql_profile.print_summary()
         raise RuntimeError("App Backtest failed or created a run-local directory")
     _print_completed_profile(controller)
     sql_profile.print_summary()
