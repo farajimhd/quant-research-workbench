@@ -50,10 +50,10 @@ def test_strategy_three_activation_mask_matches_scalar_and_preserves_baselines(b
     changed = replace(entry, candidates=(replace(entry.candidates[0],
         boundary_ms=boundary, episode_start_ms=start),), activations=(replace(
             entry.activations[0], episode_start_ms=start),))
-    for number in (1, 2, 3, 4, 5, 6):
+    for number in (1, 2, 3, 4, 5, 6, 7):
         gate = compile_static_entry_gate(candidates, changed, strategy_number=number)
-        assert gate.rejection_mask.tolist() == [0 if number not in (3, 4, 5, 6) or allowed else SESSION_ACTIVATION_REQUIRED]
-        assert numbered_fixed_strategy(number).activation_allowed(boundary, start) is (allowed if number in (3, 4, 5, 6) else True)
+        assert gate.rejection_mask.tolist() == [0 if number not in (3, 4, 5, 6, 7) or allowed else SESSION_ACTIVATION_REQUIRED]
+        assert numbered_fixed_strategy(number).activation_allowed(boundary, start) is (allowed if number in (3, 4, 5, 6, 7) else True)
 
 
 def test_static_gate_reports_independent_rejection_bits():

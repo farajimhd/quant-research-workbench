@@ -61,7 +61,7 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
     tree = ast.parse(source)
     predicates = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                   and node.name == "is_numbered_fixed_strategy"]
-    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6))"
+    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7))"
     if (len(predicates) != 1 or len(predicates[0].body) != 1
             or ast.unparse(predicates[0].body[0]) != expected):
         raise ValueError("Numbered fixed identity whitelist changed")
@@ -114,7 +114,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
             and isinstance(finish.body[0].value, ast.Await)
             and ast.unparse(finish.body[0].value.value) == "finish_boundary(work)"):
         raise ValueError("Numbered terminal cursor must complete before residual failure")
-    if strategy_number in (3, 4, 5, 6):
+    if strategy_number in (3, 4, 5, 6, 7):
         gate = named(trees[5], "compile_static_entry_gate")
         if not {"fromiter", "flatnonzero"} <= calls(gate):
             raise ValueError("Strategy 3 activation gate must remain vectorized")
@@ -130,7 +130,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                 and ast.unparse(key.value) == "runtime.config.strategy_revision"
                 for key in gates[0].keywords)):
             raise ValueError("Strategy 3 static gate is not bound to its selected contract")
-    if strategy_number in (4, 5, 6):
+    if strategy_number in (4, 5, 6, 7):
         management = named(trees[6], "on_management")
         guard = [node for node in management.body if isinstance(node, ast.If)
                  and "not self.contract.allows_adds" in ast.unparse(node.test)]
@@ -168,7 +168,18 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                     and ast.unparse(key.value) == "self.contract.allows_completed_30s_trailing"
                     for key in reducer_calls[0].keywords)):
             raise ValueError("Strategy 5 must disable only the subsequent 30s-low stop branch")
-    if strategy_number == 6:
+    if strategy_number == 7:
+        trailing = named(trees[0], "allows_completed_30s_trailing")
+        manager = named(trees[6], "on_management")
+        bound = [node for node in ast.walk(manager) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name) and node.func.id == "advance_protection"]
+        if (len(trailing.body) != 1
+                or ast.unparse(trailing.body[0]) != "return self.strategy_number not in (5, 6)"
+                or len(bound) != 1 or not any(key.arg == "allows_completed_30s_trailing"
+                    and ast.unparse(key.value) == "self.contract.allows_completed_30s_trailing"
+                    for key in bound[0].keywords)):
+            raise ValueError("Strategy 7 must restore the existing completed-low trailing branch")
+    if strategy_number in (6, 7):
         reducer = named(trees[7], "advance_protection")
         targets = [node for node in reducer.body if isinstance(node, ast.Assign)
                    and any(isinstance(target, ast.Name) and target.id == "target_amendment" for target in node.targets)]
@@ -191,7 +202,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                and isinstance(node.func, ast.Name) and node.func.id == "StrategyIntent"]
     keywords = {key.arg: ast.unparse(key.value) for key in intents[0].keywords} if len(intents) == 1 else {}
     if (keywords.get("action") != "'exit'" or keywords.get("metadata") != "{}"
-            or keywords.get("reason") != "'strategy_two_session_exit' if strategy_number == 2 else 'strategy_three_session_exit' if strategy_number == 3 else 'strategy_four_session_exit' if strategy_number == 4 else 'strategy_five_session_exit' if strategy_number == 5 else 'strategy_six_session_exit'"):
+            or keywords.get("reason") != "'strategy_two_session_exit' if strategy_number == 2 else 'strategy_three_session_exit' if strategy_number == 3 else 'strategy_four_session_exit' if strategy_number == 4 else 'strategy_five_session_exit' if strategy_number == 5 else 'strategy_six_session_exit' if strategy_number == 6 else 'strategy_seven_session_exit'"):
         raise ValueError("Strategy 2 liquidation source is not a normalized scalar exit")
     return sha256(json.dumps({"strategy_number": strategy_number, "inventory": base,
         "identity": _certify_numbered_identity(), "sources": tuple(

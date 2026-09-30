@@ -92,6 +92,19 @@ def test_six_freezes_target_with_new_and_repeated_resistance_and_preserves_defau
         advancing(opened.state, allows_target_escalation=0)
 
 
+def test_seven_policy_completes_target_trailing_matrix_without_changing_prior_numbers():
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy, trailing_policy_payload, restored_trailing_policy_payload
+    assert trailing_policy_payload()["completed_30s_low_trailing"] is False
+    assert restored_trailing_policy_payload()["completed_30s_low_trailing"] is True
+    assert [(numbered_fixed_strategy(n).allows_completed_30s_trailing,
+             numbered_fixed_strategy(n).allows_target_escalation) for n in range(1, 8)] == [
+                 (True, True), (True, True), (True, True), (True, True),
+                 (False, True), (False, False), (True, False)]
+    opened = opening()
+    result = advancing(opened.state, low_int=99_500, allows_target_escalation=False)
+    assert result.state.stop == 9.94 and result.state.target == opened.state.target
+
+
 def test_three_distinct_breaks_win_over_simultaneous_higher_low():
     opened = opening()
     breaks = [ResistanceBreak(31_000, level(index, center))

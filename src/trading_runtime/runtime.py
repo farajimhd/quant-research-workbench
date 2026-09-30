@@ -912,21 +912,21 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
-        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6):
+        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6, 7):
             from .strategy_one_intent import require_no_replacement_capital
             require_no_replacement_capital(evaluation.intents)
             if any(intent.action not in {"enter_long", "add_long", "replace_protective_stop",
                                          "replace_profit_target", "exit"}
                    for intent in evaluation.intents):
                 raise ValueError("Strategy 2 action is outside its sealed contract")
-            if self.config.strategy_revision in (4, 5, 6) and any(
+            if self.config.strategy_revision in (4, 5, 6, 7) and any(
                     intent.action == "add_long" for intent in evaluation.intents):
                 raise ValueError(f"Strategy {self.config.strategy_revision} forbids add acquisitions")
         if numbered_exit_assignment_id is not None:
-            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6)
+            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6, 7)
                     or not numbered_exit_assignment_id or event is not None
                     or any(intent.action != "exit" or intent.metadata
-                           or intent.reason != ("strategy_two_session_exit" if self.config.strategy_revision == 2 else "strategy_three_session_exit" if self.config.strategy_revision == 3 else "strategy_four_session_exit" if self.config.strategy_revision == 4 else "strategy_five_session_exit" if self.config.strategy_revision == 5 else "strategy_six_session_exit")
+                           or intent.reason != ("strategy_two_session_exit" if self.config.strategy_revision == 2 else "strategy_three_session_exit" if self.config.strategy_revision == 3 else "strategy_four_session_exit" if self.config.strategy_revision == 4 else "strategy_five_session_exit" if self.config.strategy_revision == 5 else "strategy_six_session_exit" if self.config.strategy_revision == 6 else "strategy_seven_session_exit")
                            for intent in evaluation.intents)):
                 raise ValueError("Strategy 2 session exit lacks typed source authority")
         if strategy_one_assignment_id is not None:
@@ -1251,7 +1251,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneEntryProposal)
                 or proposal.strategy_number != self.config.strategy_revision
@@ -1280,7 +1280,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneAddProposal)
                 or proposal.strategy_number != self.config.strategy_revision
@@ -1311,7 +1311,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or getattr(financial, "account_id", None) not in self.config.account_ids):
             raise ValueError("Strategy 1 protection needs its numbered Backtest runtime")

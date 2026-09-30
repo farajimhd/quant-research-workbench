@@ -194,6 +194,28 @@ def test_six_manager_keeps_initial_target_through_quote_gap_and_higher_overhead(
     assert calls == [("entry", 30_100)]
 
 
+def test_seven_restores_only_completed_low_trailing_from_six():
+    from types import SimpleNamespace
+    async def run(number):
+        source, runtime = _Evidence(), _Runtime()
+        runtime.config = SimpleNamespace(strategy_revision=number)
+        manager = StrategyOneManagementRunner(runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(replace(_proposal(), strategy_number=number))
+        await manager.on_management(_financial(), {}, 30_100)
+        source.rows[31_000] = replace(_evidence(31_000), low_boundary_ms=30_000, low_int=99_500,
+            overhead_levels=tuple(_level(f"H{i}", 11 + i * .1) for i in range(1, 8)))
+        await manager.on_management(_financial(), _add_rows(), 31_000)
+        return manager._positions[("DU1", "A1", "AAA")], runtime.calls
+    six, six_calls = asyncio.run(run(6))
+    seven, seven_calls = asyncio.run(run(7))
+    assert six.stop == 9.69 and seven.stop == 9.94
+    assert six.target == seven.target == _proposal().initial_target
+    assert six.accepted_ids == seven.accepted_ids
+    assert not any(call[0] == "add" for call in six_calls + seven_calls)
+    assert ("protection", 31_000) not in six_calls
+    assert ("protection", 31_000) in seven_calls
+
+
 class _Evidence:
     def __init__(self):
         self.rows = {}

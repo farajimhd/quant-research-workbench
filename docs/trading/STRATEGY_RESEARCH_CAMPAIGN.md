@@ -403,3 +403,47 @@ extended-session-window and disabled-public-resume guards to number 6;
 66 focused checks passed after that correction. The real OMS test retains
 the initial target and fills only on a later certified liquidity bucket.
 Prior numbered release/compiler/publisher files remain unchanged.
+
+## Strategy 6 completed comparison
+
+Published 925 normalized nodes from commit
+`2d7544338e56c3b199e43799807aa18e84bbdcfc`, configuration
+`strategy-one-6:9f77185d-6c87-4597-93ba-a6092bbedace`, payload hash
+`3c80cce551e59d566bacf5cc21a25c6097574dfb44a3893b31e6e0dbf8206844`.
+Runs used the pinned laptop `strategy6-reproduction` checkout. All completed
+flat with zero journal-writer failures. The restarted backend's history API
+confirmed all four saved reviews. Report timestamps verify extended-window
+entries/exits; certified market plan/build identities match Strategy 5.
+
+| Session | Run | Closed | Net P&L | Closed-episode DD | Broker-observed DD | Execution seconds |
+|---|---|---:|---:|---:|---:|---:|
+| August 18 PM | `1a37b878-3c5f-448f-a083-feecd01a5c1a` | 22 | $714.84 | $1,142.99 | $1,521.83 | 51.585 |
+| August 19 PM | `ea8fbc28-6b5c-41eb-a5eb-b94df568172a` | 27 | -$1,157.81 | $2,568.91 | $2,534.86 | 66.840 |
+| August 18 AH | `0b78f130-54a9-43c2-8773-03257af62a66` | 12 | -$657.73 | $782.35 | $976.55 | 38.022 |
+| August 19 AH | `69b0e779-09f1-45f7-a2ad-81d785e1b4ce` | 7 | $610.89 | $320.90 | $703.24 | 46.190 |
+
+Fixed initial targets improve net P&L and broker-observed drawdown in all four
+windows versus Strategy 5. Independent-session net sums improve $1,426.89153
+to -$489.80377. Closed-episode drawdown rises in PM18 and AH19, illustrating
+why different drawdown definitions must not be conflated. Strategy 6 still
+loses money overall; no repeatable edge is established. Preserve the prior
+reports and failed/inferior trials. Evidence is under
+`strategy-optimization-20260930/strategy6_reports_v4`, with hashes, timing,
+flatness and window checks in `strategy6-four-session-manifest-v1.json`.
+
+## Strategy 7 research specification
+
+Inherit Strategy 6 and restore only subsequent completed-30-second-low
+trailing. Keep fixed initial targets, no adds, structural stop ratchets,
+entry/reentry, sizing and session controls unchanged. This completes the
+four target/trailing combinations: Strategy 4 moving/on, 5 moving/off,
+6 fixed/off, and 7 fixed/on. The purpose is to test interaction, not assume
+that either trailing choice is universally superior. Separate failed-resistance
+and liquidity exits remain unimplemented hypotheses.
+
+Strategy 7 validation passed 391 execution checks across 24 files, 134
+configuration/report checks and 162 root integration checks. Prior sealed
+release/compiler/publisher files remain unchanged. Strategy 6's detailed
+comparison is `strategy6-vs5-four-session-comparison-v1.json`: the same-price,
+same-quantity MSS entry gained from a 407-share target fill before its final
+602-share stop. Final exit labels alone do not describe partial-exit economics.

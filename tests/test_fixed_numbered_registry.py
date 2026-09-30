@@ -21,7 +21,7 @@ def assignment():
         created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
 
 
-@pytest.mark.parametrize("number", [2, 6])
+@pytest.mark.parametrize("number", [2, 6, 7])
 def test_installed_number_uses_real_fixed_runtime_not_legacy_callbacks(number):
     initialize_numbered_fixed_strategies()
     initialize_numbered_fixed_strategies()
@@ -32,7 +32,7 @@ def test_installed_number_uses_real_fixed_runtime_not_legacy_callbacks(number):
     selected = replace(assignment(), strategy_revision=number)
     runtime = registration.build([selected], mode="backtest")
     assert runtime.revision == number and runtime.contract.strategy_number == number
-    assert runtime.contract.allows_target_escalation is (number != 6)
+    assert runtime.contract.allows_target_escalation is (number not in (6, 7))
     assert not any(row["strategy_id"] == release.executor_strategy_id for row in installed_strategy_definitions())
     with pytest.raises(ValueError, match="Backtest-only"):
         registration.build([selected], mode="live")
