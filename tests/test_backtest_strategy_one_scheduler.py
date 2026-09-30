@@ -885,3 +885,38 @@ def test_active_source_reads_persisted_window_and_closes_on_deactivation():
     assert opened[0].closed
     assert clock.pop_next() is None
     clock.close()
+
+
+def test_active_source_expands_horizon_without_duplicate_or_missing_boundaries(monkeypatch):
+    build = "a" * 64
+    attempt = "00000000-0000-0000-0000-000000000001"
+    units = tuple(MarketDayUnit(build, DAY, "AAA", stage, attempt,
+                                "b" * 64, 1, "c" * 64)
+                  for stage in ("bars", "technical", "broker_100ms"))
+    plan = CertifiedMarketDayPlan(
+        ExecutionInterval.parse("100ms"), build, "d" * 64,
+        (DAY,), ("AAA",), units, (100, 1_000), "e" * 64)
+    prices = PriceLevelPlan(build, (PriceLevelUnit(
+        DAY, "AAA", attempt, attempt, 0, 0, 0., "f" * 64),), "g" * 64)
+    boundaries = (100, 300_100, 2_100_100, 9_300_100)
+    windows = []
+
+    def market_rows(_plan, *, after_boundary_ms, through_boundary_ms,
+                    client, price_plan):
+        assert price_plan is not None and client is reader
+        windows.append((after_boundary_ms, through_boundary_ms))
+        return (dict(session_date=DAY, ticker="AAA", resolution_ms=100,
+                     boundary_ms=boundary)
+                for boundary in boundaries
+                if after_boundary_ms < boundary <= through_boundary_ms)
+
+    monkeypatch.setattr(scheduler_module, "iter_market_day_rows", market_rows)
+    reader = SimpleNamespace(closed=False)
+    reader.close = lambda: setattr(reader, "closed", True)
+    source = persisted_active_market_source(
+        plan, price_plan=prices, through_boundary_ms=9_400_000,
+        client_factory=lambda: reader)
+    assert [boundary for boundary, _ in source("AAA", 0)] == list(boundaries)
+    assert windows == [(0, 300_000), (300_000, 2_100_000),
+                       (2_100_000, 9_300_000), (9_300_000, 9_400_000)]
+    assert reader.closed

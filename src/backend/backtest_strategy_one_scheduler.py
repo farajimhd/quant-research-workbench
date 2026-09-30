@@ -194,19 +194,34 @@ def persisted_active_market_source(
             stage_time("strategy_one_active_client_creation", started)
             started = perf_counter()
         with closing(reader):
-            rows = iter_market_day_rows(
-                scoped, client=reader, after_boundary_ms=after_boundary_ms,
-                through_boundary_ms=through_boundary_ms, price_plan=prices)
+            cursor = after_boundary_ms
+            # The full remaining day makes ClickHouse build large joins before
+            # yielding even one row, including for orders that close quickly.
+            # Grow the SELECT horizon only while broker-owned state keeps this
+            # iterator alive. Windows meet at exact completed boundaries.
             try:
-                for day, boundary, symbol, resolutions in iter_market_boundary_groups(rows):
-                    if day != plan.sessions[0] or symbol != ticker:
-                        raise ValueError("Active Strategy 1 market row changed ticker scope")
-                    if not first_recorded and stage_time is not None:
-                        stage_time("strategy_one_active_first_row", started)
-                        first_recorded = True
-                    yield boundary, resolutions
+                for span in (300_000, 1_800_000, 7_200_000,
+                             through_boundary_ms):
+                    end = min(cursor + span, through_boundary_ms)
+                    if end <= cursor:
+                        break
+                    rows = iter_market_day_rows(
+                        scoped, client=reader, after_boundary_ms=cursor,
+                        through_boundary_ms=end, price_plan=prices)
+                    try:
+                        for day, boundary, symbol, resolutions in iter_market_boundary_groups(rows):
+                            if day != plan.sessions[0] or symbol != ticker:
+                                raise ValueError("Active Strategy 1 market row changed ticker scope")
+                            if not first_recorded and stage_time is not None:
+                                stage_time("strategy_one_active_first_row", started)
+                                first_recorded = True
+                            yield boundary, resolutions
+                    finally:
+                        rows.close()
+                    cursor = end
+                    if cursor == through_boundary_ms:
+                        break
             finally:
-                rows.close()
                 if not first_recorded and stage_time is not None:
                     stage_time("strategy_one_active_first_row", started)
 
