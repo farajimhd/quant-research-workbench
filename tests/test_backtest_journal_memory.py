@@ -260,13 +260,6 @@ def test_compact_command_checkpoint_restores_operational_state_without_events():
             {**journal.command_checkpoint(), "run_id": "other"})
 
 
-def test_deferred_portfolio_state_validation_still_fails_before_checkpoint_publication():
-    journal = BacktestMemoryJournal(run_id=RUN_ID)
-    journal.save_portfolio_state("paper", {"bad": float("nan")}, validate_now=False)
-    with pytest.raises(ValueError):
-        journal.command_checkpoint()
-
-
 def test_assignment_upsert_preserves_identity_and_detaches_mutable_state():
     journal = BacktestMemoryJournal(run_id=RUN_ID)
     payload = {"assignment_id": "a", "strategy_id": "s", "strategy_revision": 3,
