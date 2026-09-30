@@ -41,6 +41,8 @@ _MANAGER_TABLES = frozenset({
     "trading_strategy_one_protection_state_v1",
     "trading_strategy_one_protection_resistance_v1",
     "trading_strategy_one_manager_snapshot_v2",
+    "trading_strategy_one_manager_snapshot_v3",
+    "trading_strategy_one_manager_first_held_v1",
     "trading_strategy_one_manager_source_v2",
     "trading_strategy_one_manager_pending_break_v2",
     "trading_strategy_one_manager_position_high_v2",
@@ -1007,9 +1009,15 @@ class TypedInsertDispatch:
         if (type(last_sequence) is not int or last_sequence < 1
                 or re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None
                 or not operations or len(set(operations)) != len(operations)
-                or {"trading_strategy_one_protection_snapshot_v1",
-                    "trading_strategy_one_manager_snapshot_v2"}
-                - {table for table, _ in operations}):
+                or "trading_strategy_one_protection_snapshot_v1"
+                not in {table for table, _ in operations}
+                or len({table for table, _ in operations} & {
+                    "trading_strategy_one_manager_snapshot_v2",
+                    "trading_strategy_one_manager_snapshot_v3"}) != 1
+                or ("trading_strategy_one_manager_first_held_v1"
+                    in {table for table, _ in operations}
+                    and "trading_strategy_one_manager_snapshot_v3"
+                    not in {table for table, _ in operations})):
             raise ValueError("Manager snapshot operation inventory is invalid")
         try:
             if str(UUID(batch_id)) != batch_id or batch_id == _ZERO_BATCH:

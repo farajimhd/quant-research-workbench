@@ -16,6 +16,7 @@ from src.backend.backtest_typed_projection import (
     NIL_BATCH_ID, project_pending_backtest_prefix, project_pending_backtest_v3_prefix,
     project_pending_backtest_v4_prefix,
 )
+from src.trading_runtime.arte_followthrough_failure_v4 import V4FollowThroughFailureBatch
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch,
     V4StrategyOneEntryBatch, V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
@@ -243,7 +244,7 @@ class BacktestTypedJournalPublisher:
 
     def _prepare_batches(self, through_sequence: int) -> tuple[
             TypedJournalBatch | V3SqueezeBatch | V4CompoundBatch
-            | V4StrategyOneEntryBatch
+            | V4StrategyOneEntryBatch | V4FollowThroughFailureBatch
             | V4PortfolioAllocationBatch | V4ReservationReasonBatch
             | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
             | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
@@ -317,7 +318,7 @@ class BacktestTypedJournalPublisher:
                 for unit in batches:
                     batch = unit.base if isinstance(
                         unit, (V3SqueezeBatch, V4CompoundBatch,
-                               V4StrategyOneEntryBatch,
+                               V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
@@ -330,6 +331,8 @@ class BacktestTypedJournalPublisher:
                         raise RuntimeError("Typed Backtest batch chain is not contiguous")
                     receipt = (self.writer.submit_compound_v4(unit)
                                if isinstance(unit, V4CompoundBatch)
+                               else self.writer.submit_followthrough_exit_v4(unit)
+                               if isinstance(unit, V4FollowThroughFailureBatch)
                                else self.writer.submit_strategy_one_entry_v4(unit)
                                if isinstance(unit, V4StrategyOneEntryBatch)
                                else self.writer.submit_oms_tactic_v4(unit)
@@ -384,6 +387,14 @@ class BacktestTypedJournalPublisher:
                                 _committed_intent_source(
                                     batch, source_unit.base.events[0]["record_id"]),
                                 intent)
+                        elif isinstance(source_unit, V4FollowThroughFailureBatch):
+                            parent_id = source_unit.base.events[0]["record_id"]
+                            sidecar = self.journal.followthrough_exit_for_record(parent_id)
+                            if sidecar is None:
+                                raise RuntimeError("Committed failure exit lost its immutable scalar source")
+                            intent, _, _ = sidecar
+                            self._committed_strategy_intents[intent.intent_id] = (
+                                _committed_intent_source(batch, parent_id), intent)
                         elif (self.writer.journal_profile == "backtest_v4"
                               and source_batch.first_sequence == source_batch.last_sequence
                               and len(source_batch.events) == 1):

@@ -48,6 +48,7 @@ from src.trading_runtime.arte_strategy_one_entry_schema import (
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
 from src.trading_runtime.arte_reservation_reason_v4 import RESERVATION_REASON
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
@@ -144,7 +145,7 @@ def desired_plan() -> PrincipalPlan:
                                           V4_ALLOCATION,
                                           RESERVATION_REASON,
                                           ACKNOWLEDGEMENT, CANCEL,
-                                          REPRICE,
+                                          REPRICE, FAILURE,
                                           *OMS_TACTIC_TABLES,
                                           *RISK_ACTION_TABLES,
                                           *PROTECTION_CHANGE_TABLES,
@@ -201,6 +202,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
     storage_preflight(admin, tables=V4_COMMIT_TABLES)
     storage_preflight(admin, tables=(V4_ORDER_COMMAND_LINEAGE,))
     storage_preflight(admin, tables=(ENTRY_EVIDENCE, ADD_EVIDENCE))
+    storage_preflight(admin, tables=(FAILURE,))
     storage_preflight(admin, tables=OMS_TACTIC_TABLES)
     storage_preflight(admin, tables=BACKTEST_DEFINITION_TABLES)
     storage_preflight(admin, tables=PROTECTION_SNAPSHOT_TABLES)

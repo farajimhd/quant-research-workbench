@@ -122,7 +122,8 @@ def test_cold_loader_requires_same_keeper_head_and_verified_journal_cursor(monke
 
         def execute(self, sql):
             self.queries.append(sql)
-            selected = ((rows.snapshot,) if "manager_snapshot_v2" in sql else
+            selected = (() if "manager_snapshot_v3" in sql else
+                        (rows.snapshot,) if "manager_snapshot_v2" in sql else
                         rows.sources if "manager_source_v2" in sql else
                         rows.position_highs if "manager_position_high_v2" in sql else
                         rows.closed_positions if "manager_closed_position_v2" in sql else
@@ -142,13 +143,13 @@ def test_cold_loader_requires_same_keeper_head_and_verified_journal_cursor(monke
     assert load_attested_manager_snapshot(
         client, keeper, run_id=run, checkpoint_sequence=42
     ) == restore_manager_snapshot(rows)
-    assert len(client.queries) == 5
+    assert len(client.queries) == 6
     assert all(query.startswith("SELECT ") and "INSERT" not in query
                for query in client.queries)
     historical = Client()
     assert restore_manager_snapshot(load_unattested_manager_snapshot_rows(
         historical, run_id=run, checkpoint_sequence=42)) == restore_manager_snapshot(rows)
-    assert len(historical.queries) == 5
+    assert len(historical.queries) == 6
     keeper.head = replace(keeper.head, snapshot_hash="0" * 64)
     with pytest.raises(RuntimeError, match="selected cursor"):
         load_attested_manager_snapshot(
@@ -177,14 +178,15 @@ def test_managed_keeper_head_is_exact_and_loses_authority_on_disconnect():
         reader.read_head(run_id=rows.snapshot["run_id"])
 
 
-def test_manager_publication_is_rows_first_then_keeper_selected(monkeypatch):
+@pytest.mark.parametrize("strategy_nine", [False, True])
+def test_manager_publication_is_rows_first_then_keeper_selected(monkeypatch, strategy_nine):
     from src.trading_runtime.arte_typed_insert_dispatch import (
         TypedInsertDispatch, _Gate, _gate_path, _context_receipt_path,
     )
     from tests.test_arte_typed_insert_dispatch import Keeper, Stat
     from src.trading_runtime import arte_journal_commit_v4, arte_journal_projection
 
-    rows = _rows()
+    rows = _nine_rows() if strategy_nine else _rows()
     run, sequence = rows.snapshot["run_id"], rows.snapshot["checkpoint_sequence"]
     batch = "00000000-0000-0000-0000-000000000042"
     prefix = V4CommittedPrefix(run, sequence, batch, "2026-08-18:31000",
@@ -241,10 +243,10 @@ def test_manager_publication_is_rows_first_then_keeper_selected(monkeypatch):
     assert set(client.tables) == {
         "trading_strategy_one_protection_snapshot_v1",
         "trading_strategy_one_protection_state_v1",
-        subject.PARENT.name,
+        subject.PARENT_V3.name if strategy_nine else subject.PARENT.name,
         subject.SOURCE.name, subject.BREAK.name,
         subject.HIGH.name, subject.CLOSED.name,
-    }
+    } | ({subject.FIRST_HELD.name} if strategy_nine else set())
     assert publish_manager_snapshot(client, session, rows,
                                     journal_batch_id=batch) == head
     assert all(len(stored) == 1 for stored in client.tables.values())
@@ -266,3 +268,72 @@ def test_manager_publication_is_rows_first_then_keeper_selected(monkeypatch):
         assert journal.metrics()["publish_by_unit"]["_ManagerSnapshotUnit"]["units"] == 1
     finally:
         journal.close()
+
+
+def _nine_rows():
+    inherited = restore_manager_snapshot(_rows())
+    state = replace(inherited,
+        submitted=((KEY, replace(inherited.submitted[0][1], strategy_number=9)),),
+        first_held_boundaries=((KEY, 30_200),))
+    return project_manager_snapshot(run_id="backtest:nine", session_date=date(2026, 8, 18),
+        checkpoint_sequence=42, state=state)
+
+
+def test_ninth_manager_persists_first_held_in_versioned_scalar_family():
+    rows = _nine_rows()
+    assert set(rows.snapshot) == {name for name, _ in subject.PARENT_V3.columns}
+    assert "first_held_count" not in _rows().snapshot
+    assert rows.snapshot['first_held_count'] == 1
+    assert rows.first_held_boundaries[0]['first_held_boundary_ms'] == 30_200
+    restored = restore_manager_snapshot(rows)
+    assert restored.first_held_boundaries == ((KEY, 30_200),)
+    assert restored.submitted[0][1].strategy_number == 9
+    assert "live_market_ssd" in subject.PARENT_V3.ddl()
+    assert "live_market_ssd" in subject.FIRST_HELD.ddl()
+
+
+def test_ninth_manager_rejects_missing_duplicate_and_changed_first_held():
+    rows = _nine_rows()
+    with pytest.raises(ValueError, match="seal differs"):
+        restore_manager_snapshot(replace(rows, first_held_boundaries=()))
+    with pytest.raises(ValueError, match="seal differs"):
+        restore_manager_snapshot(replace(rows, first_held_boundaries=rows.first_held_boundaries * 2))
+    with pytest.raises(ValueError, match="first held children differ"):
+        restore_manager_snapshot(replace(rows, first_held_boundaries=(
+            {**rows.first_held_boundaries[0], "first_held_boundary_ms": 30_300},)))
+
+
+@pytest.mark.parametrize('boundary', [30_000, 31_100, 30_201])
+def test_ninth_manager_rejects_resealed_noncausal_first_held(boundary):
+    rows = _nine_rows()
+    child = {k: v for k, v in rows.first_held_boundaries[0].items() if k != 'content_hash'}
+    child['first_held_boundary_ms'] = boundary
+    child['content_hash'] = subject._digest(child)
+    seal = {k: v for k, v in rows.snapshot.items() if k != 'content_hash'}
+    seal['first_held_hash'] = subject._digest([child['content_hash']])
+    seal['content_hash'] = subject._digest(seal)
+    with pytest.raises(ValueError, match='first held boundary is not causal'):
+        restore_manager_snapshot(replace(rows, snapshot=seal, first_held_boundaries=(child,)))
+
+
+def test_ninth_manager_cold_load_reads_exact_v3_family_and_rejects_two_seals(monkeypatch):
+    rows = _nine_rows()
+    monkeypatch.setattr(subject, 'load_protection_snapshot_rows', lambda *_a, **_k: rows.protection)
+    class Client:
+        duplicate = False
+        def execute(self, sql):
+            table = sql.split('arte.', 1)[1].split(' ', 1)[0]
+            selected = {
+                subject.PARENT.name: (rows.snapshot,) if self.duplicate else (),
+                subject.PARENT_V3.name: (rows.snapshot,), subject.SOURCE.name: rows.sources,
+                subject.BREAK.name: rows.pending_breaks, subject.HIGH.name: rows.position_highs,
+                subject.CLOSED.name: rows.closed_positions,
+                subject.FIRST_HELD.name: rows.first_held_boundaries,
+            }[table]
+            return '\n'.join(json.dumps(row) for row in selected)
+    client = Client()
+    loaded = load_unattested_manager_snapshot_rows(client, run_id='backtest:nine', checkpoint_sequence=42)
+    assert restore_manager_snapshot(loaded) == restore_manager_snapshot(rows)
+    client.duplicate = True
+    with pytest.raises(RuntimeError, match='exactly one selected seal'):
+        load_unattested_manager_snapshot_rows(client, run_id='backtest:nine', checkpoint_sequence=42)

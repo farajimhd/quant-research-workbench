@@ -172,6 +172,53 @@ def test_numbered_proposal_uses_shared_runtime_portfolio_and_oms_path():
     runtime.journal.close()
 
 
+def test_nine_failure_exit_uses_typed_source_and_shared_assignment_admission():
+    from src.trading_runtime.strategy_followthrough_failure import FollowThroughFailure
+    from src.trading_runtime.strategy_followthrough_exit import followthrough_exit_intent
+    from src.trading_runtime.strategy_one_stateful import StrategyOneFinancialView
+    from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
+    from src.trading_runtime.strategy_engine import StrategyEvaluation
+
+    session = date(2026, 8, 18)
+    financial = StrategyOneFinancialView("assignment-1", "DU1", "AAA",
+        AssignmentStatus.MANAGING, StrategyPermissions(), 5., True, False, False, 1)
+    witness = FollowThroughFailure(40_000, 31_200, 10.01, 9.89,
+                                    99_400, -.2, -.1, 9.94, 9.95, 500_000)
+    entry_id = str(UUID(int=121))
+    intent = followthrough_exit_intent(witness, financial,
+        session_date=session, source_entry_intent_id=entry_id)
+    approved = replace(intent, metadata={"assignment_id": financial.assignment_id})
+    @dataclass
+    class Submitted:
+        filled_quantity: float = 0.
+    decision = SimpleNamespace(payload=lambda: {"status": "approved"})
+    runtime = object.__new__(TradingRuntime)
+    runtime.config = SimpleNamespace(mode=RunMode.BACKTEST,
+        strategy_id="early-squeeze-strategy", strategy_revision=9,
+        account_ids=("DU1",), anchor_date=session)
+    runtime.run_id = str(UUID(int=122))
+    runtime.journal = BacktestMemoryJournal(run_id=runtime.run_id)
+    runtime.intent_planner = object()
+    runtime.order_manager = SimpleNamespace(submit_intent=AsyncMock(return_value=Submitted()))
+    runtime.portfolio = SimpleNamespace(approve=AsyncMock(return_value=(decision, approved)),
+                                        _typed_recovery=False)
+    runtime.strategy = SimpleNamespace(assignments=lambda: ())
+    runtime.last_event_time = intent.event_time
+    result = asyncio.run(runtime.submit_followthrough_failure(financial, witness, entry_id))
+    assert result[0]["decision"]["status"] == "approved"
+    runtime.portfolio.approve.assert_awaited_once_with(intent, account_id="DU1",
+        assignment_id=financial.assignment_id)
+    runtime.order_manager.submit_intent.assert_awaited_once_with(approved,
+        account_id="DU1", event=None)
+    record = runtime.journal.records(runtime.run_id)[0]
+    assert runtime.journal.followthrough_exit_for_record(record.record_id) == (
+        intent, witness, entry_id)
+    with pytest.raises(ValueError, match="normalized witness"):
+        asyncio.run(runtime._execute_intents(StrategyEvaluation(intents=(intent,)), "DU1", None))
+    assert runtime.order_manager.submit_intent.await_count == 1
+    runtime.journal.close()
+
+
 def test_numbered_add_uses_shared_cash_oms_and_normalized_source():
     from src.trading_runtime.strategy_one_add import StrategyOneAddProposal
     from src.trading_runtime.strategy_one_intent import strategy_one_add_intent

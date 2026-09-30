@@ -56,6 +56,7 @@ class StrategyOneManagementState:
     pending_breaks: tuple[tuple[ManagerKey, tuple[ResistanceBreak, ...]], ...]
     position_highs: tuple[tuple[ManagerKey, int], ...] = ()
     closed_positions: tuple[tuple[ManagerKey, StrategyOneClosedPosition], ...] = ()
+    first_held_boundaries: tuple[tuple[ManagerKey, int], ...] = ()
 
 
 class StrategyOneManagementRunner:
@@ -85,6 +86,7 @@ class StrategyOneManagementRunner:
         self._pending_breaks: dict[tuple[str, str, str], list[ResistanceBreak]] = {}
         self._position_highs: dict[ManagerKey, int] = {}
         self._closed_positions: dict[ManagerKey, StrategyOneClosedPosition] = {}
+        self._first_held_boundaries: dict[ManagerKey, int] = {}
 
     @staticmethod
     def _validate_capture(state: StrategyOneManagementState, *,
@@ -96,7 +98,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 management capture has no causal boundary")
         keys = {}
         for family in ("submitted", "positions", "pending_breaks",
-                       "position_highs", "closed_positions"):
+                       "position_highs", "closed_positions", "first_held_boundaries"):
             rows = getattr(state, family)
             identities = [key for key, _ in rows]
             if (any(not isinstance(key, tuple) or len(key) != 3
@@ -110,6 +112,15 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 management state lacks its entry source")
         if keys["position_highs"] != keys["positions"]:
             raise ValueError("Strategy 1 position high lacks its active position")
+        sources = dict(state.submitted)
+        required = {key for key in keys["positions"]
+                    if sources[key].strategy_number == 9}
+        if keys["first_held_boundaries"] != required:
+            raise ValueError("Strategy 9 position lacks its first held boundary")
+        for key, boundary in state.first_held_boundaries:
+            if (type(boundary) is not int or boundary % 100
+                    or not sources[key].boundary_ms < boundary <= state.boundary_ms):
+                raise ValueError("Strategy 9 first held boundary is not causal")
         for key, proposal in state.submitted:
             if (not isinstance(proposal, StrategyOneEntryProposal)
                     or (proposal.account_id, proposal.assignment_id,
@@ -162,6 +173,7 @@ class StrategyOneManagementRunner:
                          self._pending_breaks.items())),
             tuple(sorted(self._position_highs.items())),
             tuple(sorted(self._closed_positions.items())),
+            tuple(sorted(self._first_held_boundaries.items())),
         )
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         return state
@@ -169,7 +181,8 @@ class StrategyOneManagementRunner:
     def restore_state(self, state: StrategyOneManagementState) -> None:
         """Cold typed restore only; a populated manager cannot be overwritten."""
         if (self._submitted or self._positions or self._pending_breaks
-                or self._position_highs or self._closed_positions):
+                or self._position_highs or self._closed_positions
+                or self._first_held_boundaries):
             raise RuntimeError("Strategy 1 manager is already active")
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         self._submitted = dict(state.submitted)
@@ -179,6 +192,7 @@ class StrategyOneManagementRunner:
             for row in rows] for key, rows in state.pending_breaks}
         self._position_highs = dict(state.position_highs)
         self._closed_positions = dict(state.closed_positions)
+        self._first_held_boundaries = dict(state.first_held_boundaries)
 
     def owns_position_source(self, financial: StrategyOneFinancialView) -> bool:
         """Check ownership before cleanup; a same-bucket exit cannot reenter."""
@@ -227,6 +241,7 @@ class StrategyOneManagementRunner:
                     self._closed_positions[key] = StrategyOneClosedPosition(
                         boundary_ms, source.bos_support_level_id, high_int)
                 self._positions.pop(key, None)
+                self._first_held_boundaries.pop(key, None)
                 self._pending_breaks.pop(key, None)
                 self._submitted.pop(key, None)
             return
@@ -247,6 +262,8 @@ class StrategyOneManagementRunner:
             # The fill can occur anywhere inside its aggregate liquidity bar.
             # Do not include that bucket's high in the prior-position witness.
             self._position_highs[key] = round(source.reference_ask * 10_000)
+            if self.contract.allows_followthrough_failure_exit:
+                self._first_held_boundaries[key] = boundary_ms
             return
         previous = self._positions[key]
         if boundary_ms <= previous.boundary_ms:
@@ -264,6 +281,32 @@ class StrategyOneManagementRunner:
                 or evidence.ticker != financial.ticker
                 or evidence.boundary_ms != boundary_ms):
             raise ValueError("Strategy 1 management evidence crossed its causal boundary")
+        if self.contract.allows_followthrough_failure_exit and boundary_ms % 5_000 == 0:
+            from src.trading_runtime.strategy_followthrough_failure import (
+                FollowThroughFailureInput, followthrough_failure,
+            )
+            from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+            from src.backend.backtest_market_data import market_day_boundary
+            bar = resolutions.get(5_000) or {}
+            quote = resolutions.get(100) or {}
+            at = market_day_boundary(self.runtime.config.anchor_date, boundary_ms)
+            quote_us = quote.get("quote_timestamp_us")
+            age_us = (int(at.timestamp() * 1_000_000) - quote_us
+                      if type(quote_us) is int and quote.get("quote_valid") == 1
+                      else None)
+            witness = followthrough_failure(FollowThroughFailureInput(
+                boundary_ms, self._first_held_boundaries[key],
+                source.reference_ask, source.initial_stop,
+                bar.get("boundary_ms"), bar.get("close_int"),
+                bar.get("price_valid") == 1, bar.get("macd_line"),
+                bar.get("macd_signal"), evidence.bid, evidence.ask, age_us,
+                financial.position_quantity, financial.pending_exit))
+            if witness is not None:
+                entry = strategy_one_entry_intent(
+                    source, session_date=self.runtime.config.anchor_date)
+                await self.runtime.submit_followthrough_failure(
+                    financial, witness, entry.intent_id)
+                return
         pending = self._pending_breaks.setdefault(key, [])
         # A failed OMS acknowledgement retries the same completed boundary.
         # Preserve witnesses once, not once per retry.

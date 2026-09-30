@@ -34,6 +34,11 @@ def test_complete_bucket_after_fill_and_exact_threshold_are_allowed():
         completed_five_second_close_int=95000, bid=9.5, ask=9.51)) is not None
 
 
+@pytest.mark.parametrize('age', [0, 1001, 999999, 1000000])
+def test_one_second_quote_freshness_uses_microsecond_units(age):
+    assert followthrough_failure(replace(evidence(), quote_age_us=age)) is not None
+
+
 def test_future_tail_cannot_change_a_completed_prefix_decision():
     prefix=(replace(evidence(), boundary_ms=35000,completed_five_second_boundary_ms=35000),evidence())
     expected=tuple(followthrough_failure(row) for row in prefix)

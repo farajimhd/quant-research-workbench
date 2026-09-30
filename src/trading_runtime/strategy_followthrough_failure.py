@@ -73,7 +73,7 @@ def followthrough_failure(value: FollowThroughFailureInput) -> FollowThroughFail
                    for x in (value.macd_line, value.macd_signal, value.bid, value.ask))
             or not 0 < value.bid <= value.ask
             or type(value.quote_age_us) is not int
-            or not 0 <= value.quote_age_us <= 1000):
+            or not 0 <= value.quote_age_us <= 1_000_000):
         return None
     threshold = (value.reference_ask + value.initial_stop) / 2
     if (value.completed_five_second_close_int > threshold * 10_000

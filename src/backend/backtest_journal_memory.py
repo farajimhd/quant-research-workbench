@@ -36,6 +36,9 @@ class BacktestMemoryJournal:
         self._strategy_one_adds: dict[str, tuple[Any, date]] = {}
         self._strategy_one_protection: dict[str, Any] = {}
         self._numbered_session_exits: dict[str, Any] = {}
+        self._followthrough_exits: dict[str, Any] = {}
+        self._followthrough_intents: dict[str, Any] = {}
+        self._entry_assignments: dict[str, str] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
         self._order_requests: dict[str, Any] = {}
@@ -98,6 +101,7 @@ class BacktestMemoryJournal:
                 payload={**intent.payload(), "strategy_id": strategy_id,
                          "strategy_revision": strategy_revision})
             self._strategy_one_entries[record.record_id] = (proposal, session_date)
+            self._entry_assignments[intent.intent_id] = proposal.assignment_id
             return record
 
     def strategy_one_entry_for_record(self, record_id: str) -> tuple[Any, date] | None:
@@ -166,7 +170,7 @@ class BacktestMemoryJournal:
                     "replace_protective_stop", "replace_profit_target"}
                 or intent.metadata or not account_id
                 or strategy_id != STRATEGY_ID
-                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8)
+                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
                 or (intent.action == "replace_profit_target"
                     and (intent.reason != "ordinal_resistance_target"
                          or intent.profit_target_price is None
@@ -195,8 +199,8 @@ class BacktestMemoryJournal:
                                            strategy_revision):
         from src.trading_runtime.signals import StrategyIntent
         if (not isinstance(intent, StrategyIntent) or intent.action != "exit"
-                or intent.reason != ("strategy_two_session_exit" if strategy_revision == 2 else "strategy_three_session_exit" if strategy_revision == 3 else "strategy_four_session_exit" if strategy_revision == 4 else "strategy_five_session_exit" if strategy_revision == 5 else "strategy_six_session_exit" if strategy_revision == 6 else "strategy_seven_session_exit" if strategy_revision == 7 else "strategy_eight_session_exit") or intent.metadata
-                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8)
+                or intent.reason != ("strategy_two_session_exit" if strategy_revision == 2 else "strategy_three_session_exit" if strategy_revision == 3 else "strategy_four_session_exit" if strategy_revision == 4 else "strategy_five_session_exit" if strategy_revision == 5 else "strategy_six_session_exit" if strategy_revision == 6 else "strategy_seven_session_exit" if strategy_revision == 7 else "strategy_eight_session_exit" if strategy_revision == 8 else "strategy_nine_session_exit") or intent.metadata
+                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9)
                 or not account_id):
             raise ValueError("Session exit requires Strategy 2 normalized scalar source")
         with self._lock:
@@ -211,6 +215,52 @@ class BacktestMemoryJournal:
     def numbered_session_exit_for_record(self, record_id):
         with self._lock:
             return self._numbered_session_exits.get(record_id)
+
+    def append_followthrough_exit(self, *, intent, witness, source_entry_intent_id,
+                                 account_id, strategy_id, strategy_revision, assignment_id=None):
+        from src.trading_runtime.strategy_followthrough_exit import validate_witness
+        from src.trading_runtime.arte_followthrough_failure_v4 import REASON
+        from uuid import UUID
+        validate_witness(witness)
+        UUID(source_entry_intent_id)
+        if (strategy_revision != 9 or strategy_id != "early-squeeze-strategy"
+                or not account_id or intent.action != "exit" or intent.reason != REASON
+                or intent.metadata or intent.reference_price != witness.bid):
+            raise ValueError("Follow-through exit lacks exact numbered scalar authority")
+        with self._lock:
+            source = (intent, witness, source_entry_intent_id)
+            if assignment_id is not None:
+                if not isinstance(assignment_id, str) or not assignment_id:
+                    raise ValueError("Failure source assignment must be exact")
+                prior_assignment = self._entry_assignments.get(source_entry_intent_id)
+                if prior_assignment is not None and prior_assignment != assignment_id:
+                    raise ValueError("Failure source changed original entry assignment")
+                self._entry_assignments[source_entry_intent_id] = assignment_id
+            prior_intent = self._followthrough_intents.get(intent.intent_id)
+            if prior_intent is not None:
+                prior_record, prior_source = prior_intent
+                if prior_source != source or prior_record.account_id != account_id:
+                    raise ValueError("Follow-through retry changed immutable witness")
+                return prior_record
+            record = self.append(run_id=self.run_id, category="strategy",
+                entity_type="strategy_intent", entity_id=intent.intent_id,
+                account_id=account_id, event_time=intent.event_time,
+                payload={**intent.payload(), "strategy_id": strategy_id,
+                         "strategy_revision": strategy_revision})
+            self._followthrough_intents[intent.intent_id] = (record, source)
+            prior = self._followthrough_exits.get(record.record_id)
+            if prior is not None and prior != source:
+                raise ValueError("Follow-through retry changed immutable witness")
+            self._followthrough_exits[record.record_id] = source
+            return record
+
+    def assignment_for_intent(self, intent_id):
+        with self._lock:
+            return self._entry_assignments.get(intent_id)
+
+    def followthrough_exit_for_record(self, record_id):
+        with self._lock:
+            return self._followthrough_exits.get(record_id)
 
     def append_strategy_order_command(
         self, *, order_request: Any, run_id: str, category: str,
@@ -440,6 +490,7 @@ class BacktestMemoryJournal:
                     self._strategy_one_adds.pop(record.record_id, None)
                     self._strategy_one_protection.pop(record.record_id, None)
                     self._numbered_session_exits.pop(record.record_id, None)
+                    self._followthrough_exits.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
                     self._order_requests.pop(record.record_id, None)

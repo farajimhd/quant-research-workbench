@@ -505,6 +505,7 @@ def _approved_strategy_one_oms_intent(
     protection_history: Any,
     admission_reservation: Mapping[str, Any] | None,
     admission_decision: Mapping[str, Any] | None,
+    followthrough_row: Mapping[str, Any] | None = None,
 ) -> tuple[StrategyIntent, tuple[Any, ...]]:
     """Restore the approved, amended group intent from normalized facts."""
     if (admission_reservation is None) != (admission_decision is None):
@@ -526,7 +527,27 @@ def _approved_strategy_one_oms_intent(
                 or not decision.get("policy_id")
                 or int(decision.get("policy_revision") or 0) < 1):
             raise ValueError("Strategy 1 OMS admission differs from typed source")
-        if approved_intent.action == "exit":
+        if approved_intent.reason == "strategy_nine_followthrough_failure":
+            from .arte_followthrough_failure_v4 import restore_failure
+            if (followthrough_row is None or state.group["strategy_revision"] != 9
+                    or followthrough_row["assignment_id"] != reservation["assignment_id"]
+                    or str(followthrough_row["parent_record_id"]) != source_intent.record_id
+                    or str(followthrough_row["batch_id"]) != source_intent.batch_id
+                    or float(followthrough_row["bid"]) != approved_intent.reference_price):
+                raise ValueError("Failure recovery lacks its exact committed scalar witness")
+            from .strategy_followthrough_exit import followthrough_exit_intent
+            from .strategy_one_stateful import StrategyOneFinancialView
+            from .strategy_engine import AssignmentStatus, StrategyPermissions
+            from zoneinfo import ZoneInfo
+            financial = StrategyOneFinancialView(reservation["assignment_id"], account,
+                approved_intent.ticker, AssignmentStatus.WATCHING, StrategyPermissions(),
+                approved_intent.quantity, False, False, False, 1)
+            expected = followthrough_exit_intent(restore_failure(followthrough_row), financial,
+                session_date=approved_intent.event_time.astimezone(ZoneInfo("America/New_York")).date(),
+                source_entry_intent_id=str(followthrough_row["source_entry_intent_id"]))
+            if expected != approved_intent:
+                raise ValueError("Failure recovery differs from the exact scalar exit intent")
+        elif approved_intent.action == "exit":
             from zoneinfo import ZoneInfo
             from datetime import datetime, time
             from .numbered_session_exit import numbered_session_exit_intent
@@ -538,7 +559,7 @@ def _approved_strategy_one_oms_intent(
                 assignment_id=reservation["assignment_id"], ticker=approved_intent.ticker,
                 boundary_ms=boundary_ms, quantity=approved_intent.quantity,
                 bid=approved_intent.reference_price, strategy_number=state.group["strategy_revision"])
-            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8) or expected_exit != approved_intent:
+            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9) or expected_exit != approved_intent:
                 raise ValueError("Session exit recovery differs from sealed scalar source")
         metadata = {
             "assignment_id": reservation["assignment_id"],
@@ -599,6 +620,7 @@ def reconstruct_strategy_one_oms_lineage(
     protection_history: Any,
     *, admission_reservation: Mapping[str, Any] | None = None,
     admission_decision: Mapping[str, Any] | None = None,
+    followthrough_row: Mapping[str, Any] | None = None,
 ) -> tuple[OrderRequest, ...]:
     """Rebuild exact entry-group raw lineage from completed typed evidence.
 
@@ -618,7 +640,7 @@ def reconstruct_strategy_one_oms_lineage(
     if (
             not isinstance(group, dict)
             or group.get("strategy_id") != STRATEGY_ID
-            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8)
+            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
             or group.get("run_id") != protection_history.run_id
             or group.get("batch_id") not in protection_history.committed_batch_ids
             or source_intent.batch_id not in protection_history.committed_batch_ids
@@ -631,7 +653,7 @@ def reconstruct_strategy_one_oms_lineage(
             # Its immutable source intent is add_long, not the first entry's
             # enter_long. Both require the same exact typed lineage proof.
             or source_intent.intent.action not in (
-                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8) else
+                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9) else
                 {"enter_long", "add_long", "exit"} if group.get("strategy_revision") in (2, 3)
                 else {"enter_long", "add_long"})
             or not state.orders or len(state.orders) > 65_535
@@ -651,7 +673,7 @@ def reconstruct_strategy_one_oms_lineage(
                          for row in state.broker_bindings if row["terminal"])
     approved_intent, history = _approved_strategy_one_oms_intent(
         state, source_intent, protection_history,
-        admission_reservation, admission_decision)
+        admission_reservation, admission_decision, followthrough_row)
     view = _ColdLineageView(
         identity, account, approved_intent, state.orders, bindings, terminal)
     rebuilt = []
@@ -764,16 +786,23 @@ def load_recovered_strategy_one_oms_lineage(
         client, prefix, groups, max_rows=4096)
     decisions = load_committed_oms_decision_page(
         client, prefix, groups, admissions, max_rows=4096)
+    failure_rows = {}
+    from .arte_followthrough_failure_v4 import REASON, load_followthrough_failure
+    for record_id, source in by_id.items():
+        if source.intent.reason == REASON:
+            failure_rows[record_id] = load_followthrough_failure(client, prefix, record_id)[0]
     return tuple(RecoveredStrategyOneOmsLineage(
         group, by_id[group.intent_record_id],
         reconstruct_strategy_one_oms_lineage(
             group, by_id[group.intent_record_id], history,
             admission_reservation=admissions[group.sequence],
-            admission_decision=decisions[group.sequence]),
+            admission_decision=decisions[group.sequence],
+            followthrough_row=failure_rows.get(group.intent_record_id)),
         history.through_sequence,
         _approved_strategy_one_oms_intent(
             group, by_id[group.intent_record_id], history,
-            admissions[group.sequence], decisions[group.sequence])[0],
+            admissions[group.sequence], decisions[group.sequence],
+            failure_rows.get(group.intent_record_id))[0],
         dict(admissions[group.sequence]),
     ) for group in groups)
 

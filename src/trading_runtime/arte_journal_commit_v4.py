@@ -47,6 +47,8 @@ from src.backend.backtest_protection_change_v3 import (
 )
 
 
+from .arte_followthrough_failure_v4 import FAILURE, seal_followthrough_rows
+
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
 MAX_V4_COMMIT_EVENTS = 4096
@@ -424,7 +426,8 @@ def load_verified_commit_v4(
     details = _load_verified_details_v4(
         client, run_id=run_id, batch_id=identity,
         family_rows=family_rows, max_rows_per_family=max_rows_per_family,
-        batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)))
+        batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
+        prior_batch_id=str(commit["prior_batch_id"]))
     try:
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:
@@ -435,7 +438,7 @@ def load_verified_commit_v4(
 def _load_verified_details_v4(
     client, *, run_id: str, batch_id: str,
     family_rows: Sequence[Mapping], max_rows_per_family: int,
-    batched_readback: bool = False,
+    batched_readback: bool = False, prior_batch_id: str | None = None,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
@@ -483,7 +486,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -512,6 +515,10 @@ def _load_verified_details_v4(
                 run_id=run_id, batch_id=batch_id, stored_utc=True)
         except ValueError as exc:
             raise RuntimeError("V4 OMS tactic differs from its group revision") from exc
+    seal_followthrough_rows(client, related_rows.get(FAILURE.name, ()),
+        related_rows.get("trading_strategy_intent_v1", ()),
+        related_rows.get("trading_event_v1", ()), related_rows.get(ENTRY_EVIDENCE.name, ()),
+        prior_batch_id=prior_batch_id)
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
                if row["reason"] == "strategy_one_entry"}
@@ -1058,7 +1065,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or parent["action"] != "enter_long"
             or parent["protection_profile_id"]
                != "early-squeeze-fixed-stop-full-target"
-            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8)
+            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
             or row["boundary_ms"] != boundary_ms
             or elapsed.microseconds % 1_000
             or Decimal(str(row["frozen_gap"])) <= 0
@@ -1129,7 +1136,7 @@ def _validate_strategy_one_add_link(row, parent, event, run_id, batch_id):
         raise ValueError("V4 Strategy 1 add evidence differs from its typed parent")
 
 
-def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
+def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_one_entry_rows=(),
                             strategy_one_add_rows=(),
                             oms_tactic_rows=None,
                             portfolio_allocation_row=None,
@@ -1177,7 +1184,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             raise ValueError("Live V4 cannot publish Backtest-only families")
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
-            strategy_one_entry_rows, portfolio_allocation_row,
+            strategy_one_entry_rows, followthrough_rows, portfolio_allocation_row,
             oms_tactic_rows,
             reservation_reason_rows,
             broker_acknowledgement_row, broker_acknowledgement_v5_row,
@@ -1478,7 +1485,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     strategy_one_commands = {
         str(UUID(str(row["record_id"]))) for row in command_rows
         if str(row["strategy_id"]) == "early-squeeze-strategy"
-        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8)
+        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9)
     }
     lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)
                          for row in batch.v4_command_lineages)
@@ -1503,6 +1510,15 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         batch, base_families, strategy_one_entry_rows)
     add_rows = _sealed_strategy_one_add_rows(
         batch, base_families, strategy_one_add_rows)
+    # Compound micro-preparation cannot look up an entry in a sibling unit
+    # before publication. Its controller seals the complete merged graph below.
+    failure_rows = (tuple(typed_row(FAILURE.name, {k: v for k, v in row.items()
+                          if k != "content_hash"}) for row in followthrough_rows)
+                    if _prepare_only else seal_followthrough_rows(
+                        client, followthrough_rows,
+                        dict(base_families)["trading_strategy_intent_v1"],
+                        dict(base_families)["trading_event_v1"], entry_rows,
+                        prior_batch_id=batch.prior_batch_id))
     tactic_states = ()
     tactic_steps = ()
     if oms_tactic_rows is not None:
@@ -1540,6 +1556,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((PARENT_TABLE, tactic_states),)
     if tactic_steps:
         families += ((STEP_TABLE, tactic_steps),)
+    if failure_rows:
+        families += ((FAILURE.name, failure_rows),)
     if entry_rows:
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
     if add_rows:
@@ -1770,7 +1788,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
     actual_details = _load_verified_details_v4(
         client, run_id=batch.run_id, batch_id=batch.batch_id,
         family_rows=family_rows, max_rows_per_family=65_536,
-        batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)))
+        batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
+        prior_batch_id=batch.prior_batch_id)
     verify_commit_v4(commit, family_rows, actual_details)
     mark_stage("detail_readback")
 

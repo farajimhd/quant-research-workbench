@@ -902,6 +902,7 @@ class TradingRuntime:
         strategy_one_add_proposal: Any | None = None,
         strategy_one_assignment_id: str | None = None,
         numbered_exit_assignment_id: str | None = None,
+        followthrough_source: tuple | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -912,21 +913,41 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
-        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6, 7, 8):
+        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9):
             from .strategy_one_intent import require_no_replacement_capital
             require_no_replacement_capital(evaluation.intents)
             if any(intent.action not in {"enter_long", "add_long", "replace_protective_stop",
                                          "replace_profit_target", "exit"}
                    for intent in evaluation.intents):
                 raise ValueError("Strategy 2 action is outside its sealed contract")
-            if self.config.strategy_revision in (4, 5, 6, 7, 8) and any(
+            if self.config.strategy_revision in (4, 5, 6, 7, 8, 9) and any(
                     intent.action == "add_long" for intent in evaluation.intents):
                 raise ValueError(f"Strategy {self.config.strategy_revision} forbids add acquisitions")
+        if followthrough_source is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            from .strategy_followthrough_exit import followthrough_exit_intent
+            witness, financial, source_entry_intent_id = followthrough_source
+            if (self.config.mode != RunMode.BACKTEST
+                    or self.config.strategy_id != STRATEGY_ID
+                    or self.config.strategy_revision != 9
+                    or not isinstance(self.journal, BacktestMemoryJournal)
+                    or event is not None or account_id != financial.account_id
+                    or numbered_exit_assignment_id is not None
+                    or strategy_one_assignment_id is not None
+                    or strategy_one_proposal is not None
+                    or strategy_one_add_proposal is not None
+                    or evaluation.intents != (followthrough_exit_intent(
+                        witness, financial, session_date=self.config.anchor_date,
+                        source_entry_intent_id=source_entry_intent_id),)):
+                raise ValueError("Strategy 9 failure exit lacks exact typed authority")
+        elif any(intent.reason == "strategy_nine_followthrough_failure"
+                 for intent in evaluation.intents):
+            raise ValueError("Strategy 9 failure exit lacks its normalized witness")
         if numbered_exit_assignment_id is not None:
-            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6, 7, 8)
+            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9)
                     or not numbered_exit_assignment_id or event is not None
                     or any(intent.action != "exit" or intent.metadata
-                           or intent.reason != ("strategy_two_session_exit" if self.config.strategy_revision == 2 else "strategy_three_session_exit" if self.config.strategy_revision == 3 else "strategy_four_session_exit" if self.config.strategy_revision == 4 else "strategy_five_session_exit" if self.config.strategy_revision == 5 else "strategy_six_session_exit" if self.config.strategy_revision == 6 else "strategy_seven_session_exit" if self.config.strategy_revision == 7 else "strategy_eight_session_exit")
+                           or intent.reason != ("strategy_two_session_exit" if self.config.strategy_revision == 2 else "strategy_three_session_exit" if self.config.strategy_revision == 3 else "strategy_four_session_exit" if self.config.strategy_revision == 4 else "strategy_five_session_exit" if self.config.strategy_revision == 5 else "strategy_six_session_exit" if self.config.strategy_revision == 6 else "strategy_seven_session_exit" if self.config.strategy_revision == 7 else "strategy_eight_session_exit" if self.config.strategy_revision == 8 else "strategy_nine_session_exit")
                            for intent in evaluation.intents)):
                 raise ValueError("Strategy 2 session exit lacks typed source authority")
         if strategy_one_assignment_id is not None:
@@ -1005,6 +1026,14 @@ class TradingRuntime:
                     intent=intent, account_id=account_id,
                     strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
+            elif followthrough_source is not None:
+                witness, financial, source_entry_intent_id = followthrough_source
+                self.journal.append_followthrough_exit(
+                    intent=intent, witness=witness,
+                    source_entry_intent_id=source_entry_intent_id,
+                    assignment_id=financial.assignment_id,
+                    account_id=account_id, strategy_id=self.config.strategy_id,
+                    strategy_revision=self.config.strategy_revision)
             elif numbered_exit_assignment_id is not None:
                 self.journal.append_numbered_session_exit_intent(
                     intent=intent, account_id=account_id,
@@ -1069,6 +1098,8 @@ class TradingRuntime:
                              if strategy_one_add_proposal is not None
                              else strategy_one_assignment_id
                              if strategy_one_assignment_id is not None
+                             else followthrough_source[1].assignment_id
+                             if followthrough_source is not None
                              else numbered_exit_assignment_id)
             if assignment_id is None:
                 decision, approved_intent = await self.portfolio.approve(
@@ -1206,6 +1237,17 @@ class TradingRuntime:
             # A restored actor safely checks its first cutoff boundary again.
             self._numbered_completed_cutoffs = completed | {cutoff}
 
+    async def submit_followthrough_failure(self, financial, witness,
+                                          source_entry_intent_id):
+        """Route a completed failure witness through shared Portfolio and OMS."""
+        from .strategy_followthrough_exit import followthrough_exit_intent
+        intent = followthrough_exit_intent(
+            witness, financial, session_date=self.config.anchor_date,
+            source_entry_intent_id=source_entry_intent_id)
+        return await self._execute_intents(
+            StrategyEvaluation(intents=(intent,)), financial.account_id, None,
+            followthrough_source=(witness, financial, source_entry_intent_id))
+
     async def submit_numbered_session_exit(self, financial, resolutions, boundary_ms):
         """Submit once per live exit; fills belong to later broker liquidity."""
         from .numbered_session_exit import numbered_session_exit_intent
@@ -1251,7 +1293,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneEntryProposal)
                 or proposal.strategy_number != self.config.strategy_revision
@@ -1280,7 +1322,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneAddProposal)
                 or proposal.strategy_number != self.config.strategy_revision
@@ -1311,7 +1353,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or getattr(financial, "account_id", None) not in self.config.account_ids):
             raise ValueError("Strategy 1 protection needs its numbered Backtest runtime")

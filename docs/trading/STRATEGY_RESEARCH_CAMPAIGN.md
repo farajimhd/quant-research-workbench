@@ -607,3 +607,23 @@ normalized source witness and cold-read validation, persist its first-held
 boundary in the manager contract, route it through shared Portfolio/OMS,
 validate partial-fill acquisition cancellation and protection precedence,
 and seal the complete release. Four-session execution is still pending.
+
+## Strategy 9 implementation checkpoint
+
+The single-change release now derives from the exact published Strategy 8
+revision and payload hash. The manager evaluates only held positions at
+completed five-second boundaries; shared Portfolio and OMS own liquidation,
+including cancellation of a partially filled entry remainder. The normalized
+`trading_followthrough_failure_v4` witness binds the immutable exit to its
+original typed entry, prices, assignment and committed ancestor chain.
+Manager snapshot v3 and its first-held child preserve the first filled bucket
+across recovery without altering occupied v2 schemas. Older releases retain
+their existing rules and checkpoint row shapes.
+
+Review corrected a quote-age unit mismatch before publication: the rule now
+accepts the full specified 0..1,000,000 microsecond interval. Explicit edge
+checks cover both sides of the one-second boundary. A 320-test integration
+selection passed, including manager routing, cold witness graph recovery,
+checkpoint publication and shared OMS partial-entry cancellation. Database
+layout/grant acceptance, publication and four certified session runs remain
+pending; these checks establish implementation behavior, not profitability.

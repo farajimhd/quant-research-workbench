@@ -1,0 +1,42 @@
+"""Immutable scalar Strategy 9 liquidation intent from the shared rule witness."""
+from datetime import datetime, time, timedelta, timezone
+from uuid import NAMESPACE_URL, UUID, uuid5
+from zoneinfo import ZoneInfo
+from math import isfinite
+
+from .execution_policies import ExecutionEnvelope, ExecutionPolicy, ExecutionPolicyName, PartialFillPolicy
+from .signals import StrategyIntent
+from .strategy_followthrough_failure import FollowThroughFailure, FollowThroughFailureInput, followthrough_failure
+from .strategy_one_stateful import StrategyOneFinancialView
+
+
+def validate_witness(witness):
+    if type(witness) is not FollowThroughFailure:
+        raise ValueError("Follow-through exit requires the exact scalar witness")
+    actual = followthrough_failure(FollowThroughFailureInput(
+        witness.boundary_ms, witness.first_held_boundary_ms,
+        witness.reference_ask, witness.initial_stop, witness.boundary_ms,
+        witness.completed_close_int, True, witness.macd_line, witness.macd_signal,
+        witness.bid, witness.ask, witness.quote_age_us, 1.0, False))
+    if actual != witness:
+        raise ValueError("Follow-through witness does not satisfy its pinned rule")
+
+
+def followthrough_exit_intent(witness, financial, *, session_date, source_entry_intent_id):
+    validate_witness(witness)
+    UUID(source_entry_intent_id)
+    if (type(financial) is not StrategyOneFinancialView
+            or not financial.account_id or not financial.assignment_id or not financial.ticker
+            or not isfinite(financial.position_quantity) or financial.position_quantity <= 0
+            or financial.pending_exit):
+        raise ValueError("Follow-through exit requires exact held financial authority")
+    at = datetime.combine(session_date, time(4), ZoneInfo("America/New_York")) + timedelta(milliseconds=witness.boundary_ms)
+    identity = f"strategy-9-followthrough-exit:{session_date}:{financial.account_id}:{financial.assignment_id}:{financial.ticker}:{source_entry_intent_id}:{witness.boundary_ms}"
+    return StrategyIntent(intent_id=str(uuid5(NAMESPACE_URL, identity)),
+        ticker=financial.ticker, event_time=at.astimezone(timezone.utc), action="exit",
+        quantity=float(financial.position_quantity), reference_price=witness.bid,
+        urgency="urgent", outside_rth=True, reason="strategy_nine_followthrough_failure", metadata={},
+        execution_policy=ExecutionPolicy(policy_id="strategy-adaptive_urgent",
+            name=ExecutionPolicyName.ADAPTIVE_URGENT,
+            envelope=ExecutionEnvelope(persist_until_cancelled=True),
+            partial_fill_policy=PartialFillPolicy.COMPLETE_REMAINDER, quote_source="qmd"))

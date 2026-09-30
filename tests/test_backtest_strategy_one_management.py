@@ -61,6 +61,43 @@ def _add_rows(boundary=31_000):
     }
 
 
+def test_nine_failure_waits_for_whole_post_fill_bar_and_preserves_entry_source():
+    from types import SimpleNamespace
+    from src.backend.backtest_market_data import market_day_boundary
+    from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+
+    async def run():
+        source, runtime = _Evidence(), _Runtime()
+        runtime.config = SimpleNamespace(strategy_revision=9, anchor_date=date(2026, 8, 18))
+        exits = []
+        async def submit(financial, witness, entry_id):
+            exits.append((financial, witness, entry_id))
+        runtime.submit_followthrough_failure = submit
+        manager = StrategyOneManagementRunner(
+            runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        proposal = replace(_proposal(), strategy_number=9)
+        await manager.on_entry_proposal(proposal)
+        await manager.on_management(_financial(), {}, 30_200)
+        captured = manager.capture_state(boundary_ms=30_200)
+        assert captured.first_held_boundaries == ((("DU1", "A1", "AAA"), 30_200),)
+        with pytest.raises(ValueError, match="first held"):
+            manager._validate_capture(replace(captured, first_held_boundaries=()),
+                                      max_pending_breaks=256)
+        for boundary in (35_000, 40_000):
+            source.rows[boundary] = replace(_evidence(boundary), bid=9.8, ask=9.81)
+            rows = _add_rows(boundary)
+            rows[100]["quote_timestamp_us"] = int(
+                market_day_boundary(runtime.config.anchor_date, boundary).timestamp() * 1_000_000)
+            rows[5_000] = {"boundary_ms": boundary, "price_valid": 1,
+                           "close_int": 98_000, "macd_line": -.2, "macd_signal": -.1}
+            await manager.on_management(_financial(), rows, boundary)
+            assert len(exits) == int(boundary == 40_000)
+        assert exits[0][1].first_held_boundary_ms == 30_200
+        assert exits[0][2] == strategy_one_entry_intent(
+            proposal, session_date=runtime.config.anchor_date).intent_id
+    asyncio.run(run())
+
+
 def test_add_requires_distinct_completed_bars_bullish_macd_and_fresh_quote():
     financial = _financial()
     protection = ProtectionState(31_000, 9.69, 10.3,

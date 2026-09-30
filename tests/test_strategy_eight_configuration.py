@@ -161,7 +161,7 @@ def test_eighth_rejects_changed_acquisition_contract(key, value):
         verify_strategy_eight_manifest(envelope["payload"]["strategy"])
 
 
-@pytest.mark.parametrize("number", [True, False, 1, 0, 9, "8", 8.0])
+@pytest.mark.parametrize("number", [True, False, 1, 0, 10, "8", 8.0])
 def test_numbered_parent_rejects_unadmitted_values(number):
     from src.trading_runtime.strategy_registry import numbered_strategy_parent
     with pytest.raises(ValueError, match="admitted parent"):

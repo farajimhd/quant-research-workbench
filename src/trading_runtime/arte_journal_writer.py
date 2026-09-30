@@ -96,7 +96,10 @@ if TYPE_CHECKING:
     )
 
 
+from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch
+
 _CONTRACTS = {table.name: table for table in TABLES}
+_CONTRACTS[FAILURE.name] = FAILURE
 _CONTRACTS.update({table.name: table for table in (
     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
     *BROKER_MATCH_SNAPSHOT_TABLES, *EVIDENCE_SNAPSHOT_TABLES,
@@ -2106,7 +2109,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
                  ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
-                 *OMS_TACTIC_TABLES,
+                 *OMS_TACTIC_TABLES, FAILURE,
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES,
                  *protection_tables, *manager_tables, *broker_match_tables,
@@ -2134,7 +2137,7 @@ def v4_journal_write_tables() -> frozenset[str]:
                 CANCEL.name, REPRICE.name,
                 "trading_backtest_account_snapshot_v2",
                 "trading_backtest_position_snapshot_v2",
-                *(table.name for table in OMS_TACTIC_TABLES),
+                *(table.name for table in OMS_TACTIC_TABLES), FAILURE.name,
                 *(table.name for table in RISK_ACTION_TABLES),
                 *(table.name for table in PROTECTION_CHANGE_TABLES),
                 *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
@@ -3805,7 +3808,7 @@ class ArteJournalWriter:
         self._coalesce_batches = coalesce_batches
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-                  | V4StrategyOneEntryBatch | V4PortfolioAllocationBatch
+                  | V4StrategyOneEntryBatch | V4FollowThroughFailureBatch | V4PortfolioAllocationBatch
                   | V4ReservationReasonBatch
                   | V4BrokerAcknowledgementBatch
                   | V5BrokerAcknowledgementBatch
@@ -3956,6 +3959,24 @@ class ArteJournalWriter:
         if self._journal_profile not in self._V4_PROFILES or not isinstance(
                 unit, V4StrategyOneEntryBatch):
             raise ValueError("Strategy 1 entry requires the V4 writer profile")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            if unit.base.run_id != self._run_id:
+                raise ValueError("V4 writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_followthrough_exit_v4(self, unit: V4FollowThroughFailureBatch) -> Future[str]:
+        """Queue the immutable exit and scalar witness without network I/O."""
+        if self._journal_profile not in self._V4_PROFILES or not isinstance(
+                unit, V4FollowThroughFailureBatch):
+            raise ValueError("Follow-through exit requires the V4 writer profile")
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -4632,7 +4653,7 @@ class ArteJournalWriter:
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,
                                             V4CompoundBatch,
-                                            V4StrategyOneEntryBatch,
+                                            V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
                                             V4PortfolioAllocationBatch,
                                             V4ReservationReasonBatch,
@@ -4722,6 +4743,11 @@ class ArteJournalWriter:
                     committed_id = publish_broker_acknowledgement_batch_v5(
                         self._client, unit.base,
                         acknowledgement=unit.acknowledgement)
+                elif isinstance(group[0][0], V4FollowThroughFailureBatch):
+                    from .arte_journal_commit_v4 import _publish_typed_batch_v4
+                    unit = group[0][0]
+                    committed_id = _publish_typed_batch_v4(self._client, unit.base,
+                        followthrough_rows=(unit.failure,))
                 elif isinstance(group[0][0], V4StrategyOneEntryBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_strategy_one_entry_batch_v4,

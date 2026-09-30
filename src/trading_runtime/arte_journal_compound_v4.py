@@ -28,8 +28,10 @@ from .arte_oms_tactic_projection import (
 )
 
 
+from .arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch, seal_followthrough_rows
+
 _CHILD_KEYS = (
-    "command_lineages",
+    "followthrough_failures", "command_lineages",
     "entry_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
@@ -37,7 +39,7 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
-    "command_lineages",
+    "followthrough_failures", "command_lineages",
     "entry_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
@@ -70,6 +72,8 @@ class V4CompoundBatch:
 
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if type(unit) is V4FollowThroughFailureBatch:
+        return (("followthrough_failures", unit.failure),)
     if type(unit) is TypedJournalBatch:
         return tuple(("command_lineages", row)
                      for row in unit.v4_command_lineages)
@@ -174,6 +178,8 @@ def coalesce_v4_units(
 
 
 def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is V4FollowThroughFailureBatch:
+        return {"followthrough_rows": (unit.failure,)}
     if type(unit) is V4OmsTacticBatch:
         return {"oms_tactic_rows": (unit.tactic_state, unit.tactic_steps)}
     if type(unit) is V4StrategyOneEntryBatch:
@@ -236,6 +242,7 @@ def prepare_compound_v4_families(
                 "backtest_progress", "prepared_v7_leases")):
         raise ValueError("Live V4 compound cannot publish Backtest-only families")
     table_for_key = {
+        "followthrough_failures": FAILURE.name,
         "command_lineages": V4_ORDER_COMMAND_LINEAGE.name,
         "entry_evidence": ENTRY_EVIDENCE.name,
         "add_evidence": ADD_EVIDENCE.name,
@@ -343,6 +350,10 @@ def prepare_compound_v4_families(
             dict(base_families)["trading_oms_group_state_v1"],
             dict(base_families)["trading_event_v1"],
             run_id=compound.base.run_id, batch_id=compound.base.batch_id)
+    seal_followthrough_rows(client, extra[FAILURE.name],
+        dict(base_families)["trading_strategy_intent_v1"],
+        compound.base.events, extra[ENTRY_EVIDENCE.name],
+        prior_batch_id=compound.base.prior_batch_id)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))

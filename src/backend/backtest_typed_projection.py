@@ -176,7 +176,7 @@ def project_pending_backtest_v4_prefix(
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
         if (kind == ("command", "order")
-                and (expected_config or {}).get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8)
+                and (expected_config or {}).get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9)
                 and (expected_config or {}).get("strategy_id") ==
                     "early-squeeze-strategy"):
             from src.trading_runtime.arte_journal_projection import order_command_batch
@@ -385,14 +385,19 @@ def project_pending_backtest_v4_prefix(
             add_sidecar = journal.strategy_one_add_for_record(record.record_id)
             protection_source = journal.strategy_one_protection_for_record(
                 record.record_id)
+            failure_source = journal.followthrough_exit_for_record(record.record_id)
             session_exit_source = journal.numbered_session_exit_for_record(record.record_id)
             if session_exit_source is not None:
                 if protection_source is not None:
                     raise RuntimeError("Session exit has conflicting source authorities")
                 protection_source = session_exit_source
             if sum(value is not None for value in (
-                    sidecar, add_sidecar, protection_source)) > 1:
+                    sidecar, add_sidecar, protection_source, failure_source)) > 1:
                 raise RuntimeError("Strategy 1 intent has two source authorities")
+            if (kind == ("strategy", "strategy_intent")
+                    and record.payload.get("reason") == "strategy_nine_followthrough_failure"
+                    and failure_source is None):
+                raise RuntimeError("Follow-through intent lacks its normalized witness")
             if sidecar is None and add_sidecar is None:
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("reason") in {
@@ -400,7 +405,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("strategy_id") == "early-squeeze-strategy"
-                        and record.payload.get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8)
+                        and record.payload.get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9)
                         and record.payload.get("action") in {
                             "replace_protective_stop", "replace_profit_target"}
                         and protection_source is None):
@@ -455,6 +460,29 @@ def project_pending_backtest_v4_prefix(
                 if prior_source is not None and prior_source != (batch, intent):
                     raise RuntimeError("V4 Strategy 1 add identity was reused")
                 sources[intent.intent_id] = (batch, intent)
+        if journal.followthrough_exit_for_record(record.record_id) is not None:
+            from src.trading_runtime.arte_followthrough_failure_v4 import (
+                V4FollowThroughFailureBatch, project_followthrough_failure)
+            intent, witness, source_entry_id = journal.followthrough_exit_for_record(record.record_id)
+            source = sources.get(source_entry_id)
+            if source is None:
+                raise RuntimeError("Failure exit requires its exact original typed entry source")
+            # Entry authority is retained by the publisher, including its child.
+            entry = next((u for u in units if isinstance(u, V4StrategyOneEntryBatch)
+                          and any(r['intent_id'] == source_entry_id for r in u.base.intents)), None)
+            if entry is not None:
+                assignment_id = entry.entry_evidence[0]['assignment_id']
+            elif isinstance(source[0], V4StrategyOneEntryBatch) and source[0].entry_evidence:
+                assignment_id = source[0].entry_evidence[0]['assignment_id']
+            else:
+                assignment_id = journal.assignment_for_intent(source_entry_id) if hasattr(journal, 'assignment_for_intent') else ''
+            if not assignment_id:
+                raise RuntimeError("Failure source has no normalized assignment evidence")
+            failure = project_followthrough_failure(witness, intent, source_entry_id,
+                run_id=batch.run_id, batch_id=batch.batch_id, parent_record_id=record.record_id,
+                assignment_id=assignment_id)
+            unit = V4FollowThroughFailureBatch(batch, failure)
+            sources[intent.intent_id] = (batch, intent)
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
         if (base.first_sequence != sequence or base.last_sequence != sequence
                 or len(base.events) != 1 or base.batch_id != batch_id

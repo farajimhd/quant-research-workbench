@@ -1373,10 +1373,11 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
         TABLES as OMS_OBSERVATION_SNAPSHOT_TABLES,
     )
 
+    from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE
     assert len(observed) == 2
     assert {table.name for table in observed[0]} == {
         table.name for table in (*fixed_backtest_v2_contracts(),
-                                 *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
+                                 *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE, FAILURE,
                                  ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
                                  RESERVATION_REASON,
                                      ACKNOWLEDGEMENT, CANCEL, REPRICE,
@@ -1395,7 +1396,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
             frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
-                V4_ORDER_COMMAND_LINEAGE.name,
+                V4_ORDER_COMMAND_LINEAGE.name, FAILURE.name,
             ENTRY_EVIDENCE.name, ADD_EVIDENCE.name,
             V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,

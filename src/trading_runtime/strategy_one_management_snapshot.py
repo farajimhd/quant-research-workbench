@@ -103,7 +103,27 @@ CLOSED = TableContract(
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, account_id, assignment_id, ticker",
 )
-TABLES = (PARENT, SOURCE, BREAK, HIGH, CLOSED)
+PARENT_V3 = TableContract(
+    "trading_strategy_one_manager_snapshot_v3",
+    (*PARENT.columns[:-1], ("first_held_count", "UInt32"),
+     ("first_held_hash", "FixedString(64)"), PARENT.columns[-1]),
+    PARENT.partition, PARENT.order,
+)
+FIRST_HELD = TableContract(
+    "trading_strategy_one_manager_first_held_v1",
+    (("snapshot_id", "UUID"), ("run_id", "String"),
+     ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
+     ("account_id", "String"), ("assignment_id", "String"),
+     ("ticker", "LowCardinality(String)"), ("first_held_boundary_ms", "UInt32"),
+     ("content_hash", "FixedString(64)")),
+    "toYYYYMM(snapshot_month)",
+    "run_id, checkpoint_sequence, account_id, assignment_id, ticker",
+)
+TABLES = (PARENT, SOURCE, BREAK, HIGH, CLOSED, PARENT_V3, FIRST_HELD)
+
+
+def _parent_contract(snapshot):
+    return PARENT_V3 if "first_held_count" in snapshot else PARENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +134,7 @@ class ManagerSnapshotRows:
     protection: ProtectionSnapshotRows
     position_highs: tuple[dict[str, Any], ...] = ()
     closed_positions: tuple[dict[str, Any], ...] = ()
+    first_held_boundaries: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +258,11 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
                        entry_resistance_id=prior.entry_resistance_id,
                        high_int=prior.high_int)
         closed.append({**payload, "content_hash": _digest(payload)})
+    first_held = []
+    for (account, assignment, ticker), boundary in state.first_held_boundaries:
+        payload = dict(**common, account_id=account, assignment_id=assignment,
+                       ticker=ticker, first_held_boundary_ms=boundary)
+        first_held.append({**payload, "content_hash": _digest(payload)})
     seal = dict(**common, session_date=session_date.isoformat(),
                 boundary_ms=state.boundary_ms,
                 protection_hash=root["content_hash"],
@@ -248,9 +274,12 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
                 position_high_hash=_digest([row["content_hash"] for row in highs]),
                 closed_position_count=len(closed),
                 closed_position_hash=_digest([row["content_hash"] for row in closed]))
+    if first_held or any(proposal.strategy_number == 9 for _, proposal in state.submitted):
+        seal.update(first_held_count=len(first_held),
+                    first_held_hash=_digest([row["content_hash"] for row in first_held]))
     return ManagerSnapshotRows(
         {**seal, "content_hash": _digest(seal)}, tuple(sources),
-        tuple(breaks), protection, tuple(highs), tuple(closed))
+        tuple(breaks), protection, tuple(highs), tuple(closed), tuple(first_held))
 
 
 def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
@@ -260,7 +289,7 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
     if not isinstance(rows, ManagerSnapshotRows):
         raise ValueError("Strategy 1 manager recovery needs typed rows")
     rows = ManagerSnapshotRows(
-        _canonical_snapshot_row(PARENT, rows.snapshot),
+        _canonical_snapshot_row(_parent_contract(rows.snapshot), rows.snapshot),
         tuple(sorted((_canonical_snapshot_row(SOURCE, row)
                       for row in rows.sources), key=lambda row: (
                           row["account_id"], row["assignment_id"],
@@ -275,6 +304,9 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                           row["account_id"], row["assignment_id"], row["ticker"]))),
         tuple(sorted((_canonical_snapshot_row(CLOSED, row)
                       for row in rows.closed_positions), key=lambda row: (
+                          row["account_id"], row["assignment_id"], row["ticker"]))),
+        tuple(sorted((_canonical_snapshot_row(FIRST_HELD, row)
+                      for row in rows.first_held_boundaries), key=lambda row: (
                           row["account_id"], row["assignment_id"], row["ticker"]))),
     )
     seal = rows.snapshot
@@ -292,13 +324,15 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
             or seal.get("source_count") != len(rows.sources)
             or seal.get("pending_break_count") != len(rows.pending_breaks)
             or seal.get("position_high_count") != len(rows.position_highs)
-            or seal.get("closed_position_count") != len(rows.closed_positions)):
+            or seal.get("closed_position_count") != len(rows.closed_positions)
+            or seal.get("first_held_count", 0) != len(rows.first_held_boundaries)):
         raise ValueError("Strategy 1 manager snapshot seal differs")
     for family, children, expected in (
             ("source", rows.sources, seal["source_hash"]),
             ("break", rows.pending_breaks, seal["pending_break_hash"]),
             ("high", rows.position_highs, seal["position_high_hash"]),
-            ("closed", rows.closed_positions, seal["closed_position_hash"])):
+            ("closed", rows.closed_positions, seal["closed_position_hash"]),
+            ("first held", rows.first_held_boundaries, seal.get("first_held_hash", _digest([])))):
         if (any(row.get("content_hash") != _digest({
                 key: value for key, value in row.items()
                 if key != "content_hash"})
@@ -343,7 +377,9 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                StrategyOneClosedPosition(
                    int(row["closed_boundary_ms"]),
                    row["entry_resistance_id"], int(row["high_int"])))
-              for row in rows.closed_positions))
+              for row in rows.closed_positions),
+        tuple(((row["account_id"], row["assignment_id"], row["ticker"]),
+               int(row["first_held_boundary_ms"])) for row in rows.first_held_boundaries))
     StrategyOneManagementRunner._validate_capture(
         state, max_pending_breaks=max_pending_breaks)
     if project_manager_snapshot(
@@ -379,7 +415,7 @@ def load_unattested_manager_snapshot_rows(
 
     scope = (f"run_id={_literal(run_id)} "
              f"AND checkpoint_sequence={checkpoint_sequence}")
-    seals = read(PARENT, scope, 2)
+    seals = (*read(PARENT, scope, 2), *read(PARENT_V3, scope, 2))
     if len(seals) != 1:
         raise RuntimeError("Strategy 1 manager lacks exactly one selected seal")
     seal = seals[0]
@@ -396,10 +432,12 @@ def load_unattested_manager_snapshot_rows(
     break_count = seal.get("pending_break_count")
     high_count = seal.get("position_high_count")
     closed_count = seal.get("closed_position_count")
+    first_held_count = seal.get("first_held_count", 0)
     if (type(source_count) is not int or not 0 <= source_count <= 100_000
             or type(break_count) is not int or not 0 <= break_count <= 100_000
             or type(high_count) is not int or not 0 <= high_count <= 100_000
-            or type(closed_count) is not int or not 0 <= closed_count <= 100_000):
+            or type(closed_count) is not int or not 0 <= closed_count <= 100_000
+            or type(first_held_count) is not int or not 0 <= first_held_count <= 100_000):
         raise RuntimeError("Strategy 1 manager child bound is invalid")
     protection = load_protection_snapshot_rows(
         client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
@@ -407,7 +445,8 @@ def load_unattested_manager_snapshot_rows(
         seal, read(SOURCE, predicate, source_count + 1),
         read(BREAK, predicate, break_count + 1), protection,
         read(HIGH, predicate, high_count + 1),
-        read(CLOSED, predicate, closed_count + 1))
+        read(CLOSED, predicate, closed_count + 1),
+        read(FIRST_HELD, predicate, first_held_count + 1) if _parent_contract(seal) is PARENT_V3 else ())
     restore_manager_snapshot(rows)
     return rows
 
@@ -534,7 +573,8 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
             (SOURCE.name, rows.sources), (BREAK.name, rows.pending_breaks),
             (HIGH.name, rows.position_highs),
             (CLOSED.name, rows.closed_positions),
-            (PARENT.name, (seal,)),
+            (FIRST_HELD.name, rows.first_held_boundaries),
+            (_parent_contract(seal).name, (seal,)),
         ),
     )
     operations: list[tuple[str, str]] = []
@@ -555,10 +595,11 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
         "trading_strategy_one_protection_snapshot_v1": (protection.snapshot,),
         "trading_strategy_one_protection_state_v1": protection.states,
         "trading_strategy_one_protection_resistance_v1": protection.resistances,
-        PARENT.name: (seal,), SOURCE.name: rows.sources,
+        _parent_contract(seal).name: (seal,), SOURCE.name: rows.sources,
         BREAK.name: rows.pending_breaks,
         HIGH.name: rows.position_highs,
         CLOSED.name: rows.closed_positions,
+        **({FIRST_HELD.name: rows.first_held_boundaries} if _parent_contract(seal) is PARENT_V3 else {}),
     }
     for table, expected in expected_rows.items():
         contract = contracts[table]
