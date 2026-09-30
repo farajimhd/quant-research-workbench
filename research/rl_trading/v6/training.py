@@ -158,14 +158,17 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   decisions: tuple[TeacherDecision, ...],
                   outcomes: tuple[ExecutionOutcome, ...], *,
                   device: torch.device, clocks_per_chunk: int = 32,
-                  grad_clip: float = 1., progress_callback=None) -> TrainingMetrics:
+                  grad_clip: float = 1., progress_callback=None,
+                  evaluation: bool = False) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Decisions use current completed candles and outcomes up to that close.
     Outcomes after a decision are applied only on a later clock. The encoder
     and action GRU state detach after each optimizer chunk, never mid-order.
+    Evaluation accepts development sessions only, builds no autograd graph,
+    and never reads or mutates an optimizer.
     """
-    if (session.role != 'train' or clocks_per_chunk < 1 or grad_clip <= 0 or
+    if (session.role not in (('development',) if evaluation else ('train',)) or clocks_per_chunk < 1 or grad_clip <= 0 or
             not decisions):
         raise ValueError('V6 trainer requires a train session and labels')
     listings = len(session.listings)
@@ -189,8 +192,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     confusion = np.zeros((5, 5), dtype=np.int64)
     conditional_sum = np.zeros(3, dtype=np.float64)
     conditional_count = np.zeros(3, dtype=np.int64)
-    policy.train()
-    optimizer.zero_grad(set_to_none=True)
+    policy.train(not evaluation)
+    if not evaluation:
+        optimizer.zero_grad(set_to_none=True)
     event_iter = iter(session.candle_events())
     while chunk := tuple(islice(event_iter, clocks_per_chunk)):
         labeled = any(event.close_us in decision_groups for event in chunk)
@@ -200,7 +204,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         pending_conditional = ([], [], [])
         # Empty chunks still advance every observed candle and actual order
         # outcome, but do not build a useless autograd graph.
-        with torch.set_grad_enabled(labeled):
+        with torch.set_grad_enabled(labeled and not evaluation):
             for event in chunk:
                 # An execution bucket can close before this candle does.
                 # Apply it using the *previous* completed-candle state, even
@@ -270,11 +274,14 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         pending_entries[(item.close_us, item.order_index)] = item.token-1
         if pending_losses:
             mean = torch.stack(pending_losses).mean()
-            mean.backward()
-            torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            updates += 1
+            if not torch.isfinite(mean):
+                raise ValueError('Nonfinite teacher objective')
+            if not evaluation:
+                mean.backward()
+                torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                updates += 1
             loss_sum += float(torch.stack([value.detach() for value in
                                            pending_losses]).sum())
             correct_sum += float(torch.stack(pending_correct).sum())

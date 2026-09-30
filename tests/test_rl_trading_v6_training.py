@@ -14,7 +14,8 @@ from research.rl_trading.v6.training import (ExecutionOutcome,
 
 
 @pytest.mark.parametrize('policy_type', [BracketPolicy, RankedBracketActorCritic])
-def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_type):
+@pytest.mark.parametrize('evaluation', [False, True])
+def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_type, evaluation):
     clocks = np.asarray([1_000_000, 2_000_000, 1_000_000, 2_000_000],
                         dtype=np.int64)
     scalar = np.zeros((4, 37), dtype=np.float32)
@@ -22,7 +23,7 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
     bank = SessionBank(Path('unused'),
         {'offsets': {'A': [0, 2], 'B': [2, 4]}}, clocks,
         scalar, np.zeros((4, 2, 5, 11), dtype=np.float32))
-    session = PackedSession(date(2026, 7, 31), 'train', Path('unused'),
+    session = PackedSession(date(2026, 7, 31), 'development' if evaluation else 'train', Path('unused'),
                             'certificate', bank, None, ('A', 'B'))
     decisions = (
         TeacherDecision(1_000_000, 0, 1,
@@ -44,11 +45,12 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
                                   1, 0, .25, .2, 0.),)
     policy = policy_type(width=8)
     before = policy.encoder.project.weight.detach().clone()
+    all_before = {name:value.detach().clone() for name,value in policy.state_dict().items()}
     optimizer = torch.optim.AdamW(policy.parameters(), lr=.001)
     metrics = train_session(policy, optimizer, session, decisions, outcomes,
-        device=torch.device('cpu'), clocks_per_chunk=2)
+        device=torch.device('cpu'), clocks_per_chunk=2, evaluation=evaluation)
     assert metrics.decisions == 2 and metrics.execution_outcomes == 1
-    assert metrics.optimizer_steps == 1
+    assert metrics.optimizer_steps == (0 if evaluation else 1)
     assert np.isfinite(metrics.mean_loss)
     assert metrics.action_class_counts['enter_long'] == 1
     assert metrics.action_class_counts['set_stop'] == 1
@@ -57,4 +59,9 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
     assert metrics.stop_log_distance_mae is not None
     assert metrics.target_log_distance_mae is None
     assert all(0 <= value <= 1 for value in metrics.action_class_f1.values())
-    assert not torch.equal(before, policy.encoder.project.weight)
+    if evaluation:
+        assert all(torch.equal(value,policy.state_dict()[name]) for name,value in all_before.items())
+        assert not optimizer.state
+        assert all(parameter.grad is None for parameter in policy.parameters())
+    else:
+        assert not torch.equal(before, policy.encoder.project.weight)

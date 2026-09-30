@@ -85,6 +85,8 @@ def main(argv=None):
     parser.add_argument('--ledger',type=Path,required=True)
     parser.add_argument('--device',default='cuda')
     parser.add_argument('--teacher-epochs',type=int,default=10)
+    parser.add_argument('--teacher-only',action='store_true',
+        help='Teacher initialization and per-epoch development label evaluation; no trading replay or PPO')
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
     parser.add_argument('--learning-rate',type=float,default=3e-4)
@@ -116,6 +118,8 @@ def main(argv=None):
     dataset=require_dataset(args.dataset,runtime_root=runtime)
     if args.teacher_epochs < 10:
         raise ValueError('Teacher initialization must run at least 10 epochs')
+    if args.teacher_only and args.teacher_epochs > 20:
+        raise ValueError('Teacher-only training is capped at 20 epochs')
     from research.rl_trading.v6.luld import RiskPenalty
     from research.rl_trading.v6.build_luld import open_sidecar
     risk=RiskPenalty(args.halt_onset_penalty,args.halt_per_minute_penalty,args.terminal_exposure_penalty)
@@ -147,6 +151,7 @@ def main(argv=None):
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
         'teacher_role':'candle_only_actor_initialization',
+        'validation_contract':'development_teacher_labels_trading_validation_pending' if args.teacher_only else 'trading_replay',
         'reward':'quote_delta_equity_minus_separate_modeled_halt_and_terminal_exposure_shaping_v2',
         'risk_penalty':asdict(risk),'luld_certificates':luld_certificates,
         'holding_observation_version':'11_fields_modeled_halt_flag_and_age',
@@ -211,17 +216,20 @@ def main(argv=None):
             audit=_model_causality_audit(policy,device)
             # Fresh non-learning smoke verifies the real quote collector and
             # recurrent reconstruction before any teacher/PPO optimizer step.
-            session=open_day(dataset['days'][0])
-            provider,tickers=evidence(session)
-            try:
-                env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
-                frames,steps,smoke=collect_session(policy,session,env,device=device,max_clocks=5,max_orders_per_second=4)
-                audit.update(real_reconstruction=audit_reconstruction(policy,session,frames,device=device),
-                             smoke_metrics=smoke,execution_evidence=provider.certificate())
-            finally: provider.reader.close()
+            if not args.teacher_only:
+                session=open_day(dataset['days'][0])
+                provider,tickers=evidence(session)
+                try:
+                    env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
+                    frames,steps,smoke=collect_session(policy,session,env,device=device,max_clocks=5,max_orders_per_second=4)
+                    audit.update(real_reconstruction=audit_reconstruction(policy,session,frames,device=device),
+                                 smoke_metrics=smoke,execution_evidence=provider.certificate())
+                finally: provider.reader.close()
+                del session,frames,steps,env,provider
+            else:
+                audit['trading_validation']='pending_execution_price_coverage'
             _write_json(run/'model-audit.json',{'status':'passed','source_commit':manifest['source_commit'],
                 'dataset_sha256':manifest['dataset_sha256'],**audit})
-            del session,frames,steps,env,provider
             if args.audit_only:
                 print(json.dumps({'status':'all_training_launch_audits_passed','run_root':str(run)}),flush=True)
                 return 0
@@ -244,7 +252,8 @@ def main(argv=None):
             diagnostics=[e for e in train_days if date.fromisoformat(str(e['day'])) in args.train_replay_days]
             if len(diagnostics)!=len(set(args.train_replay_days)):
                 raise ValueError('Training replay diagnostics must select audited training days')
-            for phase,epochs in (('teacher',args.teacher_epochs),('ppo',args.ppo_epochs)):
+            phases=(('teacher',args.teacher_epochs),) if args.teacher_only else (('teacher',args.teacher_epochs),('ppo',args.ppo_epochs))
+            for phase,epochs in phases:
                 if phase=='teacher' and progress['phase']=='ppo': continue
                 epoch_start=progress['epoch'] if progress['phase']==phase else 0
                 for epoch in range(epoch_start,epochs):
@@ -283,7 +292,18 @@ def main(argv=None):
                     checkpoint=run/f'{phase}-epoch-{epoch+1:03d}.pt'
                     _checkpoint(checkpoint,policy,optimizer,manifest,progress)
                     _checkpoint(last,policy,optimizer,manifest,progress)
-                    if (epoch+1)%args.replay_every==0:
+                    if args.teacher_only:
+                        for entry in dev_days:
+                            session=open_day(entry)
+                            decisions,outcomes=load_teacher(Path(entry['teacher_root']),session,runtime_root=runtime,audit_development=True)
+                            result=asdict(train_session(policy,None,session,decisions,outcomes,
+                                device=device,clocks_per_chunk=args.clocks_per_chunk,evaluation=True,
+                                progress_callback=pulse('progress/teacher_validation',session.day,epoch)))
+                            result.update(day=str(session.day),epoch=epoch+1)
+                            log('validation/teacher',result)
+                            del session,decisions,outcomes
+                        logger.save(str(checkpoint),base_path=str(run),policy='now')
+                    elif (epoch+1)%args.replay_every==0:
                         summaries=[]
                         for entry in dev_days+diagnostics:
                             session=open_day(entry)
@@ -334,12 +354,12 @@ def main(argv=None):
                             return 0
                     progress.update(phase=phase,epoch=epoch+1,day_index=0)
                     _checkpoint(last,policy,optimizer,manifest,progress)
-                if phase=='teacher':
+                if phase=='teacher' and not args.teacher_only:
                     progress.update(phase='ppo',epoch=0,day_index=0)
                     _checkpoint(last,policy,optimizer,manifest,progress)
             progress.update(phase='complete')
             _checkpoint(last,policy,optimizer,manifest,progress)
-            _write_json(run/'complete.json',{'status':'trained_and_development_evaluated',
+            _write_json(run/'complete.json',{'status':'teacher_trained_label_evaluated_trading_validation_pending' if args.teacher_only else 'trained_and_development_evaluated',
                 'manifest_hash':manifest['hash'],'selected_checkpoint':str(run/'selection.json') if (run/'selection.json').is_file() else None,
                 'heldout_replay_pending':True})
         except Exception as error:
