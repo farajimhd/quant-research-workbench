@@ -17,6 +17,7 @@ from .execution_policies import (
     PartialFillPolicy, ProtectionProfile, ProtectionSlice, StopRule,
     StopRuleType,
 )
+from .numbered_fixed_strategy import numbered_fixed_strategy
 from .signals import CapitalRequest, StrategyIntent
 from .strategy_one_stateful import StrategyOneEntryProposal
 from .strategy_one_add import StrategyOneAddProposal
@@ -51,7 +52,7 @@ def strategy_one_entry_intent(
     if (not isinstance(proposal, StrategyOneEntryProposal)
             or not isinstance(session_date, date)
             or isinstance(session_date, datetime)
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8)
             or type(proposal.boundary_ms) is not int
             or not 0 < proposal.boundary_ms <= 57_600_000
             or proposal.boundary_ms % 100
@@ -86,7 +87,10 @@ def strategy_one_entry_intent(
         execution_policy=ExecutionPolicy(
             policy_id="strategy-adaptive_urgent",
             name=ExecutionPolicyName.ADAPTIVE_URGENT,
-            envelope=ExecutionEnvelope(persist_until_cancelled=True),
+            envelope=ExecutionEnvelope(
+                persist_until_cancelled=True,
+                maximum_buy_price=(proposal.reference_ask if numbered_fixed_strategy(
+                    proposal.strategy_number).caps_entry_at_reference_ask else None)),
             partial_fill_policy=PartialFillPolicy.COMPLETE_REMAINDER,
             quote_source="qmd",
         ),

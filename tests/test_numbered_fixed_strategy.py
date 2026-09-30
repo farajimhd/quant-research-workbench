@@ -33,7 +33,7 @@ def test_separate_session_policy(boundary, entry, cancel, exit_due):
     assert not baseline.liquidation_due(boundary)
 
 
-@pytest.mark.parametrize("number", [True, 0, 8, 2.0, "2"])
+@pytest.mark.parametrize("number", [True, 0, 99, 2.0, "2"])
 def test_registry_rejects_uninstalled_or_ambiguous_numbers(number):
     assert not is_numbered_fixed_strategy("early-squeeze-strategy", number)
     with pytest.raises(ValueError):
@@ -106,11 +106,11 @@ def test_cutoff_scan_occurs_once_and_is_safe_to_repeat_after_recovery():
 
 def test_numbered_projection_proof_includes_session_lane():
     from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
-    proofs = [certify_numbered_fixed_v4_projection(number) for number in (1, 2, 3, 4, 5, 6, 7)]
-    assert all(len(proof) == 64 for proof in proofs) and len(set(proofs)) == 7
+    proofs = [certify_numbered_fixed_v4_projection(number) for number in (1, 2, 3, 4, 5, 6, 7, 8)]
+    assert all(len(proof) == 64 for proof in proofs) and len(set(proofs)) == 8
 
 
-@pytest.mark.parametrize("number", [4, 5, 6, 7])
+@pytest.mark.parametrize("number", [4, 5, 6, 7, 8])
 def test_no_add_contract_blocks_submission_before_journal_and_portfolio(number):
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.trading_runtime.strategy_one_add import StrategyOneAddProposal
@@ -196,7 +196,7 @@ def test_empty_liquidity_tail_cannot_claim_flat_terminal_success():
     scheduler.close()
 
 
-@pytest.mark.parametrize("number,target_exit", [(2, False), (3, False), (4, False), (5, False), (6, False), (6, True), (7, False), (7, True)])
+@pytest.mark.parametrize("number,target_exit", [(2, False), (3, False), (4, False), (5, False), (6, False), (6, True), (7, False), (7, True), (8, False), (8, True)])
 def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity(number, target_exit):
     from uuid import UUID
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -258,11 +258,31 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
             _, approved = await portfolio.approve(intent, account_id="DU1", assignment_id="A1")
             assert approved is not None
             await manager.submit_intent(approved, account_id="DU1", event=None)
+            if number == 8:
+                # A later rising quote cannot reprice or fill above the proposal ask.
+                row, at = bar(19_499_900, 10000)
+                row.update(bid_int=101000, ask_int=101100, low_int=101000, high_int=101200, close_int=101100,
+                           execution_price_levels=({"price_int": 101100, "volume": 10000.},))
+                manager.on_market_snapshot(ExecutionMarketSnapshot("AAA", 10.10, 10.11, .01, at, "qmd-history"))
+                await manager.advance_adaptive_execution(at)
+                assert not await broker.on_liquidity_bar(row, at=at)
+                assert broker.position_quantity("DU1", 123, "AAA") == 0
+                assert all(group.current_limit_price <= proposal.reference_ask for group in manager.snapshots())
             row, at = bar(19_500_000, 40)
             assert await broker.on_liquidity_bar(row, at=at)
             await manager.reconcile()
             held = broker.position_quantity("DU1", 123, "AAA")
             assert held > 0
+            if number == 8:
+                # Pullback fills partially; the persistent remainder still cannot chase.
+                row, at = bar(19_500_100, 10000)
+                row.update(bid_int=101000, ask_int=101100, low_int=101000, high_int=101200, close_int=101100,
+                           execution_price_levels=({"price_int": 101100, "volume": 10000.},))
+                manager.on_market_snapshot(ExecutionMarketSnapshot("AAA", 10.10, 10.11, .01, at, "qmd-history"))
+                await manager.advance_adaptive_execution(at)
+                assert not await broker.on_liquidity_bar(row, at=at)
+                assert broker.position_quantity("DU1", 123, "AAA") == held
+                assert all(group.current_limit_price <= proposal.reference_ask for group in manager.snapshots())
             await manager.cancel_numbered_session_acquisitions(at=at)
             for snapshot in manager.snapshots():
                 portfolio.on_order_group_update(snapshot)
@@ -320,7 +340,7 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
             scalar_exits = [intent for unit in units
                 for intent in (unit.base if hasattr(unit, "base") else unit).intents
                 if intent["action"] == "exit"]
-            assert len(scalar_exits) == 1 and scalar_exits[0]["reason"] == ("strategy_two_session_exit" if number == 2 else "strategy_three_session_exit" if number == 3 else "strategy_four_session_exit" if number == 4 else "strategy_five_session_exit" if number == 5 else "strategy_six_session_exit" if number == 6 else "strategy_seven_session_exit")
+            assert len(scalar_exits) == 1 and scalar_exits[0]["reason"] == ("strategy_two_session_exit" if number == 2 else "strategy_three_session_exit" if number == 3 else "strategy_four_session_exit" if number == 4 else "strategy_five_session_exit" if number == 5 else "strategy_six_session_exit" if number == 6 else "strategy_seven_session_exit" if number == 7 else "strategy_eight_session_exit")
             from tests.test_arte_journal_commit_v4 import attached_v4_client
             from src.trading_runtime.arte_journal_commit_v4 import _publish_typed_batch_v4, load_verified_v4_prefix
             from src.trading_runtime.arte_journal_compound_v4 import _publication_kwargs
@@ -333,6 +353,13 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
             prefix = load_verified_v4_prefix(client, run_id)
             recovered = load_recovered_strategy_one_oms_lineage(
                 client, prefix, allowed_accounts=frozenset({"DU1"}), strategy_number=number)
+            if number == 8:
+                entries = [item for item in recovered if item.source_intent.intent.action == "enter_long"]
+                assert len(entries) == 1
+                policy = entries[0].source_intent.intent.execution_policy
+                assert policy.envelope.maximum_buy_price == proposal.reference_ask
+                assert policy.envelope.persist_until_cancelled
+                assert policy.partial_fill_policy.value == "complete_remainder"
             exits = [item for item in recovered if item.source_intent.intent.action == "exit"]
             assert len(exits) == 1
             assert float(exits[0].state.group["remaining_quantity"]) == remaining
@@ -353,7 +380,7 @@ def test_real_oms_session_exit_cancels_protection_and_fills_only_later_liquidity
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("number", [2, 3, 4, 5, 6, 7])
+@pytest.mark.parametrize("number", [2, 3, 4, 5, 6, 7, 8])
 def test_residual_failure_completes_real_controller_cursor_and_terminal_journal(monkeypatch, number):
     import numpy as np
     from src.backend import backtest_strategy_one_execution as execution

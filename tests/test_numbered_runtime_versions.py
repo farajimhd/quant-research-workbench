@@ -48,10 +48,17 @@ def configuration(fingerprint, number=2):
         envelope = compile_strategy_seven_configuration(
             certify_numbered_configuration(reader, 6), approved_code_commit="f" * 40,
             approved_code_fingerprint=fingerprint, approval_reference="test-seventh-source-seal")
+    if number == 8:
+        from pipelines.strategy_one.strategy_eight_configuration import compile_strategy_eight_configuration
+        reader.payloads[6] = envelope["payload"]
+        reader.sources[6] = (envelope["source_candidate_id"], envelope["source_candidate_hash"])
+        envelope = compile_strategy_eight_configuration(
+            certify_numbered_configuration(reader, 6), approved_code_commit="8" * 40,
+            approved_code_fingerprint=fingerprint, approval_reference="test-eighth-source-seal")
     return envelope["payload"]
 
 
-@pytest.mark.parametrize("number", [2, 3, 4, 5, 6, 7])
+@pytest.mark.parametrize("number", [2, 3, 4, 5, 6, 7, 8])
 def test_numbered_release_requires_its_own_projection_and_approved_source(monkeypatch, number):
     current = versions.LOADED_BACKEND_FINGERPRINT
     monkeypatch.setattr(versions, "backend_source_fingerprint", lambda: current)
@@ -68,7 +75,7 @@ def test_numbered_release_requires_its_own_projection_and_approved_source(monkey
     assert calls == [number]
 
 
-@pytest.mark.parametrize("number", [2, 3, 4, 5, 6, 7])
+@pytest.mark.parametrize("number", [2, 3, 4, 5, 6, 7, 8])
 def test_numbered_release_rejects_cross_number_assignment(monkeypatch, number):
     current = versions.LOADED_BACKEND_FINGERPRINT
     monkeypatch.setattr(versions, "backend_source_fingerprint", lambda: current)

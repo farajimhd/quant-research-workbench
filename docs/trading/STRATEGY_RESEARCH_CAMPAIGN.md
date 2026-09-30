@@ -482,3 +482,43 @@ on winners. No Strategy 8 implementation or publication exists at this
 checkpoint. Both reusable subagents completed; no child processes remain.
 The research goal remains active and additional certified dates are pending
 the user's notification. Task-history CSV updates have not been requested.
+
+## Strategy 8 research specification
+
+The initial-risk audit matched 68 filled Strategy 6 episodes to 69 typed entry
+proposals (one unfilled). Winners had wider median initial stops than losers
+(10.44% versus 6.21%), so a width-only rejection is not supported. CDTG's
+$663.16394 loss reconciles to $444.44 original reference stop risk, $183.96
+adverse acquisition, $23.34394 unchanged-stop fill gap and $11.42 fees. Its
+filled average was 4.85% above the original reference ask. Entry chasing also
+occurred in winners; this is an execution hypothesis, not counterfactual P&L.
+Immutable evidence: `strategy6-initial-risk-summary-v1.json` and
+`strategy6-entry-slip-stop-gap-audit-v1.json` under the campaign runtime root.
+
+A separate position-local certified-bar/V7 observer found downward crossings
+in 39/50 losers and 15/18 winners; fresh quotes qualified 36/50 and 15/18.
+Frozen geometry and contiguous completed seconds were checked. This does not
+reconstruct original manager acknowledgements or prove later executable fills.
+The overlap rejects adopting that simple signal without further evidence.
+Retain `strategy6-failed-resistance-observer-v2.json` and its terminal summary.
+
+Strategy 8 explicitly branches from Strategy 6, not Strategy 7. Change only
+entry/reentry acquisition: set the existing typed execution envelope's maximum
+buy price to the original proposal reference ask. No discretionary percentage
+is fitted. Preserve adaptive urgency, persistence until cancelled, completion
+of partial fills, sizing, costs, initial stop, structural stop ratchets, fixed
+initial target, no adds and extended-session controls. Thus an unfilled order
+may wait for a pullback; measure delayed entries and missed winners as well as
+price improvement. Shared Portfolio/OMS remains the execution authority and
+fills require later certified liquidity. No per-row screening loop or new
+producer product is introduced. Publication and four-session results remain
+pending at this specification checkpoint.
+
+Strategy 8 integration validation passed 206 release, intent, real OMS/broker,
+normalized cold-read, session-window, registry and source-guard checks, plus
+67 related execution, management, static-gate and prior-release checks. The
+cap test supplies certified price-level fixtures: rising prices cannot fill
+or reprice above the original ask, a later pullback can partially fill, and
+the remaining acquisition remains capped. Cold OMS recovery retains the cap.
+The real loader already joins the pinned certified execution-price product;
+no intrabucket distribution is inferred. Public resume and live remain closed.

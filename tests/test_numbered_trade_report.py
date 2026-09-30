@@ -8,7 +8,7 @@ from scripts.clickhouse import report_strategy_one_trades as report
 from src.backend import backtest_strategy_one_configuration as configuration
 
 
-@pytest.mark.parametrize("number", (2, 3, 4, 5, 6, 7))
+@pytest.mark.parametrize("number", (2, 3, 4, 5, 6, 7, 8))
 def test_numbered_report_requires_pinned_configuration_and_labels_number(monkeypatch, number):
     monkeypatch.setattr(report, "load_broker_observed_drawdown", lambda *_:
                         {"maximum_drawdown": 12.0, "verified_terminal_sequence": 1})

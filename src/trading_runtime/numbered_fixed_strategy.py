@@ -61,6 +61,12 @@ def target_policy_payload() -> dict:
             "scope": "retain_initial_target_only"}
 
 
+def entry_price_policy_payload() -> dict:
+    """Strategy 8 caps acquisition at the proposal ask without changing persistence."""
+    return {"maximum_buy_price": "proposal_reference_ask", "scope": "entry_and_reentry_only",
+            "persist_until_cancelled": True, "partial_fill_policy": "complete_remainder"}
+
+
 @dataclass(frozen=True, slots=True)
 class NumberedFixedStrategyContract:
     strategy_number: int
@@ -69,19 +75,23 @@ class NumberedFixedStrategyContract:
 
     @property
     def allows_session_exit(self) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7)
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8)
 
     @property
     def allows_adds(self) -> bool:
-        return self.strategy_number not in (4, 5, 6, 7)
+        return self.strategy_number not in (4, 5, 6, 7, 8)
 
     @property
     def allows_completed_30s_trailing(self) -> bool:
-        return self.strategy_number not in (5, 6)
+        return self.strategy_number not in (5, 6, 8)
 
     @property
     def allows_target_escalation(self) -> bool:
-        return self.strategy_number not in (6, 7)
+        return self.strategy_number not in (6, 7, 8)
+
+    @property
+    def caps_entry_at_reference_ask(self) -> bool:
+        return self.strategy_number == 8
 
     def entry_allowed(self, boundary_ms: int) -> bool:
         return (self.strategy_number == 1 or 0 < boundary_ms < 19_500_000
@@ -89,22 +99,22 @@ class NumberedFixedStrategyContract:
 
     def activation_allowed(self, boundary_ms: int, episode_start_ms: int) -> bool:
         """Strategy 3 requires an episode born in this extended session."""
-        if self.strategy_number not in (3, 4, 5, 6, 7):
+        if self.strategy_number not in (3, 4, 5, 6, 7, 8):
             return True
         return (0 < episode_start_ms <= boundary_ms < 19_500_000
                 or 43_200_000 < episode_start_ms <= boundary_ms < 57_000_000)
 
     def acquisition_cutoff(self, boundary_ms: int) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7) and (
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8) and (
             19_500_000 <= boundary_ms <= 19_800_000 or 57_000_000 <= boundary_ms <= 57_600_000)
 
     def liquidation_due(self, boundary_ms: int) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7) and (
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8) and (
             19_740_000 <= boundary_ms <= 19_800_000 or 57_300_000 <= boundary_ms <= 57_600_000)
 
 
 def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
-    if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7):
+    if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8):
         raise ValueError("No installed numbered fixed Backtest contract")
     return NumberedFixedStrategyContract(number)
 
@@ -116,4 +126,4 @@ def resolve_numbered_fixed_strategy(strategy_id: str, revision: int) -> Numbered
 
 
 def is_numbered_fixed_strategy(strategy_id: str, revision: int) -> bool:
-    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7)
+    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7, 8)
