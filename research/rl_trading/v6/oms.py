@@ -64,8 +64,13 @@ class BracketAccount:
         self.fees = 0.
         # Append-order aggregates mirror the ledgers without rescanning all
         # historical executions at every causal account observation.
-        self.realized_net = 0.
+        self._realized_hi = self._realized_lo = 0.
         self.latest_order_us: int | None = None
+
+    @property
+    def realized_net(self) -> float:
+        """Compensated append-order sum, matching Python's float ledger sum."""
+        return self._realized_hi + self._realized_lo
 
     def _fee(self, shares: int, price: float, side: int) -> float:
         return sum(charges(shares, price, side, self.config).values())
@@ -168,7 +173,10 @@ class BracketAccount:
             'entry_price': position.entry_price, 'exit_price': price,
             'entry_fee': entry_fee, 'exit_fee': fee,
             'gross_pnl': gross, 'net_pnl': net, 'exit_action': action})
-        self.realized_net += net
+        total = self._realized_hi + net
+        self._realized_lo += ((self._realized_hi-total)+net if abs(self._realized_hi) >= abs(net)
+                             else (net-total)+self._realized_hi)
+        self._realized_hi = total
         self._record(action=action, ticker=ticker, clock=clock_us,
                      requested=requested, filled=quantity, price=price, fee=fee)
         if position.shares == 0:
