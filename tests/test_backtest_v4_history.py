@@ -28,12 +28,19 @@ def _head():
     }
 
 
-def test_history_preserves_number_two_identity_without_claiming_audited_review(monkeypatch):
-    monkeypatch.setattr(history, "_rows", lambda _client, sql:
-                        [{**_context(), "strategy_revision": 2}] if "trading_run_v1 AS r" in sql else [_head()])
+@pytest.mark.parametrize("number", range(1, 9))
+def test_history_preserves_number_identity_without_claiming_audited_review(monkeypatch, number):
+    def rows(_client, sql):
+        if "trading_run_v1 AS r" in sql:
+            import re
+            admitted = re.search(r"c.strategy_revision IN \(([^)]+)\)", sql)
+            assert admitted and number in {int(value) for value in admitted[1].split(",")}
+            return [{**_context(), "strategy_revision": number}]
+        return [_head()]
+    monkeypatch.setattr(history, "_rows", rows)
     row = history.load_strategy_one_v4_history(object())[0]
-    assert row["strategy_revision"] == row["configuration_revision"] == 2
-    assert row["strategy_name"] == row["configuration_label"] == "Strategy 2"
+    assert row["strategy_revision"] == row["configuration_revision"] == number
+    assert row["strategy_name"] == row["configuration_label"] == f"Strategy {number}"
     assert row["journal_verification"] == "inventory_only"
 
 

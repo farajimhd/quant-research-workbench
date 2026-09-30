@@ -522,3 +522,44 @@ or reprice above the original ask, a later pullback can partially fill, and
 the remaining acquisition remains capped. Cold OMS recovery retains the cap.
 The real loader already joins the pinned certified execution-price product;
 no intrabucket distribution is inferred. Public resume and live remain closed.
+
+## Strategy 8 completed comparison
+
+Published 931 normalized nodes from commit
+`833ce27687fcec5f90cd8602533409235f5e40ac`, configuration
+`strategy-one-8:bb1f983a-869f-4b70-b3f3-44c9032bded8`, payload hash
+`d642e40bcee00bdb047d15376aea5d70796d58b49b4f153b97ca0d5549202421`.
+All four pinned-checkout sessions completed flat with zero writer failures.
+Reports retain the same certified market-plan/build identities as Strategy 6;
+all position timestamps fall within the requested extended-session window.
+
+| Session | Run | Closed | Net P&L | Closed-episode DD | Broker-observed DD | Execution seconds |
+|---|---|---:|---:|---:|---:|---:|
+| August 18 PM | `1a297325-7e8e-47f7-b7f8-7648c5768003` | 22 | $995.65 | $958.58 | $1,341.75 | 53.468 |
+| August 19 PM | `824e6d34-bf39-4e72-bb84-a7dff6cdbcb0` | 27 | -$1,011.17 | $2,444.93 | $2,460.48 | 67.637 |
+| August 18 AH | `81599cf6-7a5d-4032-8dbc-41c99d2afe98` | 12 | -$558.27 | $740.37 | $884.58 | 35.652 |
+| August 19 AH | `972dc45c-5501-4088-a3b2-d892c6fcf781` | 7 | $610.89 | $320.90 | $703.24 | 43.962 |
+
+Independent-session net sums improve $526.904025 to $37.100255. P&L and both
+drawdown measures improve in three windows and remain unchanged in AH19.
+The largest ticker contribution is CDTG +$195.97; AIXC contributes +$65.44.
+This is near break-even with material drawdown, not an established edge.
+Execution remains comparable to Strategy 6; these single-run timings are not
+a controlled performance benchmark.
+
+`strategy8-four-session-comparison-v1.json` retains report/log hashes and
+ticker deltas. `strategy8-entry-cap-audit-v1.json` cold-verifies all 69 typed
+entry proposals and matches 68 filled episodes: every weighted acquisition
+price is at/below its original ask. All but one episode share their parent's
+ticker/first-fill time; no broad delayed-entry or missed-winner claim follows.
+This audit does not independently check each individual fill. Reports are in
+`strategy8_reports_v4`; no prior artifacts were overwritten.
+
+App verification caught the history SQL whitelist still ending at 7. The
+read-only inventory was extended to 8 with a query-level regression across
+all eight numbers (17 tests passed). This changes saved-run visibility only;
+Strategy 8 execution stays reproducible from its original pinned checkout.
+Backend restarts followed the code increment and each saved backtest.
+The goal remains active. Keep Strategy 8 as the next research reference,
+preserving Strategy 6/7 comparisons and all other trials. Strategy 9 has not
+been specified or published; diagnose remaining losses before another change.
