@@ -7951,7 +7951,11 @@ function drawTradeAnnotationPrimitiveGeometry(
       // the visible pane, independently of candle paging, panning or zooming.
       // Closed lifecycles below retain their exact event-time geometry.
       const quantity = annotation.currentQuantity;
-      const size = Number.isFinite(quantity) ? `${quantity} shares` : "Open";
+      const size = Number.isFinite(quantity) ? `${quantity}` : "—";
+      const fillColor = chartSemanticColor("--chart-position-fill", "#17365D");
+      const lossColor = chartSemanticColor("--chart-position-stop", "#B91C1C");
+      const targetColor = chartSemanticColor("--chart-position-target", "#087F3D");
+      const labelColor = chartSemanticColor("--chart-position-label", "#FFFFFF");
       const mark = annotation.openMarkPrice;
       const pnl = Number.isFinite(quantity) && Number.isFinite(mark)
         ? ((mark as number) - annotation.entryPrice) * (quantity as number)
@@ -7960,16 +7964,21 @@ function drawTradeAnnotationPrimitiveGeometry(
         line: StrategyPresentationStyleSettings, text: StrategyPresentationStyleSettings) => {
         const y = priceSeries.priceToCoordinate(price);
         if (y === null || y < 0 || y > height) return;
-        if (line.visible) drawCanvasTradeLine(context, 0, width, y,
-          strategyPresentationColor(line.color, color), line.lineWidth, line.lineStyle, line.opacity);
+        // Open-position rails have a fixed visual contract, independent of
+        // the saved closed-trade annotation styles. Visibility remains shared.
+        const box: StrategyPresentationStyleSettings = { ...text, color: labelColor,
+          fillColor: color, fillOpacity: 1, fillBlur: 0, opacity: 1,
+          borderColor: color, borderOpacity: 1, borderWidth: 1, borderStyle: "solid",
+          labelSize: 11, labelPaddingX: 6, labelPaddingY: 3, fontWeight: 500 };
+        if (line.visible) drawCanvasTradeLine(context, 0, width, y, color, 1, "solid", 1);
         if (text.visible) drawCanvasTradeLabel(context, label, width - 4,
-          y - (text.labelSize + text.labelPaddingY * 2) / 2,
-          strategyPresentationColor(text.color, color), chartBackground, "right",
-          width, height, text, undefined, elements.connector);
+          y - (box.labelSize + box.labelPaddingY * 2) / 2,
+          labelColor, chartBackground, "right",
+          width, height, box, undefined, elements.connector);
       };
       rail(annotation.entryPrice,
-        `${annotation.positionSide ?? "LONG"} · ${size} · ${formatPrice(annotation.entryPrice)} · ${pnl === null ? "P&L —" : `Est. P&L ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`}`,
-        infoColor, elements.entryLine, elements.entryLabel);
+        `${size} · ${formatPrice(annotation.entryPrice)} · ${pnl === null ? "—" : `${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}`,
+        fillColor, elements.entryLine, elements.entryLabel);
       if (annotation.protectionPath) {
         const current = new Map<string, NonNullable<TradeAnnotation["protectionPath"]>[number]>();
         for (const point of annotation.protectionPath) {
@@ -7983,14 +7992,14 @@ function drawTradeAnnotationPrimitiveGeometry(
           drawn.add(key);
           const stop = point.kind === "stop";
           rail(point.price, `${stop ? "SL" : "TP"} · ${size} · ${formatPrice(point.price)}`,
-            stop ? stopColor : successColor, stop ? elements.stopLine : elements.targetLine,
+            stop ? lossColor : targetColor, stop ? elements.stopLine : elements.targetLine,
             stop ? elements.stopLabel : elements.targetLabel);
         }
       } else {
         if (typeof annotation.stopPrice === "number") rail(annotation.stopPrice,
-          `SL · ${size} · ${formatPrice(annotation.stopPrice)}`, stopColor, elements.stopLine, elements.stopLabel);
+          `SL · ${size} · ${formatPrice(annotation.stopPrice)}`, lossColor, elements.stopLine, elements.stopLabel);
         annotation.targetPrices?.forEach(price => rail(price,
-          `TP · ${size} · ${formatPrice(price)}`, successColor, elements.targetLine, elements.targetLabel));
+          `TP · ${size} · ${formatPrice(price)}`, targetColor, elements.targetLine, elements.targetLabel));
       }
       return;
     }
