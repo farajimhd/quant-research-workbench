@@ -106,7 +106,9 @@ class ArteExecutionSource:
             token = sha256(json.dumps([self.source['build_id'],str(self.day),ticker,attempt]).encode()).hexdigest()
             market = CertifiedMarketDayPlan(ExecutionInterval.fixed(100),self.source['build_id'],
                 self.source['definition_hash'],(str(self.day),),(ticker,),
-                (MarketDayUnit(str(self.day),ticker,'broker_100ms',attempt,'',0,''),),(100,),token)
+                (MarketDayUnit(build_id=self.source['build_id'],session_date=str(self.day),
+                    ticker=ticker,stage='broker_100ms',attempt_id=attempt,
+                    source_hash='',output_rows=0,output_hash=''),),(100,),token)
             self.price_plans[ticker] = certify_price_level_plan(market,self.reader)
         touched = pl.DataFrame({'ticker':[ticker],'boundary_us':[close_us],
                                 'target_touched':[True],'stop_touched':[False]})
