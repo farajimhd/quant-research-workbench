@@ -474,6 +474,8 @@ class OrderManagementEngine:
 
     def on_market_snapshot(self, snapshot: ExecutionMarketSnapshot) -> None:
         self.execution_market_data.update(snapshot)
+        strategy_one = (self.strategy_id, self.strategy_revision) == (
+            STRATEGY_ID, STRATEGY_NUMBER)
         for group in self._groups_by_ticker.get(snapshot.ticker.upper(), ()):
             group.reprice_event.set()
             group.high_water_price = max(group.high_water_price, snapshot.bid)
@@ -482,7 +484,11 @@ class OrderManagementEngine:
                 if group.low_water_price <= 0
                 else min(group.low_water_price, snapshot.ask)
             )
-            if group.protection_task is None or group.protection_task.done():
+            # Strategy 1 owns bar-causal protection. Its task handler returns
+            # immediately, so scheduling it per quote only adds event-loop
+            # work and can never amend an order.
+            if (not strategy_one and (group.protection_task is None
+                                      or group.protection_task.done())):
                 group.protection_task = asyncio.create_task(
                     self._ratchet_dynamic_protection(group, snapshot)
                 )

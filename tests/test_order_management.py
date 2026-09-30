@@ -110,6 +110,27 @@ class ProtectionRepairMetadataTests(unittest.TestCase):
 NOW = datetime.now(timezone.utc)
 
 
+def test_strategy_one_quote_does_not_schedule_noop_protection_task() -> None:
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+    manager = object.__new__(OrderManagementEngine)
+    manager.strategy_id = STRATEGY_ID
+    manager.strategy_revision = STRATEGY_NUMBER
+    manager.execution_market_data = SimpleNamespace(update=lambda _snapshot: None)
+    group = SimpleNamespace(
+        intent=SimpleNamespace(ticker="AAA"),
+        reprice_event=SimpleNamespace(set=lambda: None),
+        high_water_price=0.0, low_water_price=0.0, protection_task=None,
+    )
+    manager._groups_by_ticker = {"AAA": [group]}
+    quote = ExecutionMarketSnapshot("AAA", 9.99, 10.01, .01, NOW, "test")
+    with patch("src.trading_runtime.order_management.asyncio.create_task") as create:
+        manager.on_market_snapshot(quote)
+    create.assert_not_called()
+    assert group.high_water_price == quote.bid
+    assert group.low_water_price == quote.ask
+
+
 def test_historical_oms_action_clock_never_precedes_its_strategy_decision() -> None:
     manager = object.__new__(OrderManagementEngine)
     manager.enforce_wall_clock_quote_freshness = False
