@@ -44,6 +44,10 @@ def test_columnar_buckets_preserve_missing_invalid_and_order():
     assert result[0].quote.valid and result[0].quote.bid==10.
     assert result[0].high==11. and result[1].quote is None
     assert not result[2].quote.valid and result[2].high is None
+    # Polars constant division may use reciprocal multiplication (one ULP).
+    # OMS thresholds retain the original integer-price conversion exactly.
+    values=pl.DataFrame([row('A',0,extrema_count=1,high_int=27600,low_int=27600,extremes_valid=1)],schema=EXECUTION_SCHEMA)
+    assert _execution_buckets(values,0)[0].high==27600/10000
     with pytest.raises(ValueError,match='Duplicate'):
         _execution_buckets(pl.DataFrame(rows+[rows[0]],schema=EXECUTION_SCHEMA),0)
     rows[0]['low_int']=120000

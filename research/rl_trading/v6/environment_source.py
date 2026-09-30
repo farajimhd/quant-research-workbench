@@ -54,13 +54,14 @@ def _execution_buckets(rows, origin):
          (pl.col('last_event_us') < pl.col('close_us')) &
          (pl.col('quote_timestamp_us') > 0) &
          (pl.col('quote_timestamp_us') <= pl.col('last_event_us'))).fill_null(False).alias('valid'),
-        pl.when(pl.col('extremes_valid') == 1).then(pl.col('high_int')/10000).alias('high'),
-        pl.when(pl.col('extremes_valid') == 1).then(pl.col('low_int')/10000).alias('low'))
+        pl.when(pl.col('extremes_valid') == 1).then(pl.col('high_int')).alias('high'),
+        pl.when(pl.col('extremes_valid') == 1).then(pl.col('low_int')).alias('low'))
     projected = joined.sort('close_us','ticker').select('ticker','close_us','has_quote',
         'quote_timestamp_us','bid_int','ask_int','bid_size','ask_size','valid','high','low')
     return tuple(ExecutionBucket(t,clock,
         Quote(clock,quoted,bid/10000,ask/10000,bs,ass,valid) if present else None,
-        high,low) for t,clock,present,quoted,bid,ask,bs,ass,valid,high,low in projected.iter_rows())
+        high/10000 if high is not None else None,low/10000 if low is not None else None)
+        for t,clock,present,quoted,bid,ask,bs,ass,valid,high,low in projected.iter_rows())
 
 
 class ArteExecutionSource:
