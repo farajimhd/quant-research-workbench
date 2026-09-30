@@ -25,6 +25,36 @@ class Evidence:
         return 2.
 
 
+def test_same_boundary_target_batch_preserves_serial_fills():
+    class Batched(Evidence):
+        def __init__(self,origin):
+            super().__init__(origin)
+            self.target_reads=[]
+        def target_capacities(self,clock,targets):
+            self.target_reads.append((clock,dict(targets)))
+            return {t:2. for t in targets}
+    def run(source):
+        env=BracketEnvironment(('A','B'),source)
+        env.marks={'A':(10.,1_000_000),'B':(10.,1_000_000)}
+        env.advance(1_000_000)
+        for i in range(2):
+            env.submit(i+1,.2,clock_us=1_000_000,order_index=i,holdings=np.empty(0,dtype=np.int64))
+        env.advance(2_000_000)
+        for t in ('A','B'):
+            env.account.set_target(t,price=10.05,clock_us=2_000_000)
+        outcomes=env.advance(3_000_000)
+        return env,outcomes
+    serial,outcomes=run(Evidence(0))
+    source=Batched(0)
+    batch,actual=run(source)
+    assert actual==outcomes
+    assert batch.account.orders==serial.account.orders
+    assert batch.account.closed==serial.account.closed
+    assert batch.account.cash==serial.account.cash
+    assert len(source.target_reads)==10
+    assert all(set(targets)=={'A','B'} for _,targets in source.target_reads)
+
+
 def test_oms_entries_after_decision_brackets_then_partial_liquidation():
     source=Evidence(0)
     env=BracketEnvironment(('A',),source)

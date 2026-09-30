@@ -24,6 +24,45 @@ class ExecutionBucket:
     low: float | None
 
 
+EXECUTION_SCHEMA = {'ticker':pl.String, 'bucket_index':pl.Int64,
+    'quote_count':pl.Int64, 'extrema_count':pl.Int64,
+    'quote_timestamp_us':pl.Int64, 'quote_valid':pl.Int64, 'bid_int':pl.Int64,
+    'ask_int':pl.Int64, 'bid_size':pl.Float64, 'ask_size':pl.Float64,
+    'event_count':pl.Int64, 'last_event_us':pl.Int64, 'high_int':pl.Int64,
+    'low_int':pl.Int64, 'extremes_valid':pl.Int64}
+
+
+def _execution_buckets(rows, origin):
+    """Validate joined columns in bulk; materialize objects only for OMS use."""
+    keys = ['ticker', 'bucket_index']
+    if (rows.select(*keys).n_unique() != rows.height or rows.filter(
+        (pl.col('quote_count').fill_null(0)>1) |
+        (pl.col('extrema_count').fill_null(0)>1)).height):
+        raise ValueError('Duplicate pinned quote or extrema bucket')
+    invalid = rows.filter((pl.col('extremes_valid') == 1) &
+        (~((pl.col('low_int') > 0) & (pl.col('high_int') >= pl.col('low_int'))).fill_null(False)))
+    if invalid.height:
+        raise ValueError('Malformed certified bucket extrema')
+    joined = rows.with_columns(
+        (pl.col('quote_count').fill_null(0)==1).alias('has_quote'),
+        *[pl.col(k).fill_null(0) for k in ('quote_timestamp_us','quote_valid',
+            'bid_int','ask_int','bid_size','ask_size','event_count','last_event_us')],
+        (origin+(pl.col('bucket_index')+1)*100_000).alias('close_us'))
+    joined = joined.with_columns(
+        ((pl.col('quote_valid') == 1) & (pl.col('event_count') > 0) &
+         (pl.col('last_event_us') >= pl.col('close_us')-100_000) &
+         (pl.col('last_event_us') < pl.col('close_us')) &
+         (pl.col('quote_timestamp_us') > 0) &
+         (pl.col('quote_timestamp_us') <= pl.col('last_event_us'))).fill_null(False).alias('valid'),
+        pl.when(pl.col('extremes_valid') == 1).then(pl.col('high_int')/10000).alias('high'),
+        pl.when(pl.col('extremes_valid') == 1).then(pl.col('low_int')/10000).alias('low'))
+    projected = joined.sort('close_us','ticker').select('ticker','close_us','has_quote',
+        'quote_timestamp_us','bid_int','ask_int','bid_size','ask_size','valid','high','low')
+    return tuple(ExecutionBucket(t,clock,
+        Quote(clock,quoted,bid/10000,ask/10000,bs,ass,valid) if present else None,
+        high,low) for t,clock,present,quoted,bid,ask,bs,ass,valid,high,low in projected.iter_rows())
+
+
 class ArteExecutionSource:
     def __init__(self, reader, source, ledger, day, *, end_us):
         self.reader, self.source, self.ledger, self.day = reader, source, ledger, day
@@ -95,7 +134,7 @@ class ArteExecutionSource:
         tickers = sorted(set(tickers))
         if set(tickers)-set(self.attempts):
             raise ValueError('Execution listing absent from pinned broker population')
-        records = {}
+        parts = []
         first = (start_us-self.origin)//100_000
         last = (end_us-self.origin)//100_000-1
         for offset in range(0, len(tickers), 100):
@@ -104,65 +143,72 @@ class ArteExecutionSource:
             where = (f'build_id={sql.literal(self.source["build_id"])} AND '
                      f'session_date=toDate({sql.literal(self.day)}) AND '
                      f'bucket_index BETWEEN {first} AND {last}')
-            quote_rows = self._frame('SELECT ticker,bucket_index,quote_timestamp_us,quote_valid,'
-                'bid_int,ask_int,bid_size,ask_size,event_count,last_event_us FROM arte.liquidity_100ms_v1 '
-                f'WHERE {where} AND (ticker,attempt_id) IN ({quote_scope}) ORDER BY bucket_index,ticker',
-                {'ticker':pl.String,'bucket_index':pl.Int64,'quote_timestamp_us':pl.Int64,
-                 'quote_valid':pl.Int64,'bid_int':pl.Int64,'ask_int':pl.Int64,
-                 'bid_size':pl.Float64,'ask_size':pl.Float64,'event_count':pl.Int64,'last_event_us':pl.Int64})
-            for row in quote_rows.iter_rows(named=True):
-                close = self.origin+(int(row['bucket_index'])+1)*100_000
-                event = int(row['last_event_us'] or 0)
-                quoted = int(row['quote_timestamp_us'] or 0)
-                valid = (int(row['quote_valid'] or 0)==1 and int(row['event_count'] or 0)>0
-                         and close-100_000 <= event < close and 0 < quoted <= event)
-                key = (close,row['ticker'])
-                if key in records:
-                    raise ValueError('Duplicate pinned quote bucket')
-                records[key] = [Quote(close,quoted,float(row['bid_int'] or 0)/10000,
-                    float(row['ask_int'] or 0)/10000,float(row['bid_size'] or 0),
-                    float(row['ask_size'] or 0),valid),None,None]
             bar_scope = ','.join(f'({sql.literal(t)},toUUID({sql.literal(self.source["units"][str(self.day)][t]["bars"]["attempt_id"])}))' for t in group)
-            bars = self._frame('SELECT ticker,bucket_index,high_int,low_int,extremes_valid FROM arte.bars_v1 '
-                f'WHERE {where} AND resolution_ms=100 AND (ticker,attempt_id) IN ({bar_scope}) ORDER BY bucket_index,ticker',
-                {'ticker':pl.String,'bucket_index':pl.Int64,'high_int':pl.Int64,'low_int':pl.Int64,'extremes_valid':pl.Int64})
-            bar_keys = set()
-            for row in bars.iter_rows(named=True):
-                key = (self.origin+(int(row['bucket_index'])+1)*100_000,row['ticker'])
-                if key in bar_keys:
-                    raise ValueError('Duplicate pinned extrema bucket')
-                bar_keys.add(key)
-                value = records.setdefault(key,[None,None,None])
-                if row['extremes_valid']==1:
-                    high,low = row['high_int']/10000,row['low_int']/10000
-                    if not 0 < low <= high:
-                        raise ValueError('Malformed certified bucket extrema')
-                    value[1:] = [high,low]
-        return tuple(ExecutionBucket(ticker,close,*records[(close,ticker)])
-                     for close,ticker in sorted(records))
+            # One sparse joined projection, with explicit multiplicity witnesses.
+            # FULL ALL retains gaps and duplicates; ANY could hide source errors.
+            rows = self._frame(
+                'SELECT coalesce(q.ticker,b.ticker) AS ticker,'
+                'coalesce(q.bucket_index,b.bucket_index) AS bucket_index,'
+                'q.quote_count AS quote_count,b.extrema_count AS extrema_count,q.quote_timestamp_us,q.quote_valid,'
+                'q.bid_int,q.ask_int,q.bid_size,q.ask_size,q.event_count,q.last_event_us,'
+                'b.high_int,b.low_int,b.extremes_valid FROM '
+                '(SELECT ticker,bucket_index,quote_timestamp_us,quote_valid,bid_int,ask_int,'
+                'bid_size,ask_size,event_count,last_event_us,'
+                'count() OVER (PARTITION BY ticker,bucket_index) AS quote_count '
+                f'FROM arte.liquidity_100ms_v1 WHERE {where} '
+                f'AND (ticker,attempt_id) IN ({quote_scope})) q FULL OUTER JOIN '
+                '(SELECT ticker,bucket_index,high_int,low_int,extremes_valid,'
+                'count() OVER (PARTITION BY ticker,bucket_index) AS extrema_count '
+                f'FROM arte.bars_v1 WHERE {where} AND resolution_ms=100 '
+                f'AND (ticker,attempt_id) IN ({bar_scope})) b '
+                'ON q.ticker=b.ticker AND q.bucket_index=b.bucket_index '
+                "ORDER BY bucket_index,ticker SETTINGS join_use_nulls=1,join_default_strictness='ALL'", EXECUTION_SCHEMA)
+            parts.append(rows)
+        rows = pl.concat(parts) if parts else pl.DataFrame(schema=EXECUTION_SCHEMA)
+        return _execution_buckets(rows, self.origin)
 
     def target_capacity(self, ticker, close_us, target):
+        return self.target_capacities(close_us, {ticker:target})[ticker]
+
+    def target_capacities(self, close_us, targets):
+        """One sparse price read for independent targets at the same clock."""
+        if not targets:
+            return {}
         from src.backend.backtest_market_data import CertifiedMarketDayPlan, MarketDayUnit, ExecutionInterval
-        from src.backend.backtest_liquidity_price import certify_price_level_plan
+        from src.backend.backtest_liquidity_price import certify_price_level_plan, PriceLevelPlan
         from research.rl_trading.v6.bracket_evidence import read_touched_price_levels
-        if ticker not in self.price_plans:
-            attempt = self.attempts[ticker]
-            token = sha256(json.dumps([self.source['build_id'],str(self.day),ticker,attempt]).encode()).hexdigest()
+        missing = sorted(set(targets)-set(self.price_plans))
+        if missing:
+            token = sha256(json.dumps([self.source['build_id'],str(self.day),
+                [(t,self.attempts[t]) for t in missing]]).encode()).hexdigest()
             market = CertifiedMarketDayPlan(ExecutionInterval.fixed(100),self.source['build_id'],
-                self.source['definition_hash'],(str(self.day),),(ticker,),
-                (MarketDayUnit(build_id=self.source['build_id'],session_date=str(self.day),
-                    ticker=ticker,stage='broker_100ms',attempt_id=attempt,
-                    source_hash='',output_rows=0,output_hash=''),),(100,),token)
-            self.price_plans[ticker] = certify_price_level_plan(market,self.reader)
-        touched = pl.DataFrame({'ticker':[ticker],'boundary_us':[close_us],
-                                'target_touched':[True],'stop_touched':[False]})
+                self.source['definition_hash'],(str(self.day),),tuple(missing),
+                tuple(MarketDayUnit(build_id=self.source['build_id'],session_date=str(self.day),
+                    ticker=t,stage='broker_100ms',attempt_id=self.attempts[t],
+                    source_hash='',output_rows=0,output_hash='') for t in missing),(100,),token)
+            certified = certify_price_level_plan(market,self.reader)
+            for t in missing:
+                self.price_plans[t] = certified
+        if len(targets) == 1:
+            plan = self.price_plans[next(iter(targets))]
+        else:
+            units = {u.ticker:u for t in targets for u in self.price_plans[t].units
+                     if u.ticker in targets}
+            plan = PriceLevelPlan(self.source['build_id'],tuple(units[t] for t in sorted(units)),
+                sha256(json.dumps(sorted(self.price_plans[t].token for t in targets)).encode()).hexdigest())
+        touched = pl.DataFrame({'ticker':list(targets),'boundary_us':[close_us]*len(targets),
+                                'target_touched':[True]*len(targets),'stop_touched':[False]*len(targets)})
         prices = read_touched_price_levels(self.reader,self.source,self.ledger,
-            self.price_plans[ticker],self.day,touched)
+            plan,self.day,touched)
         self.query_count += 1
         self.rows_read += prices.height
         self.read_hash.update(prices.hash_rows(seed=17).to_numpy().tobytes())
         # Sell limit can execute at the limit or higher; still only an upper bound.
-        return float(prices.filter(pl.col('price_int') >= target*10000-1e-6)['execution_volume'].sum())
+        thresholds=pl.DataFrame({'ticker':list(targets),'threshold':[v*10000-1e-6 for v in targets.values()]})
+        totals=prices.join(thresholds,on='ticker',how='inner').filter(
+            pl.col('price_int')>=pl.col('threshold')).group_by('ticker').agg(pl.col('execution_volume').sum())
+        values=dict(totals.iter_rows())
+        return {t:float(values.get(t,0.)) for t in targets}
 
     def certificate(self):
         return {'status':'complete','day':str(self.day),'source_build_id':self.source['build_id'],
@@ -170,5 +216,6 @@ class ArteExecutionSource:
                 'broker_attempts_sha256':sha256(json.dumps(self.attempts,sort_keys=True).encode()).hexdigest(),
                 'execution_read_sha256':self.read_hash.hexdigest(),
                 'query_count':self.query_count,'rows_read':self.rows_read,
+                'execution_read_contract':'joined-quote-extrema-and-batched-target-v2',
                 'price_plan_tokens':{t:p.token for t,p in self.price_plans.items()},
                 'scope':'only_requested_order_and_held_buckets_not_full_day_grid'}

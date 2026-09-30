@@ -129,6 +129,10 @@ class BracketEnvironment:
             if arrival <= clock_us and (arrival,ticker) not in arrivals:
                 from research.rl_trading.v6.environment_source import ExecutionBucket
                 arrivals[(arrival,ticker)] = ExecutionBucket(ticker,arrival,None,None,None)
+        by_clock = {}
+        for (boundary,t),item in arrivals.items():
+            by_clock.setdefault(boundary, []).append(item)
+        capacities = {}
         for (clock,ticker), bucket in sorted(arrivals.items()):
             before_orders,before_closed = len(self.account.orders),len(self.account.closed)
             equity = self._equity()
@@ -198,7 +202,30 @@ class BracketEnvironment:
                 if self.luld is not None and not self.luld.executable(ticker,clock,position.target):
                     self.risk_metrics['luld_blocked_execution_buckets'] += 1
                     continue
-                capacity = self.source.target_capacity(ticker,clock,position.target)
+                if hasattr(self.source, 'target_capacities'):
+                    if clock not in capacities:
+                        # Read only actual unambiguous touches at this boundary.
+                        # Other tickers' fills cannot change these price levels;
+                        # account mutations below retain their original order.
+                        targets = {}
+                        for item in by_clock[clock]:
+                            p = self.account.positions.get(item.ticker)
+                            if (p is None or item.ticker in self.exits or
+                                clock<=p.last_action_us or item.high is None or item.low is None or
+                                p.target is None or item.high<p.target or
+                                (p.stop is not None and item.low<=p.stop)):
+                                continue
+                            if self.luld is not None:
+                                quote_price=item.quote.bid if item.quote else None
+                                if (self.luld.blocked(item.ticker,clock) or
+                                    (quote_price is not None and not self.luld.executable(item.ticker,clock,quote_price)) or
+                                    not self.luld.executable(item.ticker,clock,p.target)):
+                                    continue
+                            targets[item.ticker]=p.target
+                        capacities[clock] = self.source.target_capacities(clock, targets)
+                    capacity = capacities[clock][ticker]
+                else:
+                    capacity = self.source.target_capacity(ticker,clock,position.target)
                 self.account.target_bucket(ticker,clock_us=clock,price_level_volume_cap=capacity)
                 outcome(ticker,2,1.,before_orders,before_closed,equity)
         self.clock_us = clock_us
