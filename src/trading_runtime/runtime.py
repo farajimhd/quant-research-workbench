@@ -1581,8 +1581,11 @@ class TradingRuntime:
                 # projector before strategy admission. Preserve those fills and
                 # refresh current cash/positions/orders without re-normalizing
                 # every prior execution on every candidate boundary.
-                await self._canonical_session.reconcile(
-                    include_executions=not incremental_fills)
+                if incremental_fills:
+                    await self._canonical_session.reconcile(
+                        include_executions=False)
+                else:
+                    await self._canonical_session.reconcile()
                 self.portfolio.synchronize_canonical(
                     self._canonical_session.projector.snapshot(),
                     persist=not self._review_only,
