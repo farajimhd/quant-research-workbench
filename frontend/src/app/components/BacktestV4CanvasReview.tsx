@@ -173,7 +173,8 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
   // Keep the certified Canvas interactive while paging the typed journal.
   // Larger runs stay bounded and expose explicit manual continuation.
   const [loadCompleteActivity, setLoadCompleteActivity] = useState(false);
-  const automaticEventLimit = loadCompleteActivity ? Number.POSITIVE_INFINITY : 5_000;
+  const automaticEventLimit = loadCompleteActivity
+    ? Math.min(initialPage.verified_sequence, 100_000) : 5_000;
   const [events, setEvents] = useState(initialPage.events);
   const [nextSequence, setNextSequence] = useState(initialPage.next_sequence);
   const [eventsComplete, setEventsComplete] = useState(initialPage.complete);
@@ -387,10 +388,11 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
               const symbol = String((row.instrument as { symbol?: string } | undefined)?.symbol ?? "");
               return <button className="button secondary compact" key={String(row.episode_id ?? symbol)} onClick={() => openV4Ticker(symbol)} type="button">{symbol} · {String(row.current_quantity ?? row.quantity)} shares · Chart &amp; Quote</button>;
             })}</div> : null}
-            {!eventsComplete ? <div className="trading-disclosure" role="status">Activity search covers only {events.length.toLocaleString()} loaded journal events, not the complete run. <button className="button secondary compact" disabled={loadingEvents} onClick={() => setLoadCompleteActivity(true)} type="button">{loadCompleteActivity ? "Loading complete activity…" : "Load complete activity for search"}</button></div> : null}
+            {!eventsComplete ? <div className="trading-disclosure" role="status">Activity search covers only {events.length.toLocaleString()} loaded journal events, not the complete run. <button className="button secondary compact" disabled={loadingEvents} onClick={() => setLoadCompleteActivity(true)} type="button">{loadCompleteActivity ? "Loading activity…" : "Load more activity for search"}</button></div> : null}
             <StrategyActivityContainer
             asOf={new Date(dateInTimeZone(initialPage.market_cursor?.session_date || initialPage.run.session_date || "1970-01-01", "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()}
             historicalRows={activityRows} historicalPage={{ complete: true }}
+            onSearchChange={query => { if (query) setLoadCompleteActivity(true); }}
             onSettingsChange={patch => setActivitySettings(current => ({ ...current, ...patch }))}
             onTickerSelect={openV4Ticker} runId={runId} settings={activitySettings} />
             {!eventsComplete ? <p className="trading-disclosure" role="status">{events.length.toLocaleString()} verified journal events loaded{loadingEvents ? "; loading more…" : "; more available."}</p> : null}

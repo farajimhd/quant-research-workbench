@@ -759,7 +759,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
   </section>;
 }
 
-export function StrategyActivityContainer({ asOf, focusSequence, historicalPage, historicalRows, loadAllHistory = false, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; historicalPage?: StrategyActivityPage; historicalRows?: ScreenerRow[]; loadAllHistory?: boolean; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
+export function StrategyActivityContainer({ asOf, focusSequence, historicalPage, historicalRows, loadAllHistory = false, onSearchChange, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; focusSequence?: number; historicalPage?: StrategyActivityPage; historicalRows?: ScreenerRow[]; loadAllHistory?: boolean; onSearchChange?: (query: string) => void; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
   const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
   const [error, setError] = useState("");
   const [selection, setSelection] = useState<{ scope: string; row: ScreenerRow } | null>(null);
@@ -981,7 +981,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, historicalPage,
     {olderError ? <div className="canvas-inline-error">{loadAllHistory ? "Full strategy activity is not yet loaded" : "Older strategy activity unavailable"}: {olderError} <button onClick={() => { if (loadAllHistory) setHistoryRetry((value) => value + 1); else void loadOlder(); }} type="button">{loadAllHistory ? "Retry loading full history" : "Retry loading older events"}</button></div> : null}
     <div className="strategy-activity-summary" aria-label="Strategy activity summary"><span><small>Decisions</small><strong>{activitySummary.decisions}</strong></span><span><small>Actions</small><strong>{activitySummary.actions}</strong></span><span><small>Waits</small><strong>{activitySummary.waits}</strong></span><div><small>Leading blockers</small><p>{activitySummary.blockers.length ? activitySummary.blockers.map(([reason, count]) => `${readableEvidenceLabel(reason)} (${count})`).join(" · ") : "None in this view"}</p></div></div>
     <div className="strategy-activity-content" ref={contentRef} style={{ "--strategy-inspector-width": `${inspectorWidth}%` } as CSSProperties}>
-      {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={100} lockedColumns={[]} moreAvailable={!resolvedHistoricalPage.complete} moreLoading={olderLoading} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} showBoundaryPages={loadAllHistory} onRequestMore={loadAllHistory ? undefined : loadOlder} onRowSelect={toggleSelection} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`${strategyActivityRowKey(row) === selectedRecordId ? "Close" : "Inspect"} strategy event at ${String(row.event_time || "unknown time")}`} aria-pressed={strategyActivityRowKey(row) === selectedRecordId} className="strategy-activity-inspect" onClick={() => toggleSelection(row)} type="button">{strategyActivityRowKey(row) === selectedRecordId ? "Close" : "Inspect"}</button>} rowIdentity={strategyActivityRowKey} rows={rows} selectedRowId={selectedRecordId} title="Strategy activity" />}
+      {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "gates", "reason_code", "reference_price", "source"]} customColumns={[]} empty={historicalRows !== undefined ? "No matching verified activity in this view." : "No causal strategy events match these filters yet. Press Play or advance to the next strategy action."} limit={100} lockedColumns={[]} moreAvailable={!resolvedHistoricalPage.complete} moreLoading={olderLoading} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onSearchChange={onSearchChange} showBoundaryPages={loadAllHistory} onRequestMore={loadAllHistory ? undefined : loadOlder} onRowSelect={toggleSelection} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rowAction={(row) => <button aria-label={`${strategyActivityRowKey(row) === selectedRecordId ? "Close" : "Inspect"} strategy event at ${String(row.event_time || "unknown time")}`} aria-pressed={strategyActivityRowKey(row) === selectedRecordId} className="strategy-activity-inspect" onClick={() => toggleSelection(row)} type="button">{strategyActivityRowKey(row) === selectedRecordId ? "Close" : "Inspect"}</button>} rowIdentity={strategyActivityRowKey} rows={rows} selectedRowId={selectedRecordId} title="Strategy activity" />}
       <div aria-label="Resize event evidence" aria-orientation="vertical" aria-valuemax={62} aria-valuemin={24} aria-valuenow={Math.round(inspectorWidth)} className="strategy-activity-resizer" onDoubleClick={() => setInspectorWidth(36)} onKeyDown={(event) => { if (event.key === "ArrowLeft") setInspectorWidth((value) => Math.min(62, value + 3)); if (event.key === "ArrowRight") setInspectorWidth((value) => Math.max(24, value - 3)); }} onPointerDown={startInspectorResize} role="separator" tabIndex={0} title="Drag to resize. Double-click to reset."><GripVertical aria-hidden="true" size={14} /></div>
       {selectedRecordId ? <StrategyActivityInspector error={detailError} loading={detailLoading} onClose={() => setSelection(null)} onTickerSelect={onTickerSelect} row={selectedDetail?.record_id === exactRecordId ? selectedDetail : selectedSummary} /> : <div className="strategy-activity-inspector-empty"><FileCheck2 size={18} /><span><strong>Inspect any event</strong><small>Open a row to see its strategy revision, exact reason, gate checks, thresholds, and point-in-time evidence.</small></span></div>}
     </div>
@@ -1285,6 +1285,7 @@ function MarketListTable({
   moreLoading = false,
   onColumnsChange,
   onCustomColumnsChange,
+  onSearchChange,
   onRequestMore,
   onRowSelect,
   onTickerSelect,
@@ -1313,6 +1314,7 @@ function MarketListTable({
   moreLoading?: boolean;
   onColumnsChange: (columns: string[]) => void;
   onCustomColumnsChange: (columns: ScannerCustomColumn[]) => void;
+  onSearchChange?: (query: string) => void;
   onRequestMore?: () => Promise<boolean>;
   onRowSelect?: (row: ScreenerRow) => void;
   onTickerSelect?: (ticker: string) => void;
@@ -1344,6 +1346,7 @@ function MarketListTable({
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const tableShellRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
+  useEffect(() => { onSearchChange?.(deferredQuery); }, [deferredQuery, onSearchChange]);
   const identityColumn = columns.includes("symbol") ? "symbol" : "ticker";
   const effectiveLockedColumns = useMemo(() => [...new Set([...(chronological ? ["event_time"] : []), identityColumn, ...lockedColumns.filter((column) => column !== "logo" && column !== "company_name")])], [chronological, identityColumn, lockedColumns]);
   const selectedColumns = useMemo(() => withLockedColumns(columns, effectiveLockedColumns), [columns, effectiveLockedColumns]);
