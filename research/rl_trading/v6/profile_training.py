@@ -100,11 +100,28 @@ def main(argv=None):
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.synchronize()
             started = time.perf_counter()
+            period_times = {'premarket': 0., 'regular': 0., 'after_hours': 0.}
+            last_pulse = [started]
+            session_start = bounds(session.day)[0]
+
+            def teacher_pulse(values):
+                # Chunk boundary timing includes real forward/backward/update
+                # work. Period boundaries use the certified session clock.
+                torch.cuda.synchronize()
+                now = time.perf_counter()
+                offset = (values['close_us'] - session_start) / 1_000_000
+                period = ('premarket' if offset < 19_800 else
+                          'regular' if offset < 43_200 else 'after_hours')
+                period_times[period] += now - last_pulse[0]
+                last_pulse[0] = now
+
             metrics = train_session(policy, optimizer, prefix, labels, fills,
-                                    device=device, clocks_per_chunk=args.clocks_per_chunk)
+                                    device=device, clocks_per_chunk=args.clocks_per_chunk,
+                                    progress_callback=teacher_pulse)
             torch.cuda.synchronize()
             result['teacher'] = asdict(metrics)
             result['timings']['teacher_seconds'] = time.perf_counter()-started
+            result['teacher_period_chunk_seconds'] = period_times
             if not metrics.optimizer_steps:
                 raise ValueError('Profile did not exercise a teacher optimizer step')
             reader = arte_source.reader(threads=2)
