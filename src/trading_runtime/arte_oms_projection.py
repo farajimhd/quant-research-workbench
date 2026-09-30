@@ -1039,6 +1039,18 @@ def load_committed_oms_group_state_page(
     if (sum(len(rows) for rows in children.values()) != declared_children + len(links)
             or declared_children + len(links) > max_children):
         raise RuntimeError("Committed OMS page has missing or excess child rows")
+    # A group page can contain thousands of normalized child rows. Index each
+    # verified row once by its exact parent; scanning every family for every
+    # group made cold recovery quadratic without adding any verification.
+    children_by_parent: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for name, rows in children.items():
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            parent_id = str(UUID(str(row["parent_record_id"])))
+            if parent_id not in by_id:
+                raise RuntimeError("Committed OMS child has no page parent")
+            grouped.setdefault(parent_id, []).append(row)
+        children_by_parent[name] = grouped
     tactic_by_group: dict[str, ExecutionTactic | None] = {}
     if require_tactic:
         from .arte_oms_tactic_projection import (
@@ -1066,10 +1078,16 @@ def load_committed_oms_group_state_page(
                    "entity_type": "order_group_state"} for row in events),
             run_id=prefix.run_id, batch_id=None,
             stored_utc=True)
+        steps_by_parent: dict[str, list[dict[str, Any]]] = {}
+        tactic_id_set = set(tactic_ids)
+        for row in tactic_steps:
+            parent_id = str(UUID(str(row["parent_record_id"])))
+            if parent_id not in tactic_id_set:
+                raise RuntimeError("Committed OMS tactic step has no state parent")
+            steps_by_parent.setdefault(parent_id, []).append(row)
         for parent in tactic_states:
             parent_id = str(UUID(str(parent["record_id"])))
-            selected = tuple(sorted((row for row in tactic_steps
-                                     if str(UUID(str(row["parent_record_id"]))) == parent_id),
+            selected = tuple(sorted(steps_by_parent.get(parent_id, ()),
                                     key=lambda row: int(row["ordinal"])))
             tactic_by_group[str(UUID(str(parent["parent_record_id"])))] = (
                 tactic_from_rows(parent, selected, stored_utc=True))
@@ -1108,10 +1126,10 @@ def load_committed_oms_group_state_page(
             raise RuntimeError("Committed OMS group differs from its event envelope")
         prior = sequence
         ordered: dict[str, list[dict[str, Any]]] = {}
-        for name, rows in children.items():
+        for name in children:
             if name == "trading_strategy_intent_use_v1":
                 continue
-            selected = [row for row in rows if str(UUID(str(row["parent_record_id"]))) == parent_id]
+            selected = list(children_by_parent[name].get(parent_id, ()))
             selected.sort(key=lambda row: int(row["ordinal"]))
             if ([int(row["ordinal"]) for row in selected] != list(range(len(selected)))
                     or any(str(UUID(str(row["batch_id"]))) != str(UUID(str(group["batch_id"])))
@@ -1123,8 +1141,8 @@ def load_committed_oms_group_state_page(
         binding_rows = ordered["trading_oms_broker_binding_v1"]
         warning_rows = ordered["trading_oms_warning_v1"]
         cancel_rows = ordered["trading_oms_cancel_oca_v1"]
-        use_rows = [row for row in links
-                    if str(UUID(str(row["parent_record_id"]))) == parent_id]
+        use_rows = children_by_parent["trading_strategy_intent_use_v1"].get(
+            parent_id, ())
         if any(str(UUID(str(row["batch_id"]))) != str(UUID(str(group["batch_id"])))
                or row["account_id"] != group["account_id"]
                or row["event_month"] != group["event_month"] for row in use_rows):
