@@ -96,7 +96,9 @@ def install_typed_oms_actor_image(
     if (actor.run_id != image.run_id or actor.strategy_id != image.strategy_id
             or actor.strategy_revision != image.strategy_revision):
         raise RuntimeError("Typed OMS actor identity differs from its image")
-    if (actor._groups or actor._group_by_client_id or actor._group_by_broker_id
+    if (actor._groups or actor._group_ordinal or actor._active_adaptive_groups
+            or actor._groups_by_assignment or actor._groups_by_ticker
+            or actor._group_by_client_id or actor._group_by_broker_id
             or actor._body_entry_group_ids or actor._entry_trade_prices
             or getattr(actor, "_protection_versions", {})):
         raise RuntimeError("Typed OMS actor must be fresh before installation")
@@ -118,7 +120,12 @@ def install_typed_oms_actor_image(
             or not image.body_entry_group_ids.issubset(image.groups)):
         raise RuntimeError("Typed OMS image indexes differ from groups")
     # Detach from the audit image: subsequent broker replies mutate actor state.
-    actor._groups = deepcopy(image.groups)
+    # Register through the same path as a live admission. Directly assigning
+    # _groups omits the ordinal and active/assignment/ticker indexes; the first
+    # post-resume adaptive action then fails to find the recovered group.
+    # Image insertion order is the verified first OMS transition order.
+    for group in deepcopy(image.groups).values():
+        actor._remember_group(group)
     actor._group_by_client_id = dict(image.group_by_client_id)
     actor._group_by_broker_id = dict(image.group_by_broker_id)
     actor._body_entry_group_ids = set(image.body_entry_group_ids)
@@ -198,7 +205,18 @@ def reconstruct_typed_oms_actor_image(
     by_client: dict[str, str] = {}
     by_broker: dict[str, str] = {}
     body_ids: set[str] = set()
-    for lineage in lineages:
+    first_sequences = tuple(
+        lineage.state.first_sequence if lineage.state.first_sequence is not None
+        else lineage.state.sequence for lineage in lineages)
+    if (len(set(first_sequences)) != len(first_sequences)
+            or any(not 1 <= first <= lineage.state.sequence
+                   for first, lineage in zip(first_sequences, lineages))):
+        raise RuntimeError("Typed OMS first-transition order is invalid")
+    for lineage in sorted(
+            lineages,
+            key=lambda item: (item.state.first_sequence
+                              if item.state.first_sequence is not None
+                              else item.state.sequence)):
         state = lineage.state
         row = state.group
         # The source intent predates Portfolio approval and has no assignment

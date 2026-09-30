@@ -248,6 +248,7 @@ def test_latest_oms_cold_inventory_selects_latest_revision_and_bounds_history(mo
         object(), prefix, page_size=2, max_transitions=4)
     assert [(row.sequence, row.group["group_id"]) for row in latest] == [
         (2, "B"), (3, "A"), (4, "C")]
+    assert [row.first_sequence for row in latest] == [2, 1, 4]
     with pytest.raises(RuntimeError, match="transition bound"):
         load_latest_committed_oms_groups(
             object(), prefix, page_size=2, max_transitions=3)
@@ -505,7 +506,8 @@ def test_oms_group_projection_has_normalized_children_and_committed_fence() -> N
     assert len(client.tables["trading_oms_order_state_v1"]) == 2
     recovered = load_committed_oms_group_state_page(client, prefix)
     assert len(recovered) == 1
-    assert load_latest_committed_oms_groups(client, prefix) == recovered
+    assert load_latest_committed_oms_groups(client, prefix) == (
+        replace(recovered[0], first_sequence=recovered[0].sequence),)
     assert recovered[0].orders == orders
     assert recovered[0].order_batch_ordinals == (0, 1)
     assert recovered[0].order_slice_ids == ("entry", "stop")

@@ -154,12 +154,21 @@ def test_typed_oms_image_installs_only_into_matching_fresh_actor():
     assert restored._groups["group-1"].snapshot(restored.policy.version) == (
         image.groups["group-1"].snapshot(restored.policy.version))
     assert restored._groups["group-1"] is not image.groups["group-1"]
+    assert restored._group_ordinal == {"group-1": 0}
+    assert restored._groups_by_assignment[("DU1", "assignment-1")] == [
+        restored._groups["group-1"]]
+    assert restored._groups_by_ticker["AAA"] == [restored._groups["group-1"]]
     restored._groups["group-1"].broker_order_ids.append("new-reply")
     assert image.groups["group-1"].broker_order_ids == ["broker-1"]
     with pytest.raises(RuntimeError, match="fresh"):
         install_typed_oms_actor_image(restored, image)
     with pytest.raises(RuntimeError, match="identity"):
         install_typed_oms_actor_image(actor("other-run"), image)
+
+    active = actor()
+    image.groups["group-1"].tactic = MagicMock()
+    install_typed_oms_actor_image(active, image)
+    assert active._active_adaptive_groups == {"group-1": active._groups["group-1"]}
 
 
 def test_typed_oms_actor_image_rejects_incomplete_contract():

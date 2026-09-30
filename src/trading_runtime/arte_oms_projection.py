@@ -476,6 +476,7 @@ class RecoveredOmsGroupState:
     cancel_oca_groups: tuple[str, ...]
     tactic: ExecutionTactic | None = None
     tactic_recorded: bool = False
+    first_sequence: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -779,6 +780,7 @@ def load_latest_committed_oms_groups(
                 or strategy_identity[1] < 1)):
         raise ValueError("OMS cold inventory needs a verified bounded prefix")
     latest: dict[tuple[str, str], RecoveredOmsGroupState] = {}
+    first_sequences: dict[tuple[str, str], int] = {}
     after = 0
     transitions = 0
     while True:
@@ -800,7 +802,9 @@ def load_latest_committed_oms_groups(
                     != strategy_identity):
                 raise RuntimeError("OMS cold transition differs from pinned run authority")
             after = item.sequence
-            latest[(account_id, group_id)] = item
+            key = (account_id, group_id)
+            first = first_sequences.setdefault(key, item.sequence)
+            latest[key] = replace(item, first_sequence=first)
             transitions += 1
             if transitions > max_transitions:
                 raise RuntimeError("OMS cold inventory exceeds its transition bound")
