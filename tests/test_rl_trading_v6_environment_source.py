@@ -88,4 +88,4 @@ def test_joined_read_obeys_select_only_contract():
         return pl.DataFrame(schema=EXECUTION_SCHEMA)
     source._frame=read
     assert source._read_buckets(0,100000,['A'])==()
-    assert len(statements)==1 and 'FULL ALL JOIN' in statements[0]
+    assert len(statements)==1 and 'UNION ALL' in statements[0] and 'countIf(lane=1)' in statements[0]

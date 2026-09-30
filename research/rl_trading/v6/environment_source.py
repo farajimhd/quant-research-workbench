@@ -139,25 +139,28 @@ class ArteExecutionSource:
                      f'session_date=toDate({sql.literal(self.day)}) AND '
                      f'bucket_index BETWEEN {first} AND {last}')
             bar_scope = ','.join(f'({sql.literal(t)},toUUID({sql.literal(self.source["units"][str(self.day)][t]["bars"]["attempt_id"])}))' for t in group)
-            # FULL ALL retains gaps and duplicate keys. Presence witnesses avoid
-            # a window-count pass; repeated joined keys still fail validation.
+            # Coalesce two pinned projections in ClickHouse without a hash join.
+            # Multiplicity is returned explicitly: aggregation never hides a
+            # duplicate source row. Only the final required columns cross HTTP.
+            quote_fields=('quote_timestamp_us','quote_valid','bid_int','ask_int',
+                          'bid_size','ask_size','event_count','last_event_us')
+            bar_fields=('high_int','low_int','extremes_valid')
+            aggregates=','.join(f'maxIf({k},lane=1) AS {k}' for k in quote_fields)+','+ \
+                       ','.join(f'maxIf({k},lane=2) AS {k}' for k in bar_fields)
             rows = self._frame(
-                'SELECT if(ifNull(q.quote_count,0)>0,q.ticker,b.ticker) AS ticker,'
-                'if(ifNull(q.quote_count,0)>0,q.bucket_index,b.bucket_index) AS bucket_index,'
-                'q.quote_count AS quote_count,b.extrema_count AS extrema_count,q.quote_timestamp_us,q.quote_valid,'
-                'q.bid_int,q.ask_int,q.bid_size,q.ask_size,q.event_count,q.last_event_us,'
-                'b.high_int,b.low_int,b.extremes_valid FROM '
-                '(SELECT ticker,bucket_index,quote_timestamp_us,quote_valid,bid_int,ask_int,'
-                'bid_size,ask_size,event_count,last_event_us,'
-                '1 AS quote_count '
+                'SELECT ticker,bucket_index,countIf(lane=1) AS quote_count,'
+                f'countIf(lane=2) AS extrema_count,{aggregates} FROM ('
+                'SELECT ticker,bucket_index,1 AS lane,quote_timestamp_us,quote_valid,'
+                'bid_int,ask_int,bid_size,ask_size,event_count,last_event_us,'
+                '0 AS high_int,0 AS low_int,0 AS extremes_valid '
                 f'FROM arte.liquidity_100ms_v1 WHERE {where} '
-                f'AND (ticker,attempt_id) IN ({quote_scope})) q FULL ALL JOIN '
-                '(SELECT ticker,bucket_index,high_int,low_int,extremes_valid,'
-                '1 AS extrema_count '
+                f'AND (ticker,attempt_id) IN ({quote_scope}) UNION ALL '
+                'SELECT ticker,bucket_index,2 AS lane,0 AS quote_timestamp_us,'
+                '0 AS quote_valid,0 AS bid_int,0 AS ask_int,0. AS bid_size,0. AS ask_size,'
+                '0 AS event_count,0 AS last_event_us,high_int,low_int,extremes_valid '
                 f'FROM arte.bars_v1 WHERE {where} AND resolution_ms=100 '
-                f'AND (ticker,attempt_id) IN ({bar_scope})) b '
-                'ON q.ticker=b.ticker AND q.bucket_index=b.bucket_index '
-                'ORDER BY bucket_index,ticker', EXECUTION_SCHEMA)
+                f'AND (ticker,attempt_id) IN ({bar_scope})) '
+                'GROUP BY ticker,bucket_index ORDER BY bucket_index,ticker', EXECUTION_SCHEMA)
             parts.append(rows)
         rows = pl.concat(parts) if parts else pl.DataFrame(schema=EXECUTION_SCHEMA)
         return _execution_buckets(rows, self.origin)
