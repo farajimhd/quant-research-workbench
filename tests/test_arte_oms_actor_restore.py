@@ -190,8 +190,11 @@ def test_typed_oms_image_cross_checks_broker_open_set(monkeypatch):
         strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
         through_sequence=7, cutoff_at=AT)
     monkeypatch.setattr(restore, "verify_broker_match_snapshot", lambda row: row)
+    from src.trading_runtime.strategy_one_broker_match_snapshot import float64_bits
+
     order = dict(broker_order_id="broker-1", client_order_id="co-1",
-                 account_id="DU1", conid=123, ticker="AAA", filled="0")
+                 account_id="DU1", conid=123, ticker="AAA",
+                 filled_f64_bits=float64_bits(0, "filled"))
     broker = BrokerMatchSnapshotRows({}, (), (), (order,), (), ())
     assert restore.verify_typed_oms_broker_open_orders(image, broker) == 1
     with pytest.raises(RuntimeError, match="open order identities"):
@@ -200,4 +203,5 @@ def test_typed_oms_image_cross_checks_broker_open_set(monkeypatch):
     with pytest.raises(RuntimeError, match="fill quantity"):
         restore.verify_typed_oms_broker_open_orders(
             image, BrokerMatchSnapshotRows({}, (), (),
-                                            ({**order, "filled": "1"},), (), ()))
+                                            ({**order, "filled_f64_bits":
+                                              float64_bits(1, "filled")},), (), ()))

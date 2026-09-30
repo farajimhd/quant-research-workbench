@@ -18,7 +18,7 @@ from src.trading_runtime.order_management import (
     _ManagedOrderGroup, OrderManagementEngine, OrderManagementState,
 )
 from src.trading_runtime.strategy_one_broker_match_snapshot import (
-    BrokerMatchSnapshotRows, verify_broker_match_snapshot,
+    BrokerMatchSnapshotRows, float64_from_bits, verify_broker_match_snapshot,
 )
 from src.trading_runtime.strategy_one_oms_observation_snapshot import (
     OmsObservationSnapshotRows, verify_oms_observation_snapshot,
@@ -159,7 +159,7 @@ def verify_typed_oms_broker_open_orders(
                 or group.account_id != row["account_id"]):
             raise RuntimeError("Typed OMS open request differs from broker")
         tracked = group.filled_by_broker_order.get(broker_id, 0.0)
-        if abs(tracked - float(row["filled"])) > 1e-8:
+        if abs(tracked - float64_from_bits(row["filled_f64_bits"], "filled")) > 1e-8:
             raise RuntimeError("Typed OMS fill quantity differs from broker")
     return len(rows)
 
