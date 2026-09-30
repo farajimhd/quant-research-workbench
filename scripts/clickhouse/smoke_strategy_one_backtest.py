@@ -482,6 +482,14 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
           f"processed_rows={controller.processed_events} "
           f"error={controller.error[:300]}", flush=True)
     if controller.status != "completed":
+        # A diagnostic full-session run may reach a failed terminal
+        # because positions remain open at 20:00. Report bounded timings, but
+        # retain the nonzero exit and never label that run release-accepted.
+        for name, row in sorted(controller._stage_timings.items()):
+            print(f"Stage {name}: calls={row['calls']} "
+                  f"wall_s={row['seconds']:.3f} "
+                  f"max_call_s={row['maximum_seconds']:.3f}", flush=True)
+        sql_profile.print_summary()
         raise RuntimeError("Strategy 1 integration run did not complete")
     if controller.run_dir.exists():
         raise RuntimeError("Strategy 1 integration wrote a run-local directory")
@@ -568,7 +576,7 @@ def main() -> None:
     parser.add_argument("--ticker", default="",
                         help="optional single-symbol probe; omit for the full market")
     parser.add_argument("--minutes", type=int, default=10,
-                        help="whole minutes from 04:00 ET, at most 330")
+                        help="whole minutes from 04:00 ET, at most 960 (20:00)")
     parser.add_argument("--initial-cash", type=int, default=10_000,
                         help="simulated account cash; default matches the Backtest UI")
     parser.add_argument("--apply", action="store_true")
@@ -608,8 +616,8 @@ def main() -> None:
         parser.error("Intentional crash requires an explicit --apply test run")
     if args.ticker and (not args.ticker.isascii() or not args.ticker.isalnum()):
         raise ValueError("Integration ticker must be an ASCII market symbol")
-    if not 1 <= args.minutes <= 330:
-        raise ValueError("Integration horizon must be one to 330 minutes")
+    if not 1 <= args.minutes <= 960:
+        raise ValueError("Integration horizon must be one to 960 minutes")
     if not 1_000 <= args.initial_cash <= 1_000_000_000:
         parser.error("Initial cash must be between 1,000 and 1,000,000,000")
     _load_private_credentials()
