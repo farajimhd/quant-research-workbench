@@ -9695,7 +9695,9 @@ class ReplayRunService:
             raise ValueError("Typed V4 resume requires a pinned Strategy 1 Backtest")
         controller = ReplayRunController(
             definition, run_id=run_id, runtime_root=self.runtime_root)
+        plans_started = time.perf_counter()
         plans = await controller._fixed_strategy_one_plans()
+        plan_seconds = time.perf_counter() - plans_started
         configuration = definition.configuration_revision["payload"]
         profiles, _ = historical_strategy_one_portfolio_profiles(configuration)
         account_ids = tuple(row.account_id for row in profiles)
@@ -9704,6 +9706,13 @@ class ReplayRunService:
             backtest_code_hash, Path(__file__).resolve().parents[2])
 
         def assemble():
+            stage_started = time.perf_counter()
+            stage_seconds = {}
+            def mark_stage(name):
+                nonlocal stage_started
+                now = time.perf_counter()
+                stage_seconds[name] = now - stage_started
+                stage_started = now
             keeper = open_workstation_keeper_session()
             lease = None
             writer_client = None
@@ -9724,6 +9733,7 @@ class ReplayRunService:
                         lease=lease, run_id=run_id, plan=plans.market,
                         configuration_hash=configuration_hash,
                         account_ids=account_ids, code_hash=code_hash)
+                    mark_stage("resume_anchor")
                     recovery = load_v4_running_recovery_evidence(
                         reader, run_id=run_id, account_ids=account_ids,
                         manager_keeper=ManagedManagerSnapshotHeadReader(keeper),
@@ -9732,18 +9742,22 @@ class ReplayRunService:
                         campaign_keeper=ManagedCampaignSnapshotHeadReader(keeper),
                         oms_observation_keeper=ManagedOmsObservationHeadReader(keeper),
                         market_client=market, market_plan=plans.market)
+                    mark_stage("resume_recovery_evidence")
                     fixed_authority = load_committed_fixed_market_authority(
                         reader, recovery.prefix, parent_plan=plans.market,
                         execution_plan=plans.execution_market,
                         expected_start=definition.session_start)
+                    mark_stage("resume_market_authority")
                     image = load_v4_fixed_runtime_image(
                         reader, recovery, anchor, profiles)
+                    mark_stage("resume_actor_image")
                     token = prepare_fixed_v4_journal_token(
                         reader, writer_client, terminal, run_id=run_id,
                         account_ids=account_ids,
                         configuration_hash=configuration_hash,
                         market_plan_token=plans.market.token,
                         projection_certifier=certify_strategy_one_v4_projection)
+                    mark_stage("resume_journal_token")
                     # The projector consumes the committed flat RunConfig, not
                     # the nested Strategy Studio revision payload. Reuse the
                     # same fenced authority that the new-run writer consumed.
@@ -9756,9 +9770,10 @@ class ReplayRunService:
                         expected_market_start=definition.session_start,
                         code_hash=code_hash, recovery_evidence=recovery,
                         writer_factory=ArteJournalWriter, batch_size=4096)
+                    mark_stage("resume_journal_assembly")
                     if journal_anchor != image.anchor:
                         raise RuntimeError("V4 actor and writer anchors differ")
-                return image, assembly, keeper, lease, fixed_authority
+                return image, assembly, keeper, lease, fixed_authority, stage_seconds
             except BaseException:
                 try:
                     if assembly is not None:
@@ -9774,7 +9789,8 @@ class ReplayRunService:
                         keeper.close()
                 raise
 
-        image, assembly, keeper, lease, fixed_authority = await asyncio.to_thread(assemble)
+        image, assembly, keeper, lease, fixed_authority, stage_seconds = (
+            await asyncio.to_thread(assemble))
         try:
             resumed = ReplayRunController(
                 definition, run_id=run_id, runtime_root=self.runtime_root,
@@ -9783,6 +9799,11 @@ class ReplayRunService:
             resumed._fixed_market_plan = controller._fixed_market_plan
             resumed._fixed_price_plan = controller._fixed_price_plan
             resumed._data_authority["fixed_market_data"] = fixed_authority
+            stage_seconds["resume_market_plans"] = plan_seconds
+            for stage, seconds in stage_seconds.items():
+                resumed._stage_timings[stage] = {
+                    "calls": 1, "seconds": seconds, "maximum_seconds": seconds,
+                }
             resumed._attach_resumed_fixed_v4_assembly(
                 assembly, keeper=keeper, lease=lease, anchor=image.anchor)
             return resumed

@@ -129,6 +129,10 @@ async def _resume(run_id: str) -> None:
     print(f"Resume result: run_id={run_id} status={controller.status} "
           f"wall_s={elapsed:.3f} processed_rows={controller.processed_events} "
           f"error={controller.error[:300]}", flush=True)
+    for stage, timing in sorted(getattr(controller, "_stage_timings", {}).items()):
+        if stage.startswith("resume_"):
+            print(f"Recovery {stage.removeprefix('resume_')}: "
+                  f"wall_s={float(timing['seconds']):.3f}", flush=True)
     if controller.status != "completed" or controller.run_dir.exists():
         raise RuntimeError("Cold-resumed Backtest failed or wrote a run-local directory")
     _print_completed_profile(controller)
