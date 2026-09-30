@@ -7946,22 +7946,63 @@ function drawTradeAnnotationPrimitiveGeometry(
     }
   });
   annotations.forEach((annotation) => {
+    if (annotation.status === "open") {
+      // Current positions are price-axis anchored overlays. Their rails span
+      // the visible pane, independently of candle paging, panning or zooming.
+      // Closed lifecycles below retain their exact event-time geometry.
+      const quantity = annotation.currentQuantity;
+      const size = Number.isFinite(quantity) ? `${quantity} shares` : "Open";
+      const mark = annotation.openMarkPrice;
+      const pnl = Number.isFinite(quantity) && Number.isFinite(mark)
+        ? ((mark as number) - annotation.entryPrice) * (quantity as number)
+          * (annotation.positionSide === "SHORT" ? -1 : 1) : null;
+      const rail = (price: number, label: string, color: string,
+        line: StrategyPresentationStyleSettings, text: StrategyPresentationStyleSettings) => {
+        const y = priceSeries.priceToCoordinate(price);
+        if (y === null || y < 0 || y > height) return;
+        if (line.visible) drawCanvasTradeLine(context, 0, width, y,
+          strategyPresentationColor(line.color, color), line.lineWidth, line.lineStyle, line.opacity);
+        if (text.visible) drawCanvasTradeLabel(context, label, width - 4,
+          y - (text.labelSize + text.labelPaddingY * 2) / 2,
+          strategyPresentationColor(text.color, color), chartBackground, "right",
+          width, height, text, undefined, elements.connector);
+      };
+      rail(annotation.entryPrice,
+        `${annotation.positionSide ?? "LONG"} · ${size} · ${formatPrice(annotation.entryPrice)} · ${pnl === null ? "P&L —" : `Est. P&L ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`}`,
+        infoColor, elements.entryLine, elements.entryLabel);
+      if (annotation.protectionPath) {
+        const current = new Map<string, NonNullable<TradeAnnotation["protectionPath"]>[number]>();
+        for (const point of annotation.protectionPath) {
+          const prior = current.get(point.orderId);
+          if (!prior || point.time > prior.time || point.time === prior.time && point.sequence > prior.sequence) current.set(point.orderId, point);
+        }
+        const drawn = new Set<string>();
+        for (const point of current.values()) {
+          const key = `${point.kind}:${point.price}`;
+          if (!point.active || drawn.has(key)) continue;
+          drawn.add(key);
+          const stop = point.kind === "stop";
+          rail(point.price, `${stop ? "SL" : "TP"} · ${size} · ${formatPrice(point.price)}`,
+            stop ? stopColor : successColor, stop ? elements.stopLine : elements.targetLine,
+            stop ? elements.stopLabel : elements.targetLabel);
+        }
+      } else {
+        if (typeof annotation.stopPrice === "number") rail(annotation.stopPrice,
+          `SL · ${size} · ${formatPrice(annotation.stopPrice)}`, stopColor, elements.stopLine, elements.stopLabel);
+        annotation.targetPrices?.forEach(price => rail(price,
+          `TP · ${size} · ${formatPrice(price)}`, successColor, elements.targetLine, elements.targetLabel));
+      }
+      return;
+    }
     const firstTime = timeline[0].time;
     const lastTime = timeline[timeline.length - 1].time;
     const guideX = (time: number) => xForAnnotationTime(chart, Math.max(firstTime, Math.min(lastTime, time)), timeline);
     const entryX = guideX(annotation.entryTime);
     const recordedEndTime = annotation.endTime ?? annotation.exitTime ?? annotation.entryTime;
-    if ((annotation.status !== "open" && recordedEndTime < firstTime)
-        || annotation.entryTime > lastTime) return;
-    // The replay clock can lead the latest candle (closed-bar publication or
-    // a quiet market). Keep the open protection path visible through the last
-    // loaded candle; never change the actual journal endpoint or viewport.
-    const endTime = annotation.status === 'open'
-      ? timeline[timeline.length - 1].time
-      : recordedEndTime;
+    if (recordedEndTime < firstTime || annotation.entryTime > lastTime) return;
+    const endTime = recordedEndTime;
     const resolvedEndX = guideX(endTime);
-    // Lifecycle geometry is always owned by event time. Tying an open
-    // position to the pane edge makes it float while the user pans.
+    // Closed lifecycle geometry remains owned by event time.
     const exitX = resolvedEndX;
     const entryY = priceSeries.priceToCoordinate(annotation.entryPrice);
     const exitY = typeof annotation.exitPrice === "number" ? priceSeries.priceToCoordinate(annotation.exitPrice) : null;
@@ -8020,18 +8061,7 @@ function drawTradeAnnotationPrimitiveGeometry(
     if (elements.entryLine.visible) {
       drawCanvasTradeLine(context, span.left, span.right, entryY, entryLineColor, annotation.selected ? Math.min(5, elements.entryLine.lineWidth + 1) : elements.entryLine.lineWidth, elements.entryLine.lineStyle, elements.entryLine.opacity);
     }
-    if (annotation.status === "open" && elements.entryLabel.visible) {
-      const quantity = annotation.currentQuantity;
-      const mark = annotation.openMarkPrice;
-      const estimate = Number.isFinite(quantity) && Number.isFinite(mark)
-        ? ((mark as number) - annotation.entryPrice) * (quantity as number)
-          * (annotation.positionSide === "SHORT" ? -1 : 1) : null;
-      const label = `${Number.isFinite(quantity) ? `${quantity} shares` : "Open"} · ${formatPrice(annotation.entryPrice)} · ${estimate === null ? "P&L —" : `Est. P&L ${estimate >= 0 ? "+" : ""}${estimate.toFixed(2)}`}`;
-      drawCanvasTradeLabel(context, label, span.left, entryY + 6,
-        entryLabelColor, chartBackground, "left", width, height,
-        elements.entryLabel, labelLayout, elements.connector);
-    }
-    if (elements.exitLine.visible && annotation.status !== "open" && exitY !== null) {
+    if (elements.exitLine.visible && exitY !== null) {
       drawCanvasTradeLine(context, span.left, span.right, exitY, exitLineColor, annotation.selected ? Math.min(5, elements.exitLine.lineWidth + 1) : elements.exitLine.lineWidth, elements.exitLine.lineStyle, elements.exitLine.opacity);
     }
     const entryIntentTime = annotation.entryIntentTime ?? annotation.entryTime;
@@ -8170,18 +8200,11 @@ function drawTradeAnnotationPrimitiveGeometry(
       // Do not turn an already-ended off-screen order into a visible minimum
       // width guide at the chart edge. Protection rails follow effective time.
       if (right < 0 || left > width || right < left) return;
-      const isCurrentOpenRail = annotation.status === "open" && !next;
       const railLabel = `${point.kind === "stop" ? "SL" : "TP"} ${formatPrice(point.price)}`;
       drawCanvasTradeGuide(context, Math.max(0, left), Math.min(width, right), y, color,
         railLabel, chartBackground, width, height,
         lineStyle, protectionLabels.has(index) ? labelStyle : { ...labelStyle, visible: false },
         labelLayout, elements.connector);
-      if (isCurrentOpenRail && labelStyle.visible) {
-        drawCanvasTradeLabel(context,
-          `${railLabel}${Number.isFinite(annotation.currentQuantity) ? ` · ${annotation.currentQuantity} shares` : ""}`,
-          Math.min(width, right), y + 3, color, chartBackground, "right",
-          width, height, labelStyle, labelLayout, elements.connector);
-      }
       if (lineStyle.visible && next?.active && next.time <= endTime) {
         const nextY = priceSeries.priceToCoordinate(next.price);
         if (nextY !== null) {
