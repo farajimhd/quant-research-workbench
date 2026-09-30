@@ -41,7 +41,7 @@ from src.backend.backtest_market_data import (
     project_market_day_plan, readonly_clickhouse_client,
 )
 from src.backend.backtest_v3_clients import v3_client
-from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.backtest_input_scope import certify_scoped_candidate_plan as certify_candidate_plan
 from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
 from src.backend.structural_v7_seed import certified_seed_plan
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST

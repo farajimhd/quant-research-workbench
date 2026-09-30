@@ -31,8 +31,9 @@ from src.backend.backtest_liquidity_price import certify_price_level_plan
 from src.backend.backtest_strategy_one_activation import (
     load_strategy_one_activations, project_activation_plan,
 )
+from src.backend.backtest_input_scope import certify_scoped_candidate_plan as certify_candidate_plan
 from src.backend.backtest_strategy_one_candidate_store import (
-    certify_candidate_plan, project_candidate_plan,
+    project_candidate_plan,
 )
 from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
 from src.backend.backtest_strategy_one_hod_store import certify_hod_plan

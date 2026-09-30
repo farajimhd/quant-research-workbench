@@ -12187,7 +12187,7 @@ def backtest_preflight(
             if not market_data_plan:
                 raise ValueError("Certified persisted market plan is unavailable")
             from src.backend.backtest_market_data import readonly_clickhouse_client
-            from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+            from src.backend.backtest_input_scope import certify_scoped_candidate_plan as certify_candidate_plan
             from src.backend.backtest_strategy_one_identity import certify_identity_plan
             from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
             def certify_identity_independently():
@@ -12219,11 +12219,15 @@ def backtest_preflight(
             bar_signals = {"occurrences": (), "authority": {
                 "candidate_token": precertified_candidate_plan.token,
                 "identity_token": identity_plan.token,
+                "excluded_tickers": list(precertified_candidate_plan.excluded_tickers),
             }}
             signal_check = {
                 **signal_check, "status": "ready",
                 "summary": "Normalized Strategy 1 candidate and dated identity products "
-                           "certify the complete tradable population; no bar rescan or signal build.",
+                           "certify the complete tradable population; no bar rescan or signal build."
+                           + (" Explicit input exclusions: " + ", ".join(
+                               precertified_candidate_plan.excluded_tickers) + "."
+                              if precertified_candidate_plan.excluded_tickers else ""),
                 "evidence": bar_signals["authority"],
             }
         except Exception as exc:
@@ -12302,6 +12306,7 @@ def backtest_preflight(
                     candidate_plan = precertified_candidate_plan
                     market_data_plan["strategy_one_identity_token"] = identity_plan.token
                     market_data_plan["strategy_one_candidate_token"] = candidate_plan.token
+                    market_data_plan["strategy_one_input_exclusions"] = list(candidate_plan.excluded_tickers)
                     market_data_plan["strategy_one_candidate_rule_digest"] = (
                         candidate_plan.candidate_rule_digest)
                     market_data_plan["strategy_one_scan_query_sha256"] = (

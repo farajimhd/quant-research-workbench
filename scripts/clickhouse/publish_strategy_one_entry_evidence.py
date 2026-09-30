@@ -42,7 +42,7 @@ from src.backend.backtest_market_data import (
 )
 from src.backend.backtest_v3_clients import v3_client
 from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
-from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.backtest_input_scope import certify_scoped_candidate_plan as certify_candidate_plan
 from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
 from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
 from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan

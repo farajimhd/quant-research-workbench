@@ -52,6 +52,7 @@ class CertifiedCandidatePlan:
     coverage: tuple[CandidateCoverage, ...]
     prepared: tuple[PreparedStrategyOneTicker, ...]
     token: str
+    excluded_tickers: tuple[str, ...] = ()
 
 
 def _immutable_prepared(row: PreparedStrategyOneTicker) -> PreparedStrategyOneTicker:
@@ -83,7 +84,7 @@ def project_candidate_plan(
             or through_boundary_ms % 100
             or full.token != _token(
                 full.source_build_id, full.candidate_rule_digest,
-                full.scan_query_sha256, full.coverage)):
+                full.scan_query_sha256, full.coverage, full.excluded_tickers)):
         raise ValueError("Strategy 1 horizon projection needs a full certified plan")
     by_ticker = {row.ticker: row for row in full.prepared}
     covered = {row.ticker: row for row in full.coverage
@@ -109,7 +110,7 @@ def project_candidate_plan(
                     str(through_boundary_ms)).encode()).hexdigest()
     return CertifiedCandidatePlan(
         full.source_build_id, full.candidate_rule_digest,
-        full.scan_query_sha256, full.coverage, tuple(selected), token)
+        full.scan_query_sha256, full.coverage, tuple(selected), token, full.excluded_tickers)
 
 
 def _rows(client: Any, query: str) -> list[dict[str, Any]]:
@@ -118,7 +119,7 @@ def _rows(client: Any, query: str) -> list[dict[str, Any]]:
 
 
 def _token(build_id: str, digest: str, scan_query_sha256: str,
-           coverage: tuple[CandidateCoverage, ...]) -> str:
+           coverage: tuple[CandidateCoverage, ...], excluded_tickers: tuple[str, ...] = ()) -> str:
     result = sha256(b"strategy-one-candidate-plan-v1\0")
     result.update(build_id.encode())
     result.update(digest.encode())
@@ -130,7 +131,36 @@ def _token(build_id: str, digest: str, scan_query_sha256: str,
             encoded = value.encode()
             result.update(len(encoded).to_bytes(4, "big"))
             result.update(encoded)
+    if excluded_tickers:
+        result.update(b"\0explicit-input-exclusions-v1\0")
+        result.update(json.dumps(excluded_tickers).encode())
     return result.hexdigest()
+
+
+def exclude_candidate_tickers(full: CertifiedCandidatePlan,
+                              excluded_tickers: tuple[str, ...]) -> CertifiedCandidatePlan:
+    """Project an operator-authorized scope after full source certification.
+
+    Parent products are immutable. Exclusions remove both execution candidates
+    and their derived-product coverage requirement, and become part of the run
+    token. Old runs can reconstruct their original empty exclusion list.
+    """
+    if excluded_tickers == ():
+        return full
+    if (full.excluded_tickers or full.token != _token(full.source_build_id,
+            full.candidate_rule_digest, full.scan_query_sha256, full.coverage)
+            or not isinstance(excluded_tickers, tuple)
+            or excluded_tickers != tuple(sorted(set(excluded_tickers)))
+            or any(not isinstance(ticker, str) or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,15}", ticker)
+                   for ticker in excluded_tickers)):
+        raise ValueError("Input exclusions require a full certified plan and explicit unique symbols")
+    excluded = set(excluded_tickers)
+    coverage = tuple(row for row in full.coverage if row.ticker not in excluded)
+    prepared = tuple(row for row in full.prepared if row.ticker not in excluded)
+    return CertifiedCandidatePlan(full.source_build_id, full.candidate_rule_digest,
+        full.scan_query_sha256, coverage, prepared,
+        _token(full.source_build_id, full.candidate_rule_digest, full.scan_query_sha256,
+               coverage, excluded_tickers), excluded_tickers)
 
 
 def certify_candidate_plan(market: CertifiedMarketDayPlan, *,

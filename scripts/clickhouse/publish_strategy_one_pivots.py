@@ -34,7 +34,7 @@ from scripts.clickhouse.publish_strategy_one_candidates import (
     DEFAULT_DAY, FULL_SESSION_BOUNDARY_MS, _certified_plan,
 )
 from src.backend.backtest_market_data import readonly_clickhouse_client
-from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.backtest_input_scope import certify_scoped_candidate_plan as certify_candidate_plan
 from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 from src.trading_runtime.strategy_one_pivot_schema import verify_tables

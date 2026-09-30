@@ -194,7 +194,8 @@ def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
         if rows is not None:
             _v7_chart_cache.move_to_end(cache_key)
     if rows is None:
-        from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+        from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan, exclude_candidate_tickers
+        from src.backend.backtest_input_scope import input_exclusions
         from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
         from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
         from src.backend.structural_v7_seed import certified_seed_plan
@@ -205,13 +206,32 @@ def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
         candidates = certify_candidate_plan(
             plan, candidate_rule_digest=RULE_DIGEST,
             through_boundary_ms=57_600_000, client=market_client)
-        selected = strategy_one_v7_tickers(candidates.prepared)
-        if ticker not in selected:
-            return [], "No certified V7 seed for this run ticker"
-        execution_plan = project_market_day_plan(plan, selected)
-        seeds = certified_seed_plan(execution_plan, market_client)
-        if seeds.token != definition["definition"]["causal_v7_plan_token"]:
+        # Retained runs first reconstruct their original full scope. An
+        # explicitly excluded scope is accepted only if its exact seed token
+        # matches the immutable run, never merely because coverage is absent.
+        excluded = input_exclusions(session.isoformat())
+        def alternatives():
+            yield candidates
+            if excluded:
+                yield exclude_candidate_tickers(candidates, excluded)
+        seeds = None
+        selected = ()
+        for candidate_scope in alternatives():
+            candidate_tickers = strategy_one_v7_tickers(candidate_scope.prepared)
+            if not candidate_tickers:
+                continue
+            try:
+                candidate_seeds = certified_seed_plan(
+                    project_market_day_plan(plan, candidate_tickers), market_client)
+            except (ValueError, RuntimeError):
+                continue
+            if candidate_seeds.token == definition["definition"]["causal_v7_plan_token"]:
+                seeds, selected = candidate_seeds, candidate_tickers
+                break
+        if seeds is None:
             raise RuntimeError("Saved chart V7 seed certificate differs from the run")
+        if ticker not in selected:
+            return [], "Ticker is outside this run's certified V7 scope"
         # The full saved seed token proves the run's selected population. The
         # chart needs only this ticker's interval children.
         ticker_plan = project_market_day_plan(plan, (ticker,))

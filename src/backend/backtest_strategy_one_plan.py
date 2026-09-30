@@ -21,7 +21,7 @@ from src.backend.backtest_strategy_one_activation import (
     CertifiedActivationPlan, load_strategy_one_activations,
 )
 from src.backend.backtest_strategy_one_candidate_store import (
-    CertifiedCandidatePlan, certify_candidate_plan,
+    CertifiedCandidatePlan, certify_candidate_plan, exclude_candidate_tickers,
 )
 from src.backend.backtest_strategy_one_entry_store import (
     CertifiedEntryEvidencePlan, certify_entry_evidence_plan,
@@ -156,9 +156,10 @@ def certify_strategy_one_fixed_plans(
         identity_future = pool.submit(
             read, lambda plan, reader: certify_identity_plan(plan, client=reader), market)
         candidate_future = pool.submit(
-            read, lambda plan, reader: certify_candidate_plan(
+            read, lambda plan, reader: exclude_candidate_tickers(certify_candidate_plan(
                 plan, candidate_rule_digest=RULE_DIGEST,
-                through_boundary_ms=57_600_000, client=reader), market)
+                through_boundary_ms=57_600_000, client=reader),
+                tuple(market_pins.get("strategy_one_input_exclusions") or ())), market)
         identities = identity_future.result()
         if identities.token != market_pins.get("strategy_one_identity_token"):
             raise ValueError("Strategy 1 dated broker identity seal changed")

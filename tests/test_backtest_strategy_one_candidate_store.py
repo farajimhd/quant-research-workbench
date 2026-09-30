@@ -12,7 +12,7 @@ from src.backend.backtest_strategy_one_activation import (
 )
 from src.backend.backtest_strategy_one_candidate_contract import candidate_content_hash
 from src.backend.backtest_strategy_one_candidate_store import (
-    certify_candidate_plan, project_candidate_plan,
+    certify_candidate_plan, project_candidate_plan, exclude_candidate_tickers,
 )
 from src.backend.fixed_bar_signal import first_squeeze_sql
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
@@ -103,6 +103,21 @@ def test_candidate_reader_seals_positive_and_empty_ticker():
     coverage_query = next(query for query in reader.queries
                           if "FROM arte.strategy_one_candidate_coverage_v1" in query)
     assert "(toDate('2026-08-18'),'ABCD'),(toDate('2026-08-18'),'EFGH')" in coverage_query
+
+
+def test_explicit_exclusion_changes_scope_token_and_preserves_parent():
+    full = certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                                  through_boundary_ms=THROUGH, client=Reader())
+    projected = exclude_candidate_tickers(full, ("ABCD",))
+    assert projected.excluded_tickers == ("ABCD",)
+    assert projected.prepared == ()
+    assert [row.ticker for row in projected.coverage] == ["EFGH"]
+    assert projected.token != full.token
+    assert len(full.prepared) == 1 and len(full.coverage) == 2
+    assert exclude_candidate_tickers(full, ()) is full
+    prefix = project_candidate_plan(projected, through_boundary_ms=30_000)
+    assert prefix.excluded_tickers == projected.excluded_tickers
+    assert prefix.prepared == ()
 
 
 def test_full_candidate_certificate_projects_an_exact_read_only_horizon():
