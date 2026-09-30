@@ -72,7 +72,7 @@ def test_entry_evidence_rejects_parent_intent_or_causal_mismatch():
                                       session_date=session), **kwargs)
 
 
-@pytest.mark.parametrize("strategy_number", [1, 9, 10, 11])
+@pytest.mark.parametrize("strategy_number", [1, 9, 10, 11, 12])
 def test_v4_commit_seals_exact_one_entry_child_to_the_typed_parent(monkeypatch, strategy_number):
     proposal, intent, session = _source(strategy_number)
     attempt, batch_id = str(uuid4()), str(uuid4())

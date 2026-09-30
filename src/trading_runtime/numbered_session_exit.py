@@ -31,7 +31,7 @@ def numbered_session_exit_intent(*, session_date: date, account_id: str,
         intent_id=str(uuid5(NAMESPACE_URL, identity)), ticker=ticker,
         event_time=at.astimezone(timezone.utc), action="exit", quantity=float(quantity),
         reference_price=float(bid), urgency="urgent", outside_rth=True,
-        reason=("strategy_two_session_exit" if strategy_number == 2 else "strategy_three_session_exit" if strategy_number == 3 else "strategy_four_session_exit" if strategy_number == 4 else "strategy_five_session_exit" if strategy_number == 5 else "strategy_six_session_exit" if strategy_number == 6 else "strategy_seven_session_exit" if strategy_number == 7 else "strategy_eight_session_exit" if strategy_number == 8 else "strategy_nine_session_exit" if strategy_number == 9 else "strategy_ten_session_exit" if strategy_number == 10 else "strategy_eleven_session_exit"), metadata={},
+        reason=("strategy_two_session_exit" if strategy_number == 2 else "strategy_three_session_exit" if strategy_number == 3 else "strategy_four_session_exit" if strategy_number == 4 else "strategy_five_session_exit" if strategy_number == 5 else "strategy_six_session_exit" if strategy_number == 6 else "strategy_seven_session_exit" if strategy_number == 7 else "strategy_eight_session_exit" if strategy_number == 8 else "strategy_nine_session_exit" if strategy_number == 9 else "strategy_ten_session_exit" if strategy_number == 10 else "strategy_eleven_session_exit" if strategy_number == 11 else "strategy_twelve_session_exit"), metadata={},
         execution_policy=ExecutionPolicy(
             policy_id="strategy-adaptive_urgent", name=ExecutionPolicyName.ADAPTIVE_URGENT,
             envelope=ExecutionEnvelope(persist_until_cancelled=True),

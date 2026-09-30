@@ -25,6 +25,7 @@ MISSING_COMPLETED_BOS = 1 << 1
 MISSING_BOS_SUPPORT = 1 << 2
 MISSING_INITIAL_PROTECTION = 1 << 3
 SESSION_ACTIVATION_REQUIRED = 1 << 4
+RECENT_BOS_REQUIRED = 1 << 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +37,7 @@ class StrategyOneStaticGate:
     def __post_init__(self) -> None:
         known_bits = (MISSING_FROZEN_GAP | MISSING_COMPLETED_BOS
                       | MISSING_BOS_SUPPORT | MISSING_INITIAL_PROTECTION
-                      | SESSION_ACTIVATION_REQUIRED)
+                      | SESSION_ACTIVATION_REQUIRED | RECENT_BOS_REQUIRED)
         if (self.rejection_mask.dtype != np.uint8
                 or self.eligible_indices.dtype != np.int64
                 or self.rejection_mask.shape != (len(self.facts),)
@@ -103,7 +104,7 @@ def compile_static_entry_gate(
                | (~bos).astype(np.uint8) * MISSING_COMPLETED_BOS
                | (~support).astype(np.uint8) * MISSING_BOS_SUPPORT
                | (~protection).astype(np.uint8) * MISSING_INITIAL_PROTECTION)
-    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11):
+    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
         # Shape (candidate_count,): compare original sealed episode clocks.
         # The completed opening bucket belongs to the preceding session.
         boundaries = np.fromiter((fact.boundary_ms for fact in facts), dtype=np.int64)
@@ -112,6 +113,14 @@ def compile_static_entry_gate(
             ((starts > 0) & (boundaries < 19_500_000))
             | ((starts > 43_200_000) & (boundaries < 57_000_000))))
         reasons |= (~same_session).astype(np.uint8) * SESSION_ACTIVATION_REQUIRED
+    if strategy_number == 12:
+        from src.trading_runtime.strategy_recent_bos_entry import recent_bos_entry_mask
+        # Existing sealed scalar clocks become aligned (N,) arrays once.
+        # Missing breaks use zero and retain the ordinary missing-BOS bit.
+        break_boundaries = np.fromiter(
+            (fact.bos_break_boundary_ms or 0 for fact in facts), dtype=np.int64)
+        recent = recent_bos_entry_mask(boundaries, break_boundaries)
+        reasons |= (~recent).astype(np.uint8) * RECENT_BOS_REQUIRED
     return StrategyOneStaticGate(
         tuple(facts), reasons, np.flatnonzero(reasons == 0).astype(np.int64))
 

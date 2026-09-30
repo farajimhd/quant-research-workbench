@@ -10,6 +10,8 @@ from datetime import date
 from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_strategy_one_entry_product import ActivationFact, CandidateFact
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
+from src.trading_runtime.strategy_recent_bos_entry import recent_bos_entry
+from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
 from src.trading_runtime.strategy_one_stateful import (
     StrategyOneEntryDecision, StrategyOneEntryInput,
     StrategyOneFinancialView, StrategyOneReentryWitness,
@@ -21,8 +23,10 @@ def propose_certified_strategy_one_entry(
     candidate: StrategyOneDecisionCandidate, fact: CandidateFact,
     activation: ActivationFact, financial: StrategyOneFinancialView,
     *, reentry: StrategyOneReentryWitness | None = None,
+    strategy_number: int = 1,
 ) -> StrategyOneEntryDecision:
     """Use only the certified completed row and exact producer-owned scalars."""
+    numbered_fixed_strategy(strategy_number)
     if (not isinstance(candidate, StrategyOneDecisionCandidate)
             or not isinstance(fact, CandidateFact)
             or not isinstance(activation, ActivationFact)):
@@ -51,6 +55,10 @@ def propose_certified_strategy_one_entry(
         raise ValueError("Strategy 1 candidate quote is from the future")
     if reentry is not None and not isinstance(reentry, StrategyOneReentryWitness):
         raise TypeError("Strategy 1 re-entry witness is not typed")
+    if strategy_number == 12 and not recent_bos_entry(
+            boundary_ms=fact.boundary_ms,
+            bos_break_boundary_ms=fact.bos_break_boundary_ms):
+        return StrategyOneEntryDecision("recent_supported_bos_required")
     evidence = StrategyOneEntryInput(
         fact.ticker, fact.boundary_ms, fact.episode_start_ms,
         activation.average_gap, fact.bos_break_boundary_ms,

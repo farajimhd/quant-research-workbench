@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import replace
 import numpy as np
+import pytest
 
 from src.backend.backtest_strategy_one_activation import StrategyOneActivation
 from src.backend.backtest_strategy_one_coordinator import run_strategy_one_proposals
@@ -269,3 +270,40 @@ def test_second_assignment_sees_post_submission_financial_state():
     assert submitted == ["assignment-1"]
     assert snapshots == [0, 1]
     assert counts.candidate_decisions == 2
+
+@pytest.mark.parametrize("boundary,bos,expected", [
+    (31_000, 1_000, 1), (31_100, 1_000, 0), (31_000, None, 0),
+])
+def test_strategy_twelve_coordinator_threads_number_into_real_admission(boundary, bos, expected):
+    candidate, fact, activation, financial = _facts()
+    candidate = replace(
+        candidate, market_row={**candidate.market_row, "boundary_ms": boundary},
+        evidence=replace(candidate.evidence, boundary_ms=boundary))
+    fact = replace(fact, boundary_ms=boundary, bos_break_boundary_ms=bos)
+    entry = CertifiedEntryEvidencePlan(
+        "b" * 16, "2026-08-18", (), (activation,), (fact,), "e" * 64)
+    proposals = []
+
+    async def noop(*args):
+        pass
+
+    async def views(*args):
+        return (financial,)
+
+    async def proposal(value):
+        proposals.append(value)
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date="2026-08-18", candidate_rows=iter((candidate,)),
+        activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
+        active_source=lambda *args: iter(()))
+    counts = asyncio.run(run_strategy_one_proposals(
+        scheduler, entry, process_broker_boundary=noop, financial_views=views,
+        on_entry_proposal=proposal, on_management=noop,
+        position_source_owned=lambda view: False,
+        financially_active_tickers=lambda: (), finish_boundary=noop,
+        observe_activation=noop, observe_completed_seconds=noop,
+        strategy_number=12))
+    assert counts.entry_proposals == expected
+    assert len(proposals) == expected
+    assert all(value.strategy_number == 12 for value in proposals)

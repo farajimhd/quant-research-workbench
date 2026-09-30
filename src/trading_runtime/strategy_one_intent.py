@@ -52,7 +52,7 @@ def strategy_one_entry_intent(
     if (not isinstance(proposal, StrategyOneEntryProposal)
             or not isinstance(session_date, date)
             or isinstance(session_date, datetime)
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
             or type(proposal.boundary_ms) is not int
             or not 0 < proposal.boundary_ms <= 57_600_000
             or proposal.boundary_ms % 100
@@ -67,6 +67,11 @@ def strategy_one_entry_intent(
             or not 0 < proposal.initial_stop < proposal.reference_ask
             < proposal.initial_target):
         raise ValueError("Strategy 1 intent needs an exact numbered proposal and session")
+    if proposal.strategy_number == 12:
+        from .strategy_recent_bos_entry import recent_bos_entry
+        if not recent_bos_entry(boundary_ms=proposal.boundary_ms,
+                                bos_break_boundary_ms=proposal.bos_break_boundary_ms):
+            raise ValueError("Strategy 12 entry requires recent supported BOS")
     boundary = (datetime.combine(session_date, time(4), tzinfo=_NEW_YORK)
                 + timedelta(milliseconds=proposal.boundary_ms))
     identity = (

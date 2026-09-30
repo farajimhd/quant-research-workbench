@@ -149,3 +149,55 @@ def test_mismatched_episode_or_ticker_fails_before_financial_admission():
     with pytest.raises(ValueError, match="differs"):
         propose_certified_strategy_one_entry(
             candidate, fact, replace(activation, ticker="BBB"), financial)
+
+@pytest.mark.parametrize("boundary,bos,allowed", [
+    (31_000, 1_000, True), (31_100, 1_000, False),
+    (31_000, 31_000, True), (31_000, None, False),
+])
+def test_strategy_twelve_recent_bos_matches_vectorized_mask(boundary, bos, allowed):
+    import numpy as np
+    from src.trading_runtime.strategy_recent_bos_entry import recent_bos_entry_mask
+    candidate, fact, activation, financial = _facts()
+    quote_at = int(market_day_boundary(
+        date(2026, 8, 18), boundary).timestamp() * 1_000_000) - 100_000
+    candidate = replace(
+        candidate, market_row={**candidate.market_row, "boundary_ms": boundary,
+                               "quote_timestamp_us": quote_at},
+        evidence=replace(candidate.evidence, boundary_ms=boundary))
+    fact = replace(fact, boundary_ms=boundary, bos_break_boundary_ms=bos)
+    decision = propose_certified_strategy_one_entry(
+        candidate, fact, activation, financial, strategy_number=12)
+    assert (decision.proposal is not None) is allowed
+    assert recent_bos_entry_mask(
+        np.array([boundary]), np.array([bos or 0])).tolist() == [allowed]
+    if bos is not None:
+        assert propose_certified_strategy_one_entry(
+            candidate, fact, activation, financial,
+            strategy_number=11).proposal is not None
+
+
+def test_strategy_twelve_recent_bos_preserves_reentry_and_permission_requirements():
+    candidate, fact, activation, financial = _facts()
+    financial = replace(
+        financial, completed_entries=1,
+        permissions=StrategyPermissions(observe=True, reenter=True))
+    witness = StrategyOneReentryWitness(30_500, "R3", 100_000, 99_900, 100_200)
+    assert propose_certified_strategy_one_entry(
+        candidate, fact, activation, financial, strategy_number=12,
+        reentry=witness).proposal is not None
+    assert propose_certified_strategy_one_entry(
+        candidate, fact, activation, financial,
+        strategy_number=12).reason == "reentry_structure_confirmation_unavailable"
+    denied = replace(financial, permissions=StrategyPermissions(observe=True))
+    assert propose_certified_strategy_one_entry(
+        candidate, fact, activation, denied, strategy_number=12,
+        reentry=witness).reason == "entry_permission_closed"
+    assert propose_certified_strategy_one_entry(
+        candidate, replace(fact, bos_break_boundary_ms=None), activation, financial,
+        strategy_number=12, reentry=witness).proposal is None
+
+
+@pytest.mark.parametrize("number", [True, 12.0, "12"])
+def test_numbered_adapter_rejects_untyped_strategy_number(number):
+    with pytest.raises(ValueError, match="numbered fixed"):
+        propose_certified_strategy_one_entry(*_facts(), strategy_number=number)

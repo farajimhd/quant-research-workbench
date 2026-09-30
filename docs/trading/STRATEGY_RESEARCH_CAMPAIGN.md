@@ -817,3 +817,62 @@ hypothesis should address weak or late momentum admission, measured against
 all four sessions and big-move winners. The +500-per-session goal stays active;
 repeated development on these two days still requires new certified sessions
 for independent validation.
+
+### Strategy 12 single-change specification (2026-09-30)
+
+The next research increment inherits exact Strategy 11 configuration
+`strategy-one-11:895d462c-df55-41df-95a4-b066c14cc6e9`, payload SHA256
+`6af195caed51284948e8809e53d0b679ab79b8064ff1fa736f3733d05a150dc2`.
+Its sole change is entry/reentry admission: the supported completed 1s BOS
+must be at most **30,000 ms old inclusive** at the completed 100ms proposal
+boundary. Missing BOS rejects; malformed/future clocks fail integrity
+validation. An existing holding is unaffected by break age. Preserve the
+60s early-failure exit, all existing sizing/costs, session policy, ask cap,
+fixed target, structural stops, no adds and LGHL scope certification.
+
+The rule uses existing producer-certified scalar timestamps and one native
+columnar comparison before survivor scheduling, plus the same scalar rule at
+sequential financial admission. It adds no indicator, structure calculation,
+source query or mutable checkpoint field. Publication still requires exact
+source sealing, registered guards, real-route tests and full-session runs.
+
+Screening Strategy 11's 69 actual proposals found that the 30s age rule
+rejects 11 losing positions and zero winners, with rejected historical net
+-744.787185. This is not a counterfactual return: later candidates, allocation,
+reentry and fills can change. A 5s maximum rejects nine winners; shorter
+squeeze-episode lifetimes also reject major winners. Broad rising 1s/5s
+histogram gates damage existing winners. Other momentum hypotheses remain
+research candidates, not inferred profitability claims.
+
+Read-only source diagnostics are under the campaign runtime root:
+`strategy11-entry-momentum-diagnostic-v1.json` (SHA256
+`e8cd58083063f5702d94b51a414e3a26452f642f7eb35b8636c73fca8c1f076f`)
+and `strategy11-entry-phase-diagnostic-v1.json` (SHA256
+`dcecb6a3c7c22c528c16ce242f9f4fedfebc60ccb6f76a9b6886e34534026783`).
+Initial pure/static baseline selection passed 40 tests. A synthetic one-million
+candidate native rule pass took 12.9–13.5 ms over five repetitions; this is
+rule throughput only, not evidence of full-backtest runtime. Strategy 12 is
+not yet published or backtested at this checkpoint.
+
+The complete certified source population audit covers 147,362 candidate facts
+across both dates under the authorized LGHL exclusion. Strategy 12 changes
+only the recent-BOS rejection bit: PM survivors reduce 1342 to 1215 on Aug 18
+and 1943 to 1768 on Aug 19; AH survivors remain 248 on Aug 18 and reduce 364
+to 359 on Aug 19. Other rejection bits are identical. Compiling the added
+rule increases the measured whole static-gate pass by approximately 7–8 ms
+per date. Artifact `strategy12-certified-static-population-audit-v1.json`,
+SHA256 `5edcc67c44d1cdc51fcdc552239f861c1b5e1926730c177f34ef714561e83b32`.
+Its first audit-script attempt failed on a NumPy uint8/negative-complement
+conversion before producing results; the explicit positive bitmask rerun
+passed. No source product or backtest was changed by that diagnostic.
+
+Strategy 12 implementation acceptance: 403 focused integration tests passed
+in 39.26 seconds, covering native/scalar parity, old-number controls,
+activation/session rules, actual coordinator dispatch, release/source mutation
+checks, forged stale entry rejection before Portfolio, raw normalized entry
+sealing, cold entry/source recovery, inherited first-held failure recovery,
+manager snapshots, Portfolio/OMS admission and fixed execution. Live and
+public interrupted resume remain closed. No table or grant migration is
+needed. Two reused worker lanes completed, with no failed or interrupted
+workers and no newly spawned agents in this increment. Publication and four
+actual backtests remain pending at this source checkpoint.

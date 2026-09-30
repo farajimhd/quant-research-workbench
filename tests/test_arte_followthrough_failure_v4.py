@@ -102,7 +102,7 @@ def test_missing_or_duplicate_witness_fails_closed():
             seal_followthrough_rows(None, rows, intents, (source_event, *base.events), (entry,))
 
 
-@pytest.mark.parametrize('strategy_number', [9, 10, 11])
+@pytest.mark.parametrize('strategy_number', [9, 10, 11, 12])
 def test_failure_source_binds_its_exact_successor_number(strategy_number):
     _, _, base, row, source, source_event, entry = fixture(strategy_number)
     intents = (source, *dict(_sealed_families(base))['trading_strategy_intent_v1'])
@@ -113,7 +113,7 @@ def test_failure_source_binds_its_exact_successor_number(strategy_number):
             intents, (source_event, *base.events), (entry,))
 
 
-@pytest.mark.parametrize('strategy_number', [8, 12, True])
+@pytest.mark.parametrize('strategy_number', [8, 13, True])
 def test_projector_rejects_unapproved_failure_consumers(strategy_number):
     witness, intent, base, *_ = fixture()
     with pytest.raises(ValueError, match='Strategy 9'):
@@ -123,7 +123,7 @@ def test_projector_rejects_unapproved_failure_consumers(strategy_number):
             strategy_number=strategy_number)
 
 
-@pytest.mark.parametrize("strategy_number", [9, 10, 11])
+@pytest.mark.parametrize("strategy_number", [9, 10, 11, 12])
 def test_memory_retry_preserves_exact_witness(strategy_number):
     witness, intent, base, _, *_ = fixture(strategy_number)
     journal = BacktestMemoryJournal(run_id=base.run_id)
@@ -137,8 +137,9 @@ def test_memory_retry_preserves_exact_witness(strategy_number):
         journal.append_followthrough_exit(**{**kwargs, 'strategy_revision': 10 if strategy_number == 9 else 9})
 
 
+@pytest.mark.parametrize("strategy_number", [11, 12])
 @pytest.mark.parametrize('first_held_ms,eligible', [(40000, True), (39900, False)])
-def test_strategy_eleven_persistence_inclusive_first_minute(first_held_ms, eligible):
+def test_strategy_eleven_persistence_inclusive_first_minute(first_held_ms, eligible, strategy_number):
     # The unbounded inherited factory can create both intents. Strategy 11
     # must independently reject the forged late witness at every authority.
     original = fixture()[0]
@@ -146,16 +147,16 @@ def test_strategy_eleven_persistence_inclusive_first_minute(first_held_ms, eligi
     _, intent, base, row, source, source_event, entry = fixture(10, witness)
     journal = BacktestMemoryJournal(run_id=base.run_id)
     kwargs = dict(intent=intent, witness=witness, source_entry_intent_id=str(UUID(int=77)),
-        account_id='DU1', strategy_id='early-squeeze-strategy', strategy_revision=11)
-    row = {**row, 'strategy_number': 11}
-    entry = {**entry, 'strategy_number': 11}
+        account_id='DU1', strategy_id='early-squeeze-strategy', strategy_revision=strategy_number)
+    row = {**row, 'strategy_number': strategy_number}
+    entry = {**entry, 'strategy_number': strategy_number}
     intents = (source, *dict(_sealed_families(base))['trading_strategy_intent_v1'])
     calls = (
         lambda: journal.append_followthrough_exit(**kwargs),
         lambda: restore_failure(row),
         lambda: project_followthrough_failure(witness, intent, str(UUID(int=77)),
             run_id=base.run_id, batch_id=base.batch_id, parent_record_id=base.events[0]['record_id'],
-            assignment_id='assignment-1', strategy_number=11),
+            assignment_id='assignment-1', strategy_number=strategy_number),
         lambda: seal_followthrough_rows(None, (row,), intents, (source_event, *base.events), (entry,)),
     )
     for call in calls:
@@ -177,7 +178,7 @@ def test_original_failure_persistence_retains_unbounded_age(strategy_number):
 
 
 @pytest.mark.parametrize("compound_mode", [True, False])
-@pytest.mark.parametrize("strategy_number", [9, 10, 11])
+@pytest.mark.parametrize("strategy_number", [9, 10, 11, 12])
 def test_compound_publishes_full_graph_and_cold_verifies_witness(compound_mode, strategy_number):
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent

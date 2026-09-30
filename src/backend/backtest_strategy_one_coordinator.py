@@ -145,6 +145,7 @@ async def run_strategy_one_proposals(
                 continue
             decision = propose_certified_strategy_one_entry(
                 candidate, fact, activation, current,
+                strategy_number=strategy_number,
                 reentry=(await timed("strategy_one_reentry", reentry_witness(current, candidate))
                          if current.completed_entries and reentry_witness is not None
                          else None))

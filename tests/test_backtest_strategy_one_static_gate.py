@@ -32,6 +32,40 @@ def test_static_gate_compiles_eligible_prefix_without_market_query():
         compiled.rejection_mask[0] = 1
 
 
+def test_strategy_twelve_recent_bos_native_mask_preserves_old_numbers_and_prefix():
+    from src.backend.backtest_strategy_one_static_gate import RECENT_BOS_REQUIRED
+    from src.trading_runtime.strategy_recent_bos_entry import recent_bos_entry
+    plans = _plans()
+    entry = _entry(plans)
+    boundaries = np.array([31_000, 31_100, 61_000], dtype=np.int64)
+    starts = np.full(3, 30_000, dtype=np.int64)
+    prepared = replace(plans[1].prepared[0], source_rows=3,
+        row_index=np.arange(3), boundary_ms=boundaries, episode_start_ms=starts,
+        macd_boundary_ms=np.tile([31_000] * 4, (3, 1)),
+        stop_bar_boundary_ms=np.full(3, 30_000), stop_low_int=np.full(3, 99_000))
+    candidates = replace(plans[1], prepared=(prepared,))
+    facts = tuple(replace(entry.candidates[0], boundary_ms=int(at),
+                          bos_break_boundary_ms=1_000) for at in boundaries)
+    changed = replace(entry, candidates=facts)
+    gate = compile_static_entry_gate(candidates, changed, strategy_number=12)
+    assert gate.rejection_mask.tolist() == [0, RECENT_BOS_REQUIRED, RECENT_BOS_REQUIRED]
+    assert gate.eligible_indices.tolist() == [0]
+    assert (gate.rejection_mask == 0).tolist() == [
+        recent_bos_entry(boundary_ms=int(at), bos_break_boundary_ms=1_000)
+        for at in boundaries]
+    for number in range(1, 12):
+        assert compile_static_entry_gate(candidates, changed,
+                                         strategy_number=number).rejection_mask.tolist() == [0, 0, 0]
+    prefix = replace(prepared, boundary_ms=boundaries[:1], episode_start_ms=starts[:1])
+    prefix_gate = compile_static_entry_gate(replace(candidates, prepared=(prefix,)),
+                                           changed, strategy_number=12)
+    assert np.array_equal(prefix_gate.rejection_mask, gate.rejection_mask[:1])
+    survivors, activations = project_static_survivors(candidates, plans[2], gate)
+    assert survivors.prepared[0].boundary_ms.tolist() == [31_000]
+    assert survivors.coverage is candidates.coverage
+    assert activations is plans[2]
+
+
 @pytest.mark.parametrize("boundary,start,allowed", [
     (100, 0, False), (100, 100, True),
     (19_499_900, 19_499_000, True), (19_500_000, 19_499_000, False),
