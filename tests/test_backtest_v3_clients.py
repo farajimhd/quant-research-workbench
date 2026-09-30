@@ -5,6 +5,12 @@ import pytest
 from src.backend.backtest_v3_clients import v3_client, v3_clients
 
 
+@pytest.fixture(autouse=True)
+def reset_listener_cache(monkeypatch):
+    from src.trading_runtime import clickhouse_transport
+    monkeypatch.setattr(clickhouse_transport, "_verified_listener", None)
+
+
 def _env():
     result = {}
     for role, user in (("READ", "backtest_v3_reader"),
@@ -82,8 +88,8 @@ def test_managed_workstation_uses_ipv4_transport_without_changing_credentials(
     from src.trading_runtime import clickhouse_transport
     monkeypatch.setattr(clickhouse_transport.platform, "node",
                         lambda: "DESKTOP-SAAI85T")
-    monkeypatch.setattr(clickhouse_transport.socket, "gethostbyname",
-                        lambda host: "192.168.1.218")
+    monkeypatch.setattr(clickhouse_transport, "_probe_workstation_listener",
+                        lambda port: "http://192.168.1.218:18123")
     env = _env()
     env["BACKTEST_V3_READ_CLICKHOUSE_URL"] = "http://DESKTOP-SAAI85T:18123"
     calls = []
@@ -148,3 +154,32 @@ def test_workstation_transport_never_rewrites_tls_or_other_endpoints(monkeypatch
                 "http://other-host:18123",
                 "http://DESKTOP-SAAI85T:18123/custom"):
         assert clickhouse_transport.workstation_ipv4_transport(url) == url
+
+
+def test_concurrent_workers_share_probe_and_expired_failure_is_not_cached(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from src.trading_runtime import clickhouse_transport as transport
+
+    monkeypatch.setattr(transport.platform, "node", lambda: "DESKTOP-SAAI85T")
+    now = [100.0]
+    monkeypatch.setattr(transport, "monotonic", lambda: now[0])
+    probes = []
+
+    def probe(port):
+        probes.append(port)
+        if len(probes) == 2:
+            raise RuntimeError("listener unavailable")
+        return "http://192.168.1.218:18123"
+
+    monkeypatch.setattr(transport, "_probe_workstation_listener", probe)
+    url = "http://DESKTOP-SAAI85T:18123"
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(transport.workstation_ipv4_transport, [url] * 32))
+    assert results == ["http://192.168.1.218:18123"] * 32
+    assert probes == [18123]
+    now[0] += 6
+    with pytest.raises(RuntimeError, match="listener unavailable"):
+        transport.workstation_ipv4_transport(url)
+    assert transport._verified_listener is None
+    assert transport.workstation_ipv4_transport(url) == results[0]
+    assert len(probes) == 3

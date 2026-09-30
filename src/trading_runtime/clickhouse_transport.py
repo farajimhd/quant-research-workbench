@@ -8,7 +8,14 @@ from __future__ import annotations
 from ipaddress import IPv4Address
 import platform
 import socket
+from threading import Lock
+from time import monotonic
 from urllib.parse import urlsplit
+
+
+_probe_lock = Lock()
+_verified_listener: tuple[str, float] | None = None
+_LISTENER_TTL_SECONDS = 5.0
 
 
 def workstation_ipv4_transport(url: str) -> str:
@@ -20,9 +27,25 @@ def workstation_ipv4_transport(url: str) -> str:
             or parsed.username or parsed.password
             or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
         return url
+    # Client factories fan out across read workers. Simultaneous short TCP
+    # probes can overflow the listener backlog even when HTTP is healthy.
+    # Share only a recent successful probe; real requests still fail closed.
+    global _verified_listener
+    with _probe_lock:
+        if _verified_listener is not None:
+            endpoint, expires = _verified_listener
+            if monotonic() < expires:
+                return endpoint
+        _verified_listener = None
+        endpoint = _probe_workstation_listener(parsed.port)
+        _verified_listener = (endpoint, monotonic() + _LISTENER_TTL_SECONDS)
+        return endpoint
+
+
+def _probe_workstation_listener(port: int) -> str:
     try:
         resolved = socket.getaddrinfo(
-            "DESKTOP-SAAI85T", parsed.port, family=socket.AF_INET,
+            "DESKTOP-SAAI85T", port, family=socket.AF_INET,
             type=socket.SOCK_STREAM)
     except OSError as exc:
         raise RuntimeError("Workstation ClickHouse IPv4 resolution failed") from exc
@@ -34,8 +57,8 @@ def workstation_ipv4_transport(url: str) -> str:
         raise RuntimeError("Workstation ClickHouse resolved outside the private LAN")
     for address in private_addresses:
         try:
-            with socket.create_connection((str(address), parsed.port), timeout=0.25):
-                return f"http://{address}:{parsed.port}"
+            with socket.create_connection((str(address), port), timeout=0.25):
+                return f"http://{address}:{port}"
         except OSError:
             continue
     raise RuntimeError("Workstation ClickHouse has no reachable private IPv4 listener")
