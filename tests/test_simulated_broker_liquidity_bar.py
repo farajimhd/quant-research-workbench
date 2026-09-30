@@ -72,6 +72,25 @@ def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,
 
 
 class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exact_position_quantity_matches_public_projection(self):
+        broker = SimulatedBrokerAdapter(
+            ["DU1"], mode=RunMode.BACKTEST, initial_time=START,
+            fixed_bar_mode=True,
+        )
+        await broker.initialize()
+        self.assertEqual(broker.position_quantity("DU1", 1, "AAPL"), 0.0)
+        broker._positions["DU1"][1] = SimpleNamespace(
+            conid=1, ticker="AAPL", quantity=5.0, avg_cost=10.0,
+            realized_pnl=0.0)
+        projected = await broker.positions("DU1")
+        self.assertEqual(
+            broker.position_quantity("DU1", 1, "AAPL"),
+            projected[0].position)
+        self.assertEqual(broker.position_quantity("DU1", 1, "MSFT"), 0.0)
+        self.assertEqual(broker.position_quantity("DU1", 2, "AAPL"), 0.0)
+        with self.assertRaisesRegex(ValueError, "Unknown account"):
+            broker.position_quantity("OTHER", 1, "AAPL")
+
     async def test_fixed_bar_live_orders_reuses_unchanged_snapshots(self):
         broker = SimulatedBrokerAdapter(
             ["TEST"], mode=RunMode.BACKTEST, initial_time=START,

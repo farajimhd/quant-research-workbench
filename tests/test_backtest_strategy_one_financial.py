@@ -42,6 +42,21 @@ def test_financial_view_uses_exact_position_and_live_oms_state():
     assert view.current_purchase_groups == 1
 
 
+def test_financial_view_prefers_exact_broker_quantity_without_account_projection():
+    requested = []
+    def exact(account_id, conid, ticker):
+        requested.append((account_id, conid, ticker))
+        return 5.0
+    async def forbidden(_account_id):
+        pytest.fail("Strategy 1 projected the full broker position account")
+    broker = SimpleNamespace(position_quantity=exact, positions=forbidden)
+    manager = SimpleNamespace(snapshots=lambda: [])
+    view = asyncio.run(read_strategy_one_financial_view(
+        _assignment(), broker, manager))
+    assert view.position_quantity == 5.0
+    assert requested == [("DU1", 123, "AAA")]
+
+
 def test_financial_view_counts_add_groups_not_partial_fills():
     async def positions(_account):
         return [SimpleNamespace(conid=123, contractDesc="AAA", position=7.)]

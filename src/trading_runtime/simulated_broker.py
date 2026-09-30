@@ -782,6 +782,20 @@ class SimulatedBrokerAdapter:
     async def positions(self, account_id: str) -> list[PortfolioPosition]:
         return self._position_rows(account_id)
 
+    def position_quantity(self, account_id: str, conid: int, ticker: str) -> float:
+        """Read one held quantity without projecting the whole account ledger.
+
+        Strategy 1 calls this after each completed broker boundary. The
+        account and instrument checks match the public positions() projection;
+        the mutable broker position remains the sole financial authority.
+        """
+        self._require_account(account_id)
+        position = self._positions[account_id].get(conid)
+        if (position is None or abs(position.quantity) < 1e-12
+                or position.ticker.upper() != ticker.upper()):
+            return 0.0
+        return float(position.quantity)
+
     def _position_rows(self, account_id: str) -> list[PortfolioPosition]:
         self._require_account(account_id)
         rows: list[PortfolioPosition] = []

@@ -38,9 +38,11 @@ async def read_strategy_one_financial_views(
             or not callable(getattr(broker, "positions", None))
             or not callable(getattr(order_manager, "snapshots", None))):
         raise TypeError("Strategy 1 financial views need one ticker, broker, and OMS")
+    exact_quantity = getattr(broker, "position_quantity", None)
     by_account = {}
-    for account_id in dict.fromkeys(row.account_id for row in assignments):
-        by_account[account_id] = await broker.positions(account_id)
+    if not callable(exact_quantity):
+        for account_id in dict.fromkeys(row.account_id for row in assignments):
+            by_account[account_id] = await broker.positions(account_id)
     wanted = {(row.account_id, row.assignment_id): row for row in assignments}
     by_assignment = {key: [] for key in wanted}
     indexed_snapshots = getattr(order_manager, "snapshots_for_assignment", None)
@@ -60,10 +62,16 @@ async def read_strategy_one_financial_views(
                 by_assignment[key].append(group)
     result = []
     for assignment in assignments:
-        positions = by_account[assignment.account_id]
-        quantity = sum(float(row.position) for row in positions
-                       if int(row.conid) == assignment.conid
-                       and str(row.contractDesc).upper() == assignment.ticker)
+        if callable(exact_quantity):
+            quantity = exact_quantity(
+                assignment.account_id, assignment.conid, assignment.ticker)
+            if type(quantity) not in (int, float):
+                raise TypeError("Strategy 1 exact broker quantity must be numeric")
+        else:
+            positions = by_account[assignment.account_id]
+            quantity = sum(float(row.position) for row in positions
+                           if int(row.conid) == assignment.conid
+                           and str(row.contractDesc).upper() == assignment.ticker)
         groups = by_assignment[(assignment.account_id, assignment.assignment_id)]
         if len({row.group_id for row in groups}) != len(groups):
             raise RuntimeError("Strategy 1 OMS repeated a financial group")
