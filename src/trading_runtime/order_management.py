@@ -427,6 +427,9 @@ class OrderManagementEngine:
         # boundary. Index the authoritative mutable groups once at admission;
         # never sort/snapshot every historical group for each 100 ms read.
         self._groups_by_assignment: dict[tuple[str, str], list[_ManagedOrderGroup]] = {}
+        # Quote processing is per ticker. Keep references to the authoritative
+        # mutable groups in insertion order; no duplicate order state is stored.
+        self._groups_by_ticker: dict[str, list[_ManagedOrderGroup]] = {}
         self._entry_trade_prices: dict[str, tuple[datetime, float]] = {}
         self._body_entry_group_ids: set[str] = set()
         self._group_by_client_id: dict[str, str] = {}
@@ -469,19 +472,18 @@ class OrderManagementEngine:
 
     def on_market_snapshot(self, snapshot: ExecutionMarketSnapshot) -> None:
         self.execution_market_data.update(snapshot)
-        for group in self._groups.values():
-            if group.intent.ticker.upper() == snapshot.ticker.upper():
-                group.reprice_event.set()
-                group.high_water_price = max(group.high_water_price, snapshot.bid)
-                group.low_water_price = (
-                    snapshot.ask
-                    if group.low_water_price <= 0
-                    else min(group.low_water_price, snapshot.ask)
+        for group in self._groups_by_ticker.get(snapshot.ticker.upper(), ()):
+            group.reprice_event.set()
+            group.high_water_price = max(group.high_water_price, snapshot.bid)
+            group.low_water_price = (
+                snapshot.ask
+                if group.low_water_price <= 0
+                else min(group.low_water_price, snapshot.ask)
+            )
+            if group.protection_task is None or group.protection_task.done():
+                group.protection_task = asyncio.create_task(
+                    self._ratchet_dynamic_protection(group, snapshot)
                 )
-                if group.protection_task is None or group.protection_task.done():
-                    group.protection_task = asyncio.create_task(
-                        self._ratchet_dynamic_protection(group, snapshot)
-                    )
 
     async def expire_entry_deadlines(self, event_time: datetime) -> tuple[OrderGroupSnapshot, ...]:
         """Cancel entry quantity that survived its causal execution deadline.
@@ -1693,6 +1695,7 @@ class OrderManagementEngine:
         self._groups[group.group_id] = group
         self._groups_by_assignment.setdefault(
             (group.account_id, assignment_id), []).append(group)
+        self._groups_by_ticker.setdefault(group.intent.ticker.upper(), []).append(group)
 
     def snapshots_for_assignment(
         self, account_id: str, assignment_id: str,
