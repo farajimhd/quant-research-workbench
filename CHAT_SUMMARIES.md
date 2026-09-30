@@ -11,6 +11,10 @@ each year.
 
 TASK-0217 / TASK-0197. Four checkpoints produced 11,696 reconciled predictions on selected August windows, with mixed accuracy and calibration. Extended-hours samples had no eligible origins. BF16 batch parity failed; FP32 passed 16-symbol parity but missed 24/120 paced deadlines (p95 1.341 seconds). GC stacks identified repeated full-cache sorting as the pause trigger; the incremental-ordering fix remains unimplemented. User stopped evaluation; follow-up paused, no evaluation-owned workers remain, production unchanged and acceptance sealed. 100 symbols/second remains unverified. Resume only on a new request.
 
+### [2026-09-23 08:22 PDT - Strategy 1 persisted Backtest and Canvas repair](docs/codex/chat-summaries/2026/CHAT-20260923-0822-vectorized-backtest-canvas.md)
+
+TASK-0218, with earlier TASK-0211/0212 context. Covers persisted 100 ms market inputs, normalized ClickHouse journals, Strategy 1 numbering and approved add correction, provisional structural V1, and laptop app authority. Later work restores certified Canvas interaction, open-position rails and segmented labels, causal as-of clock, and query-driven Activity/orders/fills while retaining eager positions. Commit 29f2ff9a4 passed 30 tests, build, browser fixtures, and read-only database queries (0.15-0.38s filtered reads; 12.991s cold audit). Local backend activation remains required. Full-day diagnostic remains failed; live/resume gates and broad acceptance remain open. Chat concluded September 30; no automatic continuation authorized.
+
 ### [2026-09-18 - Early Squeeze 323-328 and reusable V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
 
 328 / release 11 is active: below-lower-band breakout reset and one original

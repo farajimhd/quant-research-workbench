@@ -9,8 +9,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CSV_PATH = ROOT / "TASK_HISTORY.csv"
 MARKDOWN_PATH = ROOT / "TASK_HISTORY.md"
-CHAT_SUMMARIES_PATH = ROOT / "docs" / "codex" / "CHAT_SUMMARIES.md"
-CHAT_SUMMARIES_FALLBACK_PATH = ROOT / "CHAT_SUMMARIES.md"
+# The root index is canonical under CHAT_SUMMARY_PROMPT.md. Retain the old
+# docs index only as a fallback for older checkouts, never as preferred state.
+CHAT_SUMMARIES_PATH = ROOT / "CHAT_SUMMARIES.md"
+CHAT_SUMMARIES_FALLBACK_PATH = ROOT / "docs" / "codex" / "CHAT_SUMMARIES.md"
 
 EXPECTED_COLUMNS = [
     "id",
@@ -105,6 +107,9 @@ def read_chat_summary_index() -> list[str]:
 
 
 def render(rows: list[dict[str, str]]) -> str:
+    # Validate the canonical index, but do not duplicate its evolving contents
+    # in the task ledger. Narrative history has one discoverable authority.
+    read_chat_summary_index()
     focus_rows = [row for row in rows if row["current_focus"].strip().lower() == "true"]
     status_counts: dict[str, int] = {}
     for row in rows:
@@ -192,7 +197,8 @@ def render(rows: list[dict[str, str]]) -> str:
             "## Long Chat Summaries",
             "",
             "<!-- GENERATED FROM CHAT_SUMMARIES.md; DO NOT EDIT THIS SECTION DIRECTLY. -->",
-            *read_chat_summary_index(),
+            "See [Chat Summaries](CHAT_SUMMARIES.md) for the chronological index",
+            "and links to the detailed, bounded narratives under `docs/codex/chat-summaries/`.",
         ]
     )
 
