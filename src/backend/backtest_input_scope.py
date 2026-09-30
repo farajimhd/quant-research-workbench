@@ -38,4 +38,9 @@ def certify_scoped_candidate_plan(market, **kwargs):
     excluded = input_exclusions(market.sessions[0])
     if excluded:
         print(f"Backtest input exclusions | {market.sessions[0]} | {','.join(excluded)}", flush=True)
-    return exclude_candidate_tickers(full, excluded)
+    # Zero-candidate listings already have no execution or structural scope.
+    # Keep their full source seal so existing per-ticker evidence remains
+    # reusable. Project only exclusions that remove actual candidate rows.
+    occupied = {row.ticker for row in full.coverage if row.candidate_count > 0}
+    effective = tuple(ticker for ticker in excluded if ticker in occupied)
+    return exclude_candidate_tickers(full, effective)
