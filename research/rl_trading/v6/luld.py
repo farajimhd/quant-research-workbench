@@ -11,6 +11,7 @@ import polars as pl
 
 VERSION = 'rl-v6-modeled-luld-100ms-v2'
 STEP = 100_000
+QUOTE_FRESHNESS_US = 500_000  # Evidence freshness is independent of grid resolution.
 
 
 def project(start_us, end_us, trades, quotes, *, previous_close, tier):
@@ -46,7 +47,7 @@ def project(start_us, end_us, trades, quotes, *, previous_close, tier):
             bid[positions], ask[positions] = (frame[name].to_numpy() for name in names)
             quote_us = frame['quote_us'].to_numpy()
             fresh[positions] = ((quote_us > 0) & (quote_us <= clocks[positions]) &
-                (clocks[positions]-quote_us <= STEP) & (bid[positions] > 0) &
+                (clocks[positions]-quote_us <= QUOTE_FRESHNESS_US) & (bid[positions] > 0) &
                 (ask[positions] >= bid[positions]))
     cs, cc = np.r_[0., np.cumsum(sums)], np.r_[0, np.cumsum(counts)]
     left = np.maximum(np.arange(n)+1-300_000_000//STEP, 0)
