@@ -145,13 +145,17 @@ def certified_saved_run_plan(
         journal_client, normalized, after_sequence=0, limit=1)
     context = review["run"]
     cursor = review["market_cursor"]
-    if (review["status"] != "completed" or not review["market_cursor_verified"]
+    # A failed terminal run remains failed, but its cold-verified market cursor
+    # is still a safe read-only ceiling for chart inspection. Do not turn that
+    # evidence into Backtest acceptance or admit stopped/unverified prefixes.
+    if (review["status"] not in {"completed", "failed"}
+            or not review["market_cursor_verified"]
             or not isinstance(cursor, dict)
             or context["mode"] != "backtest"
             or context["strategy_id"] != STRATEGY_ID
             or int(context["strategy_revision"]) != STRATEGY_NUMBER
             or context["evaluation_interval_ms"] != 100):
-        raise ValueError("Saved Strategy 1 chart needs a completed verified cursor")
+        raise ValueError("Saved Strategy 1 chart needs a terminal verified cursor")
     definition = load_backtest_definition(
         journal_client, normalized, run_context=context)
     release = certify_strategy_one_configuration(market_client)

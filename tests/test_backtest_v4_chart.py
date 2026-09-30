@@ -18,7 +18,8 @@ HASH = "b" * 64
 REVISION_ID = "strategy-one-1:11111111-1111-4111-8111-111111111111"
 
 
-def _fixtures(monkeypatch, *, token: str = TOKEN):
+def _fixtures(monkeypatch, *, token: str = TOKEN,
+              status: str = "completed"):
     context = {
         "run_id": RUN_ID, "mode": "backtest", "strategy_id": STRATEGY_ID,
         "strategy_revision": STRATEGY_NUMBER, "evaluation_interval_ms": 100,
@@ -26,7 +27,7 @@ def _fixtures(monkeypatch, *, token: str = TOKEN):
         "market_plan_token": TOKEN,
     }
     monkeypatch.setattr(subject, "load_v4_terminal_review_page", lambda *a, **kw: {
-        "run": context, "status": "completed", "market_cursor_verified": True,
+        "run": context, "status": status, "market_cursor_verified": True,
         "market_cursor": {"session_date": "2026-08-18", "boundary_ms": 19_500_000},
     })
     monkeypatch.setattr(subject, "load_backtest_definition", lambda *a, **kw: {
@@ -85,6 +86,23 @@ def test_cold_chart_uses_only_exact_reproduced_plan_and_completed_cursor(monkeyp
     assert called[1][1]["read_client"] is market_client
     assert called[1][1]["page_end"] == subject.market_day_boundary(
         date(2026, 8, 18), 18_000_000)
+
+
+def test_failed_terminal_chart_uses_verified_cursor_but_stopped_cannot(monkeypatch):
+    plan = _fixtures(monkeypatch, status="failed")
+    session, context, cursor, selected = subject.certified_saved_run_plan(
+        object(), object(), run_id=RUN_ID, plan_loader=lambda **_kwargs: plan)
+    assert session == date(2026, 8, 18)
+    assert context["run_id"] == RUN_ID
+    assert cursor["boundary_ms"] == 19_500_000
+    assert selected is plan
+
+    _fixtures(monkeypatch, status="stopped")
+    with pytest.raises(ValueError, match="terminal verified cursor"):
+        subject.certified_saved_run_plan(
+            object(), object(), run_id=RUN_ID,
+            plan_loader=lambda **_kwargs: pytest.fail(
+                "stopped run reached market read"))
 
 
 def test_cold_chart_rejects_different_certificate_without_market_read(monkeypatch):

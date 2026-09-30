@@ -755,8 +755,10 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (savedV4Focus && definition.id === "charts_quotes") return {
-      detail: "Certified saved Strategy 1 bars, indicators, and liquidity at the committed Backtest boundary.",
-      sourceLabel: "ARTE verified V4",
+      detail: savedV4Focus.page.status === "failed"
+        ? "Failed Backtest; market and journal evidence are verified only through the committed boundary."
+        : "Certified saved Strategy 1 bars, indicators, and liquidity at the committed Backtest boundary.",
+      sourceLabel: savedV4Focus.page.status === "failed" ? "Failed · ARTE V4" : "ARTE verified V4",
       status: "ready",
     };
     if (definition.id === "labeler") return { detail: "Historical session selection and save status are shown inside Labeler.", sourceLabel: "QMD History · Manual labels", status: "ready" };
