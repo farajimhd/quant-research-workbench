@@ -7952,15 +7952,16 @@ function drawTradeAnnotationPrimitiveGeometry(
       // Closed lifecycles below retain their exact event-time geometry.
       const quantity = annotation.currentQuantity;
       const size = Number.isFinite(quantity) ? `${quantity}` : "—";
-      const fillColor = chartSemanticColor("--chart-position-fill", "#17365D");
+      const fillColor = chartSemanticColor("--chart-position-fill", "#3596FD");
       const lossColor = chartSemanticColor("--chart-position-stop", "#B91C1C");
       const targetColor = chartSemanticColor("--chart-position-target", "#087F3D");
       const labelColor = chartSemanticColor("--chart-position-label", "#FFFFFF");
+      const quantityColor = chartSemanticColor("--chart-position-quantity", "#E2E8F0");
       const mark = annotation.openMarkPrice;
       const pnl = Number.isFinite(quantity) && Number.isFinite(mark)
         ? ((mark as number) - annotation.entryPrice) * (quantity as number)
           * (annotation.positionSide === "SHORT" ? -1 : 1) : null;
-      const rail = (price: number, label: string, color: string,
+      const rail = (price: number, parts: TradeLabelPart[], color: string,
         line: StrategyPresentationStyleSettings, text: StrategyPresentationStyleSettings) => {
         const y = priceSeries.priceToCoordinate(price);
         if (y === null || y < 0 || y > height) return;
@@ -7970,15 +7971,30 @@ function drawTradeAnnotationPrimitiveGeometry(
           fillColor: color, fillOpacity: 1, fillBlur: 0, opacity: 1,
           borderColor: color, borderOpacity: 1, borderWidth: 1, borderStyle: "solid",
           labelSize: 11, labelPaddingX: 6, labelPaddingY: 3, fontWeight: 500 };
+        const protection = parts.some(part => part.tone === "reason");
+        const partStyles: TradeLabelPartSettings = {
+          reason: box,
+          size: { ...box, fillColor: quantityColor, color: readChartPalette().text },
+          priceLong: protection ? { ...box, fillColor: chartBackground, color } : box,
+          pnlWin: { ...box, fillColor: targetColor },
+          pnlLoss: { ...box, fillColor: lossColor },
+          label: { ...box, fillColor: chartBackground, color: readChartPalette().text },
+        };
         if (line.visible) drawCanvasTradeLine(context, 0, width, y, color, 1, "solid", 1);
-        if (text.visible) drawCanvasTradeLabel(context, label, width - 4,
+        if (text.visible) drawCanvasTradeLabel(context, parts.map(part => part.text).join(" "), width - 4,
           y - (box.labelSize + box.labelPaddingY * 2) / 2,
           labelColor, chartBackground, "right",
-          width, height, box, undefined, elements.connector);
+          width, height, box, undefined, elements.connector, parts, partStyles);
       };
       rail(annotation.entryPrice,
-        `${size} · ${formatPrice(annotation.entryPrice)} · ${pnl === null ? "—" : `${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}`,
+        [{ text: size, tone: "size" }, { text: formatPrice(annotation.entryPrice), tone: "priceLong" },
+          { text: pnl === null ? "—" : `${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`,
+            tone: pnl === null ? "label" : pnl >= 0 ? "pnlWin" : "pnlLoss" }],
         fillColor, elements.entryLine, elements.entryLabel);
+      const protectionParts = (kind: "SL" | "TP", price: number): TradeLabelPart[] => [
+        { text: kind, tone: "reason" }, { text: size, tone: "size" },
+        { text: formatPrice(price), tone: "priceLong" },
+      ];
       if (annotation.protectionPath) {
         const current = new Map<string, NonNullable<TradeAnnotation["protectionPath"]>[number]>();
         for (const point of annotation.protectionPath) {
@@ -7991,15 +8007,15 @@ function drawTradeAnnotationPrimitiveGeometry(
           if (!point.active || drawn.has(key)) continue;
           drawn.add(key);
           const stop = point.kind === "stop";
-          rail(point.price, `${stop ? "SL" : "TP"} · ${size} · ${formatPrice(point.price)}`,
+          rail(point.price, protectionParts(stop ? "SL" : "TP", point.price),
             stop ? lossColor : targetColor, stop ? elements.stopLine : elements.targetLine,
             stop ? elements.stopLabel : elements.targetLabel);
         }
       } else {
         if (typeof annotation.stopPrice === "number") rail(annotation.stopPrice,
-          `SL · ${size} · ${formatPrice(annotation.stopPrice)}`, lossColor, elements.stopLine, elements.stopLabel);
+          protectionParts("SL", annotation.stopPrice), lossColor, elements.stopLine, elements.stopLabel);
         annotation.targetPrices?.forEach(price => rail(price,
-          `TP · ${size} · ${formatPrice(price)}`, targetColor, elements.targetLine, elements.targetLabel));
+          protectionParts("TP", price), targetColor, elements.targetLine, elements.targetLabel));
       }
       return;
     }

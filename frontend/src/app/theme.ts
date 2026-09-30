@@ -45,6 +45,7 @@ type AppThemeTokenMap = {
   chartPositionStop: string;
   chartPositionTarget: string;
   chartPositionLabel: string;
+  chartPositionQuantity: string;
   canvasLinkGroups: readonly [string, string, string, string, string, string, string];
   metricAccents: readonly [string, string, string, string];
   chromeBackground: string;
@@ -467,6 +468,7 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--chart-position-stop": tokens.chartPositionStop,
     "--chart-position-target": tokens.chartPositionTarget,
     "--chart-position-label": tokens.chartPositionLabel,
+    "--chart-position-quantity": tokens.chartPositionQuantity,
     "--chart-text": tokens.mutedForeground
   };
 
@@ -512,10 +514,11 @@ function buildTheme({
       chartStrategyEntry: tone === "light" ? "#007DFF" : "#00C8FF",
       chartStrategyStop: tone === "light" ? "#FF1744" : "#FF315F",
       chartStrategyTarget: tone === "light" ? "#00B84F" : "#39FF14",
-      chartPositionFill: tone === "light" ? "#17365D" : "#3B5F94",
+      chartPositionFill: "#3596FD",
       chartPositionStop: "#B91C1C",
       chartPositionTarget: "#087F3D",
       chartPositionLabel: "#FFFFFF",
+      chartPositionQuantity: tone === "light" ? "#E2E8F0" : "#334155",
       canvasLinkGroups: tone === "light"
         ? ["#007dff", "#00c853", "#d6b000", "#8f00ff", "#ff1493", "#00a6a6", "#ff5a00"]
         : ["#00c8ff", "#39ff14", "#ffee00", "#bf5fff", "#ff3bd4", "#00ffd5", "#ff7a00"],
