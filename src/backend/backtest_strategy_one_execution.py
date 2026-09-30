@@ -19,7 +19,7 @@ import numpy as np
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import (
-    load_previous_completed_100ms_close, market_day_boundary,
+    load_previous_completed_100ms_closes_batch, market_day_boundary,
 )
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, project_market_day_plan
 from src.backend.backtest_liquidity_price import PriceLevelPlan
@@ -333,24 +333,29 @@ async def run_strategy_one_fixed_session(
         return await read_strategy_one_financial_views(
             tuple(selected), broker, order_manager)
 
-    prior_close_cache: dict[tuple[str, int], int | None] = {}
-    # Stateful re-entry is rare but each exact prior-bar lookup used to open a
-    # new HTTP client. A single worker owns one read-only connection for the
-    # session; no market rows or mutable financial state cross this thread.
+    candidate_boundaries: dict[str, list[int]] = defaultdict(list)
+    for fact in static_gate.facts:
+        candidate_boundaries[fact.ticker].append(fact.boundary_ms)
+    prior_close_cache: dict[str, dict[int, int | None]] = {}
+    # One lazy ASOF batch per ticker replaces an HTTP round trip per re-entry
+    # candidate. The worker owns its read-only connection and exact attempt.
     prior_close_pool = ThreadPoolExecutor(max_workers=1,
                                           thread_name_prefix="s1-prior-close")
     prior_close_reader: Any | None = None
 
-    def read_previous(ticker: str, boundary_ms: int) -> int | None:
+    def read_previous(ticker: str) -> dict[int, int | None]:
         nonlocal prior_close_reader
         if prior_close_reader is None:
             prior_close_reader = client_factory()
             if prior_close_reader is None or not callable(
                     getattr(prior_close_reader, "close", None)):
                 raise TypeError("Strategy 1 prior-close reader must be closable")
-        return load_previous_completed_100ms_close(
+        boundaries = tuple(sorted(set(candidate_boundaries.get(ticker, ()))))
+        if not boundaries:
+            raise ValueError("Strategy 1 re-entry lacks a sealed candidate batch")
+        return load_previous_completed_100ms_closes_batch(
             market_plan, session_date=scheduler.session_date,
-            ticker=ticker, boundary_ms=boundary_ms,
+            ticker=ticker, boundaries_ms=boundaries,
             client=prior_close_reader)
 
     async def reentry_witness(financial, candidate):
@@ -362,15 +367,17 @@ async def run_strategy_one_fixed_session(
         if (type(current_close) is not int or current_close <= 0
                 or row.get("ticker") != financial.ticker):
             raise ValueError("Strategy 1 re-entry lacks completed current close")
-        key = (financial.ticker, candidate.evidence.boundary_ms)
-        if key not in prior_close_cache:
+        ticker = financial.ticker
+        boundary_ms = candidate.evidence.boundary_ms
+        if ticker not in prior_close_cache:
             began = perf_counter() if stage_time is not None else 0.0
-
-            prior_close_cache[key] = await asyncio.get_running_loop().run_in_executor(
-                prior_close_pool, read_previous, financial.ticker, key[1])
+            prior_close_cache[ticker] = await asyncio.get_running_loop().run_in_executor(
+                prior_close_pool, read_previous, ticker)
             if stage_time is not None:
                 stage_time("strategy_one_reentry_previous_close", began)
-        previous_close = prior_close_cache[key]
+        if boundary_ms not in prior_close_cache[ticker]:
+            raise ValueError("Strategy 1 re-entry candidate was not in its sealed batch")
+        previous_close = prior_close_cache[ticker][boundary_ms]
         if previous_close is None:
             return None
         return StrategyOneReentryWitness(

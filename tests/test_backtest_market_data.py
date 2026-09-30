@@ -19,6 +19,7 @@ from src.backend.backtest_market_data import (
     iter_market_day_rows,
     iter_market_time_groups,
     load_previous_completed_100ms_close,
+    load_previous_completed_100ms_closes_batch,
     iter_persisted_v7_seconds,
     readonly_clickhouse_client,
     verify_market_day_plan,
@@ -564,6 +565,42 @@ class BacktestMarketDataTests(unittest.TestCase):
                 boundary_ms=300, client=CloseClient([
                     dict(bucket_index=144002, close_int=101_000,
                          price_valid=1)]))
+
+    def test_reentry_previous_closes_batch_uses_certified_strict_asof(self) -> None:
+        class CloseClient:
+            def __init__(self, rows):
+                self.rows = rows
+                self.queries = []
+
+            def execute(self, sql):
+                self.queries.append(sql)
+                return "\n".join(json.dumps(row) for row in self.rows)
+
+        client = CloseClient([
+            dict(target=144002, bucket_index=0, close_int=0, hit=0),
+            dict(target=144003, bucket_index=144002,
+                 close_int=101_000, hit=1),
+        ])
+        assert load_previous_completed_100ms_closes_batch(
+            self._plan(), session_date="2026-08-18", ticker="SUGP",
+            boundaries_ms=(300, 400), client=client) == {
+                300: None, 400: 101_000}
+        query = client.queries[0]
+        assert "ASOF LEFT JOIN" in query
+        assert "r.target>b.bucket_index" in query
+        assert "bucket_index<144003" in query
+        assert "price_valid=1" in query
+        assert "attempt_id=toUUID('00000000-0000-0000-0000-000000000001')" in query
+        with self.assertRaisesRegex(RuntimeError, "pinned source"):
+            load_previous_completed_100ms_closes_batch(
+                self._plan(), session_date="2026-08-18", ticker="SUGP",
+                boundaries_ms=(300,), client=CloseClient([
+                    dict(target=144002, bucket_index=144002,
+                         close_int=101_000, hit=1)]))
+        with self.assertRaisesRegex(ValueError, "unique pinned"):
+            load_previous_completed_100ms_closes_batch(
+                self._plan(), session_date="2026-08-18", ticker="SUGP",
+                boundaries_ms=(400, 300), client=client)
 
     def test_v7_catch_up_closes_stream_when_consumer_stops_early(self) -> None:
         plan = self._plan()

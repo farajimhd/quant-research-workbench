@@ -902,6 +902,71 @@ def load_previous_completed_100ms_close(
     return rows[0]["close_int"]
 
 
+def load_previous_completed_100ms_closes_batch(
+    plan: CertifiedMarketDayPlan, *, session_date: str, ticker: str,
+    boundaries_ms: tuple[int, ...], client: Any,
+) -> dict[int, int | None]:
+    """Resolve exact prior price-bearing closes with bounded ASOF reads.
+
+    This is the same strictly-prior completed-bar contract as the scalar
+    lookup above. A batch is scoped to one certified ticker/attempt and never
+    creates a bar or infers an intrabucket event ordering.
+    """
+    if (plan.execution_interval.kind != "fixed"
+            or plan.execution_interval.milliseconds != 100
+            or session_date not in plan.sessions or ticker not in plan.tickers
+            or not isinstance(boundaries_ms, tuple)
+            or any(type(boundary) is not int or not 0 < boundary <= 57_600_000
+                   or boundary % 100 for boundary in boundaries_ms)
+            or tuple(sorted(set(boundaries_ms))) != boundaries_ms
+            or not callable(getattr(client, "execute", None))):
+        raise ValueError("Previous-close batch needs unique pinned 100 ms boundaries")
+    unit = _unit_map(plan, "bars").get((session_date, ticker))
+    if unit is None:
+        raise ValueError("Previous-close batch lacks certified bar attempt")
+    result: dict[int, int | None] = {}
+    for offset in range(0, len(boundaries_ms), 512):
+        chunk = boundaries_ms[offset:offset + 512]
+        targets = tuple((boundary + SESSION_OPEN_OFFSET_MS) // 100 - 1
+                        for boundary in chunk)
+        target_array = ",".join(f"toUInt32({target})" for target in targets)
+        query = assert_select_only(
+            "SELECT r.target,b.bucket_index,b.close_int,b.hit FROM "
+            f"(SELECT arrayJoin([{target_array}]) AS target,"
+            f"{_literal(ticker)} AS ticker,"
+            f"toUUID({_literal(unit.attempt_id)}) AS attempt_id) r "
+            "ASOF LEFT JOIN ("
+            "SELECT ticker,attempt_id,bucket_index,close_int,toUInt8(1) AS hit "
+            "FROM arte.bars_v1 "
+            f"WHERE build_id={_literal(plan.build_id)} "
+            f"AND session_date=toDate({_literal(session_date)}) "
+            f"AND ticker={_literal(ticker)} "
+            f"AND attempt_id=toUUID({_literal(unit.attempt_id)}) "
+            "AND resolution_ms=100 AND price_valid=1 "
+            f"AND bucket_index<{targets[-1]}) b "
+            "ON r.ticker=b.ticker AND r.attempt_id=b.attempt_id "
+            "AND r.target>b.bucket_index ORDER BY r.target FORMAT JSONEachRow"
+        )
+        rows = [json.loads(line) for line in client.execute(query).splitlines()
+                if line.strip()]
+        if len(rows) != len(chunk):
+            raise RuntimeError("Previous-close batch omitted a pinned boundary")
+        for boundary, target, row in zip(chunk, targets, rows):
+            if type(row.get("target")) is not int or row["target"] != target:
+                raise RuntimeError("Previous-close batch changed target order")
+            hit = row.get("hit")
+            if hit == 0:
+                result[boundary] = None
+            elif (hit == 1 and type(row.get("bucket_index")) is int
+                  and 0 <= row["bucket_index"] < target
+                  and type(row.get("close_int")) is int
+                  and row["close_int"] > 0):
+                result[boundary] = row["close_int"]
+            else:
+                raise RuntimeError("Previous-close batch differs from pinned source")
+    return result
+
+
 def iter_persisted_v7_seconds(
     plan: CertifiedMarketDayPlan, *, session_date: str, ticker: str,
     through_boundary_ms: int, client=None, after_boundary_ms: int = 0,

@@ -7,6 +7,7 @@ import numpy as np
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
+from src.backend.backtest_strategy_one_entry_product import CandidateFact
 from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
 from src.backend.backtest_strategy_one_execution import run_strategy_one_fixed_session
 from src.backend import backtest_strategy_one_execution as execution
@@ -143,8 +144,12 @@ def test_reentry_prior_close_reuses_one_readonly_client_and_closes_it(monkeypatc
     scheduler = StrategyOneBoundaryScheduler(
         session_date="2026-08-18", candidate_rows=iter(()),
         active_source=lambda *_: iter(()))
+    facts = tuple(CandidateFact(
+        "AAA", boundary, 30_000, 30_000, "P1", 120_000,
+        "pivot", "R1", "P1", True, 1.0, 2.0, "T1", 1,
+    ) for boundary in (31_000, 31_100))
     entry = CertifiedEntryEvidencePlan(
-        "b" * 16, "2026-08-18", (), (), (), "e" * 64)
+        "b" * 16, "2026-08-18", (), (), facts, "e" * 64)
     prior = SimpleNamespace(closed_boundary_ms=30_000,
                             entry_resistance_id="R1", high_int=120_000)
     monkeypatch.setattr(manager, "last_closed_position", lambda _: prior)
@@ -165,10 +170,11 @@ def test_reentry_prior_close_reuses_one_readonly_client_and_closes_it(monkeypatc
         clients.append(client)
         return client
 
-    def previous(_plan, *, ticker, boundary_ms, client, **_kwargs):
+    def previous(_plan, *, ticker, boundaries_ms, client, **_kwargs):
         assert ticker == "AAA" and client is clients[0]
+        assert boundaries_ms == (31_000, 31_100)
         worker_ids.append(threading.get_ident())
-        return 100_000 + boundary_ms
+        return {boundary: 100_000 + boundary for boundary in boundaries_ms}
 
     async def proposals(_scheduler, _entry, **callbacks):
         financial = SimpleNamespace(ticker="AAA")
@@ -180,15 +186,15 @@ def test_reentry_prior_close_reuses_one_readonly_client_and_closes_it(monkeypatc
             assert witness is not None
         return SimpleNamespace(completed_boundaries=2)
 
-    monkeypatch.setattr(execution, "load_previous_completed_100ms_close", previous)
+    monkeypatch.setattr(execution, "load_previous_completed_100ms_closes_batch", previous)
     monkeypatch.setattr(execution, "run_strategy_one_proposals", proposals)
     asyncio.run(run_strategy_one_fixed_session(
         scheduler, entry, evidence, manager, runtime=runtime,
         static_gate=StrategyOneStaticGate(
-            (), np.array([], dtype=np.uint8), np.array([], dtype=np.int64)),
+            facts, np.zeros(2, dtype=np.uint8), np.arange(2, dtype=np.int64)),
         assignments=(assignment,), market_plan=object(),
         client_factory=client_factory,
         before_boundary=lambda _: asyncio.sleep(0),
         finish_boundary=lambda _: asyncio.sleep(0)))
     assert len(clients) == 1 and clients[0].closed
-    assert len(worker_ids) == 4 and len(set(worker_ids)) == 1
+    assert len(worker_ids) == 3 and len(set(worker_ids)) == 1
