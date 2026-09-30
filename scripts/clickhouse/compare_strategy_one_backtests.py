@@ -77,6 +77,35 @@ FIELDS = {
         "outside_rth", "strategy_id", "strategy_revision", "created_at",
         "security_type", "listing_exchange", "trailing_amount", "trailing_type",
     ),
+    # Compare broker and OMS state, not just final fills. Record IDs, batch
+    # IDs, and receipt timestamps are run-specific; these scalar fields are
+    # the causal order state that must remain unchanged by broker caching.
+    "trading_order_transition_v1": (
+        "account_id", "conid", "ticker", "status", "broker_status",
+        "total_quantity", "filled_quantity", "remaining_quantity",
+        "average_fill_price", "can_modify", "can_cancel", "terminal",
+        "rejection_code", "rejection_reason", "source_event_time",
+    ),
+    "trading_oms_group_state_v1": (
+        "account_id", "strategy_id", "strategy_revision", "state",
+        "created_at", "updated_at", "submitted_at", "rejection_reason",
+        "reprice_count", "filled_quantity", "remaining_quantity",
+        "current_limit_price", "protection_required_quantity",
+        "protection_coverage_quantity", "protection_delegated",
+        "order_count", "broker_binding_count", "warning_count",
+        "cancel_oca_count",
+    ),
+    "trading_oms_order_state_v1": (
+        "account_id", "ordinal", "batch_ordinal", "conid", "ticker",
+        "security_type", "listing_exchange", "side", "order_type",
+        "time_in_force", "quantity", "cash_quantity", "limit_price",
+        "aux_price", "trailing_amount", "trailing_type", "outside_rth",
+        "single_group", "manual_indicator", "broker_strategy",
+    ),
+    "trading_oms_broker_binding_v1": (
+        "account_id", "ordinal", "broker_order_id", "has_role", "role",
+        "request_index", "has_filled_quantity", "filled_quantity", "terminal",
+    ),
 }
 
 
