@@ -169,6 +169,10 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
             not decisions):
         raise ValueError('V6 trainer requires a train session and labels')
     listings = len(session.listings)
+    ranked = hasattr(policy, 'observe_market')
+    if ranked:
+        policy.reset_market(listings)
+    pending_entries = {}
     _validate(decisions, outcomes, listings)
     state = SparseCandleState.empty(policy.encoder, listings, device=device,
                                     dtype=torch.float32)
@@ -204,6 +208,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                 while (next_outcome < len(outcomes) and
                        outcomes[next_outcome].bucket_end_us <= event.close_us):
                     outcome = outcomes[next_outcome]
+                    pending_entries.pop((outcome.source_close_us,
+                                         outcome.source_order_index), None)
                     embedding = state.embeddings()[outcome.listing_index]
                     action_state = policy.remember_execution(action_state,
                         embedding, action=outcome.action,
@@ -222,7 +228,12 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                 levels = torch.from_numpy(np.asarray(
                     session.bank.levels[rows]).copy()).to(device)
                 state.advance(policy.encoder, index, scalar, levels)
+                if ranked:
+                    policy.observe_market(state, event.close_us,
+                        event.listing_index, scalar.detach().cpu().numpy())
                 for item in decision_groups.pop(event.close_us, ()):
+                    if ranked:
+                        policy.set_pending(pending_entries.values())
                     def tensor(values, dtype=None):
                         return torch.as_tensor(values, dtype=dtype,
                                                device=device)
@@ -236,6 +247,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         exit_allowed=tensor(item.exit_allowed, torch.bool),
                         stop_allowed=tensor(item.stop_allowed, torch.bool),
                         target_allowed=tensor(item.target_allowed, torch.bool))
+                    if ranked and logits[item.token] == torch.finfo(logits.dtype).min:
+                        raise ValueError('Teacher action outside causal ranked universe; '
+                                         'audit top_r/sort_secs coverage before training')
                     loss, metrics = bracket_loss(logits, sizes, stops,
                         targets, token=item.token,
                         size_fraction=item.size_fraction,
@@ -252,6 +266,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                             metrics['size_absolute_error'] if slot == 0 else
                             metrics['bracket_absolute_error'])
                     observed_decisions += 1
+                    if 1 <= item.token <= listings:
+                        pending_entries[(item.close_us, item.order_index)] = item.token-1
         if pending_losses:
             mean = torch.stack(pending_losses).mean()
             mean.backward()

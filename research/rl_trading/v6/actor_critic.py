@@ -73,11 +73,15 @@ class BracketActorCritic(BracketPolicy):
                                logits.new_zeros(h), stops, targets))
         scale = self.log_scale.clamp(-5, 2).exp()
         scales = torch.cat((scale[0].expand(1+n+h), scale[1].expand(h), scale[2].expand(h)))
-        critic_input = torch.cat((listing_embeddings.mean(0).detach(),
+        critic_market = self.critic_market_embeddings(listing_embeddings)
+        critic_input = torch.cat((critic_market.mean(0).detach(),
                                   action_state.memory.detach(),
                                   (account.sign()*torch.log1p(account.abs())).detach()))
         value = self.critic(critic_input).squeeze(-1)
         return HybridDistribution(logits, locations, scales, n, h), value
+
+    def critic_market_embeddings(self, listings):
+        return listings
 
 
 def elapsed_gae(rewards, values, terminated, elapsed_seconds, *, bootstrap,

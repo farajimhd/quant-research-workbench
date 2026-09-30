@@ -1,6 +1,8 @@
 # V6 reinforcement learning contract
 
 The existing `training.train_session` is teacher initialization, not RL.
+The current attention implementation is `RankedBracketActorCritic`; the
+earlier convolution/mean-pooling actor remains an explicit baseline.
 `BracketActorCritic` adds a stochastic hybrid actor and a separate value head.
 `rl_training.update_on_policy` performs clipped PPO updates from actual policy
 rollouts. These components do not yet constitute a production OMS collector
@@ -12,8 +14,31 @@ Input: 37 scalar channels plus ten V7 slots with 11 channels each (147 total),
 per actual completed candle. Per-listing projection and left-causal depthwise
 120-candle convolution produce width-128 embeddings. Warm-up loads 120 actual
 prior candles. Missing seconds do not advance history. Current-clock market
-pooling is linear in listing count; there is no temporal attention and no
-quadratic all-market attention. Execution-outcome GRU carries action history.
+pooling is linear in listing count. For selected listings, the latest temporal
+query attends to the 120 completed projected candles with learned lag
+positions and missing-context masking. Eight learned market tokens attend to
+these listing representations, then listings attend back to the market
+tokens. A lightweight summary of every observed listing enters the tokens.
+There is no N-by-N market attention. Execution-outcome GRU carries history.
+
+Ranking uses the sum of V6 `expm1(log_volume)` over the last 15 clock seconds,
+not 15 observed bars and not dollar volume. `top_r=100`, `sort_secs=1`, eight
+tokens and four heads are configurable; benchmark 100/500 before deployment.
+Held and pending listings are added to R, so R is neither an absolute compute
+cap nor a maximum position count. Ties use the certified identity axis.
+Refreshes never rekey action tokens or reset context. The attention query has
+no future keys because it receives only the completed ring; no future candle
+or teacher score can participate in ranking. Teacher actions outside the
+ranked universe fail explicitly, requiring a coverage audit or an explicit
+configuration change. They are not silently discarded or force-included.
+
+The chronological teacher trainer resets ranking per session, updates it from
+the existing bank, tracks pending entry identities until outcomes, and invokes
+the attention policy. Quote-aware rollout collectors must likewise call
+`reset_market`, `observe_market`, and `set_pending` before decisions; this is
+not a replacement for the still-required full OMS collector integration.
+`benchmark_attention` measures synthetic forward/backward capacity and does
+not measure complete rollout throughput or profitability.
 
 Masked action tokens are HOLD, ENTER_LONG(listing), EXIT_LONG(holding),
 SET_STOP(holding), SET_TARGET(holding). ENTER samples a sigmoid-normal cash

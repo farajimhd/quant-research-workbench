@@ -21,6 +21,7 @@ from research.rl_trading.v6.model import ActualCandleEncoder
 class SparseCandleState:
     history: torch.Tensor  # [N,120,D], detached at chunk boundaries.
     encoded: torch.Tensor  # [N,D], most recent completed actual candle.
+    seen: torch.Tensor  # [N], actual observed count; not clock seconds.
 
     @classmethod
     def empty(cls, encoder: ActualCandleEncoder, listings: int, *,
@@ -30,7 +31,8 @@ class SparseCandleState:
         return cls(torch.zeros(listings, encoder.history_candles, encoder.width,
                                device=device, dtype=dtype),
                    torch.zeros(listings, encoder.width, device=device,
-                               dtype=dtype))
+                               dtype=dtype),
+                   torch.zeros(listings, device=device, dtype=torch.long))
 
     def advance(self, encoder: ActualCandleEncoder,
                 listing_index: torch.Tensor, scalar: torch.Tensor,
@@ -57,6 +59,7 @@ class SparseCandleState:
         encoded = encoder.norm(F.gelu(weighted))
         self.history = self.history.index_copy(0, listing_index, updated)
         self.encoded = self.encoded.index_copy(0, listing_index, encoded)
+        self.seen[listing_index] += 1
 
     def embeddings(self) -> torch.Tensor:
         """Return [N,D] newest causal embeddings at the current close."""
@@ -112,6 +115,8 @@ def seed_previous_session(state: SparseCandleState,
                 len(identities), length, encoder.width)
         projected *= torch.from_numpy(present).to(
             state.history.device)[..., None]
+        state.seen[start:start+len(identities)] = torch.from_numpy(
+            present.sum(1).astype(np.int64)).to(state.history.device)
         state.history[start:start+len(identities)] = projected
         weighted = (state.history[start:start+len(identities)] *
                     encoder.lag[:, 0, :].T[None]).sum(dim=1)

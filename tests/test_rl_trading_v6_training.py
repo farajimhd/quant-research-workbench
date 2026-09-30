@@ -3,15 +3,18 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import pytest
 
 from research.rl_trading.v6.bank import SessionBank
 from research.rl_trading.v6.model import BracketPolicy
+from research.rl_trading.v6.ranked_policy import RankedBracketActorCritic
 from research.rl_trading.v6.session_data import PackedSession
 from research.rl_trading.v6.training import (ExecutionOutcome,
                                              TeacherDecision, train_session)
 
 
-def test_v6_chronological_train_core_updates_encoder_and_bracket_heads():
+@pytest.mark.parametrize('policy_type', [BracketPolicy, RankedBracketActorCritic])
+def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_type):
     clocks = np.asarray([1_000_000, 2_000_000, 1_000_000, 2_000_000],
                         dtype=np.int64)
     scalar = np.zeros((4, 37), dtype=np.float32)
@@ -39,7 +42,7 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads():
     )
     outcomes = (ExecutionOutcome(1_000_000, 0, 1_100_000,
                                   1, 0, .25, .2, 0.),)
-    policy = BracketPolicy(width=8)
+    policy = policy_type(width=8)
     before = policy.encoder.project.weight.detach().clone()
     optimizer = torch.optim.AdamW(policy.parameters(), lr=.001)
     metrics = train_session(policy, optimizer, session, decisions, outcomes,
