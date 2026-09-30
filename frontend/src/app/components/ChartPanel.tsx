@@ -1061,6 +1061,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => { drawCurrentRegions(); }, [structuralDetector.rows, structuralDetector.labelRows]);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const [pendingPositionFocusId, setPendingPositionFocusId] = useState<string | null>(null);
+  const initialSavedPositionFitRef = useRef(false);
+  const pendingInitialPositionFitIdRef = useRef<string | null>(null);
   const strategyLifecycles = useMemo(() => [...(payload?.trade_annotations ?? [])]
     .sort((a, b) => a.entryTime - b.entryTime || a.id.localeCompare(b.id)), [payload?.trade_annotations]);
   const selectedStrategy = strategyLifecycles.find((trade) => trade.id === selectedStrategyId)
@@ -1474,6 +1476,23 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [selectedStrategy?.id, strategyPresentationEnabled]);
 
   useEffect(() => {
+    if (!persistedOnly || !strategyPresentationEnabled || initialSavedPositionFitRef.current
+        || !selectedStrategy || !payload?.candles.length) return;
+    // The saved chart starts with a selected lifecycle. Focus it once when its
+    // certified history arrives; subsequent paging and indicator updates must
+    // never take the viewport back from the user.
+    if (userViewportClaimedRef.current) {
+      initialSavedPositionFitRef.current = true;
+      return;
+    }
+    if (payload.candles[0].time > selectedStrategy.entryTime
+        || payload.candles.at(-1)!.time < selectedStrategy.entryTime) return;
+    initialSavedPositionFitRef.current = true;
+    pendingInitialPositionFitIdRef.current = selectedStrategy.id;
+    setPendingPositionFocusId(selectedStrategy.id);
+  }, [persistedOnly, strategyPresentationEnabled, selectedStrategy?.id, payload?.candles]);
+
+  useEffect(() => {
     if (!pendingPositionFocusId) return;
     const trade = strategyLifecycles.find(item => item.id === pendingPositionFocusId);
     const candles = payload?.candles ?? [];
@@ -1482,6 +1501,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     // The same render may be installing newly paged candles. Focus only after
     // their native series has been synchronized; this is a user-requested fit.
     const frame = window.requestAnimationFrame(() => {
+      if (pendingInitialPositionFitIdRef.current === trade.id) {
+        pendingInitialPositionFitIdRef.current = null;
+        if (userViewportClaimedRef.current) {
+          setPendingPositionFocusId(null);
+          return;
+        }
+      }
       focusStrategyTrade(trade);
       setPendingPositionFocusId(null);
     });
@@ -2301,6 +2327,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   return (
     <div
       className={`chart-shell${fullscreen ? " fullscreen" : ""}${fillHeight ? " fill-height" : ""}`}
+      data-candle-count={payload?.candles.length ?? 0}
       onPointerDownCapture={(event) => {
         if ((event.target as HTMLElement).closest(".chart-pane-canvas")) claimViewportForUser(event.target);
       }}
@@ -2419,6 +2446,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             onSelect={(index) => {
               const trade = strategyLifecycles[index];
               if (!trade) return;
+              initialSavedPositionFitRef.current = true;
+              pendingInitialPositionFitIdRef.current = null;
               setSelectedStrategyId(trade.id);
               setPendingPositionFocusId(trade.id);
             }}

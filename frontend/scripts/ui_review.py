@@ -2615,6 +2615,10 @@ def capture(args: argparse.Namespace) -> int:
                                 raise RuntimeError("Saved ticker drilldown did not open one certified focus Canvas container")
                             saved_chart = focus.get_by_role("region", name=f"Saved {args.saved_v4_chart_ticker} chart")
                             saved_chart.locator(".chart-shell canvas").first.wait_for(timeout=args.timeout_ms)
+                            focus.wait_for_function(
+                                "document.querySelector('.backtest-v4-saved-chart .chart-shell')?.dataset.candleCount > 0",
+                                timeout=60_000,
+                            )
                             focus.wait_for_timeout(1000)
                             saved_chart.get_by_text('Loading chart data').wait_for(state='hidden', timeout=60_000)
                             if focus.locator('.canvas-clock-control').count():
