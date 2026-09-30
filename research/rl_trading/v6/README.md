@@ -181,6 +181,10 @@ chooses the smallest meeting 99% entry coverage on every training day, and
 recompiles the account after excluding entire outside-R entries. Original
 feature banks and teachers stay immutable. An incomplete campaign produces
 only a blocked audit state, never a training-ready certificate.
+The user selected N=1000 after reviewing missed-entry profit. Pass
+`--fixed-rank 1000` to preserve this choice; coverage stays audited and reported,
+while the automatic 99% expansion criterion no longer chooses the universe.
+All source, label reconciliation and full-split launch gates still apply.
 
 Run `python -m research.rl_trading.v6.run_train --help` for the Python launcher.
 Required arguments are the complete dataset certificate, runtime run root,

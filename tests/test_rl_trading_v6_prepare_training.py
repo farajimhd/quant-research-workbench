@@ -6,7 +6,7 @@ import pytest
 from research.rl_trading.v6.bank import SessionBank
 from research.rl_trading.v6.session_data import PackedSession
 from research.rl_trading.v6.training import TeacherDecision
-from research.rl_trading.v6.prepare_training import coverage, choose_rank
+from research.rl_trading.v6.prepare_training import coverage, choose_rank, select_rank
 from research.rl_trading.v6.teacher_trajectory import Intent, compile_trajectory
 from research.rl_trading.v6.market_attention import MarketAttentionConfig
 from research.rl_trading.v6.features import SCALAR_NAMES
@@ -47,3 +47,12 @@ def test_rank_exclusion_rebuilds_holdings_cash_and_later_actions():
     assert all(o.listing_index==0 for o in outcomes)
     assert report['pending_entries']==report['unresolved_positions']==0
     assert report['ledger'][0]['ticker']=='A'
+
+
+def test_explicit_user_rank_keeps_coverage_audit_without_auto_expansion():
+    report={'coverage':{'1000':{'fraction':.94},'2000':{'fraction':.999}}}
+    rank,selection=select_rank([report],[1000,2000],.99,1000)
+    assert rank==1000 and selection['policy']=='explicit_fixed_rank'
+    assert select_rank([report],[1000,2000],.99)[0]==2000
+    with pytest.raises(ValueError,match='audited coverage'):
+        select_rank([report],[500,1000,2000],.99,500)

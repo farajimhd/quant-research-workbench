@@ -21,6 +21,13 @@ def require_dataset(certificate, *, runtime_root):
     if [entry['day'] for entry in days]!=[str(d) for d in TRAIN+DEVELOPMENT]:
         raise ValueError('Training requires all 16 training and two development days exactly')
     selected = str(data['ranking']['top_r'])
+    selection=data.get('rank_selection',{'policy':'minimum_per_day_coverage'})
+    if selection.get('policy')=='explicit_fixed_rank':
+        if (selection.get('rank')!=data['ranking']['top_r'] or selection.get('rank',0)<1 or
+                selection.get('coverage_requirement')!='report_only_user_accepted_exclusions'):
+            raise ValueError('Explicit universe selection differs from audited configuration')
+    elif selection.get('policy')!='minimum_per_day_coverage':
+        raise ValueError('Unknown audited universe selection policy')
     for entry in days:
         for key in ('bank_root','previous_root','teacher_root','original_teacher_root','coverage_certificate'):
             if not Path(entry[key]).resolve().is_relative_to(runtime):
@@ -34,7 +41,10 @@ def require_dataset(certificate, *, runtime_root):
         report = json.loads(Path(entry['coverage_certificate']).read_text())
         if report['binding']['bank_certificate']!=entry['bank_certificate_sha256'] or report['binding']['teacher_certificate']!=entry['original_teacher_sha256']:
             raise ValueError('Coverage audit/source binding differs')
-        if entry['role']=='train' and report['report']['coverage'][selected]['fraction']<data['minimum_entry_coverage']:
+        if selected not in report['report']['coverage']:
+            raise ValueError('Selected universe was not audited')
+        if (selection['policy']=='minimum_per_day_coverage' and entry['role']=='train' and
+                report['report']['coverage'][selected]['fraction']<data['minimum_entry_coverage']):
             raise ValueError('Chosen universe fails required per-day coverage')
         cert = json.loads((Path(entry['teacher_root'])/'complete.json').read_text())
         original = json.loads((Path(entry['original_teacher_root'])/'complete.json').read_text())

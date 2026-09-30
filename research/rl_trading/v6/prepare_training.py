@@ -68,6 +68,17 @@ def _write_json(path, value):
     temporary.replace(path)
 
 
+def select_rank(reports, ranks, minimum, fixed_rank=None):
+    """Explicit user-selected N retains coverage evidence without auto-expansion."""
+    if fixed_rank is None:
+        return choose_rank(reports,ranks,minimum),{'policy':'minimum_per_day_coverage'}
+    if not reports or fixed_rank not in ranks or fixed_rank<1 or any(
+            str(fixed_rank) not in report['coverage'] for report in reports):
+        raise ValueError('Fixed rank requires audited coverage for every day')
+    return fixed_rank,{'policy':'explicit_fixed_rank','rank':fixed_rank,
+        'coverage_requirement':'report_only_user_accepted_exclusions'}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bank-manifest',type=Path,required=True)
@@ -76,6 +87,8 @@ def main(argv=None):
     parser.add_argument('--ranks',type=int,nargs='+',default=[500,1000,2000])
     parser.add_argument('--sort-secs',type=int,default=1)
     parser.add_argument('--minimum-entry-coverage',type=float,default=.99)
+    parser.add_argument('--fixed-rank',type=int,
+        help='Explicit selected N; report coverage without automatic expansion')
     parser.add_argument('--allocation-root',action='append',default=[])
     args = parser.parse_args(argv)
     runtime = Path(os.environ.get('QW_RUNTIME_ROOT','')).resolve()
@@ -83,7 +96,8 @@ def main(argv=None):
     if not runtime.is_dir() or any(not p.resolve().is_relative_to(runtime)
             for p in (args.bank_manifest,args.teacher_campaign,args.output)):
         raise ValueError('Audit inputs/output must be under configured runtime')
-    if not 0<args.minimum_entry_coverage<=1 or any(r<1 for r in args.ranks):
+    if (not 0<args.minimum_entry_coverage<=1 or any(r<1 for r in args.ranks) or
+            (args.fixed_rank is not None and args.fixed_rank not in args.ranks)):
         raise ValueError('Invalid coverage policy')
     allocations = {date.fromisoformat(k):Path(v) for k,v in (x.split('=',1) for x in args.allocation_root)}
     roots = json.loads(args.bank_manifest.read_text())
@@ -145,7 +159,8 @@ def main(argv=None):
                                               'audited_days':[str(d) for d,_ in reports]})
         print(json.dumps({'status':'blocked_incomplete_data','missing':missing}),flush=True)
         return 0
-    rank = choose_rank([r for d,r in reports if d in TRAIN],args.ranks,args.minimum_entry_coverage)
+    rank,selection = select_rank([r for d,r in reports if d in TRAIN],args.ranks,
+                                args.minimum_entry_coverage,args.fixed_rank)
     ranking = MarketAttentionConfig(top_r=rank,sort_secs=args.sort_secs)
     for entry in entries:
         day = date.fromisoformat(entry['day'])
@@ -192,7 +207,8 @@ def main(argv=None):
             del session
         entry.update(teacher_root=str(derived),teacher_sha256=file_hash(derived/'complete.json'))
     certificate = {'version':VERSION,'status':'audited_ready_for_training','ranking':asdict(ranking),
-        'minimum_entry_coverage':args.minimum_entry_coverage,'rank_exclusion_policy':'ignore_entire_entry_and_recompile_account',
+        'minimum_entry_coverage':args.minimum_entry_coverage,'rank_selection':selection,
+        'rank_exclusion_policy':'ignore_entire_entry_and_recompile_account',
         'days':entries,'sealed_test_accessed':False,
         'model_audit_required':'causality_and_real_rollout_reconstruction_smoke'}
     certificate['hash'] = digest(certificate)
