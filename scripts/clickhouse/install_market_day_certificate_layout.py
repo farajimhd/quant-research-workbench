@@ -27,6 +27,9 @@ from src.trading_runtime.arte_market_day_certification import TABLES
 
 def workstation_clickhouse_url() -> str:
     """Use the managed IPv4 listener, not a potentially link-local IPv6 name."""
+    from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
+    if platform.node().upper() == "DESKTOP-SAAI85T":
+        return workstation_ipv4_transport("http://DESKTOP-SAAI85T:18123")
     address = IPv4Address(socket.gethostbyname("DESKTOP-SAAI85T"))
     if not address.is_private:
         raise RuntimeError("Workstation ClickHouse resolved outside the private network")
