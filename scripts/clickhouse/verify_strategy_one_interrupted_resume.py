@@ -65,10 +65,17 @@ async def _launch_and_pause(
             await controller.command("pause")
             pause_requested = True
         checkpoint = dict(getattr(controller, "_checkpoint_projection_cache", {}) or {})
+        expected_cursor = f"{session.isoformat()}:{boundary}"
         if (pause_requested and controller.status == "paused"
                 and checkpoint.get("status") == "cursor_fenced"
                 and checkpoint.get("cursor") != checkpoint_before_pause
-                and int(checkpoint.get("processed_events") or 0) > 0
+                # An asynchronous periodic fence may finish after Pause was
+                # requested. It is not the pause checkpoint unless it proves
+                # the exact stopped engine cursor and row count. Killing the
+                # child on that stale receipt would replay an earlier prefix.
+                and checkpoint.get("cursor") == expected_cursor
+                and int(checkpoint.get("processed_events") or 0)
+                == controller.processed_events
                 and getattr(controller, "_checkpoint_io_task", None) is None
                 and getattr(controller, "_journal_publish_error", None) is None):
             channel.send(("fenced", controller.run_id, boundary,
