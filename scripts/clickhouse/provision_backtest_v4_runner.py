@@ -99,6 +99,12 @@ _RETIRED_SNAPSHOTS = frozenset({
     "trading_strategy_one_broker_match_open_order_v2",
     "trading_strategy_one_broker_match_ticker_v2",
     "trading_strategy_one_broker_match_performance_mark_v2",
+    "trading_strategy_one_broker_match_snapshot_v3",
+    "trading_strategy_one_broker_match_account_v3",
+    "trading_strategy_one_broker_match_position_v3",
+    "trading_strategy_one_broker_match_open_order_v3",
+    "trading_strategy_one_broker_match_ticker_v3",
+    "trading_strategy_one_broker_match_performance_mark_v3",
     "trading_strategy_one_oms_observation_snapshot_v1",
     "trading_strategy_one_oms_observation_v1",
 })

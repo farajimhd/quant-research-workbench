@@ -3,13 +3,13 @@
 This is only the simulator state that cannot be rebuilt from the committed V4
 OMS/fill journal and pinned ARTE liquidity bars. It deliberately does not store
 JSON, market quotes, executions, or expired same-bucket liquidity consumption.
-Projection is pure; a separate fenced writer must publish these rows before
-they may participate in cold recovery. No resume gate uses this module yet.
+Projection is pure; a separate fenced writer publishes these rows before the
+cold-resume gate may use them. V4 keeps simulator Float64 state lossless while
+retaining separate, typed, normalized child tables.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
@@ -25,7 +25,7 @@ from src.trading_runtime.strategy_one_protection_snapshot import _digest
 
 
 ROOT = TableContract(
-    "trading_strategy_one_broker_match_snapshot_v3",
+    "trading_strategy_one_broker_match_snapshot_v4",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("session_date", "Date"),
      ("checkpoint_sequence", "UInt64"), ("boundary_ms", "UInt32"),
@@ -33,9 +33,11 @@ ROOT = TableContract(
      ("next_order_id", "UInt64"), ("next_execution_id", "UInt64"),
      ("performance_complete", "UInt8"),
      ("performance_as_of", "Nullable(DateTime64(6, 'UTC'))"),
-     ("unrealized", "Decimal(38, 18)"), ("market_value", "Decimal(38, 18)"),
-     ("peak_unrealized", "Decimal(38, 18)"), ("worst_unrealized", "Decimal(38, 18)"),
-     ("equity_peak", "Decimal(38, 18)"), ("maximum_drawdown", "Decimal(38, 18)"),
+     # These are simulator Float64 accumulators. A Decimal scale can reject
+     # valid binary-float residuals and cannot reproduce the resumed state.
+     ("unrealized", "Float64"), ("market_value", "Float64"),
+     ("peak_unrealized", "Float64"), ("worst_unrealized", "Float64"),
+     ("equity_peak", "Float64"), ("maximum_drawdown", "Float64"),
      ("account_count", "UInt32"), ("account_hash", "FixedString(64)"),
      ("position_count", "UInt32"), ("position_hash", "FixedString(64)"),
      ("open_order_count", "UInt32"), ("open_order_hash", "FixedString(64)"),
@@ -45,62 +47,62 @@ ROOT = TableContract(
     "toYYYYMM(snapshot_month)", "run_id, checkpoint_sequence, snapshot_id",
 )
 ACCOUNT = TableContract(
-    "trading_strategy_one_broker_match_account_v3",
+    "trading_strategy_one_broker_match_account_v4",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
-     ("account_id", "String"), ("cash", "Decimal(38, 18)"),
-     ("realized_pnl", "Decimal(38, 18)"), ("content_hash", "FixedString(64)")),
+     ("account_id", "String"), ("cash", "Float64"),
+     ("realized_pnl", "Float64"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, account_id",
 )
 POSITION = TableContract(
-    "trading_strategy_one_broker_match_position_v3",
+    "trading_strategy_one_broker_match_position_v4",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("account_id", "String"), ("conid", "UInt64"),
      ("ticker", "LowCardinality(String)"),
-     ("quantity", "Decimal(38, 18)"), ("avg_cost", "Decimal(38, 18)"),
-     ("realized_pnl", "Decimal(38, 18)"), ("content_hash", "FixedString(64)")),
+     ("quantity", "Float64"), ("avg_cost", "Float64"),
+     ("realized_pnl", "Float64"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, account_id, conid",
 )
 OPEN_ORDER = TableContract(
-    "trading_strategy_one_broker_match_open_order_v3",
+    "trading_strategy_one_broker_match_open_order_v4",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("broker_order_id", "String"), ("account_id", "String"),
      ("client_order_id", "String"), ("conid", "UInt64"),
      ("ticker", "LowCardinality(String)"), ("status", "String"),
      ("submitted_at", "DateTime64(6, 'UTC')"),
-     ("oca_group", "String"), ("filled", "Decimal(38, 18)"),
-     ("effective_quantity", "Nullable(Decimal(38, 10))"),
-     ("effective_cash_quantity", "Nullable(Decimal(38, 10))"),
+     ("oca_group", "String"), ("filled", "Float64"),
+     ("effective_quantity", "Nullable(Float64)"),
+     ("effective_cash_quantity", "Nullable(Float64)"),
      ("effective_request_hash", "FixedString(64)"),
-     ("avg_price", "Decimal(38, 18)"), ("commission_paid", "Decimal(38, 18)"),
-     ("stop_triggered", "UInt8"), ("trailing_reference", "Decimal(38, 18)"),
+     ("avg_price", "Float64"), ("commission_paid", "Float64"),
+     ("stop_triggered", "UInt8"), ("trailing_reference", "Float64"),
      ("status_description", "String"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, broker_order_id",
 )
 TICKER = TableContract(
-    "trading_strategy_one_broker_match_ticker_v3",
+    "trading_strategy_one_broker_match_ticker_v4",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
      ("ticker", "LowCardinality(String)"), ("last_boundary_ms", "UInt32"),
-     ("has_mark", "UInt8"), ("mark", "Decimal(38, 18)"),
+     ("has_mark", "UInt8"), ("mark", "Float64"),
      ("has_quote", "UInt8"), ("quote_timestamp_us", "UInt64"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, ticker",
 )
 MARK = TableContract(
-    "trading_strategy_one_broker_match_performance_mark_v3",
+    "trading_strategy_one_broker_match_performance_mark_v4",
     (("snapshot_id", "UUID"), ("run_id", "String"),
      ("snapshot_month", "Date"), ("checkpoint_sequence", "UInt64"),
-     ("conid", "UInt64"), ("mark", "Decimal(38, 18)"),
+     ("conid", "UInt64"), ("mark", "Float64"),
      ("has_performance_path", "UInt8"),
-     ("unrealized", "Decimal(38, 18)"), ("market_value", "Decimal(38, 18)"),
+     ("unrealized", "Float64"), ("market_value", "Float64"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(snapshot_month)",
     "run_id, checkpoint_sequence, conid",
@@ -144,7 +146,7 @@ class ManagedBrokerMatchHeadReader:
         if (type(run_id) is not str or not run_id
                 or any(char in run_id for char in "\r\n\x00")):
             raise ValueError("Broker match head run is invalid")
-        return ("/trading/strategy-one-broker-match/v3/"
+        return ("/trading/strategy-one-broker-match/v4/"
                 + sha256(run_id.encode()).hexdigest() + "/head")
 
     def read_head(self, *, run_id: str) -> BrokerMatchHead:
@@ -234,7 +236,7 @@ def project_broker_match_snapshot(
     if initial.timestamp() > global_at:
         raise ValueError("Broker initial time is after checkpoint")
     snapshot_id = str(uuid5(NAMESPACE_URL,
-                            f"strategy-one-broker-match-v3:{run_id}:{checkpoint_sequence}"))
+                            f"strategy-one-broker-match-v4:{run_id}:{checkpoint_sequence}"))
     common = dict(snapshot_id=snapshot_id, run_id=run_id,
                   snapshot_month=session_date.replace(day=1).isoformat(),
                   checkpoint_sequence=checkpoint_sequence)
@@ -272,7 +274,7 @@ def project_broker_match_snapshot(
         if status not in OPEN_ORDER_STATUSES:
             continue
         request = dict(order["request"])
-        # Normalize the decimal-grid fields before sealing so a typed
+        # Normalize negative zero before sealing so a typed Float64
         # ClickHouse round-trip and OrderRequest reconstruction hash alike.
         for key in ("quantity", "cashQty"):
             if request.get(key) is not None:
@@ -383,16 +385,7 @@ def _canonical_row(contract: TableContract, value: Mapping[str, Any]) -> dict[st
             row[name] = None
         elif "DateTime64(" in kind:
             row[name] = _utc_text(item, name, from_clickhouse=True)
-        elif kind in ("Decimal(38, 18)", "Nullable(Decimal(38, 10))"):
-            try:
-                exact = Decimal(str(item))
-            except InvalidOperation as exc:
-                raise ValueError("Broker match decimal is invalid") from exc
-            scale = 10 if kind.startswith("Nullable(") else 18
-            if not exact.is_finite() or exact.as_tuple().exponent < -scale:
-                raise ValueError("Broker match decimal exceeds exact scale")
-            row[name] = _float(float(exact), name)
-        elif kind == "Float64":
+        elif kind in ("Float64", "Nullable(Float64)"):
             row[name] = _float(item, name)
         elif kind.startswith("UInt"):
             if type(item) is not int or item < 0:
@@ -447,7 +440,7 @@ def verify_broker_match_snapshot(rows: BrokerMatchSnapshotRows) -> BrokerMatchSn
             or not 0 < root["boundary_ms"] <= 57_600_000
             or root["boundary_ms"] % 100
             or root["snapshot_id"] != str(uuid5(
-                NAMESPACE_URL, f"strategy-one-broker-match-v3:"
+                NAMESPACE_URL, f"strategy-one-broker-match-v4:"
                 f"{root['run_id']}:{root['checkpoint_sequence']}"))
             or root["snapshot_month"] != root["session_date"][:7] + "-01"
             or root["next_order_id"] < 1 or root["next_execution_id"] < 1

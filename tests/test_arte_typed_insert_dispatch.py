@@ -994,7 +994,7 @@ def test_broker_match_rows_require_exact_compacted_cursor_and_seal():
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
-    table = "trading_strategy_one_broker_match_snapshot_v3"
+    table = "trading_strategy_one_broker_match_snapshot_v4"
     token = f"broker-match:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
            "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
@@ -1029,7 +1029,7 @@ def test_broker_match_lost_insert_response_remains_pending():
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
-    table = "trading_strategy_one_broker_match_snapshot_v3"
+    table = "trading_strategy_one_broker_match_snapshot_v4"
     token = f"broker-match:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
            "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"

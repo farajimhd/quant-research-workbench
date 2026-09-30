@@ -296,6 +296,16 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows.open_orders[0]["filled"], 4.0)
         self.assertEqual(rows.tickers[0]["last_boundary_ms"], boundary_ms)
         self.assertEqual(verify_broker_match_snapshot(rows), rows)
+        # Float64 checkpoint columns must retain simulator residuals below a
+        # fixed Decimal scale; cold recovery cannot silently quantize them.
+        precision_state = self.broker.broker_match_snapshot_state()
+        precision_state["performance_extrema"]["unrealized"] = 8.526512829121202e-14
+        precise_rows = project_broker_match_snapshot(
+            run_id="backtest:one", session_date=day,
+            checkpoint_sequence=43, boundary_ms=boundary_ms,
+            state=precision_state)
+        self.assertEqual(precise_rows.snapshot["unrealized"], 8.526512829121202e-14)
+        self.assertEqual(verify_broker_match_snapshot(precise_rows), precise_rows)
         class Reader:
             def execute(self, sql):
                 assert sql.lstrip().startswith("SELECT ")
