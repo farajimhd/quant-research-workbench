@@ -180,16 +180,16 @@ def main(argv=None):
             manifest=lambda d:args.early_manifest if d<=date(2026,8,17) else args.late_manifest
             source=arte_source.load_build(manifest(day),args.ledger,[day])
             prior=arte_source.load_build(manifest(previous),args.ledger,[previous])
-            reader=arte_source.reader(threads=1); client=_client()
+            reader=arte_source.reader(threads=1)
             try:
                 population,pop_proof=arte_source.population(reader,source,day)
                 old_population,_=arte_source.population(reader,prior,previous)
                 old_ids={row['ticker']:row['listing_id'] for row in old_population}
-                rules=_rows(client,'SELECT DISTINCT token_id,modifier_int,update_last,update_high_low,update_volume '
-                    f'FROM arte.market_day_source_rule_v1 WHERE build_id={literal(source["build_id"])} ORDER BY token_id')
-                if not rules: raise ValueError('No pinned trade condition rules')
+                rules=source['definition']['plan']['rules']
+                if not rules or digest(rules)!=source['definition']['rules_hash']:
+                    raise ValueError('Archived trade conditions differ from certified build')
                 attempts=broker_attempts(source,args.ledger,day,set(source['units'][str(day)]))
-            finally: reader.close(); client.close()
+            finally: reader.close()
             selected=[row for row in population if not args.tickers or row['ticker'] in args.tickers]
             if args.tickers and set(args.tickers)-{r['ticker'] for r in selected}:
                 raise ValueError('Canary ticker absent from frozen population')
