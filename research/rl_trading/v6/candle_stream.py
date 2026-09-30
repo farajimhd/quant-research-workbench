@@ -74,9 +74,9 @@ def seed_previous_session(state: SparseCandleState,
                           listings: tuple[str, ...],
                           previous: SessionBank | None, *,
                           batch_size: int = 256) -> None:
-    """Load at most 119 actual prior candles per listing, once per session.
+    """Load at most 120 actual prior candles per listing, once per session.
 
-    The current candle becomes the 120th input at the first current-day
+    The current candle replaces the oldest input at the first current-day
     observation. Missing prior listings remain zero-padded with no fabricated
     bars. This function only initializes history; it never supplies labels.
     """
@@ -86,7 +86,7 @@ def seed_previous_session(state: SparseCandleState,
         raise ValueError('Invalid previous-session warm-up state')
     if previous is None:
         return
-    length = encoder.history_candles - 1
+    length = encoder.history_candles
     for start in range(0, len(listings), batch_size):
         identities = listings[start:start+batch_size]
         scalar = np.zeros((len(identities), length, len(SCALAR_NAMES)),
@@ -112,7 +112,7 @@ def seed_previous_session(state: SparseCandleState,
                 len(identities), length, encoder.width)
         projected *= torch.from_numpy(present).to(
             state.history.device)[..., None]
-        state.history[start:start+len(identities), 1:] = projected
+        state.history[start:start+len(identities)] = projected
         weighted = (state.history[start:start+len(identities)] *
                     encoder.lag[:, 0, :].T[None]).sum(dim=1)
         state.encoded[start:start+len(identities)] = encoder.norm(
