@@ -238,6 +238,9 @@ class SimulatedBrokerAdapter:
         self._canonical_order_cache: dict[
             str, tuple[OrderRequest, tuple[object, ...], CanonicalOrderState]
         ] = {}
+        self._live_order_cache: dict[
+            str, tuple[OrderRequest, tuple[object, ...], LiveOrder]
+        ] = {}
         # Bar matching touches every active ticker boundary. These are
         # derived indexes, rebuilt on restore, never checkpoint authorities.
         self._orders_by_ticker: dict[str, list[_OrderState]] = {}
@@ -451,6 +454,7 @@ class SimulatedBrokerAdapter:
         self._positions = positions
         self._orders = orders
         self._canonical_order_cache.clear()
+        self._live_order_cache.clear()
         self._orders_by_ticker = {}
         for state in orders.values():
             if state.status in OPEN_ORDER_STATUSES:
@@ -705,7 +709,24 @@ class SimulatedBrokerAdapter:
 
     async def live_orders(self) -> list[LiveOrder]:
         self._require_initialized()
-        return [state.snapshot() for state in self._sorted_orders()]
+        if not self._bar_mode:
+            return [state.snapshot() for state in self._sorted_orders()]
+        rows: list[LiveOrder] = []
+        for state in self._sorted_orders():
+            signature = (
+                state.status, state.filled, state.avg_price,
+                state.status_description, state.submitted_at, state.oca_group,
+            )
+            cached = self._live_order_cache.get(state.order_id)
+            if (cached is None or cached[0] is not state.request
+                    or cached[1] != signature):
+                snapshot = state.snapshot()
+                self._live_order_cache[state.order_id] = (
+                    state.request, signature, snapshot)
+            else:
+                snapshot = cached[2]
+            rows.append(snapshot)
+        return rows
 
     async def canonical_orders(self, account_id: str = "") -> list[CanonicalOrderState]:
         if self._bar_mode:

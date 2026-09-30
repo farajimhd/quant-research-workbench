@@ -72,6 +72,32 @@ def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,
 
 
 class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fixed_bar_live_orders_reuses_unchanged_snapshots(self):
+        broker = SimulatedBrokerAdapter(
+            ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
+            fixed_bar_mode=True,
+        )
+        await broker.initialize()
+        request = OrderRequest(
+            acctId="TEST", conid=1, orderType="LMT", side="BUY",
+            quantity=10, ticker="AAPL", price=10, cOID="live-cache",
+        )
+        order_id = (await broker.place_orders("TEST", [request]))[0]["order_id"]
+        initial = (await broker.live_orders())[0]
+        self.assertIs((await broker.live_orders())[0], initial)
+        await broker.modify_order("TEST", order_id, replace(request, price=10.5))
+        modified = (await broker.live_orders())[0]
+        self.assertIsNot(modified, initial)
+        self.assertEqual(modified.price, 10.5)
+        broker._orders[order_id].filled = 1
+        filled = (await broker.live_orders())[0]
+        self.assertIsNot(filled, modified)
+        self.assertEqual(filled.remainingQuantity, 9)
+        broker.restore_checkpoint_state(broker.checkpoint_state())
+        restored = (await broker.live_orders())[0]
+        self.assertIsNot(restored, filled)
+        self.assertEqual(restored, filled)
+
     async def test_canonical_execution_cache_normalizes_each_fill_once_and_resets_on_restore(self):
         broker = SimulatedBrokerAdapter(
             ["TEST"], mode=RunMode.BACKTEST, initial_time=START,
