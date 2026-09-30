@@ -381,7 +381,8 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     {selectedIndicators.includes("saved.structural_v7") && structureReason
       ? <p role="note">V7 structure unavailable: {structureReason}</p> : null}
     {!compactContext && page?.history_limited ? <p role="note">ARTE history available from {page.history_first_session}; earlier {frame === "1mo" ? "months" : "sessions"} are unavailable.</p> : null}
-    {error ? <p role="alert">Chart unavailable: {error}</p> : null}
+    {/* ChartPanel owns the centered failure state; errors must not insert a
+        second row above the toolbar or shift the chart layout. */}
     <ChartPanel persistedOnly settingsStorageKey="backtest-v4-strategy-one" payload={payload}
       ticker={symbol} timeframe={frame} timeframes={[...allowedFrames]}
       featureOptions={[]} indicatorOptions={[]} displayItemOptions={frame === "1d" || frame === "1mo" ? [] : displayItems}
@@ -389,7 +390,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
         setSelectedIndicators(values);
       }}
       onTickerChange={value => changeScope({ symbol: value })} onTimeframeChange={value => changeScope({ frame: value as (typeof FRAMES)[number] })}
-      emptyMessage="No price-bearing bars in this verified run window." loading={loading && !page}
+      emptyMessage="No price-bearing bars in this verified run window." errorMessage={error || undefined} loading={loading && !page}
       showIndicatorControls={frame !== "1d" && frame !== "1mo"} strategyPresentationEnabled={Boolean(toolbarAction) || tradeAnnotations.length > 0}
       dataStatus={tradeError || undefined}
       tickerEditable={false} enableFullscreen={false} baseHeight={320} fillHeight={embedded} toolbarVariant={embedded ? "compact" : "full"}
