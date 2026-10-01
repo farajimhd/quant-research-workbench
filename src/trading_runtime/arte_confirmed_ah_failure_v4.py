@@ -163,3 +163,30 @@ def seal_confirmed_ah_rows(
         first_price_source=first_price_source,
     )
     return tuple(typed_row(CONFIRMED_AH_FAILURE.name, row) for row in checked)
+
+
+def load_confirmed_ah_failure(client, prefix, exit_record_id):
+    """Bounded cold scalar read after independently verified commit-prefix loading.
+
+    Hash verification precedes UInt adaptation and predicate replay. This
+    loader does not replace complete commit graph/source verification.
+    """
+    from .arte_journal_commit_v4 import V4CommittedPrefix
+    from .arte_journal_writer import _literal, _rows
+    from .arte_intent_projection import _verify_stored_row
+    parent_id = str(UUID(str(exit_record_id)))
+    if (type(prefix) is not V4CommittedPrefix or not prefix.batch_ids
+            or prefix.status not in {'running', 'completed', 'stopped', 'failed'}):
+        raise ValueError('AH cold read requires an independently verified committed prefix')
+    columns = ','.join(name for name, _ in CONFIRMED_AH_FAILURE.columns)
+    rows = _rows(client, f'SELECT {columns} FROM arte.{CONFIRMED_AH_FAILURE.name} '
+                 f'WHERE run_id={_literal(prefix.run_id)} '
+                 f'AND parent_record_id=toUUID({_literal(parent_id)}) LIMIT 2 FORMAT JSONEachRow')
+    if (len(rows) != 1 or str(rows[0]['batch_id']) not in prefix.batch_ids
+            or rows[0]['run_id'] != prefix.run_id
+            or str(rows[0]['parent_record_id']) != parent_id):
+        raise RuntimeError('AH confirmation lacks its unique committed prefix row')
+    canonical = _verify_stored_row(CONFIRMED_AH_FAILURE.name, rows[0])
+    unsigned = {name for name, kind in CONFIRMED_AH_FAILURE.columns if kind.startswith('UInt')}
+    adapted = {k: int(v) if k in unsigned else v for k, v in canonical.items()}
+    return rows[0], restore_confirmed_ah_failure(adapted)

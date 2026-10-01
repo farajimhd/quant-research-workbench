@@ -234,3 +234,25 @@ def test_compound_retains_confirmation_and_blocks_incomplete_publication(monkeyp
     assert unit.confirmation['batch_id'] == base.batch_id
     with pytest.raises(ValueError, match='complete native commit registration'):
         prepare_compound_v4_families(SimpleNamespace(), compound)
+
+
+def test_cold_scalar_loader_verifies_hash_before_native_uint_adaptation(monkeypatch):
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import load_confirmed_ah_failure
+    from src.trading_runtime.arte_journal_writer import typed_row
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    witness, *_, row = prepared_case()
+    stored = typed_row(CONFIRMED_AH_FAILURE.name, row)
+    stored['strategy_number'] = '34'
+    prefix = V4CommittedPrefix(row['run_id'], 65, row['batch_id'], 'cursor', 'completed', (row['batch_id'],))
+    def read(client, query):
+        assert 'LIMIT 2 FORMAT JSONEachRow' in query and row['parent_record_id'] in query
+        return [stored]
+    monkeypatch.setattr('src.trading_runtime.arte_journal_writer._rows', read)
+    raw, restored = load_confirmed_ah_failure(None, prefix, row['parent_record_id'])
+    assert raw['strategy_number'] == '34' and restored == witness
+    stored['ten_second_macd_signal'] = 0.06
+    with pytest.raises(RuntimeError, match='committed hash'):
+        load_confirmed_ah_failure(None, prefix, row['parent_record_id'])
+    stored['batch_id'] = str(uuid4())
+    with pytest.raises(RuntimeError, match='committed prefix'):
+        load_confirmed_ah_failure(None, prefix, row['parent_record_id'])
