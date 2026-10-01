@@ -3668,6 +3668,12 @@ class ReplayRunController:
                 raise RuntimeError('Strategy 1 manager is already bound')
             self._strategy_one_manager = manager
 
+        def first_price_ready(source):
+            publisher = self._journal_publisher
+            if publisher is None:
+                raise RuntimeError('Strategy20 session lacks its typed publisher')
+            publisher.bind_first_price_source(source)
+
         try:
             session_started = time.perf_counter()
             await run_certified_strategy_one_session(
@@ -3682,6 +3688,7 @@ class ReplayRunController:
                     market_stream=True, v3_read_principal=True),
                 before_boundary=before, finish_boundary=finish,
                 manager_ready=manager_ready,
+                first_price_ready=first_price_ready,
                 start_after_boundary_ms=start_after,
                 flat_start_boundary_ms=(requested_start_ms
                                         if fixed_restore is None else 0),

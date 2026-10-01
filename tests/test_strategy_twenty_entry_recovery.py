@@ -194,6 +194,19 @@ def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry():
     with pytest.raises(ValueError, match='differs from its run'):
         project_pending_backtest_v4_prefix(journal, **scope, first_price_source=foreign)
     units = project_pending_backtest_v4_prefix(journal, **scope, first_price_source=source)
+    from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+    from tests.test_backtest_typed_publisher import FakeWriter
+    writer = FakeWriter()
+    writer.run_id, writer.journal_profile = source.run_id, 'backtest_v4'
+    publisher = BacktestTypedJournalPublisher(journal, writer,
+        attempt_id=scope['attempt_id'], run_month=scope['run_month'],
+        expected_config=scope['expected_config'])
+    with pytest.raises(ValueError, match='unbound run'):
+        publisher.bind_first_price_source(foreign)
+    publisher.bind_first_price_source(source)
+    with pytest.raises(ValueError, match='unbound run'):
+        publisher.bind_first_price_source(source)
+    assert publisher._prepare_batches(1) == units
     assert len(units) == 1 and type(units[0]) is V4StrategyOneEntryBatch
     unit = units[0]
     assert len(unit.first_price_evidence) == len(unit.first_price_authorities) == 1
@@ -207,3 +220,68 @@ def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry():
     assert page.entries[0].proposal == proposal
     assert page.entries[0].intent == intent
     assert journal.pending_record_count == 1  # Projection/publication does not acknowledge this buffer.
+
+
+def test_runtime_native_entry_intent_reuses_bound_source_and_rejects_rebinding():
+    from types import SimpleNamespace
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.trading_runtime.runtime import TradingRuntime, RunMode
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    source = CertifiedPriceReadbackAuthority(str(UUID(int=201)), plan)
+    _, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)))
+    runtime = TradingRuntime.__new__(TradingRuntime)
+    runtime.run_id = source.run_id
+    runtime.config = SimpleNamespace(mode=RunMode.BACKTEST, strategy_revision=20,
+        strategy_id='early-squeeze-strategy', anchor_date=date(2026, 8, 18))
+    runtime.journal = BacktestMemoryJournal(run_id=source.run_id)
+    runtime._strategy_one_price_source = None
+    with pytest.raises(ValueError, match='native source'):
+        runtime._strategy_one_entry_intent(proposal)
+    with pytest.raises(ValueError, match='unbound session'):
+        runtime.bind_strategy_one_price_source(CertifiedPriceReadbackAuthority('foreign', plan))
+    runtime.bind_strategy_one_price_source(source)
+    assert runtime._strategy_one_entry_intent(proposal) == intent
+    with pytest.raises(ValueError, match='unbound session'):
+        runtime.bind_strategy_one_price_source(source)
+    with pytest.raises(ValueError):
+        runtime._strategy_one_entry_intent(replace(proposal, initial_stop=11.0))
+
+
+def test_manager_writer_transports_native_source_through_actual_queue(monkeypatch):
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+    from src.trading_runtime import arte_journal_writer as writer_module
+    from src.trading_runtime import strategy_one_management_snapshot as snapshots
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    source = CertifiedPriceReadbackAuthority(str(UUID(int=301)), plan)
+    unit, proposal, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)))
+    key = (proposal.account_id, proposal.assignment_id, proposal.ticker)
+    state = StrategyOneManagementState(42000, ((key, proposal),), (), ())
+    client = attached_v4_client(ExactBits())
+    client.close = lambda: None
+    client.manager_keeper_session = object()
+    monkeypatch.setattr(writer_module, '_v4_preflight', lambda _: None)
+    monkeypatch.setattr(writer_module, '_verify_run_identity',
+        lambda *_: {'mode': 'backtest', 'account_ids': (proposal.account_id,)})
+    seen = []
+    def publication(got_client, session, rows, *, journal_batch_id, first_price_source):
+        assert got_client is client and session is client.manager_keeper_session
+        assert first_price_source is source and journal_batch_id == unit.base.batch_id
+        assert rows.sources[0]['strategy_number'] == 20
+        reference = snapshots.restore_manager_snapshot(rows)
+        assert reference.submitted[0][1].first_price is None
+        seen.append(rows.snapshot['content_hash'])
+    monkeypatch.setattr(snapshots, 'publish_manager_snapshot', publication)
+    writer = writer_module.ArteJournalWriter(client, run_id=source.run_id,
+        journal_profile='backtest_v4', coalesce_batches=False)
+    try:
+        writer._last_commit_id = unit.base.batch_id
+        args = dict(session_date=date(2026, 8, 18), checkpoint_sequence=1,
+            journal_batch_id=unit.base.batch_id, state=state)
+        with pytest.raises(ValueError, match='native session source'):
+            writer.submit_manager_snapshot(**args)
+        assert writer.submit_manager_snapshot(**args, first_price_source=source).result(timeout=5) == unit.base.batch_id
+        assert len(seen) == 1
+    finally:
+        writer.close()

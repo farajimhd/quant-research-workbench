@@ -2258,3 +2258,22 @@ client. This does not activate the numbered strategy or install operational
 storage. Runtime admission, source-context transport and release wiring remain
 required before the actual portfolio campaign. Existing financial fields,
 costs and journal acknowledgement ownership are unchanged.
+
+### Strategy20 cached runtime and publisher context
+
+The certified session runner now constructs one run-bound native price authority
+from its compiled20 source plan. It binds that authority to runtime entry
+validation and, through the controller, to V4 prefix projection before entry
+processing. Neither route recomputes the source plan per trade. Bindings require
+the correct run, session/configuration and Backtest mode; rebinding is rejected.
+The ordinary installed numbered registry still excludes20 until release.
+
+The publisher and manager-snapshot queue carry the same immutable context to
+capture and publication. A real writer-queue fixture checks this transport using
+real capture and scalar recovery, with only the publication callback replaced;
+it is not operational Keeper publication evidence. The native memory-prefix
+fixture additionally exercises the real publisher projection route. Source
+guards now cover runtime validation, source binding, publisher forwarding,
+controller callback and snapshot worker transport, with dropped-context
+mutations rejected. Numbered release, operational price-table provisioning and
+actual portfolio PnL remain pending. No holdout tuning occurred.

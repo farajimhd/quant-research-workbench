@@ -95,6 +95,7 @@ async def run_certified_strategy_one_session(
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     manager_ready: Callable[[StrategyOneManagementRunner], None] | None = None,
+    first_price_ready: Callable[[object], None] | None = None,
     max_workers: int = DEFAULT_SPARSE_READ_WORKERS,
     stage_time: Callable[[str, float], None] | None = None,
     interval_plan: CertifiedV7IntervalPlan | None = None,
@@ -151,7 +152,8 @@ async def run_certified_strategy_one_session(
             or type(max_workers) is not int or not 1 <= max_workers <= 16
             or any(not callable(callback) for callback in (
                 client_factory, before_boundary, finish_boundary))
-            or manager_ready is not None and not callable(manager_ready)):
+            or manager_ready is not None and not callable(manager_ready)
+            or first_price_ready is not None and not callable(first_price_ready)):
         raise ValueError("Strategy 1 session lacks pinned 100ms inputs")
     if flat_start_boundary_ms:
         active = getattr(getattr(runtime, "broker", None),
@@ -216,7 +218,14 @@ async def run_certified_strategy_one_session(
                     source = load_first_price_source(market, initial_momentum_plan, client=price_client)
                 initial_momentum_plan = compile_certified_price_break_plan(source)
     if runtime.config.strategy_revision == 20:
-        from src.backend.backtest_strategy_certified_price_break import compile_certified_price_static_gate
+        from src.backend.backtest_strategy_certified_price_break import (
+            compile_certified_price_static_gate, CertifiedPriceReadbackAuthority,
+        )
+        if not callable(first_price_ready):
+            raise ValueError("Strategy20 session lacks its price-source publication binding")
+        price_authority = CertifiedPriceReadbackAuthority(runtime.run_id, initial_momentum_plan)
+        runtime.bind_strategy_one_price_source(price_authority)
+        first_price_ready(price_authority)
         full_gate = compile_certified_price_static_gate(initial_momentum_plan)
     else:
         full_gate = compile_static_entry_gate(
@@ -326,7 +335,10 @@ async def run_certified_strategy_one_session(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)
             if resume_manager_state is not None:
-                manager.restore_state(resume_manager_state)
+                if runtime.config.strategy_revision == 20:
+                    manager.restore_state(resume_manager_state, first_price_source=price_authority)
+                else:
+                    manager.restore_state(resume_manager_state)
             if manager_ready is not None:
                 manager_ready(manager)
             return await run_strategy_one_fixed_session(

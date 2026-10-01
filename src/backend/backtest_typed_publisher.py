@@ -114,6 +114,7 @@ class BacktestTypedJournalPublisher:
         self.expected_config = expected_config
         self.fixed_market_parent_plan = fixed_market_parent_plan
         self.fixed_market_execution_plan = fixed_market_execution_plan
+        self._first_price_source = None
         self.expected_market_start = expected_market_start
         self.expected_market_plan_token = expected_market_plan_token
         self.expected_query_sha256 = expected_query_sha256
@@ -242,6 +243,20 @@ class BacktestTypedJournalPublisher:
         self._task = asyncio.create_task(self._drain(target_sequence=target_sequence))
         return self._task
 
+    def bind_first_price_source(self, source: object) -> None:
+        """Bind one native20 source before entry-prefix projection starts."""
+        from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+        if (type(source) is not CertifiedPriceReadbackAuthority
+                or source.run_id != self.journal.run_id
+                or self.writer.journal_profile != 'backtest_v4'
+                or not isinstance(self.expected_config, dict)
+                or self.expected_config.get('strategy_revision') != 20
+                or self.expected_config.get('strategy_id') != 'early-squeeze-strategy'
+                or source.plan.source.market.sessions[0][:7] != self.run_month.isoformat()[:7]
+                or self._first_price_source is not None):
+            raise ValueError("Strategy20 publisher source lacks its exact unbound run")
+        self._first_price_source = source
+
     def _prepare_batches(self, through_sequence: int) -> tuple[
             TypedJournalBatch | V3SqueezeBatch | V4CompoundBatch
             | V4StrategyOneEntryBatch | V4FollowThroughFailureBatch
@@ -260,6 +275,7 @@ class BacktestTypedJournalPublisher:
                 expected_config=self.expected_config,
                 fixed_market_parent_plan=self.fixed_market_parent_plan,
                 fixed_market_execution_plan=self.fixed_market_execution_plan,
+                first_price_source=self._first_price_source,
                 expected_market_start=self.expected_market_start,
                 published_sources=dict(self._committed_strategy_intents),
                 committed_order_lineage=dict(self._committed_order_lineage),
@@ -470,7 +486,9 @@ class BacktestTypedJournalPublisher:
                                             session_date=session_date,
                                             checkpoint_sequence=sequence,
                                             journal_batch_id=self._batch_id,
-                                            state=manager_state)
+                                            state=manager_state,
+                                            **({} if self._first_price_source is None else
+                                               {'first_price_source': self._first_price_source}))
                                         if await asyncio.wrap_future(manager_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "Manager snapshot differs from committed checkpoint")

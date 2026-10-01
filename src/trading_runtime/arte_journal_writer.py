@@ -3687,6 +3687,7 @@ class _ManagerSnapshotUnit:
     checkpoint_sequence: int
     journal_batch_id: str
     state: Any
+    first_price_source: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4418,7 +4419,7 @@ class ArteJournalWriter:
     def submit_manager_snapshot(self, *, session_date: date,
                                 checkpoint_sequence: int,
                                 journal_batch_id: str,
-                                state: Any) -> Future[str]:
+                                state: Any, first_price_source=None) -> Future[str]:
         """Queue an immutable Strategy 1 capture; project and persist off-path."""
         from src.backend.backtest_strategy_one_management import (
             StrategyOneManagementRunner, StrategyOneManagementState,
@@ -4436,6 +4437,13 @@ class ArteJournalWriter:
             raise ValueError("Manager snapshot batch ID is invalid") from exc
         StrategyOneManagementRunner._validate_capture(
             state, max_pending_breaks=256)
+        if first_price_source is not None or any(
+                proposal.strategy_number == 20 for _, proposal in state.submitted):
+            from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+            if (type(first_price_source) is not CertifiedPriceReadbackAuthority
+                    or first_price_source.run_id != self._run_id
+                    or first_price_source.plan.source.market.sessions != (session_date.isoformat(),)):
+                raise ValueError("Strategy20 snapshot queue lacks its native session source")
         with self._submission_lock:
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")
@@ -4445,7 +4453,7 @@ class ArteJournalWriter:
             try:
                 self._queue.put_nowait((
                     _ManagerSnapshotUnit(session_date, checkpoint_sequence,
-                                         journal_batch_id, state), receipt))
+                                         journal_batch_id, state, first_price_source), receipt))
             except Full as exc:
                 raise JournalQueueFull("Manager snapshot queue is full") from exc
             self._accepted_writes = True
@@ -4885,13 +4893,15 @@ class ArteJournalWriter:
                     if self._last_commit_id != unit.journal_batch_id:
                         raise RuntimeError(
                             "Manager snapshot has no preceding ordered V4 commit")
+                    price_context = ({} if unit.first_price_source is None else
+                                     {'first_price_source': unit.first_price_source})
                     rows = project_manager_snapshot(
                         run_id=self._run_id, session_date=unit.session_date,
                         checkpoint_sequence=unit.checkpoint_sequence,
-                        state=unit.state)
+                        state=unit.state, **price_context)
                     publish_manager_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
-                        journal_batch_id=unit.journal_batch_id)
+                        journal_batch_id=unit.journal_batch_id, **price_context)
                     committed_id = unit.journal_batch_id
                 elif isinstance(group[0][0], _BrokerMatchSnapshotUnit):
                     from src.trading_runtime.strategy_one_broker_match_snapshot import (

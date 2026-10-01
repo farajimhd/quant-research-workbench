@@ -182,6 +182,13 @@ def test_reviewed_source_accepts_current_guard_and_rejects_its_removal(tmp_path)
     ('trading_runtime/arte_journal_commit_v4.py',
      'getattr(client, "_v4_writer_snapshot_price_scope", None) != price_scope',
      'False'),
+    ('backend/backtest_typed_publisher.py',
+     'first_price_source=self._first_price_source,', 'first_price_source=None,'),
+    ('trading_runtime/runtime.py',
+     'first_price_source=self._strategy_one_price_source)', 'first_price_source=None)'),
+    ('trading_runtime/arte_journal_writer.py',
+     'journal_batch_id=unit.journal_batch_id, **price_context)',
+     'journal_batch_id=unit.journal_batch_id)'),
 ])
 def test_reviewed_source_rejects_price_authority_or_dispatch_changes(tmp_path, relative, before, after):
     from pathlib import Path

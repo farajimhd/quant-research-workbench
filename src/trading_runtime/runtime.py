@@ -208,6 +208,7 @@ class TradingRuntime:
         self.broker = broker
         self.strategy = strategy
         self.journal = journal
+        self._strategy_one_price_source = None
         self._persisted_assignment_versions: dict[str, tuple[str, str]] = {}
         self._persisted_assignment_times: dict[str, datetime] = {}
         self._last_wait_decision_signatures: dict[tuple[str, str], tuple[Any, ...]] = {}
@@ -969,7 +970,6 @@ class TradingRuntime:
                 raise ValueError("Strategy 1 protection needs a typed disk-free source")
         if strategy_one_proposal is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
-            from .strategy_one_intent import strategy_one_entry_intent
             from .strategy_one_stateful import StrategyOneEntryProposal
 
             if (self.config.mode != RunMode.BACKTEST
@@ -977,9 +977,7 @@ class TradingRuntime:
                     or not isinstance(strategy_one_proposal, StrategyOneEntryProposal)
                     or event is not None
                     or account_id != strategy_one_proposal.account_id
-                    or evaluation.intents != (strategy_one_entry_intent(
-                        strategy_one_proposal,
-                        session_date=self.config.anchor_date),)):
+                    or evaluation.intents != (self._strategy_one_entry_intent(strategy_one_proposal),)):
                 raise ValueError("Strategy 1 source intent lacks exact disk-free proposal")
         if strategy_one_add_proposal is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -1017,7 +1015,8 @@ class TradingRuntime:
                     session_date=self.config.anchor_date,
                     account_id=account_id,
                     strategy_id=self.config.strategy_id,
-                    strategy_revision=self.config.strategy_revision)
+                    strategy_revision=self.config.strategy_revision,
+                    first_price_source=self._strategy_one_price_source)
             elif strategy_one_add_proposal is not None:
                 self.journal.append_strategy_one_add_intent(
                     intent=intent, proposal=strategy_one_add_proposal,
@@ -1283,6 +1282,39 @@ class TradingRuntime:
                                    financial.account_id, None,
                                    numbered_exit_assignment_id=financial.assignment_id)
 
+    def bind_strategy_one_price_source(self, source: Any) -> None:
+        """Bind one certified session plan before numbered20 entry admission."""
+        from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision != 20
+                or self.config.strategy_id != 'early-squeeze-strategy'
+                or type(source) is not CertifiedPriceReadbackAuthority
+                or source.run_id != self.run_id
+                or source.plan.source.market.sessions != (self.config.anchor_date.isoformat(),)
+                or not isinstance(self.journal, BacktestMemoryJournal)
+                or self.journal.run_id != self.run_id
+                or self._strategy_one_price_source is not None):
+            raise ValueError("Strategy20 runtime source lacks its exact unbound session")
+        self._strategy_one_price_source = source
+
+    def _strategy_one_entry_intent(self, proposal: Any):
+        """Validate entries against the cached source, without market I/O."""
+        if proposal.strategy_number == 20:
+            from src.backend.backtest_strategy_certified_price_break import (
+                CertifiedPriceReadbackAuthority, certified_price_entry_intent,
+            )
+            source = self._strategy_one_price_source
+            if (type(source) is not CertifiedPriceReadbackAuthority
+                    or source.run_id != self.run_id
+                    or self.config.mode != RunMode.BACKTEST
+                    or self.config.strategy_id != 'early-squeeze-strategy'
+                    or self.config.strategy_revision != 20):
+                raise ValueError("Strategy20 runtime entry lacks its native source")
+            return certified_price_entry_intent(source.plan, proposal,
+                session_date=self.config.anchor_date)
+        from .strategy_one_intent import strategy_one_entry_intent
+        return strategy_one_entry_intent(proposal, session_date=self.config.anchor_date)
+
     async def submit_strategy_one_proposal(self, proposal: Any) -> list[dict[str, Any]]:
         """Route numbered entry evidence through the shared Portfolio/OMS path.
 
@@ -1292,7 +1324,6 @@ class TradingRuntime:
         """
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
-        from .strategy_one_intent import strategy_one_entry_intent
         from .strategy_one_stateful import StrategyOneEntryProposal
 
         if (self.config.mode != RunMode.BACKTEST
@@ -1303,8 +1334,7 @@ class TradingRuntime:
                 or proposal.strategy_number != self.config.strategy_revision
                 or proposal.account_id not in self.config.account_ids):
             raise ValueError("Strategy 1 submission requires its numbered Backtest runtime")
-        intent = strategy_one_entry_intent(
-            proposal, session_date=self.config.anchor_date)
+        intent = self._strategy_one_entry_intent(proposal)
         from .numbered_fixed_strategy import numbered_fixed_strategy
         if not numbered_fixed_strategy(proposal.strategy_number).entry_allowed(proposal.boundary_ms):
             raise ValueError("Numbered entry is after its acquisition cutoff")
