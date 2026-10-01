@@ -88,6 +88,11 @@ class StrategyOneManagementRunner:
         self._position_highs: dict[ManagerKey, int] = {}
         self._closed_positions: dict[ManagerKey, StrategyOneClosedPosition] = {}
         self._first_held_boundaries: dict[ManagerKey, int] = {}
+        # References are selected only after a complete native checkpoint.
+        # They are deliberately ephemeral: cold restore must confirm a new
+        # checkpoint rather than manufacture a durable reference from highs.
+        self._profit_arm_references: dict[ManagerKey, Any] = {}
+        self._profit_arm_financials: dict[ManagerKey, StrategyOneFinancialView] = {}
 
     @staticmethod
     def _validate_capture(state: StrategyOneManagementState, *,
@@ -115,7 +120,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position high lacks its active position")
         sources = dict(state.submitted)
         required = {key for key in keys["positions"]
-                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)}
+                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)}
         if keys["first_held_boundaries"] != required:
             raise ValueError("Strategy 9 position lacks its first held boundary")
         for key, boundary in state.first_held_boundaries:
@@ -230,6 +235,51 @@ class StrategyOneManagementRunner:
         return ((financial.account_id, financial.assignment_id, financial.ticker)
                 in self._submitted)
 
+    def profit_arming_requests(self, *, boundary_ms: int) -> tuple:
+        """Freeze all newly armed positions against one completed capture."""
+        if self.contract.strategy_number != 31:
+            return ()
+        from decimal import Decimal
+        from src.trading_runtime.strategy_profit_giveback_arm import profit_arm_candidate
+        eligible = []
+        for key, financial in sorted(self._profit_arm_financials.items()):
+            if (key in self._profit_arm_references or key not in self._positions
+                    or financial.position_quantity <= 0 or financial.pending_exit):
+                continue
+            source = self._submitted[key]
+            threshold = (2 * Decimal(str(source.reference_ask))
+                         - Decimal(str(source.initial_stop))) * 10_000
+            if Decimal(self._position_highs[key]) >= threshold:
+                eligible.append(financial)
+        if not eligible:
+            # Deep checkpoint capture is paid once per armed position, not
+            # at every 100ms market boundary while waiting for follow-through.
+            return ()
+        state = self.capture_state(boundary_ms=boundary_ms)
+        requests = []
+        for financial in eligible:
+            candidate = profit_arm_candidate(state, financial,
+                already_checkpointed=False)
+            if candidate is not None:
+                requests.append((candidate, financial))
+        return tuple(requests)
+
+    def accept_profit_arming_references(self, requests: tuple, references: tuple,
+                                       *, boundary_ms: int) -> None:
+        """Retain confirmed references atomically before advancing the clock."""
+        from src.trading_runtime.strategy_profit_giveback_arm_reference import ProfitArmReference
+        if (type(requests) is not tuple or type(references) is not tuple
+                or not requests or len(requests) != len(references)
+                or requests != self.profit_arming_requests(boundary_ms=boundary_ms)
+                or any(type(reference) is not ProfitArmReference
+                       or reference.candidate != candidate
+                       for (candidate, _), reference in zip(requests, references))):
+            raise ValueError('Profit arming confirmation differs from completed positions')
+        for reference in references:
+            candidate = reference.candidate
+            key = (candidate.account_id, candidate.assignment_id, candidate.ticker)
+            self._profit_arm_references[key] = reference
+
     def last_closed_position(
         self, financial: StrategyOneFinancialView,
     ) -> StrategyOneClosedPosition | None:
@@ -262,6 +312,8 @@ class StrategyOneManagementRunner:
         if not isinstance(financial, StrategyOneFinancialView):
             raise TypeError("Strategy 1 management needs typed financial state")
         key = (financial.account_id, financial.assignment_id, financial.ticker)
+        if self.contract.strategy_number == 31:
+            self._profit_arm_financials[key] = financial
         if financial.position_quantity <= 0:
             if not financial.pending_entry and not financial.pending_exit:
                 source = self._submitted.get(key)
@@ -273,6 +325,8 @@ class StrategyOneManagementRunner:
                 self._first_held_boundaries.pop(key, None)
                 self._pending_breaks.pop(key, None)
                 self._submitted.pop(key, None)
+                self._profit_arm_references.pop(key, None)
+                self._profit_arm_financials.pop(key, None)
             return
         if self.contract.liquidation_due(boundary_ms):
             await self.runtime.submit_numbered_session_exit(financial, resolutions, boundary_ms)

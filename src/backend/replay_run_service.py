@@ -2554,10 +2554,18 @@ class ReplayRunController:
                     campaign_ownership=campaign_ownership,
                 ))
                 try:
-                    await asyncio.shield(self._checkpoint_io_task)
+                    durable = await asyncio.shield(self._checkpoint_io_task)
                 except asyncio.CancelledError:
                     await self._checkpoint_io_task
                     raise
+                # A forced arming checkpoint needs the actual completed
+                # publisher receipt. A queued task or a cached cursor cannot
+                # identify the snapshot selected by native recovery.
+                from src.backend.backtest_typed_publisher import TypedBacktestReceipt
+                if (type(durable) is not TypedBacktestReceipt
+                        or durable.source_cursor != boundary_id
+                        or durable.last_sequence != publisher.fenced_sequence):
+                    raise RuntimeError('Fixed Backtest checkpoint receipt differs from its fence')
                 self._record_stage_time('checkpoint_persist', started)
                 self._checkpoint_projection_cache = {
                     'status': 'cursor_fenced', 'cursor': boundary_id,
@@ -2571,7 +2579,7 @@ class ReplayRunController:
                 if not nonblocking_fixed or self._checkpoint_io_task is None:
                     self._checkpoint_io_task = None
                     self._checkpoint_work_snapshot = None
-            return
+            return durable
         # The engine awaits the entire operation: no market/strategy state can
         # advance while the worker captures it. Mutation APIs reject changes;
         # pause/stop only set control flags and take effect at this boundary.
@@ -2588,6 +2596,49 @@ class ReplayRunController:
         finally:
             self._checkpoint_io_task = None
             self._checkpoint_work_snapshot = None
+
+    async def _confirm_profit_arming_checkpoint(self, requests: tuple, *, event_time):
+        """Fence one complete capture, then attest all candidates off-thread.
+
+        The boundary coordinator awaits this operation before advancing market
+        state. No reference is installed if any native confirmation fails.
+        """
+        manager = getattr(self, '_strategy_one_manager', None)
+        publisher = getattr(self, '_journal_publisher', None)
+        keeper = getattr(self, '_fixed_keeper_session', None)
+        boundary = dict(self._source_cursor).get('boundary_ms')
+        if (self.definition.mode != RunMode.BACKTEST
+                or manager is None or manager.contract.strategy_number != 31
+                or publisher is None or publisher.writer.journal_profile != 'backtest_v4'
+                or keeper is None or type(requests) is not tuple or not requests
+                or requests != manager.profit_arming_requests(boundary_ms=boundary)):
+            raise RuntimeError('Profit arming lacks its completed native Backtest boundary')
+        receipt = await self._save_restart_checkpoint_responsive(event_time)
+        from src.trading_runtime.arte_journal_reader import readonly_typed_journal_client
+        from src.trading_runtime.strategy_one_management_snapshot import ManagedManagerSnapshotHeadReader
+        from src.trading_runtime.strategy_profit_giveback_arm_reference import confirm_profit_arm_reference
+
+        def confirm():
+            with closing(readonly_typed_journal_client()) as reader:
+                head = ManagedManagerSnapshotHeadReader(keeper)
+                return tuple(confirm_profit_arm_reference(
+                    reader, head, candidate, financial, receipt,
+                    run_id=self.run_id, first_price_source=publisher._first_price_source)
+                    for candidate, financial in requests)
+
+        started = time.perf_counter()
+        task = asyncio.create_task(asyncio.to_thread(confirm))
+        try:
+            try:
+                references = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+            manager.accept_profit_arming_references(requests, references,
+                                                    boundary_ms=boundary)
+        finally:
+            self._record_stage_time('profit_arm_confirmation', started)
+        return references
 
     def _prepare_terminal_v2_handoff(self, verified_prefix, *, committed_at):
         """Inactive fixed-Backtest handoff; publication still needs admission.
@@ -3660,6 +3711,11 @@ class ReplayRunController:
             }
             self.processed_events += len(work.broker_rows)
             await self._after_event(at)
+            manager = self._strategy_one_manager
+            if manager.contract.strategy_number == 31:
+                requests = manager.profit_arming_requests(boundary_ms=work.boundary_ms)
+                if requests:
+                    await self._confirm_profit_arming_checkpoint(requests, event_time=at)
             if boundary_count % 256 == 0:
                 await self._publish()
 

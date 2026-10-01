@@ -250,8 +250,9 @@ def test_fixed_v4_runtime_installs_typed_images_without_legacy_recovery(monkeypa
 
 @pytest.mark.parametrize("stop_requested", [False, True])
 @pytest.mark.parametrize("after_hours", [False, True])
+@pytest.mark.parametrize("strategy_number,arm_requests", [(1, ()), (31, ()), (31, ('candidate',))])
 def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
-    monkeypatch, stop_requested, after_hours,
+    monkeypatch, stop_requested, after_hours, strategy_number, arm_requests,
 ):
     from src.backend import backtest_strategy_one_execution
     from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
@@ -285,6 +286,7 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     controller._fixed_through_boundary_ms = lambda: terminal_ms
     controller._publish = AsyncMock()
     controller._after_event = AsyncMock()
+    controller._confirm_profit_arming_checkpoint = AsyncMock()
     controller._finish = AsyncMock()
     controller._wait_until_active = AsyncMock()
     controller._process_strategy_frame = AsyncMock(side_effect=AssertionError(
@@ -300,8 +302,10 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
         assert kwargs["assignments"] == controller._strategy.assignments()
         def advance_empty(boundary):
             assert boundary == terminal_ms
-        kwargs["manager_ready"](SimpleNamespace(evidence=SimpleNamespace(
-            advance_empty_boundary=advance_empty)))
+        kwargs["manager_ready"](SimpleNamespace(
+            contract=SimpleNamespace(strategy_number=strategy_number),
+            profit_arming_requests=lambda **_: arm_requests,
+            evidence=SimpleNamespace(advance_empty_boundary=advance_empty)))
         controller._stop_requested = stop_requested
         await kwargs["before_boundary"](work)
         assert controller.current_time == datetime(
@@ -331,6 +335,11 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     controller._finish.assert_awaited_once_with(
         "stopped" if stop_requested else "completed")
     controller._process_strategy_frame.assert_not_awaited()
+    if strategy_number == 31 and arm_requests and not stop_requested:
+        controller._confirm_profit_arming_checkpoint.assert_awaited_once_with(
+            arm_requests, event_time=market_data.market_day_boundary(DAY, work.boundary_ms))
+    else:
+        controller._confirm_profit_arming_checkpoint.assert_not_awaited()
 
 
 def test_strategy_one_resumed_tape_starts_after_verified_cursor(monkeypatch):
@@ -387,7 +396,7 @@ def test_strategy_one_resumed_tape_starts_after_verified_cursor(monkeypatch):
         assert kwargs["start_after_boundary_ms"] == 100
         assert kwargs["resume_evidence_state"] is evidence_state
         assert kwargs["resume_manager_state"] is manager_state
-        kwargs["manager_ready"](SimpleNamespace(evidence=SimpleNamespace(
+        kwargs["manager_ready"](SimpleNamespace(contract=SimpleNamespace(strategy_number=1), evidence=SimpleNamespace(
             advance_empty_boundary=lambda _boundary: None)))
         await kwargs["before_boundary"](work)
         await kwargs["finish_boundary"](work)
