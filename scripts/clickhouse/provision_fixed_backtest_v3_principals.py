@@ -106,6 +106,8 @@ class PrincipalPlan:
 def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
     """Derive exact table names from the same contracts as V3 preflight."""
     from src.trading_runtime.historical_reference_identity import TABLES as reference_tables
+    from src.trading_runtime.historical_reference_identity_v3 import TABLES as reference_v3_tables
+    reference_tables = (*reference_tables, *reference_v3_tables)
     from src.backend.backtest_squeeze_episode_schema import (
         PORTFOLIO_CONTROL, RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
         SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,

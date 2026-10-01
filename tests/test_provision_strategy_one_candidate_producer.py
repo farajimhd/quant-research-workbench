@@ -47,6 +47,7 @@ def test_new_producer_grants_only_owned_products_and_dated_source(monkeypatch):
     monkeypatch.setattr(subject, "verify_v7_interval_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "install_identity_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "install_reference_identity_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "install_reference_v3_tables", lambda _admin: None)
     admin = Admin()
     producer = Producer()
     def apply_grant(query):
@@ -75,6 +76,7 @@ def test_existing_broad_grant_fails_before_new_grant(monkeypatch):
     monkeypatch.setattr(subject, "verify_v7_interval_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "install_identity_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "install_reference_identity_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "install_reference_v3_tables", lambda _admin: None)
     admin = Admin(present="1")
     producer = Producer((f"GRANT INSERT ON arte.bars_v1 TO {subject.PRINCIPAL}",))
     with pytest.raises(RuntimeError, match="outside its exact source/product tables"):
@@ -91,6 +93,7 @@ def test_clickhouse_combined_grant_line_is_exactly_parsed():
     producer.grants.add(
         f"GRANT SELECT ON q_live.feature_tradable_universe_v1 TO {subject.PRINCIPAL}")
     producer.grants.add(f"GRANT SELECT ON q_live.feature_tradable_universe_snapshot_v2 TO {subject.PRINCIPAL}")
+    producer.grants.add(f"GRANT SELECT ON q_live.id_source_mapping_v1 TO {subject.PRINCIPAL}")
     assert subject._grant_set(producer) == subject._GRANTS
 
 

@@ -98,3 +98,30 @@ def test_normalized_consumer_verifies_proof_and_coverage(fault):
     else:
         with pytest.raises(ReferenceIdentityError):
             certify_proofs(facts, proofs, seal, pin)
+
+
+@pytest.mark.parametrize('fault', ['readback', 'changed_source'])
+def test_v3_publisher_never_seals_failed_children(monkeypatch, fault):
+    from pipelines.strategy_one import reference_identity_v3_publication as publisher
+    snapshot, retained, mappings, pin = inputs()
+    _, _, market, _ = fixture()
+    pin = replace(pin, population_source_hash='3')
+    day, facts, payload, _ = resolution_plan(snapshot, retained, mappings, market, pin)
+    proofs = normalized_proofs(payload)
+    outcomes = iter([(day, facts, proofs), (day, facts, [])])
+    monkeypatch.setattr(publisher, 'storage_preflight', lambda *a, **k: None)
+    monkeypatch.setattr(publisher, 'load_resolution', lambda *a: next(outcomes))
+    writes = []
+    class Client:
+        def execute(self, sql):
+            if sql.startswith('INSERT'):
+                writes.append(sql)
+                return ''
+            if 'coverage_v3' in sql: return ''
+            result = proofs if 'resolution_v3' in sql else facts
+            if fault == 'readback' and 'resolution_v3' in sql: result = []
+            return '\n'.join(json.dumps(r) for r in result)
+    with pytest.raises(ReferenceIdentityError):
+        publisher.publish_reference_identity_v3(Client(), Client(), market, pin)
+    assert len(writes) == 2
+    assert not any('coverage_v3' in sql for sql in writes)

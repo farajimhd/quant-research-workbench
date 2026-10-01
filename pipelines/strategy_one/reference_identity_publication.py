@@ -99,7 +99,13 @@ def resolve_retained_identities(client, market, pin):
 
 def publish_reference_identity(client, reader, market, pin):
     from src.backend.backtest_reference_identity import certify_reference_identity
-    source_date, expected = resolve_retained_identities(client, market, pin)
+    try:
+        source_date, expected = resolve_retained_identities(client, market, pin)
+    except ReferenceIdentityError as exc:
+        if str(exc) != 'Snapshot has ambiguous selected listing identity':
+            raise
+        from pipelines.strategy_one.reference_identity_v3_publication import publish_reference_identity_v3
+        return publish_reference_identity_v3(client, reader, market, pin)
     print(f'Reference: session={market.sessions[0]} source={source_date} '
           f'revision={pin.reference_revision} tickers={len(expected)}', flush=True)
     digest = identity_content_hash(expected)

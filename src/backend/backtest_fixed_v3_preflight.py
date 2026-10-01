@@ -156,6 +156,8 @@ def terminal_v3_preflight(client: Any) -> None:
 def read_v3_preflight(client: Any) -> None:
     """A separate cold-audit principal must have no arte INSERT grant."""
     from src.trading_runtime.historical_reference_identity import TABLES as reference_tables
+    from src.trading_runtime.historical_reference_identity_v3 import TABLES as reference_v3_tables
+    reference_tables = (*reference_tables, *reference_v3_tables)
     contracts = terminal_v3_contracts()
     certificate_names = frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES)
     candidate_names = frozenset(table.split(".", 1)[1] for table in (
