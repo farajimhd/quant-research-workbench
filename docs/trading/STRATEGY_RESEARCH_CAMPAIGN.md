@@ -1451,3 +1451,60 @@ report tests passing in 3.38s. This is a read-only inventory correction, not a
 replacement of the published 17 trading release or its pinned executor. Its
 activation requires one backend refresh; routine save refreshes remain disabled.
 Actual API visibility must be verified after activation before claiming repair.
+
+The inventory correction committed/pushed as `22cc9dfef`; its managed backend
+and frontend refresh reached ready. Actual API history then verified all four
+saved Strategy 17 runs as completed and reviewable:
+`strategy17-app-history-verification-v1.json`, SHA-256
+`d1f81027f2fa1ce954d29ef5ded757e441c70885ac42c136866956c759265d12`.
+The failed initial inventory check and diagnostic remain retained. This
+correction changes the current backend fingerprint; exact Strategy 17 execution
+continues to use its original pinned source, never a repointed approval.
+
+### Subsequent causal research and proposed Strategy 18 scope
+
+The six-run 14/17 reentry audit verified cold entry pages but found that the
+prior-position high, adjacent completed closes and closed-position witness are
+transient inputs, not retained by the typed entry proposal. It cannot classify
+the proposed stronger high-cross rule. Do not label that unavailable evidence
+as a proven normalized witness. Artifact
+`strategy14-17-reentry-high-cross-audit-v1.json`, SHA-256
+`d1534f73c819ecca75f823f3e53fe996ff4fe63b5d5b2214ee9569016c3cc31a`.
+Reentries include substantial observed winners; a blanket restriction is not
+supported. A future version using that rule would need a durable companion
+linking the exact entry intent, prior closed-position authority, high, resistance,
+completed-close clocks and certified market provenance.
+
+The exact original-proposal reward/risk screen used typed reference asks and
+initial stop/target values, not future marks or average fills. A 2R minimum
+descriptively retains PM19 profits but discards too much observed PM18/AH profit;
+do not adopt a universal 2R gate from this evidence.
+`strategy14-17-original-proposal-risk-screen-v1.json`, SHA-256
+`b831c710b78d4620fd4996d4c9b01dc4961dff70876fc2034198b6f4cdb1f747`.
+
+An independent full certified-candidate screen froze the 10s growth predicate
+at the first Strategy 12 necessary-condition eligible candidate per
+(ticker, MACD activation episode), and required both that frozen result and
+current strong 10s momentum. It uses exact certified sources and native ordered
+group indexes; holding, cash, permissions, cooldown and closed positions do not
+reset the first setup. Later stronger momentum cannot resurrect an initially
+weak episode. Artifact `strategy14-17-initial-strong-momentum-screen-v1.json`,
+SHA-256 `1b19a1a728015c1e3966b94392731d5582ebb4d1e266a6d3480d368f71001971`.
+Descriptive remaining 17 trade sums are PM18 $829.069585, PM19 $87.502465,
+AH18 $642.052335 and AH19 $380.092490. These are not counterfactual returns;
+released cash, changed sizing and entries require actual execution. This screen
+supports testing prevention of late resurrection, not claiming the goal reached.
+
+Proposed Strategy 18 should branch from exact 17 with that single eligibility
+change, retaining the early 60s failure exits and all sizing/cost/session/V7
+contracts. Before publishing, retain a normalized first-setup momentum companion
+for every 18 entry: exact parent entry intent, episode and first-base boundary,
+adjacent completed observations and source build/attempt/market-plan provenance.
+Compile first-base group indexes once in native arrays over the certified base
+gate; only survivors materialize witnesses. Use a separate versioned companion
+family and commit/cold-read seals, with SSD table/part placement and exact grants
+verified before writers. Do not overload current-clock momentum rows with stale
+anchor observations or hide the anchor in generic metadata. Static filtering,
+scalar admission, manager restore and cold review must enforce the same anchored
+rule, preserving prefix behavior and old consumer semantics. No Strategy 18
+source, release, publication or backtest is claimed at this research checkpoint.
