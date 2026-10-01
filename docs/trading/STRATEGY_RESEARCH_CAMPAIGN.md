@@ -2066,3 +2066,49 @@ features, bounds, actual19 position counts/PnL and entry delays. No holdout
 sources researched, no float fallback, no services restarted. Both read-only
 jobs are terminal. Next: trace missed-anchor rejection and before-peak paths,
 complete20 runtime admission, then evaluate actual portfolio behavior.
+
+### Before-peak paths and extended causal feature inventory
+
+User additionally requested fundamentals, float, RVOL, V7 levels and available
+ARTE indicators. Read-only enrichment completed for all88 development episodes:
+explicit setup-time ticker-facts requests (3 bounded workers,0 failures),
+certified producer EMA/RSI/ATR fields at exact completed1s/5s/10s/30s/60s buckets
+where certified, and previously certified V7 entry stop/target geometry. ARTE
+metadata inventory confirms no persisted RVOL/float field in these market tables.
+Aligned prior20-session RVOL and a full causal streamed V7 book remain pending.
+Do not query retrospective current-session V7 intervals as setup-time features.
+
+Raw historical reported float exists for34 episodes, but5 of9 big episodes with
+reported float predate later known reverse splits (AMIX, GNPX, SGLY, MSS, ZNB).
+These are pre_split_report_only and excluded from float comparisons in the
+superseding extended-feature-v2 report. No guessed adjustment or outstanding-
+share substitution is made. Only4 big and10 other uncensored episodes have
+reported float not preceding the last known split; freshness/identity/source
+provenance still matters and this cannot establish a low-float entry threshold.
+v1 raw-float medians are superseded; artifacts are retained rather than altered.
+
+The18 big-episode trajectories have exact certified 1s paths through15min.
+Before-peak lows exclude the anchor and peak candle (intrabar high/low order is
+unknown). BIVI PM19 reached21.5% upside after57s with0.6% adverse move beforehand,
+but its actual19 position stopped out after1206.8s for-171.05: investigate profit
+protection after demonstrated expansion. BIVI AH18 and SGLY PM18 exited at fixed
+targets after55.3s/12.9s before larger50.6%/36.9% opportunities; investigate a
+protected runner rather than merely raising all targets. GNPX peaked after43s
+and reversed below its anchor by120s; YJ's profitable19 position took434s to
+first20% and was approximately flat at120s. A blanket short time stop risks
+removing that winner. These paths motivate causal experiments, not optimal
+executable profits or a new tested policy.
+
+Artifacts under the campaign runtime root:
+development-big-move-prepeak-paths-v1.json SHA256
+e4c3ce6c98764adb01a0fec2b10c40c120ea80fd0cfd075c662c2df97abe4aff;
+development-episode-fundamentals-asof-v1.json SHA256
+0ca01c6ae806c4bcdafaea0b45df431b6150d299d531521608857417f20c4732;
+development-episode-technical-features-v1.json SHA256
+13cfd37ce56f583841ae6d3970f6f942a6c353970246f3c70bab7329e6d81f08;
+development-extended-feature-comparison-v2.json SHA256
+c226d80e5e3c9c086c2c00149f2973f301e1fc06865a7b082133f5f53ad9a2db.
+The paired v2 Markdown report compares float availability, ready RSI, EMA
+alignment, causal V7 target room, pre-peak paths and actual19 episode PnL.
+All jobs are terminal; no source writers, service restarts, holdout research or
+new agents were used. Actual20 backtests and the profit goal remain pending.
