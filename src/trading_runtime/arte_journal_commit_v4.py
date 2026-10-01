@@ -670,15 +670,24 @@ def _load_verified_details_v4(
                                  related_rows.get(MOMENTUM.name, ()))
         if first_price_source is not None:
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
-            if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_authorities:
+            from .arte_first_price_entry_v4 import FirstPriceEntryAuthority
+            if type(first_price_source) is not CertifiedPriceReadbackAuthority:
                 raise ValueError("Cold first-price readback requires one certified source authority")
-            first_price_authorities = first_price_source.resolve(run_id, children,
+            resolved = first_price_source.resolve(run_id, children,
                 related_rows.get("trading_strategy_intent_v1", ()))
+            if first_price_authorities and (
+                    any(type(authority) is not FirstPriceEntryAuthority for authority in first_price_authorities)
+                    or len({authority.parent_record_id for authority in first_price_authorities}) != len(first_price_authorities)
+                    or len(first_price_authorities) != len(resolved)
+                    or {authority.parent_record_id: authority for authority in first_price_authorities}
+                    != {authority.parent_record_id: authority for authority in resolved}):
+                raise ValueError('Staged first-price authority differs from certified readback source')
+            first_price_authorities = resolved
         # ClickHouse JSON renders this schema's DateTime64(..., 'UTC') without
         # an offset. These rows have already passed canonical stored-UTC hash
         # verification; restore the declared timezone only at this read boundary.
         price_events = related_rows.get("trading_event_v1", ())
-        if any(child['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30) for child in children):
+        if any(child['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31) for child in children):
             normalized_events = []
             for event in price_events:
                 clock = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
@@ -1232,7 +1241,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or parent["action"] != "enter_long"
             or parent["protection_profile_id"]
                != "early-squeeze-fixed-stop-full-target"
-            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
             or row["boundary_ms"] != boundary_ms
             or elapsed.microseconds % 1_000
             or Decimal(str(row["frozen_gap"])) <= 0
@@ -1241,7 +1250,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or not row["assignment_id"] or not row["target_level_id"]
             or not row["bos_support_level_id"]):
         raise ValueError("V4 Strategy 1 entry evidence differs from its typed parent")
-    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30):
+    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31):
         from .strategy_recent_bos_entry import recent_bos_entry
         if not recent_bos_entry(boundary_ms=row["boundary_ms"],
                                 bos_break_boundary_ms=row["bos_break_boundary_ms"]):
@@ -1661,7 +1670,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
     strategy_one_commands = {
         str(UUID(str(row["record_id"]))) for row in command_rows
         if str(row["strategy_id"]) == "early-squeeze-strategy"
-        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
     }
     lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)
                          for row in batch.v4_command_lineages)

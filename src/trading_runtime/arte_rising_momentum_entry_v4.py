@@ -37,7 +37,7 @@ def decode_momentum_row(row):
 
 
 def project_rising_momentum_entry(proposal, *, run_id, batch_id, parent_record_id, event_month):
-    if proposal.strategy_number not in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30):
+    if proposal.strategy_number not in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31):
         if proposal.momentum is not None:
             raise ValueError("Old entry cannot carry Strategy 13 momentum")
         return ()
@@ -66,7 +66,7 @@ def restore_rising_momentum(rows, *, ticker, boundary_ms, strategy_number=None):
         raise ValueError("Momentum strategy number differs from original entry source")
     identity = ("parent_record_id", "run_id", "event_month", "batch_id", "strategy_number",
                 "ticker", "boundary_ms", "source_build_id", "source_attempt_id", "market_plan_token")
-    if (first["strategy_number"] not in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30) or first["ticker"] != ticker or first["boundary_ms"] != boundary_ms
+    if (first["strategy_number"] not in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31) or first["ticker"] != ticker or first["boundary_ms"] != boundary_ms
             or any(any(r[k] != first[k] for k in identity) for r in ordered)
             or any(r["record_id"] != str(uuid5(NAMESPACE_URL,
                 f"{r['parent_record_id']}:rising-momentum:{r['resolution_ms']}")) for r in ordered)):
@@ -87,7 +87,7 @@ def seal_rising_momentum_rows(rows, entries, intents, events):
     if any("content_hash" in source and source["content_hash"] != row["content_hash"]
            for source, row in zip(rows, sealed)):
         raise ValueError("Strategy 13 momentum scalar seal changed")
-    required = {r["parent_record_id"]: r for r in entries if r["strategy_number"] in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)}
+    required = {r["parent_record_id"]: r for r in entries if r["strategy_number"] in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)}
     parents = {r["record_id"]: r for r in intents if r["reason"] == "strategy_one_entry"}
     source_events = {r["record_id"]: r for r in events}
     if len(sealed) != 2 * len(required) or any(r["parent_record_id"] not in required for r in sealed):

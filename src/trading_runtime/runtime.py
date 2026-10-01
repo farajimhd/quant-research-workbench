@@ -1335,7 +1335,7 @@ class TradingRuntime:
         """Bind one certified session plan before numbered20 entry admission."""
         from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
-        if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+        if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
                 or self.config.strategy_id != 'early-squeeze-strategy'
                 or type(source) is not CertifiedPriceReadbackAuthority
                 or source.run_id != self.run_id
@@ -1378,7 +1378,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneEntryProposal)
                 or proposal.strategy_number != self.config.strategy_revision
@@ -1406,7 +1406,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneAddProposal)
                 or proposal.strategy_number != self.config.strategy_revision
@@ -1437,7 +1437,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or getattr(financial, "account_id", None) not in self.config.account_ids):
             raise ValueError("Strategy 1 protection needs its numbered Backtest runtime")

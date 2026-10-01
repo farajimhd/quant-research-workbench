@@ -48,7 +48,7 @@ class ExactBits(MemoryClient):
 
 def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
     plan = source.plan
-    original = replace(_proposal(), strategy_number=18 if strategy_number in (26, 27, 28, 29, 30) else 19, boundary_ms=boundary,
+    original = replace(_proposal(), strategy_number=18 if strategy_number in (26, 27, 28, 29, 30, 31) else 19, boundary_ms=boundary,
         momentum=plan.momentum.lookup('AAA', boundary),
         initial_momentum=plan.source.parent.selection_witness('AAA', boundary))
     proposal = bind_certified_price_break_proposal(plan, original, strategy_number=strategy_number)
@@ -72,9 +72,9 @@ def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31])
 def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, strategy_number):
-    if strategy_number in (26, 27, 28, 29, 30):
+    if strategy_number in (26, 27, 28, 29, 30, 31):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -85,7 +85,8 @@ def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, stra
     second, second_proposal, second_intent = prepared_entry(source, 2, 41000, first.base.batch_id, strategy_number=strategy_number)
     client = attached_v4_client(ExactBits())
     if compound:
-        publish_compound_v4(client, coalesce_v4_units((first, second)))
+        merged = coalesce_v4_units((first, second))
+        publish_compound_v4(client, merged)
     else:
         for unit in (first, second):
             publish_strategy_one_entry_batch_v4(client, unit.base, entry_evidence=unit.entry_evidence,
@@ -96,9 +97,14 @@ def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, stra
     page = load_committed_strategy_one_entry_page(client, prefix, first_price_source=source)
     assert tuple(entry.proposal for entry in page.entries) == (proposal, second_proposal)
     assert tuple(entry.intent for entry in page.entries) == (intent, second_intent)
-    if not compound:
-        rebuilt, recovered = load_committed_strategy_one_source(client, prefix, page.entries[0], first_price_source=source)
-        assert rebuilt == first.base and recovered == intent
+    for index, unit in enumerate((first, second)):
+        rebuilt, recovered = load_committed_strategy_one_source(client, prefix, page.entries[index], first_price_source=source)
+        if compound:
+            from src.backend.backtest_typed_publisher import _committed_intent_source
+            expected = _committed_intent_source(merged.base, unit.base.events[0]['record_id'])
+        else:
+            expected = unit.base
+        assert rebuilt == expected and recovered == page.entries[index].intent
     with pytest.raises((ValueError, RuntimeError)):
         load_verified_v4_prefix(client, source.run_id)
     with pytest.raises((ValueError, RuntimeError)):
@@ -115,7 +121,7 @@ def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, stra
 
 
 @pytest.mark.parametrize('held', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30, 31])
 def test_twenty_manager_scalar_snapshot_recovers_witnesses_from_real_typed_entry(held, strategy_number):
     from src.backend.backtest_strategy_one_management import StrategyOneManagementState
     from src.trading_runtime.strategy_one_management_snapshot import (
@@ -123,7 +129,7 @@ def test_twenty_manager_scalar_snapshot_recovers_witnesses_from_real_typed_entry
     )
     from src.trading_runtime.strategy_one_position import ProtectionState
     from tests.test_strategy_thirteen_manager_sources import manager
-    if strategy_number in (26, 27, 28, 29, 30):
+    if strategy_number in (26, 27, 28, 29, 30, 31):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -175,11 +181,11 @@ def test_scalar_recovery_encoding_remains_bound_to_reviewed_source(tmp_path, nod
         certify_rising_momentum_entry_source(source_overrides={relative: altered})
 
 
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30, 31])
 def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry(strategy_number):
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
-    if strategy_number in (26, 27, 28, 29, 30):
+    if strategy_number in (26, 27, 28, 29, 30, 31):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -320,7 +326,7 @@ def test_manager_writer_transports_native_source_through_actual_queue(monkeypatc
 
 
 @pytest.mark.parametrize('kind', ('broker_match', 'oms_observation', 'evidence', 'campaign'))
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30, 31])
 def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeypatch, kind, strategy_number):
     import importlib
     from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
@@ -328,7 +334,7 @@ def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeyp
     from src.trading_runtime import arte_journal_writer as writer_module
     from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
     from src.trading_runtime.domain import TradingMode
-    if strategy_number in (26, 27, 28, 29, 30):
+    if strategy_number in (26, 27, 28, 29, 30, 31):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -381,7 +387,7 @@ def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeyp
 
 
 @pytest.mark.parametrize('kind', ('broker_match', 'oms_observation', 'evidence', 'campaign'))
-@pytest.mark.parametrize('strategy_number', [24, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize('strategy_number', [24, 26, 27, 28, 29, 30, 31])
 def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind, strategy_number):
     import importlib
     from types import SimpleNamespace
@@ -390,7 +396,7 @@ def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind, 
     from src.trading_runtime import arte_journal_projection
     from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
     from src.trading_runtime.domain import TradingMode
-    if strategy_number in (26, 27, 28, 29, 30):
+    if strategy_number in (26, 27, 28, 29, 30, 31):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:

@@ -189,7 +189,8 @@ def test_committed_direct_and_compound_nineteen_exact_cold_source_roundtrip(comp
                 event_month='2026-08-01', **second_kwargs),
             initial_momentum_evidence=project_initial_momentum_entry(second_proposal, selection,
                 event_month='2026-08-01', **second_kwargs))
-        publish_compound_v4(client, coalesce_v4_units((batch, second_batch)))
+        merged = coalesce_v4_units((batch, second_batch))
+        publish_compound_v4(client, merged)
     else:
         publish_strategy_one_entry_batch_v4(client, base, entry_evidence=(evidence,),
             momentum_evidence=momentum_rows, initial_momentum_evidence=initial_rows)
@@ -199,11 +200,12 @@ def test_committed_direct_and_compound_nineteen_exact_cold_source_roundtrip(comp
     assert page.entries[0].proposal == proposal
     if compound:
         assert page.entries[1].proposal == second_proposal
-        with pytest.raises(RuntimeError, match='exclusive committed batch'):
-            load_committed_strategy_one_source(client, prefix, page.entries[0])
-        return
+        from src.backend.backtest_typed_publisher import _committed_intent_source
+        expected_source = _committed_intent_source(merged.base, base.events[0]['record_id'])
+    else:
+        expected_source = base
     recovered, recovered_intent = load_committed_strategy_one_source(client, prefix, page.entries[0])
-    assert recovered_intent == intent and recovered == base
+    assert recovered_intent == intent and recovered == expected_source
     forged = replace(page.entries[0], proposal=replace(proposal,
         initial_momentum=replace(selection, selection_token='f' * 64)))
     with pytest.raises(RuntimeError, match='committed first-setup selection'):
