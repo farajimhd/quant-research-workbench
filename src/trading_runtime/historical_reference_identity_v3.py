@@ -6,7 +6,7 @@ import json
 from src.trading_runtime.arte_journal_schema import TableContract, storage_preflight
 from src.trading_runtime.historical_reference_identity import (
     COVERAGE as V2_COVERAGE, IDENTITIES as V2_IDENTITIES,
-    ReferenceIdentityError, rows,
+    ReferenceIdentityError, rows, utc,
 )
 
 IDENTITIES = TableContract("strategy_one_identity_v3", V2_IDENTITIES.columns,
@@ -22,7 +22,8 @@ PROOFS = TableContract("strategy_one_identity_resolution_v3", (
     ("resolution_revision", "String")), "toYYYYMM(session_date)",
     "source_build_id,session_date,identity_attempt_id,ticker,mapping_content_hash")
 COVERAGE = TableContract("strategy_one_identity_coverage_v3",
-    (*V2_COVERAGE.columns[:-1], ("resolution_hash", "FixedString(64)"),
+    (*V2_COVERAGE.columns[:-1], ("resolution_count", "UInt32"),
+     ("resolution_hash", "FixedString(64)"),
      V2_COVERAGE.columns[-1]), V2_COVERAGE.partition, V2_COVERAGE.order)
 TABLES = (IDENTITIES, PROOFS, COVERAGE)
 REVISION = "reference-identity-v3"
@@ -79,4 +80,59 @@ def install_tables(client):
     for table in TABLES:
         client.execute(table.ddl())
     storage_preflight(client, tables=TABLES)
+
+
+PROOF_FIELDS = tuple(name for name, _ in PROOFS.columns[3:])
+
+
+def normalized_proofs(payload):
+    """Project source-validated runtime evidence into explicit relational facts."""
+    proof = json.loads(payload)
+    selected = {}
+    from services.reference_gateway.ibkr_contract_identity import resolve_massive_ibkr_contract
+    for mapping in proof['mappings']:
+        evidence = json.loads(mapping['evidence_json'])
+        resolved = resolve_massive_ibkr_contract(
+            massive_ticker=evidence['ticker'], massive_name=evidence['name'],
+            massive_exchange=evidence['primary_exchange'], definitions=evidence['ibkr_candidates'])
+        if not resolved.accepted:
+            raise ReferenceIdentityError('Cannot project unresolved broker evidence')
+        facts = [r for r in proof['retained'] if r['ticker'] == mapping['source_entity_key']
+                 and r['ibkr_conid'] == str(resolved.conid)]
+        if len(facts) != 1:
+            raise ReferenceIdentityError('Resolution projection has ambiguous retained identity')
+        identity = facts[0]
+        row = dict(ticker=identity['ticker'], selected_symbol_id=identity['symbol_id'],
+                   selected_listing_id=identity['listing_id'], selected_security_id=identity['security_id'],
+                   selected_ibkr_conid=int(identity['ibkr_conid']),
+                   mapping_content_hash=mapping['source_content_sha256'],
+                   mapping_resolved_at=utc(mapping['resolved_at_utc']).strftime('%Y-%m-%d %H:%M:%S.%f'),
+                   mapping_inserted_at=utc(mapping['inserted_at']).strftime('%Y-%m-%d %H:%M:%S.%f'),
+                   resolution_revision=REVISION)
+        key = (row['ticker'], row['mapping_content_hash'])
+        if key in selected:
+            raise ReferenceIdentityError('Duplicate resolution mapping proof')
+        selected[key] = row
+    return [selected[key] for key in sorted(selected)]
+
+
+def proof_hash(proofs):
+    return sha256(json.dumps(proofs, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def certify_proofs(facts, proofs, seal, pin):
+    if not proofs or len(proofs) != seal['resolution_count'] or proof_hash(proofs) != seal['resolution_hash']:
+        raise ReferenceIdentityError('Normalized listing proof differs from coverage')
+    keys = [(r['ticker'], r['mapping_content_hash']) for r in proofs]
+    if keys != sorted(set(keys)):
+        raise ReferenceIdentityError('Normalized listing proof keys are not unique and ordered')
+    identities = {r['ticker']: r for r in facts}
+    for row in proofs:
+        identity = identities.get(row['ticker'])
+        if (not identity or row['resolution_revision'] != REVISION
+                or any(row['selected_' + k] != identity[k]
+                       for k in ('symbol_id', 'listing_id', 'security_id', 'ibkr_conid'))
+                or any(utc(row[k]) > utc(pin.available_at)
+                       for k in ('mapping_resolved_at', 'mapping_inserted_at'))):
+            raise ReferenceIdentityError('Normalized listing proof does not bind the dated identity')
 

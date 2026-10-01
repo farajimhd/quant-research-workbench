@@ -7,7 +7,9 @@ import pytest
 from pipelines.strategy_one.dated_listing_resolution import resolve_listing
 from src.trading_runtime.historical_reference_identity import ReferenceIdentityError
 from tests.test_historical_reference_identity import fixture
-from src.trading_runtime.historical_reference_identity_v3 import resolution_plan, verify_resolution
+from src.trading_runtime.historical_reference_identity_v3 import (
+    resolution_plan, verify_resolution, normalized_proofs, proof_hash, certify_proofs,
+)
 from dataclasses import replace
 
 
@@ -76,3 +78,23 @@ def test_versioned_proof_replays_full_population_and_retains_secondary_rows():
         verify_resolution(payload + ' ', digest, market, pin)
     with pytest.raises(ReferenceIdentityError):
         resolution_plan(snapshot, retained, mappings, market, replace(pin, population_source_hash='2'))
+
+
+@pytest.mark.parametrize('fault', [None, 'hash', 'conid', 'late', 'duplicate', 'revision'])
+def test_normalized_consumer_verifies_proof_and_coverage(fault):
+    snapshot, retained, mappings, pin = inputs()
+    _, _, market, _ = fixture()
+    pin = replace(pin, population_source_hash='3')
+    _, facts, payload, _ = resolution_plan(snapshot, retained, mappings, market, pin)
+    proofs = normalized_proofs(payload)
+    if fault == 'conid': proofs[0]['selected_ibkr_conid'] = 202
+    if fault == 'late': proofs[0]['mapping_inserted_at'] = '2026-08-20 05:00:00'
+    if fault == 'duplicate': proofs.append(deepcopy(proofs[0]))
+    if fault == 'revision': proofs[0]['resolution_revision'] = 'unapproved'
+    seal = dict(resolution_count=len(proofs), resolution_hash=proof_hash(proofs))
+    if fault == 'hash': seal['resolution_hash'] = '0' * 64
+    if fault is None:
+        certify_proofs(facts, proofs, seal, pin)
+    else:
+        with pytest.raises(ReferenceIdentityError):
+            certify_proofs(facts, proofs, seal, pin)

@@ -11,17 +11,29 @@ from src.trading_runtime.historical_reference_identity import (
 )
 
 
-def certify_reference_identity(market, *, client, pin=None):
+def certify_reference_identity(market, *, client, pin=None, _v3=False):
     from src.backend.backtest_strategy_one_identity import CertifiedIdentityPlan, identity_content_hash
     # This path is used only when no legacy publication exists. Existing V1
     # attempts retain their exact token, including for saved-run recovery.
+    coverage_table, identity_table = COVERAGE, IDENTITIES
+    if _v3:
+        from src.trading_runtime.historical_reference_identity_v3 import (
+            COVERAGE as coverage_table, IDENTITIES as identity_table,
+            PROOFS, TABLES, PROOF_FIELDS, certify_proofs,
+        )
+        from src.trading_runtime.arte_journal_schema import storage_preflight
     present = rows(client, "SELECT name FROM system.tables WHERE database='arte' "
-                   f"AND name='{COVERAGE.name}'")
-    if present != [{'name': COVERAGE.name}]:
+                   f"AND name='{coverage_table.name}'")
+    if present != [{'name': coverage_table.name}]:
         raise ReferenceIdentityError('Snapshot-linked identity publication is not installed')
-    verify_tables(client)
+    if _v3:
+        storage_preflight(client, tables=TABLES)
+    else:
+        verify_tables(client)
     predicate = f"source_build_id='{market.build_id}' AND session_date='{market.sessions[0]}'"
-    coverage = rows(client, f'SELECT * FROM arte.{COVERAGE.name} WHERE {predicate}')
+    coverage = rows(client, f'SELECT * FROM arte.{coverage_table.name} WHERE {predicate}')
+    if not coverage and not _v3:
+        return certify_reference_identity(market, client=client, pin=pin, _v3=True)
     if len(coverage) != 1:
         raise ReferenceIdentityError('Missing or ambiguous snapshot-linked identity publication')
     seal = coverage[0]
@@ -37,7 +49,7 @@ def certify_reference_identity(market, *, client, pin=None):
     if not re.fullmatch(r'[0-9a-fA-F-]{36}', attempt):
         raise ReferenceIdentityError('Identity attempt is invalid')
     facts = rows(client, 'SELECT ticker,symbol_id,listing_id,security_id,ibkr_conid,'
-        f'source_run_id,source_inserted_at FROM arte.{IDENTITIES.name} WHERE {predicate} '
+        f'source_run_id,source_inserted_at FROM arte.{identity_table.name} WHERE {predicate} '
         f"AND identity_attempt_id='{attempt}' ORDER BY ticker")
     tickers = tuple(r['ticker'] for r in facts)
     if (not facts or len(facts) != seal['ticker_count']
@@ -49,8 +61,14 @@ def certify_reference_identity(market, *, client, pin=None):
             or any(utc(r['source_inserted_at']) > utc(pin.available_at) for r in facts)
             or identity_content_hash(facts) != seal['content_hash']):
         raise ReferenceIdentityError('Snapshot-linked identity rows differ from their publication seal')
-    token = sha256(json.dumps(('reference-identity-v2', market.build_id,
-        market.sessions[0], attempt, market.token, seal['content_hash'], seal['reference_hash']),
+    token_fields = ('reference-identity-v2', market.build_id,
+        market.sessions[0], attempt, market.token, seal['content_hash'], seal['reference_hash'])
+    if _v3:
+        proofs = rows(client, f"SELECT {','.join(PROOF_FIELDS)} FROM arte.{PROOFS.name} "
+            f"WHERE {predicate} AND identity_attempt_id='{attempt}' ORDER BY ticker,mapping_content_hash")
+        certify_proofs(facts, proofs, seal, pin)
+        token_fields = ('reference-identity-v3', *token_fields[1:], seal['resolution_hash'])
+    token = sha256(json.dumps(token_fields,
         separators=(',', ':')).encode()).hexdigest()
     conids = {r['ticker']: r['ibkr_conid'] for r in facts}
     return CertifiedIdentityPlan(market.build_id, market.sessions[0], attempt,
