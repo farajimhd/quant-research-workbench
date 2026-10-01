@@ -1,0 +1,58 @@
+"""Immutable candidate liquidation intent; no submission or storage authority."""
+from datetime import date, datetime, time, timedelta, timezone
+from math import isfinite
+from uuid import NAMESPACE_URL, UUID, uuid5
+from zoneinfo import ZoneInfo
+
+from .execution_policies import (
+    ExecutionEnvelope, ExecutionPolicy, ExecutionPolicyName, PartialFillPolicy,
+)
+from .signals import StrategyIntent
+from .strategy_followthrough_failure import FollowThroughFailureInput
+from .strategy_one_stateful import StrategyOneFinancialView
+from .strategy_profit_giveback import ProfitGivebackInput, ProfitGivebackWitness, profit_giveback
+
+REASON = 'strategy_thirty_one_profit_giveback'
+
+
+def validate_profit_giveback_witness(witness: ProfitGivebackWitness) -> None:
+    """Recompute the exact scalar predicate at persistence/factory boundaries."""
+    if type(witness) is not ProfitGivebackWitness:
+        raise ValueError('Profit protection requires exact scalar witness')
+    completed = FollowThroughFailureInput(
+        witness.boundary_ms, witness.first_held_boundary_ms,
+        witness.reference_ask, witness.initial_stop, witness.boundary_ms,
+        witness.completed_close_int, True, witness.macd_line, witness.macd_signal,
+        witness.bid, witness.ask, witness.quote_age_us, 1., False)
+    actual = profit_giveback(ProfitGivebackInput(
+        completed, witness.prior_high_int, witness.prior_high_through_boundary_ms))
+    if actual != witness:
+        raise ValueError('Profit protection witness does not satisfy its pinned rule')
+
+
+def profit_giveback_exit_intent(
+    witness: ProfitGivebackWitness, financial: StrategyOneFinancialView, *,
+    session_date: date, source_entry_intent_id: str,
+) -> StrategyIntent:
+    validate_profit_giveback_witness(witness)
+    UUID(source_entry_intent_id)
+    if (type(session_date) is not date
+            or type(financial) is not StrategyOneFinancialView
+            or not financial.account_id or not financial.assignment_id or not financial.ticker
+            or type(financial.position_quantity) not in (int, float)
+            or not isfinite(financial.position_quantity) or financial.position_quantity <= 0
+            or type(financial.pending_exit) is not bool or financial.pending_exit):
+        raise ValueError('Profit protection exit requires exact held financial authority')
+    at = datetime.combine(session_date, time(4), ZoneInfo('America/New_York')) + timedelta(milliseconds=witness.boundary_ms)
+    identity = (f'strategy-31-profit-giveback-exit:{session_date}:'
+                f'{financial.account_id}:{financial.assignment_id}:{financial.ticker}:'
+                f'{source_entry_intent_id}:{witness.boundary_ms}')
+    return StrategyIntent(
+        intent_id=str(uuid5(NAMESPACE_URL, identity)), ticker=financial.ticker,
+        event_time=at.astimezone(timezone.utc), action='exit',
+        quantity=float(financial.position_quantity), reference_price=witness.bid,
+        urgency='urgent', outside_rth=True, reason=REASON, metadata={},
+        execution_policy=ExecutionPolicy(
+            policy_id='strategy-adaptive_urgent', name=ExecutionPolicyName.ADAPTIVE_URGENT,
+            envelope=ExecutionEnvelope(persist_until_cancelled=True),
+            partial_fill_policy=PartialFillPolicy.COMPLETE_REMAINDER, quote_source='qmd'))
