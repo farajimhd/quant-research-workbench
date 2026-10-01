@@ -218,7 +218,7 @@ def test_prepared_graph_sealing_uses_registered_native_hashing(monkeypatch):
         seal_confirmed_ah_rows(None, [dict(row, initial_stop=1.82)], [parent], [event], verified_prefix=prefix)
 
 
-def test_compound_retains_confirmation_and_blocks_incomplete_publication(monkeypatch):
+def test_compound_retains_confirmation_and_blocks_live_publication(monkeypatch):
     from types import SimpleNamespace
     from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
     from src.trading_runtime.arte_journal_compound_v4 import coalesce_v4_units, prepare_compound_v4_families
@@ -232,8 +232,8 @@ def test_compound_retains_confirmation_and_blocks_incomplete_publication(monkeyp
     assert len(compound.children['confirmed_ah_failures']) == 1
     assert compound.children['confirmed_ah_failures'][0]['ten_second_macd_line'] == row['ten_second_macd_line']
     assert unit.confirmation['batch_id'] == base.batch_id
-    with pytest.raises(ValueError, match='complete native commit registration'):
-        prepare_compound_v4_families(SimpleNamespace(), compound)
+    with pytest.raises(ValueError, match='Live V4 compound'):
+        prepare_compound_v4_families(SimpleNamespace(live_v4_lease=object()), compound)
 
 
 def test_cold_scalar_loader_verifies_hash_before_native_uint_adaptation(monkeypatch):
@@ -274,5 +274,43 @@ def test_actual_micro_preparation_retains_new_family_without_database_writes():
     _, families = _publish_typed_batch_v4(client, base, confirmed_ah_rows=(row,), _prepare_only=True)
     persisted = dict(families)[CONFIRMED_AH_FAILURE.name]
     assert len(persisted) == 1
+    _verify_stored_row(CONFIRMED_AH_FAILURE.name, persisted[0])
+    assert persisted[0]['ten_second_macd_line'] == witness.ten_second_macd_line
+
+
+def test_actual_compound_preparation_seals_confirmation_graph(monkeypatch):
+    from datetime import timedelta
+    from src.trading_runtime.arte_intent_projection import strategy_intent_batch, _verify_stored_row
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+    from src.trading_runtime.arte_journal_compound_v4 import coalesce_v4_units, prepare_compound_v4_families
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    witness, financial, args, intent, row = prepared_case()
+    attempt, preceding = str(uuid4()), str(uuid4())
+    base = strategy_intent_batch(
+        intent, run_id=row['run_id'], run_month=date(2026, 8, 1), account_id=financial.account_id,
+        attempt_id=attempt, batch_id=row['batch_id'], prior_batch_id=preceding, sequence=65,
+        source_cursor='boundary-43700000', run_status='running', recorded_at=intent.event_time,
+        record_id=row['parent_record_id'],
+    )
+    other = replace(intent, intent_id=str(uuid4()), ticker='OTHER',
+                    reason='strategy_one_session_liquidation', event_time=intent.event_time + timedelta(milliseconds=100))
+    following = strategy_intent_batch(
+        other, run_id=row['run_id'], run_month=date(2026, 8, 1), account_id=financial.account_id,
+        attempt_id=attempt, batch_id=str(uuid4()), prior_batch_id=row['batch_id'], sequence=66,
+        source_cursor='boundary-43700100', run_status='running', recorded_at=other.event_time,
+    )
+    prefix = V4CommittedPrefix(row['run_id'], 64, preceding, 'cursor', 'running', (preceding,))
+    def source_loader(client, run_id, intent_id, **context):
+        assert context['verified_prefix'] == prefix
+        return (dict(intent_id=args['source_entry_intent_id'], ticker='WAFU', action='enter_long',
+                     reason='strategy_one_entry', reference_price=2.08, invalidation_price=1.81),
+                dict(account_id=financial.account_id, sequence=4),
+                dict(strategy_number=34, assignment_id=financial.assignment_id, boundary_ms=43_647_400))
+    monkeypatch.setattr('src.trading_runtime.arte_followthrough_failure_v4._source_entry', source_loader)
+    compound = coalesce_v4_units((V4ConfirmedAhFailureBatch(base, row), following))
+    _, families = prepare_compound_v4_families(attached_v4_client(), compound, verified_prior_prefix=prefix)
+    persisted = dict(families)[CONFIRMED_AH_FAILURE.name]
+    assert len(persisted) == 1 and persisted[0]['batch_id'] == compound.base.batch_id
     _verify_stored_row(CONFIRMED_AH_FAILURE.name, persisted[0])
     assert persisted[0]['ten_second_macd_line'] == witness.ten_second_macd_line

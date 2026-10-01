@@ -256,8 +256,8 @@ def prepare_compound_v4_families(
 
     if type(compound) is not V4CompoundBatch:
         raise TypeError("V4 mixed preparation requires a compound batch")
-    if compound.children['confirmed_ah_failures']:
-        raise ValueError('Confirmed AH compound publication requires complete native commit registration')
+    if getattr(client, 'live_v4_lease', None) is not None and compound.children['confirmed_ah_failures']:
+        raise ValueError('Live V4 compound cannot publish confirmed AH witnesses')
     if getattr(client, "live_v4_lease", None) is not None and any(
             getattr(compound.base, name) for name in (
                 "backtest_cursors", "backtest_market_authorities",
