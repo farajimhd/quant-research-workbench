@@ -65,3 +65,44 @@ def test_missing_mixed_or_changed_financial_authority_rejects(case):
     with pytest.raises(ValueError):
         _approved_strategy_one_oms_intent(group, source, history, reservation, decision,
             confirmed_ah_row=row, profit_giveback_row={} if case == 'mixed' else None)
+
+
+def test_prepared_cold_join_checks_native_hash_and_uints_before_reconstruction(monkeypatch):
+    """Registration and adjacent readers are mocked; AH scalar loader is real."""
+    from src.trading_runtime import arte_oms_projection as oms
+    from src.trading_runtime import arte_intent_projection as intents
+    from src.trading_runtime import numbered_fixed_strategy as contracts
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime.arte_journal_writer import typed_row
+    group, source, history, reservation, decision, row = prepared()
+    prefix = V4CommittedPrefix(history.run_id, 12, group.group['batch_id'],
+        '2026-08-10:43700000', 'running', history.committed_batch_ids)
+    # This exercises the prepared downstream path, not installed admission.
+    def prepared_contract(number):
+        assert number == 34
+    monkeypatch.setattr(contracts, 'numbered_fixed_strategy', prepared_contract)
+    monkeypatch.setattr(oms, 'load_latest_committed_oms_groups', lambda *a, **k: (group,))
+    monkeypatch.setattr(intents, 'load_committed_strategy_intent_page', lambda *a, **k: (source,))
+    monkeypatch.setattr(oms, 'load_committed_oms_admission_page', lambda *a, **k: {12: reservation})
+    monkeypatch.setattr(oms, 'load_committed_oms_decision_page', lambda *a, **k: {12: decision})
+    stored = typed_row(CONFIRMED_AH_FAILURE.name, row)
+    unsigned = {name for name, kind in CONFIRMED_AH_FAILURE.columns if kind.startswith('UInt')}
+    stored.update({name: str(stored[name]) for name in unsigned})
+    calls = []
+    def native_read(client, query):
+        calls.append(query)
+        assert CONFIRMED_AH_FAILURE.name in query and 'LIMIT 2 FORMAT JSONEachRow' in query
+        return [stored]
+    monkeypatch.setattr('src.trading_runtime.arte_journal_writer._rows', native_read)
+    result = oms.load_recovered_strategy_one_oms_lineage(object(), prefix,
+        allowed_accounts=frozenset({source.account_id}), protection_history=history,
+        strategy_number=34)
+    assert len(result) == len(calls) == 1
+    assert replace(result[0].approved_intent, metadata={}) == source.intent
+    assert stored['quote_age_us'] == '48'  # Raw stored evidence was not mutated.
+    stored['ten_second_macd_signal'] = .06
+    with pytest.raises(RuntimeError, match='committed hash'):
+        oms.load_recovered_strategy_one_oms_lineage(object(), prefix,
+            allowed_accounts=frozenset({source.account_id}), protection_history=history,
+            strategy_number=34)
