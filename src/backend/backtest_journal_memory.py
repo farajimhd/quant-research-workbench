@@ -95,7 +95,7 @@ class BacktestMemoryJournal:
         columns. It is never serialized as metadata or written to disk.
         """
         from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
-        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33):
+        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
             from src.backend.backtest_strategy_certified_price_break import (
                 CertifiedPriceReadbackAuthority, certified_price_entry_intent,
             )
@@ -188,7 +188,7 @@ class BacktestMemoryJournal:
                     "replace_protective_stop", "replace_profit_target"}
                 or intent.metadata or not account_id
                 or strategy_id != STRATEGY_ID
-                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33)
+                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34)
                 or (intent.action == "replace_profit_target"
                     and (intent.reason != "ordinal_resistance_target"
                          or intent.profit_target_price is None
@@ -218,7 +218,7 @@ class BacktestMemoryJournal:
         from src.trading_runtime.signals import StrategyIntent
         if (not isinstance(intent, StrategyIntent) or intent.action != "exit"
                 or intent.reason != numbered_session_exit_reason(strategy_revision) or intent.metadata
-                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33)
+                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34)
                 or not account_id):
             raise ValueError("Session exit requires Strategy 2 normalized scalar source")
         with self._lock:
@@ -240,7 +240,7 @@ class BacktestMemoryJournal:
         from uuid import UUID
         validate_numbered_failure(witness, strategy_revision)
         UUID(source_entry_intent_id)
-        if (type(strategy_revision) is not int or strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33) or strategy_id != "early-squeeze-strategy"
+        if (type(strategy_revision) is not int or strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34) or strategy_id != "early-squeeze-strategy"
                 or not account_id or intent.action != "exit" or intent.reason != REASON
                 or intent.metadata or intent.reference_price != witness.bid):
             raise ValueError("Follow-through exit lacks exact numbered scalar authority")
@@ -333,7 +333,7 @@ class BacktestMemoryJournal:
         from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
         if (type(arm_reference) is not ProfitArmReference
                 or type(arm_reference.candidate) is not ProfitArmCandidate
-                or type(strategy_revision) is not int or strategy_revision not in (31, 32, 33)
+                or type(strategy_revision) is not int or strategy_revision not in (31, 32, 33, 34)
                 or strategy_id != 'early-squeeze-strategy'
                 or type(account_id) is not str or not account_id
                 or type(assignment_id) is not str or not assignment_id
