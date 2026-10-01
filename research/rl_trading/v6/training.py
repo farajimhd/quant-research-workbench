@@ -85,6 +85,7 @@ class TrainingMetrics:
     target_log_distance_mae: float | None
     entry_token_accuracy: float | None = None
     hold_token_accuracy: float | None = None
+    action_predicted_class_counts: dict[str, int] | None = None
 
 
 def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wait_hold=False):
@@ -389,4 +390,5 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                            entry_correct / counts['enter_long']
                            if counts['enter_long'] else None,
                            hold_correct / counts['hold']
-                           if wait_hold and counts['hold'] else None)
+                           if wait_hold and counts['hold'] else None,
+                           {name:int(confusion[:, index].sum()) for index,name in enumerate(action_names)})

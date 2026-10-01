@@ -29,6 +29,7 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.identity_map import certify_identity_map, open_identity_map
 from research.rl_trading.v6.teacher_data import load_teacher, load_wait_hold_teacher
 from research.rl_trading.v6.action_contract import ACTION_VERSION
+from research.rl_trading.v6.teacher_selection import teacher_validation_score, selection_key, SELECTION_VERSION
 from research.rl_trading.v6.training import train_session
 from research.rl_trading.v6.learning_rate import cosine_warmup
 from research.rl_trading.v6.environment_source import ArteExecutionSource
@@ -90,10 +91,16 @@ def main(argv=None):
     parser.add_argument('--teacher-epochs',type=int,default=10)
     parser.add_argument('--teacher-only',action='store_true',
         help='Teacher initialization and per-epoch development label evaluation; no trading replay or PPO')
+    parser.add_argument('--ppo-only',action='store_true',
+        help='Train PPO from an explicitly selected teacher checkpoint; do not repeat teacher initialization')
+    parser.add_argument('--initialize-from',type=Path,
+        help='Selected teacher checkpoint for a new PPO run with fresh Adam and explicit source binding')
     parser.add_argument('--teacher-loss',choices=('legacy','balanced-v2'),default='legacy',
         help='Versioned action balancing and fixed per-session block normalization')
     parser.add_argument('--action-contract', choices=('legacy','wait-hold'), default='legacy',
         help='Explicit six-class WAIT and held-ticker HOLD contract with weighted causal label migration')
+    parser.add_argument('--action-audit',type=Path,
+        help='All-18-session WAIT/HOLD migration certificate, required for the new contract')
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
     parser.add_argument('--learning-rate',type=float,default=3e-4)
@@ -124,6 +131,10 @@ def main(argv=None):
     parser.add_argument('--audit-only',action='store_true')
     parser.add_argument('--wandb-project',default='rl-trading-v6')
     args=parser.parse_args(argv)
+    if args.teacher_only and args.ppo_only or args.ppo_only != bool(args.initialize_from):
+        raise ValueError('PPO-only requires initialize-from and excludes teacher-only')
+    if args.initialize_from and args.resume_from:
+        raise ValueError('PPO initialization cannot also resume a teacher parent')
     from src.runtime_paths import runtime_root
     runtime=runtime_root().resolve()
     run=args.run_root.resolve()
@@ -134,6 +145,24 @@ def main(argv=None):
            args.max_orders_per_second,args.replay_every)<1 or args.learning_rate<=0 or args.log_every_seconds<=0:
         raise ValueError('Positive training/rollout limits required')
     dataset=require_dataset(args.dataset,runtime_root=runtime)
+    if args.action_contract=='wait-hold':
+        if args.action_audit is None or not args.action_audit.resolve().is_relative_to(runtime):
+            raise ValueError('WAIT/HOLD requires a runtime all-day migration audit')
+        action_audit=json.loads(args.action_audit.read_text())
+        records=action_audit.get('label_audits', [])
+        if (action_audit.get('status')!='bounded_diagnostic_and_all18_label_audits_complete' or
+                action_audit.get('action_version')!=ACTION_VERSION or
+                action_audit.get('sealed_test_accessed') is not False or
+                action_audit.get('learning',{}).get('dataset_sha256')!=file_hash(args.dataset) or
+                len(records)!=len(dataset['days'])):
+            raise ValueError('Incomplete or mismatched WAIT/HOLD migration audit')
+        for record,entry in zip(records,dataset['days']):
+            if (record.get('status')!='passed' or record['day']!=entry['day'] or
+                    record['role']!=entry['role'] or
+                    record['source_teacher_sha256']!=entry['teacher_sha256'] or
+                    record['bank_certificate_sha256']!=entry['bank_certificate_sha256'] or
+                    abs(record['effective_weight']-record['original_rows'])>1e-7*max(1,record['original_rows'])):
+                raise ValueError('WAIT/HOLD migration audit lost source binding or label weight')
     if args.teacher_epochs < 10:
         raise ValueError('Teacher initialization must run at least 10 epochs')
     if args.teacher_only and args.teacher_epochs > 20:
@@ -184,6 +213,8 @@ def main(argv=None):
         'action_version':ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1',
         'teacher_no_order_labels':'all_causal_held_identities_weighted_1_over_H' if wait_hold else 'portfolio_hold',
         'history_cache':'raw_causal_reprojection_after_teacher_optimizer' if wait_hold else 'detached_projected_history',
+        'teacher_selection_version':SELECTION_VERSION,
+        'action_audit_sha256':file_hash(args.action_audit) if args.action_audit else None,
         'ranking':asdict(ranking),'source_commit':_commit(),
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
@@ -197,6 +228,32 @@ def main(argv=None):
         'research_price_increment':.0001,'price_increment_authority':'canonical_precision_scenario_not_exchange_tick',
         'wandb_key_present':bool(os.environ.get('WANDB_API_KEY'))}
     manifest['hash']=digest(manifest)
+    initialization=None
+    if args.initialize_from:
+        initial=args.initialize_from.resolve()
+        if not initial.is_relative_to(runtime):
+            raise ValueError('Teacher initialization checkpoint escaped runtime')
+        parent=json.loads((initial.parent/'manifest.json').read_text())
+        selected=json.loads((initial.parent/'teacher-selection.json').read_text())
+        completed=json.loads((initial.parent/'complete.json').read_text())
+        initialization=torch.load(initial,map_location=device,weights_only=False)
+        if (initialization['manifest_hash']!=parent['hash'] or
+                completed.get('status')!='teacher_trained_label_evaluated_trading_validation_pending' or
+                completed.get('manifest_hash')!=parent['hash'] or
+                parent.get('decoder_version')!=DECODER_VERSION or
+                parent.get('action_version')!=manifest['action_version'] or
+                parent['dataset_sha256']!=manifest['dataset_sha256'] or
+                parent['luld_certificates']!=manifest['luld_certificates'] or
+                parent.get('teacher_selection_version')!=SELECTION_VERSION or
+                selected.get('checkpoint_sha256')!=file_hash(initial) or
+                selected.get('score',{}).get('exact_entry_f1',0)<=0 or
+                Path(selected['checkpoint']).resolve()!=initial or
+                selected.get('sealed_test_accessed') is not False):
+            raise ValueError('PPO initialization lacks matching development-selected teacher authority')
+        policy.load_state_dict(initialization['model'],strict=True)
+        manifest['initial_teacher_checkpoint_sha256']=file_hash(initial)
+        manifest['initial_teacher_manifest_hash']=parent['hash']
+        manifest['hash']=digest({k:v for k,v in manifest.items() if k!='hash'})
     parent_payload=None
     if args.resume_from:
         parent_manifest=json.loads((args.resume_from.parent/'manifest.json').read_text())
@@ -223,7 +280,7 @@ def main(argv=None):
         if args.resume:
             parent_payload=None  # Subsequent resumes use this run's own last.pt.
     run.mkdir(parents=True,exist_ok=True)
-    progress={'phase':'teacher','epoch':0,'day_index':0,'wandb_step':0}
+    progress={'phase':'ppo' if args.ppo_only else 'teacher','epoch':0,'day_index':0,'wandb_step':0}
     logger=None
     load_env_files(discover_clickhouse_env_files(),verbose=False)
     with exclusive(run/'run.lock'):
@@ -342,7 +399,7 @@ def main(argv=None):
             diagnostics=[e for e in train_days if date.fromisoformat(str(e['day'])) in args.train_replay_days]
             if len(diagnostics)!=len(set(args.train_replay_days)):
                 raise ValueError('Training replay diagnostics must select audited training days')
-            phases=(('teacher',args.teacher_epochs),) if args.teacher_only else (('teacher',args.teacher_epochs),('ppo',args.ppo_epochs))
+            phases=(('ppo',args.ppo_epochs),) if args.ppo_only else (('teacher',args.teacher_epochs),) if args.teacher_only else (('teacher',args.teacher_epochs),('ppo',args.ppo_epochs))
             for phase,epochs in phases:
                 if phase=='teacher' and progress['phase']=='ppo': continue
                 epoch_start=progress['epoch'] if progress['phase']==phase else 0
@@ -398,6 +455,7 @@ def main(argv=None):
                     _checkpoint(checkpoint,policy,optimizer,manifest,progress)
                     _checkpoint(last,policy,optimizer,manifest,progress)
                     if args.teacher_only:
+                        teacher_summaries=[]
                         for entry in dev_days:
                             session=open_day(entry)
                             decisions,outcomes=teacher_loader(Path(entry['teacher_root']),session,runtime_root=runtime,audit_development=True)
@@ -405,8 +463,18 @@ def main(argv=None):
                                 device=device,clocks_per_chunk=args.clocks_per_chunk,evaluation=True,
                                 progress_callback=pulse('progress/teacher_validation',session.day,epoch)))
                             result.update(day=str(session.day),epoch=epoch+1)
+                            teacher_summaries.append(result)
                             log('validation/teacher',result)
                             del session,decisions,outcomes
+                        score=teacher_validation_score(teacher_summaries)
+                        selection=run/'teacher-selection.json'
+                        previous=json.loads(selection.read_text()) if selection.is_file() else None
+                        if previous is None or selection_key(score)>selection_key(previous['score']):
+                            _write_json(selection,{'status':'selected_on_development_teacher_labels',
+                                'checkpoint':str(checkpoint),'checkpoint_sha256':file_hash(checkpoint),
+                                'epoch':epoch+1,'score':score,'sealed_test_accessed':False,
+                                'development_summaries':teacher_summaries})
+                        log('validation/teacher_selection',score)
                         logger.save(str(checkpoint),base_path=str(run),policy='now')
                     elif (epoch+1)%args.replay_every==0:
                         summaries=[]
