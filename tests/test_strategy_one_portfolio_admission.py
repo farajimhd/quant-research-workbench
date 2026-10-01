@@ -148,6 +148,7 @@ def test_numbered_proposal_uses_shared_runtime_portfolio_and_oms_path():
     runtime.strategy = SimpleNamespace(assignments=lambda: ())
     runtime.last_event_time = intent.event_time
     runtime._refresh_portfolio_from_broker = AsyncMock()
+    runtime._strategy_one_price_source = None
 
     result = asyncio.run(runtime.submit_strategy_one_proposal(proposal))
     assert result == [{"decision": {"status": "approved"},

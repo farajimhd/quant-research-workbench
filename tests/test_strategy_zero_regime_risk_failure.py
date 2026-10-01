@@ -30,3 +30,19 @@ def test_positive_signal_early_failure_is_preserved(held):
     {'macd_line':None},{'price_valid':False},{'bid':9.96,'ask':9.97}])
 def test_negative_regime_never_bypasses_parent_evidence(change):
     assert zero_regime_failure(observation(**change)) is None
+
+
+@pytest.mark.parametrize('number', [30, 31])
+def test_prepared_successor_factory_preserves_parent_late_zero_regime(number):
+    from src.trading_runtime.strategy_followthrough_exit import validate_witness
+    from src.trading_runtime.arte_followthrough_failure_v4 import validate_numbered_failure
+    witness = zero_regime_failure(observation())
+    validate_witness(witness, strategy_number=number)
+    validate_numbered_failure(witness, number)
+    # A persistent-risk witness with positive signal cannot be admitted as
+    # the parent's late zero-regime exit for either number.
+    positive = persistent_risk_failure(observation(macd_line=.01, macd_signal=.02))
+    with pytest.raises(ValueError, match='pinned rule'):
+        validate_witness(positive, strategy_number=number)
+    with pytest.raises(ValueError, match='pinned rule'):
+        validate_numbered_failure(positive, number)

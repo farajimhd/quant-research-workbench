@@ -906,6 +906,7 @@ class TradingRuntime:
         strategy_one_assignment_id: str | None = None,
         numbered_exit_assignment_id: str | None = None,
         followthrough_source: tuple | None = None,
+        profit_giveback_source: tuple | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -916,16 +917,41 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
-        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30):
+        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31):
             from .strategy_one_intent import require_no_replacement_capital
             require_no_replacement_capital(evaluation.intents)
             if any(intent.action not in {"enter_long", "add_long", "replace_protective_stop",
                                          "replace_profit_target", "exit"}
                    for intent in evaluation.intents):
                 raise ValueError("Strategy 2 action is outside its sealed contract")
-            if self.config.strategy_revision in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30) and any(
+            if self.config.strategy_revision in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31) and any(
                     intent.action == "add_long" for intent in evaluation.intents):
                 raise ValueError(f"Strategy {self.config.strategy_revision} forbids add acquisitions")
+        from .strategy_profit_giveback_exit import REASON as PROFIT_GIVEBACK_REASON
+        if profit_giveback_source is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            from .strategy_profit_giveback_exit import profit_giveback_exit_intent
+            from .strategy_profit_giveback_arm_reference import ProfitArmReference
+            from .strategy_one_stateful import StrategyOneFinancialView
+            if (type(profit_giveback_source) is not tuple or len(profit_giveback_source) != 4
+                    or self.config.mode != RunMode.BACKTEST
+                    or self.config.strategy_id != STRATEGY_ID or self.config.strategy_revision != 31
+                    or not isinstance(self.journal, BacktestMemoryJournal)
+                    or event is not None or followthrough_source is not None
+                    or numbered_exit_assignment_id is not None
+                    or strategy_one_assignment_id is not None
+                    or strategy_one_proposal is not None or strategy_one_add_proposal is not None):
+                raise ValueError('Strategy 31 profit exit lacks exact typed authority')
+            witness, financial, source_entry_intent_id, arm_reference = profit_giveback_source
+            if (type(arm_reference) is not ProfitArmReference
+                    or type(financial) is not StrategyOneFinancialView
+                    or account_id != financial.account_id
+                    or evaluation.intents != (profit_giveback_exit_intent(
+                        witness, financial, session_date=self.config.anchor_date,
+                        source_entry_intent_id=source_entry_intent_id),)):
+                raise ValueError('Strategy 31 profit exit differs from its immutable factory')
+        elif any(intent.reason == PROFIT_GIVEBACK_REASON for intent in evaluation.intents):
+            raise ValueError('Strategy 31 profit exit lacks its normalized witness')
         if followthrough_source is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
             from .strategy_followthrough_exit import followthrough_exit_intent
@@ -934,7 +960,7 @@ class TradingRuntime:
             validate_numbered_failure(witness, self.config.strategy_revision)
             if (self.config.mode != RunMode.BACKTEST
                     or self.config.strategy_id != STRATEGY_ID
-                    or self.config.strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+                    or self.config.strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
                     or not isinstance(self.journal, BacktestMemoryJournal)
                     or event is not None or account_id != financial.account_id
                     or numbered_exit_assignment_id is not None
@@ -944,13 +970,13 @@ class TradingRuntime:
                     or evaluation.intents != (followthrough_exit_intent(
                         witness, financial, session_date=self.config.anchor_date,
                         source_entry_intent_id=source_entry_intent_id,
-                        strategy_number=self.config.strategy_revision if self.config.strategy_revision in (25, 26, 27, 28, 29, 30) else 9),)):
+                        strategy_number=self.config.strategy_revision if self.config.strategy_revision in (25, 26, 27, 28, 29, 30, 31) else 9),)):
                 raise ValueError("Strategy 9 failure exit lacks exact typed authority")
         elif any(intent.reason == "strategy_nine_followthrough_failure"
                  for intent in evaluation.intents):
             raise ValueError("Strategy 9 failure exit lacks its normalized witness")
         if numbered_exit_assignment_id is not None:
-            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
                     or not numbered_exit_assignment_id or event is not None
                     or any(intent.action != "exit" or intent.metadata
                            or intent.reason != numbered_session_exit_reason(self.config.strategy_revision)
@@ -1038,6 +1064,14 @@ class TradingRuntime:
                     assignment_id=financial.assignment_id,
                     account_id=account_id, strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
+            elif profit_giveback_source is not None:
+                witness, financial, source_entry_intent_id, arm_reference = profit_giveback_source
+                self.journal.append_profit_giveback_exit(
+                    intent=intent, witness=witness,
+                    source_entry_intent_id=source_entry_intent_id,
+                    arm_reference=arm_reference, assignment_id=financial.assignment_id,
+                    account_id=account_id, strategy_id=self.config.strategy_id,
+                    strategy_revision=self.config.strategy_revision)
             elif numbered_exit_assignment_id is not None:
                 self.journal.append_numbered_session_exit_intent(
                     intent=intent, account_id=account_id,
@@ -1104,6 +1138,8 @@ class TradingRuntime:
                              if strategy_one_assignment_id is not None
                              else followthrough_source[1].assignment_id
                              if followthrough_source is not None
+                             else profit_giveback_source[1].assignment_id
+                             if profit_giveback_source is not None
                              else numbered_exit_assignment_id)
             if assignment_id is None:
                 decision, approved_intent = await self.portfolio.approve(
@@ -1248,10 +1284,21 @@ class TradingRuntime:
         intent = followthrough_exit_intent(
             witness, financial, session_date=self.config.anchor_date,
             source_entry_intent_id=source_entry_intent_id,
-            strategy_number=self.config.strategy_revision if self.config.strategy_revision in (25, 26, 27, 28, 29, 30) else 9)
+            strategy_number=self.config.strategy_revision if self.config.strategy_revision in (25, 26, 27, 28, 29, 30, 31) else 9)
         return await self._execute_intents(
             StrategyEvaluation(intents=(intent,)), financial.account_id, None,
             followthrough_source=(witness, financial, source_entry_intent_id))
+
+    async def submit_profit_giveback(self, financial, witness,
+                                    source_entry_intent_id, arm_reference):
+        """Submit one typed exit through shared Portfolio/OMS, never direct orders."""
+        from .strategy_profit_giveback_exit import profit_giveback_exit_intent
+        intent = profit_giveback_exit_intent(
+            witness, financial, session_date=self.config.anchor_date,
+            source_entry_intent_id=source_entry_intent_id)
+        return await self._execute_intents(
+            StrategyEvaluation(intents=(intent,)), financial.account_id, None,
+            profit_giveback_source=(witness, financial, source_entry_intent_id, arm_reference))
 
     async def submit_numbered_session_exit(self, financial, resolutions, boundary_ms):
         """Submit once per live exit; fills belong to later broker liquidity."""
@@ -1301,7 +1348,7 @@ class TradingRuntime:
 
     def _strategy_one_entry_intent(self, proposal: Any):
         """Validate entries against the cached source, without market I/O."""
-        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30):
+        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31):
             from src.backend.backtest_strategy_certified_price_break import (
                 CertifiedPriceReadbackAuthority, certified_price_entry_intent,
             )
@@ -1310,7 +1357,7 @@ class TradingRuntime:
                     or source.run_id != self.run_id
                     or self.config.mode != RunMode.BACKTEST
                     or self.config.strategy_id != 'early-squeeze-strategy'
-                    or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+                    or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
                     or self.config.strategy_revision != proposal.strategy_number):
                 raise ValueError("Strategy20 runtime entry lacks its native source")
             return certified_price_entry_intent(source.plan, proposal,

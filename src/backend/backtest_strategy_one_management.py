@@ -384,7 +384,7 @@ class StrategyOneManagementRunner:
             from src.trading_runtime.strategy_persistent_risk_failure import persistent_risk_failure
             from src.trading_runtime.strategy_zero_regime_risk_failure import zero_regime_risk_failure
             failure_rule = (zero_regime_risk_failure
-                            if self.contract.strategy_number == 30
+                            if self.contract.strategy_number in (30, 31)
                             else persistent_risk_failure
                             if self.contract.strategy_number == 29
                             else premarket_quarter_risk_failure
@@ -392,23 +392,43 @@ class StrategyOneManagementRunner:
                             else early_followthrough_failure
                             if self.contract.strategy_number in (11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24)
                             else followthrough_failure)
-            witness = failure_rule(FollowThroughFailureInput(
+            completed = FollowThroughFailureInput(
                 boundary_ms, self._first_held_boundaries[key],
                 source.reference_ask, source.initial_stop,
                 bar.get("boundary_ms"), bar.get("close_int"),
                 bar.get("price_valid") == 1, bar.get("macd_line"),
                 bar.get("macd_signal"), evidence.bid, evidence.ask, age_us,
-                financial.position_quantity, financial.pending_exit))
+                financial.position_quantity, financial.pending_exit)
+            witness = failure_rule(completed)
             if witness is not None:
                 # Reuse the runtime's cached, exact native source validation;
                 # the older constructor deliberately excludes price entries.
                 entry = (self.runtime._strategy_one_entry_intent(source)
-                         if self.contract.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)
+                         if self.contract.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)
                          else strategy_one_entry_intent(
                              source, session_date=self.runtime.config.anchor_date))
                 await self.runtime.submit_followthrough_failure(
                     financial, witness, entry.intent_id)
+                if self.contract.strategy_number == 31:
+                    # The pre-submission financial view cannot attest that
+                    # the position is still available for arming after OMS.
+                    # Refresh it on a later management boundary if held.
+                    self._profit_arm_financials.pop(key, None)
                 return
+            if self.contract.strategy_number == 31:
+                from src.trading_runtime.strategy_profit_giveback import ProfitGivebackInput, profit_giveback
+                reference = self._profit_arm_references.get(key)
+                # Confirmation belongs to finish(), so even an arm selected
+                # on this boundary cannot authorize an exit inside it.
+                if reference is not None and reference.candidate.boundary_ms < boundary_ms:
+                    profit_witness = profit_giveback(ProfitGivebackInput(
+                        completed, reference.candidate.high_int,
+                        reference.candidate.boundary_ms))
+                    if profit_witness is not None:
+                        entry = self.runtime._strategy_one_entry_intent(source)
+                        await self.runtime.submit_profit_giveback(
+                            financial, profit_witness, entry.intent_id, reference)
+                        return
         pending = self._pending_breaks.setdefault(key, [])
         # A failed OMS acknowledgement retries the same completed boundary.
         # Preserve witnesses once, not once per retry.
