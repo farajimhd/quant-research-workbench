@@ -53,6 +53,9 @@ class TeacherDecision:
     size_fraction: float | None = None
     oracle_log_distance: float | None = None
     sample_weight: float = 1.  # Expanded simultaneous HOLDs share one old row's weight.
+    soft_tokens: tuple[int, ...] = ()  # Local alternative actions, not portfolio negatives.
+    soft_probabilities: tuple[float, ...] = ()
+    episode_uid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +146,13 @@ def _validate(decisions: tuple[TeacherDecision, ...],
             permitted = np.concatenate((permitted, np.ones(held, dtype=np.bool_)))
         if not 0 <= item.token < len(permitted) or not permitted[item.token]:
             raise ValueError('Teacher selected a masked bracket action')
+        if item.soft_tokens or item.soft_probabilities:
+            if (not item.episode_uid or len(item.soft_tokens)!=len(item.soft_probabilities) or
+                len(set(item.soft_tokens))!=len(item.soft_tokens) or
+                any(not 0<=token<len(permitted) or not permitted[token] for token in item.soft_tokens) or
+                any(not math.isfinite(p) or not 0<=p<=1 for p in item.soft_probabilities) or
+                not math.isclose(sum(item.soft_probabilities),1.,abs_tol=1e-9) or item.token not in item.soft_tokens):
+                raise ValueError('Invalid independent episode soft target')
         enters = 1 <= item.token <= listings
         bracket_base = 1 + listings + held
         bracket_action = bracket_base <= item.token < bracket_base + 2*held
@@ -302,15 +312,22 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         size_fraction=item.size_fraction,
                         oracle_log_distance=item.oracle_log_distance,
                         action_weight=float(balance[target_class])
-                        if balance is not None else 1., wait_hold=wait_hold)
+                        if balance is not None else 1., wait_hold=wait_hold,
+                        soft_tokens=item.soft_tokens, soft_probabilities=item.soft_probabilities)
                     objective = objective * item.sample_weight
-                    # Monitoring remains the original unweighted loss, so
-                    # pre/post-fix and development values remain comparable.
+                    # Legacy monitoring remains unweighted. Episode-mode loss
+                    # is local soft CE and has a separate manifest metric scope;
+                    # it is not comparable to portfolio-token CE or recall.
                     loss = (metrics['action_loss'] + metrics['size_loss'] +
                             metrics['bracket_loss'])
                     pending_losses.append(loss)
                     pending_correct.append(metrics['action_correct'])
-                    pending_predictions.append((logits.detach().argmax(),
+                    if item.soft_tokens:
+                        alternatives=torch.as_tensor(item.soft_tokens,device=device)
+                        selected=alternatives[logits.detach()[alternatives].argmax()]
+                    else:
+                        selected=logits.detach().argmax()
+                    pending_predictions.append((selected,
                         item.token, len(item.held_index)))
                     pending_objectives.append(objective)
                     pending_weights.append(item.sample_weight)
@@ -320,7 +337,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                             metrics['size_absolute_error'] if slot == 0 else
                             metrics['bracket_absolute_error'])
                     observed_decisions += 1
-                    if 1 <= item.token <= listings:
+                    if 1 <= item.token <= listings and not item.soft_tokens:
                         pending_entries[(item.close_us, item.order_index)] = item.token-1
         if pending_losses:
             mean = (torch.stack(pending_objectives).sum() / loss_denominator

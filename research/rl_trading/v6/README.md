@@ -256,3 +256,13 @@ They are never booked as fees or financial P&L. A canary cutoff incurs no
 terminal-close cost. Never fabricate liquidation prices for stuck positions.
 Quote reads prefetch bounded 15-second chunks per active ticker; filtering
 prevents future cached evidence reaching execution or policy observations.
+
+### Independent episode-window supervision
+
+`python -B -m research.rl_trading.v6.episode_windows --dataset <audited-complete.json> --output <fresh-runtime-root> --days <train/dev dates>` reuses certified banks, episodes and candidate scores. It writes only three sparse target tables per day; no candle bank or overlapping feature shards are regenerated. Set `PYTHONDONTWRITEBYTECODE=1` before invocation.
+
+Entry-vs-WAIT probabilities are existing fee-aware scores normalized by the episode's best score, subject to at least 1% upside to the episode maximum high. EXIT-vs-ticker-HOLD probabilities use net profit relative to the best exit, with observed terminal liquidation. Held examples describe a hypothetical one-share position, never a jointly executable portfolio. Each episode branch has total optimization weight one. No profitable episode is erased because the portfolio did not select it.
+
+Rolling `[t,t+15s)` hindsight allocation takes one maximum qualifying score per episode, thresholds it and normalizes all surviving scores. Repeated candidate times do not multiply allocation weight. Future scores are sizing labels only, never observations. Allocation and entry/exit quality remain separate; the peak-entry guard applies before allocation.
+
+A fresh `--teacher-only --action-contract wait-hold --episode-supervision-root <root>` run requires all audited day sidecars. Local soft cross entropy compares only that ticker's alternatives, so another profitable ticker is not an implicit negative. Causal market ranking/attention remains unchanged; this explicit supervision mode permits labels outside portfolio top-R. Its local label loss/recall is not comparable to historical portfolio-token metrics and does not establish portfolio selection or profitability. Existing replay, broker, PPO and legacy teacher behavior stay unchanged. This path does not enable repeated live orders, adding or reducing positions.

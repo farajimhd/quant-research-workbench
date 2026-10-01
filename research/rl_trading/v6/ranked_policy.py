@@ -16,6 +16,7 @@ class RankedBracketActorCritic(BracketActorCritic):
         self.pending_indices = ()
         self._critic_market = None
         self._market_cache = None
+        self.independent_episode_supervision = False
 
     def reset_market(self, listings):
         """Reset once per session; never reset when ranks change."""
@@ -68,7 +69,11 @@ class RankedBracketActorCritic(BracketActorCritic):
         selected_mask = torch.zeros(len(full), device=full.device, dtype=torch.bool)
         selected_mask[selected] = True
         masks = dict(masks)
-        masks['enter_allowed'] = masks['enter_allowed'] & selected_mask
+        if not self.independent_episode_supervision:
+            masks['enter_allowed'] = masks['enter_allowed'] & selected_mask
+        # Opportunity classification sees every certified ticker, independently
+        # of top-R portfolio selection. Attention itself remains causal/bounded.
+        # This explicit teacher-only mode is never enabled by replay or PPO.
         return full, masks
 
     def critic_market_embeddings(self, listings):

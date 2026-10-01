@@ -101,6 +101,8 @@ def main(argv=None):
         help='Explicit six-class WAIT and held-ticker HOLD contract with weighted causal label migration')
     parser.add_argument('--action-audit',type=Path,
         help='All-18-session WAIT/HOLD migration certificate, required for the new contract')
+    parser.add_argument('--episode-supervision-root',type=Path,
+        help='Versioned independent episode window sidecars; fresh teacher-only run, never PPO replay')
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
     parser.add_argument('--learning-rate',type=float,default=3e-4)
@@ -205,7 +207,30 @@ def main(argv=None):
     torch.backends.cudnn.benchmark=False
     wait_hold = args.action_contract == 'wait-hold'
     teacher_loader = load_wait_hold_teacher if wait_hold else load_teacher
+    episode_certificates={}
+    if args.episode_supervision_root:
+        from research.rl_trading.v6.episode_windows import load_episode_teacher, VERSION as EPISODE_VERSION
+        if not args.teacher_only or not wait_hold or args.resume_from or args.initialize_from:
+            raise ValueError('Independent episode labels require fresh WAIT/HOLD teacher-only contract')
+        root=args.episode_supervision_root.resolve()
+        if not root.is_relative_to(runtime):raise ValueError('Episode labels escaped runtime')
+        for entry in dataset['days']:
+            path=root/entry['day']/'complete.json'
+            proof=json.loads(path.read_text())
+            if (proof.get('version')!=EPISODE_VERSION or proof.get('status')!='audited_independent_episode_windows' or
+                proof.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or
+                proof.get('day')!=entry['day'] or proof.get('role')!=entry['role'] or
+                proof.get('sealed_test_accessed') is not False):
+                raise ValueError('All18 episode label certificates must bind to audited banks')
+            episode_certificates[entry['day']]=file_hash(path)
+            for name in ('flat','held','allocation'):
+                artifact=root/entry['day']/(name+'.parquet')
+                if file_hash(artifact)!=proof['files'][name]['sha256']:
+                    raise ValueError('Episode label bytes changed before optimizer initialization')
+        def teacher_loader(ignored,session,**kwargs):
+            return load_episode_teacher(root/str(session.day),session,**kwargs)
     policy=RankedBracketActorCritic(config=ranking, wait_hold=wait_hold).to(device)
+    policy.independent_episode_supervision=bool(args.episode_supervision_root)
     optimizer=torch.optim.Adam(policy.parameters(),lr=args.learning_rate)
     from research.rl_trading.v6.model import DECODER_VERSION
     manifest={'version':'rl-trading-v6-attention-ppo-run-1','dataset_sha256':file_hash(args.dataset),
@@ -214,6 +239,9 @@ def main(argv=None):
         'teacher_no_order_labels':'all_causal_held_identities_weighted_1_over_H' if wait_hold else 'portfolio_hold',
         'history_cache':'raw_causal_reprojection_after_teacher_optimizer' if wait_hold else 'detached_projected_history',
         'teacher_selection_version':SELECTION_VERSION,
+        'episode_label_certificates':episode_certificates,
+        'teacher_label_scope':'independent_episode_flat_and_hypothetical_unit_position' if episode_certificates else 'selected_portfolio_trajectory',
+        'teacher_metrics_scope':'local_ticker_alternatives_not_portfolio_selection' if episode_certificates else 'portfolio_action_tokens',
         'action_audit_sha256':file_hash(args.action_audit) if args.action_audit else None,
         'ranking':asdict(ranking),'source_commit':_commit(),
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)

@@ -18,6 +18,8 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
                  oracle_log_distance: float | None = None,
                  action_weight: float = 1.,
                  wait_hold: bool = False,
+                 soft_tokens: tuple[int, ...] = (),
+                 soft_probabilities: tuple[float, ...] = (),
                  ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Score one ordered teacher action with shape [1+N+3H].
 
@@ -58,8 +60,24 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
             (not math.isfinite(oracle_log_distance) or
              oracle_log_distance <= 0)):
         raise ValueError('Oracle bracket distance must be positive')
-    action = F.cross_entropy(logits[None],
-        torch.tensor([token], dtype=torch.long, device=logits.device))
+    if soft_tokens or soft_probabilities:
+        if (len(soft_tokens)!=len(soft_probabilities) or len(set(soft_tokens))!=len(soft_tokens) or
+            token not in soft_tokens or any(not 0<=i<len(logits) for i in soft_tokens) or
+            any(not math.isfinite(p) or not 0<=p<=1 for p in soft_probabilities) or
+            not math.isclose(sum(soft_probabilities),1.,abs_tol=1e-9)):
+            raise ValueError('Invalid episode probability target')
+        index=torch.tensor(soft_tokens,dtype=torch.long,device=logits.device)
+        selected=logits[index]
+        if (selected==torch.finfo(logits.dtype).min).any():
+            raise ValueError('Episode probability target is masked')
+        # Independent alternatives for this ticker only: other profitable
+        # tickers are absent, rather than negative classes in a global CE.
+        action=-(logits.new_tensor(soft_probabilities)*F.log_softmax(selected,dim=0)).sum()
+        predicted=index[selected.argmax()]
+    else:
+        action = F.cross_entropy(logits[None],
+            torch.tensor([token], dtype=torch.long, device=logits.device))
+        predicted=logits.argmax()
     size = logits.new_zeros(())
     bracket = logits.new_zeros(())
     size_absolute_error = logits.new_zeros(())
@@ -80,5 +98,5 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
         'bracket_loss': bracket.detach(),
         'size_absolute_error': size_absolute_error.detach(),
         'bracket_absolute_error': bracket_absolute_error.detach(),
-        'action_correct': (logits.argmax() == token).to(logits.dtype).detach(),
+        'action_correct': (predicted == token).to(logits.dtype).detach(),
     }
