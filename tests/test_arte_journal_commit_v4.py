@@ -394,6 +394,38 @@ def attached_v4_client(client=None):
     return client
 
 
+def test_cold_prefix_supplies_only_verified_preceding_batches(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4 as subject
+    client = attached_v4_client()
+    first = batch()
+    publish_base_typed_batch_v4(client, first)
+    preceding = load_verified_v4_prefix(client, first.run_id)
+    next_id = '00000000-0000-0000-0000-000000000091'
+    content = {k: v for k, v in first.events[0].items() if k != 'content_hash'}
+    content.update(batch_id=next_id,
+                   record_id='00000000-0000-0000-0000-000000000092', sequence=2)
+    second = replace(first, batch_id=next_id, prior_batch_id=first.batch_id,
+                     first_sequence=2, last_sequence=2, source_cursor='bucket-2',
+                     events=(typed_row('trading_event_v1', content),))
+    publish_base_typed_batch_v4(client, second)
+    calls = []
+    original = subject.load_verified_commit_v4
+    def read(*args, **kwargs):
+        calls.append(kwargs.get('verified_prior_prefix'))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(subject, 'load_verified_commit_v4', read)
+    final = subject.load_verified_v4_prefix(client, first.run_id)
+    assert calls == [None, preceding]
+    assert final.last_sequence == 2
+    assert final.batch_ids == (first.batch_id, next_id)
+    for invalid in (replace(preceding, run_id='foreign-run'),
+                    replace(preceding, last_sequence=2),
+                    replace(preceding, last_batch_id=next_id)):
+        with pytest.raises(RuntimeError, match='precede'):
+            original(client, run_id=first.run_id, batch_id=next_id,
+                     verified_prior_prefix=invalid)
+
+
 def test_cold_prefix_propagates_one_native_price_source_without_recompiling(monkeypatch):
     from test_backtest_strategy_first_price_source import authority, Bars
     from src.backend.backtest_strategy_first_price_source import load_first_price_source

@@ -275,8 +275,12 @@ def load_verified_v4_prefix(client, run_id: str, *,
                 or cursor.lstrip("\ufeff \t\r\n").startswith(("{", "["))
                 or batch_id in seen_ids):
             raise RuntimeError("V4 committed run chain is forked or not contiguous")
+        preceding = (V4CommittedPrefix(
+            run_id, last_sequence, prior_id, commits[len(batch_ids)-1]['source_cursor'],
+            status, tuple(batch_ids)) if batch_ids else None)
         verified, _ = load_verified_commit_v4(
-            client, run_id=run_id, batch_id=batch_id, first_price_source=first_price_source)
+            client, run_id=run_id, batch_id=batch_id, first_price_source=first_price_source,
+            **({'verified_prior_prefix': preceding} if preceding is not None else {}))
         if verified != row:
             raise RuntimeError("V4 cold commit differs from ordered run inventory")
         prior_id = batch_id
@@ -426,6 +430,7 @@ def load_verified_commit_v4(
     max_rows_per_family: int = 65_536,
     first_price_source=None,
     first_price_authorities: tuple = (),
+    verified_prior_prefix: V4CommittedPrefix | None = None,
 ) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
@@ -447,6 +452,15 @@ def load_verified_commit_v4(
     commit = commits[0]
     if commit["run_id"] != run_id or str(UUID(str(commit["batch_id"]))) != identity:
         raise RuntimeError("V4 commit differs from requested identity")
+    if verified_prior_prefix is not None and (
+            type(verified_prior_prefix) is not V4CommittedPrefix
+            or verified_prior_prefix.run_id != run_id
+            or verified_prior_prefix.status != 'running'
+            or not verified_prior_prefix.batch_ids
+            or verified_prior_prefix.last_batch_id != verified_prior_prefix.batch_ids[-1]
+            or verified_prior_prefix.last_batch_id != str(commit['prior_batch_id'])
+            or verified_prior_prefix.last_sequence + 1 != commit['first_sequence']):
+        raise RuntimeError('V4 source prefix does not immediately precede requested commit')
     family_columns = ",".join(name for name, _ in
                               _CONTRACTS["trading_commit_family_v4"].columns)
     family_rows = _rows(client,
@@ -459,7 +473,8 @@ def load_verified_commit_v4(
         family_rows=family_rows, max_rows_per_family=max_rows_per_family,
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
         prior_batch_id=str(commit["prior_batch_id"]), first_price_source=first_price_source,
-        first_price_authorities=first_price_authorities)
+        first_price_authorities=first_price_authorities,
+        verified_prior_prefix=verified_prior_prefix)
     try:
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:
@@ -473,6 +488,7 @@ def _load_verified_details_v4(
     batched_readback: bool = False, prior_batch_id: str | None = None,
     first_price_authorities: tuple = (),
     first_price_source=None,
+    verified_prior_prefix: V4CommittedPrefix | None = None,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
@@ -561,6 +577,17 @@ def _load_verified_details_v4(
         related_rows.get("trading_strategy_intent_v1", ()),
         related_rows.get("trading_event_v1", ()), related_rows.get(ENTRY_EVIDENCE.name, ()),
         prior_batch_id=prior_batch_id)
+    from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, seal_profit_giveback_rows
+    from .strategy_profit_giveback_exit import REASON as PROFIT_REASON
+    profit_rows = related_rows.get(PROFIT_GIVEBACK.name, ())
+    if profit_rows or any(row['reason'] == PROFIT_REASON for row in
+                          related_rows.get('trading_strategy_intent_v1', ())):
+        if verified_prior_prefix is None:
+            raise RuntimeError('Profit readback requires an independently verified preceding prefix')
+        seal_profit_giveback_rows(client, profit_rows,
+            related_rows.get('trading_strategy_intent_v1', ()),
+            related_rows.get('trading_event_v1', ()),
+            prefix=verified_prior_prefix, first_price_source=first_price_source)
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
                if row["reason"] == "strategy_one_entry"}
