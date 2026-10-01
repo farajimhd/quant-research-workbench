@@ -1,0 +1,61 @@
+"""Prepared Strategy 34 exit factory; registration/persistence remain closed."""
+from datetime import datetime, time, timedelta, timezone
+from math import isfinite
+from uuid import NAMESPACE_URL, UUID, uuid5
+from zoneinfo import ZoneInfo
+
+from .execution_policies import ExecutionEnvelope, ExecutionPolicy, ExecutionPolicyName, PartialFillPolicy
+from .signals import StrategyIntent
+from .strategy_confirmed_ah_risk_failure import (
+    ConfirmedAhRiskFailure, ConfirmedAhRiskFailureInput, confirmed_ah_risk_failure,
+)
+from .strategy_followthrough_failure import FollowThroughFailureInput
+from .strategy_one_stateful import StrategyOneFinancialView
+
+REASON = 'strategy_thirty_four_confirmed_ah_failure'
+
+
+def validate_confirmed_ah_witness(witness):
+    """Re-run both completed-bar conditions without altering original risk."""
+    if type(witness) is not ConfirmedAhRiskFailure:
+        raise ValueError('AH exit requires its complete typed confirmation witness')
+    w = witness.five_second
+    from .strategy_followthrough_failure import FollowThroughFailure
+    if type(w) is not FollowThroughFailure:
+        raise ValueError('AH exit requires its exact five-second witness')
+    original = FollowThroughFailureInput(
+        w.boundary_ms, w.first_held_boundary_ms, w.reference_ask, w.initial_stop,
+        w.boundary_ms, w.completed_close_int, True, w.macd_line, w.macd_signal,
+        w.bid, w.ask, w.quote_age_us, 1.0, False,
+    )
+    actual = confirmed_ah_risk_failure(ConfirmedAhRiskFailureInput(
+        original, witness.completed_ten_second_boundary_ms, True,
+        witness.ten_second_macd_line, witness.ten_second_macd_signal,
+    ))
+    if actual != witness:
+        raise ValueError('AH witness does not satisfy both pinned producer observations')
+
+
+def confirmed_ah_exit_intent(witness, financial, *, session_date, source_entry_intent_id):
+    """Only the existing Portfolio/OMS path may execute this prepared intent."""
+    validate_confirmed_ah_witness(witness)
+    UUID(source_entry_intent_id)
+    if (type(financial) is not StrategyOneFinancialView
+            or not financial.account_id or not financial.assignment_id or not financial.ticker
+            or not isfinite(financial.position_quantity) or financial.position_quantity <= 0
+            or financial.pending_exit):
+        raise ValueError('AH exit requires exact held financial authority')
+    w = witness.five_second
+    at = datetime.combine(session_date, time(4), ZoneInfo('America/New_York')) + timedelta(milliseconds=w.boundary_ms)
+    identity = f'strategy-34-confirmed-ah-exit:{session_date}:{financial.account_id}:{financial.assignment_id}:{financial.ticker}:{source_entry_intent_id}:{w.boundary_ms}'
+    return StrategyIntent(
+        intent_id=str(uuid5(NAMESPACE_URL, identity)), ticker=financial.ticker,
+        event_time=at.astimezone(timezone.utc), action='exit',
+        quantity=float(financial.position_quantity), reference_price=w.bid,
+        urgency='urgent', outside_rth=True, reason=REASON, metadata={},
+        execution_policy=ExecutionPolicy(
+            policy_id='strategy-adaptive_urgent', name=ExecutionPolicyName.ADAPTIVE_URGENT,
+            envelope=ExecutionEnvelope(persist_until_cancelled=True),
+            partial_fill_policy=PartialFillPolicy.COMPLETE_REMAINDER, quote_source='qmd',
+        ),
+    )
