@@ -394,6 +394,32 @@ def attached_v4_client(client=None):
     return client
 
 
+def test_cold_prefix_propagates_one_native_price_source_without_recompiling(monkeypatch):
+    from test_backtest_strategy_first_price_source import authority, Bars
+    from src.backend.backtest_strategy_first_price_source import load_first_price_source
+    from src.backend.backtest_strategy_certified_price_break import (
+        compile_certified_price_break_plan, CertifiedPriceReadbackAuthority,
+    )
+    client = attached_v4_client()
+    item = batch()
+    publish_base_typed_batch_v4(client, item)
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    source = CertifiedPriceReadbackAuthority(item.run_id, plan)
+    calls = []
+    original = CertifiedPriceReadbackAuthority.resolve
+    def resolve(self, run_id, entries, intents):
+        calls.append((self, run_id))
+        return original(self, run_id, entries, intents)
+    monkeypatch.setattr(CertifiedPriceReadbackAuthority, 'resolve', resolve)
+    prefix = load_verified_v4_prefix(client, item.run_id, first_price_source=source)
+    assert prefix.last_sequence == item.last_sequence
+    assert calls == [(source, item.run_id)]
+    with pytest.raises(RuntimeError):
+        load_verified_v4_prefix(client, item.run_id,
+            first_price_source=CertifiedPriceReadbackAuthority('foreign-run', plan))
+
+
 def test_v4_cold_verified_prefix_reads_bounded_typed_event_page():
     client = attached_v4_client()
     item = batch()

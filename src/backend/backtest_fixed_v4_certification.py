@@ -942,9 +942,12 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_certified_price_brea
  'backend/backtest_strategy_rising_momentum.py': {'__module__': 'c0f4a1084b29088a1df63cdeb5c1b82b3d467fe2a657ee08ab37037bd6a6f245'},
  'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': '6052575cad7fd5533699c01a24f6064bd46b41adda9d1894b1f0c2a5b009a076'},
  'trading_runtime/arte_first_price_entry_v4.py': {'__module__': '25814ab52e0f12f6b715fe4b6645a916a20ab79fa349ccb3035ee9978a6ca4ac'},
- 'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': 'c2412e149a3c679aa2a25da26e44f97f31ad1fd1d7784c998f1a9b2be9ee354b'},
+ 'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': '06f940dc0e7738ae6cf53f5ba66166dffb9c008665320027a42c820010e2266b'},
  'trading_runtime/arte_journal_commit_v4.py': {'_load_verified_details_v4': '2d6dfc6f94e11c67b3efbe8d9d0be3a2142dd24b7d19f7d1b1ddfedccf9df224',
+                                               '_publish_sealed_batch_v4': '44ce5dcbdf17238e81d161b8e7b6966a353cd14e705afc4ab425c79c3e5404bb',
                                                '_publish_typed_batch_v4': '9981d915f2cb40c663efdb34ba9be67ecb3c0a27a007f502b6dcd7e5d9a0b309',
+                                               'load_verified_commit_v4': '9b16b94a3c1b35982287f20ff0f20fea8e757ef853e8c9ee170926c23ec474aa',
+                                               'load_verified_v4_prefix': 'db1fa615449d0f9e0930be8e1d0467d6f69d229415399fd8889f4d99ba0070a3',
                                                'publish_strategy_one_entry_batch_v4': '800a0ff809c6a13fd0fdfc1e8c07d6808b46ebbcbbad939535a5b35f20c68cc6'},
  'trading_runtime/arte_journal_compound_v4.py': {'_publication_kwargs': 'cd9861f91250b8c6fafcfe3b71046f28a755a4d0e5088f982066a2593b027a3e',
                                                  '_unit_children': 'b056eebe79d91a7585c2f527d43406bfca534f187da58ec9053432f5b74f7809',
@@ -952,7 +955,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_certified_price_brea
  'trading_runtime/arte_journal_writer.py': {'V4StrategyOneEntryBatch': '2e44c0950e38ef417797537036765f189a8e5ebf81fb266f6356f659bf14bbd5',
                                             'v4_journal_write_tables': 'a919688a16df38aa4afc3dcd4f66f6dc32a5de001c219e46095448a55f6e09c4',
                                             'v4_storage_contracts': '7c1b11a2d545a47b7c5ef7ae679b395cd2f7fa219a7521074c81da8c3c362703'},
- 'trading_runtime/arte_rising_momentum_entry_v4.py': {'__module__': '1200f085e5e7a96cbcb6e42a7b983d7fe7c6e7831502a0e5e042b5b771b6cad8'},
+ 'trading_runtime/arte_rising_momentum_entry_v4.py': {'__module__': '4cc8d592c82aa20510d237af7e195eff68eda98ccc716bb0f1a189c1c5249452'},
  'trading_runtime/arte_strategy_one_entry_journal.py': {'load_committed_strategy_one_entry_page': '2d8aa98ea7e35f470886674b304d47a2d30b13a77c7fd6253772d93b3c4caa67',
                                                         'load_committed_strategy_one_source': 'de7bcf1c8de31360e3dc9852fdb612a547b51984570e0c4606bacd68d25e4e9f'},
  'trading_runtime/strategy_initial_momentum_growth.py': {'__module__': '68d66854b639e67a5d3734aaaf1a61ce015963d6841746a59c4ad85390761606'},
@@ -964,7 +967,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_certified_price_brea
                                                          'project_manager_snapshot': '4b5430ff961f0dd032bca0afd6268d3cade24df73bb3f088f3b63c5278ab8c7f',
                                                          'publish_manager_snapshot': '030d4064f5d3fad34f47b02dda6ff29e7f7d0f0ae7f9ffc97f689a1b8825393b'},
  'trading_runtime/strategy_rising_momentum_entry.py': {'__module__': '26f5e82b33a5e7e4126fd703d9748ca3ee14b3696df4f6b9eddb79db96e05ea7'},
- 'trading_runtime/strategy_rising_momentum_witness.py': {'__module__': 'b92d67cc4b37d46b9852d424d267a4ecceeb91be490a822431d36496840904ce'},
+ 'trading_runtime/strategy_rising_momentum_witness.py': {'__module__': 'eb9e1e83de2b6c96d9288b8f3ae75ee4bdbcd9ff6d863c454f84335a9a5b7a2c'},
  'trading_runtime/strategy_strong_ten_second_momentum.py': {'__module__': '70071f8696a3675e4a7344328d65327a84b539cb7e03f09c4fae49542a74dba5'}}
 
 

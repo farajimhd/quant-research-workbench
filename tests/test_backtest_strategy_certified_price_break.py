@@ -176,6 +176,9 @@ def test_reviewed_source_accepts_current_guard_and_rejects_its_removal(tmp_path)
     ('backend/backtest_strategy_one_coordinator.py',
      'decision = propose_certified_price_entry(initial_momentum_plan,',
      'decision = propose_certified_price_entry(None,'),
+    ('trading_runtime/arte_journal_commit_v4.py',
+     'batch_id=batch_id, first_price_source=first_price_source)',
+     'batch_id=batch_id)'),
 ])
 def test_reviewed_source_rejects_price_authority_or_dispatch_changes(tmp_path, relative, before, after):
     from pathlib import Path
@@ -216,3 +219,40 @@ def test_projection_carries_exact_normalized_row_and_independent_source_authorit
             first_price=replace(bound.first_price, current_close_int=102)), **kwargs)
     with pytest.raises(ValueError, match='month differs'):
         project_certified_price_entry(plan, bound, **{**kwargs, 'event_month':'2026-09-01'})
+
+
+def test_twenty_current_initial_and_price_companions_bind_same_native_entry_graph():
+    from uuid import UUID, uuid5, NAMESPACE_URL
+    from test_strategy_one_intent import _proposal
+    from src.backend.backtest_strategy_certified_price_break import bind_certified_price_break_proposal, project_certified_price_entry
+    from src.trading_runtime.arte_rising_momentum_entry_v4 import project_rising_momentum_entry, seal_rising_momentum_rows
+    from src.trading_runtime.arte_initial_momentum_entry_v4 import project_initial_momentum_entry, seal_initial_momentum_rows
+    from src.trading_runtime.arte_first_price_entry_v4 import seal_first_price_rows
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    original = replace(_proposal(), strategy_number=19, boundary_ms=41000,
+        momentum=parent.momentum.lookup('AAA', 41000), initial_momentum=parent.selection_witness('AAA', 41000))
+    proposal = bind_certified_price_break_proposal(plan, original)
+    scope = dict(run_id='price-graph', batch_id=str(UUID(int=11)), event_month='2026-08-01')
+    parent_id = str(UUID(int=12))
+    kwargs = dict(scope, parent_record_id=parent_id)
+    current = project_rising_momentum_entry(proposal, **kwargs)
+    initial = project_initial_momentum_entry(proposal, proposal.initial_momentum, **kwargs)
+    price = project_certified_price_entry(plan, proposal, **kwargs)
+    identity = (f'strategy-20:2026-08-18:{proposal.assignment_id}:{proposal.account_id}:'
+                f'AAA:41000:{proposal.episode_start_ms}')
+    intent_id = str(uuid5(NAMESPACE_URL, identity))
+    entry = dict(scope, parent_record_id=parent_id, strategy_number=20,
+        assignment_id=proposal.assignment_id, boundary_ms=41000, episode_start_ms=proposal.episode_start_ms)
+    intent = dict(scope, record_id=parent_id, action='enter_long', reason='strategy_one_entry',
+        intent_id=intent_id, ticker='AAA', account_id=proposal.account_id)
+    event = dict(scope, record_id=parent_id, category='strategy', entity_type='strategy_intent',
+        entity_id=intent_id, account_id=proposal.account_id, event_time='2026-08-18T08:00:41+00:00')
+    assert len(seal_rising_momentum_rows(current, (entry,), (intent,), (event,))) == 2
+    assert len(seal_initial_momentum_rows(initial, (entry,), (intent,), (event,), current)) == 2
+    assert len(seal_first_price_rows(price.rows, (entry,), (intent,), (event,), (price.authority,))) == 1
+    for family in ('current', 'initial'):
+        changed = tuple(dict(row, strategy_number=19) for row in (current if family == 'current' else initial))
+        with pytest.raises(ValueError):
+            seal_initial_momentum_rows(changed if family == 'initial' else initial,
+                (entry,), (intent,), (event,), changed if family == 'current' else current)

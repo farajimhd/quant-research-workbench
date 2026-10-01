@@ -211,7 +211,8 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
 
 
 def load_verified_v4_prefix(client, run_id: str, *,
-                            max_commits: int = 100_000) -> V4CommittedPrefix | None:
+                            max_commits: int = 100_000,
+                            first_price_source=None) -> V4CommittedPrefix | None:
     """Recompute every detail seal and require one complete contiguous chain.
 
     This SELECT-only cold path is intentionally outside the execution loop.
@@ -255,7 +256,7 @@ def load_verified_v4_prefix(client, run_id: str, *,
                 or batch_id in seen_ids):
             raise RuntimeError("V4 committed run chain is forked or not contiguous")
         verified, _ = load_verified_commit_v4(
-            client, run_id=run_id, batch_id=batch_id)
+            client, run_id=run_id, batch_id=batch_id, first_price_source=first_price_source)
         if verified != row:
             raise RuntimeError("V4 cold commit differs from ordered run inventory")
         prior_id = batch_id
@@ -404,6 +405,7 @@ def load_verified_commit_v4(
     client, *, run_id: str, batch_id: str,
     max_rows_per_family: int = 65_536,
     first_price_source=None,
+    first_price_authorities: tuple = (),
 ) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
@@ -436,7 +438,8 @@ def load_verified_commit_v4(
         client, run_id=run_id, batch_id=identity,
         family_rows=family_rows, max_rows_per_family=max_rows_per_family,
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
-        prior_batch_id=str(commit["prior_batch_id"]), first_price_source=first_price_source)
+        prior_batch_id=str(commit["prior_batch_id"]), first_price_source=first_price_source,
+        first_price_authorities=first_price_authorities)
     try:
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:
@@ -1806,7 +1809,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         f"{filters}LIMIT 2 FORMAT JSONEachRow")
     if existing_commits:
         existing, _ = load_verified_commit_v4(
-            client, run_id=batch.run_id, batch_id=batch.batch_id)
+            client, run_id=batch.run_id, batch_id=batch.batch_id,
+            first_price_authorities=first_price_authorities)
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
         dispatch.assert_next_batch(

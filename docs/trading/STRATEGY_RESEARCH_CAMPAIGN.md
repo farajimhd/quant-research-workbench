@@ -2162,3 +2162,22 @@ paths, companion graph and transport. These are implementation checks, not
 Strategy20 portfolio runs. Numbered release, intent admission, complete typed
 projection/recovery, operational storage and actual development backtests remain
 pending. No new profit result, backend restart or holdout tuning occurred.
+
+### Strategy20 companion graph and explicit cold-prefix context
+
+The normalized current and first-setup momentum families now recognize staged20,
+with current strict10% and premarket first strict50% inherited from19. Their
+graph seals require matching numbered parents, source clocks and selection
+receipts. A source-bound20 fixture successfully seals those four MACD rows
+alongside its one integer price companion; cross-number substitutions fail.
+This extends evidence representation, not the installed intent/number registry.
+
+The cold-prefix reader accepts one explicit cached certified price source and
+forwards it to every commit verifier. Idempotent publication readback forwards
+the original independent entry authorities. Neither route permits companions
+to authenticate their own source values. The source guard now seals these
+readback entry points and the full updated momentum modules.206 focused checks
+passed across source certification, companion graph, journal/compound transport
+and19 regression paths. Actual20 persisted portfolio runs remain pending; warm
+writer snapshots, entry-page/manager recovery, intent admission, numbered release
+and operational storage still require integration before publication.
