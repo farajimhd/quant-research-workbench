@@ -1,4 +1,5 @@
 from datetime import date
+from copy import deepcopy
 from pathlib import Path
 import numpy as np
 import pytest
@@ -71,3 +72,32 @@ def test_fused_execution_gru_value_and_gradient_equivalence(device):
     assert tuple(p.state_dict())==keys
     assert torch.allclose(serial.memory,fused.memory,atol=2e-6,rtol=2e-6)
     assert torch.allclose(gradient,p.action_gru.weight_ih.grad,atol=2e-6,rtol=2e-6)
+
+
+@pytest.mark.parametrize('device',DEVICES)
+def test_chunk_projection_preserves_prefix_values_and_encoder_gradients(device):
+    from research.rl_trading.v6.rollout import _initialize,_advance,prepare_candle_chunk,PolicyFrame
+    start=bounds(date(2026,8,18))[0]+1_000_000
+    rng=np.random.default_rng(17)
+    scalar=rng.normal(0,.1,(12,37)).astype(np.float32)
+    scalar[:,8]=np.abs(scalar[:,8]);scalar[:,35:]=1
+    clocks=np.tile(np.arange(start,start+6_000_000,1_000_000,dtype=np.int64),2)
+    bank=SessionBank(Path('fixture'),{'offsets':{'A':[0,6],'B':[6,12]}},clocks,
+        scalar,np.zeros((12,2,5,11),np.float32))
+    session=PackedSession(date(2026,8,18),'train',Path('fixture'),'fixture',bank,None,('A','B'))
+    frames=[PolicyFrame(e.close_us,e.listing_index,e.bank_row,()) for e in session.candle_events()]
+    serial=RankedBracketActorCritic(width=8,config=MarketAttentionConfig(top_r=2)).to(device)
+    batched=deepcopy(serial)
+    state,_=_initialize(serial,session,torch.device(device));other,_=_initialize(batched,session,torch.device(device))
+    prepared=prepare_candle_chunk(batched,session,frames,torch.device(device))
+    losses=[];parallel=[]
+    # Only consume the prefix, despite later projected candles being resident.
+    for frame,projection in zip(frames[:3],prepared[:3]):
+        _advance(serial,state,session,frame,torch.device(device))
+        _advance(batched,other,session,frame,torch.device(device),prepared=projection)
+        assert torch.allclose(state.encoded,other.encoded,atol=2e-6,rtol=2e-6)
+        losses.append(state.encoded.square().sum());parallel.append(other.encoded.square().sum())
+    sum(losses).backward();sum(parallel).backward()
+    for (name,a),(_,b) in zip(serial.encoder.named_parameters(),batched.encoder.named_parameters()):
+        if a.grad is not None:
+            assert torch.allclose(a.grad,b.grad,atol=3e-6,rtol=3e-6),name
