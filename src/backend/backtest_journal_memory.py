@@ -42,6 +42,8 @@ class BacktestMemoryJournal:
         self._followthrough_intents: dict[str, Any] = {}
         self._profit_giveback_exits: dict[str, Any] = {}
         self._profit_giveback_intents: dict[str, Any] = {}
+        self._confirmed_ah_exits: dict[str, Any] = {}
+        self._confirmed_ah_intents: dict[str, Any] = {}
         self._entry_assignments: dict[str, str] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
@@ -273,6 +275,50 @@ class BacktestMemoryJournal:
     def assignment_for_intent(self, intent_id):
         with self._lock:
             return self._entry_assignments.get(intent_id)
+
+    def append_confirmed_ah_exit(self, *, intent, witness, financial,
+                                 source_entry_intent_id, session_date,
+                                 strategy_id, strategy_revision):
+        """Retain the exact two-timeframe source for future native publication.
+
+        This command-side cache is not persistence or installed execution
+        authority. The native publisher must project and fence this source.
+        """
+        from src.trading_runtime.strategy_confirmed_ah_failure_exit import confirmed_ah_exit_intent
+        expected = confirmed_ah_exit_intent(
+            witness, financial, session_date=session_date,
+            source_entry_intent_id=source_entry_intent_id,
+        )
+        if (strategy_id != 'early-squeeze-strategy'
+                or type(strategy_revision) is not int or strategy_revision != 34
+                or intent != expected):
+            raise ValueError('AH confirmation journal requires exact Strategy 34 factory authority')
+        source = (intent, witness, financial, source_entry_intent_id, session_date)
+        with self._lock:
+            existing_assignment = self._entry_assignments.get(source_entry_intent_id)
+            if existing_assignment is not None and existing_assignment != financial.assignment_id:
+                raise ValueError('AH confirmation changed original entry assignment')
+            prior = self._confirmed_ah_intents.get(intent.intent_id)
+            if prior is not None:
+                record, previous = prior
+                if previous != source:
+                    raise ValueError('AH confirmation retry changed immutable witness')
+                return record
+            record = self.append(
+                run_id=self.run_id, category='strategy', entity_type='strategy_intent',
+                entity_id=intent.intent_id, account_id=financial.account_id,
+                event_time=intent.event_time,
+                payload={**intent.payload(), 'strategy_id': strategy_id,
+                         'strategy_revision': strategy_revision},
+            )
+            self._entry_assignments[source_entry_intent_id] = financial.assignment_id
+            self._confirmed_ah_intents[intent.intent_id] = (record, source)
+            self._confirmed_ah_exits[record.record_id] = source
+            return record
+
+    def confirmed_ah_exit_for_record(self, record_id):
+        with self._lock:
+            return self._confirmed_ah_exits.get(record_id)
 
     def append_profit_giveback_exit(self, *, intent, witness, source_entry_intent_id,
                                    arm_reference, account_id, strategy_id,

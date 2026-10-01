@@ -403,3 +403,21 @@ def test_confirmation_worker_commit_retry_and_cold_readback(monkeypatch):
     client.tables[CONFIRMED_AH_FAILURE.name][0]['ten_second_macd_signal'] += 0.01
     with pytest.raises(RuntimeError, match='row hash'):
         load_verified_v4_prefix(client, run)
+
+
+def test_memory_journal_retains_exact_confirmation_and_idempotent_retry():
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    witness, financial, args, intent, row = prepared_case()
+    journal = BacktestMemoryJournal(run_id=row['run_id'])
+    values = dict(intent=intent, witness=witness, financial=financial, **args,
+                  strategy_id='early-squeeze-strategy', strategy_revision=34)
+    record = journal.append_confirmed_ah_exit(**values)
+    assert journal.append_confirmed_ah_exit(**values) is record
+    assert journal.confirmed_ah_exit_for_record(record.record_id) == (
+        intent, witness, financial, args['source_entry_intent_id'], args['session_date'])
+    assert journal.assignment_for_intent(args['source_entry_intent_id']) == financial.assignment_id
+    changed = replace(witness, ten_second_macd_line=witness.ten_second_macd_line - .001)
+    with pytest.raises(ValueError, match='retry changed'):
+        journal.append_confirmed_ah_exit(**dict(values, witness=changed))
+    with pytest.raises(ValueError, match='Strategy 34'):
+        journal.append_confirmed_ah_exit(**dict(values, strategy_revision=33))
