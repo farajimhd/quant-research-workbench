@@ -1605,3 +1605,93 @@ publish the unique immutable 18 configuration; execute and cold-audit all four
 certified $10,000 extended-hours sessions. AH still requires prior-day V7 seed
 and regular-session warmup. No Strategy 18 publication, backtest, P&L or target
 achievement is claimed yet. No service restart was needed during integration.
+
+### Strategy 18: pinned publication and actual four-session campaign
+
+Source `1174cc640ac8f13f63fe59ba163e7a657501285b` was committed,
+pushed and verified clean in local and workstation reproduction checkouts.
+Only the missing `arte.trading_initial_momentum_entry_v4` companion was
+created, after the `commit-v4` layout planner confirmed that no other table
+was missing. Its explicit storage policy is `live_market_ssd`; existing
+contract placement passed preflight. Exact runner grants were reconciled
+without rotating its credentials. The empty table had no active parts before
+writers. Installation/grant receipt: runtime
+`strategy18-initial-companion-install-and-grants-v1.json`, SHA256
+`407f7fcbdea07b62a859e93981b3f5b91166a28505d04bb6646a4665fc1c5986`.
+
+Published 1,006 typed nodes under unique revision
+`strategy-one-18:c05b441d-c5cc-4ac6-a4a1-50bac086d16b`.
+Payload hash `f1a2b7347021fab5139658571ca462b238829e63751eb517e386d2d2fe5c26db`;
+publication certificate
+`253862ca7654c739efbe99638923b8a8adc8183936593d35909c50564ab4a346`;
+source fingerprint
+`0d9d50958dd53fb67e6207902f3cfbe950fb8aa5409786c8861f84106e742dc1`;
+fixed-v4 projection certificate
+`a8156c8092c43c1c5f0cedb1e4f6af2996f546231768a333cdff39406437a6d0`.
+
+All four actual app-route runs completed from the pinned checkout and were
+cold-read into `strategy18_reports_v4`. Each started with $10,000 and retained
+certified LGHL exclusion. PM traded only 04:00–09:30 ET; AH traded only
+16:00–20:00 ET. The unchanged AH authority uses certified prior-session V7
+seeds and completed intraday V7 intervals; flat financial start does not
+simulate regular-session trades. No routine services restart was performed,
+following the user's latest instruction while away from the office.
+
+| Session | Run ID | Positions | Net P&L | Broker-observed max drawdown | Net change versus 17 |
+|---|---|---:|---:|---:|---:|
+| Aug 18 PM | `e25439d8-2e46-4ac3-8bea-a3c158eb4b9b` | 15 | +$791.24 | $850.44 | +$132.06 |
+| Aug 19 PM | `19577114-c655-4b8e-890b-3559ee729198` | 12 | -$80.60 | $1,567.36 | +$579.56 |
+| Aug 18 AH | `5c058462-a0c9-4962-a4e9-70e7e0bcf52c` | 5 | +$664.30 | $400.97 | +$609.87 |
+| Aug 19 AH | `753b9e69-b5a4-4914-9d97-89041ac69cd0` | 4 | +$1,060.06 | $332.41 | +$1,009.78 |
+
+Actual total net is **+$2,434.99**, with **3/4** sessions meeting +$500.
+The goal remains active: Aug 19 PM still fails. Its twelve positions comprise
+one +$1,596.50 YJ winner and eleven losses; reducing false starts while
+preserving the large move is the next research concern. Compared with 17,
+marked drawdown improved in three sessions but slightly worsened on Aug 18
+PM. Broker marks remain asynchronous and can be stale without age evidence;
+these extrema are not synchronized liquidation-value drawdown.
+
+Runtime campaign: `strategy18-four-session-campaign-v1.json`.
+Comparison: `strategy18-four-session-comparison-v1.json`, SHA256
+`3ed4f2be0f6aed841df018158c8e7a875c6241723ae2ad88922ab3f3af8506e1`.
+Both development dates remain exploratory; no independent validation or
+repeatable-edge claim is made. The independent committed-entry audit below
+recompiles first-setup selection and checks exact producer observations and
+actual companion part placement.
+
+The completed entry audit passed **36/36** typed proposals and filled
+positions. It reconstructed the certified source population and native
+first-setup selection at each run's exact horizon, compared all three stored
+selection/parent seals, and checked both first/current completed 1s/10s
+observations against producer Arrow Float64 values bit-for-bit. Recent BOS,
+activation episode, source attempt and market token also passed. Actual
+companion cardinality is **72 rows / 36 parents**. The designated journal
+storage preflight and metadata reads verified **4 active parts / 72 rows**, all
+on `live_market_ssd`, with the exact table policy.
+
+Audit receipt: `strategy18-actual-entry-source-audit-v1.json`, SHA256
+`36c566b9b2fc43c89e1aeaa0e3c84906a4ef5c18ef3959a7f19451a3b9f875ce`.
+Sorted entry-review table: `strategy18-entry-audit-v1.md`, SHA256
+`3018d36b3e1bd23c1bf234ccdfbe3d982c5dbde33454b689ac8d928710154b5d`.
+Float remains unavailable because there is no dedicated historical as-of
+reference reader; no current float is substituted.
+
+The first diagnostic reconstruction unnecessarily resealed LGHL's empty
+candidate set. Production correctly retains the original source seal when an
+exclusion removes no candidate rows. Exact anchor clocks/values already
+matched; reproducing that existing scope contract resolved the seal mismatch.
+The market-only SELECT wrapper also correctly rejected a system-metadata
+query; the audit then used the existing journal storage-preflight authority
+for those fixed metadata reads. No trading code, backtest or grant requirement
+was weakened, and all four actual runs remained completed.
+
+A subsequent original-proposal risk-distance screen is retained as
+`strategy18-original-proposal-risk-screen-v1.json`, SHA256
+`8c34963496c3dea101211ab9d4c6c67ee1ee7558904561f5471b013515264e8e`.
+Maximum initial stop distances of 2–10% reject the sole large Aug 19 PM YJ
+winner and both Aug 19 AH winners; this is not a useful uniform next rule.
+These saved-position filters are descriptive only, not counterfactual P&L.
+Continue from immutable Strategy 18 and investigate remaining false starts
+without losing the large moves. No new agents or services were started in this
+campaign step; all task-owned backtest, audit and screen subprocesses finished.
