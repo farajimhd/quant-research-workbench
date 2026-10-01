@@ -28,7 +28,7 @@ def _head():
     }
 
 
-@pytest.mark.parametrize("number", range(1, 19))
+@pytest.mark.parametrize("number", range(1, 20))
 def test_history_preserves_number_identity_without_claiming_audited_review(monkeypatch, number):
     def rows(_client, sql):
         if "trading_run_v1 AS r" in sql:

@@ -1797,3 +1797,40 @@ all four actual sessions. Strategy18 remains the newest published release and
 continues to meet 3/4 targets. No services restarted. Two existing workers
 completed four bounded assignments; no new agents, nested agents, worker
 failures or interruptions. All root diagnostic subprocesses finished.
+
+### Strategy19 runtime admission and cold-source integration
+
+Strategy19 now dispatches through the numbered Backtest runtime, static/native
+first-selection plan, source-bound scalar entry factory, normalized current
+and first companions, direct/compound commit verification, cold entry pages,
+manager snapshots/recovery, immutable configuration registry and saved history.
+Its only trading change remains PM first-setup strict50% growth; AH first and
+all current entries retain strict10%, with inherited first-minute exits and
+other Strategy18 sizing/protection/session rules. No new table or schema.
+
+Review found an omitted19 branch in cold manager restoration; it now validates
+the exact original first selection and scoped growth before state mutation.
+New tests exercise qualified/weak manager recovery, exact Float64 cold entries,
+cross-number companion rejection, original selection tokens, strict thresholds,
+AH preservation, runtime rejection before portfolio admission, and inclusive
+60s failure eligibility. Source mutation tests reject weakened50%, expanded AH
+scope and substituting current indices for immutable first indices.
+
+Reviewed AST seals include the two new whole modules and manager snapshot
+projection. Receipts are `strategy19-reviewed-source-seals-v1.json` (SHA256
+`9a801e76e6ffac4a773c64d358da53a0da11e67554a7be1d5af9ec4da3ae7a2e`)
+and `strategy19-manager-seal-review-v1.json`. Projection certification19:
+`e76d7b58867e8ee58a3220e852b8a18372eb10ef4a2551430a6e0b436d3db45b`.
+Existing unsupported-number fixtures now use20; source-mutation fixtures match
+the exact installed19 routes and retain rejection assertions. A transient
+PowerShell fixture-edit error was repaired from the unchanged committed originals
+using exact replacements; focused post-repair validation passed136 tests.
+The initial broad run (1113 passed /15 failed) was retained; failures covered
+stale fixture literals and a source seal changed during the run. Final broader
+validation follows before publication. Existing18 clean source remains immutable.
+Two reused workers completed; no fresh/nested agents or interruptions. No service
+restart, Strategy19 publication or actual19 P&L claim at this integration stage.
+
+Final integration validation: **1130 passed in 86.60s**; log retained as
+strategy19-broad-validation-v2.log. All root subprocesses finished. Next is
+clean source pin, immutable publication and four actual extended-session runs.

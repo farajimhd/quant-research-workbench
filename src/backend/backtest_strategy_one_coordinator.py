@@ -68,14 +68,16 @@ async def run_strategy_one_proposals(
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
-    if strategy_number in (13, 14, 15, 16, 17, 18):
+    if strategy_number in (13, 14, 15, 16, 17, 18, 19):
         from src.backend.backtest_strategy_rising_momentum import CertifiedRisingMomentumPlan
         if (not isinstance(momentum_plan, CertifiedRisingMomentumPlan)
                 or momentum_plan.source_build_id != entry.source_build_id):
             raise ValueError("Strategy 13 coordinator lacks certified momentum source")
-    if strategy_number == 18:
+    if strategy_number in (18, 19):
         from src.backend.backtest_strategy_initial_momentum import CertifiedInitialMomentumPlan
-        if (type(initial_momentum_plan) is not CertifiedInitialMomentumPlan
+        from src.backend.backtest_strategy_initial_momentum_growth import CertifiedInitialMomentumGrowthPlan
+        expected_type = CertifiedInitialMomentumPlan if strategy_number == 18 else CertifiedInitialMomentumGrowthPlan
+        if (type(initial_momentum_plan) is not expected_type
                 or initial_momentum_plan.entry is not entry
                 or initial_momentum_plan.momentum is not momentum_plan):
             raise ValueError("Strategy 18 coordinator lacks certified first-setup selection")
@@ -162,9 +164,9 @@ async def run_strategy_one_proposals(
                 candidate, fact, activation, current,
                 strategy_number=strategy_number,
                 momentum=(momentum_plan.lookup(fact.ticker, fact.boundary_ms)
-                          if strategy_number in (13, 14, 15, 16, 17, 18) and momentum_plan is not None else None),
+                          if strategy_number in (13, 14, 15, 16, 17, 18, 19) and momentum_plan is not None else None),
                 initial_momentum=(initial_momentum_plan.selection_witness(fact.ticker, fact.boundary_ms)
-                                  if strategy_number == 18 else None),
+                                  if strategy_number in (18, 19) else None),
                 reentry=(await timed("strategy_one_reentry", reentry_witness(current, candidate))
                          if current.completed_entries and reentry_witness is not None
                          else None))

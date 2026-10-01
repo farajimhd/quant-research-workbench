@@ -107,7 +107,7 @@ def compile_static_entry_gate(
                | (~bos).astype(np.uint8) * MISSING_COMPLETED_BOS
                | (~support).astype(np.uint8) * MISSING_BOS_SUPPORT
                | (~protection).astype(np.uint8) * MISSING_INITIAL_PROTECTION)
-    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18):
+    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
         # Shape (candidate_count,): compare original sealed episode clocks.
         # The completed opening bucket belongs to the preceding session.
         boundaries = np.fromiter((fact.boundary_ms for fact in facts), dtype=np.int64)
@@ -116,7 +116,7 @@ def compile_static_entry_gate(
             ((starts > 0) & (boundaries < 19_500_000))
             | ((starts > 43_200_000) & (boundaries < 57_000_000))))
         reasons |= (~same_session).astype(np.uint8) * SESSION_ACTIVATION_REQUIRED
-    if strategy_number in (12, 13, 14, 15, 16, 17, 18):
+    if strategy_number in (12, 13, 14, 15, 16, 17, 18, 19):
         from src.trading_runtime.strategy_recent_bos_entry import recent_bos_entry_mask
         # Existing sealed scalar clocks become aligned (N,) arrays once.
         # Missing breaks use zero and retain the ordinary missing-BOS bit.
@@ -124,7 +124,7 @@ def compile_static_entry_gate(
             (fact.bos_break_boundary_ms or 0 for fact in facts), dtype=np.int64)
         recent = recent_bos_entry_mask(boundaries, break_boundaries)
         reasons |= (~recent).astype(np.uint8) * RECENT_BOS_REQUIRED
-    if strategy_number in (13, 14, 15, 16, 17, 18):
+    if strategy_number in (13, 14, 15, 16, 17, 18, 19):
         from src.backend.backtest_strategy_rising_momentum import CertifiedRisingMomentumPlan
         if (not isinstance(momentum_plan, CertifiedRisingMomentumPlan)
                 or momentum_plan.source_build_id != candidates.source_build_id
@@ -134,9 +134,11 @@ def compile_static_entry_gate(
         if np.any((reasons == 0) & ~momentum_plan.requested_mask):
             raise ValueError("Strategy 13 momentum requests omit base-eligible candidates")
         reasons |= (~momentum_plan.eligible_mask(strategy_number)).astype(np.uint8) * RISING_MOMENTUM_REQUIRED
-    if strategy_number == 18:
+    if strategy_number in (18, 19):
         from src.backend.backtest_strategy_initial_momentum import CertifiedInitialMomentumPlan
-        if (type(initial_momentum_plan) is not CertifiedInitialMomentumPlan
+        from src.backend.backtest_strategy_initial_momentum_growth import CertifiedInitialMomentumGrowthPlan
+        expected_type = CertifiedInitialMomentumPlan if strategy_number == 18 else CertifiedInitialMomentumGrowthPlan
+        if (type(initial_momentum_plan) is not expected_type
                 or initial_momentum_plan.candidates is not candidates
                 or initial_momentum_plan.entry is not entry
                 or initial_momentum_plan.momentum is not momentum_plan):

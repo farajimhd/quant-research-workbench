@@ -52,7 +52,7 @@ def strategy_one_entry_intent(
     if (not isinstance(proposal, StrategyOneEntryProposal)
             or not isinstance(session_date, date)
             or isinstance(session_date, datetime)
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
             or type(proposal.boundary_ms) is not int
             or not 0 < proposal.boundary_ms <= 57_600_000
             or proposal.boundary_ms % 100
@@ -67,12 +67,12 @@ def strategy_one_entry_intent(
             or not 0 < proposal.initial_stop < proposal.reference_ask
             < proposal.initial_target):
         raise ValueError("Strategy 1 intent needs an exact numbered proposal and session")
-    if proposal.strategy_number in (12, 13, 14, 15, 16, 17, 18):
+    if proposal.strategy_number in (12, 13, 14, 15, 16, 17, 18, 19):
         from .strategy_recent_bos_entry import recent_bos_entry
         if not recent_bos_entry(boundary_ms=proposal.boundary_ms,
                                 bos_break_boundary_ms=proposal.bos_break_boundary_ms):
             raise ValueError("Strategy 12 entry requires recent supported BOS")
-    if proposal.strategy_number in (13, 14, 15, 16, 17, 18):
+    if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19):
         from .strategy_rising_momentum_witness import numbered_momentum_entry
         if (not numbered_momentum_entry(proposal.momentum, proposal.strategy_number)
                 or proposal.momentum.ticker != proposal.ticker
@@ -80,7 +80,7 @@ def strategy_one_entry_intent(
             raise ValueError("Strategy 13 entry requires rising completed momentum")
     elif proposal.momentum is not None:
         raise ValueError("Old numbered entry cannot carry Strategy 13 momentum witness")
-    if proposal.strategy_number == 18:
+    if proposal.strategy_number in (18, 19):
         from .strategy_initial_strong_momentum import (
             validate_initial_momentum_selection, initial_strong_momentum_entry,
         )
@@ -88,6 +88,10 @@ def strategy_one_entry_intent(
                                            episode_start_ms=proposal.episode_start_ms)
         if not initial_strong_momentum_entry(proposal.momentum, proposal.initial_momentum.initial):
             raise ValueError("Strategy 18 entry requires strong initial completed momentum")
+        if proposal.strategy_number == 19:
+            from .strategy_initial_momentum_growth import first_setup_momentum_growth_entry
+            if not first_setup_momentum_growth_entry(proposal.initial_momentum.initial.first_setup):
+                raise ValueError("Strategy 19 entry requires premarket first-setup 50pct growth")
     elif proposal.initial_momentum is not None:
         raise ValueError("Old numbered entry cannot carry initial momentum selection")
     boundary = (datetime.combine(session_date, time(4), tzinfo=_NEW_YORK)

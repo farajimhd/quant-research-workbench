@@ -1,4 +1,4 @@
-"""Normalized first-setup observations and source-plan receipts for Strategy18.
+"""Normalized first-setup observations and source-plan receipts for Strategy18/19.
 
 These rows preserve the compiler-selected anchor and its three plan seals.
 Scalar restoration verifies sources and eligibility; it cannot independently
@@ -54,24 +54,32 @@ def decode_initial_momentum_row(row):
     return result
 
 
-def _selection(current, selection):
+def _selection(current, selection, strategy_number=18):
+    if type(strategy_number) is not int or strategy_number not in (18, 19):
+        raise ValueError("Initial momentum strategy number differs")
     if type(selection) is not InitialMomentumSelectionWitness:
         raise ValueError('Initial momentum requires exact typed selection plan seals')
     validate_initial_momentum_selection(current, selection,
         episode_start_ms=getattr(selection.initial, 'episode_start_ms', None))
     if not initial_strong_momentum_entry(current, selection.initial):
         raise ValueError('Initial momentum requires strong first and current setups')
+    if strategy_number == 19:
+        from .strategy_initial_momentum_growth import first_setup_momentum_growth_entry
+        if not first_setup_momentum_growth_entry(selection.initial.first_setup):
+            raise ValueError('Strategy 19 requires premarket first-setup 50pct growth')
 
 
 def project_initial_momentum_entry(proposal, initial, *, run_id, batch_id,
                                    parent_record_id, event_month):
     if type(proposal) is not StrategyOneEntryProposal:
         raise ValueError('Initial momentum requires exact typed entry proposal')
-    if type(proposal.strategy_number) is not int or proposal.strategy_number != 18:
+    if type(proposal.strategy_number) is not int or proposal.strategy_number not in (18, 19):
         if initial is not None:
             raise ValueError('Old entry cannot carry initial momentum companions')
         return ()
-    _selection(proposal.momentum, initial)
+    _selection(proposal.momentum, initial, proposal.strategy_number)
+    if proposal.strategy_number == 19 and initial != proposal.initial_momentum:
+        raise ValueError('Strategy 19 initial momentum differs from original selection tokens')
     anchor = initial.initial
     first = anchor.first_setup
     if (proposal.ticker != proposal.momentum.ticker
@@ -86,7 +94,7 @@ def project_initial_momentum_entry(proposal, initial, *, run_id, batch_id,
     return tuple({
         'record_id': str(uuid5(NAMESPACE_URL, f'{parent}:initial-momentum:{observation.resolution_ms}')),
         'parent_record_id': parent, 'run_id': run_id, 'event_month': month.isoformat(),
-        'batch_id': batch, 'strategy_number': 18, 'ticker': proposal.ticker,
+        'batch_id': batch, 'strategy_number': proposal.strategy_number, 'ticker': proposal.ticker,
         'boundary_ms': proposal.boundary_ms, 'episode_start_ms': anchor.episode_start_ms,
         'first_setup_boundary_ms': first.boundary_ms, 'resolution_ms': observation.resolution_ms,
         'source_build_id': first.source_build_id, 'source_attempt_id': first.source_attempt_id,
@@ -99,17 +107,21 @@ def project_initial_momentum_entry(proposal, initial, *, run_id, batch_id,
     } for observation in first.observations)
 
 
-def restore_initial_momentum(rows, *, ticker, boundary_ms, episode_start_ms, current_momentum):
+def restore_initial_momentum(rows, *, ticker, boundary_ms, episode_start_ms, current_momentum, strategy_number=None):
     validate_momentum_witness(current_momentum)
     if len(rows) != 2 or {row['resolution_ms'] for row in rows} != {1000, 10000}:
         raise ValueError('Initial momentum requires exact two observations')
     ordered = sorted(rows, key=lambda row: row['resolution_ms'])
     first = ordered[0]
+    if strategy_number is None:
+        strategy_number = first['strategy_number']
+    if type(strategy_number) is not int or strategy_number not in (18, 19):
+        raise ValueError('Initial momentum strategy number differs')
     identity = ('parent_record_id', 'run_id', 'event_month', 'batch_id', 'strategy_number',
                 'ticker', 'boundary_ms', 'episode_start_ms', 'first_setup_boundary_ms',
                 'source_build_id', 'source_attempt_id', 'market_plan_token',
                 'candidate_plan_token', 'entry_plan_token', 'selection_token')
-    if (type(first['strategy_number']) is not int or first['strategy_number'] != 18
+    if (type(first['strategy_number']) is not int or first['strategy_number'] != strategy_number
             or first['ticker'] != ticker or first['boundary_ms'] != boundary_ms
             or first['episode_start_ms'] != episode_start_ms
             or current_momentum.ticker != ticker or current_momentum.boundary_ms != boundary_ms
@@ -127,7 +139,7 @@ def restore_initial_momentum(rows, *, ticker, boundary_ms, episode_start_ms, cur
     selection = InitialMomentumSelectionWitness(
         InitialStrongMomentumWitness(episode_start_ms, witness),
         first['candidate_plan_token'], first['entry_plan_token'], first['selection_token'])
-    _selection(current_momentum, selection)
+    _selection(current_momentum, selection, strategy_number)
     return selection
 
 
@@ -139,7 +151,7 @@ def seal_initial_momentum_rows(rows, entries, intents, events, current_momentum_
     if any('content_hash' in source and source['content_hash'] != row['content_hash']
            for source, row in zip(rows, sealed)):
         raise ValueError('Initial momentum scalar content seal changed')
-    eligible_entries = [row for row in entries if row['strategy_number'] == 18]
+    eligible_entries = [row for row in entries if row['strategy_number'] in (18, 19)]
     required = {row['parent_record_id']: row for row in eligible_entries}
     parents = {row['record_id']: row for row in intents if row['reason'] == 'strategy_one_entry'}
     source_events = {row['record_id']: row for row in events}
@@ -148,8 +160,8 @@ def seal_initial_momentum_rows(rows, entries, intents, events, current_momentum_
             or len(source_events) != len(events)
             or len({row['record_id'] for row in sealed}) != len(sealed)
             or len(sealed) != 2 * len(required)
-            or any(row['parent_record_id'] not in required or row['strategy_number'] != 18 for row in sealed)
-            or any(row['strategy_number'] == 18 and row['parent_record_id'] not in required
+            or any(row['parent_record_id'] not in required or row['strategy_number'] not in (18, 19) for row in sealed)
+            or any(row['strategy_number'] in (18, 19) and row['parent_record_id'] not in required
                    for row in current_momentum_rows)):
         raise ValueError('Initial momentum has missing, extra, duplicate or old entry companions')
     for parent, entry in required.items():
@@ -160,7 +172,7 @@ def seal_initial_momentum_rows(rows, entries, intents, events, current_momentum_
         if (intent is None or event is None or intent['action'] != 'enter_long'
                 or event['category'] != 'strategy' or event['entity_type'] != 'strategy_intent'
                 or event['entity_id'] != intent['intent_id'] or event['account_id'] != intent['account_id']
-                or any(row['strategy_number'] != 18 or row['run_id'] != entry['run_id']
+                or any(row['strategy_number'] != entry['strategy_number'] or row['run_id'] != entry['run_id']
                        or row['batch_id'] != entry['batch_id'] or row['event_month'] != entry['event_month']
                        for row in (*selected, *current_rows))
                 or any(intent[name] != entry[name] or event[name] != entry[name]
@@ -169,12 +181,13 @@ def seal_initial_momentum_rows(rows, entries, intents, events, current_momentum_
         current = restore_rising_momentum(current_rows, ticker=intent['ticker'],
                                           boundary_ms=entry['boundary_ms'])
         restore_initial_momentum(selected, ticker=intent['ticker'], boundary_ms=entry['boundary_ms'],
-                                 episode_start_ms=entry['episode_start_ms'], current_momentum=current)
+                                 episode_start_ms=entry['episode_start_ms'], current_momentum=current,
+                                 strategy_number=entry['strategy_number'])
         at = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
         at = at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc)
         local = at.astimezone(ZoneInfo('America/New_York'))
         expected_at = datetime.combine(local.date(), datetime.min.time(), ZoneInfo('America/New_York')) + timedelta(hours=4, milliseconds=entry['boundary_ms'])
-        identity = (f"strategy-18:{local.date().isoformat()}:{entry['assignment_id']}:"
+        identity = (f"strategy-{entry['strategy_number']}:{local.date().isoformat()}:{entry['assignment_id']}:"
                     f"{intent['account_id']}:{intent['ticker']}:{entry['boundary_ms']}:"
                     f"{entry['episode_start_ms']}")
         if at != expected_at or intent['intent_id'] != str(uuid5(NAMESPACE_URL, identity)):

@@ -85,27 +85,27 @@ class NumberedFixedStrategyContract:
 
     @property
     def allows_session_exit(self) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
     @property
     def allows_adds(self) -> bool:
-        return self.strategy_number not in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        return self.strategy_number not in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
     @property
     def allows_completed_30s_trailing(self) -> bool:
-        return self.strategy_number not in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        return self.strategy_number not in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
     @property
     def allows_target_escalation(self) -> bool:
-        return self.strategy_number not in (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        return self.strategy_number not in (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
     @property
     def caps_entry_at_reference_ask(self) -> bool:
-        return self.strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        return self.strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
     @property
     def allows_followthrough_failure_exit(self) -> bool:
-        return self.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        return self.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
     def entry_allowed(self, boundary_ms: int) -> bool:
         return (self.strategy_number == 1 or 0 < boundary_ms < 19_500_000
@@ -113,22 +113,22 @@ class NumberedFixedStrategyContract:
 
     def activation_allowed(self, boundary_ms: int, episode_start_ms: int) -> bool:
         """Strategy 3 requires an episode born in this extended session."""
-        if self.strategy_number not in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18):
+        if self.strategy_number not in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
             return True
         return (0 < episode_start_ms <= boundary_ms < 19_500_000
                 or 43_200_000 < episode_start_ms <= boundary_ms < 57_000_000)
 
     def acquisition_cutoff(self, boundary_ms: int) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18) and (
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19) and (
             19_500_000 <= boundary_ms <= 19_800_000 or 57_000_000 <= boundary_ms <= 57_600_000)
 
     def liquidation_due(self, boundary_ms: int) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18) and (
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19) and (
             19_740_000 <= boundary_ms <= 19_800_000 or 57_300_000 <= boundary_ms <= 57_600_000)
 
 
 def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
-    if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18):
+    if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
         raise ValueError("No installed numbered fixed Backtest contract")
     return NumberedFixedStrategyContract(number)
 
@@ -140,7 +140,7 @@ def resolve_numbered_fixed_strategy(strategy_id: str, revision: int) -> Numbered
 
 
 def is_numbered_fixed_strategy(strategy_id: str, revision: int) -> bool:
-    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
 
 _SESSION_EXIT_REASONS = MappingProxyType({
@@ -153,6 +153,7 @@ _SESSION_EXIT_REASONS = MappingProxyType({
     14: "strategy_fourteen_session_exit", 15: "strategy_fifteen_session_exit",
     16: "strategy_sixteen_session_exit", 17: "strategy_seventeen_session_exit",
     18: "strategy_eighteen_session_exit",
+    19: "strategy_nineteen_session_exit",
 })
 
 

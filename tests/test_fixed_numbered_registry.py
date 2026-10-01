@@ -52,3 +52,17 @@ def test_registered_fixed_executor_and_number_cannot_be_replaced_or_unregistered
         register_numbered_strategy(replace(changed, approved_digest=changed.digest()))
     with pytest.raises(ValueError, match="installed numbered registry seal"):
         verify_installed_strategy_two_release({"contract": release.canonical_payload(), "approved_digest": "0" * 64})
+
+
+def test_nineteen_inherits_eighteen_execution_capabilities_and_session_authority():
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy, numbered_session_exit_reason
+    from src.trading_runtime.strategy_registry import numbered_strategy_parent
+    child = numbered_fixed_strategy(19)
+    parent = numbered_fixed_strategy(18)
+    assert numbered_strategy_parent(19) == 18
+    for name in ('allows_session_exit', 'allows_adds', 'allows_completed_30s_trailing', 'allows_target_escalation',
+                 'caps_entry_at_reference_ask', 'allows_followthrough_failure_exit'):
+        assert getattr(child, name) == getattr(parent, name)
+    assert numbered_session_exit_reason(19) == 'strategy_nineteen_session_exit'
+    with pytest.raises(ValueError, match='No installed'):
+        numbered_fixed_strategy(20)

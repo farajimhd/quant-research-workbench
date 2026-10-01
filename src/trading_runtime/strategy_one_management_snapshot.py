@@ -212,6 +212,13 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
     sources = []
     for key, proposal in state.submitted:
         account, assignment, ticker = key
+        if proposal.strategy_number == 19:
+            from .arte_initial_momentum_entry_v4 import _selection
+            _selection(proposal.momentum, proposal.initial_momentum, 19)
+            if (proposal.momentum.ticker != proposal.ticker
+                    or proposal.momentum.boundary_ms != proposal.boundary_ms
+                    or proposal.initial_momentum.initial.episode_start_ms != proposal.episode_start_ms):
+                raise ValueError("Strategy 19 manager source differs from initial selection")
         if (not 0 < proposal.boundary_ms <= state.boundary_ms
                 or proposal.episode_start_ms > proposal.boundary_ms
                 or not proposal.target_level_id or not proposal.bos_support_level_id
@@ -274,7 +281,7 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
                 position_high_hash=_digest([row["content_hash"] for row in highs]),
                 closed_position_count=len(closed),
                 closed_position_hash=_digest([row["content_hash"] for row in closed]))
-    if first_held or any(proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18) for _, proposal in state.submitted):
+    if first_held or any(proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19) for _, proposal in state.submitted):
         seal.update(first_held_count=len(first_held),
                     first_held_hash=_digest([row["content_hash"] for row in first_held]))
     return ManagerSnapshotRows(
@@ -509,7 +516,7 @@ def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneMan
     """
     from .arte_strategy_one_entry_journal import load_committed_strategy_one_entry_page
     wanted = {(key, proposal.boundary_ms): proposal for key, proposal in state.submitted
-              if proposal.strategy_number in (13, 14, 15, 16, 17, 18)}
+              if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19)}
     if not wanted:
         return state
     found, after = {}, 0
