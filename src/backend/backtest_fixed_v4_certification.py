@@ -939,7 +939,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_initial_momentum.py'
  'backend/backtest_strategy_rising_momentum.py': {'__module__': 'c0f4a1084b29088a1df63cdeb5c1b82b3d467fe2a657ee08ab37037bd6a6f245'},
  'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': '6052575cad7fd5533699c01a24f6064bd46b41adda9d1894b1f0c2a5b009a076'},
  'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': 'c2412e149a3c679aa2a25da26e44f97f31ad1fd1d7784c998f1a9b2be9ee354b'},
- 'trading_runtime/arte_journal_commit_v4.py': {'_load_verified_details_v4': '5ecb505e6141a9eddc09108e4148137028f8ef4b1af5cea46d54146b99ad80fa',
+ 'trading_runtime/arte_journal_commit_v4.py': {'_load_verified_details_v4': '2d6dfc6f94e11c67b3efbe8d9d0be3a2142dd24b7d19f7d1b1ddfedccf9df224',
                                                '_publish_typed_batch_v4': '9981d915f2cb40c663efdb34ba9be67ecb3c0a27a007f502b6dcd7e5d9a0b309',
                                                'publish_strategy_one_entry_batch_v4': '800a0ff809c6a13fd0fdfc1e8c07d6808b46ebbcbbad939535a5b35f20c68cc6'},
  'trading_runtime/arte_journal_compound_v4.py': {'_publication_kwargs': 'cd9861f91250b8c6fafcfe3b71046f28a755a4d0e5088f982066a2593b027a3e',

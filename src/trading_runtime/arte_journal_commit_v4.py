@@ -403,6 +403,7 @@ def verify_commit_v4(
 def load_verified_commit_v4(
     client, *, run_id: str, batch_id: str,
     max_rows_per_family: int = 65_536,
+    first_price_source=None,
 ) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
@@ -435,7 +436,7 @@ def load_verified_commit_v4(
         client, run_id=run_id, batch_id=identity,
         family_rows=family_rows, max_rows_per_family=max_rows_per_family,
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
-        prior_batch_id=str(commit["prior_batch_id"]))
+        prior_batch_id=str(commit["prior_batch_id"]), first_price_source=first_price_source)
     try:
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:
@@ -448,6 +449,7 @@ def _load_verified_details_v4(
     family_rows: Sequence[Mapping], max_rows_per_family: int,
     batched_readback: bool = False, prior_batch_id: str | None = None,
     first_price_authorities: tuple = (),
+    first_price_source=None,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
@@ -563,6 +565,12 @@ def _load_verified_details_v4(
                                  related_rows.get("trading_strategy_intent_v1", ()),
                                  related_rows.get("trading_event_v1", ()),
                                  related_rows.get(MOMENTUM.name, ()))
+        if first_price_source is not None:
+            from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+            if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_authorities:
+                raise ValueError("Cold first-price readback requires one certified source authority")
+            first_price_authorities = first_price_source.resolve(run_id, children,
+                related_rows.get("trading_strategy_intent_v1", ()))
         seal_first_price_rows(related_rows.get(FIRST_PRICE.name, ()), children,
             related_rows.get("trading_strategy_intent_v1", ()),
             related_rows.get("trading_event_v1", ()), first_price_authorities)

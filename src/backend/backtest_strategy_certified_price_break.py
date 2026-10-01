@@ -101,6 +101,54 @@ def compile_certified_price_break_plan(source):
     return CertifiedInitialPriceBreakPlan(source, eligible, token)
 
 
+@dataclass(frozen=True, slots=True)
+class CertifiedPriceReadbackAuthority:
+    """Reuse one independently compiled source plan across cold journal batches.
+
+    Journal rows supply identity keys only. Prices, attempts, selection and
+    content tokens always come from the certified plan, never the companion.
+    """
+    run_id: str
+    plan: CertifiedInitialPriceBreakPlan
+
+    def __post_init__(self):
+        if (type(self.run_id) is not str or not self.run_id
+                or type(self.plan) is not CertifiedInitialPriceBreakPlan):
+            raise ValueError('Price readback requires exact run and certified plan')
+
+    def resolve(self, run_id, entries, intents):
+        from src.trading_runtime.arte_first_price_entry_v4 import FirstPriceEntryAuthority
+        if run_id != self.run_id:
+            raise ValueError('Price readback differs from certified run')
+        parents = {row['record_id']: row for row in intents}
+        if len(parents) != len(intents):
+            raise ValueError('Price readback has duplicate intent parents')
+        result = []
+        seen = set()
+        month = self.plan.source.market.sessions[0][:7] + '-01'
+        for row in entries:
+            if row['strategy_number'] != 20:
+                continue
+            parent = row['parent_record_id']
+            intent = parents.get(parent)
+            if (type(row['strategy_number']) is not int or parent in seen
+                    or intent is None or row['run_id'] != run_id
+                    or intent['run_id'] != run_id or str(row['event_month']) != month
+                    or intent['batch_id'] != row['batch_id']
+                    or intent['action'] != 'enter_long'
+                    or intent['reason'] != 'strategy_one_entry'):
+                raise ValueError('Price readback has unrelated entry identity')
+            key = (intent['ticker'], row['boundary_ms'])
+            selection = self.plan.selection_witness(*key)
+            if row['episode_start_ms'] != selection.initial.episode_start_ms:
+                raise ValueError('Price readback differs from native episode')
+            result.append(FirstPriceEntryAuthority(parent,
+                self.plan.momentum.lookup(*key), selection,
+                self.plan.price_witness(*key), self.plan.source.token))
+            seen.add(parent)
+        return tuple(result)
+
+
 def bind_certified_price_break_proposal(plan, proposal):
     """Stage a20 proposal from the exact admitted19 source; cannot submit it.
 

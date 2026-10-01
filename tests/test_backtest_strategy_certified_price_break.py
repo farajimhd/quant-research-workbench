@@ -8,6 +8,39 @@ from src.backend.backtest_strategy_first_price_source import load_first_price_so
 from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan
 
 
+def test_cold_price_authority_rebuilds_from_native_plan_and_rejects_changed_rows():
+    from test_arte_first_price_entry_v4 import graph
+    from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+    from src.trading_runtime.arte_first_price_entry_v4 import seal_first_price_rows, project_first_price_entry
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    source = CertifiedPriceReadbackAuthority('price-run', plan)
+    _, entries, intents, events, _ = graph()
+    current = plan.momentum.lookup('AAA', 41000)
+    selection = plan.selection_witness('AAA', 41000)
+    rows = project_first_price_entry(current, selection, plan.price_witness('AAA', 41000),
+        price_source_token=plan.source.token, run_id='price-run',
+        batch_id=entries[0]['batch_id'], parent_record_id=entries[0]['parent_record_id'],
+        event_month='2026-08-01')
+    rebuilt = source.resolve('price-run', entries, intents)
+    assert rebuilt[0].current == current and rebuilt[0].selection == selection
+    assert rebuilt[0].price_source_token == plan.source.token
+    assert seal_first_price_rows(rows, entries, intents, events, rebuilt)
+    changed = (dict(rows[0], current_close_int=102),)
+    with pytest.raises(ValueError):
+        seal_first_price_rows(changed, entries, intents, events, rebuilt)
+    with pytest.raises(ValueError, match='certified run'):
+        source.resolve('another-run', entries, intents)
+    with pytest.raises(ValueError, match='outside admitted'):
+        source.resolve('price-run', (dict(entries[0], boundary_ms=42000),), intents)
+    with pytest.raises(ValueError, match='native episode'):
+        source.resolve('price-run', (dict(entries[0], episode_start_ms=30001),), intents)
+    with pytest.raises(ValueError, match='duplicate intent'):
+        source.resolve('price-run', entries, intents * 2)
+    with pytest.raises(ValueError, match='unrelated entry'):
+        source.resolve('price-run', entries * 2, intents)
+
+
 def test_later_entry_price_witness_uses_original_first_clock_and_bars_attempt():
     market, parent = authority()
     source = load_first_price_source(market, parent, client=Bars())
