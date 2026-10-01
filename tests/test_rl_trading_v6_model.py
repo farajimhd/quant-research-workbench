@@ -4,6 +4,41 @@ from research.rl_trading.v6.model import (ActualCandleEncoder,
                                           BracketActionDecoder, BracketPolicy)
 
 
+def test_classification_heads_share_normalization_and_emit_raw_logits():
+    decoder = BracketActionDecoder(8)
+    captured = {}
+    hooks = []
+    for name in ('hold', 'enter', 'exit', 'stop', 'target'):
+        head = getattr(decoder, name+'_head')
+        hooks.append(head.register_forward_pre_hook(
+            lambda module, args, name=name: captured.update({name:args[0].detach()})))
+        with torch.no_grad():
+            head.weight.zero_(); head.bias.fill_(3.)
+    logits, sizes, stops, targets = decoder(torch.randn(3, 8),
+        torch.tensor([1000., 1000., 0., .1, 2., 0., 0.]),
+        torch.tensor([1]), torch.ones(1, 11),
+        enter_allowed=torch.ones(3, dtype=torch.bool),
+        exit_allowed=torch.ones(1, dtype=torch.bool),
+        stop_allowed=torch.ones(1, dtype=torch.bool),
+        target_allowed=torch.ones(1, dtype=torch.bool))
+    for hook in hooks:
+        hook.remove()
+    assert torch.equal(logits, torch.full_like(logits, 3.))
+    for values in captured.values():
+        torch.testing.assert_close(values.mean(-1), torch.zeros_like(values.mean(-1)), atol=1e-6, rtol=0)
+        torch.testing.assert_close(values.square().mean(-1), torch.ones_like(values.mean(-1)), atol=1e-4, rtol=0)
+    assert ((sizes > 0) & (sizes < 1)).all()
+
+
+def test_head_normalization_does_not_tanh_saturate_large_contrasts():
+    decoder = BracketActionDecoder(8)
+    values = torch.tensor([100., -100., 10., -10., 2., -2., 1., -1.], requires_grad=True)
+    normalized = decoder._head_features(values)
+    assert normalized.abs().max() > 1.
+    normalized[0].backward()
+    assert torch.isfinite(values.grad).all() and values.grad.abs().sum() > 1e-4
+
+
 def test_actual_candle_training_serving_parity_with_clock_gaps():
     torch.manual_seed(17)
     model = ActualCandleEncoder(width=8).eval()

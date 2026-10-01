@@ -173,7 +173,9 @@ def main(argv=None):
     torch.backends.cudnn.benchmark=False
     policy=RankedBracketActorCritic(config=ranking).to(device)
     optimizer=torch.optim.Adam(policy.parameters(),lr=args.learning_rate)
+    from research.rl_trading.v6.model import DECODER_VERSION
     manifest={'version':'rl-trading-v6-attention-ppo-run-1','dataset_sha256':file_hash(args.dataset),
+        'decoder_version':DECODER_VERSION,
         'ranking':asdict(ranking),'source_commit':_commit(),
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
@@ -193,6 +195,9 @@ def main(argv=None):
         parent_payload=torch.load(args.resume_from,map_location=device,weights_only=False)
         if parent_payload['manifest_hash']!=parent_manifest['hash']:
             raise ValueError('Parent checkpoint manifest mismatch')
+        if parent_manifest.get('decoder_version') != DECODER_VERSION:
+            raise ValueError('Parent decoder activation contract differs; '
+                'explicit validated migration is required before continuation')
         ignored={'run_root','teacher_lr_schedule','warmup_epochs','minimum_lr_ratio','resume_from','teacher_loss'}
         current=manifest['config']; previous={'broker_engine':'reference','compile_broker':False,
             'broker_participation':.1,'decoder_batch_size':1,**parent_manifest['config']}

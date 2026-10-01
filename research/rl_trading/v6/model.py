@@ -18,6 +18,7 @@ from research.rl_trading.v6.features import (CONTEXT_CANDLES, LEVEL_NAMES,
 
 INPUT_WIDTH = len(SCALAR_NAMES) + 2 * LEVELS_PER_SIDE * len(LEVEL_NAMES)
 HELD_FEATURE_WIDTH = 11  # Nine price/action fields plus modeled pause flag/age.
+DECODER_VERSION = 'rl-v6-consistent-layernorm-logits-v2'
 
 
 @dataclass
@@ -135,6 +136,15 @@ class BracketActionDecoder(nn.Module):
         self.stop_distance_head = nn.Linear(width, 1)
         self.target_distance_head = nn.Linear(width, 1)
 
+    def _head_features(self, values: torch.Tensor) -> torch.Tensor:
+        """Normalize only D in [...,D]; never mix tickers or observations.
+
+        All five action heads receive the same scale treatment. No tanh,
+        sigmoid or softmax bounds classification features or output logits.
+        Non-affine normalization adds no new checkpoint parameters.
+        """
+        return F.layer_norm(values, (self.width,))
+
     def forward(self, listings: torch.Tensor, account: torch.Tensor,
                 held_index: torch.Tensor, held_features: torch.Tensor,
                 *, enter_allowed: torch.Tensor, exit_allowed: torch.Tensor,
@@ -177,10 +187,10 @@ class BracketActionDecoder(nn.Module):
             held_scaled[:, :2] = torch.log1p(held_features[:, :2].clamp_min(0))
             held_scaled[:, 2] = torch.log1p(held_features[:, 2].clamp_min(0)) / 10
         context = listings.mean(dim=0) + self.account(account_scaled)
-        listed = torch.tanh(listings + context[None])  # [N,D].
-        held = torch.tanh(self.holding(torch.cat(
+        listed = self._head_features(listings + context[None])  # [N,D].
+        held = self._head_features(self.holding(torch.cat(
             (listings[held_index], held_scaled), dim=1)) + context[None])
-        logits = torch.cat((self.hold_head(context).view(1),
+        logits = torch.cat((self.hold_head(self._head_features(context)).view(1),
             self.enter_head(listed).flatten(),
             self.exit_head(held).flatten(),
             self.stop_head(held).flatten(),
@@ -222,11 +232,11 @@ class BracketActionDecoder(nn.Module):
         held_scaled[:, :, :2] = torch.log1p(held_features[:, :, :2].clamp_min(0))
         held_scaled[:, :, 2] = torch.log1p(held_features[:, :, 2].clamp_min(0))/10
         context = listings.mean(dim=1) + self.account(scaled)  # [B,D]
-        listed = torch.tanh(listings + context[:, None])  # [B,N,D]
+        listed = self._head_features(listings + context[:, None])  # [B,N,D]
         identities = held_index[:, :, None].expand(b, h, d)
-        held = torch.tanh(self.holding(torch.cat((listings.gather(1, identities),
+        held = self._head_features(self.holding(torch.cat((listings.gather(1, identities),
             held_scaled), dim=2)) + context[:, None])  # [B,H,D]
-        logits = torch.cat((self.hold_head(context), self.enter_head(listed).squeeze(-1),
+        logits = torch.cat((self.hold_head(self._head_features(context)), self.enter_head(listed).squeeze(-1),
             self.exit_head(held).squeeze(-1), self.stop_head(held).squeeze(-1),
             self.target_head(held).squeeze(-1)), dim=1)
         mask = torch.cat((torch.ones(b, 1, device=listings.device, dtype=torch.bool),
