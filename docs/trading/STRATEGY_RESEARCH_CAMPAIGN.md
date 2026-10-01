@@ -2198,3 +2198,29 @@ cache-identity guard is rejected.105 focused checks passed across warm/cold jour
 OMS observation snapshots, native price selection, companion graph and transport.
 Entry-page and manager recovery, complete typed projection, intent/release
 admission and operational storage remain pending before actual20 portfolio runs.
+
+### Strategy20 staged native intent and bounded entry recovery
+
+The source-bound staged intent constructor independently rebinds the complete20
+proposal, validates the exact certified session and inherits every19 financial
+and execution field. Only its numbered deterministic intent identity changes.
+Shared entry-evidence projection requires an explicit native source context for20.
+The ordinary runtime intent factory and installed numbered registry remain closed.
+
+Bounded entry-page recovery reads current/initial MACD and integer price companions,
+seals their full graph against the native plan, and restores the complete proposal.
+Run, batch and parent identities are mandatory independently supplied scope.
+Direct source reconstruction also compares the recovered price fields. Direct
+and compound journal round trips recover exact proposals/intents in the typed
+test client; individual source reconstruction retains its inherited exclusive-
+batch restriction. No operational table or actual portfolio backtest is installed.
+
+These round trips exposed a readback bug: canonical ClickHouse UTC DateTime64
+JSON has no offset, but the price graph requires timezone-aware events. The
+schema-aware verifier now restores the declared UTC timezone after canonical
+row-hash verification, only for20 entry graphs. Hot-input timezone validation
+is unchanged. Both publication modes reject rehashed forged price values against
+the independent source.149 focused regression checks passed across journal,
+compound/recovery,19, source guards and ordinary intent paths. Manager recovery,
+hot typed projection, runtime admission, numbered publication and operational
+storage remain pending; no new portfolio PnL or holdout tuning occurred.

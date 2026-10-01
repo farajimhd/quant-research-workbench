@@ -594,9 +594,21 @@ def _load_verified_details_v4(
                 raise ValueError("Cold first-price readback requires one certified source authority")
             first_price_authorities = first_price_source.resolve(run_id, children,
                 related_rows.get("trading_strategy_intent_v1", ()))
+        # ClickHouse JSON renders this schema's DateTime64(..., 'UTC') without
+        # an offset. These rows have already passed canonical stored-UTC hash
+        # verification; restore the declared timezone only at this read boundary.
+        price_events = related_rows.get("trading_event_v1", ())
+        if any(child['strategy_number'] == 20 for child in children):
+            normalized_events = []
+            for event in price_events:
+                clock = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
+                if clock.tzinfo is None:
+                    clock = clock.replace(tzinfo=timezone.utc)
+                normalized_events.append(dict(event, event_time=clock.isoformat()))
+            price_events = tuple(normalized_events)
         seal_first_price_rows(related_rows.get(FIRST_PRICE.name, ()), children,
             related_rows.get("trading_strategy_intent_v1", ()),
-            related_rows.get("trading_event_v1", ()), first_price_authorities)
+            tuple(price_events), first_price_authorities)
     except ValueError as exc:
         raise RuntimeError("V4 Strategy 13 momentum evidence differs from its parent") from exc
     add_parents = {str(UUID(str(row["record_id"]))): row for row in
@@ -1129,7 +1141,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or parent["action"] != "enter_long"
             or parent["protection_profile_id"]
                != "early-squeeze-fixed-stop-full-target"
-            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
             or row["boundary_ms"] != boundary_ms
             or elapsed.microseconds % 1_000
             or Decimal(str(row["frozen_gap"])) <= 0
@@ -1138,7 +1150,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or not row["assignment_id"] or not row["target_level_id"]
             or not row["bos_support_level_id"]):
         raise ValueError("V4 Strategy 1 entry evidence differs from its typed parent")
-    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18, 19):
+    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18, 19, 20):
         from .strategy_recent_bos_entry import recent_bos_entry
         if not recent_bos_entry(boundary_ms=row["boundary_ms"],
                                 bos_break_boundary_ms=row["bos_break_boundary_ms"]):

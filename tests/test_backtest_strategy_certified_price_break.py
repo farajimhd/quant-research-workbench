@@ -259,3 +259,38 @@ def test_twenty_current_initial_and_price_companions_bind_same_native_entry_grap
         with pytest.raises(ValueError):
             seal_initial_momentum_rows(changed if family == 'initial' else initial,
                 (entry,), (intent,), (event,), changed if family == 'current' else current)
+
+
+def test_recovered_price_proposal_matches_native_binding_and_rejects_resealed_forgery():
+    from uuid import UUID
+    from test_strategy_one_intent import _proposal
+    from src.backend.backtest_strategy_certified_price_break import (
+        bind_certified_price_break_proposal, project_certified_price_entry,
+        restore_certified_price_proposal, CertifiedPriceReadbackAuthority,
+    )
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    original = replace(_proposal(), strategy_number=19, boundary_ms=41000,
+        momentum=parent.momentum.lookup('AAA', 41000), initial_momentum=parent.selection_witness('AAA', 41000))
+    bound = bind_certified_price_break_proposal(plan, original)
+    packet = project_certified_price_entry(plan, bound, run_id='recovery',
+        batch_id=str(UUID(int=11)), parent_record_id=str(UUID(int=12)), event_month='2026-08-01')
+    scope = dict(parent_record_id=str(UUID(int=12)), batch_id=str(UUID(int=11)))
+    source = CertifiedPriceReadbackAuthority('recovery', plan)
+    reference = replace(bound, first_price=None, price_source_token=None)
+    assert restore_certified_price_proposal(source, reference, packet.rows, **scope) == bound
+    with pytest.raises(ValueError):
+        restore_certified_price_proposal(source, reference,
+            tuple(dict(row, current_close_int=102) for row in packet.rows), **scope)
+    with pytest.raises(ValueError, match='native source selection'):
+        restore_certified_price_proposal(source,
+            replace(reference, initial_momentum=original.initial_momentum), packet.rows, **scope)
+    with pytest.raises(ValueError, match='already carries'):
+        restore_certified_price_proposal(source, bound, packet.rows, **scope)
+    with pytest.raises(ValueError):
+        restore_certified_price_proposal(source, replace(reference, initial_stop=11.0), packet.rows, **scope)
+    for field, value in [('run_id', 'foreign-run'), ('parent_record_id', str(UUID(int=13))),
+                         ('batch_id', str(UUID(int=14))), ('event_month', '2026-09-01')]:
+        with pytest.raises(ValueError, match='requested run and entry scope'):
+            restore_certified_price_proposal(source, reference,
+                tuple(dict(row, **{field: value}) for row in packet.rows), **scope)
