@@ -421,3 +421,31 @@ def test_memory_journal_retains_exact_confirmation_and_idempotent_retry():
         journal.append_confirmed_ah_exit(**dict(values, witness=changed))
     with pytest.raises(ValueError, match='Strategy 34'):
         journal.append_confirmed_ah_exit(**dict(values, strategy_revision=33))
+
+
+def test_projector_retains_complete_confirmation_from_explicit_cached_entry_fixture():
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
+    from src.trading_runtime.arte_intent_projection import strategy_intent_batch
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+    from datetime import timedelta
+    witness, financial, args, intent, row = prepared_case()
+    journal = BacktestMemoryJournal(run_id=row['run_id'], initial_sequence=1)
+    journal.append_confirmed_ah_exit(intent=intent, witness=witness, financial=financial,
+        **args, strategy_id='early-squeeze-strategy', strategy_revision=34)
+    entry = replace(intent, intent_id=args['source_entry_intent_id'], action='enter_long',
+        reason='strategy_one_entry', reference_price=2.08, invalidation_price=1.81,
+        event_time=intent.event_time-timedelta(seconds=53))
+    entry_batch = strategy_intent_batch(entry, run_id=row['run_id'], run_month=date(2026, 8, 1),
+        account_id=financial.account_id, attempt_id=str(uuid4()), batch_id=str(uuid4()),
+        prior_batch_id=str(uuid4()), sequence=1, source_cursor='entry-fixture',
+        run_status='running', recorded_at=entry.event_time)
+    values = dict(attempt_id=entry_batch.attempt_id, run_month=date(2026, 8, 1),
+                  prior_sequence=1, prior_batch_id=entry_batch.batch_id, through_sequence=2,
+                  expected_config={'strategy_id': 'early-squeeze-strategy', 'strategy_revision': 34})
+    with pytest.raises(RuntimeError, match='original typed entry source'):
+        project_pending_backtest_v4_prefix(journal, **values)
+    units = project_pending_backtest_v4_prefix(journal, **values,
+        published_sources={entry.intent_id: (entry_batch, entry)})
+    assert len(units)==1 and type(units[0]) is V4ConfirmedAhFailureBatch
+    assert restore_confirmed_ah_failure(units[0].confirmation) == witness
