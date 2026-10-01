@@ -85,14 +85,11 @@ def test_profit_cannot_restore_without_witness_admission_or_with_resized_quantit
 def test_cold_join_routes_exact_native_source_to_profit_reader(monkeypatch):
     from src.trading_runtime import arte_oms_projection as oms
     from src.trading_runtime import arte_intent_projection as intents
-    from src.trading_runtime import numbered_fixed_strategy as numbered
     from src.trading_runtime import arte_profit_giveback_reader_v4 as reader
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
     group, source, history, reservation, decision, row = prepared()
     prefix = V4CommittedPrefix(history.run_id, 12, group.group['batch_id'],
         '2026-08-04:10000', 'running', history.committed_batch_ids)
-    # Registration is deliberately still closed; inject only that gate here.
-    monkeypatch.setattr(numbered, 'numbered_fixed_strategy', lambda number: number == 31)
     monkeypatch.setattr(oms, 'load_latest_committed_oms_groups', lambda *a, **k: (group,))
     monkeypatch.setattr(intents, 'load_committed_strategy_intent_page', lambda *a, **k: (source,))
     monkeypatch.setattr(oms, 'load_committed_oms_admission_page', lambda *a, **k: {12: reservation})

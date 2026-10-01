@@ -1,4 +1,4 @@
-"""Prepared immutable Strategy 31 declaration; executor admission stays closed."""
+"""Immutable Strategy 31 release; publication and execution preflight are separate."""
 from .strategy_registry import NumberedStrategyRelease
 from .strategy_thirty_release import release_contract as parent_release_contract
 from .strategy_profit_giveback import POLICY_ID, profit_giveback_policy_payload
@@ -30,7 +30,7 @@ BEHAVIOR = (
 
 
 def release_contract() -> NumberedStrategyRelease:
-    """Sealed declaration, not an installed executor or published approval."""
+    """Sealed source declaration; database publication is a separate approval."""
     parent = parent_release_contract()
     values = dict(number=31, executor_strategy_id=parent.executor_strategy_id,
                   executor_revision=31, evaluation_interval=parent.evaluation_interval,
@@ -44,7 +44,7 @@ def release_contract() -> NumberedStrategyRelease:
 
 
 def verify_installed_strategy_thirty_one_release(manifest):
-    """Future preflight cannot treat a prepared declaration as installed."""
+    """Require installed executor and exact immutable publication content."""
     from .strategy_registry import numbered_strategy, fixed_strategy_executor
     installed = numbered_strategy(31)
     fixed_strategy_executor(installed.executor_strategy_id, installed.executor_revision)
