@@ -42,7 +42,8 @@ def _prefix():
 
 
 @pytest.mark.parametrize('changed_market', [False, True])
-def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch, changed_market):
+@pytest.mark.parametrize('strategy_number', [20, 26])
+def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch, changed_market, strategy_number):
     from test_backtest_strategy_first_price_source import authority, Bars
     from src.backend import backtest_market_data as markets
     from src.backend import replay_run_service as service
@@ -56,7 +57,11 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
     )
     from src.backend.backtest_strategy_first_price_source import load_first_price_source
 
-    market, parent = authority()
+    if strategy_number == 26:
+        from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
+        market, parent = relaxed_authority()
+    else:
+        market, parent = authority()
     source_client = Bars()
     source_client.close = lambda: None
     pins = {'sessions': market.sessions, 'token': 'f' * 64 if changed_market else market.token,
@@ -67,7 +72,7 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
                             'initial_cash': 10_000.0, 'structure_book': ''},
              'tickers': [{'ticker': ticker} for ticker in market.tickers]}
     revision = {'revision_id': 'test-twenty-revision', 'payload': {}}
-    release = SimpleNamespace(payload={}, revision=lambda: revision)
+    release = SimpleNamespace(payload={}, revision=lambda: revision, strategy_number=strategy_number)
     calls = []
     monkeypatch.setattr(definitions, 'load_backtest_definition',
         lambda client, run, *, run_context: calls.append(('definition', run_context)) or saved)
@@ -91,7 +96,7 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
         assert full is parent.candidates and through_boundary_ms == 19_800_000
         return parent.candidates
     monkeypatch.setattr(candidates, 'project_candidate_plan', horizon)
-    context = {**_context(), 'strategy_revision': 20}
+    context = {**_context(), 'strategy_revision': strategy_number}
     if changed_market:
         with pytest.raises(ValueError, match='fenced definition'):
             review._saved_twenty_price_source(Client(), RUN, context, release)

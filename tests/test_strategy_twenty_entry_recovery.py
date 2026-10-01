@@ -48,7 +48,7 @@ class ExactBits(MemoryClient):
 
 def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
     plan = source.plan
-    original = replace(_proposal(), strategy_number=19, boundary_ms=boundary,
+    original = replace(_proposal(), strategy_number=18 if strategy_number == 26 else 19, boundary_ms=boundary,
         momentum=plan.momentum.lookup('AAA', boundary),
         initial_momentum=plan.source.parent.selection_witness('AAA', boundary))
     proposal = bind_certified_price_break_proposal(plan, original, strategy_number=strategy_number)
@@ -72,9 +72,13 @@ def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25])
+@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 26])
 def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, strategy_number):
-    market, parent = authority()
+    if strategy_number == 26:
+        from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
+        market, parent = relaxed_authority()
+    else:
+        market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     source = CertifiedPriceReadbackAuthority('twenty-cold', plan)
     first, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=strategy_number)
@@ -111,17 +115,22 @@ def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, stra
 
 
 @pytest.mark.parametrize('held', [False, True])
-def test_twenty_manager_scalar_snapshot_recovers_witnesses_from_real_typed_entry(held):
+@pytest.mark.parametrize('strategy_number', [20, 26])
+def test_twenty_manager_scalar_snapshot_recovers_witnesses_from_real_typed_entry(held, strategy_number):
     from src.backend.backtest_strategy_one_management import StrategyOneManagementState
     from src.trading_runtime.strategy_one_management_snapshot import (
         project_manager_snapshot, restore_manager_snapshot, attach_committed_momentum_sources,
     )
     from src.trading_runtime.strategy_one_position import ProtectionState
     from tests.test_strategy_thirteen_manager_sources import manager
-    market, parent = authority()
+    if strategy_number == 26:
+        from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
+        market, parent = relaxed_authority()
+    else:
+        market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     source = CertifiedPriceReadbackAuthority('twenty-manager', plan)
-    unit, proposal, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)))
+    unit, proposal, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=strategy_number)
     client = attached_v4_client(ExactBits())
     publish_strategy_one_entry_batch_v4(client, unit.base, entry_evidence=unit.entry_evidence,
         momentum_evidence=unit.momentum_evidence, initial_momentum_evidence=unit.initial_momentum_evidence,
@@ -166,16 +175,21 @@ def test_scalar_recovery_encoding_remains_bound_to_reviewed_source(tmp_path, nod
         certify_rising_momentum_entry_source(source_overrides={relative: altered})
 
 
-def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry():
+@pytest.mark.parametrize('strategy_number', [20, 26])
+def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry(strategy_number):
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
-    market, parent = authority()
+    if strategy_number == 26:
+        from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
+        market, parent = relaxed_authority()
+    else:
+        market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     source = CertifiedPriceReadbackAuthority(str(UUID(int=101)), plan)
-    _, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)))
+    _, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=strategy_number)
     journal = BacktestMemoryJournal(run_id=source.run_id)
     entry_args = dict(intent=intent, proposal=proposal, session_date=date(2026, 8, 18),
-        account_id=proposal.account_id, strategy_id='early-squeeze-strategy', strategy_revision=20)
+        account_id=proposal.account_id, strategy_id='early-squeeze-strategy', strategy_revision=strategy_number)
     with pytest.raises(ValueError, match='native price source'):
         journal.append_strategy_one_intent(**entry_args)
     foreign = CertifiedPriceReadbackAuthority(str(UUID(int=103)), plan)
@@ -189,7 +203,7 @@ def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry():
     journal.append_strategy_one_intent(**entry_args, first_price_source=source)
     scope = dict(attempt_id=str(UUID(int=102)), run_month=date(2026, 8, 1),
         prior_sequence=0, through_sequence=1,
-        expected_config={'strategy_id': 'early-squeeze-strategy', 'strategy_revision': 20})
+        expected_config={'strategy_id': 'early-squeeze-strategy', 'strategy_revision': strategy_number})
     with pytest.raises(ValueError, match='native price source'):
         project_pending_backtest_v4_prefix(journal, **scope)
     with pytest.raises(ValueError, match='differs from its run'):
@@ -306,14 +320,19 @@ def test_manager_writer_transports_native_source_through_actual_queue(monkeypatc
 
 
 @pytest.mark.parametrize('kind', ('broker_match', 'oms_observation', 'evidence', 'campaign'))
-def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeypatch, kind):
+@pytest.mark.parametrize('strategy_number', [20, 26])
+def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeypatch, kind, strategy_number):
     import importlib
     from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
     from src.backend.backtest_market_data import market_day_boundary
     from src.trading_runtime import arte_journal_writer as writer_module
     from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
     from src.trading_runtime.domain import TradingMode
-    market, parent = authority()
+    if strategy_number == 26:
+        from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
+        market, parent = relaxed_authority()
+    else:
+        market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     source = CertifiedPriceReadbackAuthority(str(UUID(int=302)), plan)
     day = date(2026, 8, 18)
@@ -362,7 +381,8 @@ def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeyp
 
 
 @pytest.mark.parametrize('kind', ('broker_match', 'oms_observation', 'evidence', 'campaign'))
-def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind):
+@pytest.mark.parametrize('strategy_number', [24, 26])
+def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind, strategy_number):
     import importlib
     from types import SimpleNamespace
     from src.backend.backtest_market_data import market_day_boundary
@@ -370,10 +390,14 @@ def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind):
     from src.trading_runtime import arte_journal_projection
     from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
     from src.trading_runtime.domain import TradingMode
-    market, parent = authority()
+    if strategy_number == 26:
+        from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
+        market, parent = relaxed_authority()
+    else:
+        market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     source = CertifiedPriceReadbackAuthority(str(UUID(int=304)), plan)
-    unit, _, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=24)
+    unit, _, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=strategy_number)
     client = attached_v4_client(ExactBits())
     publish_strategy_one_entry_batch_v4(client, unit.base, entry_evidence=unit.entry_evidence,
         momentum_evidence=unit.momentum_evidence, initial_momentum_evidence=unit.initial_momentum_evidence,

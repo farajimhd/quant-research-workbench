@@ -139,7 +139,7 @@ def test_future_primitive_is_not_an_installed_strategy():
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     with pytest.raises(ValueError, match='No installed'):
         # Releases 20–25 are installed; the next staged policy is still closed.
-        numbered_fixed_strategy(26)
+        numbered_fixed_strategy(27)
 
 
 def test_available_rejected_current_still_rejects_threshold_overflow():

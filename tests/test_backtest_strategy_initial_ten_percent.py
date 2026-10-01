@@ -69,12 +69,12 @@ def test_staged_policy_cannot_bypass_installed_price_parent_authority():
     candidates, entry, momentum, _ = plans()
     relaxed = compile_initial_ten_percent_plan(candidates, entry, momentum)
     # The staged type is admitted for native price research, but missing source
-    # columns and numbered execution remain closed.
+    # columns still reject; unregistered successor execution remains closed.
     with pytest.raises(ValueError, match='six aligned native producer columns'):
         stage_initial_price_break_plan(relaxed, ())
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     with pytest.raises(ValueError, match='No installed'):
-        numbered_fixed_strategy(26)
+        numbered_fixed_strategy(27)
     policy = first_setup_ten_percent_policy_payload()
     assert policy['fraction'] == 0.10
     assert policy['changed_session_scope'] == 'premarket_only'
