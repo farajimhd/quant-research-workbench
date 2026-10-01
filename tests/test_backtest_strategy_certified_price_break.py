@@ -133,6 +133,28 @@ def test_native_proposal_binding_preserves_financial_fields_and_cannot_submit():
             initial_momentum=bound.initial_momentum))
 
 
+def test_price_financial_adapter_preserves_rejections_and_exact_source_facts():
+    from test_strategy_one_stateful import _facts
+    from src.backend.backtest_strategy_certified_price_break import propose_certified_price_entry
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    candidate, _, _, financial = _facts()
+    fact = parent.entry.lookup('AAA', 31000)
+    activation = next(row for row in parent.entry.activations if row.ticker == 'AAA')
+    decision = propose_certified_price_entry(plan, candidate, fact, activation, financial)
+    assert decision.reason == 'entry_proposed' and decision.proposal.strategy_number == 20
+    assert decision.proposal.first_price == plan.price_witness('AAA', 31000)
+    assert decision.proposal.initial_stop == fact.stop_price
+    assert decision.proposal.initial_target == fact.target_price
+    rejected = propose_certified_price_entry(plan, candidate, fact, activation,
+        replace(financial, pending_entry=True))
+    assert rejected.reason == 'entry_fill_pending' and rejected.proposal is None
+    with pytest.raises(ValueError, match='certified entry facts'):
+        propose_certified_price_entry(plan, candidate, replace(fact, stop_price=9.5), activation, financial)
+    with pytest.raises(ValueError, match='certified activation'):
+        propose_certified_price_entry(plan, candidate, fact, replace(activation, average_gap=1.0), financial)
+
+
 def test_reviewed_source_accepts_current_guard_and_rejects_its_removal(tmp_path):
     from pathlib import Path
     from src.backend.backtest_fixed_v4_certification import certify_rising_momentum_entry_source
@@ -146,6 +168,24 @@ def test_reviewed_source_accepts_current_guard_and_rejects_its_removal(tmp_path)
     changed.write_text(source.replace(guard, ''))
     with pytest.raises(ValueError, match='reviewed source authority changed'):
         certify_rising_momentum_entry_source(source_overrides={relative: changed})
+
+
+@pytest.mark.parametrize('relative,before,after', [
+    ('backend/backtest_strategy_certified_price_break.py',
+     "price_source_token=plan.source.token)", "price_source_token='f' * 64)"),
+    ('backend/backtest_strategy_one_coordinator.py',
+     'decision = propose_certified_price_entry(initial_momentum_plan,',
+     'decision = propose_certified_price_entry(None,'),
+])
+def test_reviewed_source_rejects_price_authority_or_dispatch_changes(tmp_path, relative, before, after):
+    from pathlib import Path
+    from src.backend.backtest_fixed_v4_certification import certify_rising_momentum_entry_source
+    source = (Path(__file__).parents[1] / 'src' / relative).read_text(encoding='utf-8')
+    assert before in source
+    altered = tmp_path / 'source.py'
+    altered.write_text(source.replace(before, after), encoding='utf-8')
+    with pytest.raises(ValueError, match='reviewed source authority changed'):
+        certify_rising_momentum_entry_source(source_overrides={relative: altered})
 
 
 def test_projection_carries_exact_normalized_row_and_independent_source_authority():

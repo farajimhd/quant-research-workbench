@@ -2135,3 +2135,30 @@ source/configuration guards, typed projection and cold manager snapshots.
 Writer/compound transport, numbered release admission, operational storage and
 actual20 development backtests remain pending. No backend restart or registry
 activation occurred. All test processes are terminal.
+
+### Strategy20 staged transport, native reload and financial routing
+
+Direct and compound journal transport now carry normalized first-price rows
+and independent typed source authorities. Compound batching rekeys the row's
+batch identity without changing its market witness. The optional cold-read
+source reconstructs expected witnesses from one cached certified native plan;
+journal rows provide only identity keys, never their own price authority.
+The operational table and write grants remain uninstalled. Cold-prefix and
+manager recovery still need the source context propagated through their callers.
+
+Execution preflight now builds the staged20 source plan and combines its price
+mask with the inherited full19 gate. The sequential financial adapter checks
+exact certified entry facts and activation, preserves parent financial rejections,
+and binds a20 proposal only after admission succeeds. Activation evidence is
+indexed once per plan. Coordinator checks preserve broker-before-financial order
+and carry the complete source witness. Its20 tests use an explicitly simulated
+inherited contract; the installed numbered registry still rejects20.
+
+The reviewed source guard now binds the five staged price modules and updated
+coordinator. Source-token and dispatch mutations are rejected, and the positive
+baseline certificate passes.109 focused checks passed across price source,
+native selection, financial adapter, coordinator, existing execution/stateful
+paths, companion graph and transport. These are implementation checks, not
+Strategy20 portfolio runs. Numbered release, intent admission, complete typed
+projection/recovery, operational storage and actual development backtests remain
+pending. No new profit result, backend restart or holdout tuning occurred.

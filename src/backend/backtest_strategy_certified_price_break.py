@@ -1,6 +1,6 @@
 """Source-bound Strategy20 selection; numbered runtime admission is separate."""
 from bisect import bisect_left
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from types import MappingProxyType
 from typing import Mapping
@@ -30,6 +30,7 @@ class CertifiedInitialPriceBreakPlan:
     source: CertifiedFirstPriceSource
     eligible_mask: np.ndarray
     token: str
+    _activations: Mapping = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         expected, token = _selection(self.source)
@@ -41,6 +42,11 @@ class CertifiedInitialPriceBreakPlan:
         if self.token != token:
             raise ValueError('Certified price selection content seal differs')
         object.__setattr__(self, 'eligible_mask', _frozen(self.eligible_mask))
+        activations = {(row.ticker, row.episode_start_ms): row
+                       for row in self.source.parent.entry.activations}
+        if len(activations) != len(self.source.parent.entry.activations):
+            raise ValueError('Certified price source has duplicate activation keys')
+        object.__setattr__(self, '_activations', MappingProxyType(activations))
 
     @property
     def candidates(self):
@@ -193,6 +199,32 @@ def bind_certified_price_break_proposal(plan, proposal):
     selection = plan.selection_witness(*key)
     return replace(proposal, strategy_number=20, initial_momentum=selection,
                    first_price=plan.price_witness(*key), price_source_token=plan.source.token)
+
+
+def propose_certified_price_entry(plan, candidate, fact, activation, financial, *, reentry=None):
+    """Apply the inherited sequential financial decision to a source-admitted key.
+
+    No price reads or indicator calculations occur per candidate. The cached
+    plan owns the original entry facts, first setup and current momentum. A
+    financial rejection is returned unchanged, before constructing a20 proposal.
+    """
+    from .backtest_strategy_one_stateful import propose_certified_strategy_one_entry
+    if type(plan) is not CertifiedInitialPriceBreakPlan:
+        raise ValueError('Price financial decision requires exact certified plan')
+    key = (fact.ticker, fact.boundary_ms)
+    plan._index(*key)
+    if fact != plan.entry.lookup(*key):
+        raise ValueError('Price financial decision differs from certified entry facts')
+    expected_activation = plan._activations.get((fact.ticker, fact.episode_start_ms))
+    if expected_activation is None or activation != expected_activation:
+        raise ValueError('Price financial decision differs from certified activation')
+    decision = propose_certified_strategy_one_entry(candidate, fact, activation, financial,
+        strategy_number=19, momentum=plan.momentum.lookup(*key),
+        initial_momentum=plan.source.parent.selection_witness(*key), reentry=reentry)
+    if decision.proposal is None:
+        return decision
+    return replace(decision, proposal=bind_certified_price_break_proposal(plan,
+        replace(decision.proposal, strategy_number=19)))
 
 
 @dataclass(frozen=True, slots=True)

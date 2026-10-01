@@ -15,6 +15,51 @@ from test_strategy_one_stateful import _facts
 from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
 
 
+@pytest.mark.parametrize('pending_entry', [False, True])
+def test_staged_twenty_coordinator_keeps_source_evidence_and_financial_rejections(monkeypatch, pending_entry):
+    from test_backtest_strategy_first_price_source import authority, Bars
+    from src.backend.backtest_strategy_first_price_source import load_first_price_source
+    from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan
+    from src.trading_runtime import numbered_fixed_strategy as contracts
+    original_contract = contracts.numbered_fixed_strategy
+    # Exercise staged routing with inherited execution policy. This does not
+    # register or certify Strategy20, and is not a portfolio backtest.
+    monkeypatch.setattr(contracts, 'numbered_fixed_strategy',
+        lambda number: original_contract(19 if number == 20 else number))
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    candidate, _, _, financial = _facts()
+    financial = replace(financial, pending_entry=pending_entry)
+    proposals = []
+    actions = []
+    async def noop(*_args):
+        pass
+    async def broker(work):
+        actions.append(('broker', work.boundary_ms))
+    async def views(*_args):
+        actions.append(('financial', 31000))
+        return (financial,)
+    async def proposed(value):
+        proposals.append(value)
+    scheduler = StrategyOneBoundaryScheduler(session_date='2026-08-18',
+        candidate_rows=iter((candidate,)), active_source=lambda _ticker, _after: iter(()))
+    counts = asyncio.run(run_strategy_one_proposals(scheduler, parent.entry,
+        process_broker_boundary=broker, financial_views=views,
+        on_entry_proposal=proposed, on_management=noop,
+        position_source_owned=lambda _view: False, financially_active_tickers=lambda: (),
+        finish_boundary=noop, observe_activation=noop, observe_completed_seconds=noop,
+        strategy_number=20, momentum_plan=parent.momentum, initial_momentum_plan=plan))
+    assert actions == [('broker', 31000), ('financial', 31000)]
+    assert counts.candidate_decisions == 1
+    assert counts.entry_proposals == (0 if pending_entry else 1)
+    if proposals:
+        proposal = proposals[0]
+        assert proposal.strategy_number == 20
+        assert proposal.first_price == plan.price_witness('AAA', 31000)
+        assert proposal.initial_momentum == plan.selection_witness('AAA', 31000)
+        assert proposal.price_source_token == plan.source.token
+
+
 def test_proposal_lane_uses_broker_before_financial_entry_without_order():
     candidate, fact, activation, financial = _facts()
     entry = CertifiedEntryEvidencePlan(
