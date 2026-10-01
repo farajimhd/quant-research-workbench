@@ -32,3 +32,16 @@ def test_sealer_revalidates_real_canonical_factory_and_source_route(monkeypatch,
     else:
         sealed=seal_profit_giveback_rows(object(),(row,),(parent,),(event,),prefix=prefix)
         assert len(sealed)==len(calls)==1 and len(sealed[0]['content_hash'])==64
+
+
+@pytest.mark.parametrize('change', [{'run_id':'other'},{'last_sequence':10},{'last_sequence':6},
+                                   {'status':'completed'},{'last_batch_id':'other'},{'batch_ids':()}])
+def test_current_future_or_uncommitted_prefix_cannot_seal(monkeypatch,change):
+    from dataclasses import replace
+    monkeypatch.setitem(writer._CONTRACTS,PROFIT_GIVEBACK.name,PROFIT_GIVEBACK)
+    base,row=unit()
+    parent=writer._canonical_typed_content('trading_strategy_intent_v1',dict(base.intents[0]))
+    event=writer._canonical_typed_content('trading_event_v1',dict(base.events[0]))
+    prefix=V4CommittedPrefix(base.run_id,9,base.prior_batch_id,'cursor','running',(base.prior_batch_id,))
+    with pytest.raises(ValueError,match='preceding prefix'):
+        seal_profit_giveback_rows(object(),(row,),(parent,),(event,),prefix=replace(prefix,**change))

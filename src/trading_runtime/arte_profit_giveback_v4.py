@@ -120,11 +120,20 @@ def seal_profit_giveback_rows(client, rows, intents, events, *, prefix, first_pr
     from .strategy_profit_giveback_source import load_profit_giveback_checkpoint
     from .strategy_one_stateful import StrategyOneFinancialView
     from .strategy_engine import AssignmentStatus, StrategyPermissions
+    from .arte_journal_commit_v4 import V4CommittedPrefix
     parents={str(x['record_id']):x for x in intents if x['reason']==REASON}
     event_map={str(x['record_id']):x for x in events}
     if (len(event_map)!=len(events) or len({str(x['record_id']) for x in intents})!=len(intents)
             or len(rows)!=len(parents)):
         raise ValueError('Profit exit witness is missing or extra')
+    if rows and (type(prefix) is not V4CommittedPrefix or prefix.status!='running'
+            or not prefix.batch_ids or prefix.last_batch_id!=prefix.batch_ids[-1]
+            or any(row['run_id']!=prefix.run_id
+                   or type(row['source_manager_checkpoint_sequence']) is not int
+                   or not 0<row['source_manager_checkpoint_sequence']<=prefix.last_sequence
+                   for row in rows)
+            or not events or prefix.last_sequence>=min(event['sequence'] for event in events)):
+        raise ValueError('Profit sealing requires an independently verified preceding prefix')
     result=[];seen=set()
     for row in rows:
         identity=str(row['parent_record_id'])
