@@ -164,3 +164,28 @@ def test_prepared_transport_rejects_altered_envelope(monkeypatch, target, field,
         base = replace(base, intents=(dict(base.intents[0], **{field: value}),))
     with pytest.raises(ValueError):
         V4ConfirmedAhFailureBatch(base, row)
+
+
+def test_prepared_family_graph_matches_all_parents_and_freezes_verified_shape(monkeypatch):
+    from src.trading_runtime.strategy_confirmed_ah_failure_source import validate_confirmed_ah_rows
+    _, row, parent, event, prefix, *_ = prepared_source_graph(monkeypatch)
+    result = validate_confirmed_ah_rows(None, [row], [parent], [event], verified_prefix=prefix)
+    assert dict(result[0]) == row
+    with pytest.raises(TypeError):
+        result[0]['bid'] = 2.02
+    assert validate_confirmed_ah_rows(None, [], [], [], verified_prefix=None) == ()
+
+
+@pytest.mark.parametrize('change', ['missing', 'extra', 'duplicate_parent', 'duplicate_event', 'child_id', 'extra_field'])
+def test_prepared_family_graph_rejects_incomplete_or_ambiguous_admission(monkeypatch, change):
+    from src.trading_runtime.strategy_confirmed_ah_failure_source import validate_confirmed_ah_rows
+    _, row, parent, event, prefix, *_ = prepared_source_graph(monkeypatch)
+    rows, parents, events = [row], [parent], [event]
+    if change == 'missing': rows = []
+    elif change == 'extra': rows.append(dict(row))
+    elif change == 'duplicate_parent': parents.append(dict(parent))
+    elif change == 'duplicate_event': events.append(dict(event))
+    elif change == 'child_id': row['record_id'] = str(uuid4())
+    else: row['undeclared'] = 1
+    with pytest.raises(ValueError):
+        validate_confirmed_ah_rows(None, rows, parents, events, verified_prefix=prefix)

@@ -6,9 +6,49 @@ authority to the complete new exit witness and exact factory projection.
 """
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
+from types import MappingProxyType
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .arte_confirmed_ah_failure_v4 import restore_confirmed_ah_failure
 from .strategy_confirmed_ah_failure_exit import REASON, confirmed_ah_exit_intent
+
+
+def validate_confirmed_ah_rows(
+    client, rows, intents, events, *, verified_prefix, first_price_source=None,
+):
+    """Prepared bounded family graph check, before registered typed sealing.
+
+    Stored hashes must be verified by cold readers before this function; it
+    never registers, hashes, writes, or attests producer market observations.
+    """
+    from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
+    if max(len(rows), len(intents), len(events)) > 65_536:
+        raise ValueError('AH confirmation graph exceeds its bounded family limit')
+    parents = {str(p['record_id']): p for p in intents if p['reason'] == REASON}
+    event_map = {str(e['record_id']): e for e in events}
+    if (len({str(p['record_id']) for p in intents}) != len(intents)
+            or len(event_map) != len(events) or len(rows) != len(parents)):
+        raise ValueError('AH confirmation family has missing, extra or duplicate parents')
+    expected_columns = {name for name, _ in CONFIRMED_AH_FAILURE.columns} - {'content_hash'}
+    seen, records, result = set(), set(), []
+    for row in rows:
+        if set(row) - {'content_hash'} != expected_columns:
+            raise ValueError('AH confirmation family lacks its complete scalar shape')
+        parent_id = str(row['parent_record_id'])
+        record_id = str(row['record_id'])
+        expected_id = str(uuid5(NAMESPACE_URL, f"{row['run_id']}:{parent_id}:confirmed-ah-failure"))
+        if (parent_id in seen or record_id in records
+                or parent_id not in parents or parent_id not in event_map
+                or str(UUID(record_id)) != expected_id):
+            raise ValueError('AH confirmation family lacks a unique deterministic exit child')
+        seen.add(parent_id)
+        records.add(record_id)
+        validate_confirmed_ah_source(
+            client, row, parents[parent_id], event_map[parent_id],
+            verified_prefix=verified_prefix, first_price_source=first_price_source,
+        )
+        result.append(MappingProxyType({k: v for k, v in row.items() if k != 'content_hash'}))
+    return tuple(result)
 
 
 def validate_confirmed_ah_source(
