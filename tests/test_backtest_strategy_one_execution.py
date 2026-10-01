@@ -4,6 +4,7 @@ from datetime import date
 from types import SimpleNamespace
 import threading
 import numpy as np
+import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
@@ -77,6 +78,45 @@ class _Runtime:
         self.actions.append(("broker", boundary))
         if boundary == 31_100:
             self.broker.held = False
+
+
+@pytest.mark.parametrize('strategy_number', [20, 21])
+def test_native_numbered_wrapper_advances_cutoff_and_rejects_residual_exposure(monkeypatch, strategy_number):
+    """Exercise shared session callbacks; native proposals are covered separately."""
+    actions = []
+    runtime = _Runtime(actions)
+    runtime.config.strategy_revision = strategy_number
+    evidence = _Evidence(actions)
+    manager = StrategyOneManagementRunner(runtime=runtime, evidence=evidence,
+                                         tick_for_ticker=lambda _: .01)
+    assignment = StrategyAssignment('A1', 'early-squeeze-strategy', strategy_number,
+        'DU1', 'AAA', 123, AssignmentStatus.MANAGING, StrategyPermissions(enter=True), {})
+    scheduler = StrategyOneBoundaryScheduler(session_date='2026-08-18',
+        candidate_rows=iter(()), active_source=lambda *_: iter(()))
+    entry = CertifiedEntryEvidencePlan('b' * 16, '2026-08-18', (), (), (), 'e' * 64)
+    async def advance(boundary):
+        actions.append(('clock', boundary))
+    runtime.advance_numbered_session_clock = advance
+    async def proposals(_scheduler, _entry, **callbacks):
+        assert callbacks['strategy_number'] == strategy_number
+        cutoff = SimpleNamespace(boundary_ms=19_500_000)
+        terminal = SimpleNamespace(boundary_ms=19_800_000)
+        await callbacks['observe_completed_seconds'](cutoff)
+        with pytest.raises(RuntimeError, match='residual exposure'):
+            await callbacks['finish_boundary'](terminal)
+        runtime.broker.held = False
+        await callbacks['finish_boundary'](terminal)
+        return SimpleNamespace(completed_boundaries=2)
+    async def finish(work):
+        actions.append(('finish', work.boundary_ms))
+    monkeypatch.setattr(execution, 'run_strategy_one_proposals', proposals)
+    asyncio.run(run_strategy_one_fixed_session(scheduler, entry, evidence, manager,
+        runtime=runtime, static_gate=StrategyOneStaticGate((),
+            np.array([], dtype=np.uint8), np.array([], dtype=np.int64)),
+        assignments=(assignment,), before_boundary=lambda _: asyncio.sleep(0),
+        finish_boundary=finish))
+    assert actions == [('clock', 19_500_000), ('seconds', 19_500_000),
+                       ('finish', 19_800_000), ('finish', 19_800_000)]
 
 
 def test_fixed_adapter_clears_position_after_broker_exit_on_same_boundary():

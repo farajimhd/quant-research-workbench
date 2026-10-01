@@ -2357,3 +2357,29 @@ The repair changes the approved backend fingerprint. The published20 approval
 and failed run remain immutable: operational acceptance must use the next
 numbered release rather than silently execute repaired code under20's old seal.
 No afterhours or additional development20 runs were attempted after this failure.
+
+### Strategy21 repaired historical execution release
+
+Number21 derives solely from the published20 revision above. Entry masks,
+frozen-first selection, all inherited policies, rule sets, parameters, sizing,
+costs, V7 seed/RTH warmup and exit behavior remain identical to20. The release
+binds the repaired execution source under a new immutable approval rather than
+altering20's release. Native intent identity, normalized price/momentum
+companions, direct/compound cold readback, manager snapshots, terminal audits,
+registry, reporting and history now recognize21. A rehashed20 price companion
+attached to a21 entry fails its exact numbered-identity check. Ordinary legacy
+entry intents remain closed to both native20 and21.
+
+Review also found the shared fixed-session wrapper, protection/session/failure
+memory journal and order-command projection lists still stopped at19. These
+reachable routes now explicitly admit20/21; parent financial/vector adapters
+continue to execute the exact19 financial decision before native rebinding.
+The fixed-session callback test exercises cutoff clock advancement and residual
+exposure rejection; native source/proposal publication is tested separately.
+428 focused checks passed after those final shared-route changes, including
+complete20/21 source certification and inherited configuration equality. The
+publisher's real help path and scoped diff check passed. Reviewed source receipts
+are `strategy21-reviewed-native-release-seals-v1.json` and
+`strategy21-reviewed-shared-session-seals-v2.json`. Workstation synchronization,
+immutable21 publication and actual six development-session portfolio runs are
+the next operational acceptance steps. No additional holdout tuning occurred.

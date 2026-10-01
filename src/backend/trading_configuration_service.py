@@ -5970,7 +5970,7 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
                 or dict(base.get("execution") or {}).get("tick_size")
                 != dict(dict(identity.get("parameters") or {}).get("execution") or {}).get("tick_size")):
             raise ValueError("Numbered Strategy parameters differ from its sealed inputs")
-        if identity.get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20) and base != dict(identity.get("parameters") or {}):
+        if identity.get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21) and base != dict(identity.get("parameters") or {}):
             raise ValueError("Numbered assignment parameters cannot override its release")
         # The fixed-bar coordinator owns these numbered rules. Do not invoke
         # a legacy event executor or overwrite the sealed tick with OMS defaults.

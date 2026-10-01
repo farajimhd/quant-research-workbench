@@ -46,12 +46,12 @@ class ExactBits(MemoryClient):
         return super().execute(sql)
 
 
-def prepared_entry(source, sequence, boundary, prior):
+def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
     plan = source.plan
     original = replace(_proposal(), strategy_number=19, boundary_ms=boundary,
         momentum=plan.momentum.lookup('AAA', boundary),
         initial_momentum=plan.source.parent.selection_witness('AAA', boundary))
-    proposal = bind_certified_price_break_proposal(plan, original)
+    proposal = bind_certified_price_break_proposal(plan, original, strategy_number=strategy_number)
     intent = certified_price_entry_intent(plan, proposal, session_date=date(2026, 8, 18))
     inherited = strategy_one_entry_intent(original, session_date=date(2026, 8, 18))
     assert replace(intent, intent_id=inherited.intent_id) == inherited
@@ -72,12 +72,13 @@ def prepared_entry(source, sequence, boundary, prior):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound):
+@pytest.mark.parametrize('strategy_number', [20, 21])
+def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, strategy_number):
     market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     source = CertifiedPriceReadbackAuthority('twenty-cold', plan)
-    first, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)))
-    second, second_proposal, second_intent = prepared_entry(source, 2, 41000, first.base.batch_id)
+    first, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=strategy_number)
+    second, second_proposal, second_intent = prepared_entry(source, 2, 41000, first.base.batch_id, strategy_number=strategy_number)
     client = attached_v4_client(ExactBits())
     if compound:
         publish_compound_v4(client, coalesce_v4_units((first, second)))
@@ -361,3 +362,19 @@ def test_native_twenty_terminal_cold_verification_requires_original_source(monke
     assert len(anchored) == 1
     assert load_committed_strategy_one_entry_page(
         client, prefix, first_price_source=source).entries[0].proposal == proposal
+
+
+def test_twenty_one_rejects_rehashed_twenty_price_companion():
+    from src.trading_runtime.arte_first_price_entry_v4 import seal_first_price_rows
+    market, parent = authority()
+    source = CertifiedPriceReadbackAuthority('twenty-one-cross-number',
+        compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars())))
+    unit, _, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=21)
+    original = unit.first_price_evidence[0]
+    changed = typed_row(FIRST_PRICE.name, {
+        **{key: value for key, value in original.items() if key != 'content_hash'},
+        'strategy_number': 20,
+    })
+    with pytest.raises(ValueError, match='numbered entry identity'):
+        seal_first_price_rows((changed,), unit.entry_evidence, unit.base.intents,
+                              unit.base.events, unit.first_price_authorities)

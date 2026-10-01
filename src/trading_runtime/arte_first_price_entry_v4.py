@@ -53,7 +53,10 @@ def _bind(current, selection, price):
 
 
 def project_first_price_entry(current, selection, price, *, price_source_token,
-                              run_id, batch_id, parent_record_id, event_month):
+                              run_id, batch_id, parent_record_id, event_month,
+                              strategy_number=20):
+    if type(strategy_number) is not int or strategy_number not in (20, 21):
+        raise ValueError('First price requires an installed source-bound number')
     if not _bind(current, selection, price):
         return ()
     if (type(price_source_token) is not str or not re.fullmatch('[0-9a-f]{64}', price_source_token)
@@ -67,7 +70,7 @@ def project_first_price_entry(current, selection, price, *, price_source_token,
         raise ValueError('First price event month is not a month boundary')
     return ({'record_id': str(uuid5(NAMESPACE_URL, f'{parent_record_id}:first-price:1000')),
         'parent_record_id': parent_record_id, 'run_id': run_id,
-        'event_month': month.isoformat(), 'batch_id': batch_id, 'strategy_number': 20,
+        'event_month': month.isoformat(), 'batch_id': batch_id, 'strategy_number': strategy_number,
         'ticker': current.ticker, 'boundary_ms': current.boundary_ms,
         'episode_start_ms': selection.initial.episode_start_ms,
         **{name: getattr(price, name) for name in (
@@ -108,7 +111,7 @@ def restore_first_price_entry(rows, current, selection, *, expected_price,
         'current_close_int', 'prior_high_int')), *(bool(v) for v in flags))
     projected = project_first_price_entry(current, selection, price,
         **{name: row[name] for name in ('price_source_token', 'run_id', 'batch_id',
-                                       'parent_record_id', 'event_month')})[0]
+                                       'parent_record_id', 'event_month', 'strategy_number')})[0]
     if any(type(row[name]) is not type(value) or row[name] != value for name, value in projected.items()):
         raise ValueError('First price row differs from original entry selection')
     if type(expected_price) is not FirstSetupPriceBreakWitness or price != expected_price:
@@ -142,10 +145,10 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
     sealer. This function neither registers it nor installs operational tables.
     """
     from .arte_journal_writer import typed_row
-    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] == 20}
+    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] in (20, 21)}
     parents = {row['record_id']: row for row in intents}
     source_events = {row['record_id']: row for row in events}
-    if (len(required) != sum(row['strategy_number'] == 20 for row in entries)
+    if (len(required) != sum(row['strategy_number'] in (20, 21) for row in entries)
             or len(parents) != len(intents) or len(source_events) != len(events)
             or any(type(authority) is not FirstPriceEntryAuthority for authority in authorities)):
         raise ValueError('First price graph has ambiguous parents or untyped authority')
@@ -178,6 +181,8 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
                        for name in ('run_id', 'batch_id', 'event_month'))):
             raise ValueError('First price graph has unrelated entry/intent/event scope')
         selected = grouped.get(parent, ())
+        if any(row['strategy_number'] != entry['strategy_number'] for row in selected):
+            raise ValueError('First price companion differs from numbered entry identity')
         if any(row[name] != entry[name] for row in selected
                for name in ('run_id', 'batch_id', 'event_month')):
             raise ValueError('First price companion differs from entry run scope')
@@ -189,7 +194,7 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
         local = at.astimezone(ZoneInfo('America/New_York'))
         expected = datetime.combine(local.date(), datetime.min.time(), ZoneInfo('America/New_York'))
         expected += timedelta(hours=4, milliseconds=entry['boundary_ms'])
-        identity = (f"strategy-20:{local.date().isoformat()}:{entry['assignment_id']}:"
+        identity = (f"strategy-{entry['strategy_number']}:{local.date().isoformat()}:{entry['assignment_id']}:"
                     f"{intent['account_id']}:{intent['ticker']}:{entry['boundary_ms']}:"
                     f"{entry['episode_start_ms']}")
         if at != expected or intent['intent_id'] != str(uuid5(NAMESPACE_URL, identity)):
