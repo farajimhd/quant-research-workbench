@@ -1299,3 +1299,54 @@ The actual app-route campaign is tracked in runtime
 `strategy16-four-session-campaign-v1.json`, with $10,000 separately in each
 of the same four extended sessions. Its services refresh follows every saved
 run. No completed Strategy 16 session or profit is claimed at publication.
+
+### Strategy 16 completed evidence and next bounded entry experiment
+
+All four Strategy 16 actual app-route runs completed with independently funded
+$10,000 accounts, no open terminal positions, the certified LGHL exclusion and
+the same market builds/plan tokens as Strategy 14. Preferred cold reports are
+under runtime `strategy16_reports_v4`. Net P&L and broker-observed marked
+drawdown respectively were PM18 $951.795870 / $1,139.903080; PM19
+-$355.839695 / $1,988.317965; AH18 -$99.450035 / $806.104960; AH19
+$723.352565 / $710.712330. Total net was $1,219.858705, with only two of
+four sessions meeting the $500 target. These are development results; marked
+drawdown retains asynchronous, potentially stale-mark limitations.
+
+Run IDs in that order are `187661ae-fd4a-4925-ae60-ea301a1ece1d`,
+`7ef5d305-16a6-436d-81b8-e4754cc02cb5`,
+`c3e3f813-6e4f-4d03-8134-211423daa454`, and
+`1e288b22-d9a8-4e17-a520-c6e515ca6a72`. Comparison artifact
+`strategy16-four-session-comparison-v1.json` has SHA-256
+`11633600a95c885656ee558146fd75cec77a868aea29ddd576a6c6a39e4a955c`.
+Independent audit checked all 62 filled entries against exact producer Float64
+momentum values, completed clocks, source attempts and recent BOS authority:
+`strategy16-actual-entry-source-audit-v1.json`, SHA-256
+`c543b6defa4cf97a306690a5928f6d6dd6de08ef5c29c94bd97fd88ffad7e943`.
+All four persisted runs were visible and reviewable through actual app history:
+`strategy16-app-history-verification-v1.json`, SHA-256
+`868ad34cc308f3df9a31a2370fa39cd86f0ddf992137bedddced5bced69db133`.
+
+The unbounded failure exit reduced drawdown slightly, but lost $336.988655
+aggregate net versus Strategy 14. Earlier XOS evidence attributes the main
+PM18 regression to cutting two established winners, not negative additional
+entry churn. Retain this failed experiment rather than promoting it.
+
+Read-only screens on Strategy 14's exact 58 entry witnesses explored requiring
+positive completed 10s histogram growth relative to its preceding value.
+`strategy14-momentum-resolution-screen-v1.json` SHA-256
+`79ae7df5d27414ce49393471eb70cae7acbe900ce07b9a67418cb732945fb9b0`
+shows requiring both 1s and 10s rising discards too many winners.
+`strategy14-ten-second-growth-screen-v1.json` SHA-256
+`5246035b847af80437511a6cc72a22ae624c3c212614b84a8528d02aba6b1328`
+screened fractional growth thresholds 0, 5%, 10%, 15% and 20%. At 10%, the
+remaining observed trades sum to PM18 $905.375680, PM19 $512.569085,
+AH18 $508.034695 and AH19 $1,033.117850. These sums are NOT strategy
+returns: changed entry timing, sizing, available cash and reentries require
+actual counterfactual execution. Repeated development on these dates is
+exploratory. The next candidate should branch from Strategy 14's early failure
+management with one entry change, then undergo a complete immutable backtest;
+no Strategy 17 release or profitability is claimed here.
+
+Latest user operational instruction supersedes routine restarts after saves:
+restart services only when necessary for testing or activating source changes.
+Do not refresh services simply because a backtest or report was saved.
