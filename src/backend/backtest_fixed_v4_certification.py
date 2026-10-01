@@ -948,6 +948,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_certified_price_brea
                                                '_publish_typed_batch_v4': '9981d915f2cb40c663efdb34ba9be67ecb3c0a27a007f502b6dcd7e5d9a0b309',
                                                'load_verified_commit_v4': '9b16b94a3c1b35982287f20ff0f20fea8e757ef853e8c9ee170926c23ec474aa',
                                                'load_verified_v4_prefix': 'db1fa615449d0f9e0930be8e1d0467d6f69d229415399fd8889f4d99ba0070a3',
+                                               'load_writer_v4_snapshot_prefix': '144de3a4e408b4ebec72003ef409194103bc50e55398cb87ac7654dbcaa2b6ca',
                                                'publish_strategy_one_entry_batch_v4': '800a0ff809c6a13fd0fdfc1e8c07d6808b46ebbcbbad939535a5b35f20c68cc6'},
  'trading_runtime/arte_journal_compound_v4.py': {'_publication_kwargs': 'cd9861f91250b8c6fafcfe3b71046f28a755a4d0e5088f982066a2593b027a3e',
                                                  '_unit_children': 'b056eebe79d91a7585c2f527d43406bfca534f187da58ec9053432f5b74f7809',

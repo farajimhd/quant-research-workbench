@@ -179,6 +179,9 @@ def test_reviewed_source_accepts_current_guard_and_rejects_its_removal(tmp_path)
     ('trading_runtime/arte_journal_commit_v4.py',
      'batch_id=batch_id, first_price_source=first_price_source)',
      'batch_id=batch_id)'),
+    ('trading_runtime/arte_journal_commit_v4.py',
+     'getattr(client, "_v4_writer_snapshot_price_scope", None) != price_scope',
+     'False'),
 ])
 def test_reviewed_source_rejects_price_authority_or_dispatch_changes(tmp_path, relative, before, after):
     from pathlib import Path

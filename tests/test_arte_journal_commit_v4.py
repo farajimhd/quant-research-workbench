@@ -1622,7 +1622,8 @@ def test_v4_strategy_signal_uses_installed_v2_table_and_readback():
         "trading_strategy_signal_v2"
     assert load_verified_commit_v4(
         client, run_id=item.run_id, batch_id=item.batch_id)[0]["event_count"] == 1
-def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkeypatch):
+@pytest.mark.parametrize("with_price_source", [False, True])
+def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkeypatch, with_price_source):
     from types import SimpleNamespace
     from hashlib import sha256
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
@@ -1636,6 +1637,16 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
     from tests.test_live_signal_completion_keeper import FakeKazoo
 
     run = "62908518-9fd4-4a8e-8c90-2162ccb237e1"
+    from test_backtest_strategy_first_price_source import authority, Bars
+    from src.backend.backtest_strategy_first_price_source import load_first_price_source
+    from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan, CertifiedPriceReadbackAuthority
+    source = None
+    if with_price_source:
+        market, parent = authority()
+        plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+        source = CertifiedPriceReadbackAuthority(run, plan)
+    def snapshot(**kwargs):
+        return commit.load_writer_v4_snapshot_prefix(client, run, first_price_source=source, **kwargs)
     zero = "00000000-0000-0000-0000-000000000000"
     first = "00000000-0000-0000-0000-000000000011"
     second = "00000000-0000-0000-0000-000000000012"
@@ -1665,34 +1676,40 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
                         [commits[-1]] if "AND batch_id=" in sql else commits)
     verified = []
     monkeypatch.setattr(commit, "load_verified_commit_v4",
-                        lambda _client, *, run_id, batch_id:
-                        (verified.append(batch_id) or commits[-1], ()))
+                        lambda _client, *, run_id, batch_id, first_price_source=None:
+                        (verified.append((batch_id, first_price_source)) or commits[-1], ()))
     monkeypatch.setattr(commit, "load_verified_v4_prefix",
                         lambda *_a, **_k: pytest.fail("warm path scanned cold prefix"))
-    prefix = commit.load_writer_v4_snapshot_prefix(client, run)
+    prefix = snapshot()
     assert prefix.batch_ids == (first, second)
-    assert verified == [second]
-    assert commit.load_writer_v4_snapshot_prefix(client, run) is prefix
-    assert verified == [second]  # Same fenced head does not rehash details.
+    assert verified == [(second, source)]
+    assert snapshot() is prefix
+    assert verified == [(second, source)]  # Same fenced head does not rehash details.
+    if with_price_source:
+        with pytest.raises(RuntimeError, match="cached price authority differs"):
+            commit.load_writer_v4_snapshot_prefix(client, run)
+        with pytest.raises(RuntimeError, match="foreign certified price source"):
+            commit.load_writer_v4_snapshot_prefix(client, run,
+                first_price_source=CertifiedPriceReadbackAuthority('foreign-run', plan))
     with pytest.raises(RuntimeError, match="exceeds bounded committed chain"):
-        commit.load_writer_v4_snapshot_prefix(client, run, max_commits=1)
+        snapshot(max_commits=1)
     commits[-1]["source_cursor"] = "2026-08-18:201"
     with pytest.raises(RuntimeError, match="cache differs from commit"):
-        commit.load_writer_v4_snapshot_prefix(client, run)
+        snapshot()
     commits[-1]["source_cursor"] = "2026-08-18:200"
     keeper.nodes[_gate_path(run)] = (
         _Gate("open", 0, gate.epoch, 0, 4, second, "a" * 64, zero).wire(), 2, 0)
     with pytest.raises(RuntimeError, match="Keeper compaction"):
-        commit.load_writer_v4_snapshot_prefix(client, run)
+        snapshot()
     keeper.nodes[_gate_path(run)] = (
         _Gate("open", 0, gate.epoch, 0, 4, second, digest, zero).wire(), 3, 0)
     commits[1]["prior_batch_id"] = zero
     with pytest.raises(RuntimeError, match="cache differs from commit"):
-        commit.load_writer_v4_snapshot_prefix(client, run)
+        snapshot()
     commits[1]["prior_batch_id"] = first
     client.typed_insert_strict = False
     with pytest.raises(RuntimeError, match="exclusive writer"):
-        commit.load_writer_v4_snapshot_prefix(client, run)
+        snapshot()
     lease.release()
     resumed = BacktestV4KeeperLease.acquire(
         session, run_id=run, owner_id="replacement")
@@ -1705,8 +1722,8 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
         run, 4, second, "2026-08-18:200", "running", (first, second))
     monkeypatch.setattr(commit, "load_verified_v4_prefix",
                         lambda *_a, **_k: cold_reads.append(1) or cold_prefix)
-    assert commit.load_writer_v4_snapshot_prefix(client, run) is cold_prefix
+    assert snapshot() is cold_prefix
     assert cold_reads == [1]
-    assert commit.load_writer_v4_snapshot_prefix(client, run) is cold_prefix
+    assert snapshot() is cold_prefix
     assert cold_reads == [1]
     resumed.release()

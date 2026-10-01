@@ -92,6 +92,7 @@ class V4CommittedPrefix:
 
 def load_writer_v4_snapshot_prefix(client, run_id: str, *,
                                    max_commits: int = 100_000,
+                                   first_price_source=None,
                                    ) -> V4CommittedPrefix | None:
     """Verify a writer-owned head without rehashing its older compacted batches.
 
@@ -105,10 +106,21 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
     from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
 
+    price_scope = None
+    if first_price_source is not None:
+        from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+        if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id != run_id:
+            raise RuntimeError("V4 writer snapshot has a foreign certified price source")
+        price_scope = (first_price_source.run_id, first_price_source.plan.token,
+                       first_price_source.plan.source.token)
+
     lease = getattr(client, "backtest_v4_lease", None)
     if lease is None:
         # Older injected test clients and non-Backtest consumers retain the
         # complete cold verifier. A present but invalid lease never falls back.
+        if first_price_source is not None:
+            return load_verified_v4_prefix(client, run_id, max_commits=max_commits,
+                                           first_price_source=first_price_source)
         return (load_verified_v4_prefix(client, run_id)
                 if max_commits == 100_000 else load_verified_v4_prefix(
                     client, run_id, max_commits=max_commits))
@@ -128,11 +140,15 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
         raise RuntimeError("V4 warm snapshot has an unsealed dispatch gate")
     columns = ",".join(name for name, _ in _CONTRACTS["trading_commit_v4"].columns)
     cached = getattr(client, "_v4_writer_snapshot_cache", None)
+    if cached is not None and getattr(client, "_v4_writer_snapshot_price_scope", None) != price_scope:
+        raise RuntimeError("V4 writer snapshot cached price authority differs")
     if cached is None and lease.epoch > 1:
         # A replacement writer cannot inherit the first process's compacted
         # proof. Verify the entire old chain once, then cache that head under
         # this lease before permitting the ordinary warm-head shortcut.
-        prefix = load_verified_v4_prefix(client, run_id, max_commits=max_commits)
+        prefix = (load_verified_v4_prefix(client, run_id, max_commits=max_commits)
+                  if first_price_source is None else load_verified_v4_prefix(client, run_id,
+                      max_commits=max_commits, first_price_source=first_price_source))
         if (prefix is None or prefix.last_sequence != gate.compacted_through
                 or prefix.last_batch_id != gate.compacted_batch_id
                 or prefix.status != "running"):
@@ -148,6 +164,7 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
             raise RuntimeError("V4 resumed snapshot head differs from Keeper")
         lease.assert_current()
         client._v4_writer_snapshot_cache = (prefix, gate.compacted_commit_hash)
+        client._v4_writer_snapshot_price_scope = price_scope
         return prefix
     if cached is not None:
         prefix, digest = cached
@@ -200,13 +217,16 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
             or sha256(canonical_json(latest).encode()).hexdigest()
                != gate.compacted_commit_hash):
         raise RuntimeError("V4 warm snapshot differs from Keeper compaction")
-    verified, _ = load_verified_commit_v4(client, run_id=run_id, batch_id=prior)
+    verified, _ = (load_verified_commit_v4(client, run_id=run_id, batch_id=prior)
+                  if first_price_source is None else load_verified_commit_v4(client,
+                      run_id=run_id, batch_id=prior, first_price_source=first_price_source))
     if verified != latest:
         raise RuntimeError("V4 warm snapshot current detail differs from commit")
     lease.assert_current()
     prefix = V4CommittedPrefix(run_id, sequence, prior, latest["source_cursor"],
                                "running", tuple(ids))
     client._v4_writer_snapshot_cache = (prefix, gate.compacted_commit_hash)
+    client._v4_writer_snapshot_price_scope = price_scope
     return prefix
 
 

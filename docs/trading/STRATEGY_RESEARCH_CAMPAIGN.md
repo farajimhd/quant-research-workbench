@@ -2181,3 +2181,20 @@ passed across source certification, companion graph, journal/compound transport
 and19 regression paths. Actual20 persisted portfolio runs remain pending; warm
 writer snapshots, entry-page/manager recovery, intent admission, numbered release
 and operational storage still require integration before publication.
+
+### Strategy20 warm snapshot source identity
+
+The writer-owned warm snapshot API now accepts the same explicit cached native
+price source as cold verification. It forwards that source through head-detail
+verification and through the full-prefix scan required for a replacement writer.
+Cached warm proofs record run, selection token and price-source token; requesting
+a cached proof with omitted or changed price authority fails closed. Existing
+source-free calls retain their original paths and argument shapes.
+
+Keeper-owned head reuse and replacement-writer checks exercise both source-free
+and source-bound contexts. Foreign-run and omitted-source cache reuse are rejected.
+The reviewed source seal includes the warm snapshot function, and removing its
+cache-identity guard is rejected.105 focused checks passed across warm/cold journal,
+OMS observation snapshots, native price selection, companion graph and transport.
+Entry-page and manager recovery, complete typed projection, intent/release
+admission and operational storage remain pending before actual20 portfolio runs.
