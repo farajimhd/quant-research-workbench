@@ -19,7 +19,7 @@ def fixture(strategy_number=31):
     return profit_giveback(sample()), state, held
 
 
-@pytest.mark.parametrize('number', [31, 32, 33])
+@pytest.mark.parametrize('number', [31, 32, 33, 34])
 def test_scalar_state_binds_original_risk_prior_high_and_exact_identity(number):
     witness, state, held = fixture(strategy_number=number)
     assert validate_profit_giveback_state(witness, state, held) == state.submitted[0][1]
@@ -51,7 +51,7 @@ def test_changed_high_clock_or_account_cannot_bind():
 @pytest.mark.parametrize('corruption', [None, 'cursor_sequence', 'cursor_boundary',
                                       'snapshot_id', 'entry_account', 'entry_sequence',
                                       'child_strategy', 'snapshot_strategy'])
-@pytest.mark.parametrize('number', [31, 32, 33])
+@pytest.mark.parametrize('number', [31, 32, 33, 34])
 def test_checkpoint_reader_routes_and_rejects_changed_authority(monkeypatch, corruption, number):
     """Reader-contract test; mocks do not establish actual DB recovery."""
     from types import SimpleNamespace
