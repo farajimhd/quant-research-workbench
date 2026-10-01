@@ -46,7 +46,7 @@ def test_unreviewed_source_override_rejected():
 
 
 @pytest.mark.parametrize('lane', ['parent', 'profit'])
-@pytest.mark.parametrize('number', [31, 32, 33])
+@pytest.mark.parametrize('number', [31, 32, 33, 34])
 def test_full_numbered_certificate_propagates_either_route_rejection(monkeypatch, lane, number):
     from src.backend import backtest_fixed_v4_certification as fixed
     from src.backend import backtest_strategy_profit_certification as profit
