@@ -257,7 +257,9 @@ def main(argv=None):
                 proof=json.loads(proof_path.read_text())
                 if (proof.get('version')!=FEATURE_CONTRACT or proof.get('status')!='audited_execution_cost_estimates' or
                     proof.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or proof.get('day')!=entry['day'] or
-                    proof.get('feature_scope')!='completed_trailing_1s_only' or proof.get('sealed_test_accessed') is not False):
+                    proof.get('feature_scope')!='completed_trailing_1s_only' or
+                    proof.get('luld_certificate')!=luld_certificates[entry['day']] or
+                    proof.get('participation')!=args.broker_participation or proof.get('sealed_test_accessed') is not False):
                     raise ValueError('Execution observation provenance differs from audited bank')
                 if proof.get('preparation_scope')!='complete_day':raise ValueError('Bounded cost diagnostic is not training data')
                 for name in ('features','scores','allocation_netbps'):

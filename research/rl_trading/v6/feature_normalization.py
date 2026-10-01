@@ -30,7 +30,8 @@ def fit_normalization(sessions,*,dataset_sha256):
         if name.endswith(('valid','present','available')) or name in ('premarket','regular','after_hours'):
             mean[i]=0.;std[i]=1.
     for slot in range(10):
-        i=len(SCALAR_NAMES)+slot*len(LEVEL_NAMES)+LEVEL_NAMES.index('present');mean[i]=0.;std[i]=1.
+        for name in ('role_support','role_resistance','role_transition','historical_origin','present'):
+            i=len(SCALAR_NAMES)+slot*len(LEVEL_NAMES)+LEVEL_NAMES.index(name);mean[i]=0.;std[i]=1.
     return dict(version=VERSION,scope='train_only',dataset_sha256=dataset_sha256,
         training_bank_certificates=certificates,observations=count,mean=mean.tolist(),std=std.tolist(),
         price_reference='OHLC_geometry_and_indicators_close; execution_costs_mid; absolute_close_log_USD_retained')
