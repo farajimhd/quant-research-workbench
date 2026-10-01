@@ -55,7 +55,7 @@ def _bind(current, selection, price):
 def project_first_price_entry(current, selection, price, *, price_source_token,
                               run_id, batch_id, parent_record_id, event_month,
                               strategy_number=20):
-    if type(strategy_number) is not int or strategy_number not in (20, 21):
+    if type(strategy_number) is not int or strategy_number not in (20, 21, 22):
         raise ValueError('First price requires an installed source-bound number')
     if not _bind(current, selection, price):
         return ()
@@ -145,10 +145,10 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
     sealer. This function neither registers it nor installs operational tables.
     """
     from .arte_journal_writer import typed_row
-    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] in (20, 21)}
+    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] in (20, 21, 22)}
     parents = {row['record_id']: row for row in intents}
     source_events = {row['record_id']: row for row in events}
-    if (len(required) != sum(row['strategy_number'] in (20, 21) for row in entries)
+    if (len(required) != sum(row['strategy_number'] in (20, 21, 22) for row in entries)
             or len(parents) != len(intents) or len(source_events) != len(events)
             or any(type(authority) is not FirstPriceEntryAuthority for authority in authorities)):
         raise ValueError('First price graph has ambiguous parents or untyped authority')

@@ -2407,3 +2407,13 @@ requires a new numbered release. Keep entry/trade settings unchanged until a
 complete baseline portfolio run succeeds, and extend the real coordinator test
 to that next number before publication. Source correctness tests alone are not
 portfolio execution acceptance.
+
+Strategy22 inherits Strategy21's entry and financial policies unchanged and
+binds the repaired native-plan dispatch under a fresh numbered release. Its
+shared execution, publication, recovery, management, history and reporting
+routes explicitly admit22. Real coordinator, cutoff callback and cold entry
+recovery tests now include22; unknown23 still fails closed. Reviewed source
+receipt: `strategy22-reviewed-native-release-seals-v1.json` (41 nodes).
+438 focused checks passed, together with the publisher's real help path and
+diff checks. Workstation synchronization, publication and actual six development
+session runs remain pending. There is no Strategy22 portfolio PnL yet.
