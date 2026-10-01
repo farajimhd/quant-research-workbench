@@ -30,7 +30,7 @@ from .arte_oms_tactic_projection import (
 
 from .arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch, seal_followthrough_rows
 from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch, seal_profit_giveback_rows
-from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, V4ConfirmedAhFailureBatch
+from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, V4ConfirmedAhFailureBatch, seal_confirmed_ah_rows
 from .arte_rising_momentum_entry_v4 import MOMENTUM, seal_rising_momentum_rows
 from .arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM, seal_initial_momentum_rows
 from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
@@ -190,6 +190,8 @@ def coalesce_v4_units(
 
 
 def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is V4ConfirmedAhFailureBatch:
+        return {"confirmed_ah_rows": (unit.confirmation,)}
     if type(unit) is V4ProfitGivebackBatch:
         return {"profit_giveback_rows": (unit.profit,)}
     if type(unit) is V4FollowThroughFailureBatch:
@@ -403,6 +405,10 @@ def prepare_compound_v4_families(
     seal_profit_giveback_rows(client, extra[PROFIT_GIVEBACK.name],
         dict(base_families)['trading_strategy_intent_v1'],
         compound.base.events, prefix=verified_prior_prefix, first_price_source=first_price_source)
+    seal_confirmed_ah_rows(client, extra[CONFIRMED_AH_FAILURE.name],
+        dict(base_families)['trading_strategy_intent_v1'],
+        compound.base.events, verified_prefix=verified_prior_prefix,
+        first_price_source=first_price_source)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))

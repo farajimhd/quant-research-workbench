@@ -256,3 +256,23 @@ def test_cold_scalar_loader_verifies_hash_before_native_uint_adaptation(monkeypa
     stored['batch_id'] = str(uuid4())
     with pytest.raises(RuntimeError, match='committed prefix'):
         load_confirmed_ah_failure(None, prefix, row['parent_record_id'])
+
+
+def test_actual_micro_preparation_retains_new_family_without_database_writes():
+    from src.trading_runtime.arte_intent_projection import strategy_intent_batch, _verify_stored_row
+    from src.trading_runtime.arte_journal_commit_v4 import _publish_typed_batch_v4
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    witness, financial, args, intent, row = prepared_case()
+    base = strategy_intent_batch(
+        intent, run_id=row['run_id'], run_month=date(2026, 8, 1),
+        account_id=financial.account_id, attempt_id=str(uuid4()),
+        batch_id=row['batch_id'], prior_batch_id=str(uuid4()), sequence=65,
+        source_cursor='boundary-43700000', run_status='running', recorded_at=intent.event_time,
+        record_id=row['parent_record_id'],
+    )
+    client = attached_v4_client()
+    _, families = _publish_typed_batch_v4(client, base, confirmed_ah_rows=(row,), _prepare_only=True)
+    persisted = dict(families)[CONFIRMED_AH_FAILURE.name]
+    assert len(persisted) == 1
+    _verify_stored_row(CONFIRMED_AH_FAILURE.name, persisted[0])
+    assert persisted[0]['ten_second_macd_line'] == witness.ten_second_macd_line
