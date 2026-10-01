@@ -115,7 +115,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position high lacks its active position")
         sources = dict(state.submitted)
         required = {key for key in keys["positions"]
-                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24)}
+                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25)}
         if keys["first_held_boundaries"] != required:
             raise ValueError("Strategy 9 position lacks its first held boundary")
         for key, boundary in state.first_held_boundaries:
@@ -188,19 +188,19 @@ class StrategyOneManagementRunner:
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         from src.trading_runtime.strategy_rising_momentum_witness import numbered_momentum_entry
         for _, proposal in state.submitted:
-            if proposal.strategy_number in (20, 21, 22, 23, 24):
+            if proposal.strategy_number in (20, 21, 22, 23, 24, 25):
                 from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority, certified_price_entry_intent
                 if (type(first_price_source) is not CertifiedPriceReadbackAuthority
                         or first_price_source.run_id != getattr(self.runtime, 'run_id', None)):
                     raise ValueError("Strategy20 manager recovery lacks its native source context")
                 certified_price_entry_intent(first_price_source.plan, proposal,
                     session_date=date.fromisoformat(first_price_source.plan.source.market.sessions[0]))
-            if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24) and (
+            if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25) and (
                     not numbered_momentum_entry(proposal.momentum, proposal.strategy_number)
                     or proposal.momentum.ticker != proposal.ticker
                     or proposal.momentum.boundary_ms != proposal.boundary_ms):
                 raise ValueError("Strategy 13 manager recovery lacks its committed momentum source")
-            if proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24):
+            if proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25):
                 from src.trading_runtime.strategy_initial_strong_momentum import (
                     validate_initial_momentum_selection, initial_strong_momentum_entry,
                 )
@@ -208,7 +208,7 @@ class StrategyOneManagementRunner:
                                                    episode_start_ms=proposal.episode_start_ms)
                 if not initial_strong_momentum_entry(proposal.momentum, proposal.initial_momentum.initial):
                     raise ValueError("Strategy 18 manager recovery lacks strong first-setup source")
-                if proposal.strategy_number in (19, 20, 21, 22, 23, 24):
+                if proposal.strategy_number in (19, 20, 21, 22, 23, 24, 25):
                     from src.trading_runtime.strategy_initial_momentum_growth import first_setup_momentum_growth_entry
                     if not first_setup_momentum_growth_entry(proposal.initial_momentum.initial.first_setup):
                         raise ValueError("Strategy 19 manager recovery requires premarket first-setup 50pct growth")
@@ -326,7 +326,10 @@ class StrategyOneManagementRunner:
             from src.trading_runtime.strategy_early_followthrough_failure import early_followthrough_failure
             # The installed number owns eligibility; old seals retain the
             # original unbounded predicate and first-held checkpoint contract.
-            failure_rule = (early_followthrough_failure
+            from src.trading_runtime.strategy_premarket_quarter_risk_failure import premarket_quarter_risk_failure
+            failure_rule = (premarket_quarter_risk_failure
+                            if self.contract.strategy_number == 25
+                            else early_followthrough_failure
                             if self.contract.strategy_number in (11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24)
                             else followthrough_failure)
             witness = failure_rule(FollowThroughFailureInput(
@@ -340,7 +343,7 @@ class StrategyOneManagementRunner:
                 # Reuse the runtime's cached, exact native source validation;
                 # the older constructor deliberately excludes price entries.
                 entry = (self.runtime._strategy_one_entry_intent(source)
-                         if self.contract.strategy_number in (20, 21, 22, 23, 24)
+                         if self.contract.strategy_number in (20, 21, 22, 23, 24, 25)
                          else strategy_one_entry_intent(
                              source, session_date=self.runtime.config.anchor_date))
                 await self.runtime.submit_followthrough_failure(

@@ -10,10 +10,14 @@ from .strategy_followthrough_failure import FollowThroughFailure, FollowThroughF
 from .strategy_one_stateful import StrategyOneFinancialView
 
 
-def validate_witness(witness):
+def validate_witness(witness, *, strategy_number=9):
     if type(witness) is not FollowThroughFailure:
         raise ValueError("Follow-through exit requires the exact scalar witness")
-    actual = followthrough_failure(FollowThroughFailureInput(
+    if type(strategy_number) is not int or strategy_number not in (9, 25):
+        raise ValueError("Failure factory requires legacy or Strategy25 witness authority")
+    from .strategy_premarket_quarter_risk_failure import premarket_quarter_risk_failure
+    rule = premarket_quarter_risk_failure if strategy_number == 25 else followthrough_failure
+    actual = rule(FollowThroughFailureInput(
         witness.boundary_ms, witness.first_held_boundary_ms,
         witness.reference_ask, witness.initial_stop, witness.boundary_ms,
         witness.completed_close_int, True, witness.macd_line, witness.macd_signal,
@@ -22,8 +26,8 @@ def validate_witness(witness):
         raise ValueError("Follow-through witness does not satisfy its pinned rule")
 
 
-def followthrough_exit_intent(witness, financial, *, session_date, source_entry_intent_id):
-    validate_witness(witness)
+def followthrough_exit_intent(witness, financial, *, session_date, source_entry_intent_id, strategy_number=9):
+    validate_witness(witness, strategy_number=strategy_number)
     UUID(source_entry_intent_id)
     if (type(financial) is not StrategyOneFinancialView
             or not financial.account_id or not financial.assignment_id or not financial.ticker
@@ -31,7 +35,7 @@ def followthrough_exit_intent(witness, financial, *, session_date, source_entry_
             or financial.pending_exit):
         raise ValueError("Follow-through exit requires exact held financial authority")
     at = datetime.combine(session_date, time(4), ZoneInfo("America/New_York")) + timedelta(milliseconds=witness.boundary_ms)
-    identity = f"strategy-9-followthrough-exit:{session_date}:{financial.account_id}:{financial.assignment_id}:{financial.ticker}:{source_entry_intent_id}:{witness.boundary_ms}"
+    identity = f"strategy-{strategy_number}-followthrough-exit:{session_date}:{financial.account_id}:{financial.assignment_id}:{financial.ticker}:{source_entry_intent_id}:{witness.boundary_ms}"
     return StrategyIntent(intent_id=str(uuid5(NAMESPACE_URL, identity)),
         ticker=financial.ticker, event_time=at.astimezone(timezone.utc), action="exit",
         quantity=float(financial.position_quantity), reference_price=witness.bid,

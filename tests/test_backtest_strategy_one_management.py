@@ -99,7 +99,7 @@ def test_nine_failure_waits_for_whole_post_fill_bar_and_preserves_entry_source(n
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('number', (20, 21, 22, 23, 24))
+@pytest.mark.parametrize('number', (20, 21, 22, 23, 24, 25))
 def test_native_failure_exit_uses_exact_runtime_entry_source(number):
     from types import SimpleNamespace, MethodType
     from uuid import UUID
@@ -520,3 +520,48 @@ def test_typed_manager_capture_restores_pending_entry_position_and_breaks():
                                      max_pending_breaks=256)
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('number', (24, 25))
+def test_native_premarket_quarter_failure_routes_only_new_number(number):
+    from types import SimpleNamespace, MethodType
+    from uuid import UUID
+    from test_strategy_twenty_entry_recovery import (
+        authority, Bars, load_first_price_source, compile_certified_price_break_plan,
+        CertifiedPriceReadbackAuthority, prepared_entry,
+    )
+    from src.backend.backtest_market_data import market_day_boundary
+    from src.trading_runtime.runtime import TradingRuntime, RunMode
+
+    async def run():
+        market, parent = authority()
+        plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+        price_source = CertifiedPriceReadbackAuthority('native-failure', plan)
+        _, proposal, intent = prepared_entry(price_source, 1, 31000, str(UUID(int=0)), strategy_number=number)
+        source, runtime = _Evidence(), _Runtime()
+        runtime.run_id = price_source.run_id
+        runtime.config = SimpleNamespace(strategy_revision=number, anchor_date=date(2026, 8, 18),
+            strategy_id='early-squeeze-strategy', mode=RunMode.BACKTEST)
+        runtime._strategy_one_price_source = price_source
+        runtime._strategy_one_entry_intent = MethodType(TradingRuntime._strategy_one_entry_intent, runtime)
+        exits = []
+        async def submit(financial, witness, entry_id):
+            exits.append((financial, witness, entry_id))
+        runtime.submit_followthrough_failure = submit
+        manager = StrategyOneManagementRunner(runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(proposal)
+        financial = replace(_financial(), assignment_id=proposal.assignment_id)
+        await manager.on_management(financial, {}, 31100)
+        boundary = 45000
+        price = round((proposal.reference_ask + proposal.initial_stop) / 2 + .01, 4)
+        source.rows[boundary] = replace(_evidence(boundary), bid=price, ask=price+.01)
+        rows = _add_rows(boundary)
+        rows[100]['quote_timestamp_us'] = int(market_day_boundary(runtime.config.anchor_date, boundary).timestamp()*1_000_000)
+        rows[5000] = {'boundary_ms': boundary, 'price_valid': 1,
+            'close_int': round(price*10000), 'macd_line': -.2, 'macd_signal': -.1}
+        await manager.on_management(financial, rows, boundary)
+        assert len(exits) == int(number == 25)
+        if number == 25:
+            assert exits[0][2] == intent.intent_id
+    asyncio.run(run())
+

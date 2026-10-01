@@ -278,7 +278,7 @@ def test_v4_publisher_routes_numbered_entry_with_exact_child_off_hot_path():
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize('number', (20, 21, 22, 23, 24))
+@pytest.mark.parametrize('number', (20, 21, 22, 23, 24, 25))
 def test_native_entry_drain_retains_source_bound_intent_after_writer_receipt(number):
     from uuid import UUID
     from test_strategy_twenty_entry_recovery import (

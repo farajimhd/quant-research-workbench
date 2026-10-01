@@ -16,7 +16,7 @@ from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
 
 
 @pytest.mark.parametrize('pending_entry', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24])
+@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25])
 def test_native_coordinator_keeps_source_evidence_and_financial_rejections(pending_entry, strategy_number):
     from test_backtest_strategy_first_price_source import authority, Bars
     from src.backend.backtest_strategy_first_price_source import load_first_price_source

@@ -72,7 +72,7 @@ def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24])
+@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25])
 def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, strategy_number):
     market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
