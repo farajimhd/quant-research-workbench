@@ -4,7 +4,7 @@ from src.trading_runtime.strategy_profit_giveback_arm import profit_arm_candidat
 from test_strategy_profit_giveback_source import fixture
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_one_checkpoint_candidate_from_completed_manager_high(number):
     _,state,held=fixture(strategy_number=number)
     candidate=profit_arm_candidate(state,held,already_checkpointed=False)

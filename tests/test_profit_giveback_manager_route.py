@@ -13,7 +13,7 @@ from test_profit_arming_engine_boundary import manager_fixture, reference
 
 
 @pytest.mark.parametrize('case', ['exit', 'unarmed', 'same_boundary', 'pending', 'stale', 'positive_histogram', 'parent_loss', 'unarmed_parent_loss'])
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_profit_exit_requires_confirmed_prior_arm_and_current_completed_failure(case, number):
     manager, financial, state = manager_fixture(strategy_number=number)
     manager.contract = SimpleNamespace(strategy_number=number, allows_followthrough_failure_exit=True,

@@ -22,7 +22,7 @@ def unit(strategy_number=31):
     return base,row
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_exact_unit_is_immutable_and_checkpoint_precedes_exit(number):
     base,row=unit(strategy_number=number);batch=V4ProfitGivebackBatch(base,row)
     assert batch.profit['source_manager_checkpoint_sequence']==7
@@ -31,10 +31,10 @@ def test_exact_unit_is_immutable_and_checkpoint_precedes_exit(number):
     with pytest.raises(TypeError):batch.profit['prior_high_int']=1
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_child_version_must_match_parent_profit_reason(number):
     base,row=unit(strategy_number=number)
-    row['strategy_number']=63-number
+    row['strategy_number']=(31 if number != 31 else 32)
     with pytest.raises(ValueError, match='intent or prior checkpoint'):
         V4ProfitGivebackBatch(base,row)
 

@@ -21,7 +21,7 @@ def project(**changes):
         intent(strategy_number=args.get('strategy_number', 31)), financial(), **args)
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_roundtrip_preserves_causal_scalars_without_claiming_a_seal(number):
     row = project(strategy_number=number)
     assert restore_profit_giveback(row) == profit_giveback(sample())

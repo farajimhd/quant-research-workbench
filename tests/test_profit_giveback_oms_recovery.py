@@ -46,7 +46,7 @@ def prepared(strategy_number=31):
     return group, source, history, reservation, decision, row
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_full_profit_exit_reconstructs_exact_order_and_portfolio_assignment(number):
     group, source, history, reservation, decision, row = prepared(strategy_number=number)
     approved, _ = _approved_strategy_one_oms_intent(
@@ -58,12 +58,12 @@ def test_full_profit_exit_reconstructs_exact_order_and_portfolio_assignment(numb
         run_id=history.run_id, strategy_id='early-squeeze-strategy', strategy_revision=number)
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_profit_row_cannot_cross_numbered_oms_group(number):
     group, source, history, reservation, decision, row = prepared(strategy_number=number)
     with pytest.raises(ValueError, match='exact committed scalar witness'):
         _approved_strategy_one_oms_intent(group, source, history, reservation, decision,
-            profit_giveback_row={**row, 'strategy_number': 63-number})
+            profit_giveback_row={**row, 'strategy_number': (31 if number != 31 else 32)})
 
 
 @pytest.mark.parametrize('field,value', [
@@ -92,7 +92,7 @@ def test_profit_cannot_restore_without_witness_admission_or_with_resized_quantit
             reservation, decision, profit_giveback_row=row)
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_cold_join_routes_exact_native_source_to_profit_reader(monkeypatch, number):
     from src.trading_runtime import arte_oms_projection as oms
     from src.trading_runtime import arte_intent_projection as intents

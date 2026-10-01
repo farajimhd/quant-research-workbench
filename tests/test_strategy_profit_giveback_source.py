@@ -19,7 +19,7 @@ def fixture(strategy_number=31):
     return profit_giveback(sample()), state, held
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_scalar_state_binds_original_risk_prior_high_and_exact_identity(number):
     witness, state, held = fixture(strategy_number=number)
     assert validate_profit_giveback_state(witness, state, held) == state.submitted[0][1]
@@ -51,7 +51,7 @@ def test_changed_high_clock_or_account_cannot_bind():
 @pytest.mark.parametrize('corruption', [None, 'cursor_sequence', 'cursor_boundary',
                                       'snapshot_id', 'entry_account', 'entry_sequence',
                                       'child_strategy', 'snapshot_strategy'])
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_checkpoint_reader_routes_and_rejects_changed_authority(monkeypatch, corruption, number):
     """Reader-contract test; mocks do not establish actual DB recovery."""
     from types import SimpleNamespace
@@ -68,10 +68,10 @@ def test_checkpoint_reader_routes_and_rejects_changed_authority(monkeypatch, cor
     entry={'batch_id':batch,'action':'enter_long','reason':'strategy_one_entry','ticker':held.ticker,'reference_price':10.,'invalidation_price':9.}
     event={'account_id':held.account_id,'sequence':6}
     child={'strategy_number':number,'assignment_id':held.assignment_id,'boundary_ms':900}
-    if corruption=='child_strategy':child['strategy_number']=63-number
+    if corruption=='child_strategy':child['strategy_number']=(31 if number != 31 else 32)
     if corruption=='snapshot_strategy':
         key,proposal=state.submitted[0]
-        state=replace(state,submitted=((key,replace(proposal,strategy_number=63-number)),))
+        state=replace(state,submitted=((key,replace(proposal,strategy_number=(31 if number != 31 else 32))),))
     if corruption=='cursor_sequence':cursor['event_sequence']=6
     if corruption=='cursor_boundary':cursor['boundary_ms']=9800
     if corruption=='snapshot_id':snapshot['snapshot_id']='other'

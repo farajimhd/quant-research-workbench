@@ -26,15 +26,17 @@ def intent(witness=None, held=None, entry=ENTRY, strategy_number=31):
         session_date=date(2026, 8, 4), source_entry_intent_id=entry, strategy_number=strategy_number)
 
 
-def test_numbered_factory_preserves_trade_fields_and_distinct_identity():
-    previous, current = intent(), intent(strategy_number=32)
-    assert current == intent(strategy_number=32)
+@pytest.mark.parametrize('number,reason', [(32, 'strategy_thirty_two_profit_giveback'),
+                                        (33, 'strategy_thirty_three_profit_giveback')])
+def test_numbered_factory_preserves_trade_fields_and_distinct_identity(number, reason):
+    previous, current = intent(), intent(strategy_number=number)
+    assert current == intent(strategy_number=number)
     assert previous.intent_id != current.intent_id
-    assert current.reason == 'strategy_thirty_two_profit_giveback'
+    assert current.reason == reason
     assert replace(current, intent_id=previous.intent_id, reason=previous.reason) == previous
 
 
-@pytest.mark.parametrize('number', [True, 31., '32', 30, 33])
+@pytest.mark.parametrize('number', [True, 31., '32', 30, 34])
 def test_unsupported_or_untyped_number_cannot_create_profit_exit(number):
     with pytest.raises(ValueError):
         intent(strategy_number=number)

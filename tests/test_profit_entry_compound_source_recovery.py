@@ -31,7 +31,7 @@ from tests.test_arte_journal_commit_v4 import attached_v4_client
 from tests.test_arte_journal_writer import batch
 
 
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_entry_sharing_profit_commit_recovers_exact_source_and_preceding_proof(monkeypatch, number):
     from src.trading_runtime import strategy_profit_giveback_source as checkpoints
     from src.trading_runtime import arte_strategy_one_entry_journal as entries

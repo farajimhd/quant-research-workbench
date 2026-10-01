@@ -41,7 +41,7 @@ def context(monkeypatch, strategy_number=31):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-@pytest.mark.parametrize('number', [31, 32])
+@pytest.mark.parametrize('number', [31, 32, 33])
 def test_profit_native_commit_idempotent_and_cold_prefix_seals(monkeypatch, compound, number):
     client, base, row, prefix, calls = context(monkeypatch, strategy_number=number)
     if compound:

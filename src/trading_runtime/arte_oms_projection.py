@@ -513,7 +513,7 @@ def _approved_strategy_one_oms_intent(
         raise ValueError("Strategy 1 OMS admission needs its decision and reservation")
     approved_intent = source_intent.intent
     account = state.group["account_id"]
-    if approved_intent.reason in ('strategy_thirty_one_profit_giveback', 'strategy_thirty_two_profit_giveback') and admission_reservation is None:
+    if approved_intent.reason in ('strategy_thirty_one_profit_giveback', 'strategy_thirty_two_profit_giveback', 'strategy_thirty_three_profit_giveback') and admission_reservation is None:
         raise ValueError('Profit recovery requires its exact Portfolio admission')
     if admission_reservation is not None:
         from src.trading_runtime.portfolio import _intent_correlation
@@ -532,7 +532,7 @@ def _approved_strategy_one_oms_intent(
             raise ValueError("Strategy 1 OMS admission differs from typed source")
         if approved_intent.reason == "strategy_nine_followthrough_failure":
             from .arte_followthrough_failure_v4 import restore_failure
-            if (followthrough_row is None or state.group["strategy_revision"] not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)
+            if (followthrough_row is None or state.group["strategy_revision"] not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33)
                     or followthrough_row["strategy_number"] != state.group["strategy_revision"]
                     or followthrough_row["assignment_id"] != reservation["assignment_id"]
                     or str(followthrough_row["parent_record_id"]) != source_intent.record_id
@@ -549,17 +549,17 @@ def _approved_strategy_one_oms_intent(
             expected = followthrough_exit_intent(restore_failure(followthrough_row), financial,
                 session_date=approved_intent.event_time.astimezone(ZoneInfo("America/New_York")).date(),
                 source_entry_intent_id=str(followthrough_row["source_entry_intent_id"]),
-                strategy_number=state.group["strategy_revision"] if state.group["strategy_revision"] in (25, 26, 27, 28, 29, 30, 31, 32) else 9)
+                strategy_number=state.group["strategy_revision"] if state.group["strategy_revision"] in (25, 26, 27, 28, 29, 30, 31, 32, 33) else 9)
             if expected != approved_intent:
                 raise ValueError("Failure recovery differs from the exact scalar exit intent")
-        elif approved_intent.reason in ('strategy_thirty_one_profit_giveback', 'strategy_thirty_two_profit_giveback'):
+        elif approved_intent.reason in ('strategy_thirty_one_profit_giveback', 'strategy_thirty_two_profit_giveback', 'strategy_thirty_three_profit_giveback'):
             from .arte_profit_giveback_v4 import restore_profit_giveback
             from .strategy_profit_giveback_exit import profit_giveback_exit_intent
             from .strategy_one_stateful import StrategyOneFinancialView
             from .strategy_engine import AssignmentStatus, StrategyPermissions
             from zoneinfo import ZoneInfo
             if (profit_giveback_row is None or followthrough_row is not None
-                    or state.group['strategy_revision'] not in (31, 32)
+                    or state.group['strategy_revision'] not in (31, 32, 33)
                     or profit_giveback_row['strategy_number'] != state.group['strategy_revision']
                     or profit_giveback_row['run_id'] != protection_history.run_id
                     or profit_giveback_row['assignment_id'] != reservation['assignment_id']
@@ -589,7 +589,7 @@ def _approved_strategy_one_oms_intent(
                 assignment_id=reservation["assignment_id"], ticker=approved_intent.ticker,
                 boundary_ms=boundary_ms, quantity=approved_intent.quantity,
                 bid=approved_intent.reference_price, strategy_number=state.group["strategy_revision"])
-            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32) or expected_exit != approved_intent:
+            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33) or expected_exit != approved_intent:
                 raise ValueError("Session exit recovery differs from sealed scalar source")
         metadata = {
             "assignment_id": reservation["assignment_id"],
@@ -671,7 +671,7 @@ def reconstruct_strategy_one_oms_lineage(
     if (
             not isinstance(group, dict)
             or group.get("strategy_id") != STRATEGY_ID
-            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)
+            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33)
             or group.get("run_id") != protection_history.run_id
             or group.get("batch_id") not in protection_history.committed_batch_ids
             or source_intent.batch_id not in protection_history.committed_batch_ids
@@ -684,7 +684,7 @@ def reconstruct_strategy_one_oms_lineage(
             # Its immutable source intent is add_long, not the first entry's
             # enter_long. Both require the same exact typed lineage proof.
             or source_intent.intent.action not in (
-                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32) else
+                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33) else
                 {"enter_long", "add_long", "exit"} if group.get("strategy_revision") in (2, 3)
                 else {"enter_long", "add_long"})
             or not state.orders or len(state.orders) > 65_535
@@ -823,7 +823,7 @@ def load_recovered_strategy_one_oms_lineage(
     from .arte_followthrough_failure_v4 import REASON, load_followthrough_failure
     from .arte_profit_giveback_reader_v4 import load_committed_profit_giveback
     from .strategy_profit_giveback_exit import profit_giveback_reason
-    profit_reasons = {profit_giveback_reason(number) for number in (31, 32)}
+    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33)}
     for record_id, source in by_id.items():
         if source.intent.reason == REASON:
             failure_rows[record_id] = load_followthrough_failure(client, prefix, record_id)[0]

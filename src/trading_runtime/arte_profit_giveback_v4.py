@@ -94,8 +94,8 @@ def project_profit_giveback(
 
 def restore_profit_giveback(row: dict) -> ProfitGivebackWitness:
     """Revalidate scalars after native row hash/source verification, not instead."""
-    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (31, 32):
-        raise ValueError('Profit witness belongs only to Strategy 31 or 32')
+    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (31, 32, 33):
+        raise ValueError('Profit witness belongs only to Strategy 31, 32 or 33')
     integer_fields = {'boundary_ms', 'first_held_boundary_ms', 'completed_close_int',
                       'quote_age_us', 'prior_high_int', 'prior_high_through_boundary_ms'}
     converted = {}
@@ -123,7 +123,7 @@ def seal_profit_giveback_rows(client, rows, intents, events, *, prefix, first_pr
     from .strategy_one_stateful import StrategyOneFinancialView
     from .strategy_engine import AssignmentStatus, StrategyPermissions
     from .arte_journal_commit_v4 import V4CommittedPrefix
-    reasons = {profit_giveback_reason(number) for number in (31, 32)}
+    reasons = {profit_giveback_reason(number) for number in (31, 32, 33)}
     parents={str(x['record_id']):x for x in intents if x['reason'] in reasons}
     event_map={str(x['record_id']):x for x in events}
     if (len(event_map)!=len(events) or len({str(x['record_id']) for x in intents})!=len(intents)
