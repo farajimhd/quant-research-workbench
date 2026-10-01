@@ -1695,3 +1695,105 @@ These saved-position filters are descriptive only, not counterfactual P&L.
 Continue from immutable Strategy 18 and investigate remaining false starts
 without losing the large moves. No new agents or services were started in this
 campaign step; all task-owned backtest, audit and screen subprocesses finished.
+
+### Post-18 research: first setup strength and failed-move exits
+
+All but three of the 36 actual proposal entries occurred at their first
+base-eligible setup. The three delayed entries were same-episode reentries
+(two winners and one loss); a blanket first-setup-age restriction therefore
+does not address the remaining false starts and can remove strong reentries.
+The entry review also shows profitable GNPX/BIVI positions with low recent
+volume or trade counts, so no blanket liquidity floor has been adopted.
+
+The retained original-proposal risk-distance screen rejects a universal
+2–10% maximum initial-stop-distance filter because it removes the largest
+PM19 and AH19 winners. A separate read-only completed-bar probe tested
+first-minute negative 5s MACD exits at the closer of half the original stop
+distance or 1%, 2%, 3%, and 4% of the original proposal ask. It uses whole
+post-fill 5s buckets, a conservative 100ms held offset, and co-terminating
+valid quotes aged at most one second. This is a descriptive source screen;
+it does not reconstruct exact first-held snapshots, execute exits, or infer
+counterfactual P&L.
+
+Corrected probe: runtime `strategy18-capped-early-failure-probe-v3.json`,
+SHA256 `30b912707cace864cb28c0dfe14cff65636b88e40bef73ecde56980756e6d6fd`.
+A 2% cap hits thirteen losing positions but also the +$1,596.50 PM19 YJ winner
+(at 44.4s after first fill, proposal ask 3.73 / qualifying bid 3.64) and the
++$843.81 AH19 BTCT winner (at 45.5s, ask 1.35 / bid 1.29). The 4% cap hits no
+saved winner but largely preserves existing signal timing. The 2% idea is
+rejected as the next strategy change; tighter exits cannot be assumed to
+improve results merely because they reduce a loss threshold.
+
+Probe v1's new price mask retained an incorrect old R-suffix parser in its
+fresh-bid qualifier; its invalid status is explicitly saved separately.
+Probe v2 failed before writing a result because a broad text replacement
+changed the old mask's threshold variable. V3 corrects both expressions.
+Its final observations happen to equal v1's output on these data; that equality
+does not make the v1 implementation valid. Both unsuccessful helpers remain
+preserved and no actual strategy or backtest was changed by these diagnostics.
+
+The next research candidate strengthens only the frozen first-setup 10s
+histogram-growth requirement. Current/reentry momentum retains the existing
+strict 10% requirement. This distinction preserves the ability to reenter a
+strong activation episode after its initial acceleration has slowed. Native
+first-setup selection, original completed producer observations, cost/sizing,
+all exit rules and fixed targets remain the proposed parent authority. An
+independent cold-proposal threshold screen and a staged pure native/scalar
+50% growth primitive are being prepared; no Strategy 19 registration,
+configuration publication, actual backtest or profit is claimed.
+
+The independent cold-proposal first-growth screen is now complete:
+`strategy18-first-setup-growth-screen-v1.json`, SHA256
+`df50e33bf5d4f562dc4606dec54581c681d43240b82ed30e3c6c4172a7b05d64`.
+All 36 actual positions matched their committed entry proposals. A global
+first50% rule retains observed PM18 +$521.34 and PM19 +$609.55, but only AH18
++$199.33 because it removes BIVI +$464.97. Both GNPX entries retain their first
+69.85% growth despite the later reentry's lower current growth; the major YJ
+and BTCT winners also survive. Global60% removes two more PM19 losses but
+still discards BIVI. Total screened sums are not the four-session objective.
+
+Therefore the explicit next candidate is **premarket-only first50%**:
+first structurally eligible setup boundary strictly before 09:30 ET uses
+positive 10s histogram above prior plus 50% of its absolute magnitude; cutoff
+and later setup clocks retain the existing strict10% predicate. AH first/current
+momentum and all current-entry/reentry comparisons remain unchanged. There
+are no ticker or date exceptions. This session distinction is a development
+hypothesis from these two dates, not evidence of independent generalization.
+The existing native first-selection plan remains the authority; stronger
+initial growth does not select a later first setup or reset after closing.
+
+Eight durable source files stage the pure native/scalar scoped rule,
+`CertifiedInitialMomentumGrowthPlan` refinement, exact18 parent release,
+configuration compiler, publication CLI and focused tests. Strategy19's exact
+parent is `strategy-one-18:c05b441d-c5cc-4ac6-a4a1-50bac086d16b`, payload
+`f1a2b7347021fab5139658571ca462b238829e63751eb517e386d2d2fe5c26db`.
+The refinement reuses the immutable initial selection and adds a new content
+seal, preserving current eligibility and exact anchor provenance. It performs
+no source reads; producer comparisons are vectorized. Cutoff/scalar/prefix,
+Float64/source-clock, missing-data, overflow, immutable-array, forged-mask/seal,
+weak-first/later-strong and strong-first/later10% tests passed. Overflow in the
+new50% comparison is evaluated only inside its session scope; unchanged10%
+validation still applies to all rows.
+
+Root combined validation passed **73 tests in 4.02s**, including existing
+Strategy18 scalar admission and original initial compiler tests. Publication
+CLI help works and missing approval arguments fail before DB access. The
+Strategy19 configuration suite has 4 passing cases and 17 cases blocked by
+its deliberately uninstalled registry contract; full publication/registry/
+source-certifier integration remains required. No guard was weakened to
+make these cases pass.
+
+A read-only full certified-source compiler run on both dates independently
+matched all 36 saved proposal classifications and first anchor clocks, and
+proved AH eligible masks identical to Strategy18. Full staged compilation
+including the parent selection took **0.214s / 0.358s** on Aug18/Aug19.
+Receipt: `strategy19-staged-native-certified-validation-v1.json`, SHA256
+`85cc1e977aef4d9cb4c4d51c9face6aaff7edf36f3b0e3fbaf7bc6c460799243`.
+This is real certified-input implementation validation, not a Strategy19
+backtest or profit result. Next: integrate numbered runtime/certification and
+normalized entry recovery, validate all runnable routes, commit/push and pin
+exact clean source, publish the immutable19 configuration, and execute/audit
+all four actual sessions. Strategy18 remains the newest published release and
+continues to meet 3/4 targets. No services restarted. Two existing workers
+completed four bounded assignments; no new agents, nested agents, worker
+failures or interruptions. All root diagnostic subprocesses finished.
