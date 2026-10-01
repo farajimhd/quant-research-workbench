@@ -159,7 +159,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   outcomes: tuple[ExecutionOutcome, ...], *,
                   device: torch.device, clocks_per_chunk: int = 32,
                   grad_clip: float = 1., progress_callback=None,
-                  evaluation: bool = False) -> TrainingMetrics:
+                  evaluation: bool = False, learning_rate_for_clock=None) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Decisions use current completed candles and outcomes up to that close.
@@ -279,6 +279,10 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
             if not evaluation:
                 mean.backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip)
+                if learning_rate_for_clock is not None:
+                    rate=learning_rate_for_clock(chunk[-1].close_us)
+                    for group in optimizer.param_groups:
+                        group['lr']=rate
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 updates += 1

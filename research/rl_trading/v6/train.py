@@ -28,6 +28,7 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.identity_map import certify_identity_map, open_identity_map
 from research.rl_trading.v6.teacher_data import load_teacher
 from research.rl_trading.v6.training import train_session
+from research.rl_trading.v6.learning_rate import cosine_warmup
 from research.rl_trading.v6.environment_source import ArteExecutionSource
 from research.rl_trading.v6.environment import BracketEnvironment
 from research.rl_trading.v6.rollout import collect_session, update_session, audit_reconstruction
@@ -90,6 +91,11 @@ def main(argv=None):
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
     parser.add_argument('--learning-rate',type=float,default=3e-4)
+    parser.add_argument('--teacher-lr-schedule',choices=('fixed','cosine'),default='fixed')
+    parser.add_argument('--warmup-epochs',type=float,default=1.)
+    parser.add_argument('--minimum-lr-ratio',type=float,default=.1)
+    parser.add_argument('--resume-from',type=Path,
+        help='Explicit teacher-only continuation from a verified parent run last.pt')
     parser.add_argument('--clocks-per-chunk',type=int,default=32)
     parser.add_argument('--max-orders-per-second',type=int,default=64)
     parser.add_argument('--replay-every',type=int,default=1)
@@ -120,6 +126,10 @@ def main(argv=None):
         raise ValueError('Teacher initialization must run at least 10 epochs')
     if args.teacher_only and args.teacher_epochs > 20:
         raise ValueError('Teacher-only training is capped at 20 epochs')
+    if args.teacher_lr_schedule=='cosine':
+        cosine_warmup(0,args.teacher_epochs,args.learning_rate,args.warmup_epochs,args.minimum_lr_ratio)
+    if args.resume_from and (not args.teacher_only or args.resume or not args.resume_from.resolve().is_relative_to(runtime)):
+        raise ValueError('Parent continuation requires a separate teacher-only runtime')
     from research.rl_trading.v6.luld import RiskPenalty
     from research.rl_trading.v6.build_luld import open_sidecar
     risk=RiskPenalty(args.halt_onset_penalty,args.halt_per_minute_penalty,args.terminal_exposure_penalty)
@@ -158,6 +168,23 @@ def main(argv=None):
         'research_price_increment':.0001,'price_increment_authority':'canonical_precision_scenario_not_exchange_tick',
         'wandb_key_present':bool(os.environ.get('WANDB_API_KEY'))}
     manifest['hash']=digest(manifest)
+    parent_payload=None
+    if args.resume_from:
+        parent_manifest=json.loads((args.resume_from.parent/'manifest.json').read_text())
+        parent_payload=torch.load(args.resume_from,map_location=device,weights_only=False)
+        if parent_payload['manifest_hash']!=parent_manifest['hash']:
+            raise ValueError('Parent checkpoint manifest mismatch')
+        ignored={'run_root','teacher_lr_schedule','warmup_epochs','minimum_lr_ratio','resume_from'}
+        current=manifest['config']; previous=parent_manifest['config']
+        if ({k:v for k,v in current.items() if k not in ignored} !=
+                {k:v for k,v in previous.items() if k not in ignored} or
+                manifest['dataset_sha256']!=parent_manifest['dataset_sha256'] or
+                manifest['luld_certificates']!=parent_manifest['luld_certificates'] or
+                parent_payload['progress']['phase']!='teacher'):
+            raise ValueError('Parent continuation changed data or non-schedule configuration')
+        manifest['parent_checkpoint_sha256']=file_hash(args.resume_from)
+        manifest['parent_manifest_hash']=parent_manifest['hash']
+        manifest['hash']=digest({k:v for k,v in manifest.items() if k!='hash'})
     run.mkdir(parents=True,exist_ok=True)
     progress={'phase':'teacher','epoch':0,'day_index':0,'wandb_step':0}
     logger=None
@@ -170,9 +197,9 @@ def main(argv=None):
                 raise ValueError('Existing run requires explicit --resume')
         else: _write_json(run/'manifest.json',manifest)
         last=run/'last.pt'
-        if args.resume:
-            payload=torch.load(last,map_location=device,weights_only=False)
-            if payload['manifest_hash']!=manifest['hash']:
+        if args.resume or parent_payload is not None:
+            payload=parent_payload if parent_payload is not None else torch.load(last,map_location=device,weights_only=False)
+            if parent_payload is None and payload['manifest_hash']!=manifest['hash']:
                 raise ValueError('Resume checkpoint belongs to another audited run')
             policy.load_state_dict(payload['model'])
             optimizer.load_state_dict(payload['optimizer'])
@@ -204,6 +231,7 @@ def main(argv=None):
             except Exception:
                 reader.close(); raise
         def log(prefix,metrics):
+            metrics={**metrics,'learning_rate':optimizer.param_groups[0]['lr']}
             progress['wandb_step']+=1
             if logger: logger.log(_flatten(prefix,metrics),step=progress['wandb_step'])
             print(json.dumps({'phase':prefix,'metrics':metrics},default=str),flush=True)
@@ -242,7 +270,7 @@ def main(argv=None):
                 logger.save(str(run/filename),base_path=str(run),policy='now')
             # Smoke sampling is diagnostic; production starts at exact seed
             # (or saved RNG) regardless of how often audit-only was invoked.
-            if args.resume:
+            if args.resume or parent_payload is not None:
                 torch.set_rng_state(payload['torch_rng'].cpu())
                 if payload['cuda_rng']: torch.cuda.set_rng_state_all([r.cpu() for r in payload['cuda_rng']])
             else:
@@ -263,10 +291,17 @@ def main(argv=None):
                         log('progress/session_start',{'day':entry['day'],'phase':phase,'epoch':epoch+1})
                         session=open_day(entry)
                         if phase=='teacher':
+                            start_clock,end_clock=bounds(session.day)
+                            def teacher_rate(clock):
+                                position=epoch+(day_index+(clock-start_clock)/(end_clock-start_clock))/len(train_days)
+                                return cosine_warmup(position,args.teacher_epochs,args.learning_rate,
+                                    args.warmup_epochs,args.minimum_lr_ratio)
                             decisions,outcomes=load_teacher(Path(entry['teacher_root']),session,runtime_root=runtime)
                             result=asdict(train_session(policy,optimizer,session,decisions,outcomes,
                                 device=device,clocks_per_chunk=args.clocks_per_chunk,
+                                learning_rate_for_clock=teacher_rate if args.teacher_lr_schedule=='cosine' else None,
                                 progress_callback=pulse('progress/teacher',session.day,epoch)))
+                            result['learning_rate']=optimizer.param_groups[0]['lr']
                             del decisions,outcomes
                         else:
                             provider,tickers=evidence(session)

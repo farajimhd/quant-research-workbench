@@ -48,7 +48,8 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
     all_before = {name:value.detach().clone() for name,value in policy.state_dict().items()}
     optimizer = torch.optim.AdamW(policy.parameters(), lr=.001)
     metrics = train_session(policy, optimizer, session, decisions, outcomes,
-        device=torch.device('cpu'), clocks_per_chunk=2, evaluation=evaluation)
+        device=torch.device('cpu'), clocks_per_chunk=2, evaluation=evaluation,
+        learning_rate_for_clock=lambda clock: .000123)
     assert metrics.decisions == 2 and metrics.execution_outcomes == 1
     assert metrics.optimizer_steps == (0 if evaluation else 1)
     assert np.isfinite(metrics.mean_loss)
@@ -60,8 +61,10 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
     assert metrics.target_log_distance_mae is None
     assert all(0 <= value <= 1 for value in metrics.action_class_f1.values())
     if evaluation:
+        assert optimizer.param_groups[0]['lr']==.001
         assert all(torch.equal(value,policy.state_dict()[name]) for name,value in all_before.items())
         assert not optimizer.state
         assert all(parameter.grad is None for parameter in policy.parameters())
     else:
+        assert optimizer.param_groups[0]['lr']==.000123
         assert not torch.equal(before, policy.encoder.project.weight)
