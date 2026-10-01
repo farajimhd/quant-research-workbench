@@ -32,3 +32,25 @@ def test_local_resnet_isolation_padding_gradients_and_optimizer(device):
     model.eval()
     with torch.no_grad():model(x,present,account,held,features,cost)
     assert all(torch.equal(v,model.state_dict()[k]) for k,v in state.items())
+
+
+def test_window_builder_uses_actual_candles_and_never_future_rows():
+    import numpy as np
+    from types import SimpleNamespace
+    from research.rl_trading.v6.execution_features import VERSION
+    from research.rl_trading.v6.ticker_resnet_data import prepare_windows
+    scalar=np.zeros((3,37),np.float32);scalar[:,8]=[1.,2.,3.]
+    source=SimpleNamespace(close_us=np.array([100,300,900]),scalar=scalar,
+        levels=np.zeros((3,2,5,11),np.float32))
+    session=SimpleNamespace(listings=('A',),previous=None,
+        bank=SimpleNamespace(listing=lambda name:source))
+    labels=(SimpleNamespace(close_us=300,held_index=np.empty(0,int),soft_tokens=(0,1)),)
+    normal=dict(version=VERSION,scope='train_only',mean=[0.]*INPUT_WIDTH,std=[1.]*INPUT_WIDTH)
+    x,present=prepare_windows(session,labels,normal)
+    assert present.sum()==2 and present[0,-2:].all()
+    assert np.all(x[0,:-2]==0)
+    source.scalar[2]=float('nan')
+    changed,_=prepare_windows(session,labels,normal)
+    assert np.array_equal(x,changed)
+    with pytest.raises(ValueError,match='budget'):
+        prepare_windows(session,labels,normal,max_bytes=1)
