@@ -54,3 +54,26 @@ def test_window_builder_uses_actual_candles_and_never_future_rows():
     assert np.array_equal(x,changed)
     with pytest.raises(ValueError,match='budget'):
         prepare_windows(session,labels,normal,max_bytes=1)
+
+
+def test_resnet_epoch_uses_clock_updates_and_preserves_eval_weights():
+    import numpy as np
+    from types import SimpleNamespace
+    from research.rl_trading.v6.ticker_resnet_train import run_epoch
+    torch.manual_seed(73)
+    model=TickerResNet(8)
+    labels=tuple(SimpleNamespace(close_us=c,held_index=np.empty(0,int),soft_tokens=(0,1),
+        soft_probabilities=(.2,.8),account=np.zeros(7,np.float32),held_features=np.zeros((0,11),np.float32),
+        sample_weight=.5,execution_indices=np.array([0]),execution_features=np.zeros((1,11),np.float32))
+        for c in (1_000_000,2_000_000,33_000_000,34_000_000))
+    x=np.zeros((4,120,INPUT_WIDTH),np.float32);presence=np.ones((4,120),bool)
+    value=model.heads.value.weight.detach().clone()
+    report,pred,truth=run_epoch(model,x,presence,labels,device='cpu',
+        optimizer=torch.optim.Adam(model.parameters(),lr=.001),batch_size=1)
+    assert report['optimizer_steps']==2 and pred.shape==(4,4) and (truth==0).all()
+    assert np.allclose(pred.sum(1),1)
+    assert torch.equal(value,model.heads.value.weight)
+    state={k:v.clone() for k,v in model.state_dict().items()}
+    report,_,_=run_epoch(model,x,presence,labels,device='cpu',batch_size=2)
+    assert report['optimizer_steps']==0
+    assert all(torch.equal(v,model.state_dict()[k]) for k,v in state.items())
