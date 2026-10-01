@@ -46,8 +46,26 @@ def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
     Backtest, so the intent and its simulated OMS action share one durability
     boundary without weakening live order admission.
     """
-    return (coalesce_v4_units(units, max_events=max_events)
-            if len(units) > 1 else units[0],)
+    if len(units) > 1:
+        from src.trading_runtime.arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
+        if (type(max_events) is not int or not 2 <= max_events <= MAX_V4_COMMIT_EVENTS
+                or sum(len((unit if type(unit) is TypedJournalBatch else unit.base).events)
+                       for unit in units) > max_events):
+            raise ValueError('V4 publication prefix exceeds its event bound')
+    # These exits load their original entry from a sealed predecessor. They
+    # must begin a new commit even when the entry and exit fit in one chunk.
+    groups = []
+    pending = []
+    for unit in units:
+        if type(unit) in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch) and pending:
+            groups.append(coalesce_v4_units(tuple(pending), max_events=max_events)
+                          if len(pending) > 1 else pending[0])
+            pending = []
+        pending.append(unit)
+    if pending:
+        groups.append(coalesce_v4_units(tuple(pending), max_events=max_events)
+                      if len(pending) > 1 else pending[0])
+    return tuple(groups)
 
 
 def _committed_intent_source(batch: TypedJournalBatch,

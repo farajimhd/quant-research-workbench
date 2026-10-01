@@ -12,7 +12,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/backend/backtest_strategy_one_execution.py': {'__module__': '38203ae8ef938df25ca4ee19bc1da65e39c272baeaf08bb0f04fdd27be3f7b4d'},
  'src/backend/backtest_strategy_one_management.py': {'__module__': '9ba7a1be877626617d0daa90b2c4de544f76bd45cb31ab297d1b585b0efb1432'},
  'src/backend/backtest_typed_projection.py': {'__module__': '317547c9ee0e818f818643ea15c09d5ecec40d418e8bd3702d710b41db9cfd96'},
- 'src/backend/backtest_typed_publisher.py': {'__module__': 'cf1962916d197076c1021e68975694e86c030daeb64e33629195d3df2b7914a9'},
+ 'src/backend/backtest_typed_publisher.py': {'__module__': '56fb32933488d5b924ffbc82c8230138132329f79b4fe3afb7b2043aed655100'},
  'src/backend/replay_run_service.py': {'_confirm_profit_arming_checkpoint': '090dbf43500ec400015289c3819cbf110854028b2cdf85c5ed0e881f731ef055',
                                        '_require_numbered_session_window': '5ac0afe5593303e13de9b0bc533e5cb37a512bb0eabe3aed15f00f9154762be2',
                                        '_save_restart_checkpoint_responsive': '2e2ae0fd1f66145caf790b865f5146cb614386c6b451ad1c00b29a5401347482'},

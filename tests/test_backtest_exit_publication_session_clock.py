@@ -38,6 +38,26 @@ def test_mixed_prefix_uses_exit_parent_clock_for_native_session(monkeypatch, fam
         first_sequence=base.first_sequence - 1, last_sequence=base.first_sequence - 1,
         events=(creation,))
     compound = coalesce_v4_units((preceding, exit_unit))
+    if change == 'valid':
+        from src.backend.backtest_typed_publisher import _coalesce_v4_units
+        published = _coalesce_v4_units((preceding, exit_unit))
+        assert published == (preceding, exit_unit)
+        assert published[1].base.prior_batch_id == published[0].batch_id
+        later_id = str(UUID(int=996))
+        later_event = writer.typed_row('trading_event_v1', {
+            **{k: v for k, v in seed.events[0].items() if k != 'content_hash'},
+            'run_id': base.run_id, 'batch_id': later_id, 'attempt_id': base.attempt_id,
+            'record_id': str(UUID(int=995)), 'sequence': base.last_sequence + 1,
+        })
+        later = replace(seed, run_id=base.run_id, attempt_id=base.attempt_id,
+            batch_id=later_id, prior_batch_id=base.batch_id,
+            first_sequence=base.last_sequence + 1, last_sequence=base.last_sequence + 1,
+            events=(later_event,))
+        published = _coalesce_v4_units((preceding, exit_unit, later))
+        assert published == (preceding, coalesce_v4_units((exit_unit, later)))
+        assert published[1].base.prior_batch_id == preceding.batch_id
+        with pytest.raises(ValueError, match='event bound'):
+            _coalesce_v4_units((preceding, exit_unit, later), max_events=2)
     key = 'profit_givebacks' if family == 'profit' else 'confirmed_ah_failures'
     if change == 'missing_parent':
         compound = replace(compound, children={**compound.children,
