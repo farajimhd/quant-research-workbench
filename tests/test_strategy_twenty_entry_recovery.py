@@ -48,7 +48,7 @@ class ExactBits(MemoryClient):
 
 def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
     plan = source.plan
-    original = replace(_proposal(), strategy_number=18 if strategy_number in (26, 27, 28, 29) else 19, boundary_ms=boundary,
+    original = replace(_proposal(), strategy_number=18 if strategy_number in (26, 27, 28, 29, 30) else 19, boundary_ms=boundary,
         momentum=plan.momentum.lookup('AAA', boundary),
         initial_momentum=plan.source.parent.selection_witness('AAA', boundary))
     proposal = bind_certified_price_break_proposal(plan, original, strategy_number=strategy_number)
@@ -72,9 +72,9 @@ def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 26, 27, 28, 29])
+@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30])
 def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, strategy_number):
-    if strategy_number in (26, 27, 28, 29):
+    if strategy_number in (26, 27, 28, 29, 30):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -115,7 +115,7 @@ def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, stra
 
 
 @pytest.mark.parametrize('held', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30])
 def test_twenty_manager_scalar_snapshot_recovers_witnesses_from_real_typed_entry(held, strategy_number):
     from src.backend.backtest_strategy_one_management import StrategyOneManagementState
     from src.trading_runtime.strategy_one_management_snapshot import (
@@ -123,7 +123,7 @@ def test_twenty_manager_scalar_snapshot_recovers_witnesses_from_real_typed_entry
     )
     from src.trading_runtime.strategy_one_position import ProtectionState
     from tests.test_strategy_thirteen_manager_sources import manager
-    if strategy_number in (26, 27, 28, 29):
+    if strategy_number in (26, 27, 28, 29, 30):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -175,11 +175,11 @@ def test_scalar_recovery_encoding_remains_bound_to_reviewed_source(tmp_path, nod
         certify_rising_momentum_entry_source(source_overrides={relative: altered})
 
 
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30])
 def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry(strategy_number):
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
-    if strategy_number in (26, 27, 28, 29):
+    if strategy_number in (26, 27, 28, 29, 30):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -320,7 +320,7 @@ def test_manager_writer_transports_native_source_through_actual_queue(monkeypatc
 
 
 @pytest.mark.parametrize('kind', ('broker_match', 'oms_observation', 'evidence', 'campaign'))
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 29, 30])
 def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeypatch, kind, strategy_number):
     import importlib
     from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
@@ -328,7 +328,7 @@ def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeyp
     from src.trading_runtime import arte_journal_writer as writer_module
     from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
     from src.trading_runtime.domain import TradingMode
-    if strategy_number in (26, 27, 28, 29):
+    if strategy_number in (26, 27, 28, 29, 30):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -381,7 +381,7 @@ def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeyp
 
 
 @pytest.mark.parametrize('kind', ('broker_match', 'oms_observation', 'evidence', 'campaign'))
-@pytest.mark.parametrize('strategy_number', [24, 26, 27, 28, 29])
+@pytest.mark.parametrize('strategy_number', [24, 26, 27, 28, 29, 30])
 def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind, strategy_number):
     import importlib
     from types import SimpleNamespace
@@ -390,7 +390,7 @@ def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind, 
     from src.trading_runtime import arte_journal_projection
     from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
     from src.trading_runtime.domain import TradingMode
-    if strategy_number in (26, 27, 28, 29):
+    if strategy_number in (26, 27, 28, 29, 30):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:

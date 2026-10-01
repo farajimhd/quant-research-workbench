@@ -51,7 +51,7 @@ def fixture(strategy_number=9, witness=None):
     source_id = str(UUID(int=77))
     intent = followthrough_exit_intent(witness, financial,
         session_date=date(2026, 8, 18), source_entry_intent_id=source_id,
-        strategy_number=strategy_number if strategy_number in (25, 26, 27, 28, 29) else 9)
+        strategy_number=strategy_number if strategy_number in (25, 26, 27, 28, 29, 30) else 9)
     base = strategy_intent_batch(intent, run_id=str(UUID(int=1)), run_month=date(2026, 8, 1),
         account_id='DU1', attempt_id=str(UUID(int=2)), batch_id=str(UUID(int=3)),
         prior_batch_id=str(UUID(int=0)), sequence=2, source_cursor='cursor',
@@ -82,7 +82,7 @@ def test_scalar_family_and_deterministic_factory():
         unit.failure['bid'] = 9.
 
 
-@pytest.mark.parametrize('strategy_number', [25, 26, 27, 28, 29])
+@pytest.mark.parametrize('strategy_number', [25, 26, 27, 28, 29, 30])
 def test_inherited_quarter_witness_seals_and_restores_exact_number(strategy_number):
     from src.trading_runtime.arte_followthrough_failure_v4 import validate_numbered_failure
     witness = FollowThroughFailure(40000,31100,10.01,9.89,99700,
@@ -150,7 +150,25 @@ def test_strategy29_late_quarter_only_witness_is_rejected():
         validate_numbered_failure(witness, 29)
 
 
-@pytest.mark.parametrize('strategy_number', [25, 26, 27, 28, 29])
+def test_strategy30_late_witness_requires_negative_regime_at_restore():
+    from src.trading_runtime.arte_followthrough_failure_v4 import validate_numbered_failure
+    negative = FollowThroughFailure(100_000, 31_100, 10.01, 9.89, 99_400,
+                                    -.02, -.01, 9.94, 9.95, 100_000)
+    _, _, base, row, source, source_event, entry = fixture(30, negative)
+    families = dict(_sealed_families(base))
+    sealed = seal_followthrough_rows(None, (row,),
+        (source, *families['trading_strategy_intent_v1']),
+        (source_event, *base.events), (entry,))
+    assert restore_failure(sealed[0]) == negative
+    positive = replace(negative, macd_line=-.01, macd_signal=.01)
+    validate_numbered_failure(positive, 29)
+    with pytest.raises(ValueError, match='pinned rule'):
+        validate_numbered_failure(positive, 30)
+    with pytest.raises(ValueError, match='pinned rule'):
+        restore_failure({**sealed[0], 'macd_line': -.01, 'macd_signal': .01})
+
+
+@pytest.mark.parametrize('strategy_number', [25, 26, 27, 28, 29, 30])
 def test_inherited_afterhours_failure_keeps_half_risk_threshold(strategy_number):
     from src.trading_runtime.arte_followthrough_failure_v4 import validate_numbered_failure
     quarter_only = FollowThroughFailure(43_225_000,43_211_100,10.01,9.89,99700,
@@ -199,7 +217,7 @@ def test_failure_source_binds_its_exact_successor_number(strategy_number):
             intents, (source_event, *base.events), (entry,))
 
 
-@pytest.mark.parametrize('strategy_number', [8, 30, True])
+@pytest.mark.parametrize('strategy_number', [8, 31, True])
 def test_projector_rejects_unapproved_failure_consumers(strategy_number):
     witness, intent, base, *_ = fixture()
     with pytest.raises(ValueError, match='Strategy 9'):

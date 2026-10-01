@@ -522,9 +522,9 @@ def test_typed_manager_capture_restores_pending_entry_position_and_breaks():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('number', (24, 25, 26, 27, 28, 29))
-@pytest.mark.parametrize('boundary,half_risk_offset', ((45_000, .01), (100_000, -.01), (100_000, .01)))
-def test_native_premarket_failure_preserves_parent_and_routes_late_rule(number, boundary, half_risk_offset):
+@pytest.mark.parametrize('number', (24, 25, 26, 27, 28, 29, 30))
+@pytest.mark.parametrize('boundary,half_risk_offset,signal', ((45_000, .01, -.1), (100_000, -.01, -.1), (100_000, .01, -.1), (100_000, -.01, .1)))
+def test_native_premarket_failure_preserves_parent_and_routes_late_rule(number, boundary, half_risk_offset, signal):
     from types import SimpleNamespace, MethodType
     from uuid import UUID
     from test_strategy_twenty_entry_recovery import (
@@ -535,7 +535,7 @@ def test_native_premarket_failure_preserves_parent_and_routes_late_rule(number, 
     from src.trading_runtime.runtime import TradingRuntime, RunMode
 
     async def run():
-        if number in (26, 27, 28, 29):
+        if number in (26, 27, 28, 29, 30):
             from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
             market, parent = relaxed_authority()
         else:
@@ -562,10 +562,10 @@ def test_native_premarket_failure_preserves_parent_and_routes_late_rule(number, 
         rows = _add_rows(boundary)
         rows[100]['quote_timestamp_us'] = int(market_day_boundary(runtime.config.anchor_date, boundary).timestamp()*1_000_000)
         rows[5000] = {'boundary_ms': boundary, 'price_valid': 1,
-            'close_int': round(price*10000), 'macd_line': -.2, 'macd_signal': -.1}
+            'close_int': round(price*10000), 'macd_line': signal-.1, 'macd_signal': signal}
         await manager.on_management(financial, rows, boundary)
-        expected = (number in (25, 26, 27, 28, 29) if boundary == 45_000
-                    else number == 29 and half_risk_offset < 0)
+        expected = (number in (25, 26, 27, 28, 29, 30) if boundary == 45_000
+                    else (number == 29 or number == 30 and signal < 0) and half_risk_offset < 0)
         assert len(exits) == int(expected)
         if expected:
             assert exits[0][2] == intent.intent_id

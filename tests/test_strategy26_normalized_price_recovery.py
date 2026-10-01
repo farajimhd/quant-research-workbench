@@ -41,7 +41,7 @@ def graph(source_values=None, *, strategy_number=26):
     return plan, proposal, (entry,), (intent,), (event,), current, initial, price
 
 
-@pytest.mark.parametrize("strategy_number", [26, 27, 28, 29])
+@pytest.mark.parametrize("strategy_number", [26, 27, 28, 29, 30])
 def test_all_three_witness_families_seal_and_restore_native_26_proposal_and_intent(strategy_number):
     plan, proposal, entries, intents, events, current, initial, price = graph(strategy_number=strategy_number)
     sealed_current = seal_rising_momentum_rows(current, entries, intents, events)
