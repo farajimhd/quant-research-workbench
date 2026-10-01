@@ -26,7 +26,7 @@ def source():
     return market, parent, plan, original
 
 
-@pytest.mark.parametrize("strategy_number", [26, 27])
+@pytest.mark.parametrize("strategy_number", [26, 27, 28])
 def test_native_26_binding_preserves_every_financial_field_and_has_own_identity(strategy_number):
     _, parent, plan, original = source()
     bound = bind_certified_price_break_proposal(plan, original, strategy_number=strategy_number)

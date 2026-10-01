@@ -41,7 +41,7 @@ def graph(source_values=None, *, strategy_number=26):
     return plan, proposal, (entry,), (intent,), (event,), current, initial, price
 
 
-@pytest.mark.parametrize("strategy_number", [26, 27])
+@pytest.mark.parametrize("strategy_number", [26, 27, 28])
 def test_all_three_witness_families_seal_and_restore_native_26_proposal_and_intent(strategy_number):
     plan, proposal, entries, intents, events, current, initial, price = graph(strategy_number=strategy_number)
     sealed_current = seal_rising_momentum_rows(current, entries, intents, events)
@@ -73,9 +73,10 @@ def test_changed_price_values_or_number_cannot_restore_or_seal(field, value):
         seal_first_price_rows(changed, entries, intents, events, (price.authority,))
 
 
-def test_native_26_authority_cannot_be_substituted_for_native_27():
-    _, _, entries, intents, events, _, _, price = graph(strategy_number=27)
-    wrong_authority = replace(price.authority, strategy_number=26)
+@pytest.mark.parametrize("actual,foreign", [(27, 26), (28, 26), (28, 27)])
+def test_other_numbered_authority_cannot_be_substituted(actual, foreign):
+    _, _, entries, intents, events, _, _, price = graph(strategy_number=actual)
+    wrong_authority = replace(price.authority, strategy_number=foreign)
     with pytest.raises(ValueError, match="source authority differs"):
         seal_first_price_rows(price.rows, entries, intents, events, (wrong_authority,))
 

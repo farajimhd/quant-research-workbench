@@ -391,12 +391,50 @@ def reconstruct_backtest_definition_from_arte(
     verified: Mapping[str, Any], run_context: Mapping[str, Any],
     configuration_revision: Mapping[str, Any], preflight: Mapping[str, Any],
 ) -> Any:
+    """Execution/recovery reconstruction retains strict current-source readiness."""
+    return _reconstruct_backtest_definition(
+        verified, run_context, configuration_revision, preflight)
+
+
+def reconstruct_saved_review_definition_from_arte(
+    verified: Mapping[str, Any], run_context: Mapping[str, Any],
+    configuration_revision: Mapping[str, Any], preflight: Mapping[str, Any],
+    *, source_authority: Any,
+) -> Any:
+    """Read-only reconstruction cannot be substituted for execution preflight."""
+    from src.backend.backtest_saved_source_authority import validate_saved_review_source
+    validate_saved_review_source(
+        source_authority, configuration_revision, run_id=run_context.get("run_id"))
+    if (preflight.get("saved_review_ready") is not True
+            or preflight.get("ready") is not False
+            or preflight.get("strategy_run_ready") is not False
+            or preflight.get("saved_review_source") != source_authority.evidence()
+            or sum(row.get("id") == "saved_review_source"
+                   and row.get("required") is True and row.get("status") == "ready"
+                   and row.get("evidence") == source_authority.evidence()
+                   for row in preflight.get("checks") or ()) != 1):
+        raise RuntimeError("Saved review definition lacks its bound read-only source preflight")
+    return _reconstruct_backtest_definition(
+        verified, run_context, configuration_revision, preflight,
+        _source_authority=source_authority)
+
+
+def _reconstruct_backtest_definition(
+    verified: Mapping[str, Any], run_context: Mapping[str, Any],
+    configuration_revision: Mapping[str, Any], preflight: Mapping[str, Any],
+    *, _source_authority: Any = None,
+) -> Any:
     """Rebuild one Strategy 1 run from named rows, never a saved manifest.
 
     Re-running read-only preflight supplies the full certified source plan;
     the recomputed normalized definition must exactly equal the saved rows.
     """
     from src.backend.replay_run_service import ReplayRunDefinition, RunMode
+
+    if _source_authority is not None:
+        from src.backend.backtest_saved_source_authority import validate_saved_review_source
+        validate_saved_review_source(
+            _source_authority, configuration_revision, run_id=run_context.get("run_id"))
 
     parent = dict(verified.get("definition") or {})
     session = date.fromisoformat(str(run_context.get("session_date")))
@@ -413,8 +451,8 @@ def reconstruct_backtest_definition_from_arte(
             or run_context.get("configuration_hash") !=
                configuration_revision.get("content_hash")
             or type(interval_ms) is not int or interval_ms != 100
-            or preflight.get("ready") is not True
-            or preflight.get("strategy_run_ready") is not True
+            or (_source_authority is None and preflight.get("ready") is not True)
+            or (_source_authority is None and preflight.get("strategy_run_ready") is not True)
             or not checks or any(row.get("status") != "ready"
                                  for row in checks if row.get("required", True))
             or tuple(dict(preflight.get("window") or {}).get("sessions") or ())

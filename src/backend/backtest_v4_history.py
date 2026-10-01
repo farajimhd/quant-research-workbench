@@ -11,6 +11,7 @@ from uuid import UUID
 from src.trading_runtime.arte_journal_writer import _literal, _rows
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
+from src.trading_runtime.strategy_registry import installed_numbered_fixed_strategy_numbers
 
 
 def _utc(value: str) -> str:
@@ -24,6 +25,7 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
     """List fenced run contexts with bounded, explicitly unaudited commit heads."""
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("V4 history limit must be between 1 and 100")
+    revisions = tuple(sorted({STRATEGY_NUMBER, *installed_numbered_fixed_strategy_numbers()}))
     contexts = _rows(client, """
         SELECT r.run_id AS run_id,r.run_month AS run_month,
                r.session_date AS session_date,r.started_at AS started_at,
@@ -41,10 +43,10 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
           ON d.run_id=df.run_id AND d.run_month=df.run_month
           AND d.content_hash=df.definition_hash
         WHERE r.mode='backtest' AND r.evaluation_interval_ms=100
-          AND c.strategy_id={strategy_id} AND c.strategy_revision IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25)
+          AND c.strategy_id={strategy_id} AND c.strategy_revision IN ({revisions})
         ORDER BY r.started_at DESC,r.run_id DESC
         LIMIT {limit_plus_one} FORMAT JSONEachRow
-    """.format(strategy_id=_literal(STRATEGY_ID), revision=STRATEGY_NUMBER,
+    """.format(strategy_id=_literal(STRATEGY_ID), revisions=",".join(map(str, revisions)),
                limit_plus_one=limit + 1))
     if len(contexts) > limit:
         contexts = contexts[:limit]

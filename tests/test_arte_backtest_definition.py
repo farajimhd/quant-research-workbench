@@ -181,6 +181,52 @@ def test_cold_definition_reconstructs_only_exact_certified_rows():
                 "price_level_plan_token": "0" * 64}})
 
 
+@pytest.mark.parametrize("corruption", [None, "market", "v7", "check", "run_ready", "normalized"])
+def test_saved_review_keeps_native_guards_and_cannot_authorize_execution(monkeypatch, corruption):
+    from types import SimpleNamespace
+    from src.backend import backtest_saved_source_authority as sources
+    from src.trading_runtime.arte_backtest_definition import reconstruct_saved_review_definition_from_arte
+
+    original = _definition()
+    saved = prepare_backtest_definition("run-1", original, run_month=RUN_MONTH)
+    context = {"run_id": "run-1", "mode": "backtest", "run_month": RUN_MONTH.isoformat(),
+               "session_date": "2026-08-18", "evaluation_interval_ms": 100,
+               "configuration_hash": "a" * 64, "market_plan_token": "c" * 64}
+    evidence = {"scope": "test-read-only-source"}
+    proof = SimpleNamespace(evidence=lambda: evidence)
+    bindings = []
+    monkeypatch.setattr(sources, "validate_saved_review_source",
+                        lambda authority, revision, *, run_id: bindings.append((authority, run_id)))
+    preflight = {"ready": False, "strategy_run_ready": False, "saved_review_ready": True,
+                 "saved_review_source": evidence,
+                 "checks": [{"id": "saved_review_source", "status": "ready", "required": True,
+                             "evidence": evidence}],
+                 "window": {"sessions": ["2026-08-18"]},
+                 "market_data_plan": dict(original.market_data_plan),
+                 "causal_v7_plan": dict(original.causal_v7_plan)}
+    if corruption == "market":
+        preflight["market_data_plan"]["token"] = "0" * 64
+    elif corruption == "v7":
+        preflight["causal_v7_plan"]["token"] = "0" * 64
+    elif corruption == "check":
+        preflight["checks"].append({"id": "coverage", "status": "blocked", "required": True})
+    elif corruption == "run_ready":
+        preflight["strategy_run_ready"] = True
+    elif corruption == "normalized":
+        preflight["market_data_plan"]["price_level_plan_token"] = "0" * 64
+    if corruption is not None:
+        with pytest.raises(RuntimeError):
+            reconstruct_saved_review_definition_from_arte(
+                saved, context, original.configuration_revision, preflight, source_authority=proof)
+    else:
+        recovered = reconstruct_saved_review_definition_from_arte(
+            saved, context, original.configuration_revision, preflight, source_authority=proof)
+        assert prepare_backtest_definition("run-1", recovered, run_month=RUN_MONTH) == saved
+        assert bindings == [(proof, "run-1"), (proof, "run-1")]
+    with pytest.raises(RuntimeError, match="certified authority"):
+        reconstruct_backtest_definition_from_arte(saved, context, original.configuration_revision, preflight)
+
+
 def test_definition_rejects_missing_identity_and_imprecise_scalars():
     with pytest.raises(ValueError, match="pinned configuration"):
         prepare_backtest_definition("run-1", _definition(

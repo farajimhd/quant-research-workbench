@@ -47,8 +47,9 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release):
     from contextlib import closing
     from datetime import date, time, timedelta
     from src.trading_runtime.arte_backtest_definition import (
-        load_backtest_definition, reconstruct_backtest_definition_from_arte,
+        load_backtest_definition, reconstruct_saved_review_definition_from_arte,
     )
+    from src.backend.backtest_saved_source_authority import certify_saved_review_source
     from src.backend.replay_run_service import backtest_preflight
     from src.backend.backtest_market_data import (
         certified_market_plan_from_arte, configuration_tickers,
@@ -76,6 +77,7 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release):
     saved = load_backtest_definition(client, run_id, run_context=context)
     parent = saved["definition"]
     revision = release.revision()
+    source_authority = certify_saved_review_source(context, revision)
     preflight = backtest_preflight(
         anchor_date=date.fromisoformat(context["session_date"]) + timedelta(days=1),
         session_count=1, start_time=local_clock(parent["start_local_ms"]),
@@ -84,9 +86,10 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release):
         tickers=tuple(row["ticker"] for row in saved["tickers"]),
         configuration_revision=revision,
         experimental_structure_book=parent["structure_book"],
+        _saved_review_authority=source_authority,
     )
-    definition = reconstruct_backtest_definition_from_arte(
-        saved, context, revision, preflight)
+    definition = reconstruct_saved_review_definition_from_arte(
+        saved, context, revision, preflight, source_authority=source_authority)
     pins = definition.market_data_plan
     market = certified_market_plan_from_arte(
         sessions=[date.fromisoformat(value) for value in pins["sessions"]],
@@ -118,7 +121,7 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release):
         momentum = load_rising_momentum_plan(
             market, visible, client=source_client,
             candidate_indices=base_gate.eligible_indices)
-        if release.strategy_number in (26, 27):
+        if release.strategy_number in (26, 27, 28):
             from src.backend.backtest_strategy_initial_ten_percent import compile_initial_ten_percent_plan
             initial = compile_initial_ten_percent_plan(visible, fixed.entry, momentum)
         else:
@@ -171,7 +174,7 @@ def _terminal_attestation(client, normalized: str,
             or not is_numbered_fixed_strategy(context["strategy_id"], int(context["strategy_revision"]))
             or context["evaluation_interval_ms"] != 100):
         raise ValueError("Saved review accepts only installed immutable numbered strategies at 100 ms")
-    if int(context["strategy_revision"]) in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27):
+    if int(context["strategy_revision"]) in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28):
         from contextlib import closing
         from src.backend.backtest_market_data import readonly_clickhouse_client
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
@@ -188,7 +191,7 @@ def _terminal_attestation(client, normalized: str,
             attestation = candidate
             break
     if attestation is None:
-        if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27):
+        if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28):
             source = _saved_twenty_price_source(client, normalized, context, release)
             prefix = load_verified_v4_prefix(
                 client, normalized, first_price_source=source)

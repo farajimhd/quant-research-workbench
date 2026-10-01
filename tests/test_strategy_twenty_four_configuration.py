@@ -69,7 +69,7 @@ def test_twenty_four_retains_parent_session_management_contract():
     assert contract.caps_entry_at_reference_ask
     assert numbered_session_exit_reason(24) == 'strategy_twenty_four_session_exit'
     with pytest.raises(ValueError, match='installed'):
-        numbered_fixed_strategy(28)
+        numbered_fixed_strategy(29)
 
 
 def test_twenty_four_registered_executor_is_backtest_only_and_has_full_source_proof():

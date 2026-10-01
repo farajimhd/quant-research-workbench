@@ -116,7 +116,7 @@ from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
 def _require_numbered_session_window(strategy: Mapping[str, Any],
                                      start: clock_time, end: clock_time) -> None:
     """Extended-session releases run one flat window, never regular hours."""
-    if strategy.get("strategy_number") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27):
+    if strategy.get("strategy_number") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28):
         return
     if not ((clock_time(4) <= start < end <= clock_time(9, 30))
             or (clock_time(16) <= start < end <= clock_time(20))):
@@ -9523,7 +9523,7 @@ class ReplayRunService:
             if definition is None:
                 raise KeyError(run_id)
             if dict(definition.configuration_revision.get("payload", {}).get(
-                    "strategy") or {}).get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27):
+                    "strategy") or {}).get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28):
                 raise RuntimeError(
                     "This numbered strategy resume awaits interrupted-run equivalence acceptance; start a new run")
             controller = await self._prepare_typed_v4_resume(
@@ -11797,6 +11797,7 @@ def backtest_preflight(
     tickers: tuple[str, ...] = (),
     configuration_revision: dict[str, Any] | None = None,
     experimental_structure_book: str = "",
+    _saved_review_authority: Any = None,
 ) -> dict[str, Any]:
     preflight_started = time.perf_counter()
     preflight_timings: dict[str, float] = {}
@@ -11810,6 +11811,9 @@ def backtest_preflight(
         )
     approved = configuration_revision or backtest_configuration_snapshot()
     configuration = dict(approved.get("payload") or {})
+    if _saved_review_authority is not None:
+        from src.backend.backtest_saved_source_authority import validate_saved_review_source
+        validate_saved_review_source(_saved_review_authority, approved)
     from src.backend.backtest_market_data import (
         certified_market_plan_from_arte,
         configuration_tickers,
@@ -11881,8 +11885,13 @@ def backtest_preflight(
         from src.backend.historical_runtime_versions import (
             fixed_strategy_one_runtime_version_check,
         )
-        version_future = _STRATEGY_ONE_PREFLIGHT_POOL.submit(
-            fixed_strategy_one_runtime_version_check, configuration)
+        if _saved_review_authority is None:
+            version_future = _STRATEGY_ONE_PREFLIGHT_POOL.submit(
+                fixed_strategy_one_runtime_version_check, configuration)
+        else:
+            from src.backend.backtest_saved_source_authority import saved_review_runtime_version_check
+            version_future = _STRATEGY_ONE_PREFLIGHT_POOL.submit(
+                saved_review_runtime_version_check, _saved_review_authority, approved)
     if strategy_one_fixed:
         # STRATEGY CREATION RULE: the numbered scanner is code-owned and its
         # materialized candidate seal is the signal authority. A historical
@@ -12660,8 +12669,11 @@ def backtest_preflight(
     return {
         **base,
         "checks": checks,
-        "ready": ready,
-        "strategy_run_ready": ready,
+        "ready": ready and _saved_review_authority is None,
+        "strategy_run_ready": ready and _saved_review_authority is None,
+        **({"saved_review_ready": ready,
+            "saved_review_source": _saved_review_authority.evidence()}
+           if _saved_review_authority is not None else {}),
         "configuration_revision_id": approved.get("revision_id", ""),
         "configuration_revision": approved.get("revision", 0),
         "configuration_content_hash": approved.get("content_hash", ""),

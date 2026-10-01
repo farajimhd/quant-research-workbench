@@ -28,7 +28,7 @@ def _head():
     }
 
 
-@pytest.mark.parametrize("number", range(1, 20))
+@pytest.mark.parametrize("number", range(1, 29))
 def test_history_preserves_number_identity_without_claiming_audited_review(monkeypatch, number):
     def rows(_client, sql):
         if "trading_run_v1 AS r" in sql:
@@ -42,6 +42,15 @@ def test_history_preserves_number_identity_without_claiming_audited_review(monke
     assert row["strategy_revision"] == row["configuration_revision"] == number
     assert row["strategy_name"] == row["configuration_label"] == f"Strategy {number}"
     assert row["journal_verification"] == "inventory_only"
+
+
+def test_history_query_uses_installed_release_inventory(monkeypatch):
+    queries = []
+    monkeypatch.setattr(history, "installed_numbered_fixed_strategy_numbers", lambda: (2, 26, 27, 28))
+    monkeypatch.setattr(history, "_rows", lambda _client, sql: queries.append(sql) or [])
+    assert history.load_strategy_one_v4_history(object()) == []
+    assert "c.strategy_revision IN (1,2,26,27,28)" in queries[0]
+    assert "LIMIT 33" in queries[0]
 
 
 def test_history_lists_normalized_record_without_claiming_review(monkeypatch):

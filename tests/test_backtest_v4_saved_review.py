@@ -42,11 +42,12 @@ def _prefix():
 
 
 @pytest.mark.parametrize('changed_market', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 26])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28])
 def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch, changed_market, strategy_number):
     from test_backtest_strategy_first_price_source import authority, Bars
     from src.backend import backtest_market_data as markets
     from src.backend import replay_run_service as service
+    from src.backend import backtest_saved_source_authority as saved_sources
     from src.backend import backtest_liquidity_price as liquidity
     from src.backend import backtest_strategy_one_plan as fixed_plans
     from src.backend import backtest_strategy_rising_momentum as momentum
@@ -57,7 +58,7 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
     )
     from src.backend.backtest_strategy_first_price_source import load_first_price_source
 
-    if strategy_number == 26:
+    if strategy_number in (26, 27, 28):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -74,14 +75,17 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
     revision = {'revision_id': 'test-twenty-revision', 'payload': {}}
     release = SimpleNamespace(payload={}, revision=lambda: revision, strategy_number=strategy_number)
     calls = []
+    proof = object()
+    monkeypatch.setattr(saved_sources, 'certify_saved_review_source', lambda context, revision: proof)
     monkeypatch.setattr(definitions, 'load_backtest_definition',
         lambda client, run, *, run_context: calls.append(('definition', run_context)) or saved)
     def preflight(**kwargs):
         calls.append(('preflight', kwargs))
         return {'ready': True}
     monkeypatch.setattr(service, 'backtest_preflight', preflight)
-    monkeypatch.setattr(definitions, 'reconstruct_backtest_definition_from_arte',
-        lambda actual, context, selected, prepared: definition)
+    monkeypatch.setattr(definitions, 'reconstruct_saved_review_definition_from_arte',
+        lambda actual, context, selected, prepared, *, source_authority: definition
+        if source_authority is proof else pytest.fail('wrong saved source proof'))
     monkeypatch.setattr(markets, 'certified_market_plan_from_arte', lambda **_: market)
     monkeypatch.setattr(markets, 'configuration_tickers', lambda payload, tickers: tickers)
     monkeypatch.setattr(markets, 'readonly_clickhouse_client', lambda **_: source_client)
@@ -110,6 +114,7 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
         assert calls[0] == ('definition', context)
         assert calls[1][1]['initial_cash'] == 10_000.0
         assert calls[1][1]['configuration_revision'] is revision
+        assert calls[1][1]['_saved_review_authority'] is proof
 
 
 def test_terminal_page_requires_verified_context_prefix_and_snapshot(monkeypatch):
