@@ -99,7 +99,7 @@ def test_nine_failure_waits_for_whole_post_fill_bar_and_preserves_entry_source(n
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('number', (9, 10, 11))
+@pytest.mark.parametrize('number', (9, 10, 11, 12, 13, 14, 15))
 @pytest.mark.parametrize('boundary', (90_000, 95_000))
 def test_failure_window_dispatch_survives_manager_restore(number, boundary):
     from types import SimpleNamespace
@@ -114,7 +114,13 @@ def test_failure_window_dispatch_survives_manager_restore(number, boundary):
         runtime.submit_followthrough_failure = submit
         first = StrategyOneManagementRunner(runtime=runtime, evidence=source,
                                             tick_for_ticker=lambda _: .01)
-        await first.on_entry_proposal(replace(_proposal(), strategy_number=number))
+        proposal = replace(_proposal(), strategy_number=number)
+        if number >= 12:
+            proposal = replace(proposal, bos_break_boundary_ms=30_000)
+        if number >= 13:
+            from tests.test_arte_rising_momentum_entry_v4 import witness
+            proposal = replace(proposal, momentum=witness(proposal.boundary_ms))
+        await first.on_entry_proposal(proposal)
         await first.on_management(_financial(), {}, 30_200)
         manager = StrategyOneManagementRunner(runtime=runtime, evidence=source,
                                               tick_for_ticker=lambda _: .01)
@@ -126,7 +132,7 @@ def test_failure_window_dispatch_survives_manager_restore(number, boundary):
         rows[5_000] = {'boundary_ms': boundary, 'price_valid': 1,
                        'close_int': 98_000, 'macd_line': -.2, 'macd_signal': -.1}
         await manager.on_management(_financial(), rows, boundary)
-        assert bool(exits) == (number != 11 or boundary - 30_200 <= 60_000)
+        assert bool(exits) == (number not in (11, 12, 13, 14) or boundary - 30_200 <= 60_000)
     asyncio.run(run())
 
 

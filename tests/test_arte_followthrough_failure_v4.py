@@ -113,7 +113,7 @@ def test_failure_source_binds_its_exact_successor_number(strategy_number):
             intents, (source_event, *base.events), (entry,))
 
 
-@pytest.mark.parametrize('strategy_number', [8, 15, True])
+@pytest.mark.parametrize('strategy_number', [8, 16, True])
 def test_projector_rejects_unapproved_failure_consumers(strategy_number):
     witness, intent, base, *_ = fixture()
     with pytest.raises(ValueError, match='Strategy 9'):
@@ -137,7 +137,7 @@ def test_memory_retry_preserves_exact_witness(strategy_number):
         journal.append_followthrough_exit(**{**kwargs, 'strategy_revision': 10 if strategy_number == 9 else 9})
 
 
-@pytest.mark.parametrize("strategy_number", [11, 12])
+@pytest.mark.parametrize("strategy_number", [11, 12, 13, 14])
 @pytest.mark.parametrize('first_held_ms,eligible', [(40000, True), (39900, False)])
 def test_strategy_eleven_persistence_inclusive_first_minute(first_held_ms, eligible, strategy_number):
     # The unbounded inherited factory can create both intents. Strategy 11
@@ -168,7 +168,7 @@ def test_strategy_eleven_persistence_inclusive_first_minute(first_held_ms, eligi
     assert journal.pending_record_count == (1 if eligible else 0)
 
 
-@pytest.mark.parametrize('strategy_number', [9, 10])
+@pytest.mark.parametrize('strategy_number', [9, 10, 15])
 def test_original_failure_persistence_retains_unbounded_age(strategy_number):
     witness = replace(fixture()[0], boundary_ms=100000, first_held_boundary_ms=39900)
     _, intent, base, row, source, source_event, entry = fixture(strategy_number, witness)
@@ -260,3 +260,32 @@ def test_ancestry_bulk_read_fails_closed(fault):
         _verify_source_ancestor_interval(client, 'run', source, predecessor,
             max_commits=2 if fault == 'bound' else 100_000)
     assert len(client.queries) == 1
+
+
+@pytest.mark.parametrize("boundary_ms", [100_000, 3_600_000])
+def test_strategy_fifteen_normalized_failure_remains_eligible_entire_holding(boundary_ms):
+    from src.trading_runtime.arte_journal_writer import typed_row
+    witness = replace(fixture()[0], boundary_ms=boundary_ms, first_held_boundary_ms=39_900)
+    _, intent, base, row, source, source_event, entry = fixture(15, witness)
+    intents = (source, *dict(_sealed_families(base))["trading_strategy_intent_v1"])
+    sealed = seal_followthrough_rows(None, (row,), intents, (source_event, *base.events), (entry,))
+    assert len(sealed) == 1
+    assert restore_failure(sealed[0]) == witness
+    assert sealed[0] == typed_row(FAILURE.name, row)
+    assert sealed[0]["strategy_number"] == 15
+    assert intent.reason == "strategy_nine_followthrough_failure" and intent.metadata == {}
+    for number in (11, 12, 13, 14):
+        with pytest.raises(ValueError, match="first-minute eligibility"):
+            restore_failure({**sealed[0], "strategy_number": number})
+
+
+@pytest.mark.parametrize("updates", [
+    {"bid": 9.96, "ask": 9.97}, {"macd_line": -.01},
+    {"completed_close_int": 99_600}, {"quote_age_us": 1_000_001},
+])
+def test_strategy_fifteen_unbounded_age_does_not_weaken_original_failure_conditions(updates):
+    original = replace(fixture()[0], boundary_ms=100_000, first_held_boundary_ms=39_900)
+    _, _, _, row, *_ = fixture(15, original)
+    altered = {**row, **updates}
+    with pytest.raises(ValueError):
+        restore_failure(altered)

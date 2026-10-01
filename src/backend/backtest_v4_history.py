@@ -41,7 +41,7 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
           ON d.run_id=df.run_id AND d.run_month=df.run_month
           AND d.content_hash=df.definition_hash
         WHERE r.mode='backtest' AND r.evaluation_interval_ms=100
-          AND c.strategy_id={strategy_id} AND c.strategy_revision IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14)
+          AND c.strategy_id={strategy_id} AND c.strategy_revision IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)
         ORDER BY r.started_at DESC,r.run_id DESC
         LIMIT {limit_plus_one} FORMAT JSONEachRow
     """.format(strategy_id=_literal(STRATEGY_ID), revision=STRATEGY_NUMBER,

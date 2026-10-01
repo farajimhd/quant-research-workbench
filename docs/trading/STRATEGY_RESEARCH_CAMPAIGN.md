@@ -1192,3 +1192,41 @@ without removing these strong trades. Both reused workers finished all lanes;
 zero new workers spawned, zero agent failures or interruptions, no live child
 processes remain. Keep the approved goal active and preserve all rejected
 diagnostics, original reports and pinned releases for later review.
+
+### Strategy 15 integrated: holding-wide failure exit, not yet backtested
+
+Read-only Strategy 14 diagnostics retained all 58 positions. Initial-stop
+percentage exclusions disproportionately removed large winners. The completed
+five-second failure screen found seven losers and three eventual winners whose
+first fresh half-risk/negative-5s-histogram observation occurred after 60 seconds.
+These are descriptive observations, not counterfactual returns. The source-pinned
+screen uses original typed proposal asks, certified bars/indicators/liquidity and
+fresh co-terminating quotes. Its conservative first-fill-plus-100ms boundary is
+not a reconstruction of the manager checkpoint. V1 is retained; V2 corrects the
+bid threshold to the same original-risk threshold as the completed close.
+`strategy14-held-failure-probe-v2.json` SHA256:
+`f807ddf268b9841de8cec94f98952500531889311825b89aef7abc313399ff65`.
+
+Strategy 15 derives from exact published Strategy 14 revision
+`strategy-one-14:5166c8f6-6c35-4e35-bd3e-4fe67091bce3`, payload
+`725b5e6b99e4406c353c6dc8020902dfe9fc1859f292b17678c0a2618f23d988`.
+Its sole behavioral change removes the 60-second eligibility limit from the
+existing completed-five-second half-original-risk failure exit. Negative MACD,
+completed close and fresh qualifying bid remain required; elapsed time alone
+never causes an exit. All entry, reentry, initial protection, structural ratchets,
+sizing, costs, session limits, exclusion and source warming policies are inherited.
+The manifest removes the superseded explicit early-window rule contract.
+
+Typed exit witnesses, cold recovery and restored manager dispatch retain the
+11–14 inclusive early window while admitting 15 to the original unbounded rule.
+Exact momentum companions, source guards, parent linkage and bounded vectorized
+entry loading extend to 15. Actual selector, history and report admission include
+15 before publication. No producer calculation or new operational table is added.
+
+504 integration tests passed in 34.84 seconds, including restored manager
+boundaries, old/new release policies, normalized commit/cold paths and source
+mutation guards. Separate focused checks passed 103 tests and 35 manager/release
+tests. Managed backend and frontend restart reached ready. Strategy 15 source
+integration is accepted; publication, four actual saved app-route backtests,
+per-position review and comparison remain required. No Strategy 15 profit is
+claimed. The goal remains active and Strategy 14 remains at two qualifying sessions.

@@ -130,7 +130,7 @@ def load_committed_strategy_one_entry_page(
     if len(rows) != len(ids):
         raise RuntimeError("Committed Strategy 1 entry evidence is missing or duplicated")
     momentum_rows = ()
-    if any(row["strategy_number"] in (13, 14) for row in rows):
+    if any(row["strategy_number"] in (13, 14, 15) for row in rows):
         momentum_rows = tuple(decode_momentum_row(row) for row in _rows(client,
             f"SELECT {momentum_select_columns()} FROM arte.{MOMENTUM.name} "
             f"WHERE run_id={_literal(prefix.run_id)} AND parent_record_id IN ({sql_ids}) "
@@ -164,7 +164,7 @@ def load_committed_strategy_one_entry_page(
                 or row["record_id"] != str(uuid5(
                     NAMESPACE_URL, f"{parent}:strategy-one-entry"))
                 or row["event_month"] != session_date.replace(day=1).isoformat()
-                or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)):
+                or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)):
             raise RuntimeError("Committed Strategy 1 entry evidence changed")
         intent = recovered.intent
         if intent.invalidation_price is None or intent.profit_target_price is None:
@@ -178,7 +178,7 @@ def load_committed_strategy_one_entry_page(
             str(row["bos_support_level_id"]), int(row["strategy_number"]),
             restore_rising_momentum(tuple(r for r in momentum_rows if r["parent_record_id"] == parent),
                 ticker=intent.ticker, boundary_ms=int(row["boundary_ms"]))
-            if row["strategy_number"] in (13, 14) else None,
+            if row["strategy_number"] in (13, 14, 15) else None,
         )
         if strategy_one_entry_intent(proposal, session_date=session_date) != intent:
             raise RuntimeError("Committed Strategy 1 proposal differs from its intent")
@@ -209,7 +209,7 @@ def load_committed_strategy_one_source(
             or commit["last_sequence"] != entry.sequence
             or commit["event_count"] != 1):
         raise RuntimeError("Strategy 1 source is not its exclusive committed batch")
-    if entry.proposal.strategy_number in (13, 14):
+    if entry.proposal.strategy_number in (13, 14, 15):
         companions = tuple(decode_momentum_row(row) for row in _rows(client,
             f"SELECT {momentum_select_columns()} FROM arte.{MOMENTUM.name} "
             f"WHERE run_id={_literal(prefix.run_id)} "

@@ -180,14 +180,14 @@ def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
 
 def numbered_strategy_parent(number: int) -> int:
     """Explicit immutable inheritance; Strategy 8 branches from 6, not 7."""
-    parents = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 6, 9: 8, 10: 9, 11: 10, 12: 11, 13: 12, 14: 13}
+    parents = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 6, 9: 8, 10: 9, 11: 10, 12: 11, 13: 12, 14: 13, 15: 14}
     if type(number) is not int or number not in parents:
         raise ValueError("Numbered strategy has no admitted parent")
     return parents[number]
 
 
 def numbered_strategy(number: int) -> NumberedStrategyRelease:
-    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
         initialize_numbered_fixed_strategies()
     with _LOCK:
         release = _NUMBERED_RELEASES.get(number)
@@ -267,6 +267,10 @@ def _strategy_ten_contract():
 def _strategy_fourteen_contract():
     from .numbered_fixed_strategy import numbered_fixed_strategy
     return numbered_fixed_strategy(14)
+
+def _strategy_fifteen_contract():
+    from .numbered_fixed_strategy import numbered_fixed_strategy
+    return numbered_fixed_strategy(15)
 
 
 def _strategy_thirteen_contract():
@@ -390,6 +394,13 @@ def initialize_numbered_fixed_strategies() -> None:
             evaluation_interval=fourteenth.evaluation_interval,
             contract_factory=_strategy_fourteen_contract, strategy_factory=_strategy_two_factory))
         register_numbered_strategy(fourteenth)
+        from .strategy_fifteen_release import release_contract as fifteenth_release_contract
+        fifteenth = fifteenth_release_contract()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=fifteenth.executor_strategy_id, revision=fifteenth.executor_revision,
+            evaluation_interval=fifteenth.evaluation_interval,
+            contract_factory=_strategy_fifteen_contract, strategy_factory=_strategy_two_factory))
+        register_numbered_strategy(fifteenth)
         _NUMBERED_FIXED_REGISTERED = True
 
 

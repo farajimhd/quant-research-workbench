@@ -36,7 +36,7 @@ def test_fourteenth_preserves_exact_parent_rule_and_parameters():
     assert len(certify_numbered_fixed_v4_projection(14)) == 64
 
 
-@pytest.mark.parametrize('number', [13, 14])
+@pytest.mark.parametrize('number', [13, 14, 15])
 def test_actual_selector_accepts_new_identities_then_checks_certified_release(monkeypatch, number):
     import src.backend.backtest_strategy_one_configuration as module
     release = parent()
