@@ -1834,3 +1834,58 @@ restart, Strategy19 publication or actual19 P&L claim at this integration stage.
 Final integration validation: **1130 passed in 86.60s**; log retained as
 strategy19-broad-validation-v2.log. All root subprocesses finished. Next is
 clean source pin, immutable publication and four actual extended-session runs.
+
+### Strategy19 published actual four-session result
+
+Implementation commit `69626bca7552e26e46180dd19316caf8b739c13c` was pushed
+before clean local/workstation pins were created. Both checkouts were clean.
+Local: `C:/Users/g835l/.codex/worktrees/strategy19-reproduction/quant-research-workbench`.
+Workstation: `D:/TradingML/codes/quant-research-workbench-strategy19-69626bca7`.
+Pinned fingerprint `93ea95657f5e59b638c344eeafb3727c5afa76e9b3394c78014edd85d1e1b6f8`;
+exact pinned projection proof `97d7e857a2eea7e591f58ac2161e566577480885329e9a54f50773dffe0a9021`
+(the earlier working-tree proof above predates clean-checkout line-ending normalization).
+Existing companion storage policy and actual active parts were checked before
+strategy writes; no table, grants or credentials changed. Source/storage receipt
+SHA256 `0c179073b651326a1226c1eea14053fa93c746299307dcc5de38e13e22448e53`.
+
+Published1019 nodes as `strategy-one-19:24339a6e-8a8c-4c4d-a187-6b756edce405`;
+payload `eb0e317c9eaada759e9b4d1d9b6f366506663fefa2e7375ff113c882b6840c8e`;
+coverage-last publication certificate
+`9e2445a2b85dae6c37a0a998d9b5c6b720b5d98a76f393681bd4534892f7f482`.
+Four sequential actual app-route runs completed with independent$10000,
+LGHL exclusion, certified market inputs and inherited AH V7 seed/warmup contract.
+No services restarted; UI loaded-source refresh remains deferred by user instruction.
+
+| Session | Actual run | Positions | Net P&L | Broker marked maxDD |
+| --- | --- | ---: | ---: | ---: |
+| Aug18 PM | `7154f5ed-8b05-41b6-a88d-08d3b191c611` | 12 | +$208.762320 | $748.032080 |
+| Aug19 PM | `8cb4005f-eea6-48f8-a2f9-15b1a4f4b429` | 8 | +$608.262595 | $1558.262785 |
+| Aug18 AH | `58ed195e-5c9a-4b46-bc0b-69ca67fc6d89` | 5 | +$664.302640 | $400.965520 |
+| Aug19 AH | `f28b32e4-df35-450d-85b8-d3e9c07f3c36` | 4 | +$1060.057850 | $332.410000 |
+
+Total **+$2541.385405**,3/4 target sessions. Target not achieved. Both AH
+results and observed marked drawdowns exactly reproduce18; PM marked DD
+improves slightly/broadly but these extrema have asynchronous/stale-mark limits.
+PM19 improves from-$80.60 to+$608.26; PM18 declines from+$791.24 to+$208.76.
+The source-screen retained-profit sum overstated PM18: actual19 admitted four
+new losing XOS positions at04:39:21.5,05:54:46.1,05:57:07.7,06:26:10.7,
+and retained quantities/P&L changed. Screened old-position deletion is not an
+actual portfolio counterfactual. Retain19 as mixed development result; no claim
+of independent edge or universal improvement, no date/ticker-specific switch.
+
+Campaign receipt `strategy19-four-session-campaign-v1.json`, SHA256
+`b098d2c3158a1fc012e294abff808f57ec614c05892bc3afaf92546c6b99ccee`.
+Comparison receipt `strategy19-four-session-comparison-v1.json`, SHA256
+`bbb17d87dce3be7c09727ab270dffc9064dc0ebc4a9ec017b99ecaf6a3705a8b`.
+Cold reports/position tables are under `strategy19_reports_v4/<run-id>/`.
+The actual audit reconstructed the exact certified native first-selection prefix
+and all three tokens for **all29 proposals**, verified exact producer Float64
+values/attempts/clocks for current and first observations, recent BOS/current10%
+and scoped first50%, and matched all29 filled positions. There are58 new first
+companions; table total130 rows on sole active `live_market_ssd` part.
+Audit receipt `strategy19-actual-entry-source-audit-v1.json`, SHA256
+`f5e4043f7e1848b555513649895a768c50249d3997c7f0be48972aa1812fd991`.
+All campaign/audit subprocesses terminated successfully. Keeper teardown retry
+messages followed completed receipts; no run failure or service restart was needed.
+Next research must restore PM18 opportunity while retaining PM19 false-entry
+reduction;18/19 provide saved source evidence for a bounded next hypothesis.
