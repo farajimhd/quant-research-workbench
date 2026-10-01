@@ -1983,3 +1983,15 @@ strategy19-aug04-development-candle-features-v1.json. The staged reducer passed
 Certified bars loading, normalized price evidence, numbered registration,
 release/source certification and actual development backtests remain pending.
 No Strategy20 backtest or app activation has occurred.
+
+The staged first-price source loader now pins the exact certified market and
+Strategy19 parent, checks each bars attempt against candidate coverage, and
+requests only referenced original PM anchors. Each SELECT is bounded to512
+exact 1s bucket keys; no AH price read or older-bar fallback is required. Arrow
+UInt64 prices and UInt8 binary validity flags are checked without float
+conversion. Duplicate/unrequested bars, nulls, wrong source attempts and
+malformed flags fail closed. Scope, observations and parent identity have a
+separate immutable source seal. Native array operations align returned bars.
+Focused source/anchor/parent checks passed62 tests. This is implementation
+validation only: actual certified-day execution, normalized price companions,
+numbered admission and immutable development backtests remain outstanding.
