@@ -1402,3 +1402,52 @@ The actual app-route campaign started, tracked in runtime
 `strategy17-four-session-campaign-v1.json`; one service refresh activated the
 new source, with subsequent routine save refreshes disabled. No Strategy 17
 completed-session profitability is claimed at this publication checkpoint.
+
+### Strategy 17 completed development outcome
+
+All four actual runs completed with $10,000 independently, flat terminal
+positions, LGHL excluded and the same certified market builds/plan tokens as
+Strategy 14. Net P&L / broker-observed marked drawdown / position count:
+PM18 $659.172985 / $839.971360 / 17; PM19 -$660.163790 / $2,011.829875 /
+21; AH18 $54.434535 / $615.445890 / 9; AH19 $50.273530 / $710.554320 /
+6. Total net was $103.717260, with only one of four sessions at $500. Retain
+the failed trial; do not promote its entry filter. Marked drawdown retains the
+documented asynchronous and stale-mark limitations.
+
+Runs in that order are `75a0c191-ed75-49a8-9b8d-0f11e2106d95`,
+`e31e8b55-33cb-4154-bf5d-0a616217069a`,
+`1d3f6642-ba0b-4067-b219-6bd30b400ea9`, and
+`dcfecfa3-533f-4eaf-85a3-0ce66751536b`. Preferred reports remain under
+runtime `strategy17_reports_v4`. Comparison artifact
+`strategy17-four-session-comparison-v1.json` SHA-256:
+`87cc9988551c95574c86c63ef822d58c672d077e4add5bc9d144f7c737c73cbd`.
+All 53 actual typed proposals and filled positions passed exact producer
+Float64, clock, source-attempt, recent-BOS and positive 10s growth checks:
+`strategy17-actual-entry-source-audit-v1.json` SHA-256
+`7bccd5a872bbfb1551e54f45d0f06f362abdbef95021b51a582478c0de5a34f7`.
+The P&L-sorted entry table is `strategy17-entry-audit-v1.md`, SHA-256
+`76bdf225449f2d59c1d95ebd59762ace8227f999636152f99c457bf7649c08cd`.
+
+The earlier exclusion screen did not predict actual counterfactual results.
+PM18 had 12 exact entry-clock matches and five changed actual clocks; delayed
+PFSA and SLE entries lost substantial parent profit. PM19 had nine exact matches
+and 12 changed clocks; EHGO accounted for $404.96 of deterioration and fees rose
+from $166.38 to $185.28. Some rejected entries returned later at worse prices;
+cash, quantities, reentries and exits also changed. Diagnostic JSON artifacts
+`strategy17-pm18-position-diagnosis-v1.json` and
+`strategy17-pm19-position-diagnosis-v1.json` have SHA-256 respectively
+`498a73ad9a12d09e36873487087e0f7dd10c663e916b0adfa02b24cd686a9bfa`
+and `c8db833aae16c8d56ca542949a48af9b7c46813f2960ec4101ec28a03c49540d`.
+Requiring 1s rising as well would reject the large YJ PM19 winner; the descriptive
+screen `strategy17-premarket-one-second-rising-screen-v1.json` SHA-256
+`6ccce2f672d46aa98bca3043ba3db303a71411ee90a9c6dff3cbdd86ce94215e`
+does not justify that next rule. Audit original normalized prior-high crossing
+evidence for reentries before deciding another behavioral version.
+
+Actual app history initially omitted all four 17 runs because its compact SQL
+inventory whitelist still ended at 16; the saved journals and reports were
+complete. The inventory query now explicitly admits 17, with 56 history/version/
+report tests passing in 3.38s. This is a read-only inventory correction, not a
+replacement of the published 17 trading release or its pinned executor. Its
+activation requires one backend refresh; routine save refreshes remain disabled.
+Actual API visibility must be verified after activation before claiming repair.
