@@ -308,6 +308,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     def tensor(values, dtype=None):
                         return torch.as_tensor(values, dtype=dtype,
                                                device=device)
+                    if hasattr(policy.decoder, 'supervision_index'):
+                        policy.decoder.supervision_index = (int(item.held_index[0])
+                            if len(item.held_index) else item.soft_tokens[1]-1)
                     logits, sizes, stops, targets = policy.decide(
                         state.embeddings(),
                         tensor(item.account, torch.float32),
@@ -326,7 +329,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     if hasattr(policy.decoder,'ticker_outputs'):
                         from research.rl_trading.v6.ticker_heads import TickerOutputs,supervised_loss
                         decoded=policy.decoder.ticker_outputs
-                        identity=int(item.held_index[0]) if len(item.held_index) else item.soft_tokens[1]-1
+                        identity=0 if policy.decoder.supervision_index is not None else (int(item.held_index[0]) if len(item.held_index) else item.soft_tokens[1]-1)
                         local=TickerOutputs(*(getattr(decoded,k)[identity:identity+1] for k in
                             ('logits','value_bps','stop_bps','target_bps')))
                         p=torch.zeros((1,4),device=device)
@@ -361,7 +364,12 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                             metrics['bracket_loss']+metrics.get('value_loss',0))
                     pending_losses.append(loss)
                     pending_correct.append(metrics['action_correct'])
-                    if item.soft_tokens:
+                    if hasattr(policy.decoder,'ticker_outputs'):
+                        prediction=local.logits.detach().argmax(-1).squeeze(0)
+                        first,second=item.soft_tokens
+                        first_chosen=prediction==(3 if len(item.held_index) else 1)
+                        selected=torch.where(first_chosen,torch.tensor(first,device=device),torch.tensor(second,device=device))
+                    elif item.soft_tokens:
                         alternatives=torch.as_tensor(item.soft_tokens,device=device)
                         selected=alternatives[logits.detach()[alternatives].argmax()]
                     else:
@@ -441,6 +449,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     conditional_mae = [float(conditional_sum[index]/conditional_count[index])
                        if conditional_count[index] else None
                        for index in range(3)]
+    if hasattr(policy.decoder, 'supervision_index'):
+        policy.decoder.supervision_index = None
     return TrainingMetrics(observed_decisions, next_outcome, updates,
                            loss_sum / observed_decisions,
                            correct_sum / observed_decisions,

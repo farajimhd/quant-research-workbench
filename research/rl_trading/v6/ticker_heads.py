@@ -115,6 +115,7 @@ class TickerDecoder(nn.Module):
         self.holding=nn.Sequential(nn.Linear(11,width),nn.LayerNorm(width))
         self.size_head=nn.Linear(width,1)  # PPO only; absent from teacher loss.
         self.ticker_outputs=None
+        self.supervision_index=None
 
     def forward_batch(self,listings,account,held_index,held_features,*,
                       enter_allowed,exit_allowed,stop_allowed,target_allowed):
@@ -137,10 +138,42 @@ class TickerDecoder(nn.Module):
         held_logits=out.logits.gather(1,held_index[:,:,None].expand(-1,-1,4))
         exit_=(held_logits[:,:,3]-held_logits[:,:,2]).masked_fill(~exit_allowed,-torch.inf)
         absent=listings.new_full((b,h),-torch.inf)
-        logits=torch.cat((listings.new_zeros(b,1),entry,exit_,absent,absent,listings.new_zeros(b,h)),1)
+        def race(margins):
+            # Total class mass is exp(best local margin), not the sum of all
+            # tickers' odds. Conditional identity probabilities still learn.
+            # Never take logsumexp over all -inf: that has undefined gradients.
+            if not margins.shape[1]:return margins
+            any_valid=torch.isfinite(margins).any(1,keepdim=True)
+            safe=torch.where(any_valid,margins,torch.zeros_like(margins))
+            normalized=safe-torch.logsumexp(safe,1,keepdim=True)+safe.max(1,keepdim=True).values
+            return normalized.masked_fill(~any_valid,-torch.inf)
+        logits=torch.cat((listings.new_zeros(b,1),race(entry),race(exit_),absent,absent,absent),1)
         return logits,self.size_head(context).squeeze(-1).sigmoid(),listings.new_zeros(b,h),listings.new_zeros(b,h)
 
     def forward(self,listings,account,held_index,held_features,**masks):
+        if self.supervision_index is not None:
+            # Teacher supervises one identity per hypothetical branch. Its
+            # local head has no reduction across N: gather BEFORE projection
+            # rather than recomputing every ticker for each label. Preserve
+            # the full transport shape without using it as a teacher loss.
+            i=self.supervision_index;n=len(listings);h=len(held_index)
+            if not 0 <= i < n or h > 1 or (h and int(held_index[0]) != i):
+                raise ValueError('Teacher local identity must match its single held branch')
+            context=listings[i:i+1]+self.account(account.sign()*torch.log1p(account.abs()))[None]
+            if h:
+                features=held_features.clone()
+                if features.shape[1]==9:features=F.pad(features,(0,2))
+                features[:,:3]=features[:,:3].sign()*torch.log1p(features[:,:3].abs())
+                features[:,3:6]*=10
+                context=context+self.holding(features)
+            out=self.heads(context,torch.full((1,),bool(h),device=listings.device,dtype=torch.bool))
+            self.ticker_outputs=out
+            logits=listings.new_full((1+n+4*h,),-torch.inf);logits[0]=0
+            if h:
+                logits[1+n]=(out.logits[0,3]-out.logits[0,2]).masked_fill(~masks['exit_allowed'][0],-torch.inf)
+                logits[1+n+3*h]=0
+            else:logits[1+i]=(out.logits[0,0]-out.logits[0,1]).masked_fill(~masks['enter_allowed'][i],-torch.inf)
+            return logits,listings.new_zeros(n),listings.new_zeros(h),listings.new_zeros(h)
         result=self.forward_batch(listings[None],account[None],held_index[None],held_features[None],
             **{k:v[None] for k,v in masks.items()})
         out=self.ticker_outputs

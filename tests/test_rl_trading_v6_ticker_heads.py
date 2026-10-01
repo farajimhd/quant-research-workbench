@@ -47,6 +47,22 @@ def test_ticker_outputs_do_not_mix_observations_and_reject_invalid_targets():
             stop_bps=z,target_bps=z,bracket_valid=valid)
 
 
+def test_proposal_entry_probability_does_not_grow_with_ticker_count():
+    from research.rl_trading.v6.ticker_heads import TickerDecoder
+    decoder=TickerDecoder(8)
+    with torch.no_grad():
+        decoder.heads.action.weight.zero_()
+        decoder.heads.action.bias.copy_(torch.tensor([-3.,0.,0.,0.]))
+    masses=[]
+    for n in (1,20):
+        logits,*_=decoder(torch.zeros(n,8),torch.zeros(7),torch.empty(0,dtype=torch.long),torch.empty(0,11),
+            enter_allowed=torch.ones(n,dtype=torch.bool),exit_allowed=torch.empty(0,dtype=torch.bool),
+            stop_allowed=torch.empty(0,dtype=torch.bool),target_allowed=torch.empty(0,dtype=torch.bool))
+        masses.append(logits.softmax(0)[1:].sum())
+    assert torch.allclose(masses[0],masses[1],atol=1e-6)
+    assert masses[1]<.05
+
+
 @pytest.mark.parametrize('device',['cpu']+(['cuda'] if torch.cuda.is_available() else []))
 def test_real_ticker_teacher_then_tensor_ppo_reconstruction(device):
     import numpy as np
@@ -93,3 +109,33 @@ def test_real_ticker_teacher_then_tensor_ppo_reconstruction(device):
     result=update_session(policy,optimizer,session,collected.frames,collected.steps,device=torch.device(device),
         epochs=1,clocks_per_chunk=2,decoder_batch_size=2,bootstrap=collected.bootstrap,batch_candle_projection=True)
     assert result['update_epochs']==1
+
+
+@pytest.mark.parametrize('held',[False,True])
+def test_teacher_gather_matches_dense_outputs_and_gradients(held):
+    from research.rl_trading.v6.ticker_heads import TickerDecoder
+    import copy
+    torch.manual_seed(29)
+    dense=TickerDecoder(8);fast=copy.deepcopy(dense)
+    listings=torch.randn(5,8,requires_grad=True)
+    selected=listings.detach().clone().requires_grad_()
+    index=torch.tensor([3]) if held else torch.empty(0,dtype=torch.long)
+    features=torch.randn(1,11) if held else torch.empty(0,11)
+    account=torch.randn(7)
+    masks=dict(enter_allowed=torch.ones(5,dtype=torch.bool),
+        exit_allowed=torch.ones(len(index),dtype=torch.bool),
+        stop_allowed=torch.zeros(len(index),dtype=torch.bool),
+        target_allowed=torch.zeros(len(index),dtype=torch.bool))
+    dense(listings,account,index,features,**masks)
+    fast.supervision_index=3
+    fast(selected,account,index,features,**masks)
+    def loss(decoder,i):
+        out=decoder.ticker_outputs
+        return sum(getattr(out,k)[i].masked_fill(~torch.isfinite(getattr(out,k)[i]),0).sum()
+            for k in ('logits','value_bps','stop_bps','target_bps'))
+    for k in ('logits','value_bps','stop_bps','target_bps'):
+        torch.testing.assert_close(getattr(dense.ticker_outputs,k)[3],getattr(fast.ticker_outputs,k)[0])
+    loss(dense,3).backward();loss(fast,0).backward()
+    torch.testing.assert_close(listings.grad,selected.grad)
+    for a,b in zip(dense.parameters(),fast.parameters()):
+        if a.grad is not None:torch.testing.assert_close(a.grad,b.grad)

@@ -107,6 +107,17 @@ def collect_tensor_session(policy,session,broker,buckets,*,device,
         else:
             if deterministic:
                 token=dist.logits.argmax();latent=dist.locations.gather(0,token.reshape(1)).squeeze(0)
+                if hasattr(policy.decoder,'ticker_outputs'):
+                    # Mode of class -> identity hierarchy, rather than mode
+                    # of individual flattened slots (which biases to NOOP
+                    # whenever many equally good tickers share class mass).
+                    entry=dist.logits[1:1+broker.n]
+                    exit_=dist.logits[1+broker.n:1+broker.n+obs.held_index.numel()]
+                    exit_mass=torch.logsumexp(exit_,0) if exit_.numel() else entry.new_tensor(-torch.inf)
+                    kind=torch.stack((dist.logits[0],torch.logsumexp(entry,0),exit_mass)).argmax()
+                    exit_token=exit_.argmax()+1+broker.n if exit_.numel() else kind.new_zeros(())
+                    token=torch.where(kind==1,entry.argmax()+1,torch.where(kind==2,exit_token,kind.new_zeros(())))
+                    latent=dist.locations.gather(0,token.reshape(1)).squeeze(0)
                 kind=torch.where((token>0)&(token<=broker.n),1,
                     torch.where((token>=1+broker.n+obs.held_index.numel())&
                         (token<1+broker.n+3*obs.held_index.numel()),2,0))
