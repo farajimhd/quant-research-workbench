@@ -83,6 +83,7 @@ class BacktestMemoryJournal:
     def append_strategy_one_intent(
         self, *, intent: Any, proposal: Any, session_date: date,
         account_id: str, strategy_id: str, strategy_revision: int,
+        first_price_source=None,
     ) -> JournalRecord:
         """Atomically retain one typed intent and its bounded causal sidecar.
 
@@ -90,8 +91,19 @@ class BacktestMemoryJournal:
         columns. It is never serialized as metadata or written to disk.
         """
         from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+        if proposal.strategy_number == 20:
+            from src.backend.backtest_strategy_certified_price_break import (
+                CertifiedPriceReadbackAuthority, certified_price_entry_intent,
+            )
+            if (type(first_price_source) is not CertifiedPriceReadbackAuthority
+                    or first_price_source.run_id != self.run_id):
+                raise ValueError("Strategy20 journal intent lacks its native price source")
+            expected = certified_price_entry_intent(first_price_source.plan, proposal,
+                session_date=session_date)
+        else:
+            expected = strategy_one_entry_intent(proposal, session_date=session_date)
 
-        if (intent != strategy_one_entry_intent(proposal, session_date=session_date)
+        if (intent != expected
                 or account_id != proposal.account_id or not strategy_id
                 or type(strategy_revision) is not int or strategy_revision != proposal.strategy_number):
             raise ValueError("Strategy 1 journal intent differs from its numbered proposal")

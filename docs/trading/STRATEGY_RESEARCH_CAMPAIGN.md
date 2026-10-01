@@ -2242,3 +2242,19 @@ bounded paging; the source plan is reused rather than recomputed per entry.
 The reviewed source seal covers the scalar encoder and recovery route separately.
 Operational runtime wiring, numbered release and actual20 portfolio backtests
 remain pending. These tests do not establish profitability.
+
+### Strategy20 memory journal and typed prefix
+
+The memory journal now independently validates staged20 intents against an
+explicit native source context before retaining their proposal sidecars. V4
+prefix projection requires the same run-bound context and carries integer price
+rows together with their independent sealer authority, current MACD and initial
+MACD companions. Missing context, foreign run identity and changed source values
+are rejected. Protection intents retain their mandatory typed-source guard for20.
+
+An actual memory-journal record now traverses projection, typed publication and
+cold entry recovery with exact proposal and intent equality in the typed test
+client. This does not activate the numbered strategy or install operational
+storage. Runtime admission, source-context transport and release wiring remain
+required before the actual portfolio campaign. Existing financial fields,
+costs and journal acknowledgement ownership are unchanged.

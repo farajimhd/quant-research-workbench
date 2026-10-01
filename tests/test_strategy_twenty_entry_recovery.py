@@ -163,3 +163,47 @@ def test_scalar_recovery_encoding_remains_bound_to_reviewed_source(tmp_path, nod
     altered.write_text(ast.unparse(ast.fix_missing_locations(tree)), encoding='utf-8')
     with pytest.raises(ValueError, match='reviewed source authority changed'):
         certify_rising_momentum_entry_source(source_overrides={relative: altered})
+
+
+def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry():
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    source = CertifiedPriceReadbackAuthority(str(UUID(int=101)), plan)
+    _, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)))
+    journal = BacktestMemoryJournal(run_id=source.run_id)
+    entry_args = dict(intent=intent, proposal=proposal, session_date=date(2026, 8, 18),
+        account_id=proposal.account_id, strategy_id='early-squeeze-strategy', strategy_revision=20)
+    with pytest.raises(ValueError, match='native price source'):
+        journal.append_strategy_one_intent(**entry_args)
+    foreign = CertifiedPriceReadbackAuthority(str(UUID(int=103)), plan)
+    with pytest.raises(ValueError, match='native price source'):
+        journal.append_strategy_one_intent(**entry_args, first_price_source=foreign)
+    with pytest.raises(ValueError):
+        journal.append_strategy_one_intent(**dict(entry_args,
+            proposal=replace(proposal, first_price=replace(proposal.first_price, current_close_int=102000))),
+            first_price_source=source)
+    assert journal.pending_record_count == 0
+    journal.append_strategy_one_intent(**entry_args, first_price_source=source)
+    scope = dict(attempt_id=str(UUID(int=102)), run_month=date(2026, 8, 1),
+        prior_sequence=0, through_sequence=1,
+        expected_config={'strategy_id': 'early-squeeze-strategy', 'strategy_revision': 20})
+    with pytest.raises(ValueError, match='native price source'):
+        project_pending_backtest_v4_prefix(journal, **scope)
+    with pytest.raises(ValueError, match='differs from its run'):
+        project_pending_backtest_v4_prefix(journal, **scope, first_price_source=foreign)
+    units = project_pending_backtest_v4_prefix(journal, **scope, first_price_source=source)
+    assert len(units) == 1 and type(units[0]) is V4StrategyOneEntryBatch
+    unit = units[0]
+    assert len(unit.first_price_evidence) == len(unit.first_price_authorities) == 1
+    assert unit.momentum_evidence and unit.initial_momentum_evidence
+    client = attached_v4_client(ExactBits())
+    publish_strategy_one_entry_batch_v4(client, unit.base, entry_evidence=unit.entry_evidence,
+        momentum_evidence=unit.momentum_evidence, initial_momentum_evidence=unit.initial_momentum_evidence,
+        first_price_evidence=unit.first_price_evidence, first_price_authorities=unit.first_price_authorities)
+    prefix = load_verified_v4_prefix(client, source.run_id, first_price_source=source)
+    page = load_committed_strategy_one_entry_page(client, prefix, first_price_source=source)
+    assert page.entries[0].proposal == proposal
+    assert page.entries[0].intent == intent
+    assert journal.pending_record_count == 1  # Projection/publication does not acknowledge this buffer.

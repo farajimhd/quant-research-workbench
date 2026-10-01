@@ -929,7 +929,8 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
 # routes. Exact canonical AST seals bind the tested implementation; a later
 # behavior change gets a new numbered release. Comments/line endings do not
 # affect these seals. The run separately pins its complete backend fingerprint.
-_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_certified_price_break.py': {'__module__': '94f34bf84e0a17f6ce5f2e32555f6fe03ed0162df7ce0d0a3e40699e2d5ded97'},
+_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_strategy_one_intent': '8cf48ea4ea2cf50d0d19c5765e7fc5f183ee96c61b817d1f258ae5975a8688e8'},
+ 'backend/backtest_strategy_certified_price_break.py': {'__module__': '94f34bf84e0a17f6ce5f2e32555f6fe03ed0162df7ce0d0a3e40699e2d5ded97'},
  'backend/backtest_strategy_first_price_source.py': {'__module__': 'e2cbac94ae2baf5babbf829b7c9409fb8fde26bc822f65c4033ea47971e07d6f'},
  'backend/backtest_strategy_initial_momentum.py': {'__module__': '954446cab169240a183801637b4f61b27f90d45467b065ef428760d1ed5a48df'},
  'backend/backtest_strategy_initial_momentum_growth.py': {'__module__': '33bf35371d2216a5361e735959cdd1e48a65be3a5d8f04ec3d79cd277d199485'},
@@ -941,7 +942,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_certified_price_brea
  'backend/backtest_strategy_one_stateful.py': {'propose_certified_strategy_one_entry': '3d1f757e2845b029cdfe98b1ec0a8ed0213081268b27ef044de6b2ccf98ba9a1'},
  'backend/backtest_strategy_one_static_gate.py': {'compile_static_entry_gate': 'e6d2f747557dfbe005d492fa4a24ef671f47736961196cd1ca27ec2da438d0e5'},
  'backend/backtest_strategy_rising_momentum.py': {'__module__': 'c0f4a1084b29088a1df63cdeb5c1b82b3d467fe2a657ee08ab37037bd6a6f245'},
- 'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': '6052575cad7fd5533699c01a24f6064bd46b41adda9d1894b1f0c2a5b009a076'},
+ 'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': 'c353cbdf1b67a13263dec600a8c16cb843f2001c2e99074356246ee81592baf1'},
  'trading_runtime/arte_first_price_entry_v4.py': {'__module__': '25814ab52e0f12f6b715fe4b6645a916a20ab79fa349ccb3035ee9978a6ca4ac'},
  'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': '06f940dc0e7738ae6cf53f5ba66166dffb9c008665320027a42c820010e2266b'},
  'trading_runtime/arte_journal_commit_v4.py': {'_load_verified_details_v4': '2c53de150ea5a3a960a1a4b3f8ce4c35c2d1efa76ea554f88f4d05c5f644c6e0',

@@ -113,6 +113,7 @@ def project_pending_backtest_v4_prefix(
     source_cursor: str = "start", expected_config: dict | None = None,
     fixed_market_parent_plan: object | None = None,
     fixed_market_execution_plan: object | None = None,
+    first_price_source: object | None = None,
     expected_market_start: datetime | None = None,
     published_sources: Mapping[str, tuple[TypedJournalBatch, object]] | None = None,
     committed_order_lineage: Mapping[str, tuple] | None = None,
@@ -147,6 +148,11 @@ def project_pending_backtest_v4_prefix(
     from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 
     attempt = str(UUID(attempt_id))
+    if first_price_source is not None:
+        from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+        if (type(first_price_source) is not CertifiedPriceReadbackAuthority
+                or first_price_source.run_id != journal.run_id):
+            raise ValueError("V4 projection price source differs from its run")
     previous = str(UUID(prior_batch_id))
     if (run_month.day != 1 or type(prior_sequence) is not int
             or prior_sequence < 0 or not source_cursor
@@ -405,7 +411,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("strategy_id") == "early-squeeze-strategy"
-                        and record.payload.get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+                        and record.payload.get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
                         and record.payload.get("action") in {
                             "replace_protective_stop", "replace_profit_target"}
                         and protection_source is None):
@@ -427,12 +433,25 @@ def project_pending_backtest_v4_prefix(
                     sources[protection_source.intent_id] = (batch, protection_source)
             elif sidecar is not None:
                 proposal, session_date = sidecar
-                intent = strategy_one_entry_intent(
-                    proposal, session_date=session_date)
+                price_rows, price_authorities = (), ()
+                if proposal.strategy_number == 20:
+                    from src.backend.backtest_strategy_certified_price_break import (
+                        certified_price_entry_intent, project_certified_price_entry,
+                    )
+                    if first_price_source is None:
+                        raise ValueError("Strategy20 V4 projection lacks its native price source")
+                    intent = certified_price_entry_intent(first_price_source.plan,
+                        proposal, session_date=session_date)
+                    price_packet = project_certified_price_entry(first_price_source.plan,
+                        proposal, run_id=batch.run_id, batch_id=batch.batch_id,
+                        parent_record_id=record.record_id, event_month=run_month.isoformat())
+                    price_rows, price_authorities = price_packet.rows, (price_packet.authority,)
+                else:
+                    intent = strategy_one_entry_intent(proposal, session_date=session_date)
                 evidence = project_strategy_one_entry_evidence(
                     proposal, intent, session_date=session_date,
                     run_id=batch.run_id, batch_id=batch.batch_id,
-                    parent_record_id=record.record_id)
+                    parent_record_id=record.record_id, first_price_source=first_price_source)
                 from src.trading_runtime.arte_rising_momentum_entry_v4 import project_rising_momentum_entry
                 momentum = project_rising_momentum_entry(proposal, run_id=batch.run_id,
                     batch_id=batch.batch_id, parent_record_id=record.record_id,
@@ -442,7 +461,8 @@ def project_pending_backtest_v4_prefix(
                     run_id=batch.run_id, batch_id=batch.batch_id,
                     parent_record_id=record.record_id, event_month=evidence["event_month"])
                 unit = V4StrategyOneEntryBatch(batch, (evidence,), momentum_evidence=momentum,
-                                             initial_momentum_evidence=initial)
+                    initial_momentum_evidence=initial, first_price_evidence=price_rows,
+                    first_price_authorities=price_authorities)
                 prior_source = sources.get(intent.intent_id)
                 if prior_source is not None and prior_source != (batch, intent):
                     raise RuntimeError("V4 Strategy 1 intent identity was reused")
