@@ -15,6 +15,13 @@ from .strategy_profit_giveback import ProfitGivebackInput, ProfitGivebackWitness
 REASON = 'strategy_thirty_one_profit_giveback'
 
 
+def profit_giveback_reason(strategy_number: int) -> str:
+    """One exact numbered identity shared by factory, persistence and recovery."""
+    if type(strategy_number) is not int or strategy_number not in (31, 32):
+        raise ValueError('Profit protection requires Strategy 31 or 32')
+    return REASON if strategy_number == 31 else 'strategy_thirty_two_profit_giveback'
+
+
 def validate_profit_giveback_witness(witness: ProfitGivebackWitness) -> None:
     """Recompute the exact scalar predicate at persistence/factory boundaries."""
     if type(witness) is not ProfitGivebackWitness:
@@ -32,8 +39,9 @@ def validate_profit_giveback_witness(witness: ProfitGivebackWitness) -> None:
 
 def profit_giveback_exit_intent(
     witness: ProfitGivebackWitness, financial: StrategyOneFinancialView, *,
-    session_date: date, source_entry_intent_id: str,
+    session_date: date, source_entry_intent_id: str, strategy_number: int = 31,
 ) -> StrategyIntent:
+    reason = profit_giveback_reason(strategy_number)
     validate_profit_giveback_witness(witness)
     UUID(source_entry_intent_id)
     if (type(session_date) is not date
@@ -44,14 +52,14 @@ def profit_giveback_exit_intent(
             or type(financial.pending_exit) is not bool or financial.pending_exit):
         raise ValueError('Profit protection exit requires exact held financial authority')
     at = datetime.combine(session_date, time(4), ZoneInfo('America/New_York')) + timedelta(milliseconds=witness.boundary_ms)
-    identity = (f'strategy-31-profit-giveback-exit:{session_date}:'
+    identity = (f'strategy-{strategy_number}-profit-giveback-exit:{session_date}:'
                 f'{financial.account_id}:{financial.assignment_id}:{financial.ticker}:'
                 f'{source_entry_intent_id}:{witness.boundary_ms}')
     return StrategyIntent(
         intent_id=str(uuid5(NAMESPACE_URL, identity)), ticker=financial.ticker,
         event_time=at.astimezone(timezone.utc), action='exit',
         quantity=float(financial.position_quantity), reference_price=witness.bid,
-        urgency='urgent', outside_rth=True, reason=REASON, metadata={},
+        urgency='urgent', outside_rth=True, reason=reason, metadata={},
         execution_policy=ExecutionPolicy(
             policy_id='strategy-adaptive_urgent', name=ExecutionPolicyName.ADAPTIVE_URGENT,
             envelope=ExecutionEnvelope(persist_until_cancelled=True),

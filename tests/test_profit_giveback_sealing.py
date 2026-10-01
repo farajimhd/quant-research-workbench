@@ -7,11 +7,12 @@ from test_profit_giveback_typed_batch import unit
 
 
 @pytest.mark.parametrize('corruption',[None,'event_time','reason','quantity','intent_id','source_checkpoint','missing','record_id'])
-def test_sealer_revalidates_real_canonical_factory_and_source_route(monkeypatch,corruption):
+@pytest.mark.parametrize('number', [31, 32])
+def test_sealer_revalidates_real_canonical_factory_and_source_route(monkeypatch,corruption,number):
     """Test-only schema registration and source-reader mock; no native writes."""
     from src.trading_runtime import strategy_profit_giveback_source as source
     monkeypatch.setitem(writer._CONTRACTS,PROFIT_GIVEBACK.name,PROFIT_GIVEBACK)
-    base,row=unit()
+    base,row=unit(strategy_number=number)
     parent=writer._canonical_typed_content('trading_strategy_intent_v1',dict(base.intents[0]))
     event=writer._canonical_typed_content('trading_event_v1',dict(base.events[0]))
     parent=deepcopy(parent);event=deepcopy(event)

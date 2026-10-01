@@ -25,7 +25,7 @@ def validate_profit_giveback_state(witness, state, financial) -> StrategyOneEntr
         if key not in families[name]:
             raise ValueError('Profit source lacks exact held position identity')
     source = families['submitted'][key]
-    if (type(source) is not StrategyOneEntryProposal or source.strategy_number != 31
+    if (type(source) is not StrategyOneEntryProposal or source.strategy_number not in (31, 32)
             or (source.account_id, source.assignment_id, source.ticker) != key
             or source.reference_ask != witness.reference_ask
             or source.initial_stop != witness.initial_stop
@@ -87,7 +87,9 @@ def load_profit_giveback_checkpoint(client, prefix, row, financial, *, first_pri
     if (entry['action'] != 'enter_long' or entry['reason'] != 'strategy_one_entry'
             or str(entry['batch_id']) not in prefix.batch_ids
             or entry['ticker'] != financial.ticker or event['account_id'] != financial.account_id
-            or child['strategy_number'] != 31 or child['assignment_id'] != financial.assignment_id
+            or child['strategy_number'] != row['strategy_number']
+            or source.strategy_number != row['strategy_number']
+            or child['assignment_id'] != financial.assignment_id
             or child['boundary_ms'] != source.boundary_ms
             or float(entry['reference_price']) != witness.reference_ask
             or float(entry['invalidation_price']) != witness.initial_stop

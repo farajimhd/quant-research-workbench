@@ -17,15 +17,27 @@ def project(**changes):
                 run_id='run', batch_id=IDENTITY, parent_record_id=IDENTITY,
                 source_manager_snapshot_id=IDENTITY, source_manager_checkpoint_sequence=7)
     args.update(changes)
-    return project_profit_giveback(profit_giveback(sample()), intent(), financial(), **args)
+    return project_profit_giveback(profit_giveback(sample()),
+        intent(strategy_number=args.get('strategy_number', 31)), financial(), **args)
 
 
-def test_roundtrip_preserves_causal_scalars_without_claiming_a_seal():
-    row = project()
+@pytest.mark.parametrize('number', [31, 32])
+def test_roundtrip_preserves_causal_scalars_without_claiming_a_seal(number):
+    row = project(strategy_number=number)
     assert restore_profit_giveback(row) == profit_giveback(sample())
     assert 'content_hash' not in row
     UUID(row['record_id'])
     assert set(row) == {x[0] for x in PROFIT_GIVEBACK.columns} - {'content_hash'}
+    assert row['strategy_number'] == number
+
+
+def test_strategy32_row_cannot_project_strategy31_factory_intent():
+    with pytest.raises(ValueError, match='factory intent'):
+        project_profit_giveback(profit_giveback(sample()), intent(), financial(),
+            session_date=date(2026, 8, 4), source_entry_intent_id=ENTRY, run_id='run',
+            batch_id=IDENTITY, parent_record_id=IDENTITY,
+            source_manager_snapshot_id=IDENTITY, source_manager_checkpoint_sequence=7,
+            strategy_number=32)
 
 
 @pytest.mark.parametrize('sequence', [0, -1, True, 2**64])

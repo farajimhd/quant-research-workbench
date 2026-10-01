@@ -19,11 +19,25 @@ def financial():
                                    123., False, False, False, 1)
 
 
-def intent(witness=None, held=None, entry=ENTRY):
+def intent(witness=None, held=None, entry=ENTRY, strategy_number=31):
     return profit_giveback_exit_intent(
         witness if witness is not None else profit_giveback(sample()),
         held if held is not None else financial(),
-        session_date=date(2026, 8, 4), source_entry_intent_id=entry)
+        session_date=date(2026, 8, 4), source_entry_intent_id=entry, strategy_number=strategy_number)
+
+
+def test_numbered_factory_preserves_trade_fields_and_distinct_identity():
+    previous, current = intent(), intent(strategy_number=32)
+    assert current == intent(strategy_number=32)
+    assert previous.intent_id != current.intent_id
+    assert current.reason == 'strategy_thirty_two_profit_giveback'
+    assert replace(current, intent_id=previous.intent_id, reason=previous.reason) == previous
+
+
+@pytest.mark.parametrize('number', [True, 31., '32', 30, 33])
+def test_unsupported_or_untyped_number_cannot_create_profit_exit(number):
+    with pytest.raises(ValueError):
+        intent(strategy_number=number)
 
 
 def test_deterministic_identity_full_held_quantity_and_native_utc():

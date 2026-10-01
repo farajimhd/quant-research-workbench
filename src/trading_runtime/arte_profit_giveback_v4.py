@@ -36,7 +36,7 @@ class V4ProfitGivebackBatch:
 
     def __post_init__(self):
         from .arte_journal_writer import TypedJournalBatch
-        from .strategy_profit_giveback_exit import REASON
+        from .strategy_profit_giveback_exit import profit_giveback_reason
         if (type(self.base) is not TypedJournalBatch or self.base.status!='running'
                 or len(self.base.events)!=1 or len(self.base.intents)!=1):
             raise ValueError('Profit witness needs one exact running typed intent')
@@ -49,7 +49,7 @@ class V4ProfitGivebackBatch:
                 or row['parent_record_id']!=event['record_id']
                 or intent['record_id']!=event['record_id']
                 or intent['intent_id']!=event['entity_id']
-                or intent['action']!='exit' or intent['reason']!=REASON
+                or intent['action']!='exit' or intent['reason']!=profit_giveback_reason(row['strategy_number'])
                 or float(intent['reference_price'])!=witness.bid
                 or type(row['source_manager_checkpoint_sequence']) is not int
                 or not 0<row['source_manager_checkpoint_sequence']<self.base.first_sequence):
@@ -63,6 +63,7 @@ def project_profit_giveback(
     witness, intent, financial, *, session_date: date, source_entry_intent_id: str,
     run_id: str, batch_id: str, parent_record_id: str,
     source_manager_snapshot_id: str, source_manager_checkpoint_sequence: int,
+    strategy_number: int = 31,
 ) -> dict:
     """Unsealed scalar projection; source verification must precede publication."""
     validate_profit_giveback_witness(witness)
@@ -75,14 +76,15 @@ def project_profit_giveback(
                    for name in ('completed_close_int', 'prior_high_int'))):
         raise ValueError('Profit projection needs bounded source identity and prices')
     expected = profit_giveback_exit_intent(
-        witness, financial, session_date=session_date, source_entry_intent_id=source_entry_intent_id)
+        witness, financial, session_date=session_date, source_entry_intent_id=source_entry_intent_id,
+        strategy_number=strategy_number)
     if intent != expected:
         raise ValueError('Profit projection differs from immutable factory intent')
     return {
         'record_id': str(uuid5(NAMESPACE_URL, f'{run_id}:{parent_record_id}:profit-giveback')),
         'parent_record_id': parent_record_id, 'run_id': run_id,
         'event_month': intent.event_time.astimezone(timezone.utc).strftime('%Y-%m-01'),
-        'batch_id': batch_id, 'strategy_number': 31,
+        'batch_id': batch_id, 'strategy_number': strategy_number,
         'source_entry_intent_id': source_entry_intent_id, 'assignment_id': financial.assignment_id,
         'source_manager_snapshot_id': source_manager_snapshot_id,
         'source_manager_checkpoint_sequence': source_manager_checkpoint_sequence,
@@ -92,8 +94,8 @@ def project_profit_giveback(
 
 def restore_profit_giveback(row: dict) -> ProfitGivebackWitness:
     """Revalidate scalars after native row hash/source verification, not instead."""
-    if type(row.get('strategy_number')) is not int or row['strategy_number'] != 31:
-        raise ValueError('Profit witness belongs only to the prepared Strategy 31')
+    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (31, 32):
+        raise ValueError('Profit witness belongs only to Strategy 31 or 32')
     integer_fields = {'boundary_ms', 'first_held_boundary_ms', 'completed_close_int',
                       'quote_age_us', 'prior_high_int', 'prior_high_through_boundary_ms'}
     converted = {}
@@ -116,12 +118,13 @@ def seal_profit_giveback_rows(client, rows, intents, events, *, prefix, first_pr
     from zoneinfo import ZoneInfo
     from .arte_journal_writer import typed_row, _canonical_typed_content
     from .arte_intent_projection import project_strategy_intent
-    from .strategy_profit_giveback_exit import REASON
+    from .strategy_profit_giveback_exit import profit_giveback_reason
     from .strategy_profit_giveback_source import load_profit_giveback_checkpoint
     from .strategy_one_stateful import StrategyOneFinancialView
     from .strategy_engine import AssignmentStatus, StrategyPermissions
     from .arte_journal_commit_v4 import V4CommittedPrefix
-    parents={str(x['record_id']):x for x in intents if x['reason']==REASON}
+    reasons = {profit_giveback_reason(number) for number in (31, 32)}
+    parents={str(x['record_id']):x for x in intents if x['reason'] in reasons}
     event_map={str(x['record_id']):x for x in events}
     if (len(event_map)!=len(events) or len({str(x['record_id']) for x in intents})!=len(intents)
             or len(rows)!=len(parents)):
@@ -157,7 +160,7 @@ def seal_profit_giveback_rows(client, rows, intents, events, *, prefix, first_pr
             AssignmentStatus.WATCHING,StrategyPermissions(),float(parent['quantity']),False,False,False,1)
         load_profit_giveback_checkpoint(client,prefix,row,financial,first_price_source=first_price_source)
         expected=profit_giveback_exit_intent(witness,financial,session_date=local.date(),
-            source_entry_intent_id=str(row['source_entry_intent_id']))
+            source_entry_intent_id=str(row['source_entry_intent_id']), strategy_number=row['strategy_number'])
         content={k:v for k,v in parent.items() if k!='content_hash'}
         expected_content={**content,**{k:v for k,v in project_strategy_intent(expected).core.items() if k!='event_time'}}
         if (_canonical_typed_content('trading_strategy_intent_v1',content,stored_utc=True)
