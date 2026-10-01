@@ -6,19 +6,22 @@ from pathlib import Path
 
 
 LIQUIDITY_FADE_SOURCE_AST = {
-    'src/backend/backtest_strategy_liquidity_fade.py': '9dc22d73da02a6a13d9c3176aa4ba9877f2199643c73575272265b0ec08d1b20',
+    'src/backend/backtest_strategy_liquidity_fade.py': '39b5849330dfbb618216d9f0944b0dd2549444b2ab0ee2f5d33f3eed131621ed',
     'src/trading_runtime/strategy_liquidity_fade_failure.py': '25ec4e6e986c8cd684740d9140ac5b659b36f386170d3bad6ce2af2e5569350e',
     'src/trading_runtime/strategy_liquidity_fade_exit.py': '2ae17b94d208e79b07343b159a70f231f940faaf9b9aaf23be8500b3e243aa14',
     'src/trading_runtime/arte_liquidity_fade_failure_v4.py': '213c91478a51fc73e49aa51ffa0fac1858bc09fa899cc0a993fbc31f650e4d73',
     'src/trading_runtime/strategy_liquidity_fade_source.py': 'bf9c1c287bb9d1d043baacb3bedb0f2f82d74c1bd7b35fb8549fa1189cc17882',
     'src/trading_runtime/strategy_liquidity_fade_market_source.py': '45949942e0dfe40d32562e83ef19ef61ecea567a050934b6da5a4f1c3ee50420',
+    'src/trading_runtime/strategy_thirty_five_release.py': 'f0e45aba520f8792f65b375929d39063107a209b9b458c559be043d2fe64cfcd',
+    'pipelines/strategy_one/strategy_thirty_five_configuration.py': '1d2045dcde4441a05b9c77a60126b7f0aec65010eaa45cc0739785d50b4ed7d0',
+    'src/trading_runtime/strategy_liquidity_fade_transport.py': '453f4fc4fa6414a17b0ff9ada8d10382dc96b704b5b7b8e9bcc673772a9e4e3e',
 }
 
 
 def certify_prepared_liquidity_fade_source(*, source_overrides=None):
     """Reject changed prepared rules, rolling arithmetic and authority checks.
 
-    This is a six-module implementation seal. It does not certify inherited
+    This is a prepared implementation seal. It does not certify inherited
     Strategy 34 routes, install Strategy 35, grant native writer admission,
     attest market inputs, or establish financial backtest performance.
     """
