@@ -335,3 +335,71 @@ def test_confirmation_writer_rejects_foreign_run_before_io(monkeypatch):
     writer._journal_profile, writer._run_id = 'backtest_v4', 'foreign'
     with pytest.raises(ValueError, match='Backtest writer'):
         writer.submit_confirmed_ah_exit_v4(V4ConfirmedAhFailureBatch(base, row))
+
+
+def test_confirmation_worker_commit_retry_and_cold_readback(monkeypatch):
+    """Native writer/commit path with explicit memory DB and source/preflight mocks."""
+    from threading import get_ident
+    from src.trading_runtime import arte_journal_writer as writer
+    from src.trading_runtime.arte_intent_projection import strategy_intent_batch
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+    from src.trading_runtime.arte_journal_commit_v4 import publish_base_typed_batch_v4, load_verified_v4_prefix
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    from tests.test_arte_journal_writer import batch
+    witness, financial, args, intent, original = prepared_case()
+    run, attempt, preceding_id = str(uuid4()), str(uuid4()), str(uuid4())
+    row = project_confirmed_ah_failure(
+        witness, intent, financial, **args, run_id=run,
+        batch_id=original['batch_id'], parent_record_id=original['parent_record_id'],
+    )
+    base = strategy_intent_batch(
+        intent, run_id=run, run_month=date(2026, 8, 1), account_id=financial.account_id,
+        attempt_id=attempt, batch_id=row['batch_id'], prior_batch_id=preceding_id, sequence=65,
+        source_cursor='boundary-43700000', run_status='running', recorded_at=intent.event_time,
+        record_id=row['parent_record_id'],
+    )
+    seed = batch()
+    events = tuple(writer.typed_row('trading_event_v1', {
+        **{k: v for k, v in seed.events[0].items() if k != 'content_hash'},
+        'run_id': run, 'batch_id': preceding_id, 'attempt_id': attempt,
+        'record_id': str(uuid4()), 'sequence': i,
+    }) for i in range(1, 65))
+    preceding = replace(seed, run_id=run, attempt_id=attempt, batch_id=preceding_id,
+                        last_sequence=64, events=events)
+    client = attached_v4_client()
+    publish_base_typed_batch_v4(client, preceding)
+    prefix = load_verified_v4_prefix(client, run)
+    calls = []
+    def source_loader(_client, run_id, intent_id, **context):
+        assert context['verified_prefix'] == prefix
+        calls.append(context['verified_prefix'])
+        return (dict(intent_id=args['source_entry_intent_id'], ticker='WAFU', action='enter_long',
+                     reason='strategy_one_entry', reference_price=2.08, invalidation_price=1.81),
+                dict(account_id=financial.account_id, sequence=4),
+                dict(strategy_number=34, assignment_id=financial.assignment_id, boundary_ms=43_647_400))
+    monkeypatch.setattr('src.trading_runtime.arte_followthrough_failure_v4._source_entry', source_loader)
+    monkeypatch.setattr(writer, 'storage_preflight', lambda *a, **k: None)
+    monkeypatch.setattr(writer, 'journal_permission_preflight', lambda *a, **k: None)
+    monkeypatch.setattr(writer, '_verify_run_identity', lambda *a: {'mode': 'backtest', 'account_ids': (financial.account_id,)})
+    journal = writer.ArteJournalWriter(client, run_id=run, journal_profile='backtest_v4', coalesce_batches=False)
+    caller, threads = get_ident(), []
+    execute = client.execute
+    def tracked(sql):
+        threads.append(get_ident())
+        return execute(sql)
+    client.execute = tracked
+    unit = V4ConfirmedAhFailureBatch(base, row)
+    try:
+        assert journal.submit_confirmed_ah_exit_v4(unit).result(timeout=5) == base.batch_id
+        inserted = tuple(client.inserts)
+        assert journal.submit_confirmed_ah_exit_v4(unit).result(timeout=5) == base.batch_id
+        assert tuple(client.inserts) == inserted
+        assert threads and all(t != caller for t in threads)
+        assert calls
+    finally:
+        journal.close()
+    final = load_verified_v4_prefix(client, run)
+    assert final.last_sequence == 65
+    client.tables[CONFIRMED_AH_FAILURE.name][0]['ten_second_macd_signal'] += 0.01
+    with pytest.raises(RuntimeError, match='row hash'):
+        load_verified_v4_prefix(client, run)
