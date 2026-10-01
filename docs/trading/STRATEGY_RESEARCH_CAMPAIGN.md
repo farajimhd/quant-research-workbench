@@ -2335,3 +2335,25 @@ not substitute for operational execution. Reviewed terminal-route AST receipt:
 `--help` path and scoped `git diff --check` passed. Immutable configuration
 publication, real20 portfolio runs, populated UI readback and first-write SSD
 part placement remain pending; screened19 trade sums are not20 PnL.
+
+Strategy20 publication subsequently completed from source `73bf43e73`:
+revision `strategy-one-20:40e320de-bf97-4c0f-9c2b-e7c339325f7f`, payload
+`90be668fdfab207d8149710a5646fb6563f4f93433ee691aa3f7e8746bd7cd53`,
+release token `f05fac7b6c529f99fd5bccc33948148cc062ff35b320a9390c09615b2221a485`.
+The actual Aug18 PM app route passed full-market preflight with $10000 and LGHL
+excluded, then failed before processing market rows. Preserved failed run:
+`154e92c6-4af0-4e9f-bcb4-eff8e49ea9fe`; campaign/log evidence is
+`strategy20-development-six-session-campaign-v1.json` and
+`strategy20-pm18-app-route-v1.log`. This is not profitability evidence.
+
+The confirmed binding bug compared the journal's execution-creation month
+(September) with its historical market session (August). The repair checks
+the exact certified parent market plan token/session instead. A second instance
+passed run-month into the price companion; it now uses the parent intent's
+historical event month. Native publication and cold recovery explicitly verify
+an August entry in a September-created run.59 focused checks passed, followed
+by10 native entry/recovery checks after extending the cross-month cold readback.
+The repair changes the approved backend fingerprint. The published20 approval
+and failed run remain immutable: operational acceptance must use the next
+numbered release rather than silently execute repaired code under20's old seal.
+No afterhours or additional development20 runs were attempted after this failure.

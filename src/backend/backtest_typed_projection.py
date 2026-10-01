@@ -444,7 +444,8 @@ def project_pending_backtest_v4_prefix(
                         proposal, session_date=session_date)
                     price_packet = project_certified_price_entry(first_price_source.plan,
                         proposal, run_id=batch.run_id, batch_id=batch.batch_id,
-                        parent_record_id=record.record_id, event_month=run_month.isoformat())
+                        parent_record_id=record.record_id,
+                        event_month=batch.intents[0]["event_month"])
                     price_rows, price_authorities = price_packet.rows, (price_packet.authority,)
                 else:
                     intent = strategy_one_entry_intent(proposal, session_date=session_date)

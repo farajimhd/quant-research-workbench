@@ -246,15 +246,20 @@ class BacktestTypedJournalPublisher:
     def bind_first_price_source(self, source: object) -> None:
         """Bind one native20 source before entry-prefix projection starts."""
         from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+        from src.backend.backtest_market_data import CertifiedMarketDayPlan
         if (type(source) is not CertifiedPriceReadbackAuthority
                 or source.run_id != self.journal.run_id
                 or self.writer.journal_profile != 'backtest_v4'
                 or not isinstance(self.expected_config, dict)
                 or self.expected_config.get('strategy_revision') != 20
                 or self.expected_config.get('strategy_id') != 'early-squeeze-strategy'
-                or source.plan.source.market.sessions[0][:7] != self.run_month.isoformat()[:7]
+                or type(self.fixed_market_parent_plan) is not CertifiedMarketDayPlan
+                or source.plan.source.market.token != self.fixed_market_parent_plan.token
+                or source.plan.source.market.sessions != self.fixed_market_parent_plan.sessions
                 or self._first_price_source is not None):
             raise ValueError("Strategy20 publisher source lacks its exact unbound run")
+        # run_month partitions the execution's creation date. Native entries
+        # refer to the historical market session, which can be another month.
         self._first_price_source = source
 
     def _prepare_batches(self, through_sequence: int) -> tuple[

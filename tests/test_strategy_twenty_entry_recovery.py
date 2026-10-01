@@ -200,7 +200,7 @@ def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry():
     writer.run_id, writer.journal_profile = source.run_id, 'backtest_v4'
     publisher = BacktestTypedJournalPublisher(journal, writer,
         attempt_id=scope['attempt_id'], run_month=scope['run_month'],
-        expected_config=scope['expected_config'])
+        expected_config=scope['expected_config'], fixed_market_parent_plan=market)
     with pytest.raises(ValueError, match='unbound run'):
         publisher.bind_first_price_source(foreign)
     publisher.bind_first_price_source(source)
@@ -220,6 +220,23 @@ def test_native_twenty_memory_prefix_projects_and_publishes_complete_entry():
     assert page.entries[0].proposal == proposal
     assert page.entries[0].intent == intent
     assert journal.pending_record_count == 1  # Projection/publication does not acknowledge this buffer.
+    # A run created in September may trade an August historical session.
+    later_publisher = BacktestTypedJournalPublisher(journal, writer,
+        attempt_id=scope['attempt_id'], run_month=date(2026, 9, 1),
+        expected_config=scope['expected_config'], fixed_market_parent_plan=market)
+    later_publisher.bind_first_price_source(source)
+    later = later_publisher._prepare_batches(1)[0]
+    assert later.base.run_month == date(2026, 9, 1)
+    assert later.first_price_evidence[0]['event_month'] == '2026-08-01'
+    later_client = attached_v4_client(ExactBits())
+    publish_strategy_one_entry_batch_v4(later_client, later.base,
+        entry_evidence=later.entry_evidence, momentum_evidence=later.momentum_evidence,
+        initial_momentum_evidence=later.initial_momentum_evidence,
+        first_price_evidence=later.first_price_evidence,
+        first_price_authorities=later.first_price_authorities)
+    later_prefix = load_verified_v4_prefix(later_client, source.run_id, first_price_source=source)
+    assert load_committed_strategy_one_entry_page(
+        later_client, later_prefix, first_price_source=source).entries[0].proposal == proposal
 
 
 def test_runtime_native_entry_intent_reuses_bound_source_and_rejects_rebinding():
