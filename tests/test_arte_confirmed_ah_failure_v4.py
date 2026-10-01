@@ -189,3 +189,30 @@ def test_prepared_family_graph_rejects_incomplete_or_ambiguous_admission(monkeyp
     else: row['undeclared'] = 1
     with pytest.raises(ValueError):
         validate_confirmed_ah_rows(None, rows, parents, events, verified_prefix=prefix)
+
+
+def test_registered_scalar_hash_roundtrip_and_tamper_rejection():
+    from src.trading_runtime.arte_journal_writer import typed_row
+    from src.trading_runtime.arte_intent_projection import _verify_stored_row
+    witness, *_, row = prepared_case()
+    sealed = typed_row(CONFIRMED_AH_FAILURE.name, row)
+    canonical = _verify_stored_row(CONFIRMED_AH_FAILURE.name, sealed)
+    # Hash validation precedes any adaptation from native UInt spellings.
+    integer_names = {name for name, kind in CONFIRMED_AH_FAILURE.columns if kind.startswith('UInt')}
+    adapted = {k: int(v) if k in integer_names else v for k, v in canonical.items()}
+    assert restore_confirmed_ah_failure(adapted) == witness
+    with pytest.raises(RuntimeError, match='committed hash'):
+        _verify_stored_row(CONFIRMED_AH_FAILURE.name, dict(sealed, ten_second_macd_signal=0.06))
+    with pytest.raises(ValueError):
+        typed_row(CONFIRMED_AH_FAILURE.name, dict(row, undeclared=1))
+
+
+def test_prepared_graph_sealing_uses_registered_native_hashing(monkeypatch):
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import seal_confirmed_ah_rows
+    from src.trading_runtime.arte_intent_projection import _verify_stored_row
+    _, row, parent, event, prefix, *_ = prepared_source_graph(monkeypatch)
+    sealed = seal_confirmed_ah_rows(None, [row], [parent], [event], verified_prefix=prefix)
+    assert len(sealed) == 1 and sealed[0]['content_hash']
+    _verify_stored_row(CONFIRMED_AH_FAILURE.name, sealed[0])
+    with pytest.raises(ValueError):
+        seal_confirmed_ah_rows(None, [dict(row, initial_stop=1.82)], [parent], [event], verified_prefix=prefix)

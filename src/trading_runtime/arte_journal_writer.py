@@ -98,6 +98,7 @@ if TYPE_CHECKING:
 
 from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch
 from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch
+from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
@@ -105,6 +106,7 @@ from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPric
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[FAILURE.name] = FAILURE
 _CONTRACTS[PROFIT_GIVEBACK.name] = PROFIT_GIVEBACK
+_CONTRACTS[CONFIRMED_AH_FAILURE.name] = CONFIRMED_AH_FAILURE
 _CONTRACTS.update({table.name: table for table in (
     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
     *BROKER_MATCH_SNAPSHOT_TABLES, *EVIDENCE_SNAPSHOT_TABLES,

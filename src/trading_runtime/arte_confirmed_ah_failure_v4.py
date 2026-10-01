@@ -146,3 +146,20 @@ def restore_confirmed_ah_failure(row):
     )
     validate_confirmed_ah_witness(witness)
     return witness
+
+
+def seal_confirmed_ah_rows(
+    client, rows, intents, events, *, verified_prefix, first_price_source=None,
+):
+    """Prepared graph/hash sealing; active commit admission remains separate.
+
+    Cold callers must verify original stored hashes before invoking this
+    function. Producer/held/pending authority is not replaced by row hashing.
+    """
+    from .strategy_confirmed_ah_failure_source import validate_confirmed_ah_rows
+    from .arte_journal_writer import typed_row
+    checked = validate_confirmed_ah_rows(
+        client, rows, intents, events, verified_prefix=verified_prefix,
+        first_price_source=first_price_source,
+    )
+    return tuple(typed_row(CONFIRMED_AH_FAILURE.name, row) for row in checked)
