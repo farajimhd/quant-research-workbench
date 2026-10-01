@@ -103,6 +103,13 @@ def test_entry_sharing_profit_commit_recovers_exact_source_and_preceding_proof(m
             first_price_source=source)
     from src.trading_runtime import arte_profit_giveback_reader_v4 as profit_reader
     with monkeypatch.context() as cold_patch:
+        quoted = {**recovered_profit, **{name: str(recovered_profit[name])
+            for name in ('boundary_ms', 'first_held_boundary_ms', 'completed_close_int',
+                         'quote_age_us', 'prior_high_int', 'prior_high_through_boundary_ms',
+                         'source_manager_checkpoint_sequence')}}
+        cold_patch.setattr(profit_reader, '_rows', lambda *args: [quoted])
+        assert load_committed_profit_giveback(client, final,
+            profit_base.events[0]['record_id'], first_price_source=source) == recovered_profit
         for changed, message in (
                 ([recovered_profit, recovered_profit], 'unique committed witness'),
                 ([{**recovered_profit, 'batch_id': str(UUID(int=9999))}], 'outside'),

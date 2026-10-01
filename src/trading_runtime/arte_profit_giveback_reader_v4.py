@@ -44,10 +44,13 @@ def load_committed_profit_giveback(client, prefix, exit_record_id, *, first_pric
     if not any(family['family_name'] == PROFIT_GIVEBACK.name for family in families):
         raise RuntimeError('Profit witness family is absent from its committed inventory')
     content = {key: value for key, value in row.items() if key != 'content_hash'}
-    digest = sha256(canonical_json(_canonical_typed_content(
-        PROFIT_GIVEBACK.name, content, stored_utc=True)).encode()).hexdigest()
+    canonical = _canonical_typed_content(PROFIT_GIVEBACK.name, content, stored_utc=True)
+    digest = sha256(canonical_json(canonical).encode()).hexdigest()
     if (digest != row['content_hash'] or row['run_id'] != prefix.run_id
             or str(UUID(str(row['parent_record_id']))) != identity):
         raise RuntimeError('Profit witness differs from its committed typed hash')
-    restore_profit_giveback(row)
-    return row
+    # ClickHouse may quote UInt64 values in JSON. Restore their declared types
+    # only after the canonical content has passed its persisted hash check.
+    normalized = {**canonical, 'content_hash': row['content_hash']}
+    restore_profit_giveback(normalized)
+    return normalized
