@@ -314,3 +314,24 @@ def test_actual_compound_preparation_seals_confirmation_graph(monkeypatch):
     assert len(persisted) == 1 and persisted[0]['batch_id'] == compound.base.batch_id
     _verify_stored_row(CONFIRMED_AH_FAILURE.name, persisted[0])
     assert persisted[0]['ten_second_macd_line'] == witness.ten_second_macd_line
+
+
+@pytest.mark.parametrize('profile', ['live_v4', 'v1', 'backtest_v3'])
+def test_confirmation_writer_rejects_foreign_profile_before_io(monkeypatch, profile):
+    from src.trading_runtime.arte_journal_writer import ArteJournalWriter
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+    row, base = prepared_transport(monkeypatch)
+    writer = object.__new__(ArteJournalWriter)
+    writer._journal_profile, writer._run_id = profile, base.run_id
+    with pytest.raises(ValueError, match='Backtest writer'):
+        writer.submit_confirmed_ah_exit_v4(V4ConfirmedAhFailureBatch(base, row))
+
+
+def test_confirmation_writer_rejects_foreign_run_before_io(monkeypatch):
+    from src.trading_runtime.arte_journal_writer import ArteJournalWriter
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+    row, base = prepared_transport(monkeypatch)
+    writer = object.__new__(ArteJournalWriter)
+    writer._journal_profile, writer._run_id = 'backtest_v4', 'foreign'
+    with pytest.raises(ValueError, match='Backtest writer'):
+        writer.submit_confirmed_ah_exit_v4(V4ConfirmedAhFailureBatch(base, row))

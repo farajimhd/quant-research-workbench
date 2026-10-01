@@ -98,7 +98,7 @@ if TYPE_CHECKING:
 
 from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch
 from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch
-from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
+from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, V4ConfirmedAhFailureBatch
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
@@ -2132,7 +2132,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
                  ENTRY_EVIDENCE, ADD_EVIDENCE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
-                 *OMS_TACTIC_TABLES, FAILURE, PROFIT_GIVEBACK,
+                 *OMS_TACTIC_TABLES, FAILURE, PROFIT_GIVEBACK, CONFIRMED_AH_FAILURE,
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES,
                  *protection_tables, *manager_tables, *broker_match_tables,
@@ -2160,7 +2160,7 @@ def v4_journal_write_tables() -> frozenset[str]:
                 CANCEL.name, REPRICE.name,
                 "trading_backtest_account_snapshot_v2",
                 "trading_backtest_position_snapshot_v2",
-                *(table.name for table in OMS_TACTIC_TABLES), FAILURE.name, PROFIT_GIVEBACK.name,
+                *(table.name for table in OMS_TACTIC_TABLES), FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name,
                 *(table.name for table in RISK_ACTION_TABLES),
                 *(table.name for table in PROTECTION_CHANGE_TABLES),
                 *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
@@ -3979,7 +3979,7 @@ class ArteJournalWriter:
                 or type(unit) is not V4CompoundBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 compound requires its pinned writer")
-        if unit.children['profit_givebacks']:
+        if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures']:
             return self._submit_profit_publication(unit, first_price_source=first_price_source)
         if first_price_source is not None:
             raise ValueError('Compound price context requires a profit witness')
@@ -4046,7 +4046,7 @@ class ArteJournalWriter:
         from .arte_journal_compound_v4 import V4CompoundBatch
         from zoneinfo import ZoneInfo
         if (self._journal_profile != 'backtest_v4'
-                or type(unit) not in (V4ProfitGivebackBatch, V4CompoundBatch)
+                or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4CompoundBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError('Profit publication requires its exact Backtest writer')
         stamp = datetime.fromisoformat(str(unit.base.events[0]['event_time']).replace('Z', '+00:00'))
@@ -4064,6 +4064,17 @@ class ArteJournalWriter:
                 raise JournalQueueFull('V4 journal queue is full; stop admission') from exc
             self._accepted_writes = True
             return receipt
+
+    def submit_confirmed_ah_exit_v4(self, unit: V4ConfirmedAhFailureBatch, *,
+                                  first_price_source=None) -> Future[str]:
+        """Queue confirmation through the existing verified-predecessor lane.
+
+        The queue envelope retains its historical profit name; both exit
+        families require identical Backtest fencing and source-price context.
+        """
+        if type(unit) is not V4ConfirmedAhFailureBatch:
+            raise ValueError('AH confirmation requires its exact typed envelope')
+        return self._submit_profit_publication(unit, first_price_source=first_price_source)
 
     def submit_oms_tactic_v4(self, unit) -> Future[str]:
         """Queue one group+tactic graph without network I/O on the actor."""
@@ -4801,6 +4812,9 @@ class ArteJournalWriter:
                     if type(unit) is V4CompoundBatch:
                         committed_id = publish_compound_v4(self._client, unit,
                             timings_ns=compound_timings_ns, **context)
+                    elif type(unit) is V4ConfirmedAhFailureBatch:
+                        committed_id = _publish_typed_batch_v4(self._client, unit.base,
+                            confirmed_ah_rows=(unit.confirmation,), **context)
                     else:
                         committed_id = _publish_typed_batch_v4(self._client, unit.base,
                             profit_giveback_rows=(unit.profit,), **context)
