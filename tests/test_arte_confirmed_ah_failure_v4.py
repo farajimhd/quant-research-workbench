@@ -123,3 +123,44 @@ def test_prepared_source_graph_rejects_ancestry_identity_and_policy_changes(monk
     objects[target][field] = value
     with pytest.raises(ValueError):
         validate_confirmed_ah_source(None, row, parent, event, verified_prefix=prefix)
+
+
+def prepared_transport(monkeypatch):
+    from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+    _, row, parent, event, prefix, *_ = prepared_source_graph(monkeypatch)
+    event.update(category='strategy', entity_type='strategy_intent')
+    base = TypedJournalBatch(
+        row['run_id'], date(2026, 8, 1), str(uuid4()), row['batch_id'],
+        prefix.last_batch_id, 65, 65, 'cursor', 'running', (event,), intents=(parent,),
+    )
+    return row, base
+
+
+def test_prepared_transport_freezes_witness_and_retains_exact_factory(monkeypatch):
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+    row, base = prepared_transport(monkeypatch)
+    unit = V4ConfirmedAhFailureBatch(base, row)
+    row['ten_second_macd_line'] = 0.06
+    assert unit.confirmation['ten_second_macd_line'] != row['ten_second_macd_line']
+    with pytest.raises(TypeError):
+        unit.confirmation['bid'] = 2.02
+
+
+@pytest.mark.parametrize('target,field,value', [
+    ('row', 'record_id', str(uuid4())), ('row', 'parent_record_id', str(uuid4())),
+    ('row', 'batch_id', str(uuid4())), ('row', 'run_id', 'foreign'),
+    ('event', 'sequence', 66), ('event', 'account_id', 'foreign'),
+    ('event', 'event_time', '2026-08-10T20:08:25+00:00'),
+    ('event', 'entity_type', 'signal'), ('parent', 'execution_quote_source', 'foreign'),
+])
+def test_prepared_transport_rejects_altered_envelope(monkeypatch, target, field, value):
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+    row, base = prepared_transport(monkeypatch)
+    if target == 'row':
+        row[field] = value
+    elif target == 'event':
+        base = replace(base, events=(dict(base.events[0], **{field: value}),))
+    else:
+        base = replace(base, intents=(dict(base.intents[0], **{field: value}),))
+    with pytest.raises(ValueError):
+        V4ConfirmedAhFailureBatch(base, row)

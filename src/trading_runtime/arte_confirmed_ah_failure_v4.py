@@ -4,9 +4,11 @@ Projection/restoration do not attest market provenance, committed ancestry or
 current Portfolio/OMS state. Native admission must supply those checks before
 this family can become an executable Strategy 34 exit.
 """
-from dataclasses import fields
-from datetime import timezone
+from dataclasses import dataclass, fields
+from datetime import datetime, timezone
+from types import MappingProxyType
 from uuid import NAMESPACE_URL, UUID, uuid5
+from zoneinfo import ZoneInfo
 
 from .arte_journal_schema import TableContract
 from .strategy_confirmed_ah_risk_failure import ConfirmedAhRiskFailure
@@ -28,6 +30,72 @@ CONFIRMED_AH_FAILURE = TableContract('trading_confirmed_ah_failure_v4', (
     ('content_hash', 'FixedString(64)'),
 ), 'toYYYYMM(event_month)', 'run_id, parent_record_id, record_id')
 TABLES = (CONFIRMED_AH_FAILURE,)
+
+
+@dataclass(frozen=True, slots=True)
+class V4ConfirmedAhFailureBatch:
+    """Prepared immutable one-intent transport, not admitted by a writer.
+
+    Original entry/prefix and producer provenance checks remain separate;
+    an envelope must never stand in for those checks at commit admission.
+    """
+    base: object
+    confirmation: object
+
+    def __post_init__(self):
+        from .arte_journal_writer import TypedJournalBatch, _canonical_typed_content
+        from .arte_intent_projection import project_strategy_intent
+        from .strategy_one_stateful import StrategyOneFinancialView
+        from .strategy_engine import AssignmentStatus, StrategyPermissions
+        if (type(self.base) is not TypedJournalBatch or self.base.status != 'running'
+                or len(self.base.events) != 1 or len(self.base.intents) != 1
+                or self.base.first_sequence != self.base.last_sequence):
+            raise ValueError('AH batch requires one exact running typed intent')
+        row = dict(self.confirmation)
+        if set(row) != {name for name, _ in CONFIRMED_AH_FAILURE.columns} - {'content_hash'}:
+            raise ValueError('AH batch requires its complete unsealed scalar witness')
+        witness = restore_confirmed_ah_failure(row)
+        event, parent = self.base.events[0], self.base.intents[0]
+        if (row['run_id'] != self.base.run_id or row['batch_id'] != self.base.batch_id
+                or row['parent_record_id'] != event['record_id']
+                or parent['record_id'] != event['record_id']
+                or parent['run_id'] != row['run_id'] or event['run_id'] != row['run_id']
+                or parent['batch_id'] != row['batch_id'] or event['batch_id'] != row['batch_id']
+                or parent['account_id'] != event['account_id']
+                or parent['event_month'] != row['event_month']
+                or event['category'] != 'strategy' or event['entity_type'] != 'strategy_intent'
+                or parent['intent_id'] != event['entity_id']
+                or event['sequence'] != self.base.first_sequence):
+            raise ValueError('AH batch differs from its event/intent envelope')
+        at = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        local = at.astimezone(ZoneInfo('America/New_York'))
+        financial = StrategyOneFinancialView(
+            row['assignment_id'], event['account_id'], parent['ticker'],
+            AssignmentStatus.WATCHING, StrategyPermissions(),
+            float(parent['quantity']), False, False, False, 1,
+        )
+        expected = confirmed_ah_exit_intent(
+            witness, financial, session_date=local.date(),
+            source_entry_intent_id=str(row['source_entry_intent_id']),
+        )
+        if expected.event_time != at.astimezone(timezone.utc):
+            raise ValueError('AH batch event clock differs from its witness')
+        expected_row = project_confirmed_ah_failure(
+            witness, expected, financial, session_date=local.date(),
+            source_entry_intent_id=str(row['source_entry_intent_id']),
+            run_id=row['run_id'], batch_id=row['batch_id'], parent_record_id=row['parent_record_id'],
+        )
+        if row != expected_row:
+            raise ValueError('AH batch has altered scalar identity or values')
+        content = {k: v for k, v in parent.items() if k != 'content_hash'}
+        expected_content = {**content, **{k: v for k, v in project_strategy_intent(expected).core.items()
+                                         if k != 'event_time'}}
+        if (_canonical_typed_content('trading_strategy_intent_v1', content, stored_utc=True)
+                != _canonical_typed_content('trading_strategy_intent_v1', expected_content, stored_utc=True)):
+            raise ValueError('AH batch differs from its exact exit factory')
+        object.__setattr__(self, 'confirmation', MappingProxyType(row))
 
 
 def project_confirmed_ah_failure(
