@@ -82,7 +82,8 @@ def load_profit_giveback_checkpoint(client, prefix, row, financial, *, first_pri
     source = validate_profit_giveback_state(witness, state, financial)
     entry, event, child = _source_entry(
         client, prefix.run_id, str(row['source_entry_intent_id']),
-        prior_batch_id=str(cursor['batch_id']), exit_batch_id=str(row['batch_id']))
+        prior_batch_id=str(cursor['batch_id']), exit_batch_id=str(row['batch_id']),
+        verified_prefix=prefix, first_price_source=first_price_source)
     if (entry['action'] != 'enter_long' or entry['reason'] != 'strategy_one_entry'
             or str(entry['batch_id']) not in prefix.batch_ids
             or entry['ticker'] != financial.ticker or event['account_id'] != financial.account_id

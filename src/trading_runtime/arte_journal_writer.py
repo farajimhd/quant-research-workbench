@@ -97,7 +97,7 @@ if TYPE_CHECKING:
 
 
 from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch
-from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK
+from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
@@ -3738,6 +3738,18 @@ class _RunningPortfolioSnapshotUnit:
     captured: CapturedPortfolioSnapshot
 
 
+@dataclass(frozen=True, slots=True)
+class _ProfitPublicationUnit:
+    """Persistence-worker context; no source reads on strategy submission."""
+
+    unit: Any
+    first_price_source: Any | None
+
+    @property
+    def base(self) -> TypedJournalBatch:
+        return self.unit.base
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
@@ -3957,7 +3969,7 @@ class ArteJournalWriter:
             self._accepted_writes = True
             return receipt
 
-    def submit_compound_v4(self, unit) -> Future[str]:
+    def submit_compound_v4(self, unit, *, first_price_source=None) -> Future[str]:
         """Queue one bounded mixed V4 commit without caller-side network I/O."""
         from .arte_journal_compound_v4 import V4CompoundBatch
 
@@ -3965,6 +3977,10 @@ class ArteJournalWriter:
                 or type(unit) is not V4CompoundBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 compound requires its pinned writer")
+        if unit.children['profit_givebacks']:
+            return self._submit_profit_publication(unit, first_price_source=first_price_source)
+        if first_price_source is not None:
+            raise ValueError('Compound price context requires a profit witness')
         if self._journal_profile == "live_v4" and any(
                 getattr(unit.base, name) for name in (
                     "backtest_cursors", "backtest_market_authorities",
@@ -4014,6 +4030,36 @@ class ArteJournalWriter:
                 self._queue.put_nowait((unit, receipt))
             except Full as exc:
                 raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_profit_exit_v4(self, unit: V4ProfitGivebackBatch, *,
+                             first_price_source=None) -> Future[str]:
+        """Queue a typed profit exit; source verification runs on the writer."""
+        if type(unit) is not V4ProfitGivebackBatch:
+            raise ValueError('Profit exit requires its exact typed envelope')
+        return self._submit_profit_publication(unit, first_price_source=first_price_source)
+
+    def _submit_profit_publication(self, unit, *, first_price_source=None) -> Future[str]:
+        from .arte_journal_compound_v4 import V4CompoundBatch
+        from zoneinfo import ZoneInfo
+        if (self._journal_profile != 'backtest_v4'
+                or type(unit) not in (V4ProfitGivebackBatch, V4CompoundBatch)
+                or unit.base.run_id != self._run_id):
+            raise ValueError('Profit publication requires its exact Backtest writer')
+        stamp = datetime.fromisoformat(str(unit.base.events[0]['event_time']).replace('Z', '+00:00'))
+        if stamp.tzinfo is None:
+            raise ValueError('Profit submission needs a timezone-aware event')
+        self._validate_checkpoint_price_source(
+            first_price_source, stamp.astimezone(ZoneInfo('America/New_York')).date())
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('V4 writer is closed or failed')
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((_ProfitPublicationUnit(unit, first_price_source), receipt))
+            except Full as exc:
+                raise JournalQueueFull('V4 journal queue is full; stop admission') from exc
             self._accepted_writes = True
             return receipt
 
@@ -4732,9 +4778,31 @@ class ArteJournalWriter:
                                      _BrokerMatchSnapshotUnit, _EvidenceSnapshotUnit,
                                      _OmsObservationSnapshotUnit,
                                      _CampaignSnapshotUnit,
-                                     _RunningPortfolioSnapshotUnit)))):
+                                     _RunningPortfolioSnapshotUnit, _ProfitPublicationUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
-                if isinstance(group[0][0], V4CompoundBatch):
+                if isinstance(group[0][0], _ProfitPublicationUnit):
+                    from .arte_journal_commit_v4 import (
+                        load_writer_v4_snapshot_prefix, _publish_typed_batch_v4,
+                        verified_batch_predecessor,
+                    )
+                    from .arte_journal_compound_v4 import publish_compound_v4
+                    queued = group[0][0]
+                    unit = queued.unit
+                    prefix = load_writer_v4_snapshot_prefix(
+                        self._client, self._run_id, first_price_source=queued.first_price_source)
+                    # A retry needs its original predecessor, even when the
+                    # worker's durable head already includes this exact batch.
+                    if prefix is not None and unit.base.batch_id in prefix.batch_ids:
+                        prefix = verified_batch_predecessor(self._client, prefix, unit.base.batch_id)
+                    context = {'verified_prior_prefix': prefix,
+                               'first_price_source': queued.first_price_source}
+                    if type(unit) is V4CompoundBatch:
+                        committed_id = publish_compound_v4(self._client, unit,
+                            timings_ns=compound_timings_ns, **context)
+                    else:
+                        committed_id = _publish_typed_batch_v4(self._client, unit.base,
+                            profit_giveback_rows=(unit.profit,), **context)
+                elif isinstance(group[0][0], V4CompoundBatch):
                     from .arte_journal_compound_v4 import publish_compound_v4
 
                     committed_id = publish_compound_v4(

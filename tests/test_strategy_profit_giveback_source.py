@@ -83,6 +83,7 @@ def test_checkpoint_reader_routes_and_rejects_changed_authority(monkeypatch, cor
         calls.append('attach');return restored
     def source(client,run,intent_id,**kwargs):
         assert kwargs['prior_batch_id']==batch and intent_id==row['source_entry_intent_id']
+        assert kwargs['verified_prefix'] is prefix
         calls.append('entry');return entry,event,child
     monkeypatch.setattr(cursors,'load_latest_backtest_cursor',read_cursor)
     monkeypatch.setattr(snapshots,'load_unattested_manager_snapshot_rows',read_snapshot)

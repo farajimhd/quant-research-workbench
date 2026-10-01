@@ -1710,15 +1710,16 @@ def test_writer_snapshot_prefix_skips_old_details_only_under_keeper_owner(monkey
                         [commits[-1]] if "AND batch_id=" in sql else commits)
     verified = []
     monkeypatch.setattr(commit, "load_verified_commit_v4",
-                        lambda _client, *, run_id, batch_id, first_price_source=None:
-                        (verified.append((batch_id, first_price_source)) or commits[-1], ()))
+                        lambda _client, *, run_id, batch_id, first_price_source=None, verified_prior_prefix=None:
+                        (verified.append((batch_id, first_price_source, verified_prior_prefix)) or commits[-1], ()))
     monkeypatch.setattr(commit, "load_verified_v4_prefix",
                         lambda *_a, **_k: pytest.fail("warm path scanned cold prefix"))
     prefix = snapshot()
     assert prefix.batch_ids == (first, second)
-    assert verified == [(second, source)]
+    assert verified == [(second, source, commit.V4CommittedPrefix(
+        run, 2, first, commits[0]['source_cursor'], 'running', (first,)))]
     assert snapshot() is prefix
-    assert verified == [(second, source)]  # Same fenced head does not rehash details.
+    assert len(verified) == 1  # Same fenced head does not rehash details.
     if with_price_source:
         with pytest.raises(RuntimeError, match="cached price authority differs"):
             commit.load_writer_v4_snapshot_prefix(client, run)

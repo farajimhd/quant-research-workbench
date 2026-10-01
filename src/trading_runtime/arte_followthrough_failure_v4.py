@@ -69,9 +69,10 @@ def restore_failure(row):
     return witness
 
 
-def _source_entry(client, run_id, intent_id, *, prior_batch_id, exit_batch_id):
+def _source_entry(client, run_id, intent_id, *, prior_batch_id, exit_batch_id,
+                  verified_prefix=None, first_price_source=None):
     from .arte_journal_writer import _rows, _literal, _CONTRACTS
-    from .arte_journal_commit_v4 import load_verified_commit_v4
+    from .arte_journal_commit_v4 import load_verified_commit_v4, verified_batch_predecessor
     from .arte_strategy_one_entry_schema import ENTRY_EVIDENCE
     def read(name, predicate):
         columns = ','.join(k for k, _ in _CONTRACTS[name].columns)
@@ -82,8 +83,17 @@ def _source_entry(client, run_id, intent_id, *, prior_batch_id, exit_batch_id):
     intent = read("trading_strategy_intent_v1", f"intent_id IN ({_literal(intent_id)})")
     event = read("trading_event_v1", f"record_id IN (toUUID({_literal(str(intent['record_id']))}))")
     child = read(ENTRY_EVIDENCE.name, f"parent_record_id IN (toUUID({_literal(str(intent['record_id']))}))")
+    context = {}
+    if verified_prefix is not None:
+        if verified_prefix.run_id != run_id or event['sequence'] > verified_prefix.last_sequence:
+            raise RuntimeError('Original entry differs from its verified source prefix')
+        preceding = verified_batch_predecessor(client, verified_prefix, str(intent['batch_id']))
+        if preceding is not None:
+            context['verified_prior_prefix'] = preceding
+    if first_price_source is not None:
+        context['first_price_source'] = first_price_source
     source_commit, _ = load_verified_commit_v4(
-        client, run_id=run_id, batch_id=str(intent['batch_id']))
+        client, run_id=run_id, batch_id=str(intent['batch_id']), **context)
     # Read the bounded interval once: chain length must not turn a failure
     # decision into one HTTP round trip per predecessor. Source details retain
     # their independent committed seal; this scalar inventory proves ancestry.
@@ -141,7 +151,8 @@ def _verify_source_ancestor_interval(client, run_id, source_commit, predecessor,
     if len(seen) != len(rows):
         raise RuntimeError("Failure ancestry includes an orphan or conflicting commit")
 
-def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_batch_id=None):
+def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_batch_id=None,
+                            verified_prefix=None, first_price_source=None):
     """Bind witness, exit and original entry graph before committing a head."""
     from .arte_journal_writer import typed_row, _canonical_typed_content
     parents = {str(r['record_id']): r for r in intents if r['reason'] == REASON}
@@ -163,8 +174,13 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
         elapsed = local - datetime.combine(local.date(), time(4), local.tzinfo)
         source = next((r for r in intents if str(r['intent_id']) == str(row['source_entry_intent_id'])), None)
         if source is None:
+            context = {}
+            if verified_prefix is not None:
+                context['verified_prefix'] = verified_prefix
+            if first_price_source is not None:
+                context['first_price_source'] = first_price_source
             source, source_event, source_child = _source_entry(client, row['run_id'], str(row['source_entry_intent_id']),
-                prior_batch_id=prior_batch_id, exit_batch_id=str(row['batch_id']))
+                prior_batch_id=prior_batch_id, exit_batch_id=str(row['batch_id']), **context)
         else:
             source_event = event_map[str(source['record_id'])]
             matches = [r for r in entries if str(r['parent_record_id']) == str(source['record_id'])]

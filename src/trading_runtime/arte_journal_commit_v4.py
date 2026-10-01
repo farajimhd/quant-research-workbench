@@ -218,9 +218,16 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
             or sha256(canonical_json(latest).encode()).hexdigest()
                != gate.compacted_commit_hash):
         raise RuntimeError("V4 warm snapshot differs from Keeper compaction")
-    verified, _ = (load_verified_commit_v4(client, run_id=run_id, batch_id=prior)
-                  if first_price_source is None else load_verified_commit_v4(client,
-                      run_id=run_id, batch_id=prior, first_price_source=first_price_source))
+    # The exclusive writer verified older details before Keeper compaction.
+    # Carry that preceding proof when rechecking the current head, rather than
+    # recursively cold-loading it from inside a profit witness's source reader.
+    preceding = (V4CommittedPrefix(run_id, commits[-2]['last_sequence'],
+        ids[-2], commits[-2]['source_cursor'], 'running', tuple(ids[:-1]))
+        if len(commits) > 1 else None)
+    context = ({'verified_prior_prefix': preceding} if preceding is not None else {})
+    if first_price_source is not None:
+        context['first_price_source'] = first_price_source
+    verified, _ = load_verified_commit_v4(client, run_id=run_id, batch_id=prior, **context)
     if verified != latest:
         raise RuntimeError("V4 warm snapshot current detail differs from commit")
     lease.assert_current()
@@ -292,6 +299,51 @@ def load_verified_v4_prefix(client, run_id: str, *,
     return V4CommittedPrefix(
         run_id, last_sequence, prior_id, commits[-1]["source_cursor"],
         status, tuple(batch_ids))
+
+
+def verified_batch_predecessor(client, prefix: V4CommittedPrefix, batch_id: str) -> V4CommittedPrefix | None:
+    """Scope an already verified chain to an earlier batch without rescanning it.
+
+    The caller still independently verifies the selected batch's full details.
+    This context only supplies its strict predecessor for nested source reads.
+    """
+    from .arte_journal_writer import _CONTRACTS, _literal, _rows
+    identity = str(UUID(batch_id))
+    if (type(prefix) is not V4CommittedPrefix or not prefix.batch_ids
+            or type(prefix.last_sequence) is not int or prefix.last_sequence < 1
+            or prefix.last_batch_id != prefix.batch_ids[-1]
+            or len(set(prefix.batch_ids)) != len(prefix.batch_ids)
+            or identity not in prefix.batch_ids):
+        raise ValueError('Source batch is outside its independently verified prefix')
+    index = prefix.batch_ids.index(identity)
+    columns = ','.join(name for name, _ in _CONTRACTS['trading_commit_v4'].columns)
+    def read(selected):
+        rows = _rows(client, f'SELECT {columns} FROM arte.trading_commit_v4 '
+            f'WHERE run_id={_literal(prefix.run_id)} AND batch_id=toUUID({_literal(selected)}) '
+            'LIMIT 2 FORMAT JSONEachRow')
+        if len(rows) != 1 or rows[0]['run_id'] != prefix.run_id or str(rows[0]['batch_id']) != selected:
+            raise RuntimeError('Verified source batch has missing or ambiguous commit metadata')
+        content = {key: value for key, value in rows[0].items()
+                   if key not in {'committed_at', 'content_hash'}}
+        if sha256(canonical_json(content).encode()).hexdigest() != rows[0]['content_hash']:
+            raise RuntimeError('Source commit metadata differs from its scalar seal')
+        return rows[0]
+    current = read(identity)
+    if not 1 <= current['first_sequence'] <= current['last_sequence'] <= prefix.last_sequence:
+        raise RuntimeError('Source batch exceeds its verified sequence ceiling')
+    expected = prefix.batch_ids[index - 1] if index else str(UUID(int=0))
+    if str(current['prior_batch_id']) != expected:
+        raise RuntimeError('Source batch differs from its verified predecessor inventory')
+    if not index:
+        if current['first_sequence'] != 1:
+            raise RuntimeError('First verified source batch does not start at sequence one')
+        return None
+    prior = read(expected)
+    if (prior['status'] != 'running' or prior['run_month'] != current['run_month']
+            or prior['last_sequence'] + 1 != current['first_sequence']):
+        raise RuntimeError('Source batch predecessor is terminal or noncontiguous')
+    return V4CommittedPrefix(prefix.run_id, prior['last_sequence'], expected,
+        prior['source_cursor'], 'running', prefix.batch_ids[:index])
 
 
 def _family_set_hash(rows: Sequence[Mapping]) -> str:
@@ -577,7 +629,8 @@ def _load_verified_details_v4(
     seal_followthrough_rows(client, related_rows.get(FAILURE.name, ()),
         related_rows.get("trading_strategy_intent_v1", ()),
         related_rows.get("trading_event_v1", ()), related_rows.get(ENTRY_EVIDENCE.name, ()),
-        prior_batch_id=prior_batch_id)
+        prior_batch_id=prior_batch_id, verified_prefix=verified_prior_prefix,
+        first_price_source=first_price_source)
     from .strategy_profit_giveback_exit import REASON as PROFIT_REASON
     profit_rows = related_rows.get(PROFIT_GIVEBACK.name, ())
     if profit_rows or any(row['reason'] == PROFIT_REASON for row in
@@ -1650,7 +1703,9 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                         client, followthrough_rows,
                         dict(base_families)["trading_strategy_intent_v1"],
                         dict(base_families)["trading_event_v1"], entry_rows,
-                        prior_batch_id=batch.prior_batch_id))
+                        prior_batch_id=batch.prior_batch_id,
+                        verified_prefix=verified_prior_prefix,
+                        first_price_source=first_price_source))
     # The referenced checkpoint must already be durable before this prefix.
     # Micro-preparation hashes rows; compound preparation seals the merged graph.
     profit_rows = (tuple(typed_row(PROFIT_GIVEBACK.name, {

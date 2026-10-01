@@ -392,7 +392,8 @@ def prepare_compound_v4_families(
     seal_followthrough_rows(client, extra[FAILURE.name],
         dict(base_families)["trading_strategy_intent_v1"],
         compound.base.events, extra[ENTRY_EVIDENCE.name],
-        prior_batch_id=compound.base.prior_batch_id)
+        prior_batch_id=compound.base.prior_batch_id,
+        verified_prefix=verified_prior_prefix, first_price_source=first_price_source)
     seal_profit_giveback_rows(client, extra[PROFIT_GIVEBACK.name],
         dict(base_families)['trading_strategy_intent_v1'],
         compound.base.events, prefix=verified_prior_prefix, first_price_source=first_price_source)
