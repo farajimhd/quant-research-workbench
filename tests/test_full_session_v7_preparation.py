@@ -22,6 +22,7 @@ class CoveragePreflightTests(IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             controller = object.__new__(ReplayRunController)
             controller.definition = SimpleNamespace(mode=RunMode.BACKTEST,
+                execution_interval='events',
                 experimental_structure_book='level-book-v7', execution_mode='strategy',
                 session_date=datetime(2026, 8, 21).date(), final_session_date=None,
                 requested_start=datetime(2026, 8, 21, 8, tzinfo=UTC),
