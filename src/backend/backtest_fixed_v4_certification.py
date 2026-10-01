@@ -70,6 +70,15 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
 
 def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
+    if type(strategy_number) is int and strategy_number == 34:
+        from .backtest_strategy_confirmed_ah_certification import certify_confirmed_ah_source
+        from src.trading_runtime.strategy_thirty_four_release import release_contract
+        parent_proof = certify_numbered_fixed_v4_projection(33)
+        additional_proof = certify_confirmed_ah_source()
+        release = release_contract()
+        release.verify()
+        return sha256(json.dumps((parent_proof, additional_proof, release.approved_digest),
+                                 separators=(',', ':')).encode()).hexdigest()
     if strategy_number in (31, 32, 33):
         from .backtest_strategy_profit_certification import certify_profit_giveback_route_source
         if strategy_number == 31:
