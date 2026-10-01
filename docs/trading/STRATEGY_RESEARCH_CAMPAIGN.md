@@ -1508,3 +1508,40 @@ anchor observations or hide the anchor in generic metadata. Static filtering,
 scalar admission, manager restore and cold review must enforce the same anchored
 rule, preserving prefix behavior and old consumer semantics. No Strategy 18
 source, release, publication or backtest is claimed at this research checkpoint.
+
+### Strategy 18 first-setup compiler groundwork
+
+The staged pure rule and certified compiler are now implemented in
+`strategy_initial_strong_momentum.py` and
+`backtest_strategy_initial_momentum.py`. They are not connected to numbered
+execution or published release admission yet. Native sorting/group reduction
+selects the first Strategy 12 base-eligible candidate per ticker/episode over
+the full certified population. Both current and first observations must pass
+the unchanged Strategy 17 strong-10s rule. Financial permissions, cash, position
+closure and survivor pruning cannot reset the first-setup selection.
+
+The compiler binds candidate, entry and momentum tokens plus exact candidate
+keys, episode starts, base rejection mask, first indexes and eligibility in its
+content seal. Reconstruction recomputes selection; output arrays are detached
+and immutable. Sparse lookup materializes exact producer observations only for
+admitted candidates. Scalar source/clock validation does not by itself prove
+initiality; the full certified compiler supplies that proof.
+
+Focused native/scalar/source/static-gate/Strategy 17 admission regressions passed
+85 tests in 5.12s. An earlier run passed 55 and failed two fixture checks because
+separately constructed fixtures had different technical attempt UUIDs; fixtures
+were corrected to retain the same source attempt, without weakening validation.
+The repaired focused suite passed 57 tests in 1.98s before the broader check.
+
+Actual read-only certification of both source days verified exact equality of
+the new compiler's first indexes and eligibility with the independent research
+screen, across PM/AH populations. Retained artifact
+`strategy18-initial-compiler-certified-validation-v1.json` SHA-256
+`a02b32e4e6f6a02923437c64cfe54408dc82ae3391741ded3d1f66cdd94a77ab`
+under the campaign runtime root includes source/selection tokens and counts.
+This is implementation validation, not a Strategy 18 backtest or profit claim.
+Normalized companion persistence, commit/cold recovery, source certification,
+numbered execution integration, publication and all four actual sessions remain
+required. No service restart or workstation source synchronization was needed
+for this staged compiler. One existing worker completed the pure-rule lane;
+zero new agents, failures or interruptions, and no worker remains active.
