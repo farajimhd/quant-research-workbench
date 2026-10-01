@@ -50,6 +50,7 @@ class BrokerBucket:
     bid: torch.Tensor | None=None
     ask: torch.Tensor | None=None
     quote_timestamp_us: torch.Tensor | None=None
+    volume_coverage: torch.Tensor | None=None  # [N] verified producer coverage, not trade presence.
 
 
 @dataclass(frozen=True)
@@ -178,8 +179,17 @@ class TensorBroker:
                     total=volumes.sum(0)
                     vwap=(volumes*torch.stack([b.vwap for b in self.cost_history])).sum(0)/total.clamp_min(1e-12)
                     capacity=torch.floor(volumes*self.config.participation).sum(0)
-                    costs=execution_estimates(self.mark,last.bid,last.ask,vwap,total,last.quote_valid,
-                        valid.all(0),(clock_us-last.quote_timestamp_us)/1e6,
+                    # Select latest causal quote across ten completed buckets;
+                    # an event-free last bucket must not erase a fresh quote.
+                    stamps=torch.stack([b.quote_timestamp_us for b in self.cost_history])
+                    quote_masks=torch.stack([b.quote_valid for b in self.cost_history]) & (stamps<=clock_us)
+                    index=torch.where(quote_masks,stamps,0).argmax(0,keepdim=True)
+                    pick=lambda field:torch.stack([getattr(b,field) for b in self.cost_history]).gather(0,index).squeeze(0)
+                    age=(clock_us-pick('quote_timestamp_us'))/1e6
+                    coverage=(torch.stack([b.volume_coverage for b in self.cost_history]).all(0)
+                        if all(b.volume_coverage is not None for b in self.cost_history) else valid.all(0))
+                    costs=execution_estimates(self.mark,pick('bid'),pick('ask'),vwap,total,quote_masks.any(0),
+                        coverage,age,
                         participation=self.config.participation,capacity=capacity)
             # Availability flags inform policy; fills retain the existing
             # quote/volume gates. Exposing features does not change actions.

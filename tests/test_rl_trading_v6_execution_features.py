@@ -141,6 +141,7 @@ def test_sparse_sidecar_retains_old_score_and_no_future_features(tmp_path,monkey
     candidates=pl.DataFrame(dict(ticker=['X'],listing_id=['X-id'],episode_uid=['episode'],direction=[1],
         time_us=[1000000],decision_close=[10.],exit_hint_us=[1000000],exit_hint_close=[10.],score=[.02]))
     requests=pl.DataFrame({'ticker':['X'],'time_us':[1000000],'reference':[10.]})
+    monkeypatch.setattr('research.rl_trading.v6.sparse_coverage.certify_source',lambda source,tickers:({t:(0,4000000) for t in tickers},'fixture'))
     monkeypatch.setattr(module,'read_requested_windows',lambda source,requests:rows())
     proof=module.build_cost_sidecar(source,candidates,requests,tmp_path/'sidecar',bank_sha='bank')
     scores=pl.read_parquet(tmp_path/'sidecar'/'scores.parquet')
@@ -173,6 +174,7 @@ def test_unknown_market_member_masks_allocation_not_opportunity(tmp_path,monkeyp
     candidates=pl.DataFrame(dict(ticker=['X','Y'],listing_id=['X-id','Y-id'],episode_uid=['x','y'],direction=[1,1],
         time_us=[1000000,1000000],decision_close=[10.,10.],exit_hint_us=[2000000,2000000],exit_hint_close=[11.,11.],score=[.02,.02]))
     requests=candidates.select('ticker','time_us',pl.col('decision_close').alias('reference'))
+    monkeypatch.setattr('research.rl_trading.v6.sparse_coverage.certify_source',lambda source,tickers:({'X':(0,4000000),'Y':(2000000,4000000)},'fixture'))
     monkeypatch.setattr(module,'read_requested_windows',lambda source,requests:pl.concat([rows(),extra]))
     proof=module.build_cost_sidecar(source,candidates,requests,tmp_path/'cohort',bank_sha='bank')
     scored=pl.read_parquet(tmp_path/'cohort'/'scores.parquet')
@@ -189,3 +191,73 @@ def test_unknown_market_member_masks_allocation_not_opportunity(tmp_path,monkeyp
     attached=module.attach_teacher_costs([label],session,tmp_path/'cohort')[0]
     assert attached.size_fraction is None and attached.token==label.token
     assert attached.soft_probabilities==label.soft_probabilities and attached.execution_features.shape==(1,11)
+
+
+def test_certified_sparse_windows_quote_age_and_known_zero():
+    req=pl.DataFrame({'ticker':['X'],'time_us':[1000000],'reference':[10.]})
+    sparse=rows().filter(pl.col('bucket_index').is_in([0,7]))
+    covered={'X':(0,3000000)}
+    estimate=window_estimates(req,sparse,0,coverage=covered)
+    assert estimate['cost_available'][0] and estimate['capacity'][0]==20
+    assert estimate['quote_age_seconds'][0]==pytest.approx(.201)
+    assert not window_estimates(req,sparse,0)['cost_available'][0]
+    empty=window_estimates(req,rows().head(0),0,future=True,coverage=covered)
+    assert empty['cost_available'][0] and empty['capacity'][0]==0 and empty['volume_valid'][0]==1
+    assert empty['quote_valid'][0]==0
+    expired=window_estimates(req.with_columns(pl.lit(2000000).alias('time_us')),sparse,0,coverage=covered)
+    assert not expired['cost_available'][0] and expired['volume_valid'][0]==1
+    incomplete=window_estimates(req,sparse,0,coverage={'X':(500000,3000000)})
+    assert not incomplete['cost_available'][0]
+    later=sparse.with_columns((pl.col('bucket_index')+20).alias('bucket_index'),
+        (pl.col('quote_timestamp_us')+2000000).alias('quote_timestamp_us'))
+    assert estimate.equals(window_estimates(req,pl.concat([sparse,later]),0,coverage=covered))
+
+
+def test_known_no_event_window_scores_zero_without_fabricated_quote():
+    net=net_execution_bps(torch.tensor([0.]),torch.tensor([0.]),torch.tensor([0.]),torch.tensor([0.]),torch.tensor([True]))
+    assert net.item()==0
+
+
+@pytest.mark.parametrize('device',['cpu']+(['cuda'] if torch.cuda.is_available() else []))
+def test_sparse_tensor_materialization_costs_and_no_invented_fills(device):
+    from types import SimpleNamespace
+    from research.rl_trading.v6.broker_shards import materialize
+    from research.rl_trading.v6.tensor_broker import TensorBroker
+    sparse=rows().filter(pl.col('bucket_index').is_in([0,7])).with_columns(
+        pl.when(pl.col('bucket_index')==7).then(0.).otherwise(pl.col('execution_volume')).alias('execution_volume'),
+        pl.when(pl.col('bucket_index')==7).then(0.).otherwise(pl.col('execution_notional')).alias('execution_notional'),
+        pl.when(pl.col('bucket_index')==7).then(0).otherwise(pl.col('volume_valid')).alias('volume_valid'))
+    coverage={'X':(0,4000000)};broker=TensorBroker(1,device=device);broker.expose_cost_features=True
+    tape=list(materialize(sparse,['X'],0,0,1000000,device=device,
+        luld=SimpleNamespace(rows={},end_us=None),coverage=coverage))
+    for b in tape:assert broker.advance(b).listing.numel()==0
+    broker.update_marks(torch.tensor([0],device=device),torch.tensor([10.],device=device),1000000)
+    observation=broker.observe(1000000,torch.tensor([True],device=device))
+    expected=window_estimates(pl.DataFrame({'ticker':['X'],'time_us':[1000000],'reference':[10.]}),sparse,0,coverage=coverage)
+    from research.rl_trading.v6.execution_features import EXECUTION_NAMES
+    assert np.allclose(observation.execution_features.cpu().numpy()[0],expected.select(*EXECUTION_NAMES).to_numpy()[0],atol=1e-5)
+    # Only the original trade bucket offers capacity; empty buckets cannot fill.
+    assert sum(float(b.volume.sum()) for b in tape)==100 and broker.quantity.sum()==0
+    for b in materialize(rows().head(0),['X'],0,1000000,2000000,device=device,
+        luld=SimpleNamespace(rows={},end_us=None),coverage=coverage):broker.advance(b)
+    expired=broker.observe(2000000,torch.tensor([True],device=device)).execution_features
+    assert expired[0,3]==0 and expired[0,4]==1 and expired[0,5:8].sum()==0
+
+
+def test_sparse_coverage_integrity_cached_and_mismatch_rejected(tmp_path,monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+    from datetime import date
+    from research.rl_trading.v6 import sparse_coverage as module
+    ledger=tmp_path/'ledger.sqlite3'
+    with sqlite3.connect(ledger) as db:
+        db.execute('CREATE TABLE units(ticker,attempt_id,status,output_rows,output_hash,build_id,session_date,stage)')
+        db.execute("INSERT INTO units VALUES('X','attempt','complete',2,'123','build','2026-08-18','broker_100ms')")
+    source=SimpleNamespace(ledger=ledger,day=date(2026,8,18),source={'build_id':'build'},attempts={'X':'attempt'},reader=object())
+    calls=[]
+    monkeypatch.setattr(module.sql,'query',lambda reader,statement:calls.append(statement) or [{'ticker':'X','n':2,'keys':2,'hash':'123'}])
+    coverage,_=module.certify_source(source,['X']);module.certify_source(source,['X'])
+    assert len(calls)==1 and coverage['X'][1]>coverage['X'][0]
+    source.sparse_coverage={}
+    monkeypatch.setattr(module.sql,'query',lambda reader,statement:[{'ticker':'X','n':1,'keys':1,'hash':'123'}])
+    with pytest.raises(ValueError,match='content changed'):module.certify_source(source,['X'])

@@ -258,6 +258,7 @@ def main(argv=None):
                 if (proof.get('version')!=FEATURE_CONTRACT or proof.get('status')!='audited_execution_cost_estimates' or
                     proof.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or proof.get('day')!=entry['day'] or
                     proof.get('feature_scope')!='completed_trailing_1s_only' or
+                    proof.get('sparse_coverage_version')!='rl-v6-certified-event-sparse-liquidity-v1' or
                     proof.get('luld_certificate')!=luld_certificates[entry['day']] or
                     proof.get('participation')!=args.broker_participation or proof.get('sealed_test_accessed') is not False):
                     raise ValueError('Execution observation provenance differs from audited bank')
@@ -279,6 +280,7 @@ def main(argv=None):
         'feature_contract':feature_contract,
         'feature_normalization_sha256':file_hash(args.feature_normalization) if args.feature_normalization else None,
         'execution_feature_certificates':execution_certificates,
+        'execution_evidence_version':('rl-v6-certified-event-sparse-liquidity-v1' if feature_contract!='legacy' else None),
         'action_version':ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1',
         'teacher_no_order_labels':'all_causal_held_identities_weighted_1_over_H' if wait_hold else 'portfolio_hold',
         'history_cache':'raw_causal_reprojection_after_teacher_optimizer' if wait_hold else 'detached_projected_history',
@@ -313,6 +315,7 @@ def main(argv=None):
                 completed.get('status')!='teacher_trained_label_evaluated_trading_validation_pending' or
                 completed.get('manifest_hash')!=parent['hash'] or
                 parent.get('decoder_version')!=DECODER_VERSION or
+                parent.get('execution_evidence_version')!=manifest['execution_evidence_version'] or
                 parent.get('feature_contract','legacy')!=feature_contract or
                 parent.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256') or
                 parent.get('action_version')!=manifest['action_version'] or
@@ -334,7 +337,8 @@ def main(argv=None):
         parent_payload=torch.load(args.resume_from,map_location=device,weights_only=False)
         if parent_payload['manifest_hash']!=parent_manifest['hash']:
             raise ValueError('Parent checkpoint manifest mismatch')
-        if (parent_manifest.get('feature_contract','legacy')!=feature_contract or
+        if (parent_manifest.get('execution_evidence_version')!=manifest['execution_evidence_version'] or
+                parent_manifest.get('feature_contract','legacy')!=feature_contract or
                 parent_manifest.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256')):
             raise ValueError('Parent feature units differ; fresh compatible training required')
         if parent_manifest.get('decoder_version') != DECODER_VERSION:
@@ -416,6 +420,7 @@ def main(argv=None):
             finish=bounds(session.day)[1] if max_clocks is None else min(bounds(session.day)[1],start+max_clocks*1_000_000)
             namespace=digest((VERSION,provider.source['build_id'],tickers,
                 [(t,provider.attempts[t]) for t in tickers]))[:20]
+            provider.expose_execution_features=feature_contract!='legacy'
             shards=BrokerShards(provider,tickers,runtime/'rl-v6-broker-shards'/str(session.day)/namespace,
                                 runtime_root=runtime)
             broker=TensorBroker(len(tickers),device=device,config=BrokerConfig(

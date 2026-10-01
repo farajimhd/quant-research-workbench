@@ -14,11 +14,11 @@ from research.rl_trading.v6.broker_shards import SCHEMA,validate_rows
 from research.rl_trading.v6.execution_features import VERSION, EXECUTION_NAMES,execution_estimates,net_execution_bps
 
 
-def window_estimates(requests,rows,origin,*,future=False,participation=.1):
+def window_estimates(requests,rows,origin,*,future=False,participation=.1,coverage=None):
     """Unique [ticker,time_us,reference] keys -> one estimate per key.
 
-    Past uses (t-1s,t]; labels use (t,t+1s]. Ten valid volume buckets are
-    required to claim complete capacity; unknown buckets remain unavailable.
+    Past uses (t-1s,t]; labels use (t,t+1s]. Certified event-free
+    buckets have zero capacity; uncertified gaps remain unavailable.
     Quote age is measured against the window end, never future quote time.
     """
     if requests.select('ticker','time_us').n_unique()!=requests.height:
@@ -39,6 +39,8 @@ def window_estimates(requests,rows,origin,*,future=False,participation=.1):
         grouped=joined.group_by('ticker','time_us').agg(
             pl.col('execution_volume').filter(pl.col('executable')).sum().alias('volume'),
             pl.col('execution_notional').filter(pl.col('executable')).sum().alias('notional'),
+            (pl.col('execution_notional')+pl.col('execution_volume')*(pl.col('ask_int')-pl.col('bid_int'))/20000).filter(pl.col('executable')).sum().alias('buy_notional'),
+            (pl.col('execution_notional')-pl.col('execution_volume')*(pl.col('ask_int')-pl.col('bid_int'))/20000).filter(pl.col('executable')).sum().alias('sell_notional'),
             (pl.col('execution_volume')*participation).floor().filter(pl.col('executable')).sum().alias('capacity'),
             (pl.col('volume_valid')==1).sum().alias('valid_buckets'),
             pl.col('bid_int').last().alias('bid'),pl.col('ask_int').last().alias('ask'),
@@ -46,15 +48,34 @@ def window_estimates(requests,rows,origin,*,future=False,participation=.1):
             pl.col('bucket_us').last().alias('latest_bucket'))
     else:
         grouped=pl.DataFrame(schema={'ticker':pl.String,'time_us':pl.Int64,'volume':pl.Float64,
-            'notional':pl.Float64,'capacity':pl.Float64,'valid_buckets':pl.UInt32,'bid':pl.Int64,'ask':pl.Int64,
+            'notional':pl.Float64,'buy_notional':pl.Float64,'sell_notional':pl.Float64,'capacity':pl.Float64,'valid_buckets':pl.UInt32,'bid':pl.Int64,'ask':pl.Int64,
             'quoted_us':pl.Int64,'quote_good':pl.Int64,'latest_bucket':pl.Int64})
     frame=anchor.join(grouped,on=['ticker','time_us'],how='left',validate='1:1')
     def tensor(name):return torch.tensor(frame[name].fill_null(0).to_numpy(),dtype=torch.float64)
     reference=tensor('reference');bid=tensor('bid')/10000;ask=tensor('ask')/10000
     volume=tensor('volume');vwap=tensor('notional')/volume.clamp_min(1e-12)
     age=(tensor('window_end')-tensor('quoted_us'))/1e6
-    quote=(tensor('quote_good')==1)&(tensor('latest_bucket')==tensor('window_end'))
-    available=(tensor('valid_buckets')==10)
+    if coverage is None:
+        quote=(tensor('quote_good')==1)&(tensor('latest_bucket')==tensor('window_end'))
+        available=(tensor('valid_buckets')==10)
+    else:
+        # Vectorized backward as-of: last completed event may precede an empty
+        # boundary bucket. Actual quote timestamp, not row presence, sets age.
+        latest=anchor.sort('window_end').join_asof(source.select('ticker','bucket_us',
+            'bid_int','ask_int','quote_timestamp_us','quote_valid').sort('bucket_us'),
+            left_on='window_end',right_on='bucket_us',by='ticker',strategy='backward',
+            tolerance=1000000,check_sortedness=False).select('ticker','time_us',
+            'bid_int','ask_int','quote_timestamp_us','quote_valid')
+        frame=frame.join(latest,on=['ticker','time_us'],how='left',validate='1:1')
+        bid=tensor('bid_int')/10000;ask=tensor('ask_int')/10000
+        age=(tensor('window_end')-tensor('quote_timestamp_us'))/1e6
+        quote=tensor('quote_valid')==1
+        ranges=pl.DataFrame({'ticker':list(coverage),'coverage_start':[v[0] for v in coverage.values()],
+            'coverage_end':[v[1] for v in coverage.values()]})
+        frame=frame.join(ranges,on='ticker',how='left',validate='m:1')
+        covered=(pl.col('window_end')-1000000>=pl.col('coverage_start'))&(pl.col('window_end')<=pl.col('coverage_end'))
+        available=torch.tensor(frame.select(covered).to_series().fill_null(False).to_numpy())
+
     capacity=tensor('capacity')
     features=execution_estimates(reference,bid,ask,vwap,volume,quote,available,age,participation=participation,capacity=capacity)
     valid=(features[:,3]==1)&(features[:,4]==1)
@@ -62,6 +83,12 @@ def window_estimates(requests,rows,origin,*,future=False,participation=.1):
     # quote mid here only keeps an unused price denominator well-defined.
     price=torch.where(volume>0,vwap,(ask+bid)*.5)
     buy=price+(ask-bid)*.5;sell=price-(ask-bid)*.5
+    if future and coverage is not None:
+        # Fill-price estimates use the observed per-bucket half-spreads, not
+        # a possibly stale quote at the end of a quiet execution interval.
+        buy=tensor('buy_notional')/volume.clamp_min(1e-12)
+        sell=tensor('sell_notional')/volume.clamp_min(1e-12)
+        valid=available&((capacity==0)|(volume>0))
     result=frame.select('ticker','time_us').with_columns(
         *(pl.Series(name,features[:,i].numpy()) for i,name in enumerate(EXECUTION_NAMES)),
         pl.Series('buy_price',buy.numpy()),pl.Series('sell_price',sell.numpy()),
@@ -129,6 +156,8 @@ def build_cost_sidecar(source,candidates,requests,output,*,bank_sha,budget=1000.
     # price arithmetic. Resolve their references deterministically by key.
     future_keys=future_keys.group_by('ticker','time_us').agg(pl.col('reference').first())
     read_keys=pl.concat((requests.select('ticker','time_us'),future_keys.select('ticker','time_us'))).unique()
+    from research.rl_trading.v6.sparse_coverage import certify_source,VERSION as COVERAGE_VERSION
+    coverage,coverage_hash=certify_source(source,set(read_keys['ticker']))
     rows=read_requested_windows(source,read_keys)
     if not hasattr(source,'luld'):raise ValueError('Modeled LULD evidence required for execution score')
     # Reuse exactly the approximate broker's known pause/band projection.
@@ -153,8 +182,8 @@ def build_cost_sidecar(source,candidates,requests,output,*,bank_sha,budget=1000.
             pl.when(pl.col('risk_blocked')).then(0.).otherwise(pl.col('execution_notional')).alias('execution_notional')).drop('risk_blocked')
         parts.append(frame)
     rows=pl.concat(parts) if parts else rows
-    features=window_estimates(requests,rows,source.origin,participation=participation).select('ticker','time_us',*EXECUTION_NAMES)
-    future=window_estimates(future_keys,rows,source.origin,future=True,participation=participation)
+    features=window_estimates(requests,rows,source.origin,participation=participation,coverage=coverage).select('ticker','time_us',*EXECUTION_NAMES)
+    future=window_estimates(future_keys,rows,source.origin,future=True,participation=participation,coverage=coverage)
     scores=score_candidates(candidates,future,budget=budget)
     # A rolling portfolio cohort cannot be normalized from partially known
     # costs. Preserve classification opportunities, but mask its size targets.
@@ -176,6 +205,7 @@ def build_cost_sidecar(source,candidates,requests,output,*,bank_sha,budget=1000.
         path=output/(name+'.parquet');frame.write_parquet(path,compression='zstd')
         files[name]={'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'rows':frame.height}
     proof=dict(version=VERSION,status='audited_execution_cost_estimates',day=str(source.day),files=files,
+        sparse_coverage_version=COVERAGE_VERSION,sparse_coverage_sha256=coverage_hash,
         bank_certificate_sha256=bank_sha,build_id=source.source['build_id'],definition_hash=source.source['definition_hash'],
         source_attempt_hash=hashlib.sha256(json.dumps(source.attempts,sort_keys=True).encode()).hexdigest(),
         input_candidate_sha256=hashlib.sha256(candidates.serialize()).hexdigest(),

@@ -14,7 +14,7 @@ from research.rl_trading.v1 import arte_sql as sql
 from research.rl_trading.v1.common import digest,file_hash,exclusive
 from research.rl_trading.v6.tensor_broker import BrokerBucket
 
-VERSION='rl-v6-sparse-broker-100ms-1'
+VERSION='rl-v6-sparse-broker-100ms-2'
 SCHEMA={'ticker':pl.String,'bucket_index':pl.Int64,'execution_volume':pl.Float64,
     'execution_notional':pl.Float64,'volume_valid':pl.Int64,'high_int':pl.Int64,
     'low_int':pl.Int64,'extremes_valid':pl.Int64,'quote_timestamp_us':pl.Int64,
@@ -29,9 +29,14 @@ class BrokerShards:
             raise ValueError('Broker shards require the configured runtime')
         if len(set(tickers))!=len(tickers) or set(tickers)-set(source.attempts):
             raise ValueError('Broker shard identity lacks a certified source unit')
+        self.coverage=None;coverage_hash=None
+        if getattr(source,'expose_execution_features',False):
+            from research.rl_trading.v6.sparse_coverage import certify_source
+            self.coverage,coverage_hash=certify_source(source,tickers)
         self.root.mkdir(parents=True,exist_ok=True)
         contract={'version':VERSION,'day':str(source.day),'build_id':source.source['build_id'],
             'definition_hash':source.source['definition_hash'],'fields':list(SCHEMA),
+            'sparse_coverage_sha256':coverage_hash,
             'listing_hash':digest(tickers),'attempt_hash':digest([(t,source.attempts[t]) for t in tickers])}
         manifest=self.root/'manifest.json'
         if manifest.exists() and json.loads(manifest.read_text())!=contract:
@@ -71,7 +76,7 @@ class BrokerShards:
         temporary=path.with_suffix('.parquet.tmp');rows.write_parquet(temporary,compression='zstd');temporary.replace(path)
         report={'status':'complete','contract_hash':digest(self.contract),'rows':rows.height,
             'start_us':start,'end_us':end,'sha256':file_hash(path),
-            'empty_bucket_semantics':'missing_evidence_not_zero_capacity'}
+            'empty_bucket_semantics':('certified_no_event_zero_volume' if self.coverage is not None else 'missing_evidence_not_zero_capacity')}
         temp=cert.with_suffix('.json.tmp');temp.write_text(json.dumps(report,sort_keys=True));temp.replace(cert)
         s.broker_shard_certificates[name]=file_hash(cert)
         return rows
@@ -90,7 +95,7 @@ class BrokerShards:
                 rows=pending.result();following=next(windows,None)
                 if following is not None:pending=worker.submit(self.read,*following)
                 yield from materialize(rows,self.tickers,self.source.origin,*current,
-                    device=device,luld=luld,max_device_bytes=max_device_bytes)
+                    device=device,luld=luld,max_device_bytes=max_device_bytes,coverage=self.coverage)
                 current=following
 
 
@@ -109,7 +114,7 @@ def validate_rows(rows,first,last,tickers):
     if bad.height:raise ValueError('Malformed broker extrema')
 
 
-def materialize(rows,tickers,origin,start,end,*,device,luld,max_device_bytes=1<<30):
+def materialize(rows,tickers,origin,start,end,*,device,luld,max_device_bytes=1<<30,coverage=None):
     """Sparse rows -> bounded [T,N] GPU tensors; never persisted dense.
 
     Unknown prior-close LULD coverage remains explicit in the original source
@@ -152,6 +157,12 @@ def materialize(rows,tickers,origin,start,end,*,device,luld,max_device_bytes=1<<
     paused=transfer(pause);band_low=transfer(lower);band_high=transfer(upper)
     # Quote/spread price estimates must also be executable inside modeled bands.
     valid &= (vwap+spread*.5<=band_high)&(vwap-spread*.5>=band_low)
+    covered=None
+    if coverage is not None:
+        if set(tickers)-set(coverage):raise ValueError('Broker listing lacks verified sparse coverage')
+        begins=transfer(np.array([coverage[t][0] for t in tickers],np.int64))[None,:]
+        ends=transfer(np.array([coverage[t][1] for t in tickers],np.int64))[None,:]
+        covered=(clock_tensor-100000>=begins)&(clock_tensor<=ends)
     for i,clock in enumerate(clocks):
         yield BrokerBucket(int(clock),vwap[i],volume[i],high[i],low[i],spread[i],
-            valid[i],extrema[i],quote[i],paused[i],band_low[i],band_high[i],bid[i]/10000,ask[i]/10000,quote_time[i])
+            valid[i],extrema[i],quote[i],paused[i],band_low[i],band_high[i],bid[i]/10000,ask[i]/10000,quote_time[i],covered[i] if covered is not None else None)

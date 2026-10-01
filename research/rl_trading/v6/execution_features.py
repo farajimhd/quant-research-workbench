@@ -96,4 +96,5 @@ def net_execution_bps(entry_price,exit_price,entry_capacity,exit_capacity,valid,
         torch.minimum(entry_capacity,exit_capacity)).clamp_min(0)
     buy=q*entry_price;sell=q*exit_price
     net=sell-buy-order_fee(q,buy,False)-order_fee(q,sell,True)
-    return torch.where(usable,net/budget*10000,torch.full_like(net,float('nan')))
+    known_zero=valid.bool()&((entry_capacity==0)|(exit_capacity==0))
+    return torch.where(known_zero,0.,torch.where(usable,net/budget*10000,torch.full_like(net,float('nan'))))
