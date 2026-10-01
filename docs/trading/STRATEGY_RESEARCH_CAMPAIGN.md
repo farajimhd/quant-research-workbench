@@ -3292,3 +3292,11 @@ All four Aug 20/21 validation units and aggregate readers completed normally at 
 | Aug 21 AH | 0 | 0 | 0 | 0 |
 
 Descriptive total is **+266.720185** across 14 positions, with $10,000 independently reset per session. Aggregate net is unchanged from Strategy 33; matching aggregates do not establish identical individual actions, which were not inspected. The mixed two-day result does not establish repeatable edge or demonstrate broader improvement from Strategy 34. The research goal remains active. All development/validation runner and quote-audit processes started for this evaluation have exited; no routine service restart occurred. Next research remains based on development-only causal signal/quote timing and full big-move population coverage, not validation trade diagnostics.
+
+### Seven-day development split; fresh Aug 24/25 validation
+
+The latest user instruction promotes the current Aug 20/21 validation dates into development. Development is now Aug 04, 05, 10, 18, 19, 20 and 21, 2026. The two new validation dates are Aug 24 and 25, selected as the first two later dates with stored candidate and entry coverage, without reading their strategy outcomes. The fresh read-only coverage inventory `new-validation-input-coverage-inventory-v4.json` has SHA256 `d8d4fbc2f432961555570f537d37cd5650dd74e334492d7bb231c47cc970faef`.
+
+The immutable runtime manifest `strategy-research-session-split-v4.json`, SHA256 `27b2bae3e93854b06e4ec4aaf7c4801909ec949732a5a42a7338b2654af51d44`, supersedes v3 prospectively and preserves its hash. Existing splits and reports retain their original scope. Each PM/AH session still starts independently with $10,000. Full app input certification remains pending for Aug 24/25; coverage alone does not certify market inputs or V7 prior-day checkpoint and full regular-session warmup for AH. No new validation backtest is claimed.
+
+Freeze each evaluated strategy release before validation. Review only aggregate net P&L, drawdown, position count, completion and input-certification status; do not inspect validation strategy logs, individual trades, reasons, ticker features, charts or per-trade outcomes. Tune from development only. This split change does not install or publish the prepared Strategy 35 candidate.
