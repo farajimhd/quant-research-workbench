@@ -16,7 +16,8 @@ from test_rl_trading_v6_tensor_broker import bucket,DEVICES
 
 
 @pytest.mark.parametrize('device',DEVICES)
-def test_real_tensor_collection_reconstruction_and_optimizer(device,tmp_path):
+@pytest.mark.parametrize('execution_features',[False,True])
+def test_real_tensor_collection_reconstruction_and_optimizer(device,tmp_path,execution_features):
     start=bounds(date(2026,8,18))[0]+1_000_000
     scalar=np.zeros((12,37),dtype=np.float32);scalar[:,3]=np.log(10.)
     scalar[:,8]=np.log1p(10000.);scalar[:,35]=1
@@ -26,11 +27,21 @@ def test_real_tensor_collection_reconstruction_and_optimizer(device,tmp_path):
     session=PackedSession(date(2026,8,18),'train',Path('unused'),'cert',bank,None,('A','B'))
     torch.manual_seed(15)
     policy=RankedBracketActorCritic(width=8,config=MarketAttentionConfig(top_r=2)).to(device)
+    if execution_features:
+        from research.rl_trading.v6.execution_features import VERSION
+        policy.configure_execution_features(dict(version=VERSION,scope='train_only',mean=[0.]*147,std=[1.]*147))
+        policy.to(device)
     with torch.no_grad():
         policy.decoder.hold_head.bias.fill_(-10)
         policy.decoder.enter_head.bias.fill_(10)
     broker=TensorBroker(2,device=device)
-    tape=(bucket(broker,c,volume=1000.) for c in range(start+100_000,start+5_000_000+1,100_000))
+    broker.expose_cost_features=execution_features
+    from dataclasses import replace
+    def evidence(c):
+        row=bucket(broker,c,volume=1000.)
+        return replace(row,bid=row.vwap-.01,ask=row.vwap+.01,
+            quote_timestamp_us=torch.full((broker.n,),c-1000,device=device,dtype=torch.long))
+    tape=(evidence(c) for c in range(start+100_000,start+5_000_000+1,100_000))
     result=collect_tensor_session(policy,session,broker,tape,device=torch.device(device),max_clocks=5)
     assert len(result.steps)==5 and result.summary['buy_fill_orders']>0
     assert all(not s.old_log_prob.requires_grad for s in result.steps)

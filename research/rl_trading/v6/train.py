@@ -103,6 +103,8 @@ def main(argv=None):
         help='All-18-session WAIT/HOLD migration certificate, required for the new contract')
     parser.add_argument('--episode-supervision-root',type=Path,
         help='Versioned independent episode window sidecars; fresh teacher-only run, never PPO replay')
+    parser.add_argument('--feature-normalization',type=Path,help='Training-only bps/execution feature contract JSON')
+    parser.add_argument('--execution-feature-root',type=Path,help='Sparse causal execution features and separate netbps labels')
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
     parser.add_argument('--learning-rate',type=float,default=3e-4)
@@ -231,10 +233,50 @@ def main(argv=None):
             return load_episode_teacher(root/str(session.day),session,**kwargs)
     policy=RankedBracketActorCritic(config=ranking, wait_hold=wait_hold).to(device)
     policy.independent_episode_supervision=bool(args.episode_supervision_root)
+    feature_contract='legacy'
+    execution_certificates={}
+    if args.feature_normalization:
+        from research.rl_trading.v6.execution_features import VERSION as FEATURE_CONTRACT
+        if not args.feature_normalization.resolve().is_relative_to(runtime):raise ValueError('Normalization escaped runtime')
+        normalization=json.loads(args.feature_normalization.read_text())
+        expected={e['day']:e['bank_certificate_sha256'] for e in dataset['days'] if e['role']=='train'}
+        if normalization.get('dataset_sha256')!=file_hash(args.dataset) or normalization.get('training_bank_certificates')!=expected:
+            raise ValueError('Normalization must bind to all16 training banks, never development')
+        if args.teacher_only and (not args.episode_supervision_root or not args.execution_feature_root):
+            raise ValueError('Execution-aware teacher requires independent episode/cost sidecars')
+        if not args.teacher_only and args.broker_engine!='tensor-100ms':
+            raise ValueError('Execution-aware PPO requires causal tensor broker observations')
+        policy.configure_execution_features(normalization);policy.to(device)
+        feature_contract=FEATURE_CONTRACT
+        if args.teacher_only:
+            from research.rl_trading.v6.execution_sidecar import attach_teacher_costs
+            execution_root=args.execution_feature_root.resolve()
+            if not execution_root.is_relative_to(runtime):raise ValueError('Execution features escaped runtime')
+            for entry in dataset['days']:
+                proof_path=execution_root/entry['day']/'complete.json'
+                proof=json.loads(proof_path.read_text())
+                if (proof.get('version')!=FEATURE_CONTRACT or proof.get('status')!='audited_execution_cost_estimates' or
+                    proof.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or proof.get('day')!=entry['day'] or
+                    proof.get('feature_scope')!='completed_trailing_1s_only' or proof.get('sealed_test_accessed') is not False):
+                    raise ValueError('Execution observation provenance differs from audited bank')
+                if proof.get('preparation_scope')!='complete_day':raise ValueError('Bounded cost diagnostic is not training data')
+                for name in ('features','scores','allocation_netbps'):
+                    if file_hash(proof_path.parent/(name+'.parquet'))!=proof['files'][name]['sha256']:
+                        raise ValueError('Execution sidecar bytes changed')
+                execution_certificates[entry['day']]=file_hash(proof_path)
+            original_loader=teacher_loader
+            def teacher_loader(ignored,session,**kwargs):
+                labels,outcomes=original_loader(ignored,session,**kwargs)
+                return attach_teacher_costs(labels,session,execution_root/str(session.day)),outcomes
+    elif args.execution_feature_root:
+        raise ValueError('Cost observations require the explicit feature normalization contract')
     optimizer=torch.optim.Adam(policy.parameters(),lr=args.learning_rate)
     from research.rl_trading.v6.model import DECODER_VERSION
     manifest={'version':'rl-trading-v6-attention-ppo-run-1','dataset_sha256':file_hash(args.dataset),
         'decoder_version':DECODER_VERSION,
+        'feature_contract':feature_contract,
+        'feature_normalization_sha256':file_hash(args.feature_normalization) if args.feature_normalization else None,
+        'execution_feature_certificates':execution_certificates,
         'action_version':ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1',
         'teacher_no_order_labels':'all_causal_held_identities_weighted_1_over_H' if wait_hold else 'portfolio_hold',
         'history_cache':'raw_causal_reprojection_after_teacher_optimizer' if wait_hold else 'detached_projected_history',
@@ -269,6 +311,8 @@ def main(argv=None):
                 completed.get('status')!='teacher_trained_label_evaluated_trading_validation_pending' or
                 completed.get('manifest_hash')!=parent['hash'] or
                 parent.get('decoder_version')!=DECODER_VERSION or
+                parent.get('feature_contract','legacy')!=feature_contract or
+                parent.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256') or
                 parent.get('action_version')!=manifest['action_version'] or
                 parent['dataset_sha256']!=manifest['dataset_sha256'] or
                 parent['luld_certificates']!=manifest['luld_certificates'] or
@@ -288,6 +332,9 @@ def main(argv=None):
         parent_payload=torch.load(args.resume_from,map_location=device,weights_only=False)
         if parent_payload['manifest_hash']!=parent_manifest['hash']:
             raise ValueError('Parent checkpoint manifest mismatch')
+        if (parent_manifest.get('feature_contract','legacy')!=feature_contract or
+                parent_manifest.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256')):
+            raise ValueError('Parent feature units differ; fresh compatible training required')
         if parent_manifest.get('decoder_version') != DECODER_VERSION:
             raise ValueError('Parent decoder activation contract differs; '
                 'explicit validated migration is required before continuation')
@@ -371,6 +418,7 @@ def main(argv=None):
                                 runtime_root=runtime)
             broker=TensorBroker(len(tickers),device=device,config=BrokerConfig(
                 participation=args.broker_participation,risk=risk))
+            broker.expose_cost_features=feature_contract!='legacy'
             if args.compile_broker:
                 broker.compile_step()
             pulse_tensor=PeriodicProgress(lambda values:log('progress/tensor_rollout',

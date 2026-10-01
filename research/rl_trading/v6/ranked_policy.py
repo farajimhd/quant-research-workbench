@@ -16,6 +16,7 @@ class RankedBracketActorCritic(BracketActorCritic):
         self.pending_indices = ()
         self._critic_market = None
         self._market_cache = None
+
         self.independent_episode_supervision = False
 
     def reset_market(self, listings):
@@ -26,6 +27,7 @@ class RankedBracketActorCritic(BracketActorCritic):
         self.pending_indices = ()
         self._critic_market = None
         self._market_cache = None
+        if hasattr(self,'execution_projection'):self.execution_context=None
 
     def observe_market(self, state, close_us, indices, scalar):
         """Bind chronological state, consume existing V6 scalar volume once."""
@@ -38,6 +40,33 @@ class RankedBracketActorCritic(BracketActorCritic):
 
     def set_pending(self, indices):
         self.pending_indices = tuple(indices)
+
+    def configure_execution_features(self, normalization):
+        """Explicit new checkpoint contract; normalization uses training banks only."""
+        from research.rl_trading.v6.execution_features import VERSION,EXECUTION_NAMES
+        from research.rl_trading.v6.model import INPUT_WIDTH
+        mean=torch.as_tensor(normalization['mean'],dtype=torch.float32)
+        std=torch.as_tensor(normalization['std'],dtype=torch.float32)
+        if (normalization.get('version')!=VERSION or normalization.get('scope')!='train_only' or
+            mean.shape!=(INPUT_WIDTH,) or std.shape!=mean.shape or not torch.isfinite(mean).all() or
+            not torch.isfinite(std).all() or (std<=0).any()):
+            raise ValueError('Invalid training-only feature normalization')
+        self.encoder.register_buffer('feature_mean',mean)
+        self.encoder.register_buffer('feature_std',std)
+        self.encoder.feature_contract=VERSION
+        self.decoder.feature_contract=VERSION
+        self.execution_projection=torch.nn.Linear(len(EXECUTION_NAMES),self.encoder.width,bias=False)
+        self.execution_context=None
+
+    def set_execution_features(self, indices, values):
+        """Immutable causal sparse [K] identities/[K,11] physical-unit features."""
+        if not hasattr(self,'execution_projection'):return
+        from research.rl_trading.v6.execution_features import EXECUTION_NAMES
+        if (indices.ndim!=1 or indices.dtype!=torch.long or
+                (indices<0).any() or indices.unique().numel()!=indices.numel() or
+                values.shape!=(len(indices),len(EXECUTION_NAMES)) or not torch.isfinite(values).all()):
+            raise ValueError('Invalid causal execution feature shape/value')
+        self.execution_context=(indices,values)
 
     def decide(self, listing_embeddings, account, held_index, held_features,
                action_state, **masks):
@@ -65,6 +94,12 @@ class RankedBracketActorCritic(BracketActorCritic):
             self._market_cache = (key, enriched)
         # Keep [N,D] and the original token IDs. Sorting never rekeys holdings.
         full = listing_embeddings.index_copy(0, selected, enriched)
+        if hasattr(self,'execution_projection'):
+            if self.execution_context is None:raise ValueError('Causal execution features missing')
+            from research.rl_trading.v6.execution_features import EXECUTION_SCALE
+            indices,values=self.execution_context
+            encoded=self.execution_projection(values/values.new_tensor(EXECUTION_SCALE))
+            full=full.index_add(0,indices,encoded)
         self._critic_market = full
         selected_mask = torch.zeros(len(full), device=full.device, dtype=torch.bool)
         selected_mask[selected] = True

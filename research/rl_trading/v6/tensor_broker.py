@@ -47,6 +47,9 @@ class BrokerBucket:
     paused: torch.Tensor
     band_low: torch.Tensor | None=None
     band_high: torch.Tensor | None=None
+    bid: torch.Tensor | None=None
+    ask: torch.Tensor | None=None
+    quote_timestamp_us: torch.Tensor | None=None
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,7 @@ class TensorObservation:
     stop_allowed: torch.Tensor  # [H] bool.
     target_allowed: torch.Tensor  # [H] bool.
     pending_index: torch.Tensor  # [P] int64.
+    execution_features: torch.Tensor | None=None  # [N,11] immutable causal snapshot.
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,9 @@ class TensorBroker:
         self.sell_fills=q.new_zeros(());self.ambiguous=q.new_zeros(())
         self.turnover=z.new_zeros(());self.holding_seconds=z.new_zeros(())
         self._compiled_step=None;self._device_clock=q.new_zeros(())
+        self.expose_cost_features=False
+        from collections import deque
+        self.cost_history=deque(maxlen=10)
 
     def compile_step(self):
         """Opt-in fixed-shape execution kernels; compilation cost is separate.
@@ -155,8 +162,28 @@ class TensorBroker:
         fresh=(self.mark>0)&(clock_us-self.mark_us<=self.config.max_mark_age_us)
         enter=changed_valid&fresh&(self.quantity==0)&(self.remaining==0)&~self.paused&(self.cash-reserve>0)
         exit_allowed=(self.side[held]<2)&fresh[held]
+        costs=None
+        if self.expose_cost_features:
+            from research.rl_trading.v6.execution_features import execution_estimates,EXECUTION_NAMES
+            costs=self.mark.new_zeros((self.n,len(EXECUTION_NAMES))).float()
+            if len(self.cost_history)==10:
+                last=self.cost_history[-1]
+                if last.bid is not None and last.ask is not None and last.quote_timestamp_us is not None:
+                    valid=torch.stack([b.valid for b in self.cost_history])
+                    executable=valid & ~torch.stack([b.paused for b in self.cost_history])
+                    executable &= torch.stack([b.quote_valid for b in self.cost_history])
+                    executable &= torch.stack([(b.clock_us-b.quote_timestamp_us<=1_000_000)&
+                        (b.clock_us>=b.quote_timestamp_us)&(b.bid>0)&(b.ask>=b.bid) for b in self.cost_history])
+                    volumes=torch.stack([b.volume for b in self.cost_history])*executable
+                    total=volumes.sum(0)
+                    vwap=(volumes*torch.stack([b.vwap for b in self.cost_history])).sum(0)/total.clamp_min(1e-12)
+                    capacity=torch.floor(volumes*self.config.participation).sum(0)
+                    costs=execution_estimates(self.mark,last.bid,last.ask,vwap,total,last.quote_valid,
+                        valid.all(0),(clock_us-last.quote_timestamp_us)/1e6,
+                        participation=self.config.participation,capacity=capacity)
+            enter=enter&(costs[:,3]==1)&(costs[:,4]==1)
         return TensorObservation(account,held,fields,enter,exit_allowed,
-            exit_allowed&(self.stop[held]==0),exit_allowed&(self.target[held]==0),pending)
+            exit_allowed&(self.stop[held]==0),exit_allowed&(self.target[held]==0),pending,costs)
 
     def _events(self,mask,action,filled,net,*,requested=None,price=None,fee=None,clock=None,dense=False):
         index=torch.arange(self.n,device=self.device) if dense else torch.nonzero(mask).flatten()
@@ -221,6 +248,7 @@ class TensorBroker:
         else:
             outcome=self._advance_impl(b,dense=dense)
         self.clock_us=clock
+        if self.expose_cost_features:self.cost_history.append(b)
         return outcome
 
     def _advance_impl(self,b,*,dense=False):

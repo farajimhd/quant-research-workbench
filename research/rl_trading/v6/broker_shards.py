@@ -154,4 +154,4 @@ def materialize(rows,tickers,origin,start,end,*,device,luld,max_device_bytes=1<<
     valid &= (vwap+spread*.5<=band_high)&(vwap-spread*.5>=band_low)
     for i,clock in enumerate(clocks):
         yield BrokerBucket(int(clock),vwap[i],volume[i],high[i],low[i],spread[i],
-            valid[i],extrema[i],quote[i],paused[i],band_low[i],band_high[i])
+            valid[i],extrema[i],quote[i],paused[i],band_low[i],band_high[i],bid[i]/10000,ask[i]/10000,quote_time[i])

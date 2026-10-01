@@ -56,6 +56,8 @@ class TeacherDecision:
     soft_tokens: tuple[int, ...] = ()  # Local alternative actions, not portfolio negatives.
     soft_probabilities: tuple[float, ...] = ()
     episode_uid: str | None = None
+    execution_indices: tuple[int,...] = ()
+    execution_features: np.ndarray | None = None  # Sparse causal [K,11], never future scores.
 
 
 @dataclass(frozen=True)
@@ -287,6 +289,10 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     policy.observe_market(state, event.close_us,
                         event.listing_index, scalar_cpu)
                 for item in decision_groups.pop(event.close_us, ()):
+                    if hasattr(policy,'execution_projection'):
+                        if item.execution_features is None:raise ValueError('Causal cost observation missing')
+                        policy.set_execution_features(torch.as_tensor(item.execution_indices,device=device,dtype=torch.long),
+                            torch.as_tensor(item.execution_features,device=device,dtype=torch.float32))
                     if ranked:
                         policy.set_pending(pending_entries.values())
                     def tensor(values, dtype=None):

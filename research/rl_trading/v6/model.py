@@ -42,12 +42,14 @@ class ActualCandleEncoder(nn.Module):
         nn.init.normal_(self.lag, std=history_candles ** -.5)
         self.norm = nn.LayerNorm(width)
 
-    @staticmethod
-    def _input(scalar: torch.Tensor, levels: torch.Tensor) -> torch.Tensor:
+    def _input(self, scalar: torch.Tensor, levels: torch.Tensor) -> torch.Tensor:
         if (scalar.ndim != 2 or scalar.shape[1] != len(SCALAR_NAMES) or
                 levels.shape != (scalar.shape[0], 2, LEVELS_PER_SIDE,
                                  len(LEVEL_NAMES))):
             raise ValueError('Expected [candles,37] and [candles,2,5,11]')
+        if getattr(self,'feature_contract','legacy')!='legacy':
+            from research.rl_trading.v6.execution_features import bps_input
+            return (bps_input(scalar,levels)-self.feature_mean)/self.feature_std
         return torch.cat((scalar, levels.flatten(1)), dim=1)
 
     def encode_listing(self, scalar: torch.Tensor,
@@ -191,6 +193,10 @@ class BracketActionDecoder(nn.Module):
         if len(held_index):
             held_scaled[:, :2] = torch.log1p(held_features[:, :2].clamp_min(0))
             held_scaled[:, 2] = torch.log1p(held_features[:, 2].clamp_min(0)) / 10
+        if getattr(self,'feature_contract','legacy')!='legacy':
+            # Physical bps, preconditioned per 1,000 bps. Shares, absolute
+            # entry prices and log ages keep their explicit separate units.
+            held_scaled[:,3:6]=held_features[:,3:6]*10000/1000
         context = listings.mean(dim=0) + self.account(account_scaled)
         listed = self._head_features(listings + context[None])  # [N,D].
         held = self._head_features(self.holding(torch.cat(
@@ -243,6 +249,8 @@ class BracketActionDecoder(nn.Module):
         held_scaled = held_features.clone()
         held_scaled[:, :, :2] = torch.log1p(held_features[:, :, :2].clamp_min(0))
         held_scaled[:, :, 2] = torch.log1p(held_features[:, :, 2].clamp_min(0))/10
+        if getattr(self,'feature_contract','legacy')!='legacy':
+            held_scaled[:,:,3:6]=held_features[:,:,3:6]*10000/1000
         context = listings.mean(dim=1) + self.account(scaled)  # [B,D]
         listed = self._head_features(listings + context[:, None])  # [B,N,D]
         identities = held_index[:, :, None].expand(b, h, d)

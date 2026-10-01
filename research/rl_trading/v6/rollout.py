@@ -104,6 +104,9 @@ def _distribution(policy,state,memory,step,indices,scalar,device, *, prepare=Fal
     obs = step.observation
     from research.rl_trading.v6.tensor_broker import TensorObservation
     if isinstance(obs,TensorObservation):
+        if hasattr(policy,'execution_projection'):
+            if obs.execution_features is None:raise ValueError('Execution observation missing during PPO rebuild')
+            policy.set_execution_features(torch.arange(len(state.encoded),device=device),obs.execution_features)
         # Ranking currently retains a CPU identity control plane. This bounded
         # identity transfer is explicit; broker arithmetic never crosses back.
         policy.set_pending(obs.pending_index.detach().cpu().tolist())
@@ -115,6 +118,8 @@ def _distribution(policy,state,memory,step,indices,scalar,device, *, prepare=Fal
         return policy.distribution_and_value(state.embeddings(),obs.account,
             obs.held_index,obs.held_features,memory,**masks)
     pending = np.asarray(step.pending_indices,dtype=np.int64)
+    if hasattr(policy,'execution_projection'):
+        raise ValueError('Execution feature contract requires tensor-100ms replay')
     enter = causal_enter_mask(len(state.encoded),indices,scalar,
         cash=float(obs.account[0]),reserved_cash=float(obs.account[5]),
         held_index=obs.held_index,pending_index=pending)
