@@ -180,14 +180,14 @@ def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
 
 def numbered_strategy_parent(number: int) -> int:
     """Explicit immutable inheritance; Strategy 8 branches from 6, not 7."""
-    parents = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 6, 9: 8, 10: 9, 11: 10, 12: 11, 13: 12, 14: 13, 15: 14, 16: 15, 17: 14, 18: 17, 19: 18, 20: 19, 21: 20, 22: 21}
+    parents = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 6, 9: 8, 10: 9, 11: 10, 12: 11, 13: 12, 14: 13, 15: 14, 16: 15, 17: 14, 18: 17, 19: 18, 20: 19, 21: 20, 22: 21, 23: 22}
     if type(number) is not int or number not in parents:
         raise ValueError("Numbered strategy has no admitted parent")
     return parents[number]
 
 
 def numbered_strategy(number: int) -> NumberedStrategyRelease:
-    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
+    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23):
         initialize_numbered_fixed_strategies()
     with _LOCK:
         release = _NUMBERED_RELEASES.get(number)
@@ -300,6 +300,11 @@ def _strategy_twenty_one_contract():
 def _strategy_twenty_two_contract():
     from .numbered_fixed_strategy import numbered_fixed_strategy
     return numbered_fixed_strategy(22)
+
+
+def _strategy_twenty_three_contract():
+    from .numbered_fixed_strategy import numbered_fixed_strategy
+    return numbered_fixed_strategy(23)
 
 
 def _strategy_sixteen_contract():
@@ -484,6 +489,13 @@ def initialize_numbered_fixed_strategies() -> None:
             evaluation_interval=twenty_second.evaluation_interval,
             contract_factory=_strategy_twenty_two_contract, strategy_factory=_strategy_two_factory))
         register_numbered_strategy(twenty_second)
+        from .strategy_twenty_three_release import release_contract as twenty_third_release_contract
+        twenty_third = twenty_third_release_contract()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=twenty_third.executor_strategy_id, revision=twenty_third.executor_revision,
+            evaluation_interval=twenty_third.evaluation_interval,
+            contract_factory=_strategy_twenty_three_contract, strategy_factory=_strategy_two_factory))
+        register_numbered_strategy(twenty_third)
         _NUMBERED_FIXED_REGISTERED = True
 
 

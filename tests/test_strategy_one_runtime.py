@@ -30,6 +30,6 @@ def test_fixed_runtime_rejects_unpinned_or_duplicate_assignments():
     with pytest.raises(ValueError, match="numbered assignments"):
         AssignedStrategyOne([])
     with pytest.raises(ValueError, match="installed numbered"):
-        AssignedStrategyOne([_assignment(revision=23)])
+        AssignedStrategyOne([_assignment(revision=24)])
     with pytest.raises(ValueError, match="duplicated"):
         AssignedStrategyOne([_assignment(), _assignment()])

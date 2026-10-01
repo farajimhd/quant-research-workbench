@@ -251,7 +251,7 @@ class BacktestTypedJournalPublisher:
                 or source.run_id != self.journal.run_id
                 or self.writer.journal_profile != 'backtest_v4'
                 or not isinstance(self.expected_config, dict)
-                or self.expected_config.get('strategy_revision') not in (20, 21, 22)
+                or self.expected_config.get('strategy_revision') not in (20, 21, 22, 23)
                 or self.expected_config.get('strategy_id') != 'early-squeeze-strategy'
                 or type(self.fixed_market_parent_plan) is not CertifiedMarketDayPlan
                 or source.plan.source.market.token != self.fixed_market_parent_plan.token
@@ -399,7 +399,7 @@ class BacktestTypedJournalPublisher:
                             if sidecar is None:
                                 raise RuntimeError("Committed Strategy 1 acquisition lost its source")
                             proposal, session_date = sidecar
-                            if source_unit.entry_evidence and proposal.strategy_number in (20, 21, 22):
+                            if source_unit.entry_evidence and proposal.strategy_number in (20, 21, 22, 23):
                                 from .backtest_strategy_certified_price_break import (
                                     CertifiedPriceReadbackAuthority, certified_price_entry_intent,
                                 )

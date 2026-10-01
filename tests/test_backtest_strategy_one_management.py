@@ -99,7 +99,7 @@ def test_nine_failure_waits_for_whole_post_fill_bar_and_preserves_entry_source(n
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('number', (20, 21, 22))
+@pytest.mark.parametrize('number', (20, 21, 22, 23))
 def test_native_failure_exit_uses_exact_runtime_entry_source(number):
     from types import SimpleNamespace, MethodType
     from uuid import UUID

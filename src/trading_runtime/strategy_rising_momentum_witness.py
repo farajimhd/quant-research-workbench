@@ -68,9 +68,9 @@ def rising_momentum_entry(witness: RisingMomentumWitness) -> bool:
 
 def numbered_momentum_entry(witness: RisingMomentumWitness, strategy_number: int) -> bool:
     """Pin the stronger rule to 17; retain earlier completed-momentum behavior."""
-    if type(strategy_number) is not int or strategy_number not in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
+    if type(strategy_number) is not int or strategy_number not in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23):
         raise ValueError("Numbered momentum rule has no installed consumer")
-    if strategy_number in (17, 18, 19, 20, 21, 22):
+    if strategy_number in (17, 18, 19, 20, 21, 22, 23):
         from .strategy_strong_ten_second_momentum import strong_ten_second_momentum_entry
         return strong_ten_second_momentum_entry(witness)
     return rising_momentum_entry(witness)
