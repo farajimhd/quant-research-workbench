@@ -125,6 +125,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
             or "acquisition_cutoff" not in calls(clock)
             or not {"numbered_session_exit_intent", "_execute_intents", "liquidation_due"} <= calls(exit_source)
             or not {"_cancel_open_entry_roots", "reconcile"} <= calls(cutoff)
+            or "is_numbered_fixed_strategy" not in calls(cutoff)
             or calls(cutoff) & {"_record", "submit_order", "on_liquidity_bar"}
             or "advance_numbered_session_clock" not in calls(before)
             or "financially_active_tickers" not in calls(finish)
