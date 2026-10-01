@@ -181,7 +181,8 @@ class TensorBroker:
                     costs=execution_estimates(self.mark,last.bid,last.ask,vwap,total,last.quote_valid,
                         valid.all(0),(clock_us-last.quote_timestamp_us)/1e6,
                         participation=self.config.participation,capacity=capacity)
-            enter=enter&(costs[:,3]==1)&(costs[:,4]==1)
+            # Availability flags inform policy; fills retain the existing
+            # quote/volume gates. Exposing features does not change actions.
         return TensorObservation(account,held,fields,enter,exit_allowed,
             exit_allowed&(self.stop[held]==0),exit_allowed&(self.target[held]==0),pending,costs)
 

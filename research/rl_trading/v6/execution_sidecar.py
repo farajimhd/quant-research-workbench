@@ -85,7 +85,7 @@ def score_candidates(candidates,future,*,budget=1000.):
         pl.Series('execution_cost_available',valid.numpy()))
 
 
-def read_requested_windows(source,requests,*,chunk_seconds=60):
+def read_requested_windows(source,requests,*,chunk_seconds=60,max_source_rows=5_000_000):
     """Bounded SELECT-only read; only requested tickers and nearby seconds.
 
     Reuses the pinned source reader/attempt contracts and storage gates.
@@ -96,7 +96,7 @@ def read_requested_windows(source,requests,*,chunk_seconds=60):
     if requests.is_empty():return pl.DataFrame(schema=SCHEMA)
     if set(requests['ticker'])-set(source.attempts):raise ValueError('Unpinned execution identity')
     keys=requests.with_columns(((pl.col('time_us')-origin)//(chunk_seconds*1000000)).alias('chunk'))
-    parts=[]
+    parts=[];row_count=0
     for chunk,group in keys.partition_by('chunk',as_dict=True).items():
         start=int(group['time_us'].min())-1000000;end=int(group['time_us'].max())+1000000
         first=(start-origin)//100000;last=(end-origin)//100000-1
@@ -108,7 +108,10 @@ def read_requested_windows(source,requests,*,chunk_seconds=60):
                 f'WHERE build_id={sql.literal(source.source["build_id"])} AND session_date=toDate({sql.literal(source.day)}) '
                 f'AND resolution_ms=100 AND bucket_index BETWEEN {first} AND {last} AND (ticker,attempt_id) IN ({scope}) '
                 'ORDER BY bucket_index,ticker',SCHEMA)
-            validate_rows(rows,first,last,set(names));parts.append(rows)
+            validate_rows(rows,first,last,set(names))
+            row_count+=rows.height
+            if row_count>max_source_rows:raise ValueError('Sparse cost preparation exceeded explicit source row bound')
+            parts.append(rows)
     # Overlapping neighboring source windows must agree exactly, not hide
     # duplicate/conflicting authoritative source records via keep-first.
     rows=pl.concat(parts) if parts else pl.DataFrame(schema=SCHEMA)
@@ -153,10 +156,19 @@ def build_cost_sidecar(source,candidates,requests,output,*,bank_sha,budget=1000.
     features=window_estimates(requests,rows,source.origin,participation=participation).select('ticker','time_us',*EXECUTION_NAMES)
     future=window_estimates(future_keys,rows,source.origin,future=True,participation=participation)
     scores=score_candidates(candidates,future,budget=budget)
+    # A rolling portfolio cohort cannot be normalized from partially known
+    # costs. Preserve classification opportunities, but mask its size targets.
+    anchors=scores.select(pl.col('time_us').alias('decision_us')).unique()
+    missing=scores.filter(~pl.col('execution_cost_available')).select(pl.col('time_us').alias('missing_us')).unique()
+    incomplete=(anchors.join_where(missing,pl.col('missing_us')>=pl.col('decision_us'),
+        pl.col('missing_us')<pl.col('decision_us')+15_000_000).select('decision_us').unique()
+        if missing.height else anchors.head(0))
+    unknown_clocks=incomplete['decision_us'].to_list()
+    scores=scores.with_columns((~pl.col('time_us').is_in(unknown_clocks)).alias('allocation_known'))
     from research.rl_trading.v6.episode_windows import rolling_allocation
     eligible=scores.filter(pl.col('netbps').is_not_null()&(pl.col('netbps')>=100)).with_columns(
         (pl.col('netbps')/10000).alias('score'))
-    allocation=rolling_allocation(eligible)
+    allocation=rolling_allocation(eligible).filter(~pl.col('decision_us').is_in(unknown_clocks))
     allocation=allocation.with_columns((pl.col('allocation_score')*10000).alias('allocation_netbps_score'))
     output.mkdir(parents=True)
     files={}
@@ -171,7 +183,8 @@ def build_cost_sidecar(source,candidates,requests,output,*,bank_sha,budget=1000.
         score_scope='hindsight_matched_1s_participation_vwap_spread_net_profit_per_probe_capital',
         score_time_discount='none_old_score_retained_with_30s_half_life',
         luld_certificate=source.luld_certificate,
-        missing_cost_rows=scores.filter(~pl.col('execution_cost_available')).height,sealed_test_accessed=False)
+        missing_cost_rows=scores.filter(~pl.col('execution_cost_available')).height,
+        incomplete_allocation_clocks=incomplete.height,sealed_test_accessed=False)
     (output/'complete.json').write_text(json.dumps(proof,sort_keys=True));return proof
 
 
@@ -193,6 +206,7 @@ def attach_teacher_costs(labels,session,root):
     ticker_by_listing=dict(identities.iter_rows())
     values={(r['ticker'],r['time_us']):np.asarray([r[n] for n in EXECUTION_NAMES],np.float32)
         for r in tables['features'].iter_rows(named=True)}
+    unknown_clocks=set(tables['scores'].filter(~pl.col('allocation_known'))['time_us'])
     weights={(r['episode_uid'],r['decision_us']):r['allocation_weight']
         for r in tables['allocation_netbps'].iter_rows(named=True)}
     result=[]
@@ -202,6 +216,7 @@ def attach_teacher_costs(labels,session,root):
         ticker=ticker_by_listing[session.listings[i]]
         key=(ticker,item.close_us)
         if key not in values:raise ValueError('Causal execution feature key absent; no fallback')
-        size=weights.get((item.episode_uid,item.close_us),0.) if item.size_fraction is not None else None
+        size=(weights.get((item.episode_uid,item.close_us),0.)
+            if item.size_fraction is not None and item.close_us not in unknown_clocks else None)
         result.append(replace(item,execution_indices=(i,),execution_features=values[key][None].copy(),size_fraction=size))
     return tuple(result)

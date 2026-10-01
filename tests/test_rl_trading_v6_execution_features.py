@@ -149,3 +149,43 @@ def test_sparse_sidecar_retains_old_score_and_no_future_features(tmp_path,monkey
     features=pl.read_parquet(tmp_path/'sidecar'/'features.parquet')
     assert 'netbps' not in features.columns and 'entry_price' not in features.columns
     assert pl.read_parquet(tmp_path/'sidecar'/'allocation_netbps.parquet').is_empty()
+
+
+def test_exposing_cost_availability_preserves_existing_action_masks():
+    from research.rl_trading.v6.tensor_broker import TensorBroker
+    broker=TensorBroker(1,device='cpu')
+    broker.update_marks(torch.tensor([0]),torch.tensor([10.]),1000000)
+    original=broker.observe(1000000,torch.tensor([True]))
+    broker.expose_cost_features=True
+    enriched=broker.observe(1000000,torch.tensor([True]))
+    assert torch.equal(original.enter_allowed,enriched.enter_allowed)
+    assert enriched.execution_features[0,3:5].sum()==0
+
+
+def test_unknown_market_member_masks_allocation_not_opportunity(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from research.rl_trading.v6 import execution_sidecar as module
+    extra=rows().filter(pl.col('bucket_index')<10).with_columns((pl.col('bucket_index')+20).alias('bucket_index'),
+        (pl.col('quote_timestamp_us')+2000000).alias('quote_timestamp_us'),
+        pl.lit(1100.).alias('execution_notional'),pl.lit(109900,dtype=pl.Int64).alias('bid_int'),pl.lit(110100,dtype=pl.Int64).alias('ask_int'))
+    source=SimpleNamespace(origin=0,day='fixture',source={'build_id':'build','definition_hash':'definition'},
+        attempts={'X':'a','Y':'b'},luld=SimpleNamespace(rows={},end_us=None),luld_certificate='fixture')
+    candidates=pl.DataFrame(dict(ticker=['X','Y'],listing_id=['X-id','Y-id'],episode_uid=['x','y'],direction=[1,1],
+        time_us=[1000000,1000000],decision_close=[10.,10.],exit_hint_us=[2000000,2000000],exit_hint_close=[11.,11.],score=[.02,.02]))
+    requests=candidates.select('ticker','time_us',pl.col('decision_close').alias('reference'))
+    monkeypatch.setattr(module,'read_requested_windows',lambda source,requests:pl.concat([rows(),extra]))
+    proof=module.build_cost_sidecar(source,candidates,requests,tmp_path/'cohort',bank_sha='bank')
+    scored=pl.read_parquet(tmp_path/'cohort'/'scores.parquet')
+    assert scored.filter(pl.col('ticker')=='X')['netbps'][0]>100
+    assert scored.height==2 and not scored['allocation_known'].any()
+    assert proof['incomplete_allocation_clocks']==1
+    assert pl.read_parquet(tmp_path/'cohort'/'allocation_netbps.parquet').is_empty()
+
+    from research.rl_trading.v6.training import TeacherDecision
+    label=TeacherDecision(1000000,0,1,np.zeros(7,np.float32),np.empty(0,np.int64),np.zeros((0,11),np.float32),
+        np.array([True,False]),np.empty(0,bool),np.empty(0,bool),np.empty(0,bool),size_fraction=.5,
+        episode_uid='x',soft_tokens=(0,1),soft_probabilities=(.1,.9))
+    session=SimpleNamespace(day='fixture',source_certificate_sha256='bank',listings=('X-id','Y-id'))
+    attached=module.attach_teacher_costs([label],session,tmp_path/'cohort')[0]
+    assert attached.size_fraction is None and attached.token==label.token
+    assert attached.soft_probabilities==label.soft_probabilities and attached.execution_features.shape==(1,11)
