@@ -1286,3 +1286,16 @@ attempt retained 611 passing tests and one stale unapproved-number assertion;
 that assertion now rejects 17 while new 16 durability checks pass. Backend and
 frontend restart reached ready. Publication and four actual Strategy 16 backtests
 remain required; source tests establish engineering acceptance, not profitability.
+
+Strategy 16 correction source committed/pushed as
+`44ab627f741a3862df7289925c8ad24b81de5acb`, with clean pinned laptop
+`strategy16-reproduction` and workstation
+`quant-research-workbench-strategy16-44ab627f7` checkouts. Published revision
+`strategy-one-16:d8219332-9f66-4cbb-aa18-e3125d98a3fa` has 991 typed nodes,
+payload `7a6d9671b35e8817f2d2b29b3631c4c46698fe23e1b2141a74e319018358a328`,
+release certificate `c73822bba98ad690fc7244fc14175a29c4045cd1dc03e2f1e43788da276b0f54`,
+source fingerprint `7c7af7bd4e20234a29feb9665e8adbab016a431e7b6d77efb8de0c8ac34e75c3`.
+The actual app-route campaign is tracked in runtime
+`strategy16-four-session-campaign-v1.json`, with $10,000 separately in each
+of the same four extended sessions. Its services refresh follows every saved
+run. No completed Strategy 16 session or profit is claimed at publication.
