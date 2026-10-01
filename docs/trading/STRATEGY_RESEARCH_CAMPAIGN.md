@@ -1384,3 +1384,21 @@ excluding source reads and execution. Release evidence is
 `3eb3da8d9739eb0c5760ba270a5f7adb3ca2d9b52e349f623eb2eb699450a3c2`.
 Actual publication and all four immutable counterfactual backtests remain
 required; implementation acceptance does not establish profitability.
+
+The reviewed Strategy 17 source is committed/pushed as
+`2d33a775424841c4a2d686a3a0c199ad65592f96` and pinned in managed laptop
+`strategy17-reproduction` and workstation
+`quant-research-workbench-strategy17-2d33a7754` checkouts. Publication completed
+as `strategy-one-17:4613cbda-319a-4847-ba03-63fa5af580a8` with 996 typed
+nodes, payload
+`d0b4205c9532afc034849ed439dd397af8494973095dc683424a7f929ca83fe4`,
+publication certificate
+`2fa496d0a71560514efa488d5314c77d8d81410cc624d305be17450026844952`,
+source fingerprint
+`304e10e1d0ac125db9e825002a1a34c08579e88eb04ff5e9506b6229bad199d0`
+and projection certificate
+`5a0f1a55f757a08de49797dbefa040cc001f6042381d8ecbe18eb3a2e877195d`.
+The actual app-route campaign started, tracked in runtime
+`strategy17-four-session-campaign-v1.json`; one service refresh activated the
+new source, with subsequent routine save refreshes disabled. No Strategy 17
+completed-session profitability is claimed at this publication checkpoint.
