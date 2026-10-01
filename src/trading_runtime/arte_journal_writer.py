@@ -2125,7 +2125,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     )
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
-                 ENTRY_EVIDENCE, ADD_EVIDENCE, MOMENTUM, INITIAL_MOMENTUM, V4_ALLOCATION,
+                 ENTRY_EVIDENCE, ADD_EVIDENCE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
                  *OMS_TACTIC_TABLES, FAILURE,
@@ -2151,7 +2151,7 @@ def v4_journal_write_tables() -> frozenset[str]:
             | frozenset({V4_ORDER_COMMAND_LINEAGE.name})
             | PORTFOLIO_SNAPSHOT_WRITE_TABLES
             | frozenset({
-                ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, V4_ALLOCATION.name,
+                ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, V4_ALLOCATION.name,
                 RESERVATION_REASON.name, ACKNOWLEDGEMENT.name,
                 CANCEL.name, REPRICE.name,
                 "trading_backtest_account_snapshot_v2",

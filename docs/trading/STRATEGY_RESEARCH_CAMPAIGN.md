@@ -2277,3 +2277,14 @@ guards now cover runtime validation, source binding, publisher forwarding,
 controller callback and snapshot worker transport, with dropped-context
 mutations rejected. Numbered release, operational price-table provisioning and
 actual portfolio PnL remain pending. No holdout tuning occurred.
+
+### Strategy20 operational price storage catalog
+
+The normalized first-price companion now belongs to the V4 operational storage
+catalog, commit-layout planner and Backtest runner SELECT/INSERT grant plan.
+Its existing table contract declares `live_market_ssd`; runtime storage
+preflight verifies schema, policy and actual parts before writers can start.
+The runner gains no market writes or DDL privileges. The installer and
+provisioner remain dry-run by default.67 focused catalog, provisioning,
+installation, transport and source-certification checks passed. Workstation
+installation and grant verification must follow this committed source revision.
