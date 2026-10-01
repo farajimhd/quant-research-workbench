@@ -1080,3 +1080,95 @@ cover every admitted number through 14. The successor integration suite passed
 added and its journal/configuration suite passed 121 tests in 12.26 seconds;
 expanded actual history tests passed 23 tests. Review preserves all other
 selector checks and old release semantics.
+
+### Strategy 14 published four-session acceptance and actual entry audit
+
+Source `7ff7527be9e6d4c0d1396f0baa24b4438ec0f151` was committed/pushed and
+pinned on both machines before publication. Configuration
+`strategy-one-14:5166c8f6-6c35-4e35-bd3e-4fe67091bce3` has 988 nodes,
+payload `725b5e6b99e4406c353c6dc8020902dfe9fc1859f292b17678c0a2618f23d988`,
+certificate `ac89dfbdfad59cd033fe7a47f1ceb1982be2fc9d3dfcab8c63b24bfd1d4253b3`,
+approved source fingerprint
+`b4f46ad46e76d32cccad00a88d6f5ebfa89c66f64fb722908ecd360cba3749fd`.
+Projection certificate
+`7a082f56532367fda1308013f45e4e227dbd6cfc283a90d8990ea535d1d8bb7c`.
+Each run started independently with $10,000; all completed flat, exclude LGHL,
+stay within their requested extended session and share the Strategy 12 market
+build and market-plan token. AH keeps the inherited prior-day V7 seed and
+completed intraday/RTH-warmed interval authority; there is no regular-hours
+trading. Every saved run triggered the managed backend/frontend refresh.
+
+| Session | Run ID | Positions | Net P&L | Delta vs 12 | Marked drawdown | Execution seconds |
+|---|---|---:|---:|---:|---:|---:|
+| PM18 | 53bcc041-5861-42c6-88e6-1516f5e0352f | 21 | +1397.479805 | +2.937935 | 1218.190215 | 53.756 |
+| PM19 | af61cdf0-7c88-4d25-92bb-044025816c51 | 20 | -425.668395 | 0 | 2012.850445 | 62.512 |
+| AH18 | 2aa6d459-f71e-4d57-b052-ff4a5d5b86b8 | 11 | -138.316615 | +363.836385 | 843.171540 | 35.527 |
+| AH19 | a5ba7ef1-7c96-43a2-856e-809e2d73da73 | 6 | +723.352565 | 0 | 710.712330 | 44.184 |
+
+Total +1556.84736, improvement +366.77432; still only 2/4 sessions reach
++$500. AH18 marked drawdown improves by 131.566385, other session drawdowns
+are unchanged. The worst session remains PM19 at 2012.850445. These marks
+retain the prior limitations: asynchronously retained marks can be stale and
+are not a synchronized executable liquidation-equity path. All eight journal
+units per run drained with zero writer failures. Native rule/source loading
+does not materially slow these measured actual runs relative to Strategy 12.
+
+Artifact `strategy14-four-session-comparison-v1.json`, SHA256
+`5434683b9a1cfa03a1e10d8fede2a8b9bec8a8d02fd76bb5f842ff232e2a46e4`.
+The earlier outcome screen was not counterfactual profit: PM18 SGLY entered
+0.5s later and still lost; PM19 CAST later became eligible at unchanged fill
+prices and retained the same loss. AH18 actually removed CAST/BIVI losses,
+retained its BIVI winner and changed subsequent available cash/quantity.
+
+Independent cold entry/source audit verified all 58 typed admitted proposals
+and linked positions, exact Float64 values reread from their original
+technical attempts, current/adjacent completed clocks, market-plan identities
+and recent-BOS bounds. Artifact `strategy14-actual-entry-source-audit-v1.json`,
+SHA256 `7321f337d9cee11cec353581f3ed75897e651321998eea6bd09771e2b4fc9d3e`.
+Human position tables sorted by P&L, including fill/proposal times, both MACD
+histogram comparisons, volume and trade count, are in
+`strategy14-entry-audit-v1.md`, SHA256
+`bee2c697bcc9b464327c822b3727e9e12618b7756585ace2becb62ff22427d3a`.
+Float remains explicitly unavailable without a dedicated historical as-of
+reference reader; no current float is substituted.
+
+VTIX AH19 remains at 17:42:45.3 fill (17:42:45.2 proposal), net -138.78.
+The completed 1s histogram rises 0.0023868276543747204 ->
+0.002846307772235969; completed 10s rises 0.0016485837636941586 ->
+0.004620486473341526. Both satisfy the rule. Its BOS age is 11.2s. A red
+fill-time candle and price under overhead resistance are not exclusion rules,
+and a chart bar labeled by its opening clock differs from the completed source
+ending at proposal time. This case is a setup-quality weakness, not evidence
+of an entry-clock bug. It was retained rather than silently filtered away.
+
+Final operational review found the trade-report script also ended at number
+12, so initial reports had correct financial/position evidence but omitted
+numbered-release metadata and labeled themselves Strategy 1. Commit
+`2b8e177b4` extends only reporting admission; 18 tests and 17 subtests passed
+(3 unrelated optional tests skipped). Reprojected immutable reports are under
+`strategy14_reports_v4_v2`; initial reports remain intact. Exact comparison
+confirms positions, financial evidence, context, committed sequence and market
+identities are identical; only source/report metadata changes. Artifact
+`strategy14-report-metadata-correction-v1.json`, SHA256
+`2c5fa8e7b99147e7b1cfdc5b8ad7ca6b919173ae6ee903532759e4a93138845f`.
+
+The transient campaign helper initially inherited inline private credentials
+when launching services that already had managed file credentials. Dedicated
+credential validation correctly failed closed, returning HTTP 500 for history.
+Restarting from the clean shell fixed it; the runtime helper now strips only
+the managed inline credential keys before service restart. No credential
+values were logged or persisted. Actual app history confirms all four completed
+Strategy 14 runs and their saved-review availability. Artifact
+`strategy14-app-history-verification-v1.json`, SHA256
+`d864de9ad98e259b46a3eb720de81b408fcff1f5044388905eeeae30561b1fbb`.
+
+The next initial-eligibility-freeze hypothesis was screened, not published.
+Requiring an activation episode's first Strategy 12 eligible candidate to
+have rising momentum adds only one observed Strategy 14 rejection, CAST PM19
+-67.496, and rejects zero observed winners. It cannot resolve the remaining
+session targets, and ignores financial/held/cash permissions when selecting
+the initial candidate. Artifact `strategy14-initial-momentum-screen-v1.json`,
+SHA256 `9f6bc2bfae742a0ad2e2cb53776c676903a71fffe72f0033678d070396cdbb85`.
+Do not treat that amount as saved backtest profit or publish an increment
+solely from this outcome-selected screen. The ongoing goal remains active;
+no repeatable edge or four-session success is claimed.
