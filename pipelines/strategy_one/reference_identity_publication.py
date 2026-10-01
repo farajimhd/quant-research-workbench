@@ -14,7 +14,7 @@ FIELDS = ('ticker', 'symbol_id', 'listing_id', 'security_id', 'ibkr_conid',
           'source_run_id', 'source_inserted_at')
 
 
-def match_retained_identities(snapshot, retained, market, pin):
+def match_retained_identities(snapshot, retained, market, pin, *, resolved_listings=None):
     """Match the exact immutable identity tuple, source run, and capture clock.
 
     snapshot includes the entire pinned population, including non-tradable rows;
@@ -34,11 +34,17 @@ def match_retained_identities(snapshot, retained, market, pin):
     if pin.reference_revision == 'preopen-tradable-carry-forward-v1' and source_date >= market.sessions[0]:
         raise ReferenceIdentityError('Carried reference must come from an earlier date')
     selected = set(market.tickers)
+    resolved_listings = resolved_listings or {}
     snapshots = {}
     for row in snapshot:
         if utc(row['captured_at_utc']) > utc(pin.available_at):
             raise ReferenceIdentityError('Reference capture is later than its certified availability')
         if row['ticker'] in selected and row['is_tradable'] == 1:
+            resolved = resolved_listings.get(row['ticker'])
+            if resolved and (any(row[k] != resolved[k] for k in
+                    ('symbol_id', 'listing_id', 'security_id', 'source_run_id'))
+                    or utc(row['captured_at_utc']) != utc(resolved['source_inserted_at'])):
+                continue  # V3 proof explicitly selects a tuple; original hash covers every row.
             if row['ticker'] in snapshots:
                 raise ReferenceIdentityError('Snapshot has ambiguous selected listing identity')
             snapshots[row['ticker']] = row
@@ -49,6 +55,9 @@ def match_retained_identities(snapshot, retained, market, pin):
         ticker = row['ticker']
         if ticker not in selected:
             continue
+        resolved = resolved_listings.get(ticker)
+        if resolved and any(row.get(k) != resolved.get(k) for k in FIELDS):
+            continue  # Preserve secondary source rows; never silently deduplicate V1/V2.
         expected = snapshots[ticker]
         if ticker in output or any(row.get(k) != expected[k] for k in
                 ('symbol_id', 'listing_id', 'security_id', 'source_run_id')):

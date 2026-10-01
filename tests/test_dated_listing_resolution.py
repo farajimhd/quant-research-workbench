@@ -7,6 +7,8 @@ import pytest
 from pipelines.strategy_one.dated_listing_resolution import resolve_listing
 from src.trading_runtime.historical_reference_identity import ReferenceIdentityError
 from tests.test_historical_reference_identity import fixture
+from src.trading_runtime.historical_reference_identity_v3 import resolution_plan, verify_resolution
+from dataclasses import replace
 
 
 def inputs():
@@ -58,3 +60,19 @@ def test_rejects_unproven_identity_selection(fault):
         mappings.append(bad)
     with pytest.raises(ReferenceIdentityError):
         resolve_listing(snapshot, retained, mappings, ticker="AAA", pin=pin)
+
+
+def test_versioned_proof_replays_full_population_and_retains_secondary_rows():
+    snapshot, retained, mappings, pin = inputs()
+    _, _, market, _ = fixture()
+    snapshot[-1]['row_hash'] = 1
+    pin = replace(pin, population_source_hash='3')
+    source_date, expected, payload, digest = resolution_plan(snapshot, retained, mappings, market, pin)
+    assert len(json.loads(payload)['snapshot']) == 3
+    assert len(json.loads(payload)['retained']) == 3
+    assert verify_resolution(payload, digest, market, pin) == (source_date, expected)
+    assert [r['ticker'] for r in expected] == ['AAA', 'BBB']
+    with pytest.raises(ReferenceIdentityError):
+        verify_resolution(payload + ' ', digest, market, pin)
+    with pytest.raises(ReferenceIdentityError):
+        resolution_plan(snapshot, retained, mappings, market, replace(pin, population_source_hash='2'))
