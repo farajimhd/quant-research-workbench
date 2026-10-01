@@ -19,11 +19,12 @@ class BrokerConfig:
     price_increment: float=.0001
     max_mark_age_us: int=5_000_000
     risk: RiskPenalty=RiskPenalty()
+    outside_macd_per_minute: float=0.
 
     def __post_init__(self):
         if not (math.isfinite(self.initial_cash) and self.initial_cash>0 and
                 0<self.participation<=1 and self.price_increment>0 and
-                self.max_mark_age_us>0):
+                self.max_mark_age_us>0 and math.isfinite(self.outside_macd_per_minute) and self.outside_macd_per_minute>=0):
             raise ValueError('Invalid tensor broker assumptions')
 
 
@@ -110,6 +111,7 @@ class TensorBroker:
         self.quantity=q.clone();self.remaining=q.clone();self.order_quantity=q.clone()
         self.side=q.clone();self.entry_us=q.clone();self.mark_us=q.clone()
         self.cost=z.clone();self.entry_fee=z.clone();self.stop=z.clone();self.target=z.clone()
+        self.entry_stop_bps=z.clone();self.entry_target_bps=z.clone()
         self.mark=z.clone();self.cap=z.clone();self.fraction=z.clone()
         self.order_filled=q.clone();self.order_notional=z.clone()
         self.position_net=z.clone();self.pause_age=z.clone()
@@ -124,6 +126,12 @@ class TensorBroker:
         self.expose_cost_features=False
         from collections import deque
         self.cost_history=deque(maxlen=10)
+        self.outside_macd=torch.zeros(listings,device=device,dtype=torch.bool)
+        self.outside_macd_penalty=z.new_zeros(())
+
+    def observe_macd(self,index,line,signal,available):
+        """[K] completed-candle indicators; missing evidence is not a negative regime."""
+        self.outside_macd.index_copy_(0,index,available.bool()&(line<=signal))
 
     def compile_step(self):
         """Opt-in fixed-shape execution kernels; compilation cost is separate.
@@ -207,7 +215,7 @@ class TensorBroker:
             torch.ones_like(index)*(clock if clock is not None else 0),net[index],
             ((self.quantity==0)&(action==2))[index],mask if dense else None)
 
-    def submit(self,token,parameter,held,clock_us):
+    def submit(self,token,parameter,held,clock_us,*,brackets_bps=None):
         """One sampled proposal; token/parameter scalars remain on device."""
         h=held.numel();n=self.n
         # Appended ticker HOLD tokens are no orders, with no cash or memory mutation.
@@ -225,6 +233,12 @@ class TensorBroker:
             torch.where(self.mark<=50,20000,15000)))))
         requested=torch.minimum(torch.floor(free*parameter/self.mark.clamp_min(1e-9)).long(),caps)
         buy=selected&(action==1)&(self.quantity==0)&(self.remaining==0)&(self.mark>0)&(requested>0)
+        if brackets_bps is not None:
+            stop_distance,target_distance=brackets_bps
+            if stop_distance.shape!=(n,) or target_distance.shape!=(n,):raise ValueError('Entry bracket axes differ')
+            # Predicted distances are not executable until an actual fill.
+            self.entry_stop_bps=torch.where(buy,stop_distance.double(),self.entry_stop_bps)
+            self.entry_target_bps=torch.where(buy,target_distance.double(),self.entry_target_bps)
         sell=selected&(action==2)&(self.quantity>0)&(self.side<2)
         average=self.cost/self.quantity.clamp_min(1)
         proposed=average*torch.exp(torch.where(action==3,-parameter,parameter).double())
@@ -267,6 +281,8 @@ class TensorBroker:
         old=self.quantity;eq=self.equity().clamp_min(1.)
         self.shaping+=((old*self.mark/eq)*(b.paused&~self.paused)).sum()*self.config.risk.halt_entry
         self.shaping+=((old*self.mark/eq)*b.paused).sum()*self.config.risk.halt_per_minute*elapsed/60
+        regime_penalty=((old*self.mark/eq)*self.outside_macd).sum()*self.config.outside_macd_per_minute*elapsed/60
+        self.outside_macd_penalty+=regime_penalty;self.shaping+=regime_penalty
         self.pause_age=torch.where(b.paused,self.pause_age+elapsed,0.)
         self.paused=b.paused
         capacity=torch.floor(b.volume*self.config.participation).long()
@@ -315,6 +331,16 @@ class TensorBroker:
         self.entry_fee+=fee-entry_allocation
         self.position_net+=net
         self.quantity=old+buy-sell
+        # Arm at the first fill close, so earlier extrema in this same bucket
+        # cannot trigger new children. Keep intent distances fixed through
+        # partial entry fills while recomputing prices from actual cost basis.
+        average_after=self.cost/self.quantity.clamp_min(1)
+        attach=(buy>0)&(self.entry_stop_bps>0)&(self.entry_stop_bps<10000)&(self.entry_target_bps>0)
+        stop_price=torch.floor(average_after*(1-self.entry_stop_bps/10000)/self.config.price_increment+1e-9)*self.config.price_increment
+        target_price=torch.floor(average_after*(1+self.entry_target_bps/10000)/self.config.price_increment+1e-9)*self.config.price_increment
+        valid_children=attach&(stop_price>0)&(stop_price<average_after)&(target_price>average_after)
+        self.stop=torch.where(valid_children,stop_price,self.stop)
+        self.target=torch.where(valid_children,target_price,self.target)
         self.entry_us=torch.where((old==0)&(buy>0),b.clock_us,self.entry_us)
         closed=(old>0)&(self.quantity==0)
         self.holding_seconds+=torch.where(closed,(b.clock_us-self.entry_us)/1e6,0.).sum()
@@ -358,6 +384,7 @@ class TensorBroker:
         names=('modeled_net_profit','modeled_fees','closed_positions','winning_positions',
                'buy_fill_orders','sell_fill_orders','open_positions','risk_shaping_penalty','ambiguous_buckets')
         result=dict(zip(names,values));result['win_rate']=values[3]/values[2] if values[2] else None
+        result['outside_macd_shaping_penalty']=float(self.outside_macd_penalty.cpu())
         result['terminally_flat']=values[6]==0;result['environment_version']=VERSION
         result['turnover_dollars']=float(self.turnover.cpu())
         result['mean_holding_seconds']=float(self.holding_seconds.cpu())/values[2] if values[2] else None

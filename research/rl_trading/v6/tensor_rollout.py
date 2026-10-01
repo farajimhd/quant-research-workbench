@@ -80,6 +80,11 @@ def collect_tensor_session(policy,session,broker,buckets,*,device,
         valid_index=torch.as_tensor(indices[valid],device=device,dtype=torch.long)
         price=torch.as_tensor(np.exp(scalar[valid,SCALAR_NAMES.index('log_close')].astype(np.float64)),device=device)
         broker.update_marks(valid_index,price,clock)
+        if broker.config.outside_macd_per_minute:
+            broker.observe_macd(torch.as_tensor(indices,device=device,dtype=torch.long),
+                torch.as_tensor(scalar[:,SCALAR_NAMES.index('macd_line_rel')],device=device),
+                torch.as_tensor(scalar[:,SCALAR_NAMES.index('macd_signal_rel')],device=device),
+                torch.as_tensor(scalar[:,SCALAR_NAMES.index('indicator_available')],device=device))
         eq=broker.equity()
         equity.append(eq.clone());clocks.append(clock)
         if clock==real_end:
@@ -110,7 +115,9 @@ def collect_tensor_session(policy,session,broker,buckets,*,device,
             else:
                 token,latent,parameter,likelihood=dist.sample_tensor()
             step.token=token;step.latent=latent;step.old_log_prob=likelihood;step.old_value=value
-            step.immediate_outcome=broker.submit(token,parameter,obs.held_index,clock)
+            bracket_predictions=getattr(policy.decoder,'ticker_outputs',None)
+            brackets=(bracket_predictions.stop_bps,bracket_predictions.target_bps) if bracket_predictions is not None else None
+            step.immediate_outcome=broker.submit(token,parameter,obs.held_index,clock,brackets_bps=brackets)
             memory=_remember(policy,state,memory,step.immediate_outcome)
             frame.steps.append(step);steps.append(step)
         frames.append(frame)

@@ -97,6 +97,9 @@ def main(argv=None):
         help='Selected teacher checkpoint for a new PPO run with fresh Adam and explicit source binding')
     parser.add_argument('--teacher-loss',choices=('legacy','balanced-v2'),default='legacy',
         help='Versioned action balancing and fixed per-session block normalization')
+    parser.add_argument('--ticker-brackets-root',type=Path,help='Audited oracle brackets for four-action ticker supervision')
+    parser.add_argument('--ticker-heads',action='store_true',help='Four local actions, opportunity value and entry-attached brackets; no teacher sizing')
+    parser.add_argument('--outside-macd-per-minute',type=float,default=0.,help='Explicit exposure-weighted PPO shaping outside completed-candle positive MACD regime')
     parser.add_argument('--action-contract', choices=('legacy','wait-hold'), default='legacy',
         help='Explicit six-class WAIT and held-ticker HOLD contract with weighted causal label migration')
     parser.add_argument('--action-audit',type=Path,
@@ -232,6 +235,33 @@ def main(argv=None):
         def teacher_loader(ignored,session,**kwargs):
             return load_episode_teacher(root/str(session.day),session,**kwargs)
     policy=RankedBracketActorCritic(config=ranking, wait_hold=wait_hold).to(device)
+    ticker_certificates={}
+    if args.ticker_heads:
+        from research.rl_trading.v6.ticker_heads import TickerDecoder,VERSION as TICKER_VERSION
+        from research.rl_trading.v6.ticker_targets import attach_targets
+        if not wait_hold or (not args.teacher_only and args.broker_engine!='tensor-100ms'):
+            raise ValueError('Ticker heads require WAIT/HOLD transport and tensor PPO')
+        if args.teacher_only:
+            if not args.episode_supervision_root or not args.ticker_brackets_root:
+                raise ValueError('Ticker teacher needs independent episodes and certified brackets')
+            if not args.ticker_brackets_root.resolve().is_relative_to(runtime):raise ValueError('Ticker brackets escaped runtime')
+            base_loader=teacher_loader
+            # Audit every target binding before creating the optimizer.
+            for entry in dataset['days']:
+                original=json.loads((Path(entry['original_teacher_root'])/'complete.json').read_text())
+                if file_hash(args.ticker_brackets_root/entry['day']/'complete.json')!=original['bracket_certificate_sha256']:
+                    raise ValueError('Ticker bracket source differs from original audited geometry')
+                audited=open_session(Path(entry['bank_root']),runtime_root=runtime,previous_root=Path(entry['previous_root']))
+                labels,_=base_loader(Path(entry['teacher_root']),audited,runtime_root=runtime,audit_development=True)
+                _,proof=attach_targets(labels,audited,args.ticker_brackets_root)
+                ticker_certificates[entry['day']]=proof
+                del labels,audited
+            def teacher_loader(ignored,session,**kwargs):
+                labels,outcomes=base_loader(ignored,session,**kwargs)
+                labels,proof=attach_targets(labels,session,args.ticker_brackets_root)
+                if proof!=ticker_certificates[str(session.day)]:raise ValueError('Ticker targets changed after audit')
+                return labels,outcomes
+        policy.decoder=TickerDecoder(policy.encoder.width).to(device)
     policy.independent_episode_supervision=bool(args.episode_supervision_root)
     feature_contract='legacy'
     execution_certificates={}
@@ -280,8 +310,12 @@ def main(argv=None):
         'feature_contract':feature_contract,
         'feature_normalization_sha256':file_hash(args.feature_normalization) if args.feature_normalization else None,
         'execution_feature_certificates':execution_certificates,
+        'ticker_head_contract':TICKER_VERSION if args.ticker_heads else None,
+        'ticker_target_certificates':ticker_certificates,
+        'outside_macd_per_minute':args.outside_macd_per_minute,
+        'ticker_metrics_scope':'independent_ticker_not_global_selection' if args.ticker_heads else None,
         'execution_evidence_version':('rl-v6-certified-event-sparse-liquidity-v1' if feature_contract!='legacy' else None),
-        'action_version':ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1',
+        'action_version':TICKER_VERSION if args.ticker_heads else (ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1'),
         'teacher_no_order_labels':'all_causal_held_identities_weighted_1_over_H' if wait_hold else 'portfolio_hold',
         'history_cache':'raw_causal_reprojection_after_teacher_optimizer' if wait_hold else 'detached_projected_history',
         'teacher_selection_version':SELECTION_VERSION,
@@ -424,7 +458,7 @@ def main(argv=None):
             shards=BrokerShards(provider,tickers,runtime/'rl-v6-broker-shards'/str(session.day)/namespace,
                                 runtime_root=runtime)
             broker=TensorBroker(len(tickers),device=device,config=BrokerConfig(
-                participation=args.broker_participation,risk=risk))
+                participation=args.broker_participation,risk=risk,outside_macd_per_minute=args.outside_macd_per_minute))
             broker.expose_cost_features=feature_contract!='legacy'
             if args.compile_broker:
                 broker.compile_step()

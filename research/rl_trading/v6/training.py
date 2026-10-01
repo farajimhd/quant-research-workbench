@@ -58,6 +58,9 @@ class TeacherDecision:
     episode_uid: str | None = None
     execution_indices: tuple[int,...] = ()
     execution_features: np.ndarray | None = None  # Sparse causal [K,11], never future scores.
+    opportunity_value_bps: float | None = None
+    entry_stop_bps: float | None = None
+    entry_target_bps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,8 @@ class TrainingMetrics:
     entry_token_accuracy: float | None = None
     hold_token_accuracy: float | None = None
     action_predicted_class_counts: dict[str, int] | None = None
+    ticker_regression_mae_bps: dict[str,float | None] | None = None
+    ticker_regression_counts: dict[str,int] | None = None
 
 
 def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wait_hold=False):
@@ -116,7 +121,7 @@ def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wai
 
 def _validate(decisions: tuple[TeacherDecision, ...],
               outcomes: tuple[ExecutionOutcome, ...],
-              listings: int, *, wait_hold=False) -> None:
+              listings: int, *, wait_hold=False, ticker_heads=False) -> None:
     previous_key = None
     by_key = {}
     for item in decisions:
@@ -158,7 +163,10 @@ def _validate(decisions: tuple[TeacherDecision, ...],
         enters = 1 <= item.token <= listings
         bracket_base = 1 + listings + held
         bracket_action = bracket_base <= item.token < bracket_base + 2*held
-        if (enters != (item.size_fraction is not None) or
+        if ticker_heads:
+            if not item.soft_tokens or item.size_fraction is not None or item.oracle_log_distance is not None or bracket_action or held>1:
+                raise ValueError('Ticker supervision requires local labels without sizing/SET actions')
+        elif (enters != (item.size_fraction is not None) or
                 bracket_action != (item.oracle_log_distance is not None)):
             raise ValueError('Conditional label does not match teacher action')
         previous_key = key
@@ -222,7 +230,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     pending_entries = {}
     wait_hold = policy.decoder.wait_hold
     action_names = SIX_ACTION_NAMES if wait_hold else ACTION_NAMES
-    _validate(decisions, outcomes, listings, wait_hold=wait_hold)
+    _validate(decisions, outcomes, listings, wait_hold=wait_hold,ticker_heads=hasattr(policy.decoder,'ticker_outputs'))
     balance, loss_denominator = (teacher_loss_balance(decisions, listings,
         session.bank.close_us, clocks_per_chunk, wait_hold=wait_hold)
         if teacher_loss == 'balanced-v2' and not evaluation else (None, None))
@@ -243,6 +251,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     confusion = np.zeros((len(action_names), len(action_names)), dtype=np.int64)
     conditional_sum = np.zeros(3, dtype=np.float64)
     conditional_count = np.zeros(3, dtype=np.int64)
+    ticker_sum=np.zeros(3);ticker_count=np.zeros(3,dtype=np.int64)
     policy.train(not evaluation)
     if not evaluation:
         optimizer.zero_grad(set_to_none=True)
@@ -255,6 +264,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         pending_correct = []
         pending_predictions = []
         pending_conditional = ([], [], [])
+        pending_ticker=([],[],[])
         # Empty chunks still advance every observed candle and actual order
         # outcome, but do not build a useless autograd graph.
         with torch.set_grad_enabled(labeled and not evaluation):
@@ -313,7 +323,30 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                                          'audit top_r/sort_secs coverage before training')
                     target_class = _action_class(item.token, listings,
                                                  len(item.held_index), wait_hold=wait_hold)
-                    objective, metrics = bracket_loss(logits, sizes, stops,
+                    if hasattr(policy.decoder,'ticker_outputs'):
+                        from research.rl_trading.v6.ticker_heads import TickerOutputs,supervised_loss
+                        decoded=policy.decoder.ticker_outputs
+                        identity=int(item.held_index[0]) if len(item.held_index) else item.soft_tokens[1]-1
+                        local=TickerOutputs(*(getattr(decoded,k)[identity:identity+1] for k in
+                            ('logits','value_bps','stop_bps','target_bps')))
+                        p=torch.zeros((1,4),device=device)
+                        p[0,2 if len(item.held_index) else 1]=item.soft_probabilities[1 if len(item.held_index) else 0]
+                        p[0,3 if len(item.held_index) else 0]=item.soft_probabilities[0 if len(item.held_index) else 1]
+                        value_valid=torch.tensor([item.opportunity_value_bps is not None],device=device)
+                        bracket_valid=torch.tensor([item.entry_stop_bps is not None and item.entry_target_bps is not None],device=device)
+                        target=lambda value:logits.new_tensor([float('nan') if value is None else value])
+                        objective,aux=supervised_loss(local,p,value_bps=target(item.opportunity_value_bps),
+                            value_valid=value_valid,stop_bps=target(item.entry_stop_bps),target_bps=target(item.entry_target_bps),
+                            bracket_valid=bracket_valid)
+                        for slot,name in enumerate(('value','stop','target')):
+                            if torch.isfinite(aux[name+'_mae_bps']):pending_ticker[slot].append(aux[name+'_mae_bps'])
+                        metrics={'action_loss':aux['action_loss'],'size_loss':logits.new_zeros(()),
+                            'value_loss':aux['value_loss'],
+                            'bracket_loss':aux['stop_loss']+aux['target_loss'],
+                            'action_correct':(local.logits.argmax(-1)==p.argmax(-1)).float().mean(),
+                            'size_absolute_error':logits.new_zeros(()),'bracket_absolute_error':logits.new_zeros(())}
+                    else:
+                        objective, metrics = bracket_loss(logits, sizes, stops,
                         targets, token=item.token,
                         size_fraction=item.size_fraction,
                         oracle_log_distance=item.oracle_log_distance,
@@ -325,7 +358,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     # is local soft CE and has a separate manifest metric scope;
                     # it is not comparable to portfolio-token CE or recall.
                     loss = (metrics['action_loss'] + metrics['size_loss'] +
-                            metrics['bracket_loss'])
+                            metrics['bracket_loss']+metrics.get('value_loss',0))
                     pending_losses.append(loss)
                     pending_correct.append(metrics['action_correct'])
                     if item.soft_tokens:
@@ -337,7 +370,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         item.token, len(item.held_index)))
                     pending_objectives.append(objective)
                     pending_weights.append(item.sample_weight)
-                    if target_class in (1, 3, 4):
+                    if target_class in (1, 3, 4) and not hasattr(policy.decoder,'ticker_outputs'):
                         slot = {1: 0, 3: 1, 4: 2}[target_class]
                         pending_conditional[slot].append(
                             metrics['size_absolute_error'] if slot == 0 else
@@ -378,6 +411,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                 if values:
                     conditional_sum[slot] += float(torch.stack(values).sum())
                     conditional_count[slot] += len(values)
+            for slot,values in enumerate(pending_ticker):
+                if values:
+                    ticker_sum[slot]+=float(torch.stack(values).sum());ticker_count[slot]+=len(values)
         state.detach()
         if pending_losses and not evaluation and wait_hold:
             state.refresh_projection(policy.encoder)
@@ -414,4 +450,6 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                            if counts['enter_long'] else None,
                            hold_correct / counts['hold']
                            if wait_hold and counts['hold'] else None,
-                           {name:int(confusion[:, index].sum()) for index,name in enumerate(action_names)})
+                           {name:int(confusion[:, index].sum()) for index,name in enumerate(action_names)},
+                           {name:float(ticker_sum[i]/ticker_count[i]) if ticker_count[i] else None for i,name in enumerate(('value','stop','target'))},
+                           {name:int(ticker_count[i]) for i,name in enumerate(('value','stop','target'))})

@@ -147,18 +147,8 @@ def read_requested_windows(source,requests,*,chunk_seconds=60,max_source_rows=5_
     return rows.unique().sort('bucket_index','ticker')
 
 
-def build_cost_sidecar(source,candidates,requests,output,*,bank_sha,budget=1000.,participation=.1):
-    output=Path(output)
-    if output.exists():raise ValueError('Fresh cost sidecar required')
-    future_keys=pl.concat((candidates.select('ticker','time_us',pl.col('decision_close').alias('reference')),
-        candidates.select('ticker',pl.col('exit_hint_us').alias('time_us'),pl.col('exit_hint_close').alias('reference')))).unique()
-    # Exit and entry keys can coincide; current reference is not used in future
-    # price arithmetic. Resolve their references deterministically by key.
-    future_keys=future_keys.group_by('ticker','time_us').agg(pl.col('reference').first())
-    read_keys=pl.concat((requests.select('ticker','time_us'),future_keys.select('ticker','time_us'))).unique()
-    from research.rl_trading.v6.sparse_coverage import certify_source,VERSION as COVERAGE_VERSION
-    coverage,coverage_hash=certify_source(source,set(read_keys['ticker']))
-    rows=read_requested_windows(source,read_keys)
+
+def risk_filtered_rows(source,rows):
     if not hasattr(source,'luld'):raise ValueError('Modeled LULD evidence required for execution score')
     # Reuse exactly the approximate broker's known pause/band projection.
     # Unknown prior references remain explicit in its existing LULD certificate.
@@ -182,8 +172,35 @@ def build_cost_sidecar(source,candidates,requests,output,*,bank_sha,budget=1000.
             pl.when(pl.col('risk_blocked')).then(0.).otherwise(pl.col('execution_notional')).alias('execution_notional')).drop('risk_blocked')
         parts.append(frame)
     rows=pl.concat(parts) if parts else rows
-    features=window_estimates(requests,rows,source.origin,participation=participation,coverage=coverage).select('ticker','time_us',*EXECUTION_NAMES)
-    future=window_estimates(future_keys,rows,source.origin,future=True,participation=participation,coverage=coverage)
+    return rows
+
+
+def build_cost_sidecar(source,candidates,requests,output,*,bank_sha,budget=1000.,participation=.1):
+    output=Path(output)
+    if output.exists():raise ValueError('Fresh cost sidecar required')
+    future_keys=pl.concat((candidates.select('ticker','time_us',pl.col('decision_close').alias('reference')),
+        candidates.select('ticker',pl.col('exit_hint_us').alias('time_us'),pl.col('exit_hint_close').alias('reference')))).unique()
+    # Exit and entry keys can coincide; current reference is not used in future
+    # price arithmetic. Resolve their references deterministically by key.
+    future_keys=future_keys.group_by('ticker','time_us').agg(pl.col('reference').first())
+    read_keys=pl.concat((requests.select('ticker','time_us'),future_keys.select('ticker','time_us'))).unique()
+    from research.rl_trading.v6.sparse_coverage import certify_source,VERSION as COVERAGE_VERSION
+    coverage,coverage_hash=certify_source(source,set(read_keys['ticker']))
+    # Keep only one 60-second sparse source block resident. Final features
+    # are sparse targets; a full day never accumulates raw broker rows.
+    feature_parts=[];future_parts=[]
+    chunks=read_keys.with_columns((pl.col('time_us')//60_000_000).alias('chunk'))
+    request_chunks=requests.with_columns((pl.col('time_us')//60_000_000).alias('chunk'))
+    future_chunks=future_keys.with_columns((pl.col('time_us')//60_000_000).alias('chunk'))
+    for chunk,keys in chunks.partition_by('chunk',as_dict=True).items():
+        bucket=chunk[0] if isinstance(chunk,tuple) else chunk
+        rows=risk_filtered_rows(source,read_requested_windows(source,keys.drop('chunk')))
+        past=request_chunks.filter(pl.col('chunk')==bucket).drop('chunk')
+        later=future_chunks.filter(pl.col('chunk')==bucket).drop('chunk')
+        if past.height:feature_parts.append(window_estimates(past,rows,source.origin,participation=participation,coverage=coverage).select('ticker','time_us',*EXECUTION_NAMES))
+        if later.height:future_parts.append(window_estimates(later,rows,source.origin,future=True,participation=participation,coverage=coverage))
+    features=pl.concat(feature_parts) if feature_parts else window_estimates(requests,pl.DataFrame(schema=SCHEMA),source.origin,coverage=coverage).select('ticker','time_us',*EXECUTION_NAMES)
+    future=pl.concat(future_parts) if future_parts else window_estimates(future_keys,pl.DataFrame(schema=SCHEMA),source.origin,future=True,coverage=coverage)
     scores=score_candidates(candidates,future,budget=budget)
     # A rolling portfolio cohort cannot be normalized from partially known
     # costs. Preserve classification opportunities, but mask its size targets.

@@ -1,7 +1,7 @@
 """SELECT-only sparse bps feature/score preparation. Never starts training."""
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
-import argparse,json
+import argparse,json,hashlib
 from contextlib import closing
 from pathlib import Path
 from datetime import date
@@ -25,15 +25,16 @@ def main():
     p.add_argument('--days',nargs='+',required=True)
     p.add_argument('--max-candidates',type=int,help='Explicit bounded diagnostic, not training-ready')
     p.add_argument('--fit-normalization',action='store_true',help='Stream all16 certified training banks')
+    p.add_argument('--resume',action='store_true',help='Verify and reuse complete days; incomplete days fail closed')
     args=p.parse_args();runtime=args.runtime_root.resolve()
     for path in (args.dataset,args.episode_root,args.early_manifest,args.late_manifest,args.ledger,args.luld_root,args.output):
         if not path.resolve().is_relative_to(runtime):raise ValueError('Preparation path escaped runtime')
-    if args.output.exists():raise ValueError('Fresh output required')
+    if args.output.exists() and not args.resume:raise ValueError('Fresh output required or explicit --resume')
     if args.max_candidates is not None and args.max_candidates<1:raise ValueError('Positive diagnostic bound required')
     data=require_dataset(args.dataset,runtime_root=runtime)
     entries=[e for e in data['days'] if e['day'] in args.days]
     if len(entries)!=len(set(args.days)) or len(set(args.days))!=len(args.days):raise ValueError('Only unique audited days')
-    args.output.mkdir(parents=True)
+    args.output.mkdir(parents=True,exist_ok=args.resume)
     if args.fit_normalization:
         def sessions():
             for e in data['days']:
@@ -61,6 +62,21 @@ def main():
             requested_episodes=candidates.select('episode_uid').unique()
             requests=flat.join(requested_episodes,on='episode_uid').join(mapping,on='listing_id',validate='m:1').select(
                 'ticker','time_us',pl.col('close').alias('reference')).unique()
+        done=args.output/e['day']/'complete.json'
+        if args.resume and done.exists():
+            saved=json.loads(done.read_text())
+            plan=json.loads((root/'plan.json').read_text())
+            expected_scope='bounded_diagnostic' if args.max_candidates else 'complete_day'
+            if (saved.get('sparse_coverage_version')!='rl-v6-certified-event-sparse-liquidity-v1' or
+                saved.get('bank_certificate_sha256')!=session.source_certificate_sha256 or
+                saved.get('input_candidate_sha256')!=hashlib.sha256(candidates.serialize()).hexdigest() or
+                saved.get('preparation_scope')!=expected_scope or saved.get('day')!=e['day'] or
+                saved.get('build_id')!=plan['source_build_id'] or
+                saved.get('luld_certificate')!=file_hash(args.luld_root/e['day']/'complete.json') or
+                any(file_hash(done.parent/(name+'.parquet'))!=info['sha256'] for name,info in saved['files'].items())):
+                raise ValueError('Completed execution-feature day changed; cannot resume')
+            print(json.dumps({'day':e['day'],'status':'verified_reused_complete'}),flush=True)
+            continue
         with closing(arte_source.reader(threads=2)) as reader:
             source=arte_source.load_build(args.early_manifest if session.day<=date(2026,8,17) else args.late_manifest,args.ledger,[session.day])
             plan=json.loads((root/'plan.json').read_text())
