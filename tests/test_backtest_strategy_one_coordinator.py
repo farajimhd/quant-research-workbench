@@ -16,16 +16,13 @@ from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
 
 
 @pytest.mark.parametrize('pending_entry', [False, True])
-def test_staged_twenty_coordinator_keeps_source_evidence_and_financial_rejections(monkeypatch, pending_entry):
+@pytest.mark.parametrize('strategy_number', [20, 21])
+def test_native_coordinator_keeps_source_evidence_and_financial_rejections(pending_entry, strategy_number):
     from test_backtest_strategy_first_price_source import authority, Bars
     from src.backend.backtest_strategy_first_price_source import load_first_price_source
     from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan
-    from src.trading_runtime import numbered_fixed_strategy as contracts
-    original_contract = contracts.numbered_fixed_strategy
-    # Exercise staged routing with inherited execution policy. This does not
-    # register or certify Strategy20, and is not a portfolio backtest.
-    monkeypatch.setattr(contracts, 'numbered_fixed_strategy',
-        lambda number: original_contract(19 if number == 20 else number))
+    # Exercise the installed contract and real native coordinator. Publication,
+    # broker fills and portfolio cash-path acceptance remain operational checks.
     market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     candidate, _, _, financial = _facts()
@@ -48,13 +45,13 @@ def test_staged_twenty_coordinator_keeps_source_evidence_and_financial_rejection
         on_entry_proposal=proposed, on_management=noop,
         position_source_owned=lambda _view: False, financially_active_tickers=lambda: (),
         finish_boundary=noop, observe_activation=noop, observe_completed_seconds=noop,
-        strategy_number=20, momentum_plan=parent.momentum, initial_momentum_plan=plan))
+        strategy_number=strategy_number, momentum_plan=parent.momentum, initial_momentum_plan=plan))
     assert actions == [('broker', 31000), ('financial', 31000)]
     assert counts.candidate_decisions == 1
     assert counts.entry_proposals == (0 if pending_entry else 1)
     if proposals:
         proposal = proposals[0]
-        assert proposal.strategy_number == 20
+        assert proposal.strategy_number == strategy_number
         assert proposal.first_price == plan.price_witness('AAA', 31000)
         assert proposal.initial_momentum == plan.selection_witness('AAA', 31000)
         assert proposal.price_source_token == plan.source.token

@@ -2383,3 +2383,27 @@ are `strategy21-reviewed-native-release-seals-v1.json` and
 `strategy21-reviewed-shared-session-seals-v2.json`. Workstation synchronization,
 immutable21 publication and actual six development-session portfolio runs are
 the next operational acceptance steps. No additional holdout tuning occurred.
+
+Operational21 publication completed from `eebb7e6a2`, synchronized clean on the
+workstation: revision `strategy-one-21:c7b1a834-fb6b-47f0-9ad9-839120e6f898`,
+payload `82e62bc27d3a97245bbf73b0a2e1f68d47c193b3189beccb543ee8343be53e00`,
+release token `02e182d05a1900e9b832498cf2447a0096a4f880d99ac76310d68eca2d628cec`.
+Aug18 PM full-market preflight passed with $10000 and the certified LGHL
+exclusion. Actual run `d63ca8d2-97a1-426b-814f-d77c8262da8c` then failed before
+market rows: the coordinator's initial-plan type dictionary lacked key21.
+The failed campaign/log remain preserved under the runtime root. No later
+session was attempted; no21 portfolio PnL exists. Terminal cleanup also lacked
+completed evidence state because failure preceded the first market boundary.
+
+The repaired native-plan selector dispatches20/21 to the exact certified price
+plan type, retains19's growth plan and18's initial plan, and still verifies
+identity of the entry and momentum plans. The coordinator fixture now exercises
+installed20 and21 contracts without its old inherited-contract monkeypatch;
+actual native financial acceptance/rejection and witness retention are tested.
+34 focused checks passed, including full21 source proof. Reviewed receipt:
+`strategy21-native-type-selector-reviewed-seal-v1.json`. The changed source
+cannot run under21's already-published approval; next operational acceptance
+requires a new numbered release. Keep entry/trade settings unchanged until a
+complete baseline portfolio run succeeds, and extend the real coordinator test
+to that next number before publication. Source correctness tests alone are not
+portfolio execution acceptance.

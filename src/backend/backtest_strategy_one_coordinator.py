@@ -77,9 +77,10 @@ async def run_strategy_one_proposals(
         from src.backend.backtest_strategy_initial_momentum import CertifiedInitialMomentumPlan
         from src.backend.backtest_strategy_initial_momentum_growth import CertifiedInitialMomentumGrowthPlan
         from src.backend.backtest_strategy_certified_price_break import CertifiedInitialPriceBreakPlan
-        expected_type = {18: CertifiedInitialMomentumPlan,
-                         19: CertifiedInitialMomentumGrowthPlan,
-                         20: CertifiedInitialPriceBreakPlan}[strategy_number]
+        expected_type = (CertifiedInitialPriceBreakPlan
+                         if strategy_number in (20, 21) else
+                         CertifiedInitialMomentumGrowthPlan
+                         if strategy_number == 19 else CertifiedInitialMomentumPlan)
         if (type(initial_momentum_plan) is not expected_type
                 or initial_momentum_plan.entry is not entry
                 or initial_momentum_plan.momentum is not momentum_plan):
