@@ -9,6 +9,10 @@ This package is a research engine. It implements the existing approximate broker
 contract and the released Early Squeeze admission funnel. Its example downstream
 policy is not the full Candidate 328 resistance/reentry/trailing lifecycle.
 
+It also does **not** execute the app's numbered Strategy 1. The separate
+[Strategy 1 audit](STRATEGY_ONE_AUDIT.md) records its verified app baseline,
+initial tensor reducer work and the remaining full-engine integration gaps.
+
 ## The pipeline
 
 ```text
