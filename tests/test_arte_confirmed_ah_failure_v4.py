@@ -71,3 +71,55 @@ def test_factory_rejects_pending_exit_and_projection_rejects_altered_order():
             witness, replace(intent, quantity=43), financial, **args,
             run_id=row['run_id'], batch_id=row['batch_id'], parent_record_id=row['parent_record_id'],
         )
+
+
+def prepared_source_graph(monkeypatch):
+    """Explicit mock of the separately tested committed-entry loader, not CH."""
+    witness, financial, args, intent, row = prepared_case()
+    from src.trading_runtime.arte_intent_projection import project_strategy_intent
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    parent = dict(project_strategy_intent(intent).core)
+    at = parent.pop('event_time')
+    parent.update(record_id=row['parent_record_id'], run_id=row['run_id'],
+                  batch_id=row['batch_id'], event_month=row['event_month'],
+                  account_id=financial.account_id)
+    event = dict(record_id=row['parent_record_id'], run_id=row['run_id'],
+                 batch_id=row['batch_id'], event_time=at, sequence=65,
+                 entity_id=intent.intent_id, account_id=financial.account_id)
+    preceding = str(uuid4())
+    prefix = V4CommittedPrefix(row['run_id'], 64, preceding, 'cursor', 'running', (preceding,))
+    source = dict(intent_id=args['source_entry_intent_id'], ticker='WAFU',
+                  action='enter_long', reason='strategy_one_entry',
+                  reference_price=2.08, invalidation_price=1.81)
+    source_event = dict(account_id=financial.account_id, sequence=4)
+    child = dict(strategy_number=34, assignment_id=financial.assignment_id,
+                 boundary_ms=43_647_400)
+    def entry_loader(client, run_id, intent_id, **context):
+        assert context['verified_prefix'] == prefix
+        assert context['prior_batch_id'] == preceding
+        assert intent_id == args['source_entry_intent_id']
+        return source, source_event, child
+    monkeypatch.setattr('src.trading_runtime.arte_followthrough_failure_v4._source_entry', entry_loader)
+    return witness, row, parent, event, prefix, source, source_event, child
+
+
+def test_prepared_source_graph_retains_original_authority(monkeypatch):
+    from src.trading_runtime.strategy_confirmed_ah_failure_source import validate_confirmed_ah_source
+    witness, row, parent, event, prefix, *_ = prepared_source_graph(monkeypatch)
+    assert validate_confirmed_ah_source(None, row, parent, event, verified_prefix=prefix) == witness
+
+
+@pytest.mark.parametrize('target,field,value', [
+    ('source', 'reference_price', 2.09), ('source', 'invalidation_price', 1.80),
+    ('source', 'ticker', 'OTHER'), ('source_event', 'account_id', 'OTHER'),
+    ('child', 'assignment_id', 'OTHER'), ('child', 'strategy_number', 33),
+    ('child', 'boundary_ms', 43_647_500), ('event', 'sequence', 64),
+    ('parent', 'record_id', 'foreign'), ('parent', 'execution_quote_source', 'OTHER'),
+])
+def test_prepared_source_graph_rejects_ancestry_identity_and_policy_changes(monkeypatch, target, field, value):
+    from src.trading_runtime.strategy_confirmed_ah_failure_source import validate_confirmed_ah_source
+    _, row, parent, event, prefix, source, source_event, child = prepared_source_graph(monkeypatch)
+    objects = dict(source=source, source_event=source_event, child=child, event=event, parent=parent)
+    objects[target][field] = value
+    with pytest.raises(ValueError):
+        validate_confirmed_ah_source(None, row, parent, event, verified_prefix=prefix)
