@@ -112,6 +112,8 @@ class TensorBroker:
         self.side=q.clone();self.entry_us=q.clone();self.mark_us=q.clone()
         self.cost=z.clone();self.entry_fee=z.clone();self.stop=z.clone();self.target=z.clone()
         self.entry_stop_bps=z.clone();self.entry_target_bps=z.clone()
+        self.auto_brackets=torch.zeros(listings,device=self.device,dtype=torch.bool)
+        self.unexecutable_bracket_buckets=torch.zeros((),device=self.device,dtype=torch.long)
         self.mark=z.clone();self.cap=z.clone();self.fraction=z.clone()
         self.order_filled=q.clone();self.order_notional=z.clone()
         self.position_net=z.clone();self.pause_age=z.clone()
@@ -239,6 +241,7 @@ class TensorBroker:
             # Predicted distances are not executable until an actual fill.
             self.entry_stop_bps=torch.where(buy,stop_distance.double(),self.entry_stop_bps)
             self.entry_target_bps=torch.where(buy,target_distance.double(),self.entry_target_bps)
+        self.auto_brackets=torch.where(buy,torch.full_like(buy,brackets_bps is not None),self.auto_brackets)
         sell=selected&(action==2)&(self.quantity>0)&(self.side<2)
         average=self.cost/self.quantity.clamp_min(1)
         proposed=average*torch.exp(torch.where(action==3,-parameter,parameter).double())
@@ -312,6 +315,18 @@ class TensorBroker:
             buy=torch.where(buy*buy_price+fee<=budget+1e-9,buy,(buy-1).clamp_min(0))
         fee=order_fee(self.order_filled+buy,self.order_notional+buy*buy_price,False)-order_fee(self.order_filled,self.order_notional,False)
         buy=torch.where(buy*buy_price+fee<=budget+1e-9,buy,0)
+        # Reject a modeled fill BEFORE changing cash/position state if its
+        # required children cannot be represented on the execution grid.
+        # Distances remain predictions, never silently widened by one tick.
+        proposed_average=(self.cost+buy*buy_price)/(old+buy).clamp_min(1)
+        proposed_stop=torch.floor(proposed_average*(1-self.entry_stop_bps/10000)/self.config.price_increment+1e-9)*self.config.price_increment
+        proposed_target=torch.floor(proposed_average*(1+self.entry_target_bps/10000)/self.config.price_increment+1e-9)*self.config.price_increment
+        executable=(torch.isfinite(proposed_stop)&torch.isfinite(proposed_target)&
+            (self.entry_stop_bps>0)&(self.entry_stop_bps<10000)&(self.entry_target_bps>0)&
+            (proposed_stop>0)&(proposed_stop<proposed_average)&(proposed_target>proposed_average))
+        rejected=(buy>0)&self.auto_brackets&~executable
+        self.unexecutable_bracket_buckets+=rejected.sum()
+        buy=torch.where(rejected,0,buy)
         fee=order_fee(self.order_filled+buy,self.order_notional+buy*buy_price,False)-order_fee(self.order_filled,self.order_notional,False)
         selling=((self.side==2)|passive)&valid
         sell=torch.where(selling,torch.minimum(old,torch.minimum(
@@ -335,7 +350,7 @@ class TensorBroker:
         # cannot trigger new children. Keep intent distances fixed through
         # partial entry fills while recomputing prices from actual cost basis.
         average_after=self.cost/self.quantity.clamp_min(1)
-        attach=(buy>0)&(self.entry_stop_bps>0)&(self.entry_stop_bps<10000)&(self.entry_target_bps>0)
+        attach=(buy>0)&self.auto_brackets
         stop_price=torch.floor(average_after*(1-self.entry_stop_bps/10000)/self.config.price_increment+1e-9)*self.config.price_increment
         target_price=torch.floor(average_after*(1+self.entry_target_bps/10000)/self.config.price_increment+1e-9)*self.config.price_increment
         valid_children=attach&(stop_price>0)&(stop_price<average_after)&(target_price>average_after)
@@ -385,6 +400,7 @@ class TensorBroker:
                'buy_fill_orders','sell_fill_orders','open_positions','risk_shaping_penalty','ambiguous_buckets')
         result=dict(zip(names,values));result['win_rate']=values[3]/values[2] if values[2] else None
         result['outside_macd_shaping_penalty']=float(self.outside_macd_penalty.cpu())
+        result['unexecutable_bracket_listing_buckets']=int(self.unexecutable_bracket_buckets.cpu())
         result['terminally_flat']=values[6]==0;result['environment_version']=VERSION
         result['turnover_dollars']=float(self.turnover.cpu())
         result['mean_holding_seconds']=float(self.holding_seconds.cpu())/values[2] if values[2] else None

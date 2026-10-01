@@ -7,6 +7,20 @@ from research.rl_trading.v2.config import Config
 DEVICES=['cpu']+(['cuda'] if torch.cuda.is_available() else [])
 
 
+@pytest.mark.parametrize('device',DEVICES)
+def test_required_automatic_brackets_reject_unexecutable_tick_geometry(device):
+    b=TensorBroker(1,device=device)
+    index=torch.tensor([0],device=device)
+    b.update_marks(index,torch.tensor([10.],device=device),1_000_000)
+    b.submit(torch.tensor(1,device=device),torch.tensor(.1,device=device),index[:0],1_000_000,
+        brackets_bps=(torch.tensor([100.],device=device),torch.tensor([.000001],device=device)))
+    cash=b.cash.clone()
+    b.advance(bucket(b,1_100_000,volume=1000.))
+    assert b.quantity.sum()==0 and torch.equal(b.cash,cash) and b.fees==0
+    assert b.summary()['unexecutable_bracket_listing_buckets']==1
+    assert b.remaining[0]>0  # Explicit unfilled intent; no fabricated fill.
+
+
 def bucket(b,clock,price=10.,volume=100.,valid=True,high=None,low=None,paused=False):
     f=lambda v: torch.full((b.n,),v,device=b.device,dtype=torch.float64)
     mask=lambda v: torch.full((b.n,),v,device=b.device,dtype=torch.bool)
