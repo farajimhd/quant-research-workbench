@@ -6,7 +6,7 @@ and the fixed-market execution path are validated end to end.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any
 from uuid import UUID
@@ -23,7 +23,7 @@ from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch,
     V4StrategyOneEntryBatch, V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
     V4OrderRepriceBatch,
-    V4ProtectionChangeBatch, _coalesce_unpublished,
+    V4ProtectionChangeBatch, _coalesce_unpublished, typed_row,
 )
 from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
@@ -52,19 +52,58 @@ def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
                 or sum(len((unit if type(unit) is TypedJournalBatch else unit.base).events)
                        for unit in units) > max_events):
             raise ValueError('V4 publication prefix exceeds its event bound')
+    if len(units) == 1:
+        return units
+    if not any(type(unit) in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch) for unit in units):
+        return (coalesce_v4_units(units, max_events=max_events),)
     # These exits load their original entry from a sealed predecessor. They
     # must begin a new commit even when the entry and exit fit in one chunk.
     groups = []
     pending = []
+    prior_intents = {}
+    def flush():
+        # Rekey only exact references to intents in earlier groups. This map
+        # is bounded by this projected prefix and performs no database reads.
+        adapted = []
+        for unit in pending:
+            base = unit if type(unit) is TypedJournalBatch else unit.base
+            uses = []
+            changed = False
+            for row in base.intent_uses:
+                previous = prior_intents.get(str(UUID(str(row['intent_record_id']))))
+                if previous is not None:
+                    original, committed = previous
+                    if row['intent_content_hash'] != original:
+                        raise ValueError('Cross-group intent use differs from its original source')
+                    row = {**{key: value for key, value in row.items() if key != 'content_hash'},
+                           'intent_content_hash': committed}
+                    changed = True
+                uses.append(row)
+            if changed:
+                base = replace(base, intent_uses=tuple(uses))
+                unit = base if type(unit) is TypedJournalBatch else replace(unit, base=base)
+            adapted.append(unit)
+        group = (coalesce_v4_units(tuple(adapted), max_events=max_events)
+                 if len(adapted) > 1 else adapted[0])
+        final = group if type(group) is TypedJournalBatch else group.base
+        final_hashes = {str(UUID(str(row['record_id']))): typed_row(
+            'trading_strategy_intent_v1', {k: v for k, v in row.items() if k != 'content_hash'}
+        )['content_hash'] for row in final.intents}
+        for unit in pending:
+            base = unit if type(unit) is TypedJournalBatch else unit.base
+            for row in base.intents:
+                identity = str(UUID(str(row['record_id'])))
+                original = typed_row('trading_strategy_intent_v1', {
+                    k: v for k, v in row.items() if k != 'content_hash'})['content_hash']
+                prior_intents[identity] = (original, final_hashes[identity])
+        groups.append(group)
     for unit in units:
         if type(unit) in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch) and pending:
-            groups.append(coalesce_v4_units(tuple(pending), max_events=max_events)
-                          if len(pending) > 1 else pending[0])
+            flush()
             pending = []
         pending.append(unit)
     if pending:
-        groups.append(coalesce_v4_units(tuple(pending), max_events=max_events)
-                      if len(pending) > 1 else pending[0])
+        flush()
     return tuple(groups)
 
 
