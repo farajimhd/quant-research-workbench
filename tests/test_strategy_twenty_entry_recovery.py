@@ -72,7 +72,7 @@ def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23])
+@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24])
 def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, strategy_number):
     market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
@@ -373,7 +373,7 @@ def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind):
     market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     source = CertifiedPriceReadbackAuthority(str(UUID(int=304)), plan)
-    unit, _, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=23)
+    unit, _, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=24)
     client = attached_v4_client(ExactBits())
     publish_strategy_one_entry_batch_v4(client, unit.base, entry_evidence=unit.entry_evidence,
         momentum_evidence=unit.momentum_evidence, initial_momentum_evidence=unit.initial_momentum_evidence,

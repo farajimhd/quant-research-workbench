@@ -154,7 +154,7 @@ class CertifiedPriceReadbackAuthority:
         seen = set()
         month = self.plan.source.market.sessions[0][:7] + '-01'
         for row in entries:
-            if row['strategy_number'] not in (20, 21, 22, 23):
+            if row['strategy_number'] not in (20, 21, 22, 23, 24):
                 continue
             parent = row['parent_record_id']
             intent = parents.get(parent)
@@ -184,7 +184,7 @@ def bind_certified_price_break_proposal(plan, proposal, *, strategy_number=20):
     """
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
-    if (type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23)
+    if (type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24)
             or type(plan) is not CertifiedInitialPriceBreakPlan
             or type(proposal) is not StrategyOneEntryProposal
             or proposal.strategy_number != 19 or type(proposal.strategy_number) is not int):
@@ -212,7 +212,7 @@ def propose_certified_price_entry(plan, candidate, fact, activation, financial, 
     """
     from .backtest_strategy_one_stateful import propose_certified_strategy_one_entry
     if (type(plan) is not CertifiedInitialPriceBreakPlan
-            or type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23)):
+            or type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24)):
         raise ValueError('Price financial decision requires exact certified plan')
     key = (fact.ticker, fact.boundary_ms)
     plan._index(*key)
@@ -255,7 +255,7 @@ def project_certified_price_entry(plan, proposal, *, run_id, batch_id,
     )
     if (type(plan) is not CertifiedInitialPriceBreakPlan
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23)):
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24)):
         raise ValueError('Price projection requires exact certified20 proposal')
     key = (proposal.ticker, proposal.boundary_ms)
     original = replace(proposal, strategy_number=19, first_price=None, price_source_token=None,
@@ -286,7 +286,7 @@ def restore_certified_price_proposal(source, proposal, rows, *, parent_record_id
     from uuid import UUID
     if (type(source) is not CertifiedPriceReadbackAuthority
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23)):
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24)):
         raise ValueError('Price recovery requires exact certified source and20 reference')
     if proposal.first_price is not None or proposal.price_source_token is not None:
         raise ValueError('Price recovery reference already carries price evidence')
@@ -327,7 +327,7 @@ def certified_price_entry_intent(plan, proposal, *, session_date):
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
     if (type(plan) is not CertifiedInitialPriceBreakPlan
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24)
             or type(session_date) is not date
             or session_date.isoformat() != plan.source.market.sessions[0]):
         raise ValueError('Price intent requires exact certified20 proposal and session')

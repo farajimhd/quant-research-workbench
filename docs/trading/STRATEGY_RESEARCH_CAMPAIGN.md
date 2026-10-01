@@ -2503,3 +2503,8 @@ reader checks passed. Reviewed source receipt:
 including full four snapshot modules and queue validators). This changed source
 requires a new numbered approval before an actual portfolio run. Trading rules,
 sizing, costs, V7 warmup and failure thresholds remain unchanged.
+
+### Strategy 24 checkpoint-repair release (2026-10-01)
+
+Strategy 24 preserves the exact published Strategy 23 trading and financial rules and includes the committed four-channel native checkpoint authority repair. Explicit numbered dispatch and source certification now admit 24; live trading and public interrupted resume remain closed. Validation: 230 release/execution tests and 149 source-proof/checkpoint/saved-review tests passed, including actual queued native authority transport and cold native-24 entry-prefix verification. These suites overlap; they are not a unique test count. Publisher help and scoped whitespace checks passed. Reviewed AST seal changes and 25 independently verified whitelist-only source diffs are recorded under the campaign runtime root. Publication and six actual development session runs are pending; no Strategy 24 P&L is claimed.
+
