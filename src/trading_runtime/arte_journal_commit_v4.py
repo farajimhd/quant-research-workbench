@@ -48,6 +48,7 @@ from src.backend.backtest_protection_change_v3 import (
 
 
 from .arte_followthrough_failure_v4 import FAILURE, seal_followthrough_rows
+from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, seal_profit_giveback_rows
 from .arte_rising_momentum_entry_v4 import (
     MOMENTUM, seal_rising_momentum_rows, momentum_select_columns, decode_momentum_row,
 )
@@ -544,7 +545,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -577,7 +578,6 @@ def _load_verified_details_v4(
         related_rows.get("trading_strategy_intent_v1", ()),
         related_rows.get("trading_event_v1", ()), related_rows.get(ENTRY_EVIDENCE.name, ()),
         prior_batch_id=prior_batch_id)
-    from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, seal_profit_giveback_rows
     from .strategy_profit_giveback_exit import REASON as PROFIT_REASON
     profit_rows = related_rows.get(PROFIT_GIVEBACK.name, ())
     if profit_rows or any(row['reason'] == PROFIT_REASON for row in
@@ -1257,6 +1257,7 @@ def _validate_strategy_one_add_link(row, parent, event, run_id, batch_id):
 
 
 def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_one_entry_rows=(),
+                           profit_giveback_rows=(), verified_prior_prefix=None, first_price_source=None,
                            rising_momentum_rows=(), initial_momentum_rows=(),
                            first_price_rows=(), first_price_authorities=(),
                             strategy_one_add_rows=(),
@@ -1302,11 +1303,11 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         if (any(getattr(batch, name) for name in (
                 "backtest_cursors", "backtest_market_authorities",
                 "backtest_progress", "prepared_v7_leases"))
-                or broker_snapshot_rows is not None):
+                or broker_snapshot_rows is not None or profit_giveback_rows):
             raise ValueError("Live V4 cannot publish Backtest-only families")
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
-            strategy_one_entry_rows, followthrough_rows, portfolio_allocation_row,
+            strategy_one_entry_rows, followthrough_rows, profit_giveback_rows, portfolio_allocation_row,
             oms_tactic_rows,
             reservation_reason_rows,
             broker_acknowledgement_row, broker_acknowledgement_v5_row,
@@ -1650,6 +1651,15 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                         dict(base_families)["trading_strategy_intent_v1"],
                         dict(base_families)["trading_event_v1"], entry_rows,
                         prior_batch_id=batch.prior_batch_id))
+    # The referenced checkpoint must already be durable before this prefix.
+    # Micro-preparation hashes rows; compound preparation seals the merged graph.
+    profit_rows = (tuple(typed_row(PROFIT_GIVEBACK.name, {
+        k: v for k, v in row.items() if k != 'content_hash'})
+        for row in profit_giveback_rows) if _prepare_only else
+        seal_profit_giveback_rows(client, profit_giveback_rows,
+            dict(base_families)['trading_strategy_intent_v1'],
+            dict(base_families)['trading_event_v1'], prefix=verified_prior_prefix,
+            first_price_source=first_price_source))
     tactic_states = ()
     tactic_steps = ()
     if oms_tactic_rows is not None:
@@ -1689,6 +1699,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += ((STEP_TABLE, tactic_steps),)
     if failure_rows:
         families += ((FAILURE.name, failure_rows),)
+    if profit_rows:
+        families += ((PROFIT_GIVEBACK.name, profit_rows),)
     if entry_rows:
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
     if momentum_rows:
@@ -1735,7 +1747,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         # families before one Keeper reservation. No query or INSERT has run.
         return base_families, families
     return _publish_sealed_batch_v4(client, batch, base_families, families,
-        first_price_authorities=first_price_authorities)
+        first_price_authorities=first_price_authorities,
+        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
 
 
 def _existing_detail_identities_v4(client, batch, families):
@@ -1844,7 +1857,9 @@ def _insert_detail_families_v4(client, batch, pending):
 
 def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              timings_ns: dict[str, int] | None = None,
-                             first_price_authorities: tuple = ()) -> str:
+                             first_price_authorities: tuple = (),
+                             verified_prior_prefix: V4CommittedPrefix | None = None,
+                             first_price_source=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _identity, _insert, _literal, _rows,
@@ -1863,6 +1878,15 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
 
     live_lease = getattr(client, "live_v4_lease", None)
     dispatch = client.typed_insert_dispatch
+    if any(name == PROFIT_GIVEBACK.name and rows for name, rows in families):
+        if (live_lease is not None or type(verified_prior_prefix) is not V4CommittedPrefix
+                or verified_prior_prefix.run_id != batch.run_id
+                or verified_prior_prefix.status != 'running'
+                or not verified_prior_prefix.batch_ids
+                or verified_prior_prefix.last_batch_id != verified_prior_prefix.batch_ids[-1]
+                or verified_prior_prefix.last_batch_id != batch.prior_batch_id
+                or verified_prior_prefix.last_sequence + 1 != batch.first_sequence):
+            raise ValueError('Profit publication requires the exact verified Backtest predecessor')
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,
@@ -1880,7 +1904,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
     if existing_commits:
         existing, _ = load_verified_commit_v4(
             client, run_id=batch.run_id, batch_id=batch.batch_id,
-            first_price_authorities=first_price_authorities)
+            first_price_authorities=first_price_authorities,
+            verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
         dispatch.assert_next_batch(
@@ -1930,7 +1955,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         family_rows=family_rows, max_rows_per_family=65_536,
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
         prior_batch_id=batch.prior_batch_id,
-        first_price_authorities=first_price_authorities)
+        first_price_authorities=first_price_authorities,
+        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
     verify_commit_v4(commit, family_rows, actual_details)
     mark_stage("detail_readback")
 

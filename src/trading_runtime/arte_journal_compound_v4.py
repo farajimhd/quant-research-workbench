@@ -29,12 +29,13 @@ from .arte_oms_tactic_projection import (
 
 
 from .arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch, seal_followthrough_rows
+from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch, seal_profit_giveback_rows
 from .arte_rising_momentum_entry_v4 import MOMENTUM, seal_rising_momentum_rows
 from .arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM, seal_initial_momentum_rows
 from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
 
 _CHILD_KEYS = (
-    "followthrough_failures", "command_lineages",
+    "followthrough_failures", "profit_givebacks", "command_lineages",
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
@@ -42,7 +43,7 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
-    "followthrough_failures", "command_lineages",
+    "followthrough_failures", "profit_givebacks", "command_lineages",
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
@@ -75,6 +76,8 @@ class V4CompoundBatch:
 
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if type(unit) is V4ProfitGivebackBatch:
+        return (("profit_givebacks", unit.profit),)
     if type(unit) is V4FollowThroughFailureBatch:
         return (("followthrough_failures", unit.failure),)
     if type(unit) is TypedJournalBatch:
@@ -184,6 +187,8 @@ def coalesce_v4_units(
 
 
 def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is V4ProfitGivebackBatch:
+        return {"profit_giveback_rows": (unit.profit,)}
     if type(unit) is V4FollowThroughFailureBatch:
         return {"followthrough_rows": (unit.failure,)}
     if type(unit) is V4OmsTacticBatch:
@@ -220,7 +225,7 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
 
 
 def prepare_compound_v4_families(
-    client: Any, compound: V4CompoundBatch,
+    client: Any, compound: V4CompoundBatch, *, verified_prior_prefix=None, first_price_source=None,
 ) -> tuple[tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
            tuple[tuple[str, tuple[dict[str, Any], ...]], ...]]:
     """Seal each original unit, then rekey its normalized rows to one batch.
@@ -251,8 +256,11 @@ def prepare_compound_v4_families(
                 "backtest_cursors", "backtest_market_authorities",
                 "backtest_progress", "prepared_v7_leases")):
         raise ValueError("Live V4 compound cannot publish Backtest-only families")
+    if getattr(client, "live_v4_lease", None) is not None and compound.children['profit_givebacks']:
+        raise ValueError('Live V4 compound cannot publish profit-protection witnesses')
     table_for_key = {
         "followthrough_failures": FAILURE.name,
+        "profit_givebacks": PROFIT_GIVEBACK.name,
         "command_lineages": V4_ORDER_COMMAND_LINEAGE.name,
         "entry_evidence": ENTRY_EVIDENCE.name,
         "momentum_evidence": MOMENTUM.name,
@@ -385,6 +393,9 @@ def prepare_compound_v4_families(
         dict(base_families)["trading_strategy_intent_v1"],
         compound.base.events, extra[ENTRY_EVIDENCE.name],
         prior_batch_id=compound.base.prior_batch_id)
+    seal_profit_giveback_rows(client, extra[PROFIT_GIVEBACK.name],
+        dict(base_families)['trading_strategy_intent_v1'],
+        compound.base.events, prefix=verified_prior_prefix, first_price_source=first_price_source)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))
@@ -395,16 +406,22 @@ def prepare_compound_v4_families(
 def publish_compound_v4(
     client: Any, compound: V4CompoundBatch, *,
     timings_ns: dict[str, int] | None = None,
+    verified_prior_prefix=None,
+    first_price_source=None,
 ) -> str:
     """Commit a mixed normalized prefix only after its full family graph seals."""
     from .arte_journal_commit_v4 import _publish_sealed_batch_v4
 
     started_ns = perf_counter_ns()
-    base_families, families = prepare_compound_v4_families(client, compound)
+    base_families, families = prepare_compound_v4_families(
+        client, compound, verified_prior_prefix=verified_prior_prefix,
+        first_price_source=first_price_source)
     prepared_ns = perf_counter_ns()
     committed_id = _publish_sealed_batch_v4(
         client, compound.base, base_families, families,
         timings_ns=timings_ns,
+        verified_prior_prefix=verified_prior_prefix,
+        first_price_source=first_price_source,
         first_price_authorities=tuple(authority for unit in compound.units
             if type(unit) is V4StrategyOneEntryBatch for authority in unit.first_price_authorities))
     if timings_ns is not None:

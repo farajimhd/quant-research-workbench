@@ -97,12 +97,14 @@ if TYPE_CHECKING:
 
 
 from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch
+from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
 
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[FAILURE.name] = FAILURE
+_CONTRACTS[PROFIT_GIVEBACK.name] = PROFIT_GIVEBACK
 _CONTRACTS.update({table.name: table for table in (
     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
     *BROKER_MATCH_SNAPSHOT_TABLES, *EVIDENCE_SNAPSHOT_TABLES,
@@ -2128,7 +2130,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
                  ENTRY_EVIDENCE, ADD_EVIDENCE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
-                 *OMS_TACTIC_TABLES, FAILURE,
+                 *OMS_TACTIC_TABLES, FAILURE, PROFIT_GIVEBACK,
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES,
                  *protection_tables, *manager_tables, *broker_match_tables,
@@ -2156,7 +2158,7 @@ def v4_journal_write_tables() -> frozenset[str]:
                 CANCEL.name, REPRICE.name,
                 "trading_backtest_account_snapshot_v2",
                 "trading_backtest_position_snapshot_v2",
-                *(table.name for table in OMS_TACTIC_TABLES), FAILURE.name,
+                *(table.name for table in OMS_TACTIC_TABLES), FAILURE.name, PROFIT_GIVEBACK.name,
                 *(table.name for table in RISK_ACTION_TABLES),
                 *(table.name for table in PROTECTION_CHANGE_TABLES),
                 *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
