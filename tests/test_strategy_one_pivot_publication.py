@@ -1,6 +1,7 @@
 """A pivot attempt becomes visible only after verified normalized child rows."""
 import json
 from uuid import UUID
+from http.client import IncompleteRead
 
 import pytest
 
@@ -108,3 +109,51 @@ def test_empty_product_gets_coverage_without_child_rows(monkeypatch):
     assert producer.publish_unit(writer, object(), market(),
                                  session_date=DAY, ticker="ABCD") == "published"
     assert writer.fact["interval_count"] == 0
+
+
+def test_partial_source_is_discarded_and_closed_before_derivation(monkeypatch):
+    writer = Writer()
+    calls = []
+    closed = []
+
+    def source(*_args, **_kwargs):
+        attempt = len(calls)
+        calls.append(attempt)
+        try:
+            yield {"attempt": attempt}
+            if attempt == 0:
+                raise IncompleteRead(b"partial", 10)
+        finally:
+            closed.append(attempt)
+
+    def derive(rows, **_kwargs):
+        assert closed == [0, 1]
+        assert tuple(rows) == ({"attempt": 1},)
+        return ()
+
+    monkeypatch.setattr(producer, "iter_persisted_v7_seconds", source)
+    monkeypatch.setattr(producer, "derive_pivot_intervals", derive)
+    monkeypatch.setattr(producer, "uuid4", lambda: UUID(DERIVED))
+    assert producer.publish_unit(writer, object(), market(),
+                                 session_date=DAY, ticker="ABCD") == "published"
+    assert calls == [0, 1]
+
+
+def test_uncertain_insert_transport_failure_is_not_retried(monkeypatch):
+    writer = Writer()
+    inserts = []
+    monkeypatch.setattr(producer, "iter_persisted_v7_seconds",
+                        lambda *_args, **_kwargs: (_ for _ in ({},)))
+    monkeypatch.setattr(producer, "derive_pivot_intervals",
+                        lambda *_args, **_kwargs: (INTERVAL,))
+
+    def insert(*_args):
+        inserts.append(1)
+        raise IncompleteRead(b"unknown insert result", 10)
+
+    monkeypatch.setattr(producer, "_insert_intervals", insert)
+    with pytest.raises(IncompleteRead):
+        producer.publish_unit(writer, object(), market(),
+                              session_date=DAY, ticker="ABCD")
+    assert inserts == [1]
+    assert writer.fact is None

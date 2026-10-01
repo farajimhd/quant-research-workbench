@@ -128,11 +128,22 @@ def publish_unit(writer: Any, reader: Any, market: CertifiedMarketDayPlan,
                  *, session_date: str, ticker: str) -> str:
     """Publish or re-verify one ticker-day, including an empty pivot set."""
     scope = _scope(market, session_date, ticker)
-    with closing(iter_persisted_v7_seconds(
-            market, session_date=session_date, ticker=ticker,
-            through_boundary_ms=57_600_000, client=reader)) as bars:
-        intervals = derive_pivot_intervals(
-            bars, session_date=session_date, ticker=ticker)
+    from pipelines.strategy_one.source_read_retry import restartable_read_error
+    for source_attempt in range(3):
+        try:
+            with closing(iter_persisted_v7_seconds(
+                    market, session_date=session_date, ticker=ticker,
+                    through_boundary_ms=57_600_000, client=reader)) as bars:
+                # At most 57,600 completed seconds. Close HTTP before pivot
+                # computation; discard a failed partial read in its entirety.
+                buffered_bars = tuple(bars)
+            break
+        except Exception as exc:
+            if source_attempt == 2 or not restartable_read_error(exc):
+                raise
+            print(f'Pivot source retry: {session_date} {ticker} attempt={source_attempt + 2}/3', flush=True)
+    intervals = derive_pivot_intervals(
+        iter(buffered_bars), session_date=session_date, ticker=ticker)
     digest = interval_content_hash(intervals)
     if _verify(writer, scope, expected=intervals, digest=digest) is not None:
         return "skipped"

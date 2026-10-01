@@ -13,6 +13,8 @@ from http.client import IncompleteRead, RemoteDisconnected
 import json
 from typing import Any, Callable, Iterator
 from uuid import UUID, uuid4
+from urllib.error import URLError
+from pipelines.strategy_one.source_read_retry import restartable_read_error
 
 from pipelines.market_sip.events.market_day_sql import literal
 from pipelines.strategy_one.hod_derivation import derive_hod_context
@@ -243,8 +245,8 @@ def publish_unit(writer: Any, reader_100ms: Any, reader_1s: Any,
             values = _derive(reader_100ms, reader_1s, market, seeds, scope)
             break
         except (IncompleteRead, RemoteDisconnected,
-                ConnectionResetError, BrokenPipeError, TimeoutError):
-            if attempt == 2:
+                ConnectionResetError, BrokenPipeError, TimeoutError, URLError) as exc:
+            if attempt == 2 or not restartable_read_error(exc):
                 raise
             if on_source_retry is not None:
                 on_source_retry()
