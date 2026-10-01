@@ -66,6 +66,76 @@ def test_product_inventory_fingerprint_requires_exact_ssd_tables(monkeypatch):
         subject.product_inventory_fingerprint(client, ("bars_v1", "bars_v1"))
 
 
+def test_selected_product_fences_only_scope_and_retains_global_ssd_checks(monkeypatch):
+    monkeypatch.setattr(subject, "_NAMES", ("bars_v1", "indicators_v1"))
+    class ScopedClient(InventoryClient):
+        def execute(self, sql):
+            if sql.startswith("SELECT table_name,part_name FROM ("):
+                assert "source_build_id='" + "a" * 64 + "'" in sql
+                assert "session_date=toDate('2026-08-18')" in sql
+                assert "ticker IN ('AMIX','SLE')" in sql
+            return super().execute(sql)
+    client = ScopedClient()
+    client.part_name = "selected_1"
+    scope = dict(source_build_id="a" * 64, session_date="2026-08-18",
+                 tickers=("AMIX", "SLE"))
+    names = subject._NAMES
+    first = subject.selected_product_inventory_fingerprint(client, names, **scope)
+    client.unrelated_part_name = "unrelated_1"
+    assert subject.selected_product_inventory_fingerprint(client, names, **scope) == first
+    client.part_name = "selected_2"
+    assert subject.selected_product_inventory_fingerprint(client, names, **scope) != first
+    client.disk_name = "default"
+    with pytest.raises(RuntimeError, match="off-SSD"):
+        subject.selected_product_inventory_fingerprint(client, names, **scope)
+
+
+@pytest.mark.parametrize("selected", ["bars_v1\tmissing", "unknown\tpart_1",
+                                      "bars_v1\tpart_1\nbars_v1\tpart_1"])
+def test_selected_product_rejects_missing_or_malformed_part_inventory(monkeypatch, selected):
+    monkeypatch.setattr(subject, "_NAMES", ("bars_v1",))
+    class ChangedClient(InventoryClient):
+        def execute(self, sql):
+            if sql.startswith("SELECT table_name,part_name FROM ("):
+                return selected
+            return super().execute(sql)
+    client = ChangedClient()
+    client.part_name = "part_1"
+    with pytest.raises(RuntimeError, match="merged|invalid part"):
+        subject.selected_product_inventory_fingerprint(
+            client, subject._NAMES, source_build_id="a" * 64,
+            session_date="2026-08-18", tickers=("SLE",))
+
+
+@pytest.mark.parametrize("failure", ["missing_table", "missing_columns", "policy",
+                                     "unrelated_off_ssd"])
+def test_selected_product_does_not_hide_global_authority_failures(monkeypatch, failure):
+    monkeypatch.setattr(subject, "_NAMES", ("bars_v1", "indicators_v1"))
+    class BrokenClient(InventoryClient):
+        def execute(self, sql):
+            result = super().execute(sql)
+            if "FORMAT JSONEachRow" not in sql:
+                return result
+            rows = [json.loads(line) for line in result.splitlines()]
+            if "FROM system.tables" in sql:
+                if failure == "missing_table":
+                    rows.pop()
+                elif failure == "policy":
+                    rows[0]["storage_policy"] = "default"
+            elif "FROM system.columns" in sql and failure == "missing_columns":
+                rows.pop()
+            elif "FROM system.parts" in sql and failure == "unrelated_off_ssd":
+                rows[-1]["disk_name"] = "default"
+            return "\n".join(json.dumps(row) for row in rows)
+    client = BrokenClient()
+    client.part_name = "selected_1"
+    client.unrelated_part_name = "unrelated_1"
+    with pytest.raises(RuntimeError, match="schema or policy|off-SSD"):
+        subject.selected_product_inventory_fingerprint(
+            client, subject._NAMES, source_build_id="a" * 64,
+            session_date="2026-08-18", tickers=("SLE",))
+
+
 def test_selected_inventory_ignores_unrelated_parts_but_fences_selected_parts():
     client = InventoryClient()
     client.part_name = "part_1"

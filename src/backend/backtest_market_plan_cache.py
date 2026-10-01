@@ -7,6 +7,7 @@ Any change falls back to the exact cold audit; absent metadata fails closed.
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import date
 from hashlib import sha256
 import json
 import re
@@ -166,6 +167,87 @@ def product_inventory_fingerprint(client: Any, names: tuple[str, ...]) -> str:
         raise ValueError("Product inventory requires distinct arte table names")
     return _inventory_fingerprint(
         client, tuple(sorted(names)), b"arte-product-plan-inventory-v1")
+
+
+def selected_product_inventory_fingerprint(
+    client: Any, names: tuple[str, ...], *, source_build_id: str,
+    session_date: str, tickers: tuple[str, ...],
+) -> str:
+    """Fence selected immutable parts, retaining global schema and SSD checks.
+
+    These derivative tables share source_build_id/session_date/ticker keys.
+    Unrelated publications need not invalidate a verified plan. A merge or
+    insertion involving selected rows still changes the physical fingerprint.
+    Coverage and child hashes remain the caller's independent logical audit.
+    """
+    if (not names or len(set(names)) != len(names)
+            or any(not re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in names)
+            or not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", source_build_id)
+            or date.fromisoformat(session_date).isoformat() != session_date
+            or not tickers or any(type(value) is not str or not value
+                                  for value in tickers)
+            or tuple(sorted(set(tickers))) != tickers):
+        raise ValueError("Selected product inventory requires exact ordered scope")
+    # Import at call time: market_data itself imports this cache module.
+    from src.backend.backtest_market_data import _literal
+    names = tuple(sorted(names))
+    sql_names = ",".join(_literal(name) for name in names)
+    digest = sha256(b"arte-selected-product-inventory-v1\0")
+    digest.update(json.dumps((names, source_build_id, session_date, tickers),
+                             separators=(",", ":")).encode() + b"\0")
+    for label, columns, system_table, key, ordering in _QUERIES[:2]:
+        rows = [json.loads(line) for line in client.execute(
+            f"SELECT {columns} FROM {system_table} WHERE database='arte' "
+            f"AND {key} IN ({sql_names}) ORDER BY {ordering} FORMAT JSONEachRow"
+        ).splitlines() if line.strip()]
+        if (any(set(row) != set(columns.split(",")) or row[key] not in names
+                for row in rows)
+                or (label == "table" and (
+                    {row["name"] for row in rows} != set(names)
+                    or len(rows) != len(names)
+                    or any(row["storage_policy"] != "live_market_ssd" for row in rows)))
+                or (label == "column" and {row["table"] for row in rows} != set(names))):
+            raise RuntimeError("Selected product inventory schema or policy changed")
+        digest.update(label.encode() + b"\0")
+        for row in rows:
+            digest.update(json.dumps(row, sort_keys=True, separators=(",", ":"))
+                          .encode() + b"\n")
+    parts = [json.loads(line) for line in client.execute(
+        "SELECT table,name,disk_name,rows,bytes_on_disk,hash_of_all_files "
+        "FROM system.parts WHERE database='arte' AND active "
+        f"AND table IN ({sql_names}) ORDER BY table,name FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    expected = set(_QUERIES[2][1].split(","))
+    if any(set(row) != expected or row["table"] not in names
+           or row["disk_name"] != "live_market_ssd" for row in parts):
+        raise RuntimeError("Selected product inventory has malformed or off-SSD parts")
+    by_part = {(row["table"], row["name"]): row for row in parts}
+    if len(by_part) != len(parts):
+        raise RuntimeError("Selected product inventory repeats an active part")
+    scope = (f"source_build_id={_literal(source_build_id)} "
+             f"AND session_date=toDate({_literal(session_date)}) "
+             "AND ticker IN (" + ",".join(_literal(value) for value in tickers) + ")")
+    selections = [f"SELECT DISTINCT '{name}' AS table_name, _part AS part_name "
+                  f"FROM arte.{name} WHERE {scope}" for name in names]
+    selected_rows = client.execute(
+        "SELECT table_name,part_name FROM (" + " UNION ALL ".join(selections)
+        + ") ORDER BY table_name,part_name FORMAT TabSeparated"
+    ).splitlines()
+    prior: tuple[str, str] | None = None
+    digest.update(b"part\0")
+    for line in selected_rows:
+        fields = line.split("\t")
+        if (len(fields) != 2 or fields[0] not in names
+                or not re.fullmatch(r"[A-Za-z0-9_]+", fields[1])
+                or (prior is not None and tuple(fields) <= prior)):
+            raise RuntimeError("Selected product inventory returned invalid part names")
+        prior = (fields[0], fields[1])
+        row = by_part.get(prior)
+        if row is None:
+            raise RuntimeError("Selected product part merged during inventory read")
+        digest.update(json.dumps(row, sort_keys=True, separators=(",", ":"))
+                      .encode() + b"\n")
+    return digest.hexdigest()
 
 
 class MarketPlanCache:

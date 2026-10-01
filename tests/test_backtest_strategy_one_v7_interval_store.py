@@ -103,8 +103,11 @@ def test_unchanged_physical_inventory_reuses_verified_arrays(monkeypatch):
     monkeypatch.setattr(store, "verify_tables", lambda _client: None)
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     fingerprint = ["stable"]
-    monkeypatch.setattr(store, "product_inventory_fingerprint",
-                        lambda *_args: fingerprint[0])
+    def inventory(_client, _names, **scope):
+        assert scope == dict(source_build_id="build-1", session_date=DAY,
+                             tickers=("TEST",))
+        return fingerprint[0]
+    monkeypatch.setattr(store, "selected_product_inventory_fingerprint", inventory)
     monkeypatch.setattr(store, "V7_INTERVAL_PLAN_CACHE",
                         store.FingerprintPlanCache())
     market, seeds = plans()
@@ -129,3 +132,22 @@ def test_overlapping_ordinal_and_future_confirmation_fail_closed():
         store._validate_children(
             (1000,), (replace(LEVEL, confirmed_at_ms=1_900_000_000_000),),
             origin_ms=1_800_000_000_000)
+
+
+def test_selected_part_change_during_cold_read_rejects_and_does_not_cache(monkeypatch):
+    import pytest
+    import research.mlops.clickhouse as clickhouse
+    monkeypatch.setattr(store, "verify_tables", lambda _client: None)
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    fingerprints = iter(("before", "changed", "stable", "stable"))
+    monkeypatch.setattr(store, "selected_product_inventory_fingerprint",
+                        lambda *_args, **_kwargs: next(fingerprints))
+    monkeypatch.setattr(store, "V7_INTERVAL_PLAN_CACHE", store.FingerprintPlanCache())
+    market, seeds = plans()
+    reader = Reader()
+    with pytest.raises(RuntimeError, match="parts changed during cold read"):
+        store.certify_v7_interval_plan(
+            market, seeds, session_date=DAY, candidate_tickers=("TEST",), client=reader)
+    store.certify_v7_interval_plan(
+        market, seeds, session_date=DAY, candidate_tickers=("TEST",), client=reader)
+    assert reader.child_reads == 4

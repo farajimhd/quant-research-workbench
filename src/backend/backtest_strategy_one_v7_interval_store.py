@@ -19,7 +19,7 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, market_day_boundary,
 )
 from src.backend.backtest_market_plan_cache import (
-    FingerprintPlanCache, product_inventory_fingerprint,
+    FingerprintPlanCache, selected_product_inventory_fingerprint,
 )
 from src.backend.structural_v7_seed import CertifiedSeedPlan
 from src.market_engine.derived_trade_policy import POLICY
@@ -176,11 +176,15 @@ def certify_v7_interval_plan(
         market.token, seeds.token, session_date, PRODUCT_DIGEST,
         *candidate_tickers)).encode()).hexdigest()
     before = None
+    inventory_scope = dict(source_build_id=market.build_id,
+                           session_date=session_date, tickers=candidate_tickers)
     if isinstance(client, ClickHouseHttpClient):
-        before = product_inventory_fingerprint(client, _TABLE_NAMES)
+        before = selected_product_inventory_fingerprint(
+            client, _TABLE_NAMES, **inventory_scope)
         cached = V7_INTERVAL_PLAN_CACHE.get(cache_key, before)
         if (cached is not None and
-                product_inventory_fingerprint(client, _TABLE_NAMES) == before):
+                selected_product_inventory_fingerprint(
+                    client, _TABLE_NAMES, **inventory_scope) == before):
             return cached
     bar_attempts = {unit.ticker: str(UUID(unit.attempt_id))
                     for unit in market.units if unit.stage == "bars"
@@ -307,7 +311,8 @@ def certify_v7_interval_plan(
         market.build_id, session_date, tuple(coverage),
         tuple(validated_clocks), tuple(validated_intervals), token.hexdigest())
     if before is not None:
-        after = product_inventory_fingerprint(client, _TABLE_NAMES)
+        after = selected_product_inventory_fingerprint(
+            client, _TABLE_NAMES, **inventory_scope)
         if after != before:
             raise RuntimeError("Strategy 1 V7 interval parts changed during cold read")
         V7_INTERVAL_PLAN_CACHE.put(cache_key, after, result)
