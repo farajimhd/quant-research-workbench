@@ -2444,3 +2444,22 @@ The RVOL availability probe successfully validated SLE's Aug18 baseline against
 source revision. Receipt: `development-rvol-baseline-availability-probe-v1.json`;
 baseline: `development-rvol-sle-aug18-baseline-v1.json`. This is baseline
 availability evidence, not an entry-time RVOL comparison or a new trading rule.
+
+RVOL enrichment then completed40 bounded producer units (3 prior20 baselines
+and37 current ticker-day prefixes), with0 failures. All88 development anchors
+use completed-second volume, separate PM-since04 and AH-since16 numerators and
+matching prior20 denominators. Baseline/current artifacts retain hashes and
+canonical revisions. Receipt: `development-episode-rvol-comparison-v2.json`,
+SHA256 `354f8a7171daa65b1b627341a49e76a29e77409cbf06b2faf64829e4968019bf`;
+review table: `development-episode-rvol-comparison-v2.md`.
+
+Known splits crossing a baseline are excluded from descriptive comparisons;
+the producer uses reported sizes without split normalization. Corporate-action
+coverage remains a limitation. Excluding known split crossings, PM big-move
+RVOL median was14.95 (8 ready episodes) versus738.33 (41 other episodes).
+AH medians were12780.13 (4 big episodes, including two BTCT episodes) versus
+378.78 (15 other episodes). These small correlated cohorts do not establish
+thresholds. AMIX's big-move anchor was0.66x, SLE3.75x, and BIVI AH1.00x:
+a high universal RVOL gate would discard useful moves. Combine RVOL with
+absolute liquidity, trade counts and causal price structure in subsequent
+development; no trading rules or holdout outcomes were changed in this study.
