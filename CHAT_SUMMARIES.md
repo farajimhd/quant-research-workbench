@@ -11,6 +11,11 @@ each year.
 
 TASK-0217 / TASK-0197. Four checkpoints produced 11,696 reconciled predictions on selected August windows, with mixed accuracy and calibration. Extended-hours samples had no eligible origins. BF16 batch parity failed; FP32 passed 16-symbol parity but missed 24/120 paced deadlines (p95 1.341 seconds). GC stacks identified repeated full-cache sorting as the pause trigger; the incremental-ordering fix remains unimplemented. User stopped evaluation; follow-up paused, no evaluation-owned workers remain, production unchanged and acceptance sealed. 100 symbols/second remains unverified. Resume only on a new request.
 
+
+### [2026-09-26 07:48 PDT - RL trading V2 PPO campaign and stopped continuation](docs/codex/chat-summaries/2026/CHAT-20260926-0748-rl-v2-ppo-campaign.md)
+
+TASK-0219 records the laptop-only V2 campaign, probability-preserving hierarchical migration, executable-action fixes, and explicit 12-epoch continuation. V8 completed 338 iterations with improving but negative validation; no checkpoint passed the nine-rollout validity/trading and positive-q25 gate. The continuation regressed and exited abruptly during validation 565, preserving checkpoint 564. The cause is unresolved, and the user declined restart. Includes pushed commits, test evidence, protected holdout rules, and the stopped operational handoff. Early source completeness is partial.
+
 ### [2026-09-23 08:22 PDT - Strategy 1 persisted Backtest and Canvas repair](docs/codex/chat-summaries/2026/CHAT-20260923-0822-vectorized-backtest-canvas.md)
 
 TASK-0218, with earlier TASK-0211/0212 context. Covers persisted 100 ms market inputs, normalized ClickHouse journals, Strategy 1 numbering and approved add correction, provisional structural V1, and laptop app authority. Later work restores certified Canvas interaction, open-position rails and segmented labels, causal as-of clock, and query-driven Activity/orders/fills while retaining eager positions. Commit 29f2ff9a4 passed 30 tests, build, browser fixtures, and read-only database queries (0.15-0.38s filtered reads; 12.991s cold audit). Local backend activation remains required. Full-day diagnostic remains failed; live/resume gates and broad acceptance remain open. Chat concluded September 30; no automatic continuation authorized.
