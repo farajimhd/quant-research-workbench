@@ -1995,3 +1995,12 @@ separate immutable source seal. Native array operations align returned bars.
 Focused source/anchor/parent checks passed62 tests. This is implementation
 validation only: actual certified-day execution, normalized price companions,
 numbered admission and immutable development backtests remain outstanding.
+
+The source-bound Strategy20 compiler now exposes admitted-only momentum and
+price witnesses. Each later candidate's price witness resolves through the
+original first index and must match the first MACD witness clock; the witness
+uses the certified bars attempt, market token and exact integer producer fields.
+After-hours explicitly has no additional price witness. Selection seals include
+the source seal as well as the parent-derived comparison. Focused checks passed
+65 tests. Numbered runtime admission and persistent price evidence remain
+pending; this compiler does not itself authorize an installed strategy.
