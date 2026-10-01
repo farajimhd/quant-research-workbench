@@ -13,6 +13,7 @@ from uuid import UUID, NAMESPACE_URL, uuid5
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.arte_profit_giveback_v4 import V4ProfitGivebackBatch
 from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
 from src.trading_runtime.arte_oms_tactic_projection import (
     V4OmsTacticBatch, tactic_rows,
@@ -121,6 +122,7 @@ def project_pending_backtest_v4_prefix(
     committed_order_lineage_oms_records: Mapping[str, str] | None = None,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
+           | V4ProfitGivebackBatch
            | V4OmsTacticBatch
            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
            | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
@@ -176,6 +178,7 @@ def project_pending_backtest_v4_prefix(
         if record.run_id != journal.run_id or record.sequence != sequence:
             raise ValueError("V4 projection changed its run or event sequence")
         canonical_json(record.payload)
+        profit_source = journal.profit_giveback_exit_for_record(record.record_id)
         batch_id = str(uuid5(NAMESPACE_URL,
             f"arte-backtest-v1:{record.run_id}:{attempt}:{sequence}:{record.record_id}"))
         kind = (record.category, record.entity_type)
@@ -398,12 +401,16 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Session exit has conflicting source authorities")
                 protection_source = session_exit_source
             if sum(value is not None for value in (
-                    sidecar, add_sidecar, protection_source, failure_source)) > 1:
+                    sidecar, add_sidecar, protection_source, failure_source, profit_source)) > 1:
                 raise RuntimeError("Strategy 1 intent has two source authorities")
             if (kind == ("strategy", "strategy_intent")
                     and record.payload.get("reason") == "strategy_nine_followthrough_failure"
                     and failure_source is None):
                 raise RuntimeError("Follow-through intent lacks its normalized witness")
+            if (kind == ('strategy', 'strategy_intent')
+                    and record.payload.get('reason') == 'strategy_thirty_one_profit_giveback'
+                    and profit_source is None):
+                raise RuntimeError('Profit intent lacks its normalized witness')
             if sidecar is None and add_sidecar is None:
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("reason") in {
@@ -512,6 +519,45 @@ def project_pending_backtest_v4_prefix(
                 run_id=batch.run_id, batch_id=batch.batch_id, parent_record_id=record.record_id,
                 assignment_id=assignment_id, strategy_number=record.payload["strategy_revision"])
             unit = V4FollowThroughFailureBatch(batch, failure)
+            sources[intent.intent_id] = (batch, intent)
+        if profit_source is not None:
+            from zoneinfo import ZoneInfo
+            from src.trading_runtime.arte_profit_giveback_v4 import project_profit_giveback
+            from src.trading_runtime.strategy_one_stateful import StrategyOneFinancialView
+            from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
+            intent, witness, source_entry_id, arm = profit_source
+            payload = {key: value for key, value in record.payload.items()
+                       if key not in {'strategy_id', 'strategy_revision', 'correlation_id', 'causation_id'}}
+            if (record.entity_id != intent.intent_id
+                    or record.account_id != arm.candidate.account_id
+                    or canonical_json(payload) != canonical_json(intent.payload())):
+                raise RuntimeError('Profit journal payload changed its immutable exit source')
+            source = sources.get(source_entry_id)
+            assignment = journal.assignment_for_intent(source_entry_id)
+            if (source is None or source[0].run_id != record.run_id
+                    or source[0].last_sequence >= arm.checkpoint_sequence
+                    or len(source[0].intents) != 1 or len(source[0].events) != 1
+                    or source[0].events[0]['account_id'] != record.account_id
+                    or source[0].events[0]['entity_id'] != source_entry_id
+                    or source[0].intents[0]['intent_id'] != source_entry_id
+                    or source[0].intents[0]['account_id'] != record.account_id
+                    or source[1].action != 'enter_long' or source[1].reason != 'strategy_one_entry'
+                    or source[1].intent_id != source_entry_id or source[1].ticker != intent.ticker
+                    or source[1].reference_price != witness.reference_ask
+                    or source[1].invalidation_price != witness.initial_stop
+                    or assignment != arm.candidate.assignment_id
+                    or record.payload['strategy_revision'] != 31):
+                raise RuntimeError('Profit exit requires its exact original typed entry source')
+            financial = StrategyOneFinancialView(assignment, record.account_id, intent.ticker,
+                AssignmentStatus.WATCHING, StrategyPermissions(), intent.quantity,
+                False, False, False, 1)
+            profit = project_profit_giveback(witness, intent, financial,
+                session_date=intent.event_time.astimezone(ZoneInfo('America/New_York')).date(),
+                source_entry_intent_id=source_entry_id, run_id=batch.run_id,
+                batch_id=batch.batch_id, parent_record_id=record.record_id,
+                source_manager_snapshot_id=arm.snapshot_id,
+                source_manager_checkpoint_sequence=arm.checkpoint_sequence)
+            unit = V4ProfitGivebackBatch(batch, profit)
             sources[intent.intent_id] = (batch, intent)
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
         if (base.first_sequence != sequence or base.last_sequence != sequence

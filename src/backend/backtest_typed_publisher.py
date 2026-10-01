@@ -17,6 +17,7 @@ from src.backend.backtest_typed_projection import (
     project_pending_backtest_v4_prefix,
 )
 from src.trading_runtime.arte_followthrough_failure_v4 import V4FollowThroughFailureBatch
+from src.trading_runtime.arte_profit_giveback_v4 import V4ProfitGivebackBatch
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch,
     V4StrategyOneEntryBatch, V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
@@ -265,6 +266,7 @@ class BacktestTypedJournalPublisher:
     def _prepare_batches(self, through_sequence: int) -> tuple[
             TypedJournalBatch | V3SqueezeBatch | V4CompoundBatch
             | V4StrategyOneEntryBatch | V4FollowThroughFailureBatch
+            | V4ProfitGivebackBatch
             | V4PortfolioAllocationBatch | V4ReservationReasonBatch
             | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
             | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
@@ -339,7 +341,7 @@ class BacktestTypedJournalPublisher:
                 for unit in batches:
                     batch = unit.base if isinstance(
                         unit, (V3SqueezeBatch, V4CompoundBatch,
-                               V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
+                               V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
@@ -350,8 +352,13 @@ class BacktestTypedJournalPublisher:
                     if (batch.first_sequence != self._sequence + 1
                             or batch.prior_batch_id != self._batch_id):
                         raise RuntimeError("Typed Backtest batch chain is not contiguous")
-                    receipt = (self.writer.submit_compound_v4(unit)
+                    receipt = (self.writer.submit_compound_v4(unit,
+                                    **({'first_price_source': self._first_price_source}
+                                       if unit.children['profit_givebacks'] else {}))
                                if isinstance(unit, V4CompoundBatch)
+                               else self.writer.submit_profit_exit_v4(unit,
+                                    first_price_source=self._first_price_source)
+                               if isinstance(unit, V4ProfitGivebackBatch)
                                else self.writer.submit_followthrough_exit_v4(unit)
                                if isinstance(unit, V4FollowThroughFailureBatch)
                                else self.writer.submit_strategy_one_entry_v4(unit)
@@ -425,6 +432,14 @@ class BacktestTypedJournalPublisher:
                             if sidecar is None:
                                 raise RuntimeError("Committed failure exit lost its immutable scalar source")
                             intent, _, _ = sidecar
+                            self._committed_strategy_intents[intent.intent_id] = (
+                                _committed_intent_source(batch, parent_id), intent)
+                        elif isinstance(source_unit, V4ProfitGivebackBatch):
+                            parent_id = source_unit.base.events[0]['record_id']
+                            sidecar = self.journal.profit_giveback_exit_for_record(parent_id)
+                            if sidecar is None:
+                                raise RuntimeError('Committed profit exit lost its immutable scalar source')
+                            intent, _, _, _ = sidecar
                             self._committed_strategy_intents[intent.intent_id] = (
                                 _committed_intent_source(batch, parent_id), intent)
                         elif (self.writer.journal_profile == "backtest_v4"

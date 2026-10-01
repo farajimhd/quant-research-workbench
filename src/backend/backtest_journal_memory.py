@@ -40,6 +40,8 @@ class BacktestMemoryJournal:
         self._numbered_session_exits: dict[str, Any] = {}
         self._followthrough_exits: dict[str, Any] = {}
         self._followthrough_intents: dict[str, Any] = {}
+        self._profit_giveback_exits: dict[str, Any] = {}
+        self._profit_giveback_intents: dict[str, Any] = {}
         self._entry_assignments: dict[str, str] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
@@ -271,6 +273,76 @@ class BacktestMemoryJournal:
     def assignment_for_intent(self, intent_id):
         with self._lock:
             return self._entry_assignments.get(intent_id)
+
+    def append_profit_giveback_exit(self, *, intent, witness, source_entry_intent_id,
+                                   arm_reference, account_id, strategy_id,
+                                   strategy_revision, assignment_id):
+        """Buffer exact typed profit evidence only after its arming fence."""
+        from uuid import UUID
+        from zoneinfo import ZoneInfo
+        from src.trading_runtime.strategy_profit_giveback_arm_reference import ProfitArmReference
+        from src.trading_runtime.strategy_profit_giveback_arm import ProfitArmCandidate
+        from src.trading_runtime.strategy_profit_giveback_exit import profit_giveback_exit_intent
+        from src.trading_runtime.strategy_one_stateful import StrategyOneFinancialView
+        from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
+        if (type(arm_reference) is not ProfitArmReference
+                or type(arm_reference.candidate) is not ProfitArmCandidate
+                or type(strategy_revision) is not int or strategy_revision != 31
+                or strategy_id != 'early-squeeze-strategy'
+                or type(account_id) is not str or not account_id
+                or type(assignment_id) is not str or not assignment_id
+                or type(arm_reference.checkpoint_sequence) is not int
+                or arm_reference.checkpoint_sequence < 1
+                or type(arm_reference.snapshot_hash) is not str or len(arm_reference.snapshot_hash) != 64
+                or any(char not in '0123456789abcdef' for char in arm_reference.snapshot_hash)):
+            raise ValueError('Profit exit requires exact Strategy 31 arming authority')
+        UUID(source_entry_intent_id)
+        UUID(arm_reference.snapshot_id)
+        UUID(arm_reference.journal_batch_id)
+        candidate = arm_reference.candidate
+        if ((candidate.account_id, candidate.assignment_id, candidate.ticker)
+                != (account_id, assignment_id, intent.ticker)
+                or candidate.boundary_ms != witness.prior_high_through_boundary_ms
+                or candidate.high_int != witness.prior_high_int
+                or candidate.first_held_boundary_ms != witness.first_held_boundary_ms
+                or candidate.reference_ask != witness.reference_ask
+                or candidate.initial_stop != witness.initial_stop):
+            raise ValueError('Profit witness differs from its frozen arming reference')
+        financial = StrategyOneFinancialView(assignment_id, account_id, intent.ticker,
+            AssignmentStatus.WATCHING, StrategyPermissions(), intent.quantity,
+            False, False, False, 1)
+        expected = profit_giveback_exit_intent(witness, financial,
+            session_date=intent.event_time.astimezone(ZoneInfo('America/New_York')).date(),
+            source_entry_intent_id=source_entry_intent_id)
+        if intent != expected:
+            raise ValueError('Profit journal exit differs from its immutable factory')
+        source = (intent, witness, source_entry_intent_id, arm_reference)
+        with self._lock:
+            self._require_open()
+            if arm_reference.checkpoint_sequence > self._fenced_sequence:
+                raise ValueError('Profit arming checkpoint is not yet fenced')
+            prior_assignment = self._entry_assignments.get(source_entry_intent_id)
+            if prior_assignment is not None and prior_assignment != assignment_id:
+                raise ValueError('Profit source changed original entry assignment')
+            prior = self._profit_giveback_intents.get(intent.intent_id)
+            if prior is not None:
+                record, previous = prior
+                if previous != source or record.account_id != account_id:
+                    raise ValueError('Profit retry changed immutable witness or checkpoint')
+                return record
+            record = self.append(run_id=self.run_id, category='strategy',
+                entity_type='strategy_intent', entity_id=intent.intent_id,
+                account_id=account_id, event_time=intent.event_time,
+                payload={**intent.payload(), 'strategy_id': strategy_id,
+                         'strategy_revision': strategy_revision})
+            self._entry_assignments[source_entry_intent_id] = assignment_id
+            self._profit_giveback_intents[intent.intent_id] = (record, source)
+            self._profit_giveback_exits[record.record_id] = source
+            return record
+
+    def profit_giveback_exit_for_record(self, record_id):
+        with self._lock:
+            return self._profit_giveback_exits.get(record_id)
 
     def followthrough_exit_for_record(self, record_id):
         with self._lock:
@@ -505,6 +577,7 @@ class BacktestMemoryJournal:
                     self._strategy_one_protection.pop(record.record_id, None)
                     self._numbered_session_exits.pop(record.record_id, None)
                     self._followthrough_exits.pop(record.record_id, None)
+                    self._profit_giveback_exits.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
                     self._order_requests.pop(record.record_id, None)
@@ -930,6 +1003,8 @@ class BacktestMemoryJournal:
             self._closed = True
             self._strategy_one_entries.clear()
             self._strategy_one_adds.clear()
+            self._profit_giveback_exits.clear()
+            self._profit_giveback_intents.clear()
             self._order_requests.clear()
             self._backtest_progress.clear()
             self._oms_groups.clear()
