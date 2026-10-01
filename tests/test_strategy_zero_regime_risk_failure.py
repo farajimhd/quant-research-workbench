@@ -32,7 +32,7 @@ def test_negative_regime_never_bypasses_parent_evidence(change):
     assert zero_regime_failure(observation(**change)) is None
 
 
-@pytest.mark.parametrize('number', [30, 31])
+@pytest.mark.parametrize('number', [30, 31, 32, 33, 34])
 def test_prepared_successor_factory_preserves_parent_late_zero_regime(number):
     from src.trading_runtime.strategy_followthrough_exit import validate_witness
     from src.trading_runtime.arte_followthrough_failure_v4 import validate_numbered_failure
