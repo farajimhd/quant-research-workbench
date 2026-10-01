@@ -35,3 +35,61 @@ def validate_profit_giveback_state(witness, state, financial) -> StrategyOneEntr
             or families['positions'][key].boundary_ms > state.boundary_ms):
         raise ValueError('Profit source differs from original entry or checkpoint high')
     return source
+
+
+def load_profit_giveback_checkpoint(client, prefix, row, financial, *, first_price_source=None):
+    """Load a historical checkpoint from a verified prefix, never current head.
+
+    Required native Strategy 31 readers/routing are a separate integration
+    gate. This function does not replace prefix verification or attest Keeper.
+    """
+    from dataclasses import replace
+    from .arte_journal_commit_v4 import V4CommittedPrefix
+    from .arte_journal_projection import load_latest_backtest_cursor
+    from .strategy_one_management_snapshot import (
+        load_unattested_manager_snapshot_rows, restore_manager_snapshot,
+        attach_committed_momentum_sources,
+    )
+    from .arte_profit_giveback_v4 import restore_profit_giveback
+    from .arte_followthrough_failure_v4 import _source_entry
+    witness = restore_profit_giveback(row)
+    sequence = row['source_manager_checkpoint_sequence']
+    if (type(prefix) is not V4CommittedPrefix or prefix.run_id != row['run_id']
+            or not prefix.batch_ids or prefix.last_batch_id != prefix.batch_ids[-1]
+            or row['assignment_id'] != financial.assignment_id
+            or type(sequence) is not int or not 0 < sequence <= prefix.last_sequence):
+        raise ValueError('Profit checkpoint lacks its verified committed prefix')
+    # The full prefix is already verified. Restrict the existing cursor reader
+    # to the referenced sequence without treating the synthetic ceiling as a
+    # new execution/recovery admission or a Keeper-selected head.
+    ceiling = replace(prefix, last_sequence=sequence)
+    cursor = load_latest_backtest_cursor(client, ceiling)
+    if (not isinstance(cursor, dict) or cursor.get('event_sequence') != sequence
+            or cursor.get('run_id') != prefix.run_id
+            or str(cursor.get('batch_id')) not in prefix.batch_ids
+            or cursor.get('boundary_ms') != witness.prior_high_through_boundary_ms):
+        raise ValueError('Profit checkpoint differs from committed market cursor')
+    rows = load_unattested_manager_snapshot_rows(
+        client, run_id=prefix.run_id, checkpoint_sequence=sequence)
+    if (rows.snapshot.get('snapshot_id') != row['source_manager_snapshot_id']
+            or rows.snapshot.get('run_id') != prefix.run_id
+            or rows.snapshot.get('checkpoint_sequence') != sequence
+            or rows.snapshot.get('boundary_ms') != cursor['boundary_ms']
+            or rows.snapshot.get('session_date') != cursor['session_date']):
+        raise ValueError('Profit checkpoint snapshot differs from committed cursor')
+    state = attach_committed_momentum_sources(
+        client, prefix, restore_manager_snapshot(rows), first_price_source=first_price_source)
+    source = validate_profit_giveback_state(witness, state, financial)
+    entry, event, child = _source_entry(
+        client, prefix.run_id, str(row['source_entry_intent_id']),
+        prior_batch_id=str(cursor['batch_id']), exit_batch_id=str(row['batch_id']))
+    if (entry['action'] != 'enter_long' or entry['reason'] != 'strategy_one_entry'
+            or str(entry['batch_id']) not in prefix.batch_ids
+            or entry['ticker'] != financial.ticker or event['account_id'] != financial.account_id
+            or child['strategy_number'] != 31 or child['assignment_id'] != financial.assignment_id
+            or child['boundary_ms'] != source.boundary_ms
+            or float(entry['reference_price']) != witness.reference_ask
+            or float(entry['invalidation_price']) != witness.initial_stop
+            or event['sequence'] >= sequence):
+        raise ValueError('Profit checkpoint differs from committed source entry')
+    return state

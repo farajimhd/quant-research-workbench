@@ -45,3 +45,52 @@ def test_changed_high_clock_or_account_cannot_bind():
                     replace(state,first_held_boundaries=((key,1100),))):
         with pytest.raises(ValueError):validate_profit_giveback_state(witness,changed,held)
     with pytest.raises(ValueError):validate_profit_giveback_state(witness,state,replace(held,account_id='other'))
+
+
+@pytest.mark.parametrize('corruption', [None, 'cursor_sequence', 'cursor_boundary',
+                                      'snapshot_id', 'entry_account', 'entry_sequence'])
+def test_checkpoint_reader_routes_and_rejects_changed_authority(monkeypatch, corruption):
+    """Reader-contract test; mocks do not establish actual DB recovery."""
+    from types import SimpleNamespace
+    from src.trading_runtime import arte_journal_projection as cursors
+    from src.trading_runtime import strategy_one_management_snapshot as snapshots
+    from src.trading_runtime import arte_followthrough_failure_v4 as entries
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime.strategy_profit_giveback_source import load_profit_giveback_checkpoint
+    from test_arte_profit_giveback_v4 import project, IDENTITY
+    witness,state,held=fixture();row=project()
+    batch='b';prefix=V4CommittedPrefix('run',20,batch,'cursor','running',(batch,))
+    cursor={'run_id':'run','event_sequence':7,'batch_id':batch,'boundary_ms':9900,'session_date':'2026-08-04'}
+    snapshot={'run_id':'run','snapshot_id':IDENTITY,'checkpoint_sequence':7,'boundary_ms':9900,'session_date':'2026-08-04'}
+    entry={'batch_id':batch,'action':'enter_long','reason':'strategy_one_entry','ticker':held.ticker,'reference_price':10.,'invalidation_price':9.}
+    event={'account_id':held.account_id,'sequence':6}
+    child={'strategy_number':31,'assignment_id':held.assignment_id,'boundary_ms':900}
+    if corruption=='cursor_sequence':cursor['event_sequence']=6
+    if corruption=='cursor_boundary':cursor['boundary_ms']=9800
+    if corruption=='snapshot_id':snapshot['snapshot_id']='other'
+    if corruption=='entry_account':event['account_id']='other'
+    if corruption=='entry_sequence':event['sequence']=7
+    calls=[]
+    def read_cursor(client, ceiling):
+        assert ceiling.last_sequence==7 and ceiling.batch_ids==prefix.batch_ids
+        calls.append('cursor');return cursor
+    def read_snapshot(client,**kwargs):
+        assert kwargs=={'run_id':'run','checkpoint_sequence':7}
+        calls.append('snapshot');return SimpleNamespace(snapshot=snapshot)
+    def restore(rows):calls.append('restore');return state
+    def attach(client, committed, restored, **kwargs):
+        assert committed==prefix and restored==state
+        calls.append('attach');return restored
+    def source(client,run,intent_id,**kwargs):
+        assert kwargs['prior_batch_id']==batch and intent_id==row['source_entry_intent_id']
+        calls.append('entry');return entry,event,child
+    monkeypatch.setattr(cursors,'load_latest_backtest_cursor',read_cursor)
+    monkeypatch.setattr(snapshots,'load_unattested_manager_snapshot_rows',read_snapshot)
+    monkeypatch.setattr(snapshots,'restore_manager_snapshot',restore)
+    monkeypatch.setattr(snapshots,'attach_committed_momentum_sources',attach)
+    monkeypatch.setattr(entries,'_source_entry',source)
+    if corruption:
+        with pytest.raises(ValueError):load_profit_giveback_checkpoint(object(),prefix,row,held)
+    else:
+        assert load_profit_giveback_checkpoint(object(),prefix,row,held)==state
+        assert calls==['cursor','snapshot','restore','attach','entry']
