@@ -522,7 +522,7 @@ def test_typed_manager_capture_restores_pending_entry_position_and_breaks():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('number', (24, 25, 26))
+@pytest.mark.parametrize('number', (24, 25, 26, 27))
 def test_native_premarket_quarter_failure_routes_only_new_number(number):
     from types import SimpleNamespace, MethodType
     from uuid import UUID
@@ -534,7 +534,7 @@ def test_native_premarket_quarter_failure_routes_only_new_number(number):
     from src.trading_runtime.runtime import TradingRuntime, RunMode
 
     async def run():
-        if number == 26:
+        if number in (26, 27):
             from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
             market, parent = relaxed_authority()
         else:
@@ -564,7 +564,7 @@ def test_native_premarket_quarter_failure_routes_only_new_number(number):
         rows[5000] = {'boundary_ms': boundary, 'price_valid': 1,
             'close_int': round(price*10000), 'macd_line': -.2, 'macd_signal': -.1}
         await manager.on_management(financial, rows, boundary)
-        assert len(exits) == int(number in (25, 26))
-        if number in (25, 26):
+        assert len(exits) == int(number in (25, 26, 27))
+        if number in (25, 26, 27):
             assert exits[0][2] == intent.intent_id
     asyncio.run(run())

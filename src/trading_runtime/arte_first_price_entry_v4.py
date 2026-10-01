@@ -30,7 +30,7 @@ FIRST_PRICE = TableContract('trading_first_price_entry_v4', (
 
 
 def _bind(current, selection, price, *, strategy_number=20):
-    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26):
+    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27):
         raise ValueError('First price requires exact source policy number')
     if type(selection) is not InitialMomentumSelectionWitness:
         raise ValueError('First price requires typed original selection')
@@ -38,7 +38,7 @@ def _bind(current, selection, price, *, strategy_number=20):
         episode_start_ms=selection.initial.episode_start_ms)
     first = selection.initial.first_setup
     from .strategy_initial_ten_percent import first_setup_ten_percent_entry
-    first_rule = first_setup_ten_percent_entry if strategy_number == 26 else first_setup_momentum_growth_entry
+    first_rule = first_setup_ten_percent_entry if strategy_number in (26, 27) else first_setup_momentum_growth_entry
     if (not initial_strong_momentum_entry(current, selection.initial)
             or not first_rule(first)):
         raise ValueError('First price requires policy-matched first-setup momentum')
@@ -59,7 +59,7 @@ def _bind(current, selection, price, *, strategy_number=20):
 def project_first_price_entry(current, selection, price, *, price_source_token,
                               run_id, batch_id, parent_record_id, event_month,
                               strategy_number=20):
-    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26):
+    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27):
         raise ValueError('First price requires an installed source-bound number')
     if not _bind(current, selection, price, strategy_number=strategy_number):
         return ()
@@ -152,10 +152,10 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
     sealer. This function neither registers it nor installs operational tables.
     """
     from .arte_journal_writer import typed_row
-    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26)}
+    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27)}
     parents = {row['record_id']: row for row in intents}
     source_events = {row['record_id']: row for row in events}
-    if (len(required) != sum(row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26) for row in entries)
+    if (len(required) != sum(row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27) for row in entries)
             or len(parents) != len(intents) or len(source_events) != len(events)
             or any(type(authority) is not FirstPriceEntryAuthority for authority in authorities)):
         raise ValueError('First price graph has ambiguous parents or untyped authority')
@@ -187,7 +187,8 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
                 or any(intent[name] != entry[name] or event[name] != entry[name]
                        for name in ('run_id', 'batch_id', 'event_month'))):
             raise ValueError('First price graph has unrelated entry/intent/event scope')
-        if (authority.strategy_number == 26) != (entry['strategy_number'] == 26):
+        if ((authority.strategy_number in (26, 27) or entry['strategy_number'] in (26, 27))
+                and authority.strategy_number != entry['strategy_number']):
             raise ValueError('First price source authority differs from entry policy')
         selected = grouped.get(parent, ())
         if any(row['strategy_number'] != entry['strategy_number'] for row in selected):

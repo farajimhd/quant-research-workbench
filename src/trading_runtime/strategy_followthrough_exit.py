@@ -13,10 +13,10 @@ from .strategy_one_stateful import StrategyOneFinancialView
 def validate_witness(witness, *, strategy_number=9):
     if type(witness) is not FollowThroughFailure:
         raise ValueError("Follow-through exit requires the exact scalar witness")
-    if type(strategy_number) is not int or strategy_number not in (9, 25, 26):
+    if type(strategy_number) is not int or strategy_number not in (9, 25, 26, 27):
         raise ValueError("Failure factory requires legacy or inherited quarter-risk witness authority")
     from .strategy_premarket_quarter_risk_failure import premarket_quarter_risk_failure
-    rule = premarket_quarter_risk_failure if strategy_number in (25, 26) else followthrough_failure
+    rule = premarket_quarter_risk_failure if strategy_number in (25, 26, 27) else followthrough_failure
     actual = rule(FollowThroughFailureInput(
         witness.boundary_ms, witness.first_held_boundary_ms,
         witness.reference_ask, witness.initial_stop, witness.boundary_ms,
