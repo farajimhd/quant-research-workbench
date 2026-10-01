@@ -251,14 +251,29 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--runtime-root',type=Path,default=Path('D:/TradingML/runtimes'))
     parser.add_argument('--days',nargs='+',required=True)
+    parser.add_argument('--resume',action='store_true',help='Verify and reuse completed day sidecars')
     args=parser.parse_args()
-    if not args.output.resolve().is_relative_to(args.runtime_root.resolve()) or args.output.exists():
-        raise ValueError('Fresh runtime sidecar root required')
+    if not args.output.resolve().is_relative_to(args.runtime_root.resolve()) or (args.output.exists() and not args.resume):
+        raise ValueError('Runtime sidecar root requires explicit resume when it exists')
     dataset=require_dataset(args.dataset,runtime_root=args.runtime_root)
     selected=[entry for entry in dataset['days'] if entry['day'] in args.days]
     if len(selected)!=len(set(args.days)) or len(set(args.days))!=len(args.days):
         raise ValueError('Only unique audited train/development days permitted')
     for entry in selected:
+        existing=args.output/entry['day']/'complete.json'
+        if args.resume and existing.is_file():
+            proof=json.loads(existing.read_text())
+            if (proof.get('version')!=VERSION or proof.get('status')!='audited_independent_episode_windows' or
+                proof.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or
+                proof.get('day')!=entry['day'] or proof.get('role')!=entry['role'] or
+                proof.get('config')!=asdict(WindowConfig()) or proof.get('sealed_test_accessed') is not False):
+                raise ValueError('Cannot resume changed episode sidecar contract')
+            for name in ('flat','held','allocation'):
+                path=existing.parent/(name+'.parquet')
+                if hashlib.sha256(path.read_bytes()).hexdigest()!=proof['files'][name]['sha256']:
+                    raise ValueError('Cannot reuse changed episode target bytes')
+            print(json.dumps(dict(day=entry['day'],status='verified_reused_sidecars')),flush=True)
+            continue
         session=open_session(Path(entry['bank_root']),runtime_root=args.runtime_root,
                              previous_root=Path(entry['previous_root']))
         report=build_day(session,args.output/entry['day'])
