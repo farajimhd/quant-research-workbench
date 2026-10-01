@@ -67,7 +67,7 @@ async def run_strategy_one_proposals(
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
-    if strategy_number == 13:
+    if strategy_number in (13, 14):
         from src.backend.backtest_strategy_rising_momentum import CertifiedRisingMomentumPlan
         if (not isinstance(momentum_plan, CertifiedRisingMomentumPlan)
                 or momentum_plan.source_build_id != entry.source_build_id):
@@ -153,7 +153,7 @@ async def run_strategy_one_proposals(
                 candidate, fact, activation, current,
                 strategy_number=strategy_number,
                 momentum=(momentum_plan.lookup(fact.ticker, fact.boundary_ms)
-                          if strategy_number == 13 and momentum_plan is not None else None),
+                          if strategy_number in (13, 14) and momentum_plan is not None else None),
                 reentry=(await timed("strategy_one_reentry", reentry_witness(current, candidate))
                          if current.completed_entries and reentry_witness is not None
                          else None))

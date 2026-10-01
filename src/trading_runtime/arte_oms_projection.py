@@ -529,7 +529,7 @@ def _approved_strategy_one_oms_intent(
             raise ValueError("Strategy 1 OMS admission differs from typed source")
         if approved_intent.reason == "strategy_nine_followthrough_failure":
             from .arte_followthrough_failure_v4 import restore_failure
-            if (followthrough_row is None or state.group["strategy_revision"] not in (9, 10, 11, 12, 13)
+            if (followthrough_row is None or state.group["strategy_revision"] not in (9, 10, 11, 12, 13, 14)
                     or followthrough_row["strategy_number"] != state.group["strategy_revision"]
                     or followthrough_row["assignment_id"] != reservation["assignment_id"]
                     or str(followthrough_row["parent_record_id"]) != source_intent.record_id
@@ -560,7 +560,7 @@ def _approved_strategy_one_oms_intent(
                 assignment_id=reservation["assignment_id"], ticker=approved_intent.ticker,
                 boundary_ms=boundary_ms, quantity=approved_intent.quantity,
                 bid=approved_intent.reference_price, strategy_number=state.group["strategy_revision"])
-            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13) or expected_exit != approved_intent:
+            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14) or expected_exit != approved_intent:
                 raise ValueError("Session exit recovery differs from sealed scalar source")
         metadata = {
             "assignment_id": reservation["assignment_id"],
@@ -641,7 +641,7 @@ def reconstruct_strategy_one_oms_lineage(
     if (
             not isinstance(group, dict)
             or group.get("strategy_id") != STRATEGY_ID
-            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
             or group.get("run_id") != protection_history.run_id
             or group.get("batch_id") not in protection_history.committed_batch_ids
             or source_intent.batch_id not in protection_history.committed_batch_ids
@@ -654,7 +654,7 @@ def reconstruct_strategy_one_oms_lineage(
             # Its immutable source intent is add_long, not the first entry's
             # enter_long. Both require the same exact typed lineage proof.
             or source_intent.intent.action not in (
-                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13) else
+                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14) else
                 {"enter_long", "add_long", "exit"} if group.get("strategy_revision") in (2, 3)
                 else {"enter_long", "add_long"})
             or not state.orders or len(state.orders) > 65_535

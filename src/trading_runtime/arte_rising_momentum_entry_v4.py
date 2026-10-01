@@ -37,7 +37,7 @@ def decode_momentum_row(row):
 
 
 def project_rising_momentum_entry(proposal, *, run_id, batch_id, parent_record_id, event_month):
-    if proposal.strategy_number != 13:
+    if proposal.strategy_number not in (13, 14):
         if proposal.momentum is not None:
             raise ValueError("Old entry cannot carry Strategy 13 momentum")
         return ()
@@ -48,7 +48,7 @@ def project_rising_momentum_entry(proposal, *, run_id, batch_id, parent_record_i
     parent, batch = str(UUID(parent_record_id)), str(UUID(batch_id))
     return tuple({"record_id": str(uuid5(NAMESPACE_URL, f"{parent}:rising-momentum:{o.resolution_ms}")),
         "parent_record_id": parent, "run_id": run_id, "event_month": str(event_month),
-        "batch_id": batch, "strategy_number": 13, "ticker": witness.ticker,
+        "batch_id": batch, "strategy_number": proposal.strategy_number, "ticker": witness.ticker,
         "boundary_ms": witness.boundary_ms, "resolution_ms": o.resolution_ms,
         "source_build_id": witness.source_build_id, "source_attempt_id": witness.source_attempt_id,
         "market_plan_token": witness.market_plan_token,
@@ -63,7 +63,7 @@ def restore_rising_momentum(rows, *, ticker, boundary_ms):
     first = ordered[0]
     identity = ("parent_record_id", "run_id", "event_month", "batch_id", "strategy_number",
                 "ticker", "boundary_ms", "source_build_id", "source_attempt_id", "market_plan_token")
-    if (first["strategy_number"] != 13 or first["ticker"] != ticker or first["boundary_ms"] != boundary_ms
+    if (first["strategy_number"] not in (13, 14) or first["ticker"] != ticker or first["boundary_ms"] != boundary_ms
             or any(any(r[k] != first[k] for k in identity) for r in ordered)
             or any(r["record_id"] != str(uuid5(NAMESPACE_URL,
                 f"{r['parent_record_id']}:rising-momentum:{r['resolution_ms']}")) for r in ordered)):
@@ -84,7 +84,7 @@ def seal_rising_momentum_rows(rows, entries, intents, events):
     if any("content_hash" in source and source["content_hash"] != row["content_hash"]
            for source, row in zip(rows, sealed)):
         raise ValueError("Strategy 13 momentum scalar seal changed")
-    required = {r["parent_record_id"]: r for r in entries if r["strategy_number"] == 13}
+    required = {r["parent_record_id"]: r for r in entries if r["strategy_number"] in (13, 14)}
     parents = {r["record_id"]: r for r in intents if r["reason"] == "strategy_one_entry"}
     source_events = {r["record_id"]: r for r in events}
     if len(sealed) != 2 * len(required) or any(r["parent_record_id"] not in required for r in sealed):
@@ -92,7 +92,8 @@ def seal_rising_momentum_rows(rows, entries, intents, events):
     for parent, entry in required.items():
         selected = tuple(r for r in sealed if r["parent_record_id"] == parent)
         intent = parents.get(parent)
-        if intent is None or any(r["run_id"] != entry["run_id"] or r["batch_id"] != entry["batch_id"]
+        if intent is None or any(r["strategy_number"] != entry["strategy_number"]
+                                 or r["run_id"] != entry["run_id"] or r["batch_id"] != entry["batch_id"]
                                  or r["event_month"] != entry["event_month"] for r in selected):
             raise ValueError("Strategy 13 momentum has an unrelated typed parent")
         restore_rising_momentum(selected, ticker=intent["ticker"], boundary_ms=entry["boundary_ms"])
@@ -103,7 +104,7 @@ def seal_rising_momentum_rows(rows, entries, intents, events):
         from zoneinfo import ZoneInfo
         at = datetime.fromisoformat(str(event["event_time"]).replace("Z", "+00:00"))
         local = (at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo("America/New_York"))
-        identity = (f"strategy-13:{local.date().isoformat()}:{entry['assignment_id']}:"
+        identity = (f"strategy-{entry['strategy_number']}:{local.date().isoformat()}:{entry['assignment_id']}:"
                     f"{intent['account_id']}:{intent['ticker']}:{entry['boundary_ms']}:"
                     f"{entry['episode_start_ms']}")
         if intent["intent_id"] != str(uuid5(NAMESPACE_URL, identity)):

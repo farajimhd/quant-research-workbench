@@ -1041,3 +1041,42 @@ Strategy 13 configuration. Four saved app-route backtests and position audits
 remain required. No Strategy 13 profit is claimed at this checkpoint.
 Two existing workers were reused for independent source/performance and
 durability lanes; both completed, with no newly spawned or interrupted workers.
+
+### Published Strategy 13 admission failure and Strategy 14 successor
+
+Strategy 13 source `5f566e9b289b1d751b568ba9c548914a6984bb96` was committed,
+pushed and pinned on both machines. The operator created only the new momentum
+table, verifying 19 commit-v4 tables and SSD placement; zero rows inserted.
+The runner has exact 127 arte SELECT, 98 arte INSERT and 5 system SELECT grants.
+Published configuration `strategy-one-13:90261e0b-c028-4efb-8c7d-e3537430dac3`
+has 987 nodes, payload
+`4e8b91296a7144c202b1a0e3c7a26c99e304a77d212a15c831e2b61eb179db41`,
+certificate `083975053c47e9ab8fbe967f82b060d48379cbce31d64d1d22fdb7544119c821`,
+approved source fingerprint
+`920eea29a37b8c14c76ac4bd3787bdb60e8c3780122b44ce9d39274a0a8a41db`.
+Backend/frontend refresh completed after the source commit and publication.
+
+The first actual PM18 app-route preflight rejected that configuration before
+creating a run: `selected_numbered_revision` still had a literal identity
+regular expression ending at number 12. The previously passing integration
+suite covered registry, compiler, runtime, source proof and durability but
+missed this actual selector. Retain `strategy13-pm18-app-route-v1.log` and the
+immutable published release; no successful Strategy 13 backtest or profit
+exists, and its published metadata is not overwritten.
+
+Strategy 14 is the explicit successor, pinned to that exact published Strategy
+13 parent and payload. It preserves every momentum/management/sizing/cost
+policy. Its sole correction admits the successor through the actual selector
+and extends the same guarded runtime and normalized evidence to its numbered
+identity. New tests call the real selector for 13 and 14, assert subsequent
+certified-release verification, compare all inherited policies and recover a
+committed Strategy 14 entry with exact Float64 source evidence. No new table,
+market-product rebuild, indicator calculation or broader permission is needed.
+
+The history SQL also ended at number 12; it now explicitly includes 13 and 14,
+so completed successor runs appear in the existing app history. History tests
+cover every admitted number through 14. The successor integration suite passed
+539 tests in 55.65 seconds. A final cross-number companion parent guard was
+added and its journal/configuration suite passed 121 tests in 12.26 seconds;
+expanded actual history tests passed 23 tests. Review preserves all other
+selector checks and old release semantics.

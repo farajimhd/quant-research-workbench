@@ -41,9 +41,9 @@ class V4FollowThroughFailureBatch:
 def validate_numbered_failure(witness, strategy_number):
     """Pin the successor eligibility bound at every persistence boundary."""
     validate_witness(witness)
-    if type(strategy_number) is not int or strategy_number not in (9, 10, 11, 12, 13):
+    if type(strategy_number) is not int or strategy_number not in (9, 10, 11, 12, 13, 14):
         raise ValueError("Failure evidence requires Strategy 9, 10, 11 or 12")
-    if strategy_number in (11, 12, 13):
+    if strategy_number in (11, 12, 13, 14):
         from .strategy_early_followthrough_failure import EARLY_FAILURE_WINDOW_MS
         if witness.boundary_ms - witness.first_held_boundary_ms > EARLY_FAILURE_WINDOW_MS:
             raise ValueError("Strategy 11 failure witness exceeds the first-minute eligibility window")
@@ -171,7 +171,7 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
             if len(matches) != 1:
                 raise ValueError("Follow-through original entry has no exact typed evidence")
             source_child = matches[0]
-        if (row['strategy_number'] not in (9, 10, 11, 12, 13)
+        if (row['strategy_number'] not in (9, 10, 11, 12, 13, 14)
                 or source_child['strategy_number'] != row['strategy_number']
                 or row['assignment_id'] != source_child['assignment_id']
                 or row['run_id'] != parent['run_id'] or row['batch_id'] != parent['batch_id']

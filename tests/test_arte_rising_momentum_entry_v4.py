@@ -62,8 +62,8 @@ class BitClient(MemoryClient):
         return super().execute(sql)
 
 
-def unit(sequence=1, prior=0, batch_id=11, boundary=31_000):
-    proposal = replace(_proposal(), boundary_ms=boundary, strategy_number=13, momentum=witness(boundary))
+def unit(sequence=1, prior=0, batch_id=11, boundary=31_000, strategy_number=13):
+    proposal = replace(_proposal(), boundary_ms=boundary, strategy_number=strategy_number, momentum=witness(boundary))
     session = date(2026, 8, 18)
     intent = strategy_one_entry_intent(proposal, session_date=session)
     batch = strategy_intent_batch(intent, run_id="momentum-run", run_month=date(2026, 8, 1),
