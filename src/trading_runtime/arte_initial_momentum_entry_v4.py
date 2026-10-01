@@ -55,7 +55,7 @@ def decode_initial_momentum_row(row):
 
 
 def _selection(current, selection, strategy_number=18):
-    if type(strategy_number) is not int or strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25):
+    if type(strategy_number) is not int or strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26):
         raise ValueError("Initial momentum strategy number differs")
     if type(selection) is not InitialMomentumSelectionWitness:
         raise ValueError('Initial momentum requires exact typed selection plan seals')
@@ -67,18 +67,22 @@ def _selection(current, selection, strategy_number=18):
         from .strategy_initial_momentum_growth import first_setup_momentum_growth_entry
         if not first_setup_momentum_growth_entry(selection.initial.first_setup):
             raise ValueError('Strategy 19 requires premarket first-setup 50pct growth')
+    elif strategy_number == 26:
+        from .strategy_initial_ten_percent import first_setup_ten_percent_entry
+        if not first_setup_ten_percent_entry(selection.initial.first_setup):
+            raise ValueError('Strategy 26 requires first-setup strict 10pct growth')
 
 
 def project_initial_momentum_entry(proposal, initial, *, run_id, batch_id,
                                    parent_record_id, event_month):
     if type(proposal) is not StrategyOneEntryProposal:
         raise ValueError('Initial momentum requires exact typed entry proposal')
-    if type(proposal.strategy_number) is not int or proposal.strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25):
+    if type(proposal.strategy_number) is not int or proposal.strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26):
         if initial is not None:
             raise ValueError('Old entry cannot carry initial momentum companions')
         return ()
     _selection(proposal.momentum, initial, proposal.strategy_number)
-    if proposal.strategy_number in (19, 20, 21, 22, 23, 24, 25) and initial != proposal.initial_momentum:
+    if proposal.strategy_number in (19, 20, 21, 22, 23, 24, 25, 26) and initial != proposal.initial_momentum:
         raise ValueError('Strategy 19 initial momentum differs from original selection tokens')
     anchor = initial.initial
     first = anchor.first_setup
@@ -115,7 +119,7 @@ def restore_initial_momentum(rows, *, ticker, boundary_ms, episode_start_ms, cur
     first = ordered[0]
     if strategy_number is None:
         strategy_number = first['strategy_number']
-    if type(strategy_number) is not int or strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25):
+    if type(strategy_number) is not int or strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26):
         raise ValueError('Initial momentum strategy number differs')
     identity = ('parent_record_id', 'run_id', 'event_month', 'batch_id', 'strategy_number',
                 'ticker', 'boundary_ms', 'episode_start_ms', 'first_setup_boundary_ms',
@@ -151,7 +155,7 @@ def seal_initial_momentum_rows(rows, entries, intents, events, current_momentum_
     if any('content_hash' in source and source['content_hash'] != row['content_hash']
            for source, row in zip(rows, sealed)):
         raise ValueError('Initial momentum scalar content seal changed')
-    eligible_entries = [row for row in entries if row['strategy_number'] in (18, 19, 20, 21, 22, 23, 24, 25)]
+    eligible_entries = [row for row in entries if row['strategy_number'] in (18, 19, 20, 21, 22, 23, 24, 25, 26)]
     required = {row['parent_record_id']: row for row in eligible_entries}
     parents = {row['record_id']: row for row in intents if row['reason'] == 'strategy_one_entry'}
     source_events = {row['record_id']: row for row in events}
@@ -160,8 +164,8 @@ def seal_initial_momentum_rows(rows, entries, intents, events, current_momentum_
             or len(source_events) != len(events)
             or len({row['record_id'] for row in sealed}) != len(sealed)
             or len(sealed) != 2 * len(required)
-            or any(row['parent_record_id'] not in required or row['strategy_number'] not in (18, 19, 20, 21, 22, 23, 24, 25) for row in sealed)
-            or any(row['strategy_number'] in (18, 19, 20, 21, 22, 23, 24, 25) and row['parent_record_id'] not in required
+            or any(row['parent_record_id'] not in required or row['strategy_number'] not in (18, 19, 20, 21, 22, 23, 24, 25, 26) for row in sealed)
+            or any(row['strategy_number'] in (18, 19, 20, 21, 22, 23, 24, 25, 26) and row['parent_record_id'] not in required
                    for row in current_momentum_rows)):
         raise ValueError('Initial momentum has missing, extra, duplicate or old entry companions')
     for parent, entry in required.items():

@@ -29,15 +29,19 @@ FIRST_PRICE = TableContract('trading_first_price_entry_v4', (
     'run_id,parent_record_id,record_id')
 
 
-def _bind(current, selection, price):
+def _bind(current, selection, price, *, strategy_number=20):
+    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26):
+        raise ValueError('First price requires exact source policy number')
     if type(selection) is not InitialMomentumSelectionWitness:
         raise ValueError('First price requires typed original selection')
     validate_initial_momentum_selection(current, selection,
         episode_start_ms=selection.initial.episode_start_ms)
     first = selection.initial.first_setup
+    from .strategy_initial_ten_percent import first_setup_ten_percent_entry
+    first_rule = first_setup_ten_percent_entry if strategy_number == 26 else first_setup_momentum_growth_entry
     if (not initial_strong_momentum_entry(current, selection.initial)
-            or not first_setup_momentum_growth_entry(first)):
-        raise ValueError('First price requires parent19 first-setup momentum')
+            or not first_rule(first)):
+        raise ValueError('First price requires policy-matched first-setup momentum')
     if first.boundary_ms >= PREMARKET_END_MS:
         if price is not None:
             raise ValueError('After-hours cannot carry first-price companions')
@@ -55,9 +59,9 @@ def _bind(current, selection, price):
 def project_first_price_entry(current, selection, price, *, price_source_token,
                               run_id, batch_id, parent_record_id, event_month,
                               strategy_number=20):
-    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25):
+    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26):
         raise ValueError('First price requires an installed source-bound number')
-    if not _bind(current, selection, price):
+    if not _bind(current, selection, price, strategy_number=strategy_number):
         return ()
     if (type(price_source_token) is not str or not re.fullmatch('[0-9a-f]{64}', price_source_token)
             or type(run_id) is not str or not run_id):
@@ -84,7 +88,7 @@ def project_first_price_entry(current, selection, price, *, price_source_token,
 
 
 def restore_first_price_entry(rows, current, selection, *, expected_price,
-                              expected_price_source_token):
+                              expected_price_source_token, strategy_number=None):
     """Restore only against independently supplied certified source evidence.
 
     Row-contained tokens cannot authenticate themselves. The caller must obtain
@@ -93,13 +97,15 @@ def restore_first_price_entry(rows, current, selection, *, expected_price,
     if selection.initial.first_setup.boundary_ms >= PREMARKET_END_MS:
         if rows:
             raise ValueError('After-hours cannot carry first-price companions')
-        _bind(current, selection, None)
+        _bind(current, selection, None, strategy_number=20 if strategy_number is None else strategy_number)
         if expected_price is not None:
             raise ValueError('After-hours source cannot contain a price witness')
         return None
     if len(rows) != 1:
         raise ValueError('Premarket requires exactly one first-price companion')
     row = rows[0]
+    if strategy_number is not None and row['strategy_number'] != strategy_number:
+        raise ValueError('First price differs from expected numbered policy')
     if row['price_source_token'] != expected_price_source_token:
         raise ValueError('First price source seal differs from certified authority')
     flags = (row['current_price_valid'], row['prior_extremes_valid'])
@@ -127,6 +133,7 @@ class FirstPriceEntryAuthority:
     selection: InitialMomentumSelectionWitness
     price: FirstSetupPriceBreakWitness | None
     price_source_token: str
+    strategy_number: int = 20
 
     def __post_init__(self):
         parent = self.parent_record_id
@@ -135,7 +142,7 @@ class FirstPriceEntryAuthority:
         if (type(self.price_source_token) is not str
                 or not re.fullmatch('[0-9a-f]{64}', self.price_source_token)):
             raise ValueError('First price authority requires certified source token')
-        _bind(self.current, self.selection, self.price)
+        _bind(self.current, self.selection, self.price, strategy_number=self.strategy_number)
 
 
 def seal_first_price_rows(rows, entries, intents, events, authorities):
@@ -145,10 +152,10 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
     sealer. This function neither registers it nor installs operational tables.
     """
     from .arte_journal_writer import typed_row
-    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] in (20, 21, 22, 23, 24, 25)}
+    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26)}
     parents = {row['record_id']: row for row in intents}
     source_events = {row['record_id']: row for row in events}
-    if (len(required) != sum(row['strategy_number'] in (20, 21, 22, 23, 24, 25) for row in entries)
+    if (len(required) != sum(row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26) for row in entries)
             or len(parents) != len(intents) or len(source_events) != len(events)
             or any(type(authority) is not FirstPriceEntryAuthority for authority in authorities)):
         raise ValueError('First price graph has ambiguous parents or untyped authority')
@@ -180,6 +187,8 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
                 or any(intent[name] != entry[name] or event[name] != entry[name]
                        for name in ('run_id', 'batch_id', 'event_month'))):
             raise ValueError('First price graph has unrelated entry/intent/event scope')
+        if (authority.strategy_number == 26) != (entry['strategy_number'] == 26):
+            raise ValueError('First price source authority differs from entry policy')
         selected = grouped.get(parent, ())
         if any(row['strategy_number'] != entry['strategy_number'] for row in selected):
             raise ValueError('First price companion differs from numbered entry identity')
@@ -187,7 +196,8 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
                for name in ('run_id', 'batch_id', 'event_month')):
             raise ValueError('First price companion differs from entry run scope')
         restore_first_price_entry(selected, authority.current, authority.selection,
-            expected_price=authority.price, expected_price_source_token=authority.price_source_token)
+            expected_price=authority.price, expected_price_source_token=authority.price_source_token,
+            strategy_number=entry['strategy_number'])
         at = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
         if at.tzinfo is None:
             raise ValueError('First price entry source clock must be timezone-aware')
