@@ -942,10 +942,10 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_
                                         'append_strategy_one_intent': '4ba9fe7d3392b75bb41a8f19e12b36f2bd316d16606590496c10833d0577a5f8',
                                         'append_strategy_one_protection_intent': '5c4fea53eee9b986be20d81b6708f8c53de0f55beed3a67f4b7d037ca2510e92'},
  'backend/backtest_strategy_certified_price_break.py': {'__module__': 'f0388794abe1be1d216b793be8909e88f5fb5a0a42632ee593febc11a6a9e94e'},
- 'backend/backtest_strategy_first_price_source.py': {'__module__': 'e2cbac94ae2baf5babbf829b7c9409fb8fde26bc822f65c4033ea47971e07d6f'},
+ 'backend/backtest_strategy_first_price_source.py': {'__module__': '8c711095ee81bbe5541a6c0a208f1380effdb057039976c43f8ffcee1afed268'},
  'backend/backtest_strategy_initial_momentum.py': {'__module__': '954446cab169240a183801637b4f61b27f90d45467b065ef428760d1ed5a48df'},
  'backend/backtest_strategy_initial_momentum_growth.py': {'__module__': '33bf35371d2216a5361e735959cdd1e48a65be3a5d8f04ec3d79cd277d199485'},
- 'backend/backtest_strategy_initial_price_break.py': {'__module__': '46bf46ce559ad760f95ad00abd68331670582a95a5c800f8a074fc39623af046'},
+ 'backend/backtest_strategy_initial_price_break.py': {'__module__': '6e48bc02aa9a734e70327db977531d967f85f469ed30208341768d3ed2701208'},
  'backend/backtest_strategy_one_configuration.py': {'__module__': '6324be2f99e2ccd0e212d5e05876565e8e79aa19c5a5f1f1834a32a4380281c0'},
  'backend/backtest_strategy_one_coordinator.py': {'run_strategy_one_proposals': '941f5287827d5ee0133ace6533226b15d411fd4a40d30e5180b28fd7bfc18016'},
  'backend/backtest_strategy_one_execution.py': {'run_certified_strategy_one_session': 'cfddcd883643112bdbbe086f552479d64ea74eef011971f9a014416f9fb7a876',
@@ -1033,7 +1033,9 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_
  'trading_runtime/strategy_twenty_four_release.py': {'__module__': '7913d809cbe160b2d2018c63f4749ee2dd085bc4a1f6fa8412dde9c5168f5859'},
  'trading_runtime/strategy_twenty_five_release.py': {'__module__': '1bbba29e4542af0fbe42ef7d07ebe852926039910c02d0680d1ad429def83f3a'},
  'trading_runtime/strategy_premarket_quarter_risk_failure.py': {'__module__': '87a7e1941a30e09f0e3b463187d9914f8389186a528d9f706ec76b5e6ea529b9'},
- 'trading_runtime/strategy_followthrough_exit.py': {'__module__': '44758c384a7181ef0ca9f32d25d8213c6e5be67d5b1f5a405a2adda89891c4d7'}}
+ 'trading_runtime/strategy_followthrough_exit.py': {'__module__': '44758c384a7181ef0ca9f32d25d8213c6e5be67d5b1f5a405a2adda89891c4d7'},
+ 'backend/backtest_strategy_initial_ten_percent.py': {'__module__': '73b8b04654cd8ebef2a8906908bac4c82fa06616fb4d50d19f73442f7f07f420'},
+ 'trading_runtime/strategy_initial_ten_percent.py': {'__module__': '086a330212aa01c2ddf70bdb8ddb2db70654f4b851662977ea86ec307be18be2'}}
 
 
 def certify_rising_momentum_entry_source(*, source_overrides: dict[str, Path] | None = None) -> str:

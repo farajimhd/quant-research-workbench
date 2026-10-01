@@ -9,6 +9,7 @@ from hashlib import sha256
 import numpy as np
 
 from .backtest_strategy_initial_momentum_growth import CertifiedInitialMomentumGrowthPlan
+from .backtest_strategy_initial_ten_percent import CertifiedInitialTenPercentPlan
 from .backtest_strategy_rising_momentum import _frozen
 from src.trading_runtime.strategy_initial_price_break import (
     POLICY_ID, first_setup_price_break_mask,
@@ -16,8 +17,8 @@ from src.trading_runtime.strategy_initial_price_break import (
 
 
 def _selection(parent, observations):
-    if type(parent) is not CertifiedInitialMomentumGrowthPlan:
-        raise ValueError('Price refinement requires exact certified Strategy19 parent')
+    if type(parent) not in (CertifiedInitialMomentumGrowthPlan, CertifiedInitialTenPercentPlan):
+        raise ValueError('Price refinement requires an exact certified first-momentum parent')
     if type(observations) is not tuple or len(observations) != 6:
         raise ValueError('Price refinement requires six aligned native producer columns')
     boundaries = np.fromiter((key[1] for key in parent.momentum.keys), dtype=np.int64)
@@ -39,7 +40,7 @@ def _selection(parent, observations):
 
 @dataclass(frozen=True, slots=True)
 class StagedInitialPriceBreakPlan:
-    parent: CertifiedInitialMomentumGrowthPlan
+    parent: CertifiedInitialMomentumGrowthPlan | CertifiedInitialTenPercentPlan
     observations: tuple[np.ndarray, ...]
     eligible_mask: np.ndarray
     token: str
