@@ -101,6 +101,27 @@ def compile_certified_price_break_plan(source):
     return CertifiedInitialPriceBreakPlan(source, eligible, token)
 
 
+def compile_certified_price_static_gate(plan):
+    """Reduce the inherited full gate with the source-bound first-price mask.
+
+    Both masks have shape (candidate_count,). The initial-setup rejection bit
+    also covers the price rule on that same frozen setup. Portfolio admission
+    remains sequential and cannot be authorized by this necessary-condition gate.
+    """
+    from .backtest_strategy_one_static_gate import (
+        compile_static_entry_gate, StrategyOneStaticGate, INITIAL_MOMENTUM_REQUIRED,
+    )
+    if type(plan) is not CertifiedInitialPriceBreakPlan:
+        raise ValueError('Price static gate requires exact certified plan')
+    parent = plan.source.parent
+    inherited = compile_static_entry_gate(plan.candidates, plan.entry,
+        strategy_number=19, momentum_plan=plan.momentum, initial_momentum_plan=parent)
+    reasons = inherited.rejection_mask | (
+        (~plan.eligible_mask).astype(np.uint8) * INITIAL_MOMENTUM_REQUIRED)
+    return StrategyOneStaticGate(inherited.facts, reasons,
+        np.flatnonzero(reasons == 0).astype(np.int64))
+
+
 @dataclass(frozen=True, slots=True)
 class CertifiedPriceReadbackAuthority:
     """Reuse one independently compiled source plan across cold journal batches.

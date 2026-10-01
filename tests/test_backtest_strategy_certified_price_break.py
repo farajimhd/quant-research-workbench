@@ -66,6 +66,30 @@ def test_missing_price_rejects_native_and_scalar_entry():
         plan.selection_witness('AAA', 41000)
 
 
+@pytest.mark.parametrize('bars_mode', ['valid', 'missing'])
+def test_price_static_gate_preserves_inherited_rejections_and_never_promotes(bars_mode):
+    from src.backend.backtest_strategy_certified_price_break import compile_certified_price_static_gate
+    from src.backend.backtest_strategy_one_static_gate import compile_static_entry_gate, INITIAL_MOMENTUM_REQUIRED
+    market, parent = authority()
+    source = load_first_price_source(market, parent,
+        client=Bars() if bars_mode == 'valid' else Bars('missing'))
+    plan = compile_certified_price_break_plan(source)
+    inherited = compile_static_entry_gate(parent.candidates, parent.entry,
+        strategy_number=19, momentum_plan=parent.momentum, initial_momentum_plan=parent)
+    gate = compile_certified_price_static_gate(plan)
+    assert gate.facts == inherited.facts
+    assert np.array_equal(gate.rejection_mask & inherited.rejection_mask,
+                          inherited.rejection_mask)
+    expected = inherited.rejection_mask | (
+        (~plan.eligible_mask).astype(np.uint8) * INITIAL_MOMENTUM_REQUIRED)
+    assert np.array_equal(gate.rejection_mask, expected)
+    assert np.array_equal(gate.eligible_indices, np.flatnonzero(expected == 0))
+    if bars_mode == 'missing':
+        assert gate.eligible_indices.size == 0
+    with pytest.raises(ValueError, match='exact certified'):
+        compile_certified_price_static_gate(parent)
+
+
 def test_identity_and_immutable_seal_fail_closed():
     market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))

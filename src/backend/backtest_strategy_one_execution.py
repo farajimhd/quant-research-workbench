@@ -196,7 +196,7 @@ async def run_certified_strategy_one_session(
         activations, candidates, through_boundary_ms=through_boundary_ms)
     momentum_plan = None
     initial_momentum_plan = None
-    if runtime.config.strategy_revision in (13, 14, 15, 16, 17, 18, 19):
+    if runtime.config.strategy_revision in (13, 14, 15, 16, 17, 18, 19, 20):
         from src.backend.backtest_strategy_rising_momentum import load_rising_momentum_plan
         base_gate = compile_static_entry_gate(visible, entry, strategy_number=12)
         with closing(client_factory()) as momentum_client:
@@ -206,12 +206,22 @@ async def run_certified_strategy_one_session(
         if runtime.config.strategy_revision == 18:
             from src.backend.backtest_strategy_initial_momentum import compile_initial_momentum_plan
             initial_momentum_plan = compile_initial_momentum_plan(visible, entry, momentum_plan)
-        elif runtime.config.strategy_revision == 19:
+        elif runtime.config.strategy_revision in (19, 20):
             from src.backend.backtest_strategy_initial_momentum_growth import compile_initial_momentum_growth_plan
             initial_momentum_plan = compile_initial_momentum_growth_plan(visible, entry, momentum_plan)
-    full_gate = compile_static_entry_gate(
-        visible, entry, strategy_number=runtime.config.strategy_revision,
-        momentum_plan=momentum_plan, initial_momentum_plan=initial_momentum_plan)
+            if runtime.config.strategy_revision == 20:
+                from src.backend.backtest_strategy_first_price_source import load_first_price_source
+                from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan
+                with closing(client_factory()) as price_client:
+                    source = load_first_price_source(market, initial_momentum_plan, client=price_client)
+                initial_momentum_plan = compile_certified_price_break_plan(source)
+    if runtime.config.strategy_revision == 20:
+        from src.backend.backtest_strategy_certified_price_break import compile_certified_price_static_gate
+        full_gate = compile_certified_price_static_gate(initial_momentum_plan)
+    else:
+        full_gate = compile_static_entry_gate(
+            visible, entry, strategy_number=runtime.config.strategy_revision,
+            momentum_plan=momentum_plan, initial_momentum_plan=initial_momentum_plan)
     survivors, activation_schedule = project_static_survivors(
         visible, visible_activations, full_gate)
     # The scheduler sees only survivors. Its local gate must index exactly
