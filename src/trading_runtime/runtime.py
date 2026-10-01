@@ -907,6 +907,7 @@ class TradingRuntime:
         numbered_exit_assignment_id: str | None = None,
         followthrough_source: tuple | None = None,
         profit_giveback_source: tuple | None = None,
+        confirmed_ah_source: tuple | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -927,6 +928,27 @@ class TradingRuntime:
             if self.config.strategy_revision in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33) and any(
                     intent.action == "add_long" for intent in evaluation.intents):
                 raise ValueError(f"Strategy {self.config.strategy_revision} forbids add acquisitions")
+        from .strategy_confirmed_ah_failure_exit import REASON as confirmed_ah_reason, confirmed_ah_exit_intent
+        if confirmed_ah_source is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            from .strategy_one_stateful import StrategyOneFinancialView
+            if (type(confirmed_ah_source) is not tuple or len(confirmed_ah_source) != 3
+                    or self.config.mode != RunMode.BACKTEST
+                    or self.config.strategy_id != STRATEGY_ID
+                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision != 34
+                    or not isinstance(self.journal, BacktestMemoryJournal)
+                    or event is not None or followthrough_source is not None or profit_giveback_source is not None
+                    or numbered_exit_assignment_id is not None or strategy_one_assignment_id is not None
+                    or strategy_one_proposal is not None or strategy_one_add_proposal is not None):
+                raise ValueError('Strategy 34 AH exit lacks exact typed authority')
+            witness, financial, source_entry_intent_id = confirmed_ah_source
+            if (type(financial) is not StrategyOneFinancialView or account_id != financial.account_id
+                    or evaluation.intents != (confirmed_ah_exit_intent(
+                        witness, financial, session_date=self.config.anchor_date,
+                        source_entry_intent_id=source_entry_intent_id),)):
+                raise ValueError('Strategy 34 AH exit differs from its immutable factory')
+        elif any(intent.reason == confirmed_ah_reason for intent in evaluation.intents):
+            raise ValueError('Strategy 34 AH exit lacks its normalized witness')
         from .strategy_profit_giveback_exit import profit_giveback_reason
         profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33)}
         if profit_giveback_source is not None:
@@ -1066,6 +1088,13 @@ class TradingRuntime:
                     assignment_id=financial.assignment_id,
                     account_id=account_id, strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
+            elif confirmed_ah_source is not None:
+                witness, financial, source_entry_intent_id = confirmed_ah_source
+                self.journal.append_confirmed_ah_exit(
+                    intent=intent, witness=witness, financial=financial,
+                    source_entry_intent_id=source_entry_intent_id,
+                    session_date=self.config.anchor_date, strategy_id=self.config.strategy_id,
+                    strategy_revision=self.config.strategy_revision)
             elif profit_giveback_source is not None:
                 witness, financial, source_entry_intent_id, arm_reference = profit_giveback_source
                 self.journal.append_profit_giveback_exit(
@@ -1142,6 +1171,8 @@ class TradingRuntime:
                              if followthrough_source is not None
                              else profit_giveback_source[1].assignment_id
                              if profit_giveback_source is not None
+                             else confirmed_ah_source[1].assignment_id
+                             if confirmed_ah_source is not None
                              else numbered_exit_assignment_id)
             if assignment_id is None:
                 decision, approved_intent = await self.portfolio.approve(
@@ -1301,6 +1332,16 @@ class TradingRuntime:
         return await self._execute_intents(
             StrategyEvaluation(intents=(intent,)), financial.account_id, None,
             profit_giveback_source=(witness, financial, source_entry_intent_id, arm_reference))
+
+    async def submit_confirmed_ah_failure(self, financial, witness, source_entry_intent_id):
+        """Submit the complete confirmation through shared Portfolio/OMS."""
+        from .strategy_confirmed_ah_failure_exit import confirmed_ah_exit_intent
+        intent = confirmed_ah_exit_intent(
+            witness, financial, session_date=self.config.anchor_date,
+            source_entry_intent_id=source_entry_intent_id)
+        return await self._execute_intents(
+            StrategyEvaluation(intents=(intent,)), financial.account_id, None,
+            confirmed_ah_source=(witness, financial, source_entry_intent_id))
 
     async def submit_numbered_session_exit(self, financial, resolutions, boundary_ms):
         """Submit once per live exit; fills belong to later broker liquidity."""
