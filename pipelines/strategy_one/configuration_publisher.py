@@ -104,7 +104,7 @@ def publish_configuration(client: Any, keeper: Any,
     number = dict(dict(envelope.get("payload") or {}).get("strategy") or {}).get("strategy_number")
     if number == 1:
         payload, nodes = _verified_envelope(envelope)
-    elif type(number) is int and number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31):
+    elif type(number) is int and number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32):
         payload, nodes = _verified_numbered_envelope(envelope)
         if number == 2:
             from pipelines.strategy_one.strategy_two_configuration import compile_strategy_two_configuration as compile_configuration
@@ -164,8 +164,10 @@ def publish_configuration(client: Any, keeper: Any,
             from pipelines.strategy_one.strategy_twenty_nine_configuration import compile_strategy_twenty_nine_configuration as compile_configuration
         elif number == 30:
             from pipelines.strategy_one.strategy_thirty_configuration import compile_strategy_thirty_configuration as compile_configuration
-        else:
+        elif number == 31:
             from pipelines.strategy_one.strategy_thirty_one_configuration import compile_strategy_thirty_one_configuration as compile_configuration
+        else:
+            from pipelines.strategy_one.strategy_thirty_two_configuration import compile_strategy_thirty_two_configuration as compile_configuration
         from src.trading_runtime.strategy_registry import numbered_strategy_parent
         source = certify_numbered_configuration(client, numbered_strategy_parent(number))
         manifest = payload["strategy"]["numbered_release"]
@@ -283,11 +285,11 @@ def _verified_numbered_envelope(envelope: Mapping[str, Any]) -> tuple[dict, tupl
     if set(envelope) != {"source_candidate_id", "source_candidate_hash", "payload_hash", "node_hash", "node_count", "payload"}:
         raise ValueError("Numbered configuration envelope shape differs")
     payload = envelope["payload"]
-    if not is_numbered_fixed_configuration(payload) or payload["strategy"]["strategy_number"] not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31):
+    if not is_numbered_fixed_configuration(payload) or payload["strategy"]["strategy_number"] not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32):
         raise ValueError("Numbered publisher requires sealed Strategy 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 or 12")
     _validate_strategy_two_payload(payload)
     manifest = payload["strategy"]["numbered_release"]
-    source_prefix = {2: "strategy-two-from", 3: "strategy-three-from", 4: "strategy-four-from", 5: "strategy-five-from", 6: "strategy-six-from", 7: "strategy-seven-from", 8: "strategy-eight-from", 9: "strategy-nine-from", 10: "strategy-ten-from", 11: "strategy-eleven-from", 12: "strategy-twelve-from", 13: "strategy-thirteen-from", 14: "strategy-fourteen-from", 15: "strategy-fifteen-from", 16: "strategy-sixteen-from", 17: "strategy-seventeen-from", 18: "strategy-eighteen-from", 19: "strategy-nineteen-from", 20: "strategy-twenty-from", 21: "strategy-twenty-one-from", 22: "strategy-twenty-two-from", 23: "strategy-twenty-three-from", 24: "strategy-twenty-four-from", 25: "strategy-twenty-five-from", 26: "strategy-twenty-six-from", 27: "strategy-twenty-seven-from", 28: "strategy-twenty-eight-from", 29: "strategy-twenty-nine-from", 30: "strategy-thirty-from", 31: "strategy-thirty-one-from"}[payload["strategy"]["strategy_number"]]
+    source_prefix = {2: "strategy-two-from", 3: "strategy-three-from", 4: "strategy-four-from", 5: "strategy-five-from", 6: "strategy-six-from", 7: "strategy-seven-from", 8: "strategy-eight-from", 9: "strategy-nine-from", 10: "strategy-ten-from", 11: "strategy-eleven-from", 12: "strategy-twelve-from", 13: "strategy-thirteen-from", 14: "strategy-fourteen-from", 15: "strategy-fifteen-from", 16: "strategy-sixteen-from", 17: "strategy-seventeen-from", 18: "strategy-eighteen-from", 19: "strategy-nineteen-from", 20: "strategy-twenty-from", 21: "strategy-twenty-one-from", 22: "strategy-twenty-two-from", 23: "strategy-twenty-three-from", 24: "strategy-twenty-four-from", 25: "strategy-twenty-five-from", 26: "strategy-twenty-six-from", 27: "strategy-twenty-seven-from", 28: "strategy-twenty-eight-from", 29: "strategy-twenty-nine-from", 30: "strategy-thirty-from", 31: "strategy-thirty-one-from", 32: "strategy-thirty-two-from"}[payload["strategy"]["strategy_number"]]
     if (envelope["source_candidate_id"] != f"{source_prefix}:{manifest['source_revision_id']}"
             or envelope["source_candidate_hash"] != manifest["source_payload_hash"]):
         raise ValueError("Numbered source provenance differs")
