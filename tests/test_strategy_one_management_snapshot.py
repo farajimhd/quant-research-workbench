@@ -61,6 +61,22 @@ def test_manager_snapshot_roundtrips_all_owned_state_without_json_columns():
                for table in TABLES for name, _ in table.columns)
 
 
+def test_nineteen_scalar_roundtrip_preserves_reference_without_claiming_source_authority():
+    from tests.test_strategy_nineteen_entry_authority import graph
+    proposal, _, _, _, _, _ = graph()
+    key = (proposal.account_id, proposal.assignment_id, proposal.ticker)
+    state = StrategyOneManagementState(proposal.boundary_ms, ((key, proposal),), (), ())
+    rows = project_manager_snapshot(run_id='nineteen-reference', session_date=date(2026, 8, 18),
+        checkpoint_sequence=1, state=state)
+    reference = restore_manager_snapshot(rows)
+    assert reference.submitted[0][1].momentum is None
+    assert reference.submitted[0][1].initial_momentum is None
+    assert replace(proposal, momentum=None, initial_momentum=None) == reference.submitted[0][1]
+    with pytest.raises(ValueError):
+        project_manager_snapshot(run_id='nineteen-reference', session_date=date(2026, 8, 18),
+            checkpoint_sequence=1, state=reference)
+
+
 def test_manager_snapshot_rejects_missing_or_modified_children():
     rows = _rows()
     with pytest.raises(ValueError, match="seal differs"):

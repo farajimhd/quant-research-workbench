@@ -8,6 +8,7 @@ Portfolio/OMS retains sole order authority and confirms protection changes.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import date
 from math import isfinite
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
@@ -114,7 +115,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position high lacks its active position")
         sources = dict(state.submitted)
         required = {key for key in keys["positions"]
-                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)}
+                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)}
         if keys["first_held_boundaries"] != required:
             raise ValueError("Strategy 9 position lacks its first held boundary")
         for key, boundary in state.first_held_boundaries:
@@ -178,7 +179,7 @@ class StrategyOneManagementRunner:
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         return state
 
-    def restore_state(self, state: StrategyOneManagementState) -> None:
+    def restore_state(self, state: StrategyOneManagementState, *, first_price_source=None) -> None:
         """Cold typed restore only; a populated manager cannot be overwritten."""
         if (self._submitted or self._positions or self._pending_breaks
                 or self._position_highs or self._closed_positions
@@ -187,12 +188,19 @@ class StrategyOneManagementRunner:
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         from src.trading_runtime.strategy_rising_momentum_witness import numbered_momentum_entry
         for _, proposal in state.submitted:
-            if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19) and (
+            if proposal.strategy_number == 20:
+                from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority, certified_price_entry_intent
+                if (type(first_price_source) is not CertifiedPriceReadbackAuthority
+                        or first_price_source.run_id != getattr(self.runtime, 'run_id', None)):
+                    raise ValueError("Strategy20 manager recovery lacks its native source context")
+                certified_price_entry_intent(first_price_source.plan, proposal,
+                    session_date=date.fromisoformat(first_price_source.plan.source.market.sessions[0]))
+            if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20) and (
                     not numbered_momentum_entry(proposal.momentum, proposal.strategy_number)
                     or proposal.momentum.ticker != proposal.ticker
                     or proposal.momentum.boundary_ms != proposal.boundary_ms):
                 raise ValueError("Strategy 13 manager recovery lacks its committed momentum source")
-            if proposal.strategy_number in (18, 19):
+            if proposal.strategy_number in (18, 19, 20):
                 from src.trading_runtime.strategy_initial_strong_momentum import (
                     validate_initial_momentum_selection, initial_strong_momentum_entry,
                 )
@@ -200,7 +208,7 @@ class StrategyOneManagementRunner:
                                                    episode_start_ms=proposal.episode_start_ms)
                 if not initial_strong_momentum_entry(proposal.momentum, proposal.initial_momentum.initial):
                     raise ValueError("Strategy 18 manager recovery lacks strong first-setup source")
-                if proposal.strategy_number == 19:
+                if proposal.strategy_number in (19, 20):
                     from src.trading_runtime.strategy_initial_momentum_growth import first_setup_momentum_growth_entry
                     if not first_setup_momentum_growth_entry(proposal.initial_momentum.initial.first_setup):
                         raise ValueError("Strategy 19 manager recovery requires premarket first-setup 50pct growth")

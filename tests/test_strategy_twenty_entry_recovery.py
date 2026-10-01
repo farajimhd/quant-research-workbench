@@ -107,3 +107,59 @@ def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound):
     assert 'certified source authority' in str(rejected.value.__cause__)
     with pytest.raises(ValueError, match='certified source authority'):
         load_committed_strategy_one_entry_page(client, prefix, first_price_source=source)
+
+
+@pytest.mark.parametrize('held', [False, True])
+def test_twenty_manager_scalar_snapshot_recovers_witnesses_from_real_typed_entry(held):
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+    from src.trading_runtime.strategy_one_management_snapshot import (
+        project_manager_snapshot, restore_manager_snapshot, attach_committed_momentum_sources,
+    )
+    from src.trading_runtime.strategy_one_position import ProtectionState
+    from tests.test_strategy_thirteen_manager_sources import manager
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    source = CertifiedPriceReadbackAuthority('twenty-manager', plan)
+    unit, proposal, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)))
+    client = attached_v4_client(ExactBits())
+    publish_strategy_one_entry_batch_v4(client, unit.base, entry_evidence=unit.entry_evidence,
+        momentum_evidence=unit.momentum_evidence, initial_momentum_evidence=unit.initial_momentum_evidence,
+        first_price_evidence=unit.first_price_evidence, first_price_authorities=unit.first_price_authorities)
+    prefix = load_verified_v4_prefix(client, source.run_id, first_price_source=source)
+    key = (proposal.account_id, proposal.assignment_id, proposal.ticker)
+    state = StrategyOneManagementState(42000, ((key, proposal),),
+        ((key, ProtectionState(42000, proposal.initial_stop, proposal.initial_target)),) if held else (),
+        (), ((key, 100100),) if held else (), (), ((key, 31100),) if held else ())
+    rows = project_manager_snapshot(run_id=source.run_id, session_date=date(2026, 8, 18),
+        checkpoint_sequence=1, state=state, first_price_source=source)
+    reference = restore_manager_snapshot(rows)
+    assert reference.submitted[0][1].first_price is None
+    assert reference.submitted[0][1].momentum is None
+    restored = attach_committed_momentum_sources(client, prefix, reference, first_price_source=source)
+    assert restored == state
+    runner = manager()  # Existing installed policy only; no20 release registration.
+    runner.runtime.run_id = source.run_id
+    runner.restore_state(restored, first_price_source=source)
+    assert runner.capture_state(boundary_ms=42000) == state
+    with pytest.raises(ValueError, match='native source context'):
+        project_manager_snapshot(run_id=source.run_id, session_date=date(2026, 8, 18), checkpoint_sequence=1, state=state)
+    with pytest.raises(ValueError, match='native source context'):
+        manager().restore_state(state)
+
+
+@pytest.mark.parametrize('node', ['_project_manager_snapshot_scalar', 'restore_manager_snapshot'])
+def test_scalar_recovery_encoding_remains_bound_to_reviewed_source(tmp_path, node):
+    import ast
+    from pathlib import Path
+    from src.backend.backtest_fixed_v4_certification import certify_rising_momentum_entry_source
+    assert len(certify_rising_momentum_entry_source()) == 64
+    relative = 'trading_runtime/strategy_one_management_snapshot.py'
+    original = (Path(__file__).parents[1] / 'src' / relative).read_text(encoding='utf-8')
+    tree = ast.parse(original)
+    target = next(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == node)
+    target.body.append(ast.Raise(exc=ast.Call(func=ast.Name(id='RuntimeError', ctx=ast.Load()),
+        args=[ast.Constant(value='changed recovery contract')], keywords=[]), cause=None))
+    altered = tmp_path / 'changed_snapshot.py'
+    altered.write_text(ast.unparse(ast.fix_missing_locations(tree)), encoding='utf-8')
+    with pytest.raises(ValueError, match='reviewed source authority changed'):
+        certify_rising_momentum_entry_source(source_overrides={relative: altered})

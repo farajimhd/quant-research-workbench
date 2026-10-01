@@ -2224,3 +2224,21 @@ the independent source.149 focused regression checks passed across journal,
 compound/recovery,19, source guards and ordinary intent paths. Manager recovery,
 hot typed projection, runtime admission, numbered publication and operational
 storage remain pending; no new portfolio PnL or holdout tuning occurred.
+
+### Strategy20 manager source recovery
+
+Manager snapshot recovery exposed an existing Strategy19 round-trip bug:
+scalar snapshots deliberately omit entry witnesses, but their shape verifier
+called the public capture serializer, which requires those witnesses. A private
+scalar encoder now checks the unchanged scalar shape and hashes. Public capture
+still validates entry sources; attested recovery and publication join verified
+journal entries before returning or publishing a qualified state.
+
+Staged Strategy20 capture and manager restore additionally require the exact
+native price source context and run identity. Pending and held snapshots recover
+all witnesses from actual typed entry-journal fixtures. First-held boundaries
+remain mandatory for held20 positions. Recovery scans retain their existing
+bounded paging; the source plan is reused rather than recomputed per entry.
+The reviewed source seal covers the scalar encoder and recovery route separately.
+Operational runtime wiring, numbered release and actual20 portfolio backtests
+remain pending. These tests do not establish profitability.

@@ -195,8 +195,36 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
                              checkpoint_sequence: int,
                              state: StrategyOneManagementState,
                              max_pending_breaks: int = 256,
+                             first_price_source=None) -> ManagerSnapshotRows:
+    """Validate capture sources before encoding their nonredundant references."""
+    StrategyOneManagementRunner._validate_capture(state, max_pending_breaks=max_pending_breaks)
+    for _, proposal in state.submitted:
+        if proposal.strategy_number == 20:
+            from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority, certified_price_entry_intent
+            if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id != run_id:
+                raise ValueError("Strategy20 manager capture requires its native source context")
+            certified_price_entry_intent(first_price_source.plan, proposal, session_date=session_date)
+        if proposal.strategy_number == 19:
+            from .arte_initial_momentum_entry_v4 import _selection
+            _selection(proposal.momentum, proposal.initial_momentum, 19)
+            if (proposal.momentum.ticker != proposal.ticker
+                    or proposal.momentum.boundary_ms != proposal.boundary_ms
+                    or proposal.initial_momentum.initial.episode_start_ms != proposal.episode_start_ms):
+                raise ValueError("Strategy 19 manager source differs from initial selection")
+    return _project_manager_snapshot_scalar(run_id=run_id, session_date=session_date,
+        checkpoint_sequence=checkpoint_sequence, state=state, max_pending_breaks=max_pending_breaks)
+
+
+def _project_manager_snapshot_scalar(*, run_id: str, session_date: date,
+                             checkpoint_sequence: int,
+                             state: StrategyOneManagementState,
+                             max_pending_breaks: int = 256,
                              ) -> ManagerSnapshotRows:
-    """One complete, scalar state root at a completed journal cursor."""
+    """Encode bounded scalar references; this alone attests no entry source.
+
+    Recovery uses this encoder only to verify stored shape/hash round trips.
+    Publication and attested recovery independently join the entry journal.
+    """
     StrategyOneManagementRunner._validate_capture(
         state, max_pending_breaks=max_pending_breaks)
     positions = {(key[0], key[2], key[1]): value
@@ -212,13 +240,6 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
     sources = []
     for key, proposal in state.submitted:
         account, assignment, ticker = key
-        if proposal.strategy_number == 19:
-            from .arte_initial_momentum_entry_v4 import _selection
-            _selection(proposal.momentum, proposal.initial_momentum, 19)
-            if (proposal.momentum.ticker != proposal.ticker
-                    or proposal.momentum.boundary_ms != proposal.boundary_ms
-                    or proposal.initial_momentum.initial.episode_start_ms != proposal.episode_start_ms):
-                raise ValueError("Strategy 19 manager source differs from initial selection")
         if (not 0 < proposal.boundary_ms <= state.boundary_ms
                 or proposal.episode_start_ms > proposal.boundary_ms
                 or not proposal.target_level_id or not proposal.bos_support_level_id
@@ -281,7 +302,7 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
                 position_high_hash=_digest([row["content_hash"] for row in highs]),
                 closed_position_count=len(closed),
                 closed_position_hash=_digest([row["content_hash"] for row in closed]))
-    if first_held or any(proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19) for _, proposal in state.submitted):
+    if first_held or any(proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20) for _, proposal in state.submitted):
         seal.update(first_held_count=len(first_held),
                     first_held_hash=_digest([row["content_hash"] for row in first_held]))
     return ManagerSnapshotRows(
@@ -389,7 +410,7 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                int(row["first_held_boundary_ms"])) for row in rows.first_held_boundaries))
     StrategyOneManagementRunner._validate_capture(
         state, max_pending_breaks=max_pending_breaks)
-    if project_manager_snapshot(
+    if _project_manager_snapshot_scalar(
             run_id=seal["run_id"],
             session_date=date.fromisoformat(seal["session_date"]),
             checkpoint_sequence=seal["checkpoint_sequence"],
@@ -461,6 +482,7 @@ def load_unattested_manager_snapshot_rows(
 def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReader,
                                    *, run_id: str,
                                    checkpoint_sequence: int,
+                                   first_price_source=None,
                                    ) -> StrategyOneManagementState:
     """Read only a Keeper-selected snapshot at the exact cold V4 cursor."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
@@ -471,7 +493,8 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
             or not callable(getattr(client, "execute", None))
             or not callable(getattr(keeper, "read_head", None))):
         raise ValueError("Strategy 1 manager cold read lacks exact authorities")
-    prefix = load_verified_v4_prefix(client, run_id)
+    prefix = (load_verified_v4_prefix(client, run_id) if first_price_source is None else
+              load_verified_v4_prefix(client, run_id, first_price_source=first_price_source))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not prefix.batch_ids
@@ -500,13 +523,16 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
             or rows.snapshot["boundary_ms"] != cursor.get("boundary_ms")
             or rows.snapshot["session_date"] != cursor.get("session_date")):
         raise RuntimeError("Strategy 1 manager seal differs from selected cursor")
-    state = attach_committed_momentum_sources(client, prefix, restore_manager_snapshot(rows))
+    state = (attach_committed_momentum_sources(client, prefix, restore_manager_snapshot(rows))
+             if first_price_source is None else attach_committed_momentum_sources(client, prefix,
+                 restore_manager_snapshot(rows), first_price_source=first_price_source))
     if keeper.read_head(run_id=run_id) != first:
         raise RuntimeError("Strategy 1 manager Keeper head changed during cold read")
     return state
 
 
-def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneManagementState
+def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneManagementState,
+                                     *, first_price_source=None
                                      ) -> StrategyOneManagementState:
     """Resolve Strategy 13 snapshot references from their sole entry authority.
 
@@ -516,22 +542,29 @@ def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneMan
     """
     from .arte_strategy_one_entry_journal import load_committed_strategy_one_entry_page
     wanted = {(key, proposal.boundary_ms): proposal for key, proposal in state.submitted
-              if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19)}
+              if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20)}
     if not wanted:
         return state
+    def reference(value):
+        if value.strategy_number == 20:
+            return replace(value, momentum=None, initial_momentum=None,
+                           first_price=None, price_source_token=None)
+        return replace(value, momentum=None, initial_momentum=None)
+
     found, after = {}, 0
     # Bound the cold intent scan; a longer journal needs an explicit indexed
     # recovery contract instead of silent truncation or an unbounded query.
     for _ in range(200):
-        page = load_committed_strategy_one_entry_page(client, prefix,
-            after_sequence=after, limit=500)
+        page = (load_committed_strategy_one_entry_page(client, prefix,
+            after_sequence=after, limit=500) if first_price_source is None else
+            load_committed_strategy_one_entry_page(client, prefix,
+                after_sequence=after, limit=500, first_price_source=first_price_source))
         for entry in page.entries:
             proposal = entry.proposal
             identity = ((proposal.account_id, proposal.assignment_id, proposal.ticker),
                         proposal.boundary_ms)
             if identity in wanted:
-                if identity in found or replace(proposal, momentum=None, initial_momentum=None) != replace(
-                        wanted[identity], momentum=None, initial_momentum=None):
+                if identity in found or reference(proposal) != reference(wanted[identity]):
                     raise RuntimeError("Manager momentum source differs from snapshot reference")
                 found[identity] = proposal
         if len(found) == len(wanted):
@@ -547,7 +580,7 @@ def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneMan
 
 def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
                              rows: ManagerSnapshotRows, *,
-                             journal_batch_id: str) -> ManagerSnapshotHead:
+                             journal_batch_id: str, first_price_source=None) -> ManagerSnapshotHead:
     """Journal-worker-only rows-first, head-last publication at a V4 cursor.
 
     A lost INSERT response leaves a pending Keeper operation and stops this
@@ -575,12 +608,14 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise ValueError("Manager snapshot batch ID is invalid") from exc
-    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    prefix = (load_writer_v4_snapshot_prefix(client, run_id) if first_price_source is None else
+              load_writer_v4_snapshot_prefix(client, run_id, first_price_source=first_price_source))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != sequence
             or prefix.last_batch_id != journal_batch_id):
         raise RuntimeError("Manager snapshot lacks exact running V4 cursor")
-    restored = attach_committed_momentum_sources(client, prefix, restored)
+    restored = (attach_committed_momentum_sources(client, prefix, restored) if first_price_source is None else
+                attach_committed_momentum_sources(client, prefix, restored, first_price_source=first_price_source))
     cursor = load_latest_backtest_cursor(client, prefix)
     if (not isinstance(cursor, dict)
             or cursor.get("run_id") != run_id
