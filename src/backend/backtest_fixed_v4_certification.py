@@ -71,7 +71,16 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
 def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
     if strategy_number == 31:
-        raise ValueError('Strategy 31 requires complete profit-route source certification before execution')
+        from .backtest_strategy_profit_certification import certify_profit_giveback_route_source
+        from src.trading_runtime.strategy_thirty_one_release import release_contract
+        # Reuse all inherited execution proofs rather than bypassing their
+        # numbered rule checks; bind the complete additional route separately.
+        parent_proof = certify_numbered_fixed_v4_projection(30)
+        profit_proof = certify_profit_giveback_route_source()
+        release = release_contract()
+        release.verify()
+        return sha256(json.dumps((parent_proof, profit_proof, release.approved_digest),
+                                 separators=(',', ':')).encode()).hexdigest()
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
     followthrough_proof = certify_followthrough_failure_v4_source() if strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30) else ""

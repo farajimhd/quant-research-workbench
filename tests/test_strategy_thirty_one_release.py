@@ -55,7 +55,7 @@ def test_installed_capabilities_inherit_parent_and_numbered_session_identity():
     assert numbered_session_exit_reason(31) == 'strategy_thirty_one_session_exit'
 
 
-def test_registration_does_not_substitute_for_complete_execution_certification():
+def test_execution_certification_binds_parent_and_complete_profit_route():
     from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
-    with pytest.raises(ValueError, match='complete profit-route source certification'):
-        certify_numbered_fixed_v4_projection(31)
+    proof = certify_numbered_fixed_v4_projection(31)
+    assert len(proof) == 64 and proof != certify_numbered_fixed_v4_projection(30)
