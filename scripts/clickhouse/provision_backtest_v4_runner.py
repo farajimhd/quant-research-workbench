@@ -52,6 +52,7 @@ from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE
+from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
 from src.trading_runtime.arte_reservation_reason_v4 import RESERVATION_REASON
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
@@ -148,7 +149,7 @@ def desired_plan() -> PrincipalPlan:
                                           V4_ALLOCATION,
                                           RESERVATION_REASON,
                                           ACKNOWLEDGEMENT, CANCEL,
-                                          REPRICE, FAILURE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE,
+                                          REPRICE, FAILURE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, PROFIT_GIVEBACK,
                                           *OMS_TACTIC_TABLES,
                                           *RISK_ACTION_TABLES,
                                           *PROTECTION_CHANGE_TABLES,
