@@ -58,8 +58,21 @@ def release_contract() -> NumberedStrategyRelease:
     return release
 
 
+def verify_installed_strategy_thirty_four_release(manifest):
+    """Require the exact installed Backtest catalog seal before selection."""
+    from .strategy_registry import numbered_strategy, fixed_strategy_executor
+    installed = numbered_strategy(34)
+    expected = release_contract()
+    fixed = fixed_strategy_executor(installed.executor_strategy_id, installed.executor_revision)
+    fixed.verify()
+    if (installed != expected or manifest.get('contract') != expected.canonical_payload()
+            or manifest.get('approved_digest') != expected.approved_digest):
+        raise ValueError('Strategy 34 published release differs from installed approval')
+    return installed
+
+
 def verify_strategy_thirty_four_manifest(strategy):
-    """Pure declared-content verification; installed executor checks remain separate."""
+    """Validate exact policy content, installed identity and approval seal."""
     release = release_contract()
     if (type(strategy.get('strategy_number')) is not int or strategy['strategy_number'] != 34
             or type(strategy.get('revision')) is not int or strategy['revision'] != 34
@@ -88,6 +101,7 @@ def verify_strategy_thirty_four_manifest(strategy):
     seal = sha256(canonical_json({k: v for k, v in manifest.items() if k != 'manifest_hash'}).encode()).hexdigest()
     if manifest['manifest_hash'] != seal:
         raise ValueError('Strategy 34 approval/code manifest seal differs')
+    verify_installed_strategy_thirty_four_release(manifest)
     return manifest
 
 

@@ -1,4 +1,4 @@
-"""Prepared immutable declaration checks; no installed executor or publication."""
+"""Immutable declaration and installed selection checks; no connected publication."""
 from copy import deepcopy
 from dataclasses import replace
 
@@ -66,6 +66,31 @@ def test_compiler_preserves_parent_trading_data_and_does_not_mutate_source():
         assert payload['strategy'][name] == before['strategy'][name]
     child.verify_strategy_thirty_four_manifest(payload['strategy'])
     assert result['source_candidate_hash'] == child.PARENT_PAYLOAD_HASH
+
+
+def test_native_configuration_selection_and_envelope_use_installed34(monkeypatch):
+    from test_strategy_thirty_three_configuration import APPROVAL
+    from src.backend.backtest_strategy_one_configuration import (
+        is_numbered_fixed_configuration, selected_numbered_revision,
+    )
+    from pipelines.strategy_one.configuration_publisher import _verified_numbered_envelope
+    result = child.derive_strategy_thirty_four_configuration(typed_parent_fixture(), **APPROVAL)
+    assert is_numbered_fixed_configuration(result['payload'])
+    payload, nodes = _verified_numbered_envelope(result)
+    assert nodes and payload == result['payload']
+    assert child.verify_installed_strategy_thirty_four_release(
+        result['payload']['strategy']['numbered_release']) == child.release_contract()
+    from src.backend import backtest_strategy_one_configuration as configurations
+    selected = replace(typed_parent_fixture(),
+        attempt_id='00000000-0000-0000-0000-000000000034', payload=payload)
+    calls = []
+    def certified_fixture(client, number):
+        calls.append(number)
+        return selected
+    monkeypatch.setattr(configurations, 'certify_numbered_configuration', certified_fixture)
+    revision = selected_numbered_revision(client=object(),
+        revision_id='strategy-one-34:00000000-0000-0000-0000-000000000034')
+    assert revision == selected.revision() and calls == [34]
 
 
 @pytest.mark.parametrize('policy', [*child.INHERITED_POLICIES, 'profit_protection_policy', 'confirmed_ah_failure_policy'])
