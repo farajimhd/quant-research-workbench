@@ -10,12 +10,32 @@ from research.rl_trading.v6.model import BracketPolicy
 from research.rl_trading.v6.ranked_policy import RankedBracketActorCritic
 from research.rl_trading.v6.session_data import PackedSession
 from research.rl_trading.v6.training import (ExecutionOutcome,
-                                             TeacherDecision, train_session)
+                                             TeacherDecision, train_session,
+                                             teacher_loss_balance)
+
+
+def test_session_balance_uses_fixed_denominator_and_mean_one_weights():
+    from types import SimpleNamespace
+    labels = [SimpleNamespace(token=0, held_index=()) for _ in range(9)]
+    labels.append(SimpleNamespace(token=1, held_index=()))
+    weights, denominator = teacher_loss_balance(tuple(labels), 2,
+        np.asarray([1_000_000, 64_000_000]), 32)
+    assert denominator == 5.
+    assert weights[1] / weights[0] == pytest.approx(3.)
+    assert (weights[0]*9 + weights[1])/10 == pytest.approx(1.)
+    # One label's gradient has the same coefficient in a sparse or dense
+    # block. Summing repeated labels changes total influence, not each label.
+    x = torch.tensor(1., requires_grad=True)
+    (torch.stack([x]*1).sum()/denominator).backward()
+    single = x.grad.clone(); x.grad = None
+    (torch.stack([x]*9).sum()/denominator).backward()
+    assert x.grad == pytest.approx(float(single)*9)
 
 
 @pytest.mark.parametrize('policy_type', [BracketPolicy, RankedBracketActorCritic])
 @pytest.mark.parametrize('evaluation', [False, True])
-def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_type, evaluation):
+@pytest.mark.parametrize('teacher_loss', ['legacy', 'balanced-v2'])
+def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_type, evaluation, teacher_loss):
     clocks = np.asarray([1_000_000, 2_000_000, 1_000_000, 2_000_000],
                         dtype=np.int64)
     scalar = np.zeros((4, 37), dtype=np.float32)
@@ -49,7 +69,8 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
     optimizer = torch.optim.AdamW(policy.parameters(), lr=.001)
     metrics = train_session(policy, optimizer, session, decisions, outcomes,
         device=torch.device('cpu'), clocks_per_chunk=2, evaluation=evaluation,
-        learning_rate_for_clock=lambda clock: .000123)
+        learning_rate_for_clock=lambda clock: .000123,
+        teacher_loss=teacher_loss)
     assert metrics.decisions == 2 and metrics.execution_outcomes == 1
     assert metrics.optimizer_steps == (0 if evaluation else 1)
     assert np.isfinite(metrics.mean_loss)
@@ -57,6 +78,7 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
     assert metrics.action_class_counts['set_stop'] == 1
     assert sum(metrics.action_class_counts.values()) == metrics.decisions
     assert metrics.buy_size_mae is not None
+    assert metrics.entry_token_accuracy is not None
     assert metrics.stop_log_distance_mae is not None
     assert metrics.target_log_distance_mae is None
     assert all(0 <= value <= 1 for value in metrics.action_class_f1.values())

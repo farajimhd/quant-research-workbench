@@ -89,6 +89,8 @@ def main(argv=None):
     parser.add_argument('--teacher-epochs',type=int,default=10)
     parser.add_argument('--teacher-only',action='store_true',
         help='Teacher initialization and per-epoch development label evaluation; no trading replay or PPO')
+    parser.add_argument('--teacher-loss',choices=('legacy','balanced-v2'),default='legacy',
+        help='Versioned action balancing and fixed per-session block normalization')
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
     parser.add_argument('--learning-rate',type=float,default=3e-4)
@@ -191,7 +193,7 @@ def main(argv=None):
         parent_payload=torch.load(args.resume_from,map_location=device,weights_only=False)
         if parent_payload['manifest_hash']!=parent_manifest['hash']:
             raise ValueError('Parent checkpoint manifest mismatch')
-        ignored={'run_root','teacher_lr_schedule','warmup_epochs','minimum_lr_ratio','resume_from'}
+        ignored={'run_root','teacher_lr_schedule','warmup_epochs','minimum_lr_ratio','resume_from','teacher_loss'}
         current=manifest['config']; previous={'broker_engine':'reference','compile_broker':False,
             'broker_participation':.1,'decoder_batch_size':1,**parent_manifest['config']}
         if ({k:v for k,v in current.items() if k not in ignored} !=
@@ -344,6 +346,7 @@ def main(argv=None):
                             decisions,outcomes=load_teacher(Path(entry['teacher_root']),session,runtime_root=runtime)
                             result=asdict(train_session(policy,optimizer,session,decisions,outcomes,
                                 device=device,clocks_per_chunk=args.clocks_per_chunk,
+                                teacher_loss=args.teacher_loss,
                                 learning_rate_for_clock=teacher_rate if args.teacher_lr_schedule=='cosine' else None,
                                 progress_callback=pulse('progress/teacher',session.day,epoch)))
                             result['learning_rate']=optimizer.param_groups[0]['lr']

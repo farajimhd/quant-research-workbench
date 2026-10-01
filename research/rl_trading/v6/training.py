@@ -79,6 +79,27 @@ class TrainingMetrics:
     buy_size_mae: float | None
     stop_log_distance_mae: float | None
     target_log_distance_mae: float | None
+    entry_token_accuracy: float | None = None
+
+
+def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk):
+    """Fixed per-session normalization; no per-block density reweighting.
+
+    Inverse-square-root class weights have empirical mean one. Only the
+    action CE is balanced: conditional size/bracket regressions retain their
+    original weight. All labels in a session share one denominator, including
+    the last partial block. Coordinates are existing certified bank data.
+    """
+    classes = np.asarray([_action_class(d.token, listings, len(d.held_index))
+                          for d in decisions], dtype=np.int64)
+    counts = np.bincount(classes, minlength=5)
+    weights = np.zeros(5, dtype=np.float64)
+    present = counts > 0
+    weights[present] = 1 / np.sqrt(counts[present])
+    weights /= np.dot(weights, counts) / len(decisions)
+    span = (int(np.max(close_us)) - int(np.min(close_us))) // 1_000_000 + 1
+    blocks = max(1, math.ceil(span / clocks_per_chunk))
+    return weights, max(1., len(decisions) / blocks)
 
 
 def _validate(decisions: tuple[TeacherDecision, ...],
@@ -159,7 +180,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   outcomes: tuple[ExecutionOutcome, ...], *,
                   device: torch.device, clocks_per_chunk: int = 32,
                   grad_clip: float = 1., progress_callback=None,
-                  evaluation: bool = False, learning_rate_for_clock=None) -> TrainingMetrics:
+                  evaluation: bool = False, learning_rate_for_clock=None,
+                  teacher_loss: str = 'legacy') -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Decisions use current completed candles and outcomes up to that close.
@@ -169,7 +191,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     and never reads or mutates an optimizer.
     """
     if (session.role not in (('development',) if evaluation else ('train',)) or clocks_per_chunk < 1 or grad_clip <= 0 or
-            not decisions):
+            not decisions or teacher_loss not in ('legacy', 'balanced-v2')):
         raise ValueError('V6 trainer requires a train session and labels')
     listings = len(session.listings)
     ranked = hasattr(policy, 'observe_market')
@@ -177,6 +199,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         policy.reset_market(listings)
     pending_entries = {}
     _validate(decisions, outcomes, listings)
+    balance, loss_denominator = (teacher_loss_balance(decisions, listings,
+        session.bank.close_us, clocks_per_chunk)
+        if teacher_loss == 'balanced-v2' and not evaluation else (None, None))
     state = SparseCandleState.empty(policy.encoder, listings, device=device,
                                     dtype=torch.float32)
     seed_previous_session(state, policy.encoder, session.listings,
@@ -189,6 +214,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     observed_decisions = 0
     updates = 0
     loss_sum = correct_sum = 0.
+    entry_correct = 0
     confusion = np.zeros((5, 5), dtype=np.int64)
     conditional_sum = np.zeros(3, dtype=np.float64)
     conditional_count = np.zeros(3, dtype=np.int64)
@@ -199,6 +225,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     while chunk := tuple(islice(event_iter, clocks_per_chunk)):
         labeled = any(event.close_us in decision_groups for event in chunk)
         pending_losses = []
+        pending_objectives = []
         pending_correct = []
         pending_predictions = []
         pending_conditional = ([], [], [])
@@ -254,16 +281,23 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     if ranked and logits[item.token] == torch.finfo(logits.dtype).min:
                         raise ValueError('Teacher action outside causal ranked universe; '
                                          'audit top_r/sort_secs coverage before training')
-                    loss, metrics = bracket_loss(logits, sizes, stops,
+                    target_class = _action_class(item.token, listings,
+                                                 len(item.held_index))
+                    objective, metrics = bracket_loss(logits, sizes, stops,
                         targets, token=item.token,
                         size_fraction=item.size_fraction,
-                        oracle_log_distance=item.oracle_log_distance)
+                        oracle_log_distance=item.oracle_log_distance,
+                        action_weight=float(balance[target_class])
+                        if balance is not None else 1.)
+                    # Monitoring remains the original unweighted loss, so
+                    # pre/post-fix and development values remain comparable.
+                    loss = (metrics['action_loss'] + metrics['size_loss'] +
+                            metrics['bracket_loss'])
                     pending_losses.append(loss)
                     pending_correct.append(metrics['action_correct'])
                     pending_predictions.append((logits.detach().argmax(),
                         item.token, len(item.held_index)))
-                    target_class = _action_class(item.token, listings,
-                                                 len(item.held_index))
+                    pending_objectives.append(objective)
                     if target_class in (1, 3, 4):
                         slot = {1: 0, 3: 1, 4: 2}[target_class]
                         pending_conditional[slot].append(
@@ -273,7 +307,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     if 1 <= item.token <= listings:
                         pending_entries[(item.close_us, item.order_index)] = item.token-1
         if pending_losses:
-            mean = torch.stack(pending_losses).mean()
+            mean = (torch.stack(pending_objectives).sum() / loss_denominator
+                    if balance is not None else torch.stack(pending_objectives).mean())
             if not torch.isfinite(mean):
                 raise ValueError('Nonfinite teacher objective')
             if not evaluation:
@@ -293,6 +328,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                                      pending_predictions]).cpu().tolist()
             for selected, (_, target, held) in zip(predicted,
                                                     pending_predictions):
+                if 1 <= target <= listings:
+                    entry_correct += int(selected == target)
                 confusion[_action_class(target, listings, held),
                           _action_class(selected, listings, held)] += 1
             for slot, values in enumerate(pending_conditional):
@@ -328,4 +365,6 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                            loss_sum / observed_decisions,
                            correct_sum / observed_decisions,
                            counts, precision, recall, f1,
-                           *conditional_mae)
+                           *conditional_mae,
+                           entry_correct / counts['enter_long']
+                           if counts['enter_long'] else None)

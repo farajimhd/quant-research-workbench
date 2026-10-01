@@ -16,6 +16,7 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
                  target_distances: torch.Tensor, *, token: int,
                  size_fraction: float | None = None,
                  oracle_log_distance: float | None = None,
+                 action_weight: float = 1.,
                  ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Score one ordered teacher action with shape [1+N+3H].
 
@@ -23,6 +24,8 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
     EXIT_LONG, SET_STOP, SET_TARGET. Stop distance is log(entry/stop), target
     distance is log(target/entry); both are positive and scale-free.
     """
+    if not math.isfinite(action_weight) or action_weight <= 0:
+        raise ValueError('Invalid action loss weight')
     listings, holdings = sizes.numel(), stop_distances.numel()
     if (logits.ndim != 1 or target_distances.shape != (holdings,) or
             logits.shape != (1 + listings + 3 * holdings,) or
@@ -69,7 +72,7 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
         bracket = F.smooth_l1_loss(predicted,
             raw.new_tensor(oracle_log_distance))
         bracket_absolute_error = (predicted-oracle_log_distance).abs()
-    return action + size + bracket, {
+    return action_weight * action + size + bracket, {
         'action_loss': action.detach(), 'size_loss': size.detach(),
         'bracket_loss': bracket.detach(),
         'size_absolute_error': size_absolute_error.detach(),

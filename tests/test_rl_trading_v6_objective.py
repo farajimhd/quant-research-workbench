@@ -6,6 +6,20 @@ import torch
 from research.rl_trading.v6.objective import bracket_loss
 
 
+def test_balancing_scales_entry_gradient_not_conditional_regression_or_metrics():
+    gradients = []
+    for weight in (1., 1.5):
+        logits = torch.zeros(3, requires_grad=True)
+        sizes = torch.tensor([.2, .5], requires_grad=True)
+        loss, metrics = bracket_loss(logits, sizes, torch.empty(0),
+            torch.empty(0), token=1, size_fraction=.8, action_weight=weight)
+        loss.backward()
+        gradients.append((logits.grad.clone(), sizes.grad.clone(), metrics))
+    assert torch.allclose(gradients[1][0], gradients[0][0]*1.5)
+    assert torch.equal(gradients[0][1], gradients[1][1])
+    assert torch.equal(gradients[0][2]['action_loss'], gradients[1][2]['action_loss'])
+
+
 def test_conditional_size_and_stop_target_have_gradients():
     # N=2 listings, H=1 held position, action axis is [HOLD, 2 ENTER,
     # EXIT, SET_STOP, SET_TARGET]. Only the chosen conditional head trains.
