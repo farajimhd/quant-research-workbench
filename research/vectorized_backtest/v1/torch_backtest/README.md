@@ -132,6 +132,84 @@ no per-tick device-to-host scalar reads, transfers or dataframe executions.
 
 ## Searching the parameters
 
+### V6's five levels on each side
+
+The Torch catalog now includes **170 V7 atomic inputs**: ten nearest slots,
+each with V6's eleven fields plus three basis-point distances and three absolute
+prices. The original V6 `[C,2,5,11]` ordering is preserved: below/equal first,
+above second, nearest center first on each side. Support/resistance/transition
+remain separate role flags. For example:
+
+```text
+v7.above[0].center_distance_rel   # return fraction from that candle's close
+v7.above[0].center_distance_bps   # same distance × 10,000
+v7.below[2].lower_price          # raw ARTE candle close × (1 + V6 distance)
+v7.above[4].log_observation_count
+v7.below[0].present
+```
+
+Every field is an atomic scalar operand with an explicit unit. Counts and age
+retain V6's `log1p` representation and have dimensionless ratio units; comparing
+them directly to raw count or seconds parameters is rejected. Role/history
+flags are Boolean. An empty slot's presence is known false; its other fields
+are masked unknown. A candle without a V6 record cannot grant permission.
+Absolute prices use the matching pinned ARTE close, not the later decision
+price. Bps and price variants are deterministic projections of V6 geometry.
+
+`v7_example(lookback=12)` enters when both nearest slots are present and the
+rolling mean of nearest-above center distance exceeds a parameterized bps gap.
+It sets a stop from the nearest-below lower band multiplied by a searchable
+price ratio, and a target from the nearest-above center. These are generic
+research rules, not a reproduction of the released V7 lifecycle.
+
+Source-history operations work on V7 numeric fields and `BAR_LAG` also works on
+presence/role flags. The logical history layout is `[N,H,2,5,11]`; the replay
+materializes only the requested atomic fields, not a dense full level-history
+tensor. History follows each **ranked slot at each actual completed candle**.
+Its underlying level may change; the tensor does not contain persistent level
+IDs. The adapter uses this session's candles; it does not prepend prior-day
+level history. Unknown initial windows suppress actions until enough current
+session observations exist.
+
+V7 policies require an existing **certified V6 day directory**, its declared
+prior directory, and their runtime root. `prepare_session(...,
+v6_day_root=..., v6_previous_root=..., v6_runtime_root=...)` verifies V6's
+day/plan/census/file certificates and checks that the source build, definition
+and attempt-unit hash match the backtest. It then fetches the existing ARTE
+watchlist projection and reads only watchlist listings' level records from the
+bank. It never generates structural levels or reads retrospective levels as an
+intraday substitute. Missing listing/bank certificates fail closed; certified
+listings with no V7 coverage retain V6's masked empty slots.
+
+Bank integrity verification hashes the complete current/prior bank files once
+when preparing the session, including non-watchlist data. This can be expensive
+over the workstation share and is reported separately from projection/replay.
+Repeated objective evaluations reuse the resident tape. The benchmark results
+below predate this adapter and do not include that V7 certificate cost.
+
+To run the new policy, add these arguments to the launcher command below:
+
+```powershell
+--example v7 --lookback 12 --v6-day-root //DESKTOP-SAAI85T/Workstation-D/TradingML/runtimes/rl-v6-forward-40cd11fac/2026-08-18 --v6-previous-root //DESKTOP-SAAI85T/Workstation-D/TradingML/runtimes/rl-v6-forward-40cd11fac/2026-08-17 --v6-runtime-root //DESKTOP-SAAI85T/Workstation-D/TradingML/runtimes
+```
+
+These are existing certified session paths; the consumer does not create them.
+The default `history` example and non-V7 loader behavior remain unchanged.
+
+The adapter was validated on the real Aug 18 certified V6 bank for
+**04:00–04:10 America/New_York**, 96 watchlist listings, 600 strategy decisions
+and 600 broker intervals. Three compiled-graph GPU replays took 12.84, 11.67
+and 12.82 ms (**median 12.82 ms**). Full account/final state matched Polars at
+1e-7 monetary tolerance with exact integer state; the oracle took 3.52 s.
+Current/prior V6 certificate verification cost **159.42 s**, market preparation
+**29.88 s**, and level projection **2.05 s**. Total preparation was 191.37 s,
+followed by 0.14 s alignment, 0.002 s transfer, 8.46 s JIT and 0.005 s capture.
+One cold evaluation was therefore approximately **200 s**, excluding export and
+oracle validation. The 12.82 ms result is the resident replay, not that cold
+pipeline. This is an expression policy, with no neural model inference. The
+immutable run report is `57d3c11c435a4038b205259bb129af7e/report.json` beneath
+the launcher runtime root.
+
 ```python
 from research.vectorized_backtest.v1.torch_backtest import (
     ReplayRunner,
@@ -241,6 +319,7 @@ The number of concurrent candidates also remains bounded by state memory.
 | `replay.py` | Orders, shared cash, partial fills, actions, equity and objective |
 | `examples.py` | Seeded original policy and searchable source-history policy |
 | `vocabulary.py` | Operation labels and constraints for future search |
+| `v7.py` | V6 fixed-slot atomic catalog and certified day-bank adapter |
 | `reference.py` | Independent offline source-window/Polars oracle |
 | `export.py` | Explicit host reporting boundary |
 | `run_backtest.py` | Real-data launcher, timing and immutable run artifacts |

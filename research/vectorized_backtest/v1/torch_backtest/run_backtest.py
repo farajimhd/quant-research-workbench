@@ -35,6 +35,7 @@ from research.vectorized_backtest.v1.torch_backtest import (
 from research.vectorized_backtest.v1.torch_backtest.examples import (
     history_example,
     seeded_example,
+    v7_example,
 )
 from research.vectorized_backtest.v1.torch_backtest.export import to_frames
 from research.vectorized_backtest.v1.torch_backtest.reference import evaluate_reference
@@ -48,7 +49,12 @@ def main(argv=None):
         choices=("eager", "compile", "cudagraph", "compiled_graph"),
         default="compiled_graph",
     )
-    parser.add_argument("--example", choices=("seeded", "history"), default="history")
+    parser.add_argument(
+        "--example", choices=("seeded", "history", "v7"), default="history"
+    )
+    parser.add_argument("--v6-day-root", type=Path)
+    parser.add_argument("--v6-previous-root", type=Path)
+    parser.add_argument("--v6-runtime-root", type=Path)
     parser.add_argument("--lookback", type=int, default=12)
     parser.add_argument("--seed", type=int, default=20261001)
     parser.add_argument("--date", default="2026-08-18")
@@ -71,6 +77,12 @@ def main(argv=None):
         default=Path("D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v1"),
     )
     args = parser.parse_args(argv)
+    if args.example == "v7" and (
+        args.v6_day_root is None or args.v6_runtime_root is None
+    ):
+        parser.error(
+            "V7 requires --v6-day-root and --v6-runtime-root (and V6 prior context when declared)"
+        )
     if not 1 <= args.batch <= 256 or not 1 <= args.repeats <= 10:
         parser.error("Batch/repeats exceed bounded defaults")
     if not args.runtime.parent.is_dir():
@@ -130,6 +142,8 @@ def main(argv=None):
     program, catalog = (
         seeded_example(args.seed)
         if args.example == "seeded"
+        else v7_example(args.lookback)
+        if args.example == "v7"
         else history_example(args.lookback)
     )
     strategy = compile_strategy(program, catalog)
@@ -163,7 +177,13 @@ def main(argv=None):
     save()
     progress = lambda value: print(json.dumps(value), flush=True)
     prepared = prepare_session(
-        config, Funnel(), strategy.dependencies, progress=progress
+        config,
+        Funnel(),
+        strategy.dependencies,
+        progress=progress,
+        v6_day_root=args.v6_day_root,
+        v6_previous_root=args.v6_previous_root,
+        v6_runtime_root=args.v6_runtime_root,
     )
     report["preparation"] = prepared.metrics
     tape = to_tensors(prepared, strategy, device=args.device, max_gib=args.max_gib)

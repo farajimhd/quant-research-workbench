@@ -85,3 +85,41 @@ def history_example(lookback=12):
         I(O.EXIT, -16),
     ]
     return Program.encode(nodes, (lookback, 2.0, 50.0, 0.02), pad_to=24), catalog
+
+
+def v7_example(lookback=12):
+    """V6 nearest-slot history gate, with level-derived stops and targets.
+
+    A source window follows the slot at each completed candle; level IDs are
+    intentionally not inferred. The stop multiplier is a dimensionless ratio.
+    """
+    from .v7 import arte_catalog
+
+    catalog = arte_catalog(
+        (
+            Parameter("source_bars", Unit.COUNT, 1, 64, integer=True),
+            Parameter("overhead_gap_bps", Unit.BPS, 0, 1000),
+            Parameter("cash_fraction", Unit.FRACTION, 0.001, 1),
+            Parameter("stop_price_ratio", Unit.RATIO, 0.9, 1),
+        )
+    )
+    labels = {f.name: f.label for f in catalog.inputs}
+    above = lambda field: labels[f"v7.above[0].{field}"]
+    below = lambda field: labels[f"v7.below[0].{field}"]
+    return Program.encode(
+        [
+            I(H.BAR_MEAN, above("center_distance_bps"), parameter=0),  # -1
+            I(O.PARAMETER, parameter=1),  # -2: searchable overhead gap
+            I(O.GREATER, -1, -2),  # -3
+            I(O.AND, above("present"), -3),  # -4
+            I(O.AND, below("present"), -4),  # -5: both slots needed for entry
+            I(O.PARAMETER, parameter=2),  # -6
+            I(O.ENTER, -5, -6),
+            I(O.PARAMETER, parameter=3),  # -8
+            I(O.MULTIPLY, below("lower_price"), -8),  # -9: buffered lower band
+            I(O.SET_STOP, below("present"), -9),
+            I(O.SET_TARGET, above("present"), above("center_price")),
+        ],
+        (lookback, 10.0, 0.02, 0.995),
+        pad_to=16,
+    ), catalog

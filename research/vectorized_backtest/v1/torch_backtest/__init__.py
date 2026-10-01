@@ -12,13 +12,12 @@ from research.vectorized_backtest.v1.strategy_encoding import (
     Funnel,
     Program,
     Session,
-    arte_catalog,
 )
-from research.vectorized_backtest.v1.strategy_encoding.clickhouse import prepare_session
 
 from .compiler import HistoryOperation, TorchStrategy, compile_strategy
 from .data import TensorTape, to_tensors
 from .replay import ReplayRunner
+from .v7 import arte_catalog, prepare_session
 from .vocabulary import describe
 
 __all__ = [
