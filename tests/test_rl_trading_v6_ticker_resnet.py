@@ -64,7 +64,7 @@ def test_resnet_epoch_uses_clock_updates_and_preserves_eval_weights():
     model=TickerResNet(8)
     labels=tuple(SimpleNamespace(close_us=c,held_index=np.empty(0,int),soft_tokens=(0,1),
         soft_probabilities=(.2,.8),account=np.zeros(7,np.float32),held_features=np.zeros((0,11),np.float32),
-        sample_weight=.5,execution_indices=np.array([0]),execution_features=np.zeros((1,11),np.float32))
+        sample_weight=.5,execution_indices=(0,),execution_features=np.zeros((1,11),np.float32))
         for c in (1_000_000,2_000_000,33_000_000,34_000_000))
     x=np.zeros((4,120,INPUT_WIDTH),np.float32);presence=np.ones((4,120),bool)
     value=model.heads.value.weight.detach().clone()

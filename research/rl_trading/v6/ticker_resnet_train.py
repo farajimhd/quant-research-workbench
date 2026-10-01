@@ -39,7 +39,7 @@ def run_epoch(model, windows, present, decisions, *, device, optimizer=None,
                 holding=bool(len(item.held_index));held.append(holding)
                 identity=int(item.held_index[0]) if holding else item.soft_tokens[1]-1
                 if item.execution_features is None:raise ValueError('ResNet execution evidence missing')
-                match=np.flatnonzero(item.execution_indices==identity)
+                match=np.flatnonzero(np.asarray(item.execution_indices)==identity)
                 if len(match)!=1:raise ValueError('ResNet execution identity missing/duplicated')
                 cost.append(item.execution_features[match[0]])
                 account.append(item.account)
