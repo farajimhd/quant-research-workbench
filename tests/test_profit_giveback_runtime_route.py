@@ -14,13 +14,13 @@ from test_profit_giveback_journal_projection import values, RUN
 from test_strategy_profit_giveback_exit import financial
 
 
-def runtime_fixture():
-    values_ = values()
+def runtime_fixture(strategy_number=31):
+    values_ = values(strategy_number=strategy_number)
     intent = values_['intent']
     held = financial()
     runtime = object.__new__(TradingRuntime)
     runtime.config = SimpleNamespace(mode=RunMode.BACKTEST,
-        strategy_id='early-squeeze-strategy', strategy_revision=31,
+        strategy_id='early-squeeze-strategy', strategy_revision=strategy_number,
         account_ids=(held.account_id,), anchor_date=date(2026, 8, 4))
     runtime.run_id = RUN
     runtime.journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=9)
@@ -44,8 +44,9 @@ def submit(runtime, held, values_):
         values_['source_entry_intent_id'], values_['arm_reference'])
 
 
-def test_profit_exit_keeps_typed_witness_and_shared_assignment_admission():
-    runtime, held, values_ = runtime_fixture()
+@pytest.mark.parametrize('number', [31, 32])
+def test_profit_exit_keeps_typed_witness_and_shared_assignment_admission(number):
+    runtime, held, values_ = runtime_fixture(strategy_number=number)
     result = asyncio.run(submit(runtime, held, values_))
     assert result[0]['decision']['status'] == 'approved'
     runtime.portfolio.approve.assert_awaited_once_with(values_['intent'],
@@ -85,8 +86,9 @@ def test_invalid_authority_cannot_reach_portfolio_or_oms(corruption):
     runtime.journal.close()
 
 
-def test_ordinary_exit_route_cannot_bypass_profit_witness():
-    runtime, held, values_ = runtime_fixture()
+@pytest.mark.parametrize('number', [31, 32])
+def test_ordinary_exit_route_cannot_bypass_profit_witness(number):
+    runtime, held, values_ = runtime_fixture(strategy_number=number)
     with pytest.raises(ValueError, match='normalized witness'):
         asyncio.run(runtime._execute_intents(StrategyEvaluation(intents=(values_['intent'],)),
                                             held.account_id, None))
@@ -103,14 +105,15 @@ def test_profit_exit_rejects_portfolio_assignment_loss_before_order():
     runtime.order_manager.submit_intent.assert_not_awaited()
 
 
-def test_prepared_successor_parent_loss_keeps_numbered_factory_and_shared_route():
+@pytest.mark.parametrize('number', [31, 32])
+def test_prepared_successor_parent_loss_keeps_numbered_factory_and_shared_route(number):
     from src.trading_runtime.strategy_followthrough_exit import followthrough_exit_intent
     from src.trading_runtime.strategy_zero_regime_risk_failure import zero_regime_risk_failure
     from test_strategy_zero_regime_risk_failure import observation
-    runtime, held, values_ = runtime_fixture()
+    runtime, held, values_ = runtime_fixture(strategy_number=number)
     witness = zero_regime_risk_failure(observation())
     parent = followthrough_exit_intent(witness, held, session_date=runtime.config.anchor_date,
-        source_entry_intent_id=values_['source_entry_intent_id'], strategy_number=31)
+        source_entry_intent_id=values_['source_entry_intent_id'], strategy_number=number)
     decision, _ = runtime.portfolio.approve.return_value
     approved = replace(parent, metadata={'assignment_id': held.assignment_id})
     runtime.portfolio.approve.return_value = decision, approved

@@ -15,15 +15,13 @@ from src.trading_runtime.strategy_profit_giveback_arm_reference import ProfitArm
 from test_strategy_profit_giveback_source import fixture
 
 
-def manager_fixture():
-    _, state, financial = fixture()
-    runtime = SimpleNamespace(config=SimpleNamespace(strategy_revision=30),
+def manager_fixture(strategy_number=31):
+    _, state, financial = fixture(strategy_number=strategy_number)
+    runtime = SimpleNamespace(config=SimpleNamespace(strategy_revision=strategy_number),
         submit_strategy_one_proposal=AsyncMock(), submit_strategy_one_add=AsyncMock(),
         submit_strategy_one_protection=AsyncMock())
     manager = StrategyOneManagementRunner(runtime=runtime,
         evidence=SimpleNamespace(management_evidence=AsyncMock()), tick_for_ticker=lambda _: .01)
-    # Deliberately inject prepared 31 policy; no executable release is registered.
-    manager.contract = SimpleNamespace(strategy_number=31)
     for name in ('submitted', 'positions', 'position_highs', 'first_held_boundaries'):
         setattr(manager, '_' + name, dict(getattr(state, name)))
     key = state.submitted[0][0]
@@ -36,8 +34,9 @@ def reference(candidate):
         20, '00000000-0000-0000-0000-000000000002', 'a' * 64)
 
 
-def test_manager_freezes_one_reference_and_does_not_rearm_at_later_high():
-    manager, _, state = manager_fixture()
+@pytest.mark.parametrize('number', [31, 32])
+def test_manager_freezes_one_reference_and_does_not_rearm_at_later_high(number):
+    manager, _, state = manager_fixture(strategy_number=number)
     requests = manager.profit_arming_requests(boundary_ms=state.boundary_ms)
     assert len(requests) == 1
     arm = reference(requests[0][0])
@@ -106,11 +105,12 @@ def test_unarmed_and_confirmed_positions_do_not_pay_for_deep_capture(monkeypatch
 
 
 @pytest.mark.parametrize('fail_confirmation', [False, True])
-def test_controller_confirms_after_fence_off_thread_and_closes_reader(monkeypatch, fail_confirmation):
+@pytest.mark.parametrize('number', [31, 32])
+def test_controller_confirms_after_fence_off_thread_and_closes_reader(monkeypatch, fail_confirmation, number):
     from src.trading_runtime import arte_journal_writer as readers
     from src.trading_runtime import strategy_one_management_snapshot as snapshots
     from src.trading_runtime import strategy_profit_giveback_arm_reference as arms
-    manager, _, state = manager_fixture()
+    manager, _, state = manager_fixture(strategy_number=number)
     requests = manager.profit_arming_requests(boundary_ms=state.boundary_ms)
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)

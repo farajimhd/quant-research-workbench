@@ -17,9 +17,9 @@ from tests.test_arte_journal_commit_v4 import attached_v4_client
 from tests.test_arte_journal_writer import batch
 
 
-def context(monkeypatch):
+def context(monkeypatch, strategy_number=31):
     from src.trading_runtime import strategy_profit_giveback_source as source
-    base, row = unit()
+    base, row = unit(strategy_number=strategy_number)
     seed = batch()
     events = tuple(typed_row('trading_event_v1', {
         **{k: v for k, v in seed.events[0].items() if k != 'content_hash'},
@@ -41,8 +41,9 @@ def context(monkeypatch):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-def test_profit_native_commit_idempotent_and_cold_prefix_seals(monkeypatch, compound):
-    client, base, row, prefix, calls = context(monkeypatch)
+@pytest.mark.parametrize('number', [31, 32])
+def test_profit_native_commit_idempotent_and_cold_prefix_seals(monkeypatch, compound, number):
+    client, base, row, prefix, calls = context(monkeypatch, strategy_number=number)
     if compound:
         merged = mixed_unit(base, row)
         publish = lambda: publish_compound_v4(client, merged, verified_prior_prefix=prefix)

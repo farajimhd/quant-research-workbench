@@ -81,7 +81,7 @@ def test_resealed_legacy_confirmation_reader_rejected():
         verify_strategy_thirty_two_manifest(strategy)
 
 
-def test_registry_preserves_parent_capabilities_and_blocks_unintegrated_execution():
+def test_registry_preserves_parent_capabilities_and_binds_complete_execution_source():
     from src.trading_runtime.strategy_registry import fixed_strategy_executor, numbered_strategy_parent
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy, numbered_session_exit_reason
     from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
@@ -103,7 +103,7 @@ def test_registry_preserves_parent_capabilities_and_blocks_unintegrated_executio
             assert getattr(contract, name)(boundary) == getattr(previous, name)(boundary)
         assert contract.activation_allowed(boundary, boundary) == previous.activation_allowed(boundary, boundary)
     assert numbered_session_exit_reason(32) == 'strategy_thirty_two_session_exit'
-    with pytest.raises(ValueError, match='native profit-route integration is not yet certified'):
-        certify_numbered_fixed_v4_projection(32)
+    assert len(certify_numbered_fixed_v4_projection(32)) == 64
+    assert certify_numbered_fixed_v4_projection(32) != certify_numbered_fixed_v4_projection(31)
     with pytest.raises(ValueError):
         numbered_fixed_strategy(33)

@@ -13,7 +13,8 @@ def test_complete_route_covers_arming_orders_native_publication_and_recovery():
     for filename in ('strategy_profit_giveback_arm_reference.py', 'arte_journal_writer.py',
                      'arte_journal_commit_v4.py', 'arte_profit_giveback_reader_v4.py',
                      'arte_oms_projection.py', 'configuration_publisher.py',
-                     'backtest_strategy_one_execution.py'):
+                     'backtest_strategy_one_execution.py', 'strategy_thirty_two_release.py',
+                     'strategy_thirty_two_configuration.py'):
         assert any(path.endswith('/' + filename) for path in REVIEWED_PROFIT_ROUTE)
     assert len(certify_profit_giveback_route_source()) == 64
 
@@ -44,7 +45,8 @@ def test_unreviewed_source_override_rejected():
 
 
 @pytest.mark.parametrize('lane', ['parent', 'profit'])
-def test_full_numbered_certificate_propagates_either_route_rejection(monkeypatch, lane):
+@pytest.mark.parametrize('number', [31, 32])
+def test_full_numbered_certificate_propagates_either_route_rejection(monkeypatch, lane, number):
     from src.backend import backtest_fixed_v4_certification as fixed
     from src.backend import backtest_strategy_profit_certification as profit
     def rejected(*args, **kwargs):
@@ -54,4 +56,4 @@ def test_full_numbered_certificate_propagates_either_route_rejection(monkeypatch
     else:
         monkeypatch.setattr(profit, 'certify_profit_giveback_route_source', rejected)
     with pytest.raises(ValueError, match='rejected ' + lane + ' source'):
-        fixed.certify_numbered_fixed_v4_projection(31)
+        fixed.certify_numbered_fixed_v4_projection(number)

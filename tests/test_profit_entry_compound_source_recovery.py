@@ -31,14 +31,15 @@ from tests.test_arte_journal_commit_v4 import attached_v4_client
 from tests.test_arte_journal_writer import batch
 
 
-def test_entry_sharing_profit_commit_recovers_exact_source_and_preceding_proof(monkeypatch):
+@pytest.mark.parametrize('number', [31, 32])
+def test_entry_sharing_profit_commit_recovers_exact_source_and_preceding_proof(monkeypatch, number):
     from src.trading_runtime import strategy_profit_giveback_source as checkpoints
     from src.trading_runtime import arte_strategy_one_entry_journal as entries
     market, parent = authority()
     plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
     source = CertifiedPriceReadbackAuthority('profit-entry-compound', plan)
     original, proposal, entry_intent = prepared_entry(source, 1, 31000,
-        str(UUID(int=0)), strategy_number=31)
+        str(UUID(int=0)), strategy_number=number)
     client = attached_v4_client(ExactBits())
     publish_strategy_one_entry_batch_v4(client, original.base,
         entry_evidence=original.entry_evidence, momentum_evidence=original.momentum_evidence,
@@ -67,7 +68,7 @@ def test_entry_sharing_profit_commit_recovers_exact_source_and_preceding_proof(m
         40000, int(floor*10000), True, .01, .02, float(floor), float(floor)+.01,
         1000, held.position_quantity, False), high, 39900))
     intent = profit_giveback_exit_intent(witness, held, session_date=date(2026, 8, 18),
-        source_entry_intent_id=entry_intent.intent_id)
+        source_entry_intent_id=entry_intent.intent_id, strategy_number=number)
     profit_base = strategy_intent_batch(intent, run_id=source.run_id,
         run_month=original.base.run_month, account_id=held.account_id,
         attempt_id=original.base.attempt_id, batch_id=str(UUID(int=300)),
@@ -76,9 +77,10 @@ def test_entry_sharing_profit_commit_recovers_exact_source_and_preceding_proof(m
     row = project_profit_giveback(witness, intent, held, session_date=date(2026, 8, 18),
         source_entry_intent_id=entry_intent.intent_id, run_id=source.run_id,
         batch_id=profit_base.batch_id, parent_record_id=profit_base.events[0]['record_id'],
-        source_manager_snapshot_id=str(UUID(int=400)), source_manager_checkpoint_sequence=7)
+        source_manager_snapshot_id=str(UUID(int=400)), source_manager_checkpoint_sequence=7,
+        strategy_number=number)
     subsequent, subsequent_proposal, _ = prepared_entry(source, 11, 41000,
-        profit_base.batch_id, strategy_number=31)
+        profit_base.batch_id, strategy_number=number)
     confirmations = []
     def attest(actual_client, proof, actual_row, actual_financial, **kwargs):
         assert actual_client is client and proof == prefix

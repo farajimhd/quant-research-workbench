@@ -80,7 +80,7 @@ class _Runtime:
             self.broker.held = False
 
 
-@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 31])
+@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 31, 32])
 def test_native_numbered_wrapper_advances_cutoff_and_rejects_residual_exposure(monkeypatch, strategy_number):
     """Exercise shared session callbacks; native proposals are covered separately."""
     actions = []

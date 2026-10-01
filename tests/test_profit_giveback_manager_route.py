@@ -13,9 +13,10 @@ from test_profit_arming_engine_boundary import manager_fixture, reference
 
 
 @pytest.mark.parametrize('case', ['exit', 'unarmed', 'same_boundary', 'pending', 'stale', 'positive_histogram', 'parent_loss', 'unarmed_parent_loss'])
-def test_profit_exit_requires_confirmed_prior_arm_and_current_completed_failure(case):
-    manager, financial, state = manager_fixture()
-    manager.contract = SimpleNamespace(strategy_number=31, allows_followthrough_failure_exit=True,
+@pytest.mark.parametrize('number', [31, 32])
+def test_profit_exit_requires_confirmed_prior_arm_and_current_completed_failure(case, number):
+    manager, financial, state = manager_fixture(strategy_number=number)
+    manager.contract = SimpleNamespace(strategy_number=number, allows_followthrough_failure_exit=True,
         liquidation_due=lambda _: False, allows_completed_30s_trailing=False,
         allows_target_escalation=False, allows_adds=False)
     manager.runtime.config.anchor_date = date(2026, 8, 4)

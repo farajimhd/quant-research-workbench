@@ -48,7 +48,7 @@ class ExactBits(MemoryClient):
 
 def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
     plan = source.plan
-    original = replace(_proposal(), strategy_number=18 if strategy_number in (26, 27, 28, 29, 30, 31) else 19, boundary_ms=boundary,
+    original = replace(_proposal(), strategy_number=18 if strategy_number in (26, 27, 28, 29, 30, 31, 32) else 19, boundary_ms=boundary,
         momentum=plan.momentum.lookup('AAA', boundary),
         initial_momentum=plan.source.parent.selection_witness('AAA', boundary))
     proposal = bind_certified_price_break_proposal(plan, original, strategy_number=strategy_number)
@@ -72,9 +72,9 @@ def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
 
 
 @pytest.mark.parametrize('compound', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31])
+@pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])
 def test_staged_twenty_typed_publication_and_cold_entry_roundtrip(compound, strategy_number):
-    if strategy_number in (26, 27, 28, 29, 30, 31):
+    if strategy_number in (26, 27, 28, 29, 30, 31, 32):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
