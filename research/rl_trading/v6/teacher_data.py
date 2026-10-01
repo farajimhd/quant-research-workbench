@@ -117,3 +117,16 @@ def load_teacher(root: Path, session: PackedSession, *,
             len(outcomes) != certificate.get('outcome_rows')):
         raise ValueError('Teacher sparse row counts differ from audit')
     return tuple(decisions), outcomes
+
+
+def load_wait_hold_teacher(root, session, *, runtime_root, audit_development=False):
+    """Explicit six-class view of validated immutable legacy supervision.
+
+    The source certificate continues certifying its original five-action
+    bytes. The caller must record the new action version and migrated counts
+    in its run manifest; this is not a claim that source bytes were rebuilt.
+    """
+    from research.rl_trading.v6.wait_hold_supervision import split_wait_hold
+    decisions, outcomes = load_teacher(root, session, runtime_root=runtime_root,
+                                       audit_development=audit_development)
+    return split_wait_hold(decisions, outcomes, len(session.listings))

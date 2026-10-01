@@ -216,12 +216,13 @@ def collect_session(policy, session, environment, *, device,
                 token,latent,parameter,likelihood = dist.sample()
             step.token,step.latent,step.old_log_prob,step.old_value = token,float(latent),float(likelihood),float(value)
             step.immediate_outcome = environment.submit(token,float(parameter),clock_us=clock,
-                order_index=order_index,holdings=obs.held_index)
+                order_index=order_index,holdings=obs.held_index,
+                wait_hold=policy.decoder.wait_hold)
             if step.immediate_outcome is not None:
                 memory = _remember(policy,state,memory,(step.immediate_outcome,))
             frame.steps.append(step)
             steps.append(step)
-            if token==0:
+            if token==0 or (policy.decoder.wait_hold and token>=1+len(session.listings)+3*len(obs.held_index)):
                 break
         frames.append(frame)
         if progress_callback:
@@ -238,7 +239,10 @@ def collect_session(policy, session, environment, *, device,
     metrics['luld_sidecar_enabled'] = environment.luld is not None
     metrics['missing_bracket_extrema_buckets'] = environment.missing_bracket_extrema
     metrics['policy_steps'] = len(steps)
-    metrics['order_bound_clock_count'] = sum(len(f.steps)==max_orders_per_second and f.steps[-1].token!=0 for f in frames)
+    metrics['order_bound_clock_count'] = sum(len(f.steps)==max_orders_per_second and
+        f.steps[-1].token!=0 and not (policy.decoder.wait_hold and
+        f.steps[-1].token>=1+len(session.listings)+3*len(f.steps[-1].observation.held_index))
+        for f in frames)
     return frames,steps,metrics
 
 

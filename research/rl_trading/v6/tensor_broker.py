@@ -172,7 +172,8 @@ class TensorBroker:
     def submit(self,token,parameter,held,clock_us):
         """One sampled proposal; token/parameter scalars remain on device."""
         h=held.numel();n=self.n
-        enter=(token>0)&(token<=n);held_action=token>=1+n
+        # Appended ticker HOLD tokens are no orders, with no cash or memory mutation.
+        enter=(token>0)&(token<=n);held_action=(token>=1+n)&(token<1+n+3*h)
         group=torch.div(token-1-n,max(h,1),rounding_mode='floor')
         slot=torch.remainder(token-1-n,max(h,1))
         padded=torch.cat((held,held.new_zeros(1)))

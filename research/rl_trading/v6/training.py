@@ -19,13 +19,16 @@ from research.rl_trading.v6.candle_stream import (SparseCandleState,
 from research.rl_trading.v6.model import BracketPolicy, HELD_FEATURE_WIDTH
 from research.rl_trading.v6.objective import bracket_loss
 from research.rl_trading.v6.session_data import PackedSession
+from research.rl_trading.v6.action_contract import ActionAxes, ACTION_NAMES as SIX_ACTION_NAMES
 
 
 ACTION_NAMES = ('hold', 'enter_long', 'exit_long', 'set_stop', 'set_target')
 
 
-def _action_class(token: int, listings: int, holdings: int) -> int:
+def _action_class(token: int, listings: int, holdings: int, *, wait_hold=False) -> int:
     """Map a variable-width identity token to one of five stable classes."""
+    if wait_hold:
+        return ActionAxes(listings, holdings).action_class(token)
     if token == 0:
         return 0
     if token <= listings:
@@ -49,6 +52,7 @@ class TeacherDecision:
     target_allowed: np.ndarray  # [H], false until confirmed entry fill.
     size_fraction: float | None = None
     oracle_log_distance: float | None = None
+    sample_weight: float = 1.  # Expanded simultaneous HOLDs share one old row's weight.
 
 
 @dataclass(frozen=True)
@@ -80,9 +84,10 @@ class TrainingMetrics:
     stop_log_distance_mae: float | None
     target_log_distance_mae: float | None
     entry_token_accuracy: float | None = None
+    hold_token_accuracy: float | None = None
 
 
-def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk):
+def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wait_hold=False):
     """Fixed per-session normalization; no per-block density reweighting.
 
     Inverse-square-root class weights have empirical mean one. Only the
@@ -90,21 +95,22 @@ def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk):
     original weight. All labels in a session share one denominator, including
     the last partial block. Coordinates are existing certified bank data.
     """
-    classes = np.asarray([_action_class(d.token, listings, len(d.held_index))
+    classes = np.asarray([_action_class(d.token, listings, len(d.held_index), wait_hold=wait_hold)
                           for d in decisions], dtype=np.int64)
-    counts = np.bincount(classes, minlength=5)
-    weights = np.zeros(5, dtype=np.float64)
+    sample_weights = np.asarray([getattr(d, 'sample_weight', 1.) for d in decisions])
+    counts = np.bincount(classes, weights=sample_weights, minlength=6 if wait_hold else 5)
+    weights = np.zeros(len(counts), dtype=np.float64)
     present = counts > 0
     weights[present] = 1 / np.sqrt(counts[present])
-    weights /= np.dot(weights, counts) / len(decisions)
+    weights /= np.dot(weights, counts) / sample_weights.sum()
     span = (int(np.max(close_us)) - int(np.min(close_us))) // 1_000_000 + 1
     blocks = max(1, math.ceil(span / clocks_per_chunk))
-    return weights, max(1., len(decisions) / blocks)
+    return weights, max(1., sample_weights.sum() / blocks)
 
 
 def _validate(decisions: tuple[TeacherDecision, ...],
               outcomes: tuple[ExecutionOutcome, ...],
-              listings: int) -> None:
+              listings: int, *, wait_hold=False) -> None:
     previous_key = None
     by_key = {}
     for item in decisions:
@@ -126,11 +132,14 @@ def _validate(decisions: tuple[TeacherDecision, ...],
                 np.any(item.held_index >= listings) or
                 len(np.unique(item.held_index)) != held or
                 not np.isfinite(item.account).all() or
-                not np.isfinite(item.held_features).all()):
+                not np.isfinite(item.held_features).all() or
+                not math.isfinite(item.sample_weight) or not 0 < item.sample_weight <= 1):
             raise ValueError('Malformed or unsorted causal teacher decision')
         permitted = np.concatenate((np.ones(1, dtype=np.bool_),
             item.enter_allowed, item.exit_allowed, item.stop_allowed,
             item.target_allowed))
+        if wait_hold:
+            permitted = np.concatenate((permitted, np.ones(held, dtype=np.bool_)))
         if not 0 <= item.token < len(permitted) or not permitted[item.token]:
             raise ValueError('Teacher selected a masked bracket action')
         enters = 1 <= item.token <= listings
@@ -198,9 +207,11 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     if ranked:
         policy.reset_market(listings)
     pending_entries = {}
-    _validate(decisions, outcomes, listings)
+    wait_hold = policy.decoder.wait_hold
+    action_names = SIX_ACTION_NAMES if wait_hold else ACTION_NAMES
+    _validate(decisions, outcomes, listings, wait_hold=wait_hold)
     balance, loss_denominator = (teacher_loss_balance(decisions, listings,
-        session.bank.close_us, clocks_per_chunk)
+        session.bank.close_us, clocks_per_chunk, wait_hold=wait_hold)
         if teacher_loss == 'balanced-v2' and not evaluation else (None, None))
     state = SparseCandleState.empty(policy.encoder, listings, device=device,
                                     dtype=torch.float32)
@@ -215,7 +226,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     updates = 0
     loss_sum = correct_sum = 0.
     entry_correct = 0
-    confusion = np.zeros((5, 5), dtype=np.int64)
+    hold_correct = 0
+    confusion = np.zeros((len(action_names), len(action_names)), dtype=np.int64)
     conditional_sum = np.zeros(3, dtype=np.float64)
     conditional_count = np.zeros(3, dtype=np.int64)
     policy.train(not evaluation)
@@ -226,6 +238,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         labeled = any(event.close_us in decision_groups for event in chunk)
         pending_losses = []
         pending_objectives = []
+        pending_weights = []
         pending_correct = []
         pending_predictions = []
         pending_conditional = ([], [], [])
@@ -282,13 +295,14 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         raise ValueError('Teacher action outside causal ranked universe; '
                                          'audit top_r/sort_secs coverage before training')
                     target_class = _action_class(item.token, listings,
-                                                 len(item.held_index))
+                                                 len(item.held_index), wait_hold=wait_hold)
                     objective, metrics = bracket_loss(logits, sizes, stops,
                         targets, token=item.token,
                         size_fraction=item.size_fraction,
                         oracle_log_distance=item.oracle_log_distance,
                         action_weight=float(balance[target_class])
-                        if balance is not None else 1.)
+                        if balance is not None else 1., wait_hold=wait_hold)
+                    objective = objective * item.sample_weight
                     # Monitoring remains the original unweighted loss, so
                     # pre/post-fix and development values remain comparable.
                     loss = (metrics['action_loss'] + metrics['size_loss'] +
@@ -298,6 +312,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     pending_predictions.append((logits.detach().argmax(),
                         item.token, len(item.held_index)))
                     pending_objectives.append(objective)
+                    pending_weights.append(item.sample_weight)
                     if target_class in (1, 3, 4):
                         slot = {1: 0, 3: 1, 4: 2}[target_class]
                         pending_conditional[slot].append(
@@ -308,7 +323,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         pending_entries[(item.close_us, item.order_index)] = item.token-1
         if pending_losses:
             mean = (torch.stack(pending_objectives).sum() / loss_denominator
-                    if balance is not None else torch.stack(pending_objectives).mean())
+                    if balance is not None else torch.stack(pending_objectives).sum()/sum(pending_weights))
             if not torch.isfinite(mean):
                 raise ValueError('Nonfinite teacher objective')
             if not evaluation:
@@ -330,8 +345,11 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                                                     pending_predictions):
                 if 1 <= target <= listings:
                     entry_correct += int(selected == target)
-                confusion[_action_class(target, listings, held),
-                          _action_class(selected, listings, held)] += 1
+                target_class = _action_class(target, listings, held, wait_hold=wait_hold)
+                if target_class == 5:
+                    hold_correct += int(selected == target)
+                confusion[target_class,
+                          _action_class(selected, listings, held, wait_hold=wait_hold)] += 1
             for slot, values in enumerate(pending_conditional):
                 if values:
                     conditional_sum[slot] += float(torch.stack(values).sum())
@@ -347,9 +365,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     if next_outcome != len(outcomes):
         raise ValueError('Execution outcome occurs after last certified candle')
     counts = {name: int(confusion[index].sum()) for index, name in
-              enumerate(ACTION_NAMES)}
+              enumerate(action_names)}
     precision, recall, f1 = {}, {}, {}
-    for index, name in enumerate(ACTION_NAMES):
+    for index, name in enumerate(action_names):
         correct = int(confusion[index, index])
         predicted = int(confusion[:, index].sum())
         actual = counts[name]
@@ -367,4 +385,6 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                            counts, precision, recall, f1,
                            *conditional_mae,
                            entry_correct / counts['enter_long']
-                           if counts['enter_long'] else None)
+                           if counts['enter_long'] else None,
+                           hold_correct / counts['hold']
+                           if wait_hold and counts['hold'] else None)

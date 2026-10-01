@@ -103,7 +103,8 @@ def collect_tensor_session(policy,session,broker,buckets,*,device,
             if deterministic:
                 token=dist.logits.argmax();latent=dist.locations.gather(0,token.reshape(1)).squeeze(0)
                 kind=torch.where((token>0)&(token<=broker.n),1,
-                    torch.where(token>=1+broker.n+obs.held_index.numel(),2,0))
+                    torch.where((token>=1+broker.n+obs.held_index.numel())&
+                        (token<1+broker.n+3*obs.held_index.numel()),2,0))
                 parameter=torch.where(kind==1,latent.sigmoid(),torch.where(kind==2,torch.nn.functional.softplus(latent),0.))
                 likelihood=dist.tensor_log_prob(token,latent)
             else:

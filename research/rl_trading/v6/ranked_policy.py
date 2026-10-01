@@ -6,8 +6,8 @@ from research.rl_trading.v6.market_attention import (
 
 
 class RankedBracketActorCritic(BracketActorCritic):
-    def __init__(self, width=128, *, config=None):
-        super().__init__(width)
+    def __init__(self, width=128, *, config=None, wait_hold=False):
+        super().__init__(width, wait_hold=wait_hold)
         self.ranking_config = config or MarketAttentionConfig()
         self.market_attention = RankedMarketAttention(width, self.ranking_config)
         self.ranker = None

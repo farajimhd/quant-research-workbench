@@ -232,9 +232,17 @@ class BracketEnvironment:
         self.consumed_display = {k:v for k,v in self.consumed_display.items() if k[1]>=clock_us-1_000_000}
         return tuple(outcomes)
 
-    def submit(self, token, parameter, *, clock_us, order_index, holdings):
+    def submit(self, token, parameter, *, clock_us, order_index, holdings, wait_hold=False):
         n,h = len(self.tickers),len(holdings)
+        if not 0 <= token < 1+n+(4 if wait_hold else 3)*h:
+            raise ValueError('Policy token outside environment action contract')
         if token==0:
+            return None
+        if wait_hold and token >= 1+n+3*h:
+            slot = token-(1+n+3*h)
+            ticker = self.tickers[int(holdings[slot])]
+            if ticker not in self.account.positions:
+                raise ValueError('HOLD requires an open position')
             return None
         if token<=n:
             ticker = self.tickers[token-1]
