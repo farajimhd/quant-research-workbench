@@ -2614,12 +2614,12 @@ class ReplayRunController:
                 or requests != manager.profit_arming_requests(boundary_ms=boundary)):
             raise RuntimeError('Profit arming lacks its completed native Backtest boundary')
         receipt = await self._save_restart_checkpoint_responsive(event_time)
-        from src.trading_runtime.arte_journal_reader import readonly_typed_journal_client
+        from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
         from src.trading_runtime.strategy_one_management_snapshot import ManagedManagerSnapshotHeadReader
         from src.trading_runtime.strategy_profit_giveback_arm_reference import confirm_profit_arm_reference
 
         def confirm():
-            with closing(readonly_typed_journal_client()) as reader:
+            with closing(backtest_v4_operator_client_from_env()) as reader:
                 head = ManagedManagerSnapshotHeadReader(keeper)
                 return tuple(confirm_profit_arm_reference(
                     reader, head, candidate, financial, receipt,

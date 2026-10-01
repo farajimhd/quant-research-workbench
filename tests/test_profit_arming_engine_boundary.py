@@ -107,7 +107,7 @@ def test_unarmed_and_confirmed_positions_do_not_pay_for_deep_capture(monkeypatch
 
 @pytest.mark.parametrize('fail_confirmation', [False, True])
 def test_controller_confirms_after_fence_off_thread_and_closes_reader(monkeypatch, fail_confirmation):
-    from src.trading_runtime import arte_journal_reader as readers
+    from src.trading_runtime import arte_journal_writer as readers
     from src.trading_runtime import strategy_one_management_snapshot as snapshots
     from src.trading_runtime import strategy_profit_giveback_arm_reference as arms
     manager, _, state = manager_fixture()
@@ -128,7 +128,7 @@ def test_controller_confirms_after_fence_off_thread_and_closes_reader(monkeypatc
         return receipt
     controller._save_restart_checkpoint_responsive = checkpoint
     reader = SimpleNamespace(close=lambda: calls.append('closed'))
-    monkeypatch.setattr(readers, 'readonly_typed_journal_client', lambda: reader)
+    monkeypatch.setattr(readers, 'backtest_v4_operator_client_from_env', lambda: reader)
     monkeypatch.setattr(snapshots, 'ManagedManagerSnapshotHeadReader', lambda keeper: keeper)
     engine_thread = get_ident()
     def confirm(actual_reader, keeper, candidate, financial, actual_receipt, **kwargs):
