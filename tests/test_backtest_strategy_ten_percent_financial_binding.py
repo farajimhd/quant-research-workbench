@@ -26,7 +26,7 @@ def source():
     return market, parent, plan, original
 
 
-@pytest.mark.parametrize("strategy_number", [26, 27, 28, 29, 30])
+@pytest.mark.parametrize("strategy_number", [26, 27, 28, 29, 30, 31, 32, 33, 34])
 def test_native_26_binding_preserves_every_financial_field_and_has_own_identity(strategy_number):
     _, parent, plan, original = source()
     bound = bind_certified_price_break_proposal(plan, original, strategy_number=strategy_number)
@@ -89,3 +89,35 @@ def test_relaxed_financial_decision_preserves_pending_rejection_and_protection()
     rejected = propose_certified_price_entry(plan, candidate, fact, activation,
         replace(financial, pending_entry=True), strategy_number=26)
     assert rejected.reason == 'entry_fill_pending' and rejected.proposal is None
+
+
+def test_revision34_entry_matches33_and_restores_complete_native_projection():
+    """Prepared binding is distinct from runtime registration or DB certification."""
+    from uuid import UUID
+    from src.backend.backtest_strategy_certified_price_break import (
+        CertifiedPriceReadbackAuthority, project_certified_price_entry,
+        restore_certified_price_proposal,
+    )
+    _, _, plan, original = source()
+    parent = bind_certified_price_break_proposal(plan, original, strategy_number=33)
+    current = bind_certified_price_break_proposal(plan, original, strategy_number=34)
+    assert replace(current, strategy_number=33) == parent
+    old_intent = certified_price_entry_intent(plan, parent, session_date=date(2026, 8, 18))
+    new_intent = certified_price_entry_intent(plan, current, session_date=date(2026, 8, 18))
+    assert old_intent.intent_id != new_intent.intent_id
+    assert replace(new_intent, intent_id=old_intent.intent_id) == old_intent
+    parent_id, batch_id = str(UUID(int=101)), str(UUID(int=102))
+    projection = project_certified_price_entry(plan, current, run_id='prepared34',
+        batch_id=batch_id, parent_record_id=parent_id, event_month='2026-08-01')
+    assert projection.authority.strategy_number == 34
+    assert all(row['strategy_number'] == 34 for row in projection.rows)
+    recovered = restore_certified_price_proposal(
+        CertifiedPriceReadbackAuthority('prepared34', plan),
+        replace(current, first_price=None, price_source_token=None), projection.rows,
+        parent_record_id=parent_id, batch_id=batch_id)
+    assert recovered == current
+    with pytest.raises(ValueError, match='entry scope'):
+        restore_certified_price_proposal(CertifiedPriceReadbackAuthority('prepared34', plan),
+            replace(current, first_price=None, price_source_token=None),
+            tuple(dict(row, strategy_number=33) for row in projection.rows),
+            parent_record_id=parent_id, batch_id=batch_id)
