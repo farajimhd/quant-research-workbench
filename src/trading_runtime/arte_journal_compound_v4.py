@@ -31,10 +31,11 @@ from .arte_oms_tactic_projection import (
 from .arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch, seal_followthrough_rows
 from .arte_rising_momentum_entry_v4 import MOMENTUM, seal_rising_momentum_rows
 from .arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM, seal_initial_momentum_rows
+from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
 
 _CHILD_KEYS = (
     "followthrough_failures", "command_lineages",
-    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "add_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "reconciliation_actions",
@@ -42,7 +43,7 @@ _CHILD_KEYS = (
 )
 _EVENT_PARENT_KEYS = frozenset({
     "followthrough_failures", "command_lineages",
-    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "add_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "oms_tactics",
@@ -86,7 +87,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
         return (tuple(("entry_evidence", row) for row in unit.entry_evidence)
                 + tuple(("add_evidence", row) for row in unit.add_evidence)
                 + tuple(("momentum_evidence", row) for row in unit.momentum_evidence)
-                + tuple(("initial_momentum_evidence", row) for row in unit.initial_momentum_evidence))
+                + tuple(("initial_momentum_evidence", row) for row in unit.initial_momentum_evidence)
+                + tuple(("first_price_evidence", row) for row in unit.first_price_evidence))
     if type(unit) is V4PortfolioAllocationBatch:
         return (("allocations", unit.allocation),)
     if type(unit) is V4ReservationReasonBatch:
@@ -190,7 +192,9 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
         return {"strategy_one_entry_rows": unit.entry_evidence,
                 "strategy_one_add_rows": unit.add_evidence,
                 "rising_momentum_rows": unit.momentum_evidence,
-                "initial_momentum_rows": unit.initial_momentum_evidence}
+                "initial_momentum_rows": unit.initial_momentum_evidence,
+                "first_price_rows": unit.first_price_evidence,
+                "first_price_authorities": unit.first_price_authorities}
     if type(unit) is V4PortfolioAllocationBatch:
         return {"portfolio_allocation_row": unit.allocation}
     if type(unit) is V4ReservationReasonBatch:
@@ -253,6 +257,7 @@ def prepare_compound_v4_families(
         "entry_evidence": ENTRY_EVIDENCE.name,
         "momentum_evidence": MOMENTUM.name,
         "initial_momentum_evidence": INITIAL_MOMENTUM.name,
+        "first_price_evidence": FIRST_PRICE.name,
         "add_evidence": ADD_EVIDENCE.name,
         "allocations": V4_ALLOCATION.name,
         "reservation_reasons": RESERVATION_REASON.name,
@@ -338,6 +343,14 @@ def prepare_compound_v4_families(
             dict(base_families)["trading_strategy_intent_v1"],
             dict(base_families)["trading_event_v1"], tuple(extra[MOMENTUM.name])):
         raise ValueError("V4 compound initial momentum differs from its parent")
+    authorities = tuple(authority for unit in compound.units
+                        if type(unit) is V4StrategyOneEntryBatch
+                        for authority in unit.first_price_authorities)
+    if tuple(extra[FIRST_PRICE.name]) != seal_first_price_rows(
+            tuple(extra[FIRST_PRICE.name]), tuple(extra[ENTRY_EVIDENCE.name]),
+            dict(base_families)["trading_strategy_intent_v1"],
+            dict(base_families)["trading_event_v1"], authorities):
+        raise ValueError("V4 compound first price differs from certified authority")
     if tuple(extra[ADD_EVIDENCE.name]) != _sealed_strategy_one_add_rows(
             compound.base, base_families, tuple(
                 {key: value for key, value in row.items() if key != "content_hash"}
@@ -391,7 +404,9 @@ def publish_compound_v4(
     prepared_ns = perf_counter_ns()
     committed_id = _publish_sealed_batch_v4(
         client, compound.base, base_families, families,
-        timings_ns=timings_ns)
+        timings_ns=timings_ns,
+        first_price_authorities=tuple(authority for unit in compound.units
+            if type(unit) is V4StrategyOneEntryBatch for authority in unit.first_price_authorities))
     if timings_ns is not None:
         timings_ns["prepare"] = prepared_ns - started_ns
         timings_ns["publish"] = perf_counter_ns() - prepared_ns

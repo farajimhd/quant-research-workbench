@@ -55,6 +55,7 @@ from .arte_initial_momentum_entry_v4 import (
     INITIAL_MOMENTUM, seal_initial_momentum_rows, initial_momentum_select_columns,
     decode_initial_momentum_row,
 )
+from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
 
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
@@ -446,6 +447,7 @@ def _load_verified_details_v4(
     client, *, run_id: str, batch_id: str,
     family_rows: Sequence[Mapping], max_rows_per_family: int,
     batched_readback: bool = False, prior_batch_id: str | None = None,
+    first_price_authorities: tuple = (),
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
@@ -501,7 +503,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -561,6 +563,9 @@ def _load_verified_details_v4(
                                  related_rows.get("trading_strategy_intent_v1", ()),
                                  related_rows.get("trading_event_v1", ()),
                                  related_rows.get(MOMENTUM.name, ()))
+        seal_first_price_rows(related_rows.get(FIRST_PRICE.name, ()), children,
+            related_rows.get("trading_strategy_intent_v1", ()),
+            related_rows.get("trading_event_v1", ()), first_price_authorities)
     except ValueError as exc:
         raise RuntimeError("V4 Strategy 13 momentum evidence differs from its parent") from exc
     add_parents = {str(UUID(str(row["record_id"]))): row for row in
@@ -896,6 +901,7 @@ def publish_reservation_reason_batch_v4(client, batch, *, reasons) -> str:
 
 def publish_strategy_one_entry_batch_v4(
     client, batch, *, entry_evidence=(), add_evidence=(), momentum_evidence=(), initial_momentum_evidence=(),
+    first_price_evidence=(), first_price_authorities=(),
 ) -> str:
     """Commit one numbered acquisition and its scalar child on the writer lane."""
     if bool(entry_evidence) == bool(add_evidence):
@@ -903,7 +909,8 @@ def publish_strategy_one_entry_batch_v4(
     return _publish_typed_batch_v4(
         client, batch, strategy_one_entry_rows=entry_evidence,
         strategy_one_add_rows=add_evidence, rising_momentum_rows=momentum_evidence,
-        initial_momentum_rows=initial_momentum_evidence)
+        initial_momentum_rows=initial_momentum_evidence,
+        first_price_rows=first_price_evidence, first_price_authorities=first_price_authorities)
 
 
 def publish_oms_tactic_batch_v4(client, batch, *, tactic_state, tactic_steps=()) -> str:
@@ -1170,6 +1177,7 @@ def _validate_strategy_one_add_link(row, parent, event, run_id, batch_id):
 
 def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_one_entry_rows=(),
                            rising_momentum_rows=(), initial_momentum_rows=(),
+                           first_price_rows=(), first_price_authorities=(),
                             strategy_one_add_rows=(),
                             oms_tactic_rows=None,
                             portfolio_allocation_row=None,
@@ -1547,6 +1555,9 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
     initial_rows = seal_initial_momentum_rows(initial_momentum_rows, entry_rows,
         dict(base_families)["trading_strategy_intent_v1"],
         dict(base_families)["trading_event_v1"], momentum_rows)
+    price_rows = seal_first_price_rows(first_price_rows, entry_rows,
+        dict(base_families)["trading_strategy_intent_v1"],
+        dict(base_families)["trading_event_v1"], first_price_authorities)
     add_rows = _sealed_strategy_one_add_rows(
         batch, base_families, strategy_one_add_rows)
     # Compound micro-preparation cannot look up an entry in a sibling unit
@@ -1603,6 +1614,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += ((MOMENTUM.name, momentum_rows),)
     if initial_rows:
         families += ((INITIAL_MOMENTUM.name, initial_rows),)
+    if price_rows:
+        families += ((FIRST_PRICE.name, price_rows),)
     if add_rows:
         families += ((ADD_EVIDENCE.name, add_rows),)
     if allocation_rows:
@@ -1640,7 +1653,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         # The compound transport rekeys these fully validated normalized
         # families before one Keeper reservation. No query or INSERT has run.
         return base_families, families
-    return _publish_sealed_batch_v4(client, batch, base_families, families)
+    return _publish_sealed_batch_v4(client, batch, base_families, families,
+        first_price_authorities=first_price_authorities)
 
 
 def _existing_detail_identities_v4(client, batch, families):
@@ -1748,7 +1762,8 @@ def _insert_detail_families_v4(client, batch, pending):
 
 
 def _publish_sealed_batch_v4(client, batch, base_families, families, *,
-                             timings_ns: dict[str, int] | None = None) -> str:
+                             timings_ns: dict[str, int] | None = None,
+                             first_price_authorities: tuple = ()) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _identity, _insert, _literal, _rows,
@@ -1832,7 +1847,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         client, run_id=batch.run_id, batch_id=batch.batch_id,
         family_rows=family_rows, max_rows_per_family=65_536,
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
-        prior_batch_id=batch.prior_batch_id)
+        prior_batch_id=batch.prior_batch_id,
+        first_price_authorities=first_price_authorities)
     verify_commit_v4(commit, family_rows, actual_details)
     mark_stage("detail_readback")
 

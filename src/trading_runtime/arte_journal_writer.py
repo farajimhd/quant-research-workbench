@@ -99,6 +99,7 @@ if TYPE_CHECKING:
 from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
+from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
 
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[FAILURE.name] = FAILURE
@@ -111,6 +112,7 @@ _CONTRACTS.update({table.name: table for table in (
 _CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[MOMENTUM.name] = MOMENTUM
 _CONTRACTS[INITIAL_MOMENTUM.name] = INITIAL_MOMENTUM
+_CONTRACTS[FIRST_PRICE.name] = FIRST_PRICE
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ADD_EVIDENCE.name] = ADD_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
@@ -565,6 +567,8 @@ class V4StrategyOneEntryBatch:
     add_evidence: tuple[Mapping[str, Any], ...] = ()
     momentum_evidence: tuple[Mapping[str, Any], ...] = ()
     initial_momentum_evidence: tuple[Mapping[str, Any], ...] = ()
+    first_price_evidence: tuple[Mapping[str, Any], ...] = ()
+    first_price_authorities: tuple[FirstPriceEntryAuthority, ...] = ()
 
     def __post_init__(self) -> None:
         if (not isinstance(self.base, TypedJournalBatch)
@@ -579,6 +583,11 @@ class V4StrategyOneEntryBatch:
             MappingProxyType(dict(row)) for row in self.momentum_evidence))
         object.__setattr__(self, "initial_momentum_evidence", tuple(
             MappingProxyType(dict(row)) for row in self.initial_momentum_evidence))
+        object.__setattr__(self, "first_price_evidence", tuple(
+            MappingProxyType(dict(row)) for row in self.first_price_evidence))
+        if (type(self.first_price_authorities) is not tuple
+                or any(type(value) is not FirstPriceEntryAuthority for value in self.first_price_authorities)):
+            raise ValueError("First price acquisition needs exact certified authorities")
 
 
 @dataclass(frozen=True, slots=True)
@@ -4767,7 +4776,9 @@ class ArteJournalWriter:
                         self._client, unit.base,
                         entry_evidence=unit.entry_evidence,
                         add_evidence=unit.add_evidence, momentum_evidence=unit.momentum_evidence,
-                        initial_momentum_evidence=unit.initial_momentum_evidence)
+                        initial_momentum_evidence=unit.initial_momentum_evidence,
+                        first_price_evidence=unit.first_price_evidence,
+                        first_price_authorities=unit.first_price_authorities)
                 elif isinstance(group[0][0], V4OmsTacticBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_oms_tactic_batch_v4,
