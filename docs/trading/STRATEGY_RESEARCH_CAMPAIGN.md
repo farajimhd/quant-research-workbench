@@ -2004,3 +2004,13 @@ After-hours explicitly has no additional price witness. Selection seals include
 the source seal as well as the parent-derived comparison. Focused checks passed
 65 tests. Numbered runtime admission and persistent price evidence remain
 pending; this compiler does not itself authorize an installed strategy.
+
+A separate staged trading_first_price_entry_v4 contract preserves UInt64 close
+and prior high plus binary producer validity flags. Its projection/restoration
+binds first clock, producer build, market token, candidate/entry/selection seals,
+entry/episode clocks and deterministic parent record identity. Parent19 first
+and current momentum rules are checked before projection. AH emits no price
+companion. Focused new source/selection/journal and existing anchor checks
+passed81 tests. This contract is not registered in production writers and no
+table was installed: whole-graph sealing, source-token crosslinks, journal
+recovery, operator storage/grants and numbered runtime admission remain required.
