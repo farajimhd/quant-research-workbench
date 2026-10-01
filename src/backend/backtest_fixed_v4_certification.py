@@ -1020,7 +1020,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                                  '_publication_kwargs': '19c0578fb9a6918245add745749aac5e2073f691dbb47b46b814dd8b3b74a7da',
                                                  '_unit_children': 'bef65d656f3efcfc2b375d18545dea31457f06e8aacd9ecaa930ad8881fec377',
                                                  'prepare_compound_v4_families': 'b1d8e356aab91a26de36d44af50bfbc38c44ccf6b792eeec4d9cfa413133c307'},
- 'trading_runtime/arte_journal_writer.py': {'_ProfitPublicationUnit': '7cf5b6eec9ddf368a1427d43fc5cfda7ae48b1efe661d66af970f160f82f2c72', 'submit_compound_v4': '79636201442823570ba53e6c516f4a7d45c4b0dc521c4846eef68629f0101455', 'submit_profit_exit_v4': '0b1344d9735e100b5901ca3df69773968e838a738127d73df3510478c0e1c2fe', '_submit_profit_publication': 'da306f3c49dded5a2366d39997a360dcee4c412ff61382095658dea29a481f3e',
+ 'trading_runtime/arte_journal_writer.py': {'_ProfitPublicationUnit': '7cf5b6eec9ddf368a1427d43fc5cfda7ae48b1efe661d66af970f160f82f2c72', 'submit_compound_v4': '79636201442823570ba53e6c516f4a7d45c4b0dc521c4846eef68629f0101455', 'submit_profit_exit_v4': '0b1344d9735e100b5901ca3df69773968e838a738127d73df3510478c0e1c2fe', '_submit_profit_publication': 'f706a5c95403f80814c1f24e866d6bb804cccc915564b0adb476eef85a44d935',
                                             'V4StrategyOneEntryBatch': '2e44c0950e38ef417797537036765f189a8e5ebf81fb266f6356f659bf14bbd5',
                                             '_BrokerMatchSnapshotUnit': 'b9f57982ff159fc4c38acf5e2bea17e3edec5941ca5a3a339231949824982617',
                                             '_CampaignSnapshotUnit': '7d38bc41d265b2507a147da65bfa59c298fe0b77234ca611ede1c70367714a75',

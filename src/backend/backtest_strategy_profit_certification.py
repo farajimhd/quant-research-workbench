@@ -18,7 +18,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
                                        '_save_restart_checkpoint_responsive': '2e2ae0fd1f66145caf790b865f5146cb614386c6b451ad1c00b29a5401347482'},
  'src/trading_runtime/arte_journal_commit_v4.py': {'__module__': '678e015fb946cab6cd84c1f053857f734abeb9aecce19130884043fa1534d70f'},
  'src/trading_runtime/arte_journal_compound_v4.py': {'__module__': '88485c336eed326ec192bfe6b0680de83daf047286a98d698d329532dc6faa82'},
- 'src/trading_runtime/arte_journal_writer.py': {'__module__': '00fd7e2f226e289e4e4e322577ddb772c82985946ca2b81e707818f57bb2ae13'},
+ 'src/trading_runtime/arte_journal_writer.py': {'__module__': '9a13f46f0911158808e3e58844e0b004da288a99bd785ccfe2946353e5da60e7'},
  'src/trading_runtime/arte_oms_projection.py': {'__module__': '72b320c9680f8eb03ad32181ea6a8594c847afb01a21a099eaef2e6bd245da07'},
  'src/trading_runtime/arte_profit_giveback_reader_v4.py': {'__module__': '0cf0f1628422ba7c5400099068b7cfcd0e9fa0ff47f49d7b6051189480ac40a3'},
  'src/trading_runtime/arte_profit_giveback_v4.py': {'__module__': 'f8b0b2ff9498e746f693016a474ff3c8ec33e2d3304105ddb95525c942a602cb'},

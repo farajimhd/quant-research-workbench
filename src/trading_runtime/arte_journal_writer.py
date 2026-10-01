@@ -4049,11 +4049,28 @@ class ArteJournalWriter:
                 or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4CompoundBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError('Profit publication requires its exact Backtest writer')
-        stamp = datetime.fromisoformat(str(unit.base.events[0]['event_time']).replace('Z', '+00:00'))
-        if stamp.tzinfo is None:
-            raise ValueError('Profit submission needs a timezone-aware event')
-        self._validate_checkpoint_price_source(
-            first_price_source, stamp.astimezone(ZoneInfo('America/New_York')).date())
+        # A compound may start with a present-day run-creation event. Only the
+        # linked historical exit clocks attest the native market session.
+        exits = (unit.children['profit_givebacks'] + unit.children['confirmed_ah_failures']
+                 if type(unit) is V4CompoundBatch else
+                 (unit.profit,) if type(unit) is V4ProfitGivebackBatch else
+                 (unit.confirmation,))
+        events = {str(row['record_id']): row for row in unit.base.events}
+        if not exits or len(events) != len(unit.base.events):
+            raise ValueError('Exit publication requires unique linked source events')
+        sessions = set()
+        for row in exits:
+            event = events.get(str(row['parent_record_id']))
+            if (event is None or event['category'] != 'strategy'
+                    or event['entity_type'] != 'strategy_intent'):
+                raise ValueError('Exit publication lacks its linked strategy event')
+            stamp = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
+            if stamp.tzinfo is None:
+                raise ValueError('Profit submission needs a timezone-aware event')
+            sessions.add(stamp.astimezone(ZoneInfo('America/New_York')).date())
+        if len(sessions) != 1:
+            raise ValueError('Exit publication spans different native sessions')
+        self._validate_checkpoint_price_source(first_price_source, next(iter(sessions)))
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError('V4 writer is closed or failed')
