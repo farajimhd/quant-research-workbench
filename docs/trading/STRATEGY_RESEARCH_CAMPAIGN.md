@@ -1889,3 +1889,76 @@ All campaign/audit subprocesses terminated successfully. Keeper teardown retry
 messages followed completed receipts; no run failure or service restart was needed.
 Next research must restore PM18 opportunity while retaining PM19 false-entry
 reduction;18/19 provide saved source evidence for a bounded next hypothesis.
+
+### Additional development day and revealed frozen19 holdouts
+
+User requested three additional days: one development, two holdouts, and then
+explicitly requested Strategy19 results on all three, PM/AH separately. Dates
+were selected using coverage metadata before trade/P&L reads. Initial split
+Aug04 development /Aug05 validation /Aug06 final test was frozen in
+`strategy-research-session-split-v1.json` (SHA256
+`eb9d023fde67a360fe738b5511b46b9ef33adae333f73f89d479fbf7cb099578`).
+The19 baseline source/configuration was frozen before outcomes, protocol receipt
+SHA256 `65276493ac09548d09121ef75b01701b4796ee24646ff651fc6075502e92184f`.
+
+Aug06 failed closed before launch: LGHL has15 candidate boundaries, while the
+shared LGHL exclusion needs separately certified products for nonempty removed
+coverage. Existing empty-scope restoration must not be generalized without a
+producer contract. No source guard weakened, excluded ticker reintroduced,
+regular-hours run or market repair/rebuild performed. Failed preflight retained.
+Root explained replacement before selecting Aug10, based on entry coverage and
+zero LGHL candidate count only. Split v2 SHA256
+`64972298edfdead87124c8144ff53d66cb8062ba4740963566b08606a3731a0d`.
+Final dates: Aug04 development, Aug05 validation baseline, Aug10 final baseline.
+These earlier dates are date holdouts, not chronological forward tests relative
+to Aug18/19 training. Requested baseline reporting reveals outcomes; Aug05/Aug10
+remain excluded from tuning and cannot be described as untouched tests of later
+versions. No detailed holdout trade research was conducted; automated source
+correctness auditing is distinct from strategy research.
+
+All six actual app-route sessions passed full preflight and completed with
+independent$10000, shared dated LGHL policy, no residual open lifecycle and the
+same pinned19 source/configuration. No backend/services restart. AH source seed
+and persisted interval/entry checks remained required; full source audits follow.
+
+| Date | Role | PM run /net P&L | AH run /net P&L |
+| --- | --- | --- | --- |
+| Aug04 | Development | `185c2471-b59b-4e15-8c75-c1f47f35d06d` /-$918.137270 | `9b21d379-1cd3-44c3-91b3-46a270b1b00b` /-$747.058030 |
+| Aug05 | Validation baseline | `6c9ca763-a871-4bd7-8552-781463a230ca` /-$70.389230 | `01356625-16b3-41a1-bdee-aab8902bcbba` /-$228.535000 |
+| Aug10 | Final baseline | `fbb745e8-2378-43c4-bcb1-2acfc5e787ef` /-$575.178295 | `6ec5d809-646e-4968-b397-e4d15007dab4` /-$949.616205 |
+
+Total **-$3488.914030**,0/6 sessions reach target. Positions6/3,6/4,9/9;
+broker marked maxDD PM/AH respectively$1330.913940/$776.933040,
+$545.467720/$312.780000,$1085.002395/$1223.308805. Marks remain asynchronous
+and can be stale. Results contradict independent repeatable edge for19; original
+three-of-four targets were development-specific. Canonical receipt
+`strategy19-three-additional-days-performance-v1.json`, SHA256
+`c45acffadf82970612748507d47337529667642c3724f63d83d0bf19f13a7733`;
+actual reports/position tables under `strategy19_additional_reports_v4/<run>/`.
+Aug06 rejected attempt remains in original campaign; replacement two actual
+runs have their own campaign. No failed result overwritten or counted as profit.
+
+Before the new date outcomes were available, root extracted causal candle
+features for all65 original18/19 proposals on Aug18/19, exact certified bars
+attempts at saved proposal and immutable first clocks. Completed1s/5s/10s
+current and two prior buckets, OHLC integer values, validity, volume/trade counts
+were persisted with missing bars explicit. No MACD recomputed or forming/future
+bar read. Receipt `strategy18-19-causal-entry-candle-features-v1.json`, SHA256
+`138cbe0fc01234ee2cf6424e14435cde43ba6957a180cf9ab185fd0c1fe8bf0e`.
+A descriptive screen suggests testing PM first completed1s close above the
+immediately prior1s high while keeping first/current10% and AH18 rules: retained
+old18 PM sums$1020.41/$1167.15. Current-green and uniform liquidity-growth rules
+remove major good moves. These are hypothesis screens, not portfolio profits;
+19 already proved deleting old positions is not a portfolio counterfactual.
+No Strategy20 source/rule was implemented. Next research includes Aug04 only
+alongside original dates; holdout outcomes/details must not become tuning inputs.
+
+Final cold audit passed **all37 actual entries** across the six added sessions:
+exact producer Float64 values, first/current clocks, native first-selection
+prefix and all three tokens, BOS/current10%, PM first50%, original filled
+position linkage, two normalized first companions per proposal and SSD parts.
+Receipt strategy19-additional-entry-source-audit-v1.json SHA256
+4db41839ebc11e00c59c12c4ec8f9c104c0092a06d71aa5f84508cd4f8a9b057.
+All root campaign/review/diagnostic subprocesses finished; no new agents were
+spawned or reused this turn. Goal remains active: neither original four-session
+target nor repeatable edge is achieved.
