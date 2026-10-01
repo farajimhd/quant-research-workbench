@@ -1,8 +1,12 @@
 """Prepared immutable Strategy 34 declaration; executor/publication remain closed."""
 from copy import deepcopy
+from hashlib import sha256
+import re
 
 from .strategy_registry import NumberedStrategyRelease
 from . import strategy_thirty_three_release as parent_policy
+from .journal_contract import canonical_json
+from .strategy_one_configuration_tree import encode_nodes, node_hash
 
 PARENT_REVISION_ID = 'strategy-one-33:66f5cdae-3cbb-4fdd-af99-a72d22e77e6c'
 PARENT_PAYLOAD_HASH = '1dcf2e4d52de04e710880fc1be221ae68fafb4ed5a441691edd183e8c092815b'
@@ -52,3 +56,73 @@ def release_contract() -> NumberedStrategyRelease:
     release = NumberedStrategyRelease(**values, approved_digest=draft.digest())
     release.verify()
     return release
+
+
+def verify_strategy_thirty_four_manifest(strategy):
+    """Pure declared-content verification; installed executor checks remain separate."""
+    release = release_contract()
+    if (type(strategy.get('strategy_number')) is not int or strategy['strategy_number'] != 34
+            or type(strategy.get('revision')) is not int or strategy['revision'] != 34
+            or strategy.get('strategy_id') != release.executor_strategy_id
+            or strategy.get('execution_interval') != release.evaluation_interval):
+        raise ValueError('Strategy 34 declared execution identity differs')
+    manifest = strategy.get('numbered_release')
+    required = {'contract', 'approved_digest', 'approved_code_commit', 'approved_code_fingerprint',
+                'approval_reference', 'publication_mode', 'source_revision_id', 'source_payload_hash',
+                'manifest_hash', 'profit_protection_policy', 'confirmed_ah_failure_policy', *INHERITED_POLICIES}
+    if type(manifest) is not dict or set(manifest) != required:
+        raise ValueError('Strategy 34 manifest shape differs')
+    if (manifest['contract'] != release.canonical_payload()
+            or manifest['approved_digest'] != release.approved_digest
+            or manifest['source_revision_id'] != PARENT_REVISION_ID
+            or manifest['source_payload_hash'] != PARENT_PAYLOAD_HASH
+            or manifest['confirmed_ah_failure_policy'] != CONFIRMED_AH_FAILURE_POLICY
+            or manifest['profit_protection_policy'] != PROFIT_PROTECTION_POLICY
+            or any(manifest[name] != policy for name, policy in INHERITED_POLICIES.items())
+            or manifest['publication_mode'] != 'backtest_only'
+            or not re.fullmatch(r'[0-9a-f]{40}', str(manifest['approved_code_commit']))
+            or not re.fullmatch(r'[0-9a-f]{64}', str(manifest['approved_code_fingerprint']))
+            or type(manifest['approval_reference']) is not str
+            or not 1 <= len(manifest['approval_reference'].strip()) <= 512):
+        raise ValueError('Strategy 34 differs from pinned policy or code approval')
+    seal = sha256(canonical_json({k: v for k, v in manifest.items() if k != 'manifest_hash'}).encode()).hexdigest()
+    if manifest['manifest_hash'] != seal:
+        raise ValueError('Strategy 34 approval/code manifest seal differs')
+    return manifest
+
+
+def derive_strategy_thirty_four_configuration(source, *, approved_code_commit,
+                                             approved_code_fingerprint, approval_reference):
+    """Prepare the exact parent derivation without installing an executor."""
+    if (source.strategy_number != 33 or source.revision()['revision_id'] != PARENT_REVISION_ID
+            or source.payload_hash != PARENT_PAYLOAD_HASH):
+        raise ValueError('Strategy 34 must derive from exact pinned certified Strategy 33')
+    parent_policy.verify_strategy_thirty_three_manifest(source.payload['strategy'])
+    payload = deepcopy(source.payload)
+    if payload.get('assignments'):
+        raise ValueError('Strategy 34 cannot inherit mutable assignments')
+    release = release_contract()
+    manifest = {
+        **deepcopy(INHERITED_POLICIES), 'contract': release.canonical_payload(),
+        'approved_digest': release.approved_digest, 'approved_code_commit': approved_code_commit,
+        'approved_code_fingerprint': approved_code_fingerprint, 'approval_reference': approval_reference,
+        'publication_mode': 'backtest_only', 'source_revision_id': PARENT_REVISION_ID,
+        'source_payload_hash': PARENT_PAYLOAD_HASH,
+        'profit_protection_policy': deepcopy(PROFIT_PROTECTION_POLICY),
+        'confirmed_ah_failure_policy': deepcopy(CONFIRMED_AH_FAILURE_POLICY),
+    }
+    manifest['manifest_hash'] = sha256(canonical_json(manifest).encode()).hexdigest()
+    payload['strategy'].update(strategy_number=34, revision=34, name='Early Squeeze Strategy 34',
+                              profile_id='strategy-one-34', profile_revision=34, numbered_release=manifest)
+    verify_strategy_thirty_four_manifest(payload['strategy'])
+    payload['strategy_profile'].update(profile_id='strategy-one-34', revision=34,
+        definition_revision=34, name='Early Squeeze Strategy 34', description=BEHAVIOR)
+    payload['strategy_profile'].setdefault('lifecycle', {}).setdefault('trading_behavior', {})[
+        'eligible_sessions'] = ['premarket', 'afterhours']
+    payload['run_plan'].update(name='Strategy 34 Backtest',
+        description='Sealed extended-session Strategy 34', profile_id='strategy-one-34')
+    nodes = encode_nodes(payload)
+    return dict(source_candidate_id=f'strategy-thirty-four-from:{PARENT_REVISION_ID}',
+                source_candidate_hash=source.payload_hash,
+                payload_hash=sha256(canonical_json(payload).encode()).hexdigest(),
+                node_hash=node_hash(nodes), node_count=len(nodes), payload=payload)
