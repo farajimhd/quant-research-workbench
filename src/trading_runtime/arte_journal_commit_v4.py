@@ -633,7 +633,7 @@ def _load_verified_details_v4(
         prior_batch_id=prior_batch_id, verified_prefix=verified_prior_prefix,
         first_price_source=first_price_source)
     from .strategy_profit_giveback_exit import profit_giveback_reason
-    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33)}
+    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34)}
     profit_rows = related_rows.get(PROFIT_GIVEBACK.name, ())
     if profit_rows or any(row['reason'] in profit_reasons for row in
                           related_rows.get('trading_strategy_intent_v1', ())):
