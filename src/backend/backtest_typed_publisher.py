@@ -514,7 +514,9 @@ class BacktestTypedJournalPublisher:
                                             checkpoint_sequence=sequence,
                                             boundary_ms=broker_state[0],
                                             journal_batch_id=self._batch_id,
-                                            state=broker_state[1])
+                                            state=broker_state[1],
+                                            **({} if self._first_price_source is None else
+                                               {'first_price_source': self._first_price_source}))
                                         if await asyncio.wrap_future(broker_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "Broker snapshot differs from committed checkpoint")
@@ -524,7 +526,9 @@ class BacktestTypedJournalPublisher:
                                             checkpoint_sequence=sequence,
                                             boundary_ms=broker_state[0],
                                             journal_batch_id=self._batch_id,
-                                            groups=oms_observations)
+                                            groups=oms_observations,
+                                            **({} if self._first_price_source is None else
+                                               {'first_price_source': self._first_price_source}))
                                         if await asyncio.wrap_future(oms_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "OMS observation differs from committed checkpoint")
@@ -533,7 +537,9 @@ class BacktestTypedJournalPublisher:
                                             session_date=session_date,
                                             checkpoint_sequence=sequence,
                                             journal_batch_id=self._batch_id,
-                                            state=evidence_state)
+                                            state=evidence_state,
+                                            **({} if self._first_price_source is None else
+                                               {'first_price_source': self._first_price_source}))
                                         if await asyncio.wrap_future(evidence_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "Evidence snapshot differs from committed checkpoint")
@@ -550,7 +556,9 @@ class BacktestTypedJournalPublisher:
                                             checkpoint_sequence=sequence,
                                             boundary_ms=broker_state[0],
                                             journal_batch_id=self._batch_id,
-                                            ownership=campaign_ownership)
+                                            ownership=campaign_ownership,
+                                            **({} if self._first_price_source is None else
+                                               {'first_price_source': self._first_price_source}))
                                         if await asyncio.wrap_future(campaign_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "Campaign snapshot differs from committed checkpoint")

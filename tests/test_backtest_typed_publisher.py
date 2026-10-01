@@ -814,6 +814,60 @@ def test_v4_checkpoint_waits_for_matching_broker_head_off_execution_path():
     asyncio.run(exercise())
 
 
+def test_native_checkpoint_forwards_same_source_to_all_snapshot_channels():
+    from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
+    from test_strategy_twenty_entry_recovery import (
+        authority, Bars, load_first_price_source, compile_certified_price_break_plan,
+        CertifiedPriceReadbackAuthority,
+    )
+
+    class V4Writer(FakeWriter):
+        journal_profile = 'backtest_v4'
+
+        def submit_base_v4(self, batch):
+            return FakeWriter.submit(self, batch)
+
+        def capture(self, kind, **kwargs):
+            self.captures[kind] = kwargs
+            result = Future()
+            result.set_result(kwargs['journal_batch_id'])
+            return result
+
+        def submit_broker_match_snapshot(self, **kwargs):
+            return self.capture('broker_match', **kwargs)
+
+        def submit_oms_observation_snapshot(self, **kwargs):
+            return self.capture('oms_observation', **kwargs)
+
+        def submit_evidence_snapshot(self, **kwargs):
+            return self.capture('evidence', **kwargs)
+
+        def submit_campaign_snapshot(self, **kwargs):
+            return self.capture('campaign', **kwargs)
+
+    async def exercise():
+        market, parent = authority()
+        plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+        source = CertifiedPriceReadbackAuthority(RUN, plan)
+        writer = V4Writer()
+        writer.captures = {}
+        publisher = _publisher(_journal(), writer)
+        # Exact public binding has separate market-plan tests. Here the actual
+        # checkpoint drain must carry one authority to all four queued adapters.
+        publisher._first_price_source = source
+        result = await publisher.enqueue_checkpoint(boundary_id=f'{DAY}:300000',
+            broker_state=(300000, {}), oms_observations={},
+            evidence_state=StrategyOneEvidenceState(300000, (), (), ()),
+            campaign_ownership=())
+        assert result.last_sequence == 2
+        assert set(writer.captures) == {'broker_match', 'oms_observation', 'evidence', 'campaign'}
+        for capture in writer.captures.values():
+            assert capture['first_price_source'] is source
+            assert capture['session_date'] == DAY and capture['checkpoint_sequence'] == 2
+            assert capture['journal_batch_id'] == result.last_batch_id
+    asyncio.run(exercise())
+
+
 def test_v4_checkpoint_receipt_waits_for_campaign_snapshot():
     class V4Writer(FakeWriter):
         journal_profile = "backtest_v4"

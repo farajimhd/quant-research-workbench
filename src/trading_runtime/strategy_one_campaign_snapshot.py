@@ -198,14 +198,16 @@ def load_campaign_snapshot(
     return verify_campaign_snapshot(CampaignSnapshotRows(root, owners))
 
 
-def load_attested_campaign_snapshot(client: Any, keeper: CampaignSnapshotHeadReader,
-                                    *, run_id: str,
-                                    checkpoint_sequence: int) -> CampaignSnapshotRows:
+def load_attested_campaign_snapshot(
+    client: Any, keeper: CampaignSnapshotHeadReader, *, run_id: str,
+    checkpoint_sequence: int,
+    first_price_source=None,
+) -> CampaignSnapshotRows:
     """Require a stable running V4 prefix and its exact completed cursor."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 
-    prefix = load_verified_v4_prefix(client, run_id)
+    prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence):
         raise RuntimeError("Campaign recovery lacks its committed running V4 prefix")
@@ -226,7 +228,7 @@ def load_attested_campaign_snapshot(client: Any, keeper: CampaignSnapshotHeadRea
             or cursor.get("session_date") != root["session_date"]
             or cursor.get("boundary_ms") != root["boundary_ms"]
             or prefix.last_batch_id != root["journal_batch_id"]
-            or load_verified_v4_prefix(client, run_id) != prefix
+            or load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source})) != prefix
             or keeper.read_head(run_id=run_id) != selected):
         raise RuntimeError("Campaign checkpoint differs from committed market cursor")
     return rows
@@ -234,6 +236,7 @@ def load_attested_campaign_snapshot(client: Any, keeper: CampaignSnapshotHeadRea
 
 def publish_campaign_snapshot(
     client: Any, session: ManagedKeeperSession, rows: CampaignSnapshotRows,
+    *, first_price_source=None,
 ) -> CampaignSnapshotHead:
     """Background-writer-only children-first publication and Keeper selection."""
     from src.trading_runtime.arte_journal_commit_v4 import load_writer_v4_snapshot_prefix
@@ -251,7 +254,7 @@ def publish_campaign_snapshot(
     root = expected.snapshot
     run_id, sequence, batch_id = (
         root["run_id"], root["checkpoint_sequence"], root["journal_batch_id"])
-    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    prefix = load_writer_v4_snapshot_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != sequence
             or prefix.last_batch_id != batch_id):
@@ -274,7 +277,8 @@ def publish_campaign_snapshot(
                     or previous.snapshot_hash != root["content_hash"]
                     or load_attested_campaign_snapshot(
                         client, reader, run_id=run_id,
-                        checkpoint_sequence=sequence) != expected):
+                        checkpoint_sequence=sequence,
+                        **({} if first_price_source is None else {'first_price_source': first_price_source})) != expected):
                 raise RuntimeError("Campaign repeat differs from selected snapshot")
             return previous
         if previous.checkpoint_sequence > sequence:

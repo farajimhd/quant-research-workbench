@@ -2475,3 +2475,31 @@ and scoped diff checks also passed. Reviewed receipt:
 `strategy23-reviewed-native-release-seals-v1.json` (42 nodes;25 common files
 independently verified as explicit number-list extensions only). No23 portfolio
 PnL exists yet. Publication and six actual development-session runs are pending.
+
+Strategy23 synchronized and published from `2fe173dc7`: revision
+`strategy-one-23:990e41b5-6ead-4ca3-b452-4934ed9121f3`, payload
+`4f04f8bda3da810140f5a62822424fcb960dd561cb81b9c5ce6d8dd2bca9bd30`,
+release token `a5af5288420f64bf45ec0203015723524d313ebe18192697737d00d7be745117`.
+Actual Aug18 PM run `b862e721-1cb5-49f1-b23e-5f81333481b0` passed preflight,
+processed6954 market rows and committed native entry/manager evidence. It then
+failed at broker snapshot publication: `V4 writer snapshot cached price
+authority differs`. Terminal evidence also failed unique typed account capture
+validation. Other five campaign sessions were not attempted. Preserve failed
+campaign/log; no valid23 portfolio PnL exists. The storage probe verified7 native
+price rows and1 actual part on `live_market_ssd`, in addition to table policy:
+`strategy23-first-price-storage-after-v1.json`.
+
+The source omission also affected OMS-observation, evidence and campaign
+snapshots. The repair transports one exact run/session-owned native authority
+explicitly from publisher through four frozen queue units to publication and
+cold prefix checks. Keeper/head/cursor and cached-authority checks are unchanged;
+there is no implicit authority fallback. Queue tests use actual worker threads
+and real snapshot projection, with publication transport isolated. Cold-reader
+tests verify complete real native entry prefixes, reject missing/foreign
+authority and forged price companions, and isolate already-tested snapshot-row
+and cursor transport.237 snapshot/publisher/writer checks and4 additional cold
+reader checks passed. Reviewed source receipt:
+`strategy23-native-checkpoint-transport-reviewed-seals-v1.json` (15 nodes,
+including full four snapshot modules and queue validators). This changed source
+requires a new numbered approval before an actual portfolio run. Trading rules,
+sizing, costs, V7 warmup and failure thresholds remain unchanged.

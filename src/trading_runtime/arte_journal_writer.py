@@ -3698,6 +3698,7 @@ class _BrokerMatchSnapshotUnit:
     boundary_ms: int
     journal_batch_id: str
     state: Any
+    first_price_source: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3707,6 +3708,7 @@ class _OmsObservationSnapshotUnit:
     boundary_ms: int
     journal_batch_id: str
     groups: Any
+    first_price_source: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3715,6 +3717,7 @@ class _EvidenceSnapshotUnit:
     checkpoint_sequence: int
     journal_batch_id: str
     state: Any
+    first_price_source: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3724,6 +3727,7 @@ class _CampaignSnapshotUnit:
     boundary_ms: int
     journal_batch_id: str
     ownership: tuple[dict[str, Any], ...]
+    first_price_source: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4468,11 +4472,22 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
-    def submit_broker_match_snapshot(self, *, session_date: date,
-                                     checkpoint_sequence: int,
-                                     boundary_ms: int,
-                                     journal_batch_id: str,
-                                     state: Any) -> Future[str]:
+    def _validate_checkpoint_price_source(self, source, session_date: date) -> None:
+        """Validate cached native authority before it enters a snapshot queue."""
+        if source is None:
+            return  # A native committed prefix still rejects missing authority.
+        from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+        if (self._journal_profile != 'backtest_v4'
+                or type(source) is not CertifiedPriceReadbackAuthority
+                or source.run_id != self._run_id
+                or source.plan.source.market.sessions != (session_date.isoformat(),)):
+            raise ValueError('Checkpoint snapshot lacks its exact native session source')
+
+    def submit_broker_match_snapshot(
+        self, *, session_date: date, checkpoint_sequence: int,
+        boundary_ms: int, journal_batch_id: str, state: Any,
+        first_price_source=None,
+    ) -> Future[str]:
         """Queue completed-boundary broker match state off the engine path."""
         if (self._journal_profile != "backtest_v4"
                 or not isinstance(session_date, date)
@@ -4486,6 +4501,7 @@ class ArteJournalWriter:
                 raise ValueError
         except (TypeError, ValueError) as exc:
             raise ValueError("Broker match snapshot batch ID is invalid") from exc
+        self._validate_checkpoint_price_source(first_price_source, session_date)
         with self._submission_lock:
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")
@@ -4495,7 +4511,7 @@ class ArteJournalWriter:
             try:
                 self._queue.put_nowait((
                     _BrokerMatchSnapshotUnit(session_date, checkpoint_sequence,
-                                             boundary_ms, journal_batch_id, state),
+                                             boundary_ms, journal_batch_id, state, first_price_source),
                     receipt))
             except Full as exc:
                 raise JournalQueueFull("Broker match snapshot queue is full") from exc
@@ -4506,6 +4522,7 @@ class ArteJournalWriter:
         self, *, session_date: date, checkpoint_sequence: int,
         boundary_ms: int, journal_batch_id: str,
         groups: Mapping[str, Any],
+        first_price_source=None,
     ) -> Future[str]:
         """Queue frozen OMS-observed states for worker-only typed publication."""
         from src.trading_runtime.strategy_one_oms_observation_snapshot import (
@@ -4523,6 +4540,7 @@ class ArteJournalWriter:
             raise ValueError("OMS observation snapshot needs a typed V4 boundary")
         if str(UUID(journal_batch_id)) != journal_batch_id:
             raise ValueError("OMS observation batch ID is invalid")
+        self._validate_checkpoint_price_source(first_price_source, session_date)
         with self._submission_lock:
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")
@@ -4533,16 +4551,17 @@ class ArteJournalWriter:
                 self._queue.put_nowait((
                     _OmsObservationSnapshotUnit(
                         session_date, checkpoint_sequence, boundary_ms,
-                        journal_batch_id, dict(groups)), receipt))
+                        journal_batch_id, dict(groups), first_price_source), receipt))
             except Full as exc:
                 raise JournalQueueFull("OMS observation snapshot queue is full") from exc
             self._accepted_writes = True
         return receipt
 
-    def submit_evidence_snapshot(self, *, session_date: date,
-                                 checkpoint_sequence: int,
-                                 journal_batch_id: str,
-                                 state: Any) -> Future[str]:
+    def submit_evidence_snapshot(
+        self, *, session_date: date, checkpoint_sequence: int,
+        journal_batch_id: str, state: Any,
+        first_price_source=None,
+    ) -> Future[str]:
         """Queue typed causal evidence for worker-only normalized publication."""
         from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
         if (self._journal_profile != "backtest_v4"
@@ -4560,6 +4579,7 @@ class ArteJournalWriter:
         project_evidence_snapshot(
             run_id=self._run_id, session_date=session_date,
             checkpoint_sequence=checkpoint_sequence, state=state)
+        self._validate_checkpoint_price_source(first_price_source, session_date)
         with self._submission_lock:
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")
@@ -4569,7 +4589,7 @@ class ArteJournalWriter:
             try:
                 self._queue.put_nowait((
                     _EvidenceSnapshotUnit(session_date, checkpoint_sequence,
-                                          journal_batch_id, state), receipt))
+                                          journal_batch_id, state, first_price_source), receipt))
             except Full as exc:
                 raise JournalQueueFull("Evidence snapshot queue is full") from exc
             self._accepted_writes = True
@@ -4579,6 +4599,7 @@ class ArteJournalWriter:
         self, *, session_date: date, checkpoint_sequence: int,
         boundary_ms: int, journal_batch_id: str,
         ownership: tuple[dict[str, Any], ...],
+        first_price_source=None,
     ) -> Future[str]:
         """Queue an immutable normalized campaign capture off the engine path."""
         from src.trading_runtime.strategy_one_campaign_snapshot import project_campaign_snapshot
@@ -4589,6 +4610,7 @@ class ArteJournalWriter:
             run_id=self._run_id, session_date=session_date,
             checkpoint_sequence=checkpoint_sequence, boundary_ms=boundary_ms,
             journal_batch_id=journal_batch_id, ownership=captured)
+        self._validate_checkpoint_price_source(first_price_source, session_date)
         with self._submission_lock:
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")
@@ -4598,7 +4620,7 @@ class ArteJournalWriter:
             try:
                 self._queue.put_nowait((
                     _CampaignSnapshotUnit(session_date, checkpoint_sequence,
-                                          boundary_ms, journal_batch_id, captured), receipt))
+                                          boundary_ms, journal_batch_id, captured, first_price_source), receipt))
             except Full as exc:
                 raise JournalQueueFull("Campaign snapshot queue is full") from exc
             self._accepted_writes = True
@@ -4928,7 +4950,9 @@ class ArteJournalWriter:
                         boundary_ms=unit.boundary_ms, state=unit.state)
                     publish_broker_match_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
-                        journal_batch_id=unit.journal_batch_id)
+                        journal_batch_id=unit.journal_batch_id,
+                        **({} if unit.first_price_source is None else
+                           {'first_price_source': unit.first_price_source}))
                     committed_id = unit.journal_batch_id
                 elif isinstance(group[0][0], _OmsObservationSnapshotUnit):
                     from src.trading_runtime.strategy_one_oms_observation_snapshot import (
@@ -4945,7 +4969,9 @@ class ArteJournalWriter:
                         boundary_ms=unit.boundary_ms, groups=unit.groups)
                     publish_oms_observation_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
-                        journal_batch_id=unit.journal_batch_id)
+                        journal_batch_id=unit.journal_batch_id,
+                        **({} if unit.first_price_source is None else
+                           {'first_price_source': unit.first_price_source}))
                     committed_id = unit.journal_batch_id
                 elif isinstance(group[0][0], _EvidenceSnapshotUnit):
                     from src.trading_runtime.strategy_one_evidence_snapshot import (
@@ -4961,7 +4987,9 @@ class ArteJournalWriter:
                         state=unit.state)
                     publish_evidence_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
-                        journal_batch_id=unit.journal_batch_id)
+                        journal_batch_id=unit.journal_batch_id,
+                        **({} if unit.first_price_source is None else
+                           {'first_price_source': unit.first_price_source}))
                     committed_id = unit.journal_batch_id
                 elif isinstance(group[0][0], _CampaignSnapshotUnit):
                     from src.trading_runtime.strategy_one_campaign_snapshot import (
@@ -4978,7 +5006,9 @@ class ArteJournalWriter:
                         journal_batch_id=unit.journal_batch_id,
                         ownership=unit.ownership)
                     publish_campaign_snapshot(
-                        self._client, self._client.manager_keeper_session, rows)
+                        self._client, self._client.manager_keeper_session, rows,
+                        **({} if unit.first_price_source is None else
+                           {'first_price_source': unit.first_price_source}))
                     committed_id = unit.journal_batch_id
                 elif isinstance(group[0][0], _RunningPortfolioSnapshotUnit):
                     from src.trading_runtime.arte_portfolio_snapshot import (

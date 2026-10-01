@@ -591,6 +591,7 @@ def load_unattested_broker_match_snapshot(
 def load_attested_broker_match_snapshot(
     client: Any, keeper: BrokerMatchHeadReader, *,
     run_id: str, checkpoint_sequence: int,
+    first_price_source=None,
 ) -> BrokerMatchSnapshotRows:
     """Require exact Keeper, V4, and market-cursor agreement on cold read.
 
@@ -606,7 +607,7 @@ def load_attested_broker_match_snapshot(
             or not callable(getattr(client, "execute", None))
             or not callable(getattr(keeper, "read_head", None))):
         raise ValueError("Broker match cold read lacks exact authorities")
-    prefix = load_verified_v4_prefix(client, run_id)
+    prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not prefix.batch_ids
@@ -641,6 +642,7 @@ def load_attested_broker_match_snapshot(
 def publish_broker_match_snapshot(
     client: Any, session: ManagedKeeperSession,
     rows: BrokerMatchSnapshotRows, *, journal_batch_id: str,
+    first_price_source=None,
 ) -> BrokerMatchHead:
     """Journal-worker-only children-first publication, then Keeper CAS.
 
@@ -666,7 +668,7 @@ def publish_broker_match_snapshot(
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise ValueError("Broker match batch ID is invalid") from exc
-    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    prefix = load_writer_v4_snapshot_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != sequence
             or prefix.last_batch_id != journal_batch_id):
@@ -689,7 +691,8 @@ def publish_broker_match_snapshot(
                     or previous.snapshot_hash != seal["content_hash"]
                     or load_attested_broker_match_snapshot(
                         client, reader, run_id=run_id,
-                        checkpoint_sequence=sequence) != expected):
+                        checkpoint_sequence=sequence,
+                        **({} if first_price_source is None else {'first_price_source': first_price_source})) != expected):
                 raise RuntimeError("Broker match repeat differs from selected state")
             return previous
         if previous.checkpoint_sequence > sequence:

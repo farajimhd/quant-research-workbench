@@ -288,12 +288,13 @@ def load_unattested_oms_observation_snapshot(
 
 def load_attested_oms_observation_snapshot(
     client: Any, keeper: Any, *, run_id: str, checkpoint_sequence: int,
+    first_price_source=None,
 ) -> OmsObservationSnapshotRows:
     """Join Keeper, V4 journal and completed market cursor before cold use."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 
-    prefix = load_verified_v4_prefix(client, run_id)
+    prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not callable(getattr(keeper, "read_head", None))):
@@ -322,6 +323,7 @@ def load_attested_oms_observation_snapshot(
 def publish_oms_observation_snapshot(
     client: Any, session: ManagedKeeperSession,
     rows: OmsObservationSnapshotRows, *, journal_batch_id: str,
+    first_price_source=None,
 ) -> OmsObservationHead:
     """Journal-worker-only children-first publication followed by Keeper CAS.
 
@@ -347,7 +349,7 @@ def publish_oms_observation_snapshot(
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise ValueError("OMS observation batch ID is invalid") from exc
-    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    prefix = load_writer_v4_snapshot_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != sequence
             or prefix.last_batch_id != journal_batch_id):
@@ -369,7 +371,8 @@ def publish_oms_observation_snapshot(
                     or previous.snapshot_hash != seal["content_hash"]
                     or load_attested_oms_observation_snapshot(
                         client, reader, run_id=run_id,
-                        checkpoint_sequence=sequence) != expected):
+                        checkpoint_sequence=sequence,
+                        **({} if first_price_source is None else {'first_price_source': first_price_source})) != expected):
                 raise RuntimeError("OMS observation repeat differs from selected state")
             return previous
         if previous.checkpoint_sequence > sequence:

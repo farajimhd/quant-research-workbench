@@ -358,6 +358,7 @@ def load_unattested_evidence_snapshot_rows(
 def load_attested_evidence_snapshot(
     client: Any, keeper: EvidenceSnapshotHeadReader, *, run_id: str,
     checkpoint_sequence: int,
+    first_price_source=None,
 ) -> StrategyOneEvidenceState:
     """Cold-read only Keeper-selected evidence at its committed V4 cursor."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
@@ -368,7 +369,7 @@ def load_attested_evidence_snapshot(
             or not callable(getattr(client, "execute", None))
             or not callable(getattr(keeper, "read_head", None))):
         raise ValueError("Strategy 1 evidence cold read lacks exact authorities")
-    prefix = load_verified_v4_prefix(client, run_id)
+    prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not prefix.batch_ids
@@ -405,6 +406,7 @@ def load_attested_evidence_snapshot(
 def publish_evidence_snapshot(
     client: Any, session: ManagedKeeperSession,
     rows: EvidenceSnapshotRows, *, journal_batch_id: str,
+    first_price_source=None,
 ) -> EvidenceSnapshotHead:
     """Journal-worker-only children-first, readback-first Keeper publication."""
     from src.trading_runtime.arte_journal_commit_v4 import load_writer_v4_snapshot_prefix
@@ -424,7 +426,7 @@ def publish_evidence_snapshot(
     run_id, sequence = root["run_id"], root["checkpoint_sequence"]
     if str(UUID(journal_batch_id)) != journal_batch_id:
         raise ValueError("Strategy 1 evidence batch ID is invalid")
-    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    prefix = load_writer_v4_snapshot_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != sequence
             or prefix.last_batch_id != journal_batch_id):

@@ -305,6 +305,123 @@ def test_manager_writer_transports_native_source_through_actual_queue(monkeypatc
         writer.close()
 
 
+@pytest.mark.parametrize('kind', ('broker_match', 'oms_observation', 'evidence', 'campaign'))
+def test_checkpoint_writer_transports_native_source_through_actual_queue(monkeypatch, kind):
+    import importlib
+    from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
+    from src.backend.backtest_market_data import market_day_boundary
+    from src.trading_runtime import arte_journal_writer as writer_module
+    from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+    from src.trading_runtime.domain import TradingMode
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    source = CertifiedPriceReadbackAuthority(str(UUID(int=302)), plan)
+    day = date(2026, 8, 18)
+    batch_id = str(UUID(int=303))
+    module = importlib.import_module(f'src.trading_runtime.strategy_one_{kind}_snapshot')
+    client = attached_v4_client(ExactBits())
+    client.close = lambda: None
+    client.manager_keeper_session = object()
+    monkeypatch.setattr(writer_module, '_v4_preflight', lambda _: None)
+    monkeypatch.setattr(writer_module, '_verify_run_identity',
+        lambda *_: {'mode': 'backtest', 'account_ids': ('DU1',)})
+    seen = []
+    def publication(got_client, session, rows, **kwargs):
+        assert got_client is client and session is client.manager_keeper_session
+        assert kwargs['first_price_source'] is source
+        root = rows.root if kind == 'oms_observation' else rows.snapshot
+        assert root['run_id'] == source.run_id and root['checkpoint_sequence'] == 1
+        seen.append(root['content_hash'])
+    monkeypatch.setattr(module, f'publish_{kind}_snapshot', publication)
+    args = dict(session_date=day, checkpoint_sequence=1, journal_batch_id=batch_id)
+    if kind == 'broker_match':
+        broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST,
+            initial_time=market_day_boundary(day, 0), fixed_bar_mode=True)
+        args.update(boundary_ms=42000, state=broker.broker_match_snapshot_state())
+    elif kind == 'oms_observation':
+        args.update(boundary_ms=42000, groups={})
+    elif kind == 'evidence':
+        args['state'] = StrategyOneEvidenceState(42000, (), (), ())
+    else:
+        args.update(boundary_ms=42000, ownership=())
+    writer = writer_module.ArteJournalWriter(client, run_id=source.run_id,
+        journal_profile='backtest_v4', coalesce_batches=False)
+    try:
+        writer._last_commit_id = batch_id
+        submit = getattr(writer, f'submit_{kind}_snapshot')
+        for wrong in (object(), CertifiedPriceReadbackAuthority('foreign-run', plan)):
+            with pytest.raises(ValueError, match='native session source'):
+                submit(**args, first_price_source=wrong)
+        with pytest.raises(ValueError, match='native session source'):
+            submit(**{**args, 'session_date': date(2026, 8, 19)}, first_price_source=source)
+        assert seen == []
+        assert submit(**args, first_price_source=source).result(timeout=5) == batch_id
+        assert len(seen) == 1
+    finally:
+        writer.close()
+
+
+@pytest.mark.parametrize('kind', ('broker_match', 'oms_observation', 'evidence', 'campaign'))
+def test_cold_checkpoint_reader_verifies_native_entry_prefix(monkeypatch, kind):
+    import importlib
+    from types import SimpleNamespace
+    from src.backend.backtest_market_data import market_day_boundary
+    from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
+    from src.trading_runtime import arte_journal_projection
+    from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+    from src.trading_runtime.domain import TradingMode
+    market, parent = authority()
+    plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+    source = CertifiedPriceReadbackAuthority(str(UUID(int=304)), plan)
+    unit, _, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=23)
+    client = attached_v4_client(ExactBits())
+    publish_strategy_one_entry_batch_v4(client, unit.base, entry_evidence=unit.entry_evidence,
+        momentum_evidence=unit.momentum_evidence, initial_momentum_evidence=unit.initial_momentum_evidence,
+        first_price_evidence=unit.first_price_evidence, first_price_authorities=unit.first_price_authorities)
+    module = importlib.import_module(f'src.trading_runtime.strategy_one_{kind}_snapshot')
+    day = date(2026, 8, 18)
+    args = dict(run_id=source.run_id, session_date=day, checkpoint_sequence=1)
+    if kind == 'broker_match':
+        broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST,
+            initial_time=market_day_boundary(day, 0), fixed_bar_mode=True)
+        rows = module.project_broker_match_snapshot(**args, boundary_ms=31000,
+            state=broker.broker_match_snapshot_state())
+        head_type, loader = module.BrokerMatchHead, 'load_unattested_broker_match_snapshot'
+    elif kind == 'oms_observation':
+        rows = module.project_oms_observation_snapshot(**args, boundary_ms=31000, groups={})
+        head_type, loader = module.OmsObservationHead, 'load_unattested_oms_observation_snapshot'
+    elif kind == 'evidence':
+        state = StrategyOneEvidenceState(31000, (), (), ())
+        rows = module.project_evidence_snapshot(**args, state=state)
+        head_type, loader = module.EvidenceSnapshotHead, 'load_unattested_evidence_snapshot_rows'
+    else:
+        rows = module.project_campaign_snapshot(**args, boundary_ms=31000,
+            journal_batch_id=unit.base.batch_id, ownership=())
+        head_type, loader = module.CampaignSnapshotHead, 'load_campaign_snapshot'
+    root = rows.root if kind == 'oms_observation' else rows.snapshot
+    head = head_type(source.run_id, 1, unit.base.batch_id, root['content_hash'], 0)
+    keeper = SimpleNamespace(read_head=lambda **_: head)
+    # Snapshot-row and cursor transport have dedicated publication tests. This
+    # fixture exercises each reader's actual complete native entry-prefix seal.
+    monkeypatch.setattr(module, loader, lambda *_, **__: rows)
+    monkeypatch.setattr(arte_journal_projection, 'load_latest_backtest_cursor',
+        lambda *_: dict(run_id=source.run_id, event_sequence=1, batch_id=unit.base.batch_id,
+            boundary_ms=31000, session_date=day.isoformat()))
+    read = getattr(module, f'load_attested_{kind}_snapshot')
+    read_args = dict(run_id=source.run_id, checkpoint_sequence=1)
+    with pytest.raises((ValueError, RuntimeError)):
+        read(client, keeper, **read_args)
+    with pytest.raises((ValueError, RuntimeError)):
+        read(client, keeper, **read_args,
+            first_price_source=CertifiedPriceReadbackAuthority('foreign-run', plan))
+    assert read(client, keeper, **read_args, first_price_source=source) == (state if kind == 'evidence' else rows)
+    original = client.tables[FIRST_PRICE.name][0]
+    client.tables[FIRST_PRICE.name][0] = typed_row(FIRST_PRICE.name, dict(
+        {k: v for k, v in original.items() if k != 'content_hash'}, current_close_int=102))
+    with pytest.raises((ValueError, RuntimeError)):
+        read(client, keeper, **read_args, first_price_source=source)
+
+
 def test_native_twenty_terminal_cold_verification_requires_original_source(monkeypatch):
     from datetime import datetime, timezone
     from uuid import uuid4
