@@ -1350,3 +1350,37 @@ no Strategy 17 release or profitability is claimed here.
 Latest user operational instruction supersedes routine restarts after saves:
 restart services only when necessary for testing or activating source changes.
 Do not refresh services simply because a backtest or report was saved.
+
+### Strategy 17 implementation acceptance
+
+Strategy 17 branches directly from the exact published Strategy 14 configuration
+and changes entry/reentry eligibility only: completed 10s histogram must be
+positive and strictly greater than its adjacent predecessor plus 10% of that
+predecessor's absolute value. The original 1s/10s witness, source identities and
+Float64 journal columns are reused. Shared numbered dispatch applies this rule
+to the native static gate, scalar adapter, intent factory, typed projector/cold
+reader and manager restore; Strategies 13–16 retain their previous predicate.
+There are no new market products or tables. Missing 10s values reject, malformed
+clocks or arithmetic overflow fail closed. Native arrays remain unchanged and
+row independent. The original first-held 60s failure window is retained.
+
+784 integration tests passed in 51.14s (`strategy17-integration-tests-v2.log`
+and `strategy17-integration-validation-v2.json` under the campaign runtime root).
+This includes actual selected-number source admission, direct typed commit/cold
+restore, weak-witness manager rejection, independent source mutations, extended
+windows, session reason authority and existing normalized journal/OMS tests.
+The first broad run retained 765 passing tests and seven stale catalog/source
+mutation assertions; those tests now exercise the installed successor and keep
+their fail-closed assertions. A separate initial selector run retained 359
+passing tests and found the missing literal 17 selector branch, now corrected.
+The first new cold fixture lacked 10s observations and correctly rejected; its
+test input now carries strong completed 10s values. No source gate was weakened.
+
+Two existing workers were reused for the four-file release lane and two-file
+pure reducer lane; both completed without child agents. The release lane passed
+25 tests. The reducer lane passed 21 tests and measured 1 million rows in 121ms,
+excluding source reads and execution. Release evidence is
+`strategy17-release-lane-validation-20261001T012111Z.json`, SHA-256
+`3eb3da8d9739eb0c5760ba270a5f7adb3ca2d9b52e349f623eb2eb699450a3c2`.
+Actual publication and all four immutable counterfactual backtests remain
+required; implementation acceptance does not establish profitability.

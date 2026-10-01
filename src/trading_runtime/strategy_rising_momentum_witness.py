@@ -64,3 +64,13 @@ def rising_momentum_entry(witness: RisingMomentumWitness) -> bool:
                    for name in ("current_line", "current_signal", "prior_line", "prior_signal"))
     return bool(rising_momentum_entry_mask(np.asarray([witness.boundary_ms], dtype=np.int64),
                                           *clocks, *values)[0])
+
+
+def numbered_momentum_entry(witness: RisingMomentumWitness, strategy_number: int) -> bool:
+    """Pin the stronger rule to 17; retain earlier completed-momentum behavior."""
+    if type(strategy_number) is not int or strategy_number not in (13, 14, 15, 16, 17):
+        raise ValueError("Numbered momentum rule has no installed consumer")
+    if strategy_number == 17:
+        from .strategy_strong_ten_second_momentum import strong_ten_second_momentum_entry
+        return strong_ten_second_momentum_entry(witness)
+    return rising_momentum_entry(witness)

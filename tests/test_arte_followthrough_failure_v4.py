@@ -113,7 +113,7 @@ def test_failure_source_binds_its_exact_successor_number(strategy_number):
             intents, (source_event, *base.events), (entry,))
 
 
-@pytest.mark.parametrize('strategy_number', [8, 17, True])
+@pytest.mark.parametrize('strategy_number', [8, 18, True])
 def test_projector_rejects_unapproved_failure_consumers(strategy_number):
     witness, intent, base, *_ = fixture()
     with pytest.raises(ValueError, match='Strategy 9'):
@@ -137,7 +137,7 @@ def test_memory_retry_preserves_exact_witness(strategy_number):
         journal.append_followthrough_exit(**{**kwargs, 'strategy_revision': 10 if strategy_number == 9 else 9})
 
 
-@pytest.mark.parametrize("strategy_number", [11, 12, 13, 14])
+@pytest.mark.parametrize("strategy_number", [11, 12, 13, 14, 17])
 @pytest.mark.parametrize('first_held_ms,eligible', [(40000, True), (39900, False)])
 def test_strategy_eleven_persistence_inclusive_first_minute(first_held_ms, eligible, strategy_number):
     # The unbounded inherited factory can create both intents. Strategy 11
@@ -275,7 +275,7 @@ def test_strategy_fifteen_normalized_failure_remains_eligible_entire_holding(bou
     assert sealed[0] == typed_row(FAILURE.name, row)
     assert sealed[0]["strategy_number"] == strategy_number
     assert intent.reason == "strategy_nine_followthrough_failure" and intent.metadata == {}
-    for number in (11, 12, 13, 14):
+    for number in (11, 12, 13, 14, 17):
         with pytest.raises(ValueError, match="first-minute eligibility"):
             restore_failure({**sealed[0], "strategy_number": number})
 

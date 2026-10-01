@@ -61,7 +61,7 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
     tree = ast.parse(source)
     predicates = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                   and node.name == "is_numbered_fixed_strategy"]
-    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))"
+    expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17))"
     if (len(predicates) != 1 or len(predicates[0].body) != 1
             or ast.unparse(predicates[0].body[0]) != expected):
         raise ValueError("Numbered fixed identity whitelist changed")
@@ -72,11 +72,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
-    followthrough_proof = certify_followthrough_failure_v4_source() if strategy_number in (9, 10, 11, 12, 13, 14, 15, 16) else ""
-    entry_scope_proof = certify_empty_exclusion_entry_scope_source() if strategy_number in (10, 11, 12, 13, 14, 15, 16) else ""
-    early_failure_proof = certify_early_followthrough_failure_v4_source() if strategy_number in (11, 12, 13, 14) else ""
-    recent_bos_proof = certify_recent_bos_entry_source() if strategy_number in (12, 13, 14, 15, 16) else ""
-    rising_momentum_proof = certify_rising_momentum_entry_source() if strategy_number in (13, 14, 15, 16) else ""
+    followthrough_proof = certify_followthrough_failure_v4_source() if strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17) else ""
+    entry_scope_proof = certify_empty_exclusion_entry_scope_source() if strategy_number in (10, 11, 12, 13, 14, 15, 16, 17) else ""
+    early_failure_proof = certify_early_followthrough_failure_v4_source() if strategy_number in (11, 12, 13, 14, 17) else ""
+    recent_bos_proof = certify_recent_bos_entry_source() if strategy_number in (12, 13, 14, 15, 16, 17) else ""
+    rising_momentum_proof = certify_rising_momentum_entry_source() if strategy_number in (13, 14, 15, 16, 17) else ""
     base = certify_strategy_one_v4_projection()
     if strategy_number == 1:
         return base
@@ -120,7 +120,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
             and isinstance(finish.body[0].value, ast.Await)
             and ast.unparse(finish.body[0].value.value) == "finish_boundary(work)"):
         raise ValueError("Numbered terminal cursor must complete before residual failure")
-    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         gate = named(trees[5], "compile_static_entry_gate")
         if not {"fromiter", "flatnonzero"} <= calls(gate):
             raise ValueError("Strategy 3 activation gate must remain vectorized")
@@ -138,12 +138,12 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         preliminary_gates = [node for node in gates if any(key.arg == "strategy_number"
                 and ast.unparse(key.value) == "12" for key in node.keywords)]
         momentum_routes = [node for node in ast.walk(trees[1]) if isinstance(node, ast.If)
-                and ast.unparse(node.test) == "runtime.config.strategy_revision in (13, 14, 15, 16)"]
+                and ast.unparse(node.test) == "runtime.config.strategy_revision in (13, 14, 15, 16, 17)"]
         if (len(gates) != 2 or len(selected_gates) != 1 or len(preliminary_gates) != 1
                 or len(momentum_routes) != 1
                 or preliminary_gates[0] not in tuple(ast.walk(momentum_routes[0]))):
             raise ValueError("Strategy 3 static gate is not bound to its selected contract")
-    if strategy_number in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+    if strategy_number in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         management = named(trees[6], "on_management")
         guard = [node for node in management.body if isinstance(node, ast.If)
                  and "not self.contract.allows_adds" in ast.unparse(node.test)]
@@ -163,7 +163,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                 or len(submission_guards) != 1 or not submissions
                 or any(node.lineno <= submission_guards[0].lineno for node in submissions)):
             raise ValueError("Strategy 4 must prohibit adds after confirmed protection")
-    if strategy_number in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+    if strategy_number in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         reducer = named(trees[7], "advance_protection")
         swing = [node for node in reducer.body if isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name) and target.id == "swing" for target in node.targets)]
@@ -187,12 +187,12 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         bound = [node for node in ast.walk(manager) if isinstance(node, ast.Call)
                  and isinstance(node.func, ast.Name) and node.func.id == "advance_protection"]
         if (len(trailing.body) != 1
-                or ast.unparse(trailing.body[0]) != "return self.strategy_number not in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16)"
+                or ast.unparse(trailing.body[0]) != "return self.strategy_number not in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)"
                 or len(bound) != 1 or not any(key.arg == "allows_completed_30s_trailing"
                     and ast.unparse(key.value) == "self.contract.allows_completed_30s_trailing"
                     for key in bound[0].keywords)):
             raise ValueError("Strategy 7 must restore the existing completed-low trailing branch")
-    if strategy_number in (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+    if strategy_number in (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         reducer = named(trees[7], "advance_protection")
         targets = [node for node in reducer.body if isinstance(node, ast.Assign)
                    and any(isinstance(target, ast.Name) and target.id == "target_amendment" for target in node.targets)]
@@ -211,7 +211,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                     and ast.unparse(key.value) == "self.contract.allows_target_escalation"
                     for key in bindings[0].keywords)):
             raise ValueError("Strategy 6 must freeze only subsequent target escalation")
-    if strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16):
+    if strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         cap = named(trees[0], "caps_entry_at_reference_ask")
         entry = named(trees[8], "strategy_one_entry_intent")
         envelopes = [node for node in ast.walk(entry) if isinstance(node, ast.Call)
@@ -220,7 +220,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                     and isinstance(node.func, ast.Name) and node.func.id == "ExecutionPolicy"]
         envelope_keys = {key.arg: ast.unparse(key.value) for key in envelopes[0].keywords} if len(envelopes) == 1 else {}
         policy_keys = {key.arg: ast.unparse(key.value) for key in policies[0].keywords} if len(policies) == 1 else {}
-        if (len(cap.body) != 1 or ast.unparse(cap.body[0]) != "return self.strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16)"
+        if (len(cap.body) != 1 or ast.unparse(cap.body[0]) != "return self.strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17)"
                 or envelope_keys.get("maximum_buy_price") != "proposal.reference_ask if numbered_fixed_strategy(proposal.strategy_number).caps_entry_at_reference_ask else None"
                 or envelope_keys.get("persist_until_cancelled") != "True"
                 or policy_keys.get("partial_fill_policy") != "PartialFillPolicy.COMPLETE_REMAINDER"):
@@ -265,12 +265,12 @@ def certify_early_followthrough_failure_v4_source(*, source_path: Path | None = 
     assignments = [n for n in ast.walk(trees[1]) if isinstance(n, ast.Assign)
                    and any(isinstance(t, ast.Name) and t.id == "failure_rule" for t in n.targets)]
     if (len(assignments) != 1 or ast.unparse(assignments[0].value)
-            != "early_followthrough_failure if self.contract.strategy_number in (11, 12, 13, 14) else followthrough_failure"):
+            != "early_followthrough_failure if self.contract.strategy_number in (11, 12, 13, 14, 17) else followthrough_failure"):
         raise ValueError("Strategy 11 early failure predicate is not exclusively routed")
     numbered = [n for n in trees[2].body if isinstance(n, ast.FunctionDef)
                 and n.name == "validate_numbered_failure"]
     if (len(numbered) != 1
-            or "strategy_number in (11, 12, 13, 14)" not in ast.unparse(numbered[0])
+            or "strategy_number in (11, 12, 13, 14, 17)" not in ast.unparse(numbered[0])
             or "witness.boundary_ms - witness.first_held_boundary_ms > EARLY_FAILURE_WINDOW_MS" not in ast.unparse(numbered[0])):
         raise ValueError("Strategy 11 normalized witness must preserve its inclusive first-held bound")
     execute = [n for n in ast.walk(trees[3]) if isinstance(n, ast.AsyncFunctionDef)
@@ -361,7 +361,7 @@ def certify_followthrough_failure_v4_source() -> str:
     selectors = [n for n in ast.walk(management) if isinstance(n, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == "failure_rule" for t in n.targets)]
     if (len(selectors) != 1 or ast.unparse(selectors[0].value)
-            != "early_followthrough_failure if self.contract.strategy_number in (11, 12, 13, 14) else followthrough_failure"):
+            != "early_followthrough_failure if self.contract.strategy_number in (11, 12, 13, 14, 17) else followthrough_failure"):
         raise ValueError("Original failure rule must remain routed exclusively to Strategy 9/10")
     submit = named(trees[3], "submit_followthrough_failure")
     execute = named(trees[3], "_execute_intents")
@@ -887,13 +887,13 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
         if actual != statements:
             raise ValueError("Strategy 12 recent BOS completed-clock or inclusive bound changed")
     static_routes = [n for n in ast.walk(trees[1]) if isinstance(n, ast.If)
-                     and ast.unparse(n.test) == "strategy_number in (12, 13, 14, 15, 16)"]
+                     and ast.unparse(n.test) == "strategy_number in (12, 13, 14, 15, 16, 17)"]
     if len(static_routes) != 1 or not all(value in ast.unparse(static_routes[0]) for value in
             ("recent_bos_entry_mask(boundaries, break_boundaries)",
              "fact.bos_break_boundary_ms or 0", "reasons |= (~recent).astype(np.uint8) * RECENT_BOS_REQUIRED")):
         raise ValueError("Strategy 12 recent BOS vector gate is not exclusively routed")
     adapter_routes = [n for n in ast.walk(trees[2]) if isinstance(n, ast.If)
-                      and ast.unparse(n.test) == "strategy_number in (12, 13, 14, 15, 16) and (not recent_bos_entry(boundary_ms=fact.boundary_ms, bos_break_boundary_ms=fact.bos_break_boundary_ms))"]
+                      and ast.unparse(n.test) == "strategy_number in (12, 13, 14, 15, 16, 17) and (not recent_bos_entry(boundary_ms=fact.boundary_ms, bos_break_boundary_ms=fact.bos_break_boundary_ms))"]
     if len(adapter_routes) != 1 or ast.unparse(adapter_routes[0].body[0]) != "return StrategyOneEntryDecision('recent_supported_bos_required')":
         raise ValueError("Strategy 12 recent BOS sequential adapter is not exclusively routed")
     coordinator_calls = [n for n in ast.walk(trees[3]) if isinstance(n, ast.Call)
@@ -905,7 +905,7 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
     if len(execution_calls) != 1 or not any(k.arg == "strategy_number" and ast.unparse(k.value) == "config.strategy_revision" for k in execution_calls[0].keywords):
         raise ValueError("Strategy 12 execution must thread certified revision")
     intent_routes = [n for n in ast.walk(trees[5]) if isinstance(n, ast.If)
-                     and ast.unparse(n.test) == "proposal.strategy_number in (12, 13, 14, 15, 16)"]
+                     and ast.unparse(n.test) == "proposal.strategy_number in (12, 13, 14, 15, 16, 17)"]
     if len(intent_routes) != 1 or "if not recent_bos_entry(boundary_ms=proposal.boundary_ms, bos_break_boundary_ms=proposal.bos_break_boundary_ms):" not in ast.unparse(intent_routes[0]):
         raise ValueError("Strategy 12 intent authority must reject forged stale BOS")
     # Persistence, cold entry evidence and runtime admission reuse the guarded
@@ -918,7 +918,7 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
                     and n.func.id == "strategy_one_entry_intent" for n in ast.walk(functions[0])):
                 raise ValueError("Strategy 12 persisted entry authority factory route changed: " + name)
     raw_routes = [n for n in ast.walk(trees[8]) if isinstance(n, ast.If)
-                  and ast.unparse(n.test) == "row['strategy_number'] in (12, 13, 14, 15, 16)"]
+                  and ast.unparse(n.test) == "row['strategy_number'] in (12, 13, 14, 15, 16, 17)"]
     if len(raw_routes) != 1 or "if not recent_bos_entry(boundary_ms=row['boundary_ms'], bos_break_boundary_ms=row['bos_break_boundary_ms']):" not in ast.unparse(raw_routes[0]):
         raise ValueError("Strategy 12 raw normalized entry authority must reject forged stale BOS")
     return sha256(json.dumps(tuple((path.name, sha256(source.encode()).hexdigest())
@@ -929,15 +929,15 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
 # routes. Exact canonical AST seals bind the tested implementation; a later
 # behavior change gets a new numbered release. Comments/line endings do not
 # affect these seals. The run separately pins its complete backend fingerprint.
-_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_one_coordinator.py': {'run_strategy_one_proposals': 'f7373bb73fd6b1f0615e2a15b5beacbdab1785ae6e2e796dbbfaf38d5a2069c1'},
- 'backend/backtest_strategy_one_execution.py': {'run_certified_strategy_one_session': '7ec483a7b94c38e8b20c256c6adb8c4e1b31fc9b4fb1f674fa37f6c331eb51fe'},
- 'backend/backtest_strategy_one_management.py': {'restore_state': 'c40256c8e980db125ce76e06708511ec33f31318281cc27be51bfba9a4f09334'},
- 'backend/backtest_strategy_one_stateful.py': {'propose_certified_strategy_one_entry': '5391a04434466878707371cf492557b1595461dfd3999884b15063cdc8f05a7c'},
- 'backend/backtest_strategy_one_static_gate.py': {'compile_static_entry_gate': '7e12f50197258ca64fe8377e41944ec74e931d8736839c764c330187e7f93d8d'},
- 'backend/backtest_strategy_rising_momentum.py': {'__module__': '266c27374cea376f8f2a4ed13c571ffe400d0997672b19148226709ef6c454c3'},
- 'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': 'ce690bd9c24e005563c15ecf413bec7e98fd87087c50170f2d72052f2c7a2652'},
+_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_one_coordinator.py': {'run_strategy_one_proposals': '0ef2449406c267074caaf3713d9d9b6a63332412b5c61cc40930e06f3f936f7c'},
+ 'backend/backtest_strategy_one_execution.py': {'run_certified_strategy_one_session': 'f6eca84900d518be78306b95cbad965ff4011a05ccc245f746b9415a8ed282a1'},
+ 'backend/backtest_strategy_one_management.py': {'restore_state': '1a0bf782e99cbd3b80eec917aa6bec0f9f9318af2491dbe0f2aa02dc7dd9976b'},
+ 'backend/backtest_strategy_one_stateful.py': {'propose_certified_strategy_one_entry': 'f54277aabbc8f40f3642054af3eb9f217ad934587d2c751c9980ff18fead4433'},
+ 'backend/backtest_strategy_one_static_gate.py': {'compile_static_entry_gate': '1e6bda6e806530452920ffcd4b3e0c28566712478d8b0f8856d0714432762e2c'},
+ 'backend/backtest_strategy_rising_momentum.py': {'__module__': '5a9f9b837f25999fd0521d5786c65635573c39f46887216ef89d1b8371b09a55'},
+ 'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': '4644745bd61bfbed5731b69c920fa232801e18dc9cd47b02f66de0a9298bae4b'},
  'trading_runtime/arte_journal_commit_v4.py': {'_load_verified_details_v4': '8abe694bc3f3f1b9ef672c1531e13e9c4c8baaff000c59dc491174e0cddc55a6',
-                                               '_publish_typed_batch_v4': 'ebbe5cdd88f070dc6e91098be8cdc4397def2d1068ead1d24c250905d11fde67',
+                                               '_publish_typed_batch_v4': 'e107acc48e4b1021b4f5ec91ea61b0e288eb957a3e078fb0cee086901ab98f39',
                                                'publish_strategy_one_entry_batch_v4': '41859cfbc938382211bf98004e0def2851611afed446438e556da7e962e71cbf'},
  'trading_runtime/arte_journal_compound_v4.py': {'_publication_kwargs': '77ef27d4751e07fe66ee166ba624fdb5dabd8c8dbf4b304722f339ea47443032',
                                                  '_unit_children': '91e94d16bca0d80926d43a630222834a69886aac74bed117fb3e6598fadf9132',
@@ -945,15 +945,16 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_one_coordinator.py':
  'trading_runtime/arte_journal_writer.py': {'V4StrategyOneEntryBatch': '310d38e5f5ecd810d444bb0d4a637e3f1b085127d6ea6980c51ba7d275c7e5b8',
                                             'v4_journal_write_tables': '97e91e6d21f3055dd8a56d22ced447aaa34945074596f603a371dc0820f0ec27',
                                             'v4_storage_contracts': 'ab9c2400ef6c1c0e9e7f18b0199f436a3435773f5c9bf6a4be7b818a58977631'},
- 'trading_runtime/arte_rising_momentum_entry_v4.py': {'__module__': 'dd9ae4bb2909be32b41a9c815d44b639d938acab7ba51b6dc91086b2efdd8570'},
- 'trading_runtime/arte_strategy_one_entry_journal.py': {'load_committed_strategy_one_entry_page': 'a5d9d326075d65f47cb445ebadc99b73e9b8109cd3c821b60c71496ecb3cacb5',
-                                                        'load_committed_strategy_one_source': 'a0daaf166cdb3d28a8e95841a9fb95d6ff676bc4134d0c684c64ae9bed27a98f'},
- 'trading_runtime/strategy_one_intent.py': {'strategy_one_entry_intent': '0b1ada2406ef841a16f26f8189b8432c48ce8172bf14e11d7db8999982ad7c4f'},
- 'trading_runtime/strategy_one_management_snapshot.py': {'attach_committed_momentum_sources': 'c60b625e11f29fa7dabee0419249f2640ed82450dd478660f61e6eac135a0f2d',
+ 'trading_runtime/arte_rising_momentum_entry_v4.py': {'__module__': 'e340da6aa684ae6b790e80efa2a2dfa8ebd5b3e2c3038bf59eb998a097a56b6b'},
+ 'trading_runtime/arte_strategy_one_entry_journal.py': {'load_committed_strategy_one_entry_page': '3ca45d346c812eef9a7bcf1f888db42ab67431373585c282997fef7832678d00',
+                                                        'load_committed_strategy_one_source': 'a52e4a30a61eb88deea2bd49982e03e64952e1557a0142196da2075395262cf9'},
+ 'trading_runtime/strategy_one_intent.py': {'strategy_one_entry_intent': '46c38309299337fb16898007452e0315bceaf8e370ab579fd9db52aed85bbca1'},
+ 'trading_runtime/strategy_one_management_snapshot.py': {'attach_committed_momentum_sources': '938cbc7b12ac062b6a2f36374d1cecef6f46bf94adf339b1f71d8f3ded9561c0',
                                                          'load_attested_manager_snapshot': '2700ed3e45b3819f1c76ab9bdcdefaf27ba50493b8cf8972dea50ed555a70aa6',
                                                          'publish_manager_snapshot': '030d4064f5d3fad34f47b02dda6ff29e7f7d0f0ae7f9ffc97f689a1b8825393b'},
  'trading_runtime/strategy_rising_momentum_entry.py': {'__module__': '26f5e82b33a5e7e4126fd703d9748ca3ee14b3696df4f6b9eddb79db96e05ea7'},
- 'trading_runtime/strategy_rising_momentum_witness.py': {'__module__': 'e8be3017dea558b4aafc8a5c1fcde1552199732e5242569ff9cda9802b9ebc76'}}
+ 'trading_runtime/strategy_rising_momentum_witness.py': {'__module__': '2eb910f8b9c36551299940cae4f390dd57e74eee0a2174b0c817b3495dc1d520'},
+ 'trading_runtime/strategy_strong_ten_second_momentum.py': {'__module__': '70071f8696a3675e4a7344328d65327a84b539cb7e03f09c4fae49542a74dba5'}}
 
 
 def certify_rising_momentum_entry_source(*, source_overrides: dict[str, Path] | None = None) -> str:
@@ -986,11 +987,11 @@ def certify_rising_momentum_entry_source(*, source_overrides: dict[str, Path] | 
     return sha256(json.dumps(observations, separators=(",", ":")).encode()).hexdigest()
 
 
-_SESSION_EXIT_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_numbered_session_exit_intent': '95ba0412ad43c69319fd1862cd9e7d514aa873a0662196d987b8cc67a262010d'},
- 'trading_runtime/numbered_fixed_strategy.py': {'_SESSION_EXIT_REASONS': 'a997e22c939a743d1c76a5cb61df9d6a6f071ef2cb59ba8a1c60b72abebc4be9',
+_SESSION_EXIT_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_numbered_session_exit_intent': '7a0308202436485eed25868453d4fbd8229f52b5b73315d7d6a3380d1b64d106'},
+ 'trading_runtime/numbered_fixed_strategy.py': {'_SESSION_EXIT_REASONS': 'baf5a5bcc83ac883baa440693a0eeaa76f945c403ed251d7f9e4afcbfe63fc07',
                                                 'numbered_session_exit_reason': '210f5211d9f9a3ca40a881298b00de8be3465a21941376ee44885efe952c7565'},
  'trading_runtime/numbered_session_exit.py': {'numbered_session_exit_intent': 'ef9bf3c91d18c5059f3d58ea844397a0d764b7cad9188a865a4d7260e85d0550'},
- 'trading_runtime/runtime.py': {'_execute_intents': '92d7e0c31ed3df24a353878a58971c3a16e1bdacf2592f43af725955a5d743cd'}}
+ 'trading_runtime/runtime.py': {'_execute_intents': '4eeec51006fd30228bed3780b597ecfc359d3bbf14ac57303a74878c9c44f6cb'}}
 
 
 def certify_numbered_session_exit_reason_source(*, source_overrides=None) -> str:

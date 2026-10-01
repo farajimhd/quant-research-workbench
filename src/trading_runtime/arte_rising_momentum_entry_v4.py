@@ -3,7 +3,7 @@ import struct
 from uuid import UUID, NAMESPACE_URL, uuid5
 from .arte_journal_schema import TableContract
 from .strategy_rising_momentum_witness import (
-    CompletedMomentumObservation, RisingMomentumWitness, rising_momentum_entry,
+    CompletedMomentumObservation, RisingMomentumWitness, numbered_momentum_entry,
 )
 
 VALUES = ("current_line", "current_signal", "prior_line", "prior_signal")
@@ -37,12 +37,12 @@ def decode_momentum_row(row):
 
 
 def project_rising_momentum_entry(proposal, *, run_id, batch_id, parent_record_id, event_month):
-    if proposal.strategy_number not in (13, 14, 15, 16):
+    if proposal.strategy_number not in (13, 14, 15, 16, 17):
         if proposal.momentum is not None:
             raise ValueError("Old entry cannot carry Strategy 13 momentum")
         return ()
     witness = proposal.momentum
-    if (not rising_momentum_entry(witness) or witness.ticker != proposal.ticker
+    if (not numbered_momentum_entry(witness, proposal.strategy_number) or witness.ticker != proposal.ticker
             or witness.boundary_ms != proposal.boundary_ms):
         raise ValueError("Strategy 13 entry requires rising completed momentum")
     parent, batch = str(UUID(parent_record_id)), str(UUID(batch_id))
@@ -63,7 +63,7 @@ def restore_rising_momentum(rows, *, ticker, boundary_ms):
     first = ordered[0]
     identity = ("parent_record_id", "run_id", "event_month", "batch_id", "strategy_number",
                 "ticker", "boundary_ms", "source_build_id", "source_attempt_id", "market_plan_token")
-    if (first["strategy_number"] not in (13, 14, 15, 16) or first["ticker"] != ticker or first["boundary_ms"] != boundary_ms
+    if (first["strategy_number"] not in (13, 14, 15, 16, 17) or first["ticker"] != ticker or first["boundary_ms"] != boundary_ms
             or any(any(r[k] != first[k] for k in identity) for r in ordered)
             or any(r["record_id"] != str(uuid5(NAMESPACE_URL,
                 f"{r['parent_record_id']}:rising-momentum:{r['resolution_ms']}")) for r in ordered)):
@@ -72,7 +72,7 @@ def restore_rising_momentum(rows, *, ticker, boundary_ms):
         str(first["source_attempt_id"]), first["market_plan_token"], tuple(
             CompletedMomentumObservation(r["resolution_ms"], r["current_boundary_ms"],
                 r["prior_boundary_ms"], *(r[name] for name in VALUES)) for r in ordered))
-    if not rising_momentum_entry(witness):
+    if not numbered_momentum_entry(witness, first["strategy_number"]):
         raise ValueError("Strategy 13 entry requires rising completed momentum")
     return witness
 
@@ -84,7 +84,7 @@ def seal_rising_momentum_rows(rows, entries, intents, events):
     if any("content_hash" in source and source["content_hash"] != row["content_hash"]
            for source, row in zip(rows, sealed)):
         raise ValueError("Strategy 13 momentum scalar seal changed")
-    required = {r["parent_record_id"]: r for r in entries if r["strategy_number"] in (13, 14, 15, 16)}
+    required = {r["parent_record_id"]: r for r in entries if r["strategy_number"] in (13, 14, 15, 16, 17)}
     parents = {r["record_id"]: r for r in intents if r["reason"] == "strategy_one_entry"}
     source_events = {r["record_id"]: r for r in events}
     if len(sealed) != 2 * len(required) or any(r["parent_record_id"] not in required for r in sealed):

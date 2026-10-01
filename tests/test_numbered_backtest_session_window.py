@@ -6,7 +6,7 @@ import pytest
 from src.backend.replay_run_service import _require_numbered_session_window
 
 
-@pytest.mark.parametrize("number", list(range(2, 17)))
+@pytest.mark.parametrize("number", list(range(2, 18)))
 @pytest.mark.parametrize("start,end", [
     (time(4), time(9, 30)), (time(16), time(20)),
     (time(5), time(8)), (time(17), time(19, 55)),
@@ -15,7 +15,7 @@ def test_extended_release_accepts_one_extended_window(number, start, end):
     _require_numbered_session_window({"strategy_number": number}, start, end)
 
 
-@pytest.mark.parametrize("number", list(range(2, 17)))
+@pytest.mark.parametrize("number", list(range(2, 18)))
 @pytest.mark.parametrize("start,end", [
     (time(4), time(20)), (time(9, 30), time(16)),
     (time(9, 29), time(9, 31)), (time(15, 59), time(20)),
@@ -30,7 +30,7 @@ def test_strategy_one_historical_window_contract_is_unchanged():
     _require_numbered_session_window({"strategy_number": 1}, time(4), time(20))
 
 
-@pytest.mark.parametrize("number", list(range(2, 17)))
+@pytest.mark.parametrize("number", list(range(2, 18)))
 def test_new_strategy_public_resume_stays_closed_before_acceptance(number, tmp_path, monkeypatch):
     import asyncio
     from types import SimpleNamespace

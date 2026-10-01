@@ -94,8 +94,14 @@ class CertifiedRisingMomentumPlan:
         object.__setattr__(self, "requested_mask", _frozen(self.requested_mask))
         self.eligible_mask()
 
-    def eligible_mask(self) -> np.ndarray:
-        return rising_momentum_entry_mask(
+    def eligible_mask(self, strategy_number: int = 13) -> np.ndarray:
+        if type(strategy_number) is not int or strategy_number not in (13, 14, 15, 16, 17):
+            raise ValueError("Momentum plan has no installed numbered rule")
+        rule = rising_momentum_entry_mask
+        if strategy_number == 17:
+            from src.trading_runtime.strategy_strong_ten_second_momentum import strong_ten_second_momentum_entry_mask
+            rule = strong_ten_second_momentum_entry_mask
+        return rule(
             np.array([key[1] for key in self.keys], dtype=np.int64),
             self.current_boundaries_ms, self.prior_boundaries_ms,
             self.current_line, self.current_signal, self.prior_line, self.prior_signal)
