@@ -68,20 +68,15 @@ def test_missing_mixed_or_changed_financial_authority_rejects(case):
 
 
 def test_prepared_cold_join_checks_native_hash_and_uints_before_reconstruction(monkeypatch):
-    """Registration and adjacent readers are mocked; AH scalar loader is real."""
+    """Adjacent readers are mocked; registration and AH scalar loader are real."""
     from src.trading_runtime import arte_oms_projection as oms
     from src.trading_runtime import arte_intent_projection as intents
-    from src.trading_runtime import numbered_fixed_strategy as contracts
     from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
     from src.trading_runtime.arte_journal_writer import typed_row
     group, source, history, reservation, decision, row = prepared()
     prefix = V4CommittedPrefix(history.run_id, 12, group.group['batch_id'],
         '2026-08-10:43700000', 'running', history.committed_batch_ids)
-    # This exercises the prepared downstream path, not installed admission.
-    def prepared_contract(number):
-        assert number == 34
-    monkeypatch.setattr(contracts, 'numbered_fixed_strategy', prepared_contract)
     monkeypatch.setattr(oms, 'load_latest_committed_oms_groups', lambda *a, **k: (group,))
     monkeypatch.setattr(intents, 'load_committed_strategy_intent_page', lambda *a, **k: (source,))
     monkeypatch.setattr(oms, 'load_committed_oms_admission_page', lambda *a, **k: {12: reservation})

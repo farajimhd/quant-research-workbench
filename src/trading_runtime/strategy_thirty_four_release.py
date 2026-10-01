@@ -1,4 +1,4 @@
-"""Prepared immutable Strategy 34 declaration; executor/publication remain closed."""
+"""Immutable Strategy 34 declaration; publication requires independent approval."""
 from copy import deepcopy
 from hashlib import sha256
 import re

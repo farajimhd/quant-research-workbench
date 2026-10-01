@@ -92,7 +92,7 @@ def test_profit_cannot_restore_without_witness_admission_or_with_resized_quantit
             reservation, decision, profit_giveback_row=row)
 
 
-@pytest.mark.parametrize('number', [31, 32, 33])
+@pytest.mark.parametrize('number', [31, 32, 33, 34])
 def test_cold_join_routes_exact_native_source_to_profit_reader(monkeypatch, number):
     from src.trading_runtime import arte_oms_projection as oms
     from src.trading_runtime import arte_intent_projection as intents
@@ -120,7 +120,7 @@ def test_cold_join_routes_exact_native_source_to_profit_reader(monkeypatch, numb
     assert result[0].approved_intent.metadata['assignment_id'] == reservation['assignment_id']
 
 
-def test_prepared34_cold_join_remains_closed_until_installed_contract():
+def test_future35_cold_join_remains_closed_until_installed_contract():
     from src.trading_runtime.arte_oms_projection import load_recovered_strategy_one_oms_lineage
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
     group, source, history, _, _, _ = prepared(strategy_number=34)
@@ -129,4 +129,4 @@ def test_prepared34_cold_join_remains_closed_until_installed_contract():
     with pytest.raises(ValueError, match='No installed numbered'):
         load_recovered_strategy_one_oms_lineage(object(), prefix,
             allowed_accounts=frozenset({source.account_id}), protection_history=history,
-            strategy_number=34)
+            strategy_number=35)

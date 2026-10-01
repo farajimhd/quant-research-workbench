@@ -21,7 +21,7 @@ def assignment():
         created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
 
 
-@pytest.mark.parametrize("number", [2, 6, 7])
+@pytest.mark.parametrize("number", [2, 6, 7, 34])
 def test_installed_number_uses_real_fixed_runtime_not_legacy_callbacks(number):
     initialize_numbered_fixed_strategies()
     initialize_numbered_fixed_strategies()
@@ -32,7 +32,7 @@ def test_installed_number_uses_real_fixed_runtime_not_legacy_callbacks(number):
     selected = replace(assignment(), strategy_revision=number)
     runtime = registration.build([selected], mode="backtest")
     assert runtime.revision == number and runtime.contract.strategy_number == number
-    assert runtime.contract.allows_target_escalation is (number not in (6, 7))
+    assert runtime.contract.allows_target_escalation is (number not in (6, 7, 34))
     assert not any(row["strategy_id"] == release.executor_strategy_id for row in installed_strategy_definitions())
     with pytest.raises(ValueError, match="Backtest-only"):
         registration.build([selected], mode="live")
@@ -65,4 +65,22 @@ def test_nineteen_inherits_eighteen_execution_capabilities_and_session_authority
         assert getattr(child, name) == getattr(parent, name)
     assert numbered_session_exit_reason(19) == 'strategy_nineteen_session_exit'
     with pytest.raises(ValueError, match='No installed'):
-        numbered_fixed_strategy(34)
+        numbered_fixed_strategy(35)
+
+
+def test_thirty_four_matches_parent_capabilities_and_session_boundaries():
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy, numbered_session_exit_reason
+    from src.trading_runtime.strategy_registry import numbered_strategy_parent
+    child, parent = numbered_fixed_strategy(34), numbered_fixed_strategy(33)
+    assert numbered_strategy_parent(34) == 33
+    for name in ('allows_session_exit', 'allows_adds', 'allows_completed_30s_trailing',
+                 'allows_target_escalation', 'caps_entry_at_reference_ask',
+                 'allows_followthrough_failure_exit'):
+        assert getattr(child, name) == getattr(parent, name)
+    for boundary in (0, 100, 19499900, 19500000, 19740000, 19800000,
+                     43200000, 43200100, 57000000, 57300000, 57600000):
+        for method in ('entry_allowed', 'acquisition_cutoff', 'liquidation_due'):
+            assert getattr(child, method)(boundary) == getattr(parent, method)(boundary)
+        for start in (0, 100, 43200000, 43200100):
+            assert child.activation_allowed(boundary, start) == parent.activation_allowed(boundary, start)
+    assert numbered_session_exit_reason(34) == 'strategy_thirty_four_session_exit'
