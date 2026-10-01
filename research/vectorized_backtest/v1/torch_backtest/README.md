@@ -1,0 +1,253 @@
+# Torch backtest v1
+
+A searchable strategy array compiled into a causal Torch replay. Market features,
+source history, orders, positions and cash remain on the selected device during
+replay. The initial history policy uses **12 completed source observations**;
+the lookback is an integer search parameter with a declared range of **1–64**.
+
+This package is a research engine. It implements the existing approximate broker
+contract and the released Early Squeeze admission funnel. Its example downstream
+policy is not the full Candidate 328 resistance/reentry/trailing lifecycle.
+
+## The pipeline
+
+```text
+Program [L,4] + parameter values [P] + atomic catalog
+    → validate units, ranges, graph and physical data requirements
+    → ClickHouse price envelope → released Early Squeeze → persistent watchlist
+    → certified, projected ARTE chunks for watchlist listings
+    → align once and transfer a bounded tensor tape
+    → compile/capture once
+    → update Theta [B,P] → replay → objective [B]
+```
+
+The certified input boundary reuses `../strategy_encoding/clickhouse.py`. It
+pins build/attempt provenance and point-in-time listing identities, verifies
+source counts/hashes and storage authority, and reads ARTE-owned bars,
+indicators and liquidity products. Broker capacity comes from
+`arte.liquidity_100ms_v1`, through the shared broker source contract; interval
+execution VWAP derives from notional/volume. No historical flatfiles are read.
+
+The price envelope and completed 100 ms Early Squeeze stream run in ClickHouse.
+The released impulse requires at least 5 bps price increase plus increasing
+trade count and volume, with the released five-minute episode semantics.
+Admission persists through session end. Only admitted listings' required
+downstream fields are fetched. Fetching uses bounded listing groups and time
+chunks where needed. Whole-session admission determines allocation, while each
+actual admission timestamp gates trading causally.
+
+ClickHouse and initial alignment still use the shared Polars/NumPy boundary.
+The replay/objective loop uses Torch only. Moving certified database loading to
+GPU would not remove its I/O cost; the optimization benefit comes from reusing
+the resident tape across many candidate evaluations.
+
+## Atomic inputs and feature dimensions
+
+Each atomic label identifies **one field at one source resolution**, with units,
+normalization, validity and availability contracts. For example, close, high and
+RSI at 1 s are separate labels. OHLC is a collection of atomic fields, rather
+than an untyped vector operand. This lets the compiler reject invalid unit
+combinations and project only the required columns.
+
+| Tensor | Shape | Meaning |
+|---|---|---|
+| Instruction array | `[L,4]` int64 | Operation label, input/reference a, input/reference b, parameter slot |
+| Candidate parameters | `[B,P]` float64 | Independent parameterized policies |
+| Current market tape | `[T,N,F]` float64 | Completed, causally available atomic fields |
+| Source bank | `[M+1,F]` | Packed actual observations; sentinel row is unknown |
+| Source cursor | `[T,N]` int64 | Latest packed record for each listing and clock |
+| Source feature view | `[N,F,H]` | Newest-first history, gathered on device |
+| Intermediate expression | `[B,N]` | Broadcast market fields and candidate-specific account state |
+| Action proposals | `[B,N,10]` | Flag/value pairs for enter, exit, add, stop and target |
+| Account history | `[T_session,B,4]` | Cash, realized P&L, equity, market value |
+| Objective | `[B]` | Return minus configured drawdown penalty |
+
+`N` is the stable listing axis, `B` the candidate axis, `F` atomic fields and `H`
+history. A separate bank exists for each source/resolution; a 100 ms bar and a
+1 s indicator do not share an observation counter. `WindowBank.gather(row,
+clock, length)` exposes the requested `[N,F,H]` view. Banks prevent history from
+crossing listing boundaries and mask unavailable/invalid observations with NaN.
+The engine avoids materializing a large `[T,N,F,H]` tensor.
+
+## Two kinds of sliding operations
+
+**Source history:** `HistoryOperation` extends the instruction grammar:
+
+| Label | Operation | Semantics |
+|---|---|---|
+| 50 | `BAR_LAG` | Value k completed source observations back; current is index 0 |
+| 51 | `BAR_MIN` | Minimum of the latest k observations |
+| 52 | `BAR_MAX` | Maximum of the latest k observations |
+| 53 | `BAR_MEAN` | Mean of the latest k observations |
+| 54 | `BAR_SUM` | Sum of the latest k observations |
+
+Operand a must be an atomic market field; b is `UNUSED`. The parameter slot
+holds a bounded positive integer count. Rolling operations include the current
+completed observation and require a complete valid window; missing history
+produces unknown rather than a partial-window aggregate. Each clock advances
+the source cursor and gathers history. Ten 100 ms decisions seeing the same 1 s
+bar therefore do not count that bar ten times.
+
+The declared maximum sizes the gathered window; candidate-specific masks select
+the actual count. A source count can change from 12 to 8 or 24 without rebuilding
+the tape or capturing another graph. Increasing the declared maximum or adding
+new physical fields requires a new validated strategy/tape envelope.
+
+**Decision history:** the shared `LAG`, `ROLLING_MIN`, `ROLLING_MAX` and crossing
+operations slide over strategy observations. They can operate on expression
+outputs and account state. Bounded rings update only on strategy boundaries,
+including warm-up. Their lookback sizes are fixed at compilation; changing them
+requires a new runner. This distinction matters when strategy and source clocks
+differ.
+
+All other shared operation labels and dimension rules are preserved, including
+absolute prices, return fractions, basis-point gaps, arithmetic, comparisons,
+three-valued Boolean logic and action expressions. `describe(catalog)` returns
+the search-facing vocabulary and constraints. NaN means unknown; unknown action
+conditions do not trade.
+
+## Timing and approximate fills
+
+Strategy and broker resolutions are independent `Session` settings, including
+100 ms. The common clock uses their greatest common divisor. At each boundary:
+
+1. Process the just-completed broker interval, if this is a broker boundary.
+2. Fill eligible previously submitted orders, bounded by participation × volume.
+   Sells provide cash first; competing buys share available cash proportionally.
+   Quantities remain integers, fees and accounting use float64.
+3. Queue protection exits from completed close evidence.
+4. On a strategy boundary, evaluate the expression graph and queue new actions.
+5. Mark the portfolio and record account values.
+
+An order can fill only in an interval that started at or after its submission.
+Consequently, an action cannot use a completed bar and fill retrospectively
+inside that same bar. Missing liquidity gives no fill capacity. Partial orders
+carry forward. Stops/targets use completed closes and queue subsequent orders;
+these are approximate liquidity-bar fills, not exact broker event execution.
+
+Time remains sequential because cash, positions and pending orders depend on
+the preceding boundary. Within a boundary, listings and candidates are
+vectorized. CUDA graphs reduce the Python loop to graph submissions; there are
+no per-tick device-to-host scalar reads, transfers or dataframe executions.
+
+## Searching the parameters
+
+```python
+from research.vectorized_backtest.v1.torch_backtest import (
+    ReplayRunner,
+    compile_strategy,
+    prepare_session,
+    to_tensors,
+)
+from research.vectorized_backtest.v1.torch_backtest.examples import history_example
+
+program, catalog = history_example(lookback=12)
+strategy = compile_strategy(program, catalog)
+# session and funnel are the shared validated Session/Funnel contracts.
+prepared = prepare_session(session, funnel, strategy.dependencies)
+tape = to_tensors(prepared, strategy, device="cuda", max_gib=4.0)
+
+# Columns: source count, mean gap bps, minimum RSI, cash fraction.
+theta = [[8, 2.0, 50.0, 0.02], [12, 2.0, 50.0, 0.02], [24, 2.0, 50.0, 0.02]]
+runner = ReplayRunner(strategy, tape, values=theta, backend="compiled_graph")
+result = runner.run()
+scores = result["objective"]  # [3], still on GPU
+
+# Same B/P shape, topology and dependency envelope: reuse captured pointers.
+runner.set_parameters(
+    [[10, 3.0, 52.0, 0.02], [16, 3.0, 52.0, 0.02], [20, 3.0, 52.0, 0.02]]
+)
+next_scores = runner.run()["objective"]
+```
+
+Each candidate has its own cash, orders and participation capacity; candidates
+are alternative experiments, not accounts competing for the same simulated
+market liquidity. The runner resets in place before each run and is not
+thread-safe. Changing instruction labels/topology requires recompilation;
+changing dependencies requires preparing a compatible tape. Changing upstream
+funnel thresholds changes the dataset/cache identity. Source-window policy
+fingerprints canonicalize numeric parameter types so 12 and 12.0 match.
+
+This is a discrete objective function, not a differentiable trading simulator.
+The package does not implement a strategy search algorithm, V6 model inference,
+PPO rollout/GAE or training. A V6 adapter must supply one sampled-policy inference
+per 1 s decision and preserve the same timing/masking contracts. The timings
+below include expression policies, not neural inference.
+
+## Run a real session on the laptop
+
+From the repository root in PowerShell, using the existing CUDA environment:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = '1'
+& C:/Users/g835l/miniconda3/envs/ml4t/python.exe -B -m research.vectorized_backtest.v1.torch_backtest.run_backtest --example history --lookback 12 --device cuda --backend compiled_graph --date 2026-08-18 --start 04:00 --end 09:30 --strategy-ms 1000 --broker-ms 1000 --compare-polars
+```
+
+The launcher uses the shared certified build manifest/ledger and repository
+environment discovery. It never prints credentials. Outputs go to unique run
+directories under `D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v1`;
+compiler caches also stay under the runtime root. It records provenance, source
+requirements, program/catalog, code hashes, preparation/alignment/transfer/JIT/
+capture/replay timings, accounts and final state. `--compare-polars` validates
+the entire account trajectory and final state using the independent offline
+source-window oracle and the existing Polars account engine.
+
+Choose `eager` for CPU, `compile` for Torch compilation, `cudagraph` for capture,
+or `compiled_graph` for compilation plus capture. Unsupported backends or
+compilation failures raise errors; there is no silent fallback.
+
+## Measured results
+
+Real ARTE data for **2026-08-18, America/New_York**, laptop RTX 5090 Laptop GPU,
+Torch 2.12.0+cu130. Three GPU repeats; one CPU repeat. Each experiment used one
+candidate. These are implementation benchmarks, not profitability evidence.
+
+| Policy / session | Watchlist | Decision slots / broker slots | GPU median | Comparison |
+|---|---:|---:|---:|---:|
+| Seeded original policy, 04:00–09:30, 1 s / 1 s | 882 | 19,800 / 19,800 | **0.856 s** | Polars 118.68 s |
+| 12-observation history policy, 04:00–09:30, 1 s / 1 s | 882 | 19,800 / 19,800 | **1.163 s** | Polars 134.25 s; CPU Torch 58.70 s |
+| History policy, 04:00–04:10, 100 ms / 1 s | 96 | 6,000 / 600 | **0.151 s** | Polars 17.02 s |
+
+The full history session narrowed 6,100 universe tickers to 2,289 price
+candidates and 882 watchlist listings; 348,066 broker rows were fetched. The
+resident tape used 1.707 GiB. One-time costs were **32.79 s preparation**,
+**6.03 s alignment**, **0.19 s transfer**, **7.54 s compilation** and **0.005 s
+capture**. Together with one replay, that is approximately **47.72 s** before
+export/reference validation. Repeated objective evaluation reuses these costs.
+Replay timing includes reset and final GPU synchronization, but excludes result
+cloning/export and initial preparation/JIT/capture.
+
+Full accounts and final integer state matched the Polars reference; monetary
+comparisons used absolute tolerance 1e-7. The seeded policy's largest account
+difference was approximately 5.8e-11. Reports are saved in runtime run folders:
+
+- Seeded GPU: `3b90469b4e504d2ca390653614364a38`
+- Full history GPU + oracle: `1da83c29cb14457e8b518d98c3d955be`
+- Full history CPU: `271cf4c8b29a453d989ab4b208ea015a`
+- Mixed-resolution ten-minute GPU + oracle: `f8271b49175d494da681257588947e06`
+
+The full 5.5-hour session at 100 ms has **not** been benchmarked. The current
+whole-session `[T,N,F]` tape can exceed its default 4 GiB guard at that resolution;
+the implementation raises rather than truncating or silently moving to CPU.
+GPU time chunking and a compact event-driven tape are future performance work.
+The number of concurrent candidates also remains bounded by state memory.
+
+## Source layout and verification
+
+| File | Responsibility |
+|---|---|
+| `compiler.py` | ABI validation, units, operation lowering, temporal rings |
+| `data.py` | Certified frame boundary, alignment, source banks, device transfer |
+| `replay.py` | Orders, shared cash, partial fills, actions, equity and objective |
+| `examples.py` | Seeded original policy and searchable source-history policy |
+| `vocabulary.py` | Operation labels and constraints for future search |
+| `reference.py` | Independent offline source-window/Polars oracle |
+| `export.py` | Explicit host reporting boundary |
+| `run_backtest.py` | Real-data launcher, timing and immutable run artifacts |
+| `tests/test_replay.py` | CPU/CUDA accounting, causality, masks, histories and captures |
+
+Tests cover independent strategy/broker clocks, partial fills, shared cash,
+three-valued logic, observation windows, source-count optimization, compiled CUDA
+capture parameter updates and fail-closed input/memory contracts. Use the
+existing Python environment with `-B`, disable pytest's repository cache, and
+place its temporary directory under `D:/TradingML/runtimes`.
