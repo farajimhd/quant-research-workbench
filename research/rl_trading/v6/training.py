@@ -340,7 +340,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         target=lambda value:logits.new_tensor([float('nan') if value is None else value])
                         objective,aux=supervised_loss(local,p,value_bps=target(item.opportunity_value_bps),
                             value_valid=value_valid,stop_bps=target(item.entry_stop_bps),target_bps=target(item.entry_target_bps),
-                            bracket_valid=bracket_valid)
+                            bracket_valid=bracket_valid,
+                            action_weight=float(balance[target_class]) if balance is not None else 1.)
                         for slot,name in enumerate(('value','stop','target')):
                             if torch.isfinite(aux[name+'_mae_bps']):pending_ticker[slot].append(aux[name+'_mae_bps'])
                         metrics={'action_loss':aux['action_loss'],'size_loss':logits.new_zeros(()),

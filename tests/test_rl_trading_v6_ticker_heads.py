@@ -47,6 +47,26 @@ def test_ticker_outputs_do_not_mix_observations_and_reject_invalid_targets():
             stop_bps=z,target_bps=z,bracket_valid=valid)
 
 
+def test_class_balance_changes_only_classification_gradient():
+    import copy
+    torch.manual_seed(33)
+    models=[TickerHeads(8)]
+    models.append(copy.deepcopy(models[0]))
+    x=torch.randn(1,8)
+    metrics=[]
+    for model,balance in zip(models,(1.,3.)):
+        out=model(x,torch.tensor([False]))
+        loss,report=supervised_loss(out,torch.tensor([[.8,.2,0.,0.]]),
+            value_bps=torch.tensor([200.]),value_valid=torch.tensor([True]),
+            stop_bps=torch.tensor([80.]),target_bps=torch.tensor([150.]),
+            bracket_valid=torch.tensor([True]),action_weight=balance)
+        loss.backward();metrics.append(report)
+    torch.testing.assert_close(models[1].action.weight.grad,3*models[0].action.weight.grad)
+    for head in ('value','stop','target'):
+        torch.testing.assert_close(getattr(models[0],head).weight.grad,getattr(models[1],head).weight.grad)
+    torch.testing.assert_close(metrics[0]['action_loss'],metrics[1]['action_loss'])
+
+
 def test_proposal_entry_probability_does_not_grow_with_ticker_count():
     from research.rl_trading.v6.ticker_heads import TickerDecoder
     decoder=TickerDecoder(8)
