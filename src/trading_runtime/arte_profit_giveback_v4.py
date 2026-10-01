@@ -108,3 +108,51 @@ def restore_profit_giveback(row: dict) -> ProfitGivebackWitness:
     witness = ProfitGivebackWitness(**converted)
     validate_profit_giveback_witness(witness)
     return witness
+
+
+def seal_profit_giveback_rows(client, rows, intents, events, *, prefix, first_price_source=None):
+    """Complete source/factory sealing; table registration is a separate gate."""
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+    from .arte_journal_writer import typed_row, _canonical_typed_content
+    from .arte_intent_projection import project_strategy_intent
+    from .strategy_profit_giveback_exit import REASON
+    from .strategy_profit_giveback_source import load_profit_giveback_checkpoint
+    from .strategy_one_stateful import StrategyOneFinancialView
+    from .strategy_engine import AssignmentStatus, StrategyPermissions
+    parents={str(x['record_id']):x for x in intents if x['reason']==REASON}
+    event_map={str(x['record_id']):x for x in events}
+    if (len(event_map)!=len(events) or len({str(x['record_id']) for x in intents})!=len(intents)
+            or len(rows)!=len(parents)):
+        raise ValueError('Profit exit witness is missing or extra')
+    result=[];seen=set()
+    for row in rows:
+        identity=str(row['parent_record_id'])
+        if identity in seen or identity not in parents or identity not in event_map:
+            raise ValueError('Profit witness lacks a unique exit event parent')
+        seen.add(identity)
+        parent,event=parents[identity],event_map[identity]
+        witness=restore_profit_giveback(row)
+        stamp=datetime.fromisoformat(str(event['event_time']).replace('Z','+00:00'))
+        if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=timezone.utc)
+        local=stamp.astimezone(ZoneInfo('America/New_York'))
+        elapsed=round((local-datetime.combine(local.date(),time(4),local.tzinfo)).total_seconds()*1000)
+        if (row['run_id']!=parent['run_id'] or row['batch_id']!=parent['batch_id']
+                or str(row['record_id'])!=str(uuid5(NAMESPACE_URL,f'{row["run_id"]}:{identity}:profit-giveback'))
+                or row['event_month']!=parent['event_month']
+                or parent['intent_id']!=event['entity_id'] or parent['action']!='exit'
+                or elapsed!=witness.boundary_ms
+                or row['source_manager_checkpoint_sequence']>=event['sequence']):
+            raise ValueError('Profit scalar witness differs from exit event authority')
+        financial=StrategyOneFinancialView(row['assignment_id'],event['account_id'],parent['ticker'],
+            AssignmentStatus.WATCHING,StrategyPermissions(),float(parent['quantity']),False,False,False,1)
+        load_profit_giveback_checkpoint(client,prefix,row,financial,first_price_source=first_price_source)
+        expected=profit_giveback_exit_intent(witness,financial,session_date=local.date(),
+            source_entry_intent_id=str(row['source_entry_intent_id']))
+        content={k:v for k,v in parent.items() if k!='content_hash'}
+        expected_content={**content,**{k:v for k,v in project_strategy_intent(expected).core.items() if k!='event_time'}}
+        if (_canonical_typed_content('trading_strategy_intent_v1',content,stored_utc=True)
+                !=_canonical_typed_content('trading_strategy_intent_v1',expected_content,stored_utc=True)):
+            raise ValueError('Profit exit differs from immutable factory content')
+        result.append(typed_row(PROFIT_GIVEBACK.name,{k:v for k,v in row.items() if k!='content_hash'}))
+    return tuple(result)
