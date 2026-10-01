@@ -42,7 +42,7 @@ def _prefix():
 
 
 @pytest.mark.parametrize('changed_market', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 34])
 def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch, changed_market, strategy_number):
     from test_backtest_strategy_first_price_source import authority, Bars
     from src.backend import backtest_market_data as markets
@@ -58,7 +58,7 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
     )
     from src.backend.backtest_strategy_first_price_source import load_first_price_source
 
-    if strategy_number in (26, 27, 28):
+    if strategy_number in (26, 27, 28, 34):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -115,6 +115,39 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
         assert calls[1][1]['initial_cash'] == 10_000.0
         assert calls[1][1]['configuration_revision'] is revision
         assert calls[1][1]['_saved_review_authority'] is proof
+
+
+@pytest.mark.parametrize('changed_release', [False, True])
+def test_strategy34_terminal_review_requires_release_and_native_source(monkeypatch, changed_release):
+    """The terminal entry point cannot skip either inherited attestation gate."""
+    from src.backend import backtest_market_data as markets
+    from src.backend import backtest_strategy_one_configuration as configurations
+
+    context = {**_context(), 'strategy_revision': 34, 'configuration_hash': 'a' * 64}
+    release = SimpleNamespace(payload_hash=('b' if changed_release else 'a') * 64)
+    market = SimpleNamespace(close=lambda: None)
+    source = object()
+    calls = []
+    monkeypatch.setattr(review, 'load_typed_run_context', lambda *_: context)
+    monkeypatch.setattr(markets, 'readonly_clickhouse_client', lambda **_: market)
+    def certified(client, number):
+        assert client is market and number == 34
+        calls.append('release')
+        return release
+    monkeypatch.setattr(configurations, 'certify_numbered_configuration', certified)
+    def native(client, run, actual, selected):
+        assert run == RUN and actual is context and selected is release
+        calls.append('native')
+        return source
+    monkeypatch.setattr(review, '_saved_twenty_price_source', native)
+    def prefix(client, run, *, first_price_source):
+        assert run == RUN and first_price_source is source
+        calls.append('prefix')
+        return None
+    monkeypatch.setattr(review, 'load_verified_v4_prefix', prefix)
+    with pytest.raises(ValueError, match='sealed release' if changed_release else 'cold-verified terminal'):
+        review._terminal_attestation(Client(), RUN, AuditedSessionCache())
+    assert calls == (['release'] if changed_release else ['release', 'native', 'prefix'])
 
 
 def test_terminal_page_requires_verified_context_prefix_and_snapshot(monkeypatch):

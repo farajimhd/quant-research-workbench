@@ -55,6 +55,7 @@ from src.backend.live_strategy_one_approval import TABLE as STRATEGY_ONE_APPROVA
 from src.trading_runtime.arte_journal_writer import journal_client_from_env
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK
+from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
 from src.trading_runtime.arte_strategy_one_activation_schema import (
     STRATEGY_ONE_ACTIVATION_TABLES,
@@ -79,7 +80,7 @@ def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
         return V4_COMMIT_TABLES + (V4_ORDER_COMMAND_LINEAGE,
                                    ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
                                    RESERVATION_REASON,
-                                   ACKNOWLEDGEMENT, CANCEL, REPRICE, FAILURE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, PROFIT_GIVEBACK,
+                                   ACKNOWLEDGEMENT, CANCEL, REPRICE, FAILURE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, PROFIT_GIVEBACK, CONFIRMED_AH_FAILURE,
                                    *RISK_ACTION_TABLES,
                                    *PROTECTION_CHANGE_TABLES,
                                    *PROTECTION_RECONCILIATION_TABLES)
