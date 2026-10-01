@@ -3279,3 +3279,16 @@ All ten development sessions now have completed, flat-terminal, cold-verified re
 Each session starts independently with $10,000. The four original target sessions exceed +$500, but the broader development results remain mixed and do not establish repeatable edge. Frozen Strategy 34 validation on Aug 20/21 has started using the existing sealed-log and aggregate-only workflow. The driver reads only operational completion markers internally; no strategy-log contents, ticker outcomes, individual trades or validation features are exported or reviewed. No new policy is selected from validation outcomes.
 
 The held-liquidity candidate received a separate read-only quote audit. Exact-boundary liquidity rows were absent in both cases. A preceding-one-second completed-row search found quotes whose exchange timestamps were already 1.435471 and 2.104701 seconds old, so neither satisfies the unchanged one-second freshness limit. A subsequent bounded five-second search found fresh quotes at/below original entry 2.2 and 2.4 seconds after the completed signal, before the next completed 5s candle and before original closure. `strategy34-held-liquidity-candidate-quote-audit-v3.json`, SHA256 `5e7de78cbf989b22eb6f389978d7fbddf6138fc343722ce47a7be47453a1a2c4`, retains exact native attempts, quote timestamps, and earlier exit-intent checks. This supports investigating a completed failure signal evaluated on a later fresh quote; it does not authorize stale quotes or prove full pending-state, first-held, capacity, execution or altered-profit behavior. No Strategy 35 has been installed or published.
+
+### Strategy 34 sealed validation completed
+
+All four Aug 20/21 validation units and aggregate readers completed normally at the frozen implementation `1672773f3`. Strategy logs, individual trades and validation features remain unreviewed; only operational completion markers and certified aggregate output were consumed. Summary `strategy34-sealed-validation-aggregate-summary-v1.json` has SHA256 `e0d6628dab32146ca84cb6f69453ec1a82239f508d957ca212b669fc29a48d96` and retains the campaign/aggregate hashes.
+
+| Validation session | Net P&L | Closed-position DD | Broker-observed DD | Positions |
+|---|---:|---:|---:|---:|
+| Aug 20 PM | +380.122675 | 239.697325 | 361.235000 | 4 |
+| Aug 20 AH | -490.759360 | 517.640000 | 671.410000 | 5 |
+| Aug 21 PM | +377.356870 | 299.553130 | 323.708130 | 5 |
+| Aug 21 AH | 0 | 0 | 0 | 0 |
+
+Descriptive total is **+266.720185** across 14 positions, with $10,000 independently reset per session. Aggregate net is unchanged from Strategy 33; matching aggregates do not establish identical individual actions, which were not inspected. The mixed two-day result does not establish repeatable edge or demonstrate broader improvement from Strategy 34. The research goal remains active. All development/validation runner and quote-audit processes started for this evaluation have exited; no routine service restart occurred. Next research remains based on development-only causal signal/quote timing and full big-move population coverage, not validation trade diagnostics.
