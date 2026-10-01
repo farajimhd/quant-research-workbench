@@ -2288,3 +2288,16 @@ The runner gains no market writes or DDL privileges. The installer and
 provisioner remain dry-run by default.67 focused catalog, provisioning,
 installation, transport and source-certification checks passed. Workstation
 installation and grant verification must follow this committed source revision.
+
+Workstation deployment from clean detached source `044eccf3f` completed: the
+installer verified20 existing commit-profile tables and created exactly the
+first-price table, then verified21. The Backtest runner authenticated with exact
+129-table SELECT,100-table INSERT and5-table system SELECT surfaces. A separate
+storage preflight confirmed the table is MergeTree on `live_market_ssd`, with
+zero rows and no parts; actual part placement must be rechecked after its first
+write. No source/market rows were inserted. Deployment receipt:
+`strategy20-first-price-storage-deployment-v1.json`, SHA-256
+`e728dd1e3a5a0679fdcf3a02dd1bf87824b1e3e90cf0eb7ee486c4896e07a34d`.
+The initial stdin evidence probe stalled without creating a receipt; its
+identified process was stopped. The bounded runtime-file probe completed using
+the provisioner's pinned endpoint. Numbered release and actual20 PnL remain open.
