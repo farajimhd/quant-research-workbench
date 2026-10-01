@@ -2112,3 +2112,26 @@ The paired v2 Markdown report compares float availability, ready RSI, EMA
 alignment, causal V7 target room, pre-peak paths and actual19 episode PnL.
 All jobs are terminal; no source writers, service restarts, holdout research or
 new agents were used. Actual20 backtests and the profit goal remain pending.
+
+### Strategy20 typed proposal and certified projection binding
+
+The shared entry proposal now has explicit optional first_price and
+price_source_token fields. Existing installed intent admission rejects nonempty
+unpublished price evidence; its numbered whitelist remains1–19. The certified20
+binder starts from an exact parent19 proposal, verifies its momentum and original
+first-selection witness against the native parent plan, reuses complete19 scalar
+validation, then attaches20's native selection, price witness and source token.
+All financial/protection fields are preserved. This does not submit an intent.
+
+Certified price projection rebinds the complete proposal against the source
+plan and requires event month equal to the certified market month. It returns
+immutable normalized rows and an independent FirstPriceEntryAuthority together
+for the graph sealer. Changed witness values or source selection fail closed.
+The shared intent AST seal was reviewed and updated only for the added
+unpublished-evidence rejection guard; positive source certification and a
+guard-removal mutation test both passed.138 focused checks passed across
+new binding/projection/journal, existing intent/stateful admission, numbered
+source/configuration guards, typed projection and cold manager snapshots.
+Writer/compound transport, numbered release admission, operational storage and
+actual20 development backtests remain pending. No backend restart or registry
+activation occurred. All test processes are terminal.

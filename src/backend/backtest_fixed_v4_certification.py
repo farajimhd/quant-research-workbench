@@ -953,7 +953,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_strategy_initial_momentum.py'
                                                         'load_committed_strategy_one_source': 'de7bcf1c8de31360e3dc9852fdb612a547b51984570e0c4606bacd68d25e4e9f'},
  'trading_runtime/strategy_initial_momentum_growth.py': {'__module__': '68d66854b639e67a5d3734aaaf1a61ce015963d6841746a59c4ad85390761606'},
  'trading_runtime/strategy_initial_strong_momentum.py': {'__module__': '65c6021a7a7c287682a502989fe03b638ee6aaa6ae1488e9a323a0e4c75f4c06'},
- 'trading_runtime/strategy_one_intent.py': {'strategy_one_entry_intent': '9844bfd8347489ea82e125c302c43417b73271c76e9e719011d6eed7689b0744'},
+ 'trading_runtime/strategy_one_intent.py': {'strategy_one_entry_intent': 'bca3aaf81302ccc413e61fc5d5b33905b376b93de4fe334dbf84036ed5a83873'},
  'trading_runtime/strategy_one_management_snapshot.py': {'attach_committed_momentum_sources': 'b6a590a9f5c65abe0a83e4371d9980fe4a04f28f1f33c2ed291fdcc13da2b5b4',
                                                          'load_attested_manager_snapshot': '2700ed3e45b3819f1c76ab9bdcdefaf27ba50493b8cf8972dea50ed555a70aa6',
                                                          'project_manager_snapshot': '4b5430ff961f0dd032bca0afd6268d3cade24df73bb3f088f3b63c5278ab8c7f',

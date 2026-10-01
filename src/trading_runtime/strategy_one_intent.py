@@ -67,6 +67,8 @@ def strategy_one_entry_intent(
             or not 0 < proposal.initial_stop < proposal.reference_ask
             < proposal.initial_target):
         raise ValueError("Strategy 1 intent needs an exact numbered proposal and session")
+    if proposal.first_price is not None or proposal.price_source_token is not None:
+        raise ValueError("Installed entry cannot carry unpublished first-price evidence")
     if proposal.strategy_number in (12, 13, 14, 15, 16, 17, 18, 19):
         from .strategy_recent_bos_entry import recent_bos_entry
         if not recent_bos_entry(boundary_ms=proposal.boundary_ms,

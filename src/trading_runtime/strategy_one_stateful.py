@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from .strategy_rising_momentum_witness import RisingMomentumWitness
 from .strategy_initial_strong_momentum import InitialMomentumSelectionWitness
+from .strategy_initial_price_break import FirstSetupPriceBreakWitness
 
 from dataclasses import dataclass
 from math import isfinite
@@ -89,6 +90,8 @@ class StrategyOneEntryProposal:
     strategy_number: int = STRATEGY_NUMBER
     momentum: RisingMomentumWitness | None = None
     initial_momentum: InitialMomentumSelectionWitness | None = None
+    first_price: FirstSetupPriceBreakWitness | None = None
+    price_source_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,9 @@
 """Source-bound Strategy20 selection; numbered runtime admission is separate."""
 from bisect import bisect_left
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import date
+from types import MappingProxyType
+from typing import Mapping
 from hashlib import sha256
 
 import numpy as np
@@ -96,3 +99,71 @@ class CertifiedInitialPriceBreakPlan:
 def compile_certified_price_break_plan(source):
     eligible, token = _selection(source)
     return CertifiedInitialPriceBreakPlan(source, eligible, token)
+
+
+def bind_certified_price_break_proposal(plan, proposal):
+    """Stage a20 proposal from the exact admitted19 source; cannot submit it.
+
+    Portfolio admission remains sequential. Neither this binder nor its source
+    compiler changes financial quantities, protection, sizing or execution costs.
+    """
+    from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+    from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+    if (type(plan) is not CertifiedInitialPriceBreakPlan
+            or type(proposal) is not StrategyOneEntryProposal
+            or proposal.strategy_number != 19 or type(proposal.strategy_number) is not int):
+        raise ValueError('Price proposal binding needs exact certified plan and parent19 proposal')
+    parent = plan.source.parent
+    key = (proposal.ticker, proposal.boundary_ms)
+    if (proposal.momentum != parent.momentum.lookup(*key)
+            or proposal.initial_momentum != parent.selection_witness(*key)):
+        raise ValueError('Price proposal differs from original parent source selection')
+    # Reuse complete installed19 scalar intent validation without routing or
+    # submitting the resulting value. Number20 remains uninstalled at this stage.
+    strategy_one_entry_intent(proposal, session_date=date.fromisoformat(plan.source.market.sessions[0]))
+    selection = plan.selection_witness(*key)
+    return replace(proposal, strategy_number=20, initial_momentum=selection,
+                   first_price=plan.price_witness(*key), price_source_token=plan.source.token)
+
+
+@dataclass(frozen=True, slots=True)
+class CertifiedPriceEntryProjection:
+    rows: tuple[Mapping, ...]
+    authority: object
+
+    def __post_init__(self):
+        from src.trading_runtime.arte_first_price_entry_v4 import FirstPriceEntryAuthority
+        if type(self.authority) is not FirstPriceEntryAuthority:
+            raise ValueError('Price projection requires exact source authority')
+        object.__setattr__(self, 'rows', tuple(MappingProxyType(dict(row)) for row in self.rows))
+
+
+def project_certified_price_entry(plan, proposal, *, run_id, batch_id,
+                                   parent_record_id, event_month):
+    """Prepare normalized rows and independent sealer input from one source.
+
+    No writer, registration, DDL or order submission occurs. Journal integration
+    must carry both outputs together and retain the source graph checks.
+    """
+    from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+    from src.trading_runtime.arte_first_price_entry_v4 import (
+        FirstPriceEntryAuthority, project_first_price_entry,
+    )
+    if (type(plan) is not CertifiedInitialPriceBreakPlan
+            or type(proposal) is not StrategyOneEntryProposal
+            or type(proposal.strategy_number) is not int or proposal.strategy_number != 20):
+        raise ValueError('Price projection requires exact certified20 proposal')
+    key = (proposal.ticker, proposal.boundary_ms)
+    original = replace(proposal, strategy_number=19, first_price=None, price_source_token=None,
+                       initial_momentum=plan.source.parent.selection_witness(*key))
+    if bind_certified_price_break_proposal(plan, original) != proposal:
+        raise ValueError('Price projection differs from native source-bound proposal')
+    if str(event_month) != plan.source.market.sessions[0][:7] + '-01':
+        raise ValueError('Price projection month differs from certified market session')
+    rows = project_first_price_entry(proposal.momentum, proposal.initial_momentum,
+        proposal.first_price, price_source_token=proposal.price_source_token,
+        run_id=run_id, batch_id=batch_id, parent_record_id=parent_record_id,
+        event_month=event_month)
+    authority = FirstPriceEntryAuthority(parent_record_id, proposal.momentum,
+        proposal.initial_momentum, proposal.first_price, proposal.price_source_token)
+    return CertifiedPriceEntryProjection(rows, authority)
