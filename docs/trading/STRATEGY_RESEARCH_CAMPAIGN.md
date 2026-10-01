@@ -1172,3 +1172,23 @@ SHA256 `9f6bc2bfae742a0ad2e2cb53776c676903a71fffe72f0033678d070396cdbb85`.
 Do not treat that amount as saved backtest profit or publish an increment
 solely from this outcome-selected screen. The ongoing goal remains active;
 no repeatable edge or four-session success is claimed.
+
+A separate completed-candle diagnostic checked all 58 Strategy 14 entries
+against 116 exact source 1s/5s candle keys in two bounded Arrow queries, with
+zero missing/invalid candles. At VTIX's 17:42:45.2 proposal the 1s bar ending
+17:42:45 (chart opening label 17:42:44) is green, open 2.32 / close 2.35.
+The 5s bar ending at the same clock (opening label 17:42:40) is red, open
+2.362 / close 2.35. The bar opening 17:42:45 is forming and is not an entry
+input. Both source clocks are causal. A blanket green 1s rule rejects 13
+observed losers and 8 winners, with observed rejected net +1214.004725;
+green 5s rejects 9 losers and 4 winners, rejected net +1300.17272. Either
+green rejects 3 losers / 1 winner (+606.55785); both green rejects 19 losers /
+11 winners (+1907.619595). Positive rejected net indicates substantial
+observed winner cost, not saved profit. No candle filter was published.
+Artifact `strategy14-completed-candle-screen-v1.json`, SHA256
+`11d4b706862b91d20b3ae53b56d2537ffbb9d50fc480a552494842ff89105ef3`.
+Next research should investigate weak structural setups and liquidity fading
+without removing these strong trades. Both reused workers finished all lanes;
+zero new workers spawned, zero agent failures or interruptions, no live child
+processes remain. Keep the approved goal active and preserve all rejected
+diagnostics, original reports and pinned releases for later review.
