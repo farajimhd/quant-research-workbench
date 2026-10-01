@@ -128,7 +128,7 @@ def main(argv=None):
         raise ValueError('Teacher-only training is capped at 20 epochs')
     if args.teacher_lr_schedule=='cosine':
         cosine_warmup(0,args.teacher_epochs,args.learning_rate,args.warmup_epochs,args.minimum_lr_ratio)
-    if args.resume_from and (not args.teacher_only or args.resume or not args.resume_from.resolve().is_relative_to(runtime)):
+    if args.resume_from and (not args.teacher_only or not args.resume_from.resolve().is_relative_to(runtime)):
         raise ValueError('Parent continuation requires a separate teacher-only runtime')
     from research.rl_trading.v6.luld import RiskPenalty
     from research.rl_trading.v6.build_luld import open_sidecar
@@ -185,6 +185,8 @@ def main(argv=None):
         manifest['parent_checkpoint_sha256']=file_hash(args.resume_from)
         manifest['parent_manifest_hash']=parent_manifest['hash']
         manifest['hash']=digest({k:v for k,v in manifest.items() if k!='hash'})
+        if args.resume:
+            parent_payload=None  # Subsequent resumes use this run's own last.pt.
     run.mkdir(parents=True,exist_ok=True)
     progress={'phase':'teacher','epoch':0,'day_index':0,'wandb_step':0}
     logger=None
