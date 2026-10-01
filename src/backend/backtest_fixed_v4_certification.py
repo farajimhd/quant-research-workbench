@@ -966,8 +966,8 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_
  'backend/replay_run_service.py': {'_run_strategy_one_fixed_days': 'e4bb1bfd24467a1278a82d1bf81b2572288d28d7f4e3a38262ec698c54ee5627',
                                    'backtest_preflight': '667796a87260b1b0c5d27075cf671a3cca228afd51983478677103d6d09009f7'},
  'trading_runtime/arte_first_price_entry_v4.py': {'__module__': '3b2126b95029fb9700cf0319976ab23dfd2636bbc49f0889796dacf777dd9bd2'},
- 'trading_runtime/arte_followthrough_failure_v4.py': {'seal_followthrough_rows': '44643cd3cb9e090dcf31003a9146179e49cd97c66a5573b1be70014ee3605fd8',
-                                                      'validate_numbered_failure': 'ee30c6776c8c888b0993104b09137185ad4dcd17ee8e971ec04fe678dab59202'},
+ 'trading_runtime/arte_followthrough_failure_v4.py': {'seal_followthrough_rows': '5abadec3c2054d0355724aa756bfdf811ad042ece65bf632f5bb32922e9ca122',
+                                                      'validate_numbered_failure': '43191577e5ecdfb8dc321e375ba581cd1e87f2892d8e630bc4921c26fc25323a'},
  'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': '7be8feb732ab4227a9e283ce8e3d354bbe76f6b68b533dd9c53068e38f1fa31b'},
  'trading_runtime/arte_journal_commit_v4.py': {'_load_verified_details_v4': 'e6ca2e8c5e071d782cc2c725945bb5daccb4934809bccbd9cbf61a5b4e829c41',
                                                '_publish_sealed_batch_v4': '44ce5dcbdf17238e81d161b8e7b6966a353cd14e705afc4ab425c79c3e5404bb',
@@ -1033,7 +1033,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_
  'trading_runtime/strategy_twenty_four_release.py': {'__module__': '7913d809cbe160b2d2018c63f4749ee2dd085bc4a1f6fa8412dde9c5168f5859'},
  'trading_runtime/strategy_twenty_five_release.py': {'__module__': '1bbba29e4542af0fbe42ef7d07ebe852926039910c02d0680d1ad429def83f3a'},
  'trading_runtime/strategy_premarket_quarter_risk_failure.py': {'__module__': '87a7e1941a30e09f0e3b463187d9914f8389186a528d9f706ec76b5e6ea529b9'},
- 'trading_runtime/strategy_followthrough_exit.py': {'__module__': '44758c384a7181ef0ca9f32d25d8213c6e5be67d5b1f5a405a2adda89891c4d7'},
+ 'trading_runtime/strategy_followthrough_exit.py': {'__module__': '566d133bd6c87675ec619ef9086025d719b65230a6b16dd6d506cf5675b5787e'},
  'backend/backtest_strategy_initial_ten_percent.py': {'__module__': '73b8b04654cd8ebef2a8906908bac4c82fa06616fb4d50d19f73442f7f07f420'},
  'trading_runtime/strategy_initial_ten_percent.py': {'__module__': '086a330212aa01c2ddf70bdb8ddb2db70654f4b851662977ea86ec307be18be2'}}
 

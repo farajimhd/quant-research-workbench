@@ -51,7 +51,7 @@ def fixture(strategy_number=9, witness=None):
     source_id = str(UUID(int=77))
     intent = followthrough_exit_intent(witness, financial,
         session_date=date(2026, 8, 18), source_entry_intent_id=source_id,
-        strategy_number=25 if strategy_number == 25 else 9)
+        strategy_number=strategy_number if strategy_number in (25, 26) else 9)
     base = strategy_intent_batch(intent, run_id=str(UUID(int=1)), run_month=date(2026, 8, 1),
         account_id='DU1', attempt_id=str(UUID(int=2)), batch_id=str(UUID(int=3)),
         prior_batch_id=str(UUID(int=0)), sequence=2, source_cursor='cursor',
@@ -82,11 +82,12 @@ def test_scalar_family_and_deterministic_factory():
         unit.failure['bid'] = 9.
 
 
-def test_strategy25_quarter_witness_seals_and_restores_exact_number():
+@pytest.mark.parametrize('strategy_number', [25, 26])
+def test_inherited_quarter_witness_seals_and_restores_exact_number(strategy_number):
     from src.trading_runtime.arte_followthrough_failure_v4 import validate_numbered_failure
     witness = FollowThroughFailure(40000,31100,10.01,9.89,99700,
         -.02,-.01,9.97,9.98,100000)
-    _,intent,base,row,source,source_event,entry = fixture(25,witness)
+    _,intent,base,row,source,source_event,entry = fixture(strategy_number,witness)
     families = dict(_sealed_families(base))
     sealed = seal_followthrough_rows(None,(row,),
         (source,*families['trading_strategy_intent_v1']),
@@ -96,13 +97,48 @@ def test_strategy25_quarter_witness_seals_and_restores_exact_number():
         StrategyOneFinancialView('assignment-1','DU1','AAA',AssignmentStatus.WATCHING,
             StrategyPermissions(observe=True,enter=True),10.,False,False,False,1),
         session_date=date(2026,8,18),source_entry_intent_id=str(UUID(int=77)),
-        strategy_number=25)==intent
+        strategy_number=strategy_number)==intent
     with pytest.raises(ValueError,match='pinned rule'):
         validate_numbered_failure(witness,24)
     with pytest.raises(ValueError,match='pinned rule'):
         restore_failure({**row,'strategy_number':24})
     with pytest.raises(ValueError,match='pinned rule'):
-        validate_numbered_failure(replace(witness,completed_close_int=99900,bid=9.99,ask=10.),25)
+        validate_numbered_failure(replace(witness,completed_close_int=99900,bid=9.99,ask=10.),strategy_number)
+
+
+def test_strategy26_failure_preserves_parent_fields_but_cannot_borrow_parent_intent_identity():
+    witness = FollowThroughFailure(40000,31100,10.01,9.89,99700,
+        -.02,-.01,9.97,9.98,100000)
+    _, parent_intent, *_ = fixture(25, witness)
+    _, intent, base, row, source, source_event, entry = fixture(26, witness)
+    assert intent.intent_id != parent_intent.intent_id
+    assert replace(intent, intent_id=parent_intent.intent_id) == parent_intent
+    families = dict(_sealed_families(base))
+    # Both rules admit these exact facts, so only the typed number and factory
+    # identity distinguish the normalized exit. A valid parent UUID is not proof.
+    forged = {**families['trading_strategy_intent_v1'][0],
+              'intent_id': parent_intent.intent_id}
+    forged_event = {**base.events[0], 'entity_id': parent_intent.intent_id}
+    with pytest.raises(ValueError, match='immutable factory'):
+        seal_followthrough_rows(None, (row,), (source, forged),
+            (source_event, forged_event), (entry,))
+
+
+@pytest.mark.parametrize('strategy_number', [25, 26])
+def test_inherited_afterhours_failure_keeps_half_risk_threshold(strategy_number):
+    from src.trading_runtime.arte_followthrough_failure_v4 import validate_numbered_failure
+    quarter_only = FollowThroughFailure(43_225_000,43_211_100,10.01,9.89,99700,
+        -.02,-.01,9.97,9.98,100000)
+    with pytest.raises(ValueError, match='pinned rule'):
+        validate_numbered_failure(quarter_only, strategy_number)
+    half = replace(quarter_only, completed_close_int=99400, bid=9.94, ask=9.95)
+    _, _, base, row, source, source_event, entry = fixture(strategy_number, half)
+    families = dict(_sealed_families(base))
+    sealed = seal_followthrough_rows(None, (row,),
+        (source, *families['trading_strategy_intent_v1']),
+        (source_event, *base.events), (entry,))
+    assert restore_failure(sealed[0]) == half
+    assert sealed[0]['strategy_number'] == strategy_number
 
 
 @pytest.mark.parametrize('field,value', [('reference_ask', 10.02), ('initial_stop', 9.88),
@@ -137,7 +173,7 @@ def test_failure_source_binds_its_exact_successor_number(strategy_number):
             intents, (source_event, *base.events), (entry,))
 
 
-@pytest.mark.parametrize('strategy_number', [8, 26, True])
+@pytest.mark.parametrize('strategy_number', [8, 27, True])
 def test_projector_rejects_unapproved_failure_consumers(strategy_number):
     witness, intent, base, *_ = fixture()
     with pytest.raises(ValueError, match='Strategy 9'):
