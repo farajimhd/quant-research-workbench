@@ -399,11 +399,22 @@ class BacktestTypedJournalPublisher:
                             if sidecar is None:
                                 raise RuntimeError("Committed Strategy 1 acquisition lost its source")
                             proposal, session_date = sidecar
-                            intent = (strategy_one_entry_intent(
-                                proposal, session_date=session_date)
-                                if source_unit.entry_evidence else
-                                strategy_one_add_intent(
-                                    proposal, session_date=session_date))
+                            if source_unit.entry_evidence and proposal.strategy_number in (20, 21, 22):
+                                from .backtest_strategy_certified_price_break import (
+                                    CertifiedPriceReadbackAuthority, certified_price_entry_intent,
+                                )
+                                source = self._first_price_source
+                                if (type(source) is not CertifiedPriceReadbackAuthority
+                                        or source.run_id != self.journal.run_id):
+                                    raise ValueError('Committed native entry lacks its exact source')
+                                intent = certified_price_entry_intent(
+                                    source.plan, proposal, session_date=session_date)
+                            else:
+                                intent = (strategy_one_entry_intent(
+                                    proposal, session_date=session_date)
+                                    if source_unit.entry_evidence else
+                                    strategy_one_add_intent(
+                                        proposal, session_date=session_date))
                             self._committed_strategy_intents[intent.intent_id] = (
                                 _committed_intent_source(
                                     batch, source_unit.base.events[0]["record_id"]),

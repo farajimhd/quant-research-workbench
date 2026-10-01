@@ -337,8 +337,12 @@ class StrategyOneManagementRunner:
                 bar.get("macd_signal"), evidence.bid, evidence.ask, age_us,
                 financial.position_quantity, financial.pending_exit))
             if witness is not None:
-                entry = strategy_one_entry_intent(
-                    source, session_date=self.runtime.config.anchor_date)
+                # Reuse the runtime's cached, exact native source validation;
+                # the older constructor deliberately excludes price entries.
+                entry = (self.runtime._strategy_one_entry_intent(source)
+                         if self.contract.strategy_number in (20, 21, 22)
+                         else strategy_one_entry_intent(
+                             source, session_date=self.runtime.config.anchor_date))
                 await self.runtime.submit_followthrough_failure(
                     financial, witness, entry.intent_id)
                 return

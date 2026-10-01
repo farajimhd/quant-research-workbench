@@ -2417,3 +2417,30 @@ receipt: `strategy22-reviewed-native-release-seals-v1.json` (41 nodes).
 438 focused checks passed, together with the publisher's real help path and
 diff checks. Workstation synchronization, publication and actual six development
 session runs remain pending. There is no Strategy22 portfolio PnL yet.
+
+Strategy22 was synchronized and published from `5dcef0878`: revision
+`strategy-one-22:be2f7a39-d211-4dde-b9bc-8058b7f89332`, payload
+`2f64082aaeee76483335d2b2e1b7d5eaf42b5d4b9e0ce9ec50ec5b44172a43e7`,
+release token `256e95c8887919084123f62e425dda50f587522693cb38294a7ab10c23512624`.
+Aug18 PM actual run `7d38f078-a993-46f8-8813-78cd17ed522c` passed full-market
+preflight and processed267 rows before failing exact numbered entry-intent
+validation. Terminal evidence also failed its completed-boundary cursor check.
+The failed campaign/log are preserved; the other five sessions were not run.
+There is no valid22 PnL. First-price storage remained empty with the required
+`live_market_ssd` table policy before and after this failed run.
+
+Regression tests reproduced two reachable legacy intent reconstructions for
+native20/21/22: publisher post-commit retention and early-failure exit management.
+The repaired publisher revalidates the exact run-owned native authority before
+retaining its intent. Management reuses the runtime's cached native constructor
+to preserve the exact source entry identity; missing authority rejects the exit.
+Entry rules, financial policy and exit thresholds are unchanged.129 focused
+checks passed, including full reviewed source certification and native recovery.
+Reviewed receipt: `strategy22-native-intent-routing-reviewed-seals-v1.json`.
+This changed source needs a new numbered publication before an actual run.
+
+The RVOL availability probe successfully validated SLE's Aug18 baseline against
+20 complete prior canonical sessions (Jul21-Aug17), including content hash and
+source revision. Receipt: `development-rvol-baseline-availability-probe-v1.json`;
+baseline: `development-rvol-sle-aug18-baseline-v1.json`. This is baseline
+availability evidence, not an entry-time RVOL comparison or a new trading rule.

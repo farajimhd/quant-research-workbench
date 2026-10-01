@@ -278,6 +278,47 @@ def test_v4_publisher_routes_numbered_entry_with_exact_child_off_hot_path():
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize('number', (20, 21, 22))
+def test_native_entry_drain_retains_source_bound_intent_after_writer_receipt(number):
+    from uuid import UUID
+    from test_strategy_twenty_entry_recovery import (
+        authority, Bars, load_first_price_source, compile_certified_price_break_plan,
+        CertifiedPriceReadbackAuthority, prepared_entry,
+    )
+
+    class V4Writer(FakeWriter):
+        journal_profile = 'backtest_v4'
+
+        def submit_strategy_one_entry_v4(self, unit):
+            self.entry_unit = unit
+            return FakeWriter.submit(self, unit.base)
+
+    async def exercise():
+        market, parent = authority()
+        plan = compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
+        source = CertifiedPriceReadbackAuthority(RUN, plan)
+        _, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=number)
+        journal = BacktestMemoryJournal(run_id=RUN)
+        record = journal.append_strategy_one_intent(intent=intent, proposal=proposal,
+            session_date=DAY, account_id=proposal.account_id,
+            strategy_id='early-squeeze-strategy', strategy_revision=number,
+            first_price_source=source)
+        writer = V4Writer()
+        publisher = BacktestTypedJournalPublisher(journal, writer, attempt_id=ATTEMPT,
+            run_month=DAY.replace(day=1), expected_config={'mode': 'backtest',
+                'strategy_id': 'early-squeeze-strategy', 'strategy_revision': number})
+        # The binder's market-plan contract is tested separately. This regression
+        # exercises projection, writer acknowledgement and post-commit retention.
+        publisher._first_price_source = source
+        receipt = await publisher.enqueue_pending()
+        assert receipt.last_sequence == 1
+        assert publisher._committed_strategy_intents[intent.intent_id][1] == intent
+        assert journal.strategy_one_entry_for_record(record.record_id) is None
+        assert writer.entry_unit.first_price_evidence[0]['strategy_number'] == number
+
+    asyncio.run(exercise())
+
+
 def test_v4_publisher_routes_numbered_add_with_exact_child_off_hot_path():
     from src.trading_runtime.strategy_one_add import StrategyOneAddProposal
     from src.trading_runtime.strategy_one_intent import strategy_one_add_intent
