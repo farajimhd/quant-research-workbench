@@ -7,6 +7,7 @@ and joins completed candle clocks into the backtest's prepared envelope.
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
@@ -14,9 +15,9 @@ from time import perf_counter
 import numpy as np
 import polars as pl
 
-from research.rl_trading.v1 import arte_source
 from research.rl_trading.v1.common import digest
-from research.rl_trading.v6.features import LEVEL_NAMES, SCALAR_NAMES
+from research.rl_trading.v6.bank import SessionBank
+from research.rl_trading.v6.features import LEVEL_NAMES, SCALAR_NAMES, CandleFeatures
 from research.rl_trading.v6.session_data import open_session
 from research.vectorized_backtest.v1.strategy_encoding import AtomicInput, Unit
 from research.vectorized_backtest.v1.strategy_encoding.catalog import (
@@ -24,11 +25,14 @@ from research.vectorized_backtest.v1.strategy_encoding.catalog import (
 )
 from research.vectorized_backtest.v1.strategy_encoding.clickhouse import (
     _clocks,
+    certify_source,
 )
 from research.vectorized_backtest.v1.strategy_encoding.clickhouse import (
     prepare_session as prepare_market,
 )
 from research.vectorized_backtest.v1.strategy_encoding.core import EncodingError
+
+from .v7_cache import cache_path, load_projection, producer_seals, save_projection
 
 SIDES = ("below", "above")
 GEOMETRY = ("center", "lower", "upper")
@@ -118,8 +122,26 @@ def attach_level_features(prepared, bank, dependencies, *, certificate):
     )
     projected = 0
     rows = []
+    # Partition once instead of scanning the entire market frame per listing.
+    price_frames = base.select(
+        "listing_id", "time_us", "close_int_1000", "price_valid_1000"
+    ).partition_by("listing_id", as_dict=True)
     for identity in prepared.watchlist["listing_id"].to_list():
-        item = bank.listing(identity)
+        if isinstance(bank, SessionBank):
+            # Full file hashes/census were certified before reaching this path.
+            # Validate consumed candles once, without re-reading all full-day
+            # feature arrays twice through SessionBank.listing().
+            left, right = bank.manifest["offsets"][identity]
+            clocks = bank.close_us[left:right]
+            if clocks.dtype != np.int64 or np.any(np.diff(clocks) <= 0):
+                raise EncodingError("Invalid V6 listing candle ordering")
+            lo = int(np.searchsorted(clocks, start, side="left")) + left
+            hi = int(np.searchsorted(clocks, end, side="right")) + left
+            item = CandleFeatures(
+                bank.close_us[lo:hi], bank.scalar[lo:hi], bank.levels[lo:hi]
+            )
+        else:
+            item = bank.listing(identity)
         item.validate()
         take = (item.close_us >= start) & (item.close_us <= end)
         clocks = item.close_us[take]
@@ -158,7 +180,7 @@ def attach_level_features(prepared, bank, dependencies, *, certificate):
             raise EncodingError("V6 level side must agree with completed close")
         # Absolute prices use the matching certified ARTE close, never the
         # current decision price or exp(float32 log_close) as a price authority.
-        prices = base.filter(pl.col("listing_id") == identity).select(
+        prices = price_frames.get((identity,), base.head(0)).select(
             "time_us", "close_int_1000", "price_valid_1000"
         )
         bound = pl.DataFrame({"time_us": clocks}).join(
@@ -236,6 +258,7 @@ def prepare_session(
     v6_day_root=None,
     v6_previous_root=None,
     v6_runtime_root=None,
+    v7_cache=True,
     progress=None,
 ):
     """Shared ClickHouse funnel plus optional certified V6 level-bank adapter.
@@ -251,7 +274,8 @@ def prepare_session(
     started = perf_counter()
     day, *_ = _clocks(config)
     plan = json.loads((Path(v6_day_root) / "plan.json").read_text(encoding="utf-8"))
-    source = arte_source.load_build(config.manifest, config.ledger, [day])
+    receipt = certify_source(config)
+    source = receipt.source
     if (
         plan["day"] != str(day)
         or plan["source_build_id"] != source["build_id"]
@@ -261,30 +285,67 @@ def prepare_session(
         raise EncodingError(
             "V6 bank and backtest must use the same pinned ARTE day/build/attempts"
         )
-    if progress:
-        progress({"stage": "v7_certificate", "status": "verifying"})
-    # The quick comparison above can reject mismatches before hashing large
-    # banks, but it never authorizes use. The certified loader still verifies
-    # plan/census/file hashes and chronological prior-context provenance.
-    session = open_session(
-        Path(v6_day_root),
-        runtime_root=Path(v6_runtime_root),
-        previous_root=v6_previous_root,
-    )
-    certificate_seconds = perf_counter() - started
-    if progress:
-        progress(
-            {
-                "stage": "v7_certificate",
-                "status": "verified",
-                "seconds": certificate_seconds,
-            }
-        )
     close = next(f for f in base_catalog().inputs if f.name == "close@1000ms")
     market_dependencies = tuple(
         dict.fromkeys((*[f for f in dependencies if f.source != "v7"], close))
     )
-    prepared = prepare_market(config, funnel, market_dependencies, progress=progress)
+    seals = producer_seals(v6_day_root, v6_previous_root, v6_runtime_root)
+    folder, key = cache_path(config, funnel, dependencies, seals)
+    if v7_cache and (folder / "complete.json").exists():
+        prepared = prepare_market(
+            config,
+            funnel,
+            market_dependencies,
+            progress=progress,
+            source_receipt=receipt,
+        )
+        read_started = perf_counter()
+        prepared = load_projection(folder, key, prepared, dependencies, seals)
+        prepared.metrics.update(
+            v7_adapter_total_seconds=perf_counter() - started,
+            v7_certificate_seconds=0.0,
+            v7_projection_seconds=0.0,
+            v7_cache_seconds=perf_counter() - read_started,
+        )
+        if progress:
+            progress(
+                {"stage": "v7_projection", "status": "verified_copy_reused", "key": key}
+            )
+        return prepared
+
+    def certify():
+        begun = perf_counter()
+        if progress:
+            progress({"stage": "v7_certificate", "status": "verifying"})
+        session = open_session(
+            Path(v6_day_root),
+            runtime_root=Path(v6_runtime_root),
+            previous_root=v6_previous_root,
+        )
+        seconds = perf_counter() - begun
+        if progress:
+            progress(
+                {"stage": "v7_certificate", "status": "verified", "seconds": seconds}
+            )
+        return session, seconds
+
+    # Independent read-only lanes, bounded to two workers. Both finish before
+    # projection, and no GPU work starts until both authorities have passed.
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        certification = workers.submit(certify)
+        market = workers.submit(
+            prepare_market,
+            config,
+            funnel,
+            market_dependencies,
+            progress=progress,
+            source_receipt=receipt,
+        )
+        session, certificate_seconds = certification.result()
+        prepared = market.result()
+    if producer_seals(v6_day_root, v6_previous_root, v6_runtime_root) != seals:
+        raise EncodingError("V6 producer seals changed during certification")
+    market_key = prepared.source_key
     if progress:
         progress(
             {
@@ -300,6 +361,8 @@ def prepare_session(
         dependencies,
         certificate=session.source_certificate_sha256,
     )
+    if v7_cache:
+        save_projection(folder, key, prepared, market_key, seals)
     prepared.metrics["v7_adapter_total_seconds"] = perf_counter() - started
     prepared.metrics["v7_certificate_seconds"] = certificate_seconds
     prepared.metrics["v7_projection_seconds"] = perf_counter() - projection_started

@@ -10,8 +10,9 @@ import hashlib
 import json
 import math
 from contextlib import closing
-from dataclasses import asdict, dataclass
-from datetime import datetime, time, timezone
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime, time, timezone
+from pathlib import Path
 from time import perf_counter
 from zoneinfo import ZoneInfo
 
@@ -30,6 +31,7 @@ from .core import AtomicInput, EncodingError
 
 NY = ZoneInfo("America/New_York")
 VERSION = "atomic-watchlist-session-v3"
+_SOURCE_AUTHORITY = object()
 
 
 @dataclass
@@ -41,6 +43,39 @@ class PreparedSession:
     dependencies: tuple[AtomicInput, ...]
     source_key: str
     metrics: dict
+
+
+@dataclass(frozen=True)
+class CertifiedSource:
+    """One authoritative manifest/ledger certification, shared in-process.
+
+    Obtain this through certify_source(), never from a persisted cache. The
+    handoff checks paths, day and manifest bytes before reusing the pinned
+    attempt snapshot, avoiding a second remote SQLite unit scan.
+    """
+
+    manifest: Path
+    ledger: Path
+    day: date
+    manifest_hash: str
+    source: dict
+    _authority: object = field(default=None, repr=False, compare=False)
+
+
+def certify_source(config):
+    day, *_ = _clocks(config)
+    checksum = _hash_file(config.manifest)
+    source = arte_source.load_build(config.manifest, config.ledger, [day])
+    if _hash_file(config.manifest) != checksum:
+        raise EncodingError("Source manifest changed during certification")
+    return CertifiedSource(
+        Path(config.manifest).resolve(),
+        Path(config.ledger).resolve(),
+        day,
+        checksum,
+        source,
+        _SOURCE_AUTHORITY,
+    )
 
 
 def _digest(value):
@@ -190,6 +225,7 @@ def prepare_session(
     dependencies: tuple[AtomicInput, ...],
     *,
     progress=None,
+    source_receipt=None,
 ):
     """Cache a fixed upstream dataset; repeated evaluate() calls perform no I/O.
 
@@ -202,13 +238,23 @@ def prepare_session(
     if not config.runtime.parent.is_dir():
         raise FileNotFoundError("Required runtime parent unavailable")
     config.runtime.mkdir(exist_ok=True)
-    source = arte_source.load_build(config.manifest, config.ledger, [day])
+    receipt = certify_source(config) if source_receipt is None else source_receipt
+    if (
+        not isinstance(receipt, CertifiedSource)
+        or receipt._authority is not _SOURCE_AUTHORITY
+        or receipt.manifest != Path(config.manifest).resolve()
+        or receipt.ledger != Path(config.ledger).resolve()
+        or receipt.day != day
+        or _hash_file(config.manifest) != receipt.manifest_hash
+    ):
+        raise EncodingError("Certified source receipt differs from session inputs")
+    source = receipt.source
     names = sorted(source["units"][str(day)])
     broker_attempts(source, config.ledger, day, set(names))
     signature = {
         "version": VERSION,
         "source": source,
-        "manifest": _hash_file(config.manifest),
+        "manifest": receipt.manifest_hash,
         "session": asdict(config),
         "funnel": asdict(funnel),
         "dependencies": [asdict(x) for x in dependencies],

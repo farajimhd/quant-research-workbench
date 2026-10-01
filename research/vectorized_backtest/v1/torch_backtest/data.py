@@ -167,21 +167,30 @@ def to_tensors(
             raise EncodingError("Non-watchlisted source row") from error
         return rows, columns
 
+    last_key, last_update = None, None
+
     def column(frame, name, coords, *, carry):
         # Flattened source indices choose the last update after common-clock
         # coalescing. A maximum scan propagates indices, not possibly-NaN values.
         rows, columns = coords
         source = frame[name].to_numpy().astype(np.float64, copy=False)
-        valid = frame[name].is_not_null().to_numpy() & (rows >= 0) & (rows < slots)
-        update = np.zeros((slots, n), dtype=np.int64)
-        np.maximum.at(
-            update,
-            (rows[valid], columns[valid]),
-            np.arange(len(source), dtype=np.int64)[valid] + 1,
-        )
-        if carry:
-            np.maximum.accumulate(update, axis=0, out=update)
-        return np.concatenate(([np.nan], source))[update]
+        nonnull = frame[name].is_not_null().to_numpy()
+        # Reuse scans only when the complete nonnull update bitmap agrees.
+        # NaN is still an update. Keep one grid, not a cache per source field.
+        nonlocal last_key, last_update
+        key = (id(frame), carry, np.packbits(nonnull).tobytes())
+        if key != last_key:
+            valid = nonnull & (rows >= 0) & (rows < slots)
+            update = np.zeros((slots, n), dtype=np.int64)
+            np.maximum.at(
+                update,
+                (rows[valid], columns[valid]),
+                np.arange(len(source), dtype=np.int64)[valid] + 1,
+            )
+            if carry:
+                np.maximum.accumulate(update, axis=0, out=update)
+            last_key, last_update = key, update
+        return np.concatenate(([np.nan], source))[last_update]
 
     # Normalize one atomic field at a time to bound temporary host memory.
     normalized = np.empty((slots, n, fields), dtype=np.float64)
@@ -264,6 +273,7 @@ def to_tensors(
             cursor,
             offsets,
         )
+    last_update = None
     build_seconds = perf_counter() - started
     transfer_start = perf_counter()
     market_tensor = torch.from_numpy(normalized).to(device)

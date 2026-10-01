@@ -34,6 +34,7 @@ class ReplayRunner:
         values=None,
         backend="eager",
         max_state_gib=1.0,
+        graph_steps=1,
     ):
         self.strategy, self.tape = strategy, tape
         self.broker = Broker() if broker is None else broker
@@ -49,6 +50,10 @@ class ReplayRunner:
             raise EncodingError("Invalid broker/objective contract")
         if backend not in {"eager", "compile", "cudagraph", "compiled_graph"}:
             raise EncodingError("Unknown Torch execution backend")
+        if type(graph_steps) is not int or not 1 <= graph_steps <= 128:
+            raise EncodingError("graph_steps must be an integer in [1,128]")
+        if graph_steps != 1 and backend not in {"cudagraph", "compiled_graph"}:
+            raise EncodingError("Multi-tick capture requires a CUDA graph backend")
         if backend in {"cudagraph", "compiled_graph"} and tape.device.type != "cuda":
             raise EncodingError(
                 "CUDA graphs require an explicitly selected CUDA device"
@@ -96,6 +101,7 @@ class ReplayRunner:
         self.listings = len(tape.listing_ids)
         self.slots = tape.market.shape[0]
         self.backend = backend
+        self.graph_steps = min(graph_steps, self.slots)
         state_bytes = (
             self.slots * self.batch * 4
             + self.batch * self.listings * 10
@@ -140,6 +146,7 @@ class ReplayRunner:
         self.compile_seconds = self.capture_seconds = 0.0
         self.step = self._tick
         self.graph = None
+        self.tail_graph = None
         self.set_parameters(strategy.program.values if values is None else values)
         self._prepare_backend()
 
@@ -216,9 +223,22 @@ class ReplayRunner:
                         self.step()
                 torch.cuda.current_stream(self.tape.device).wait_stream(stream)
                 self.reset()
+                stream.wait_stream(torch.cuda.current_stream(self.tape.device))
                 self.graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(self.graph, stream=stream):
-                    self.step()
+                    for _ in range(self.graph_steps):
+                        self.step()
+                # A separate exact-size remainder preserves the final boundary;
+                # no padded tick can read past the resident tape or trade later.
+                remainder = self.slots % self.graph_steps
+                if remainder:
+                    torch.cuda.current_stream(self.tape.device).wait_stream(stream)
+                    self.reset()
+                    stream.wait_stream(torch.cuda.current_stream(self.tape.device))
+                    self.tail_graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(self.tail_graph, stream=stream):
+                        for _ in range(remainder):
+                            self.step()
                 torch.cuda.synchronize(self.tape.device)
                 self.capture_seconds = perf_counter() - started
                 self.reset()
@@ -419,19 +439,29 @@ class ReplayRunner:
         started = perf_counter()
         with torch.inference_mode():
             self.reset()
-            for step in range(self.slots):
+            launches = (
+                self.slots if self.graph is None else self.slots // self.graph_steps
+            )
+            cadence = max(1, 3600_000_000 // self.tape.step_us)
+            for step in range(launches):
                 if self.graph is None:
                     self.step()
                 else:
                     self.graph.replay()
-                if progress and step % max(1, 3600_000_000 // self.tape.step_us) == 0:
+                completed = step if self.graph is None else step * self.graph_steps
+                previous = completed - (1 if self.graph is None else self.graph_steps)
+                if progress and (
+                    step == 0 or completed // cadence > previous // cadence
+                ):
                     progress(
                         {
                             "stage": "torch_replay",
-                            "completed_slots": step,
+                            "completed_slots": completed,
                             "total_slots": self.slots,
                         }
                     )
+            if self.tail_graph is not None:
+                self.tail_graph.replay()
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
         wall = perf_counter() - started
@@ -465,6 +495,10 @@ class ReplayRunner:
             "compile_seconds": self.compile_seconds,
             "capture_seconds": self.capture_seconds,
             "backend": self.backend,
+            "graph_steps": self.graph_steps,
+            "graph_launches": launches + (self.tail_graph is not None)
+            if self.graph is not None
+            else 0,
             "batch": self.batch,
             "strategy_calls": (
                 (self.tape.end_us - self.tape.start_us)

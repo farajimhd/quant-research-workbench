@@ -38,7 +38,9 @@ from research.vectorized_backtest.v1.torch_backtest.examples import (
     v7_example,
 )
 from research.vectorized_backtest.v1.torch_backtest.export import to_frames
+from research.vectorized_backtest.v1.torch_backtest.profiling import sample_kernels
 from research.vectorized_backtest.v1.torch_backtest.reference import evaluate_reference
+from research.vectorized_backtest.v1.torch_backtest.validation import compare_saved
 
 
 def main(argv=None):
@@ -65,7 +67,23 @@ def main(argv=None):
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--max-gib", type=float, default=4.0)
+    parser.add_argument("--graph-steps", type=int, default=1)
+    parser.add_argument(
+        "--reaudit-v7",
+        action="store_true",
+        help="Reverify upstream bank bytes even when a retained projection exists",
+    )
     parser.add_argument("--compare-polars", action="store_true")
+    parser.add_argument(
+        "--baseline-report",
+        type=Path,
+        help="Compare full outputs with a saved Polars-verified run",
+    )
+    parser.add_argument(
+        "--profile-kernels",
+        action="store_true",
+        help="Sample one bounded mid-session CUDA graph block",
+    )
     parser.add_argument(
         "--cache-root",
         type=Path,
@@ -139,6 +157,7 @@ def main(argv=None):
         args.broker_ms,
     )
     started = perf_counter()
+    pipeline_started = started
     program, catalog = (
         seeded_example(args.seed)
         if args.example == "seeded"
@@ -176,6 +195,7 @@ def main(argv=None):
 
     save()
     progress = lambda value: print(json.dumps(value), flush=True)
+    stage_started = perf_counter()
     prepared = prepare_session(
         config,
         Funnel(),
@@ -184,7 +204,9 @@ def main(argv=None):
         v6_day_root=args.v6_day_root,
         v6_previous_root=args.v6_previous_root,
         v6_runtime_root=args.v6_runtime_root,
+        v7_cache=not args.reaudit_v7,
     )
+    preparation_seconds = perf_counter() - stage_started
     report["preparation"] = prepared.metrics
     tape = to_tensors(prepared, strategy, device=args.device, max_gib=args.max_gib)
     report["tensor_preparation"] = tape.metrics
@@ -194,14 +216,38 @@ def main(argv=None):
     save()
     values = [list(program.values)] * args.batch
     print("Preparing execution backend: " + args.backend, flush=True)
-    runner = ReplayRunner(strategy, tape, values=values, backend=args.backend)
+    stage_started = perf_counter()
+    runner = ReplayRunner(
+        strategy,
+        tape,
+        values=values,
+        backend=args.backend,
+        graph_steps=args.graph_steps,
+    )
+    backend_seconds = perf_counter() - stage_started
     runs = []
     for _ in range(args.repeats):
         result = runner.run(progress=progress)
+        if not runs:
+            # Include device result cloning/synchronization in the first-result
+            # pipeline measure; warm core replay timing is reported separately.
+            if tape.device.type == "cuda":
+                torch.cuda.synchronize(tape.device)
+            first_result_seconds = perf_counter() - pipeline_started
         runs.append(result["wall_seconds"])
+    stage_started = perf_counter()
     accounts, state = to_frames(result, tape)
     accounts.write_parquet(run / "accounts.parquet")
     state.write_parquet(run / "final_state.parquet")
+    report["stage_seconds"] = {
+        "strategy_compile": ir_seconds,
+        "session_prepare": preparation_seconds,
+        "tensor_alignment": tape.metrics["alignment_seconds"],
+        "transfer": tape.metrics["transfer_seconds"],
+        "execution_backend": backend_seconds,
+        "pipeline_to_first_result": first_result_seconds,
+        "host_export": perf_counter() - stage_started,
+    }
     report["backtest"] = {
         k: (v.cpu().tolist() if isinstance(v, torch.Tensor) else v)
         for k, v in result.items()
@@ -210,6 +256,11 @@ def main(argv=None):
     report["replay_seconds"] = runs
     report["median_replay_seconds"] = float(np.median(runs))
     save()
+    if args.baseline_report:
+        report["baseline_comparison"] = compare_saved(
+            args.baseline_report, report, accounts, state
+        )
+        save()
     if args.compare_polars:
         print("Validating complete trajectory against Polars...", flush=True)
         expected = evaluate_reference(program, catalog, prepared, Broker())
@@ -239,6 +290,9 @@ def main(argv=None):
             "atol": 1e-7,
             "wall_seconds": expected["wall_seconds"],
         }
+        save()
+    if args.profile_kernels:
+        report["gpu_profile"] = sample_kernels(runner, run)
         save()
     print(
         json.dumps(

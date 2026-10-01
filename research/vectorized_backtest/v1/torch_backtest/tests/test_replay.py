@@ -200,6 +200,27 @@ def test_explicit_memory_and_device_guards():
         ReplayRunner(strategy, to_tensors(prepared, strategy), backend="cudagraph")
 
 
+def test_alignment_shared_scan_respects_distinct_null_and_nan_updates():
+    _, prepared = prepared_fixture()
+    p, c = momentum_example()
+    prepared = replace(
+        prepared,
+        features={
+            1000: prepared.features[1000].with_columns(
+                pl.Series("ema_20_1000", [9.0, None, float("nan")], dtype=pl.Float64)
+            )
+        },
+    )
+    strategy = compile_strategy(p, c)
+    tape = to_tensors(prepared, strategy)
+    label = next(f.label for f in strategy.dependencies if f.name == "ema_20@1000ms")
+    np.testing.assert_allclose(
+        tape.market[:, 0, tape.labels.index(label)].numpy(),
+        [float("nan"), 9.0, 9.0, float("nan")],
+        equal_nan=True,
+    )
+
+
 @pytest.mark.parametrize("device", DEVICES)
 def test_shared_cash_pro_rata_across_competing_listings(device):
     _, prepared = prepared_fixture()

@@ -23,6 +23,7 @@ from research.vectorized_backtest.v1.strategy_encoding import (
     Parameter,
     Program,
     Unit,
+    clickhouse,
 )
 from research.vectorized_backtest.v1.strategy_encoding import (
     Instruction as I,
@@ -269,11 +270,14 @@ def test_certified_day_loader_source_binding_and_corruption(tmp_path, monkeypatc
         "definition_hash": "definition",
         "units": {"day": "pinned-attempts"},
     }
+    manifest = tmp_path / "market.json"
+    manifest.write_text('{"fixture":true}', encoding="utf-8")
+    prepared = replace(prepared, config=replace(prepared.config, manifest=manifest))
     previous, current = tmp_path / "previous", tmp_path / "current"
     prior = replace(item, close_us=item.close_us - 19 * 86_400_000_000)
     certify_fixture(previous, prior, source)
     certify_fixture(current, item, source, previous=previous)
-    monkeypatch.setattr(v7.arte_source, "load_build", lambda *args: source)
+    monkeypatch.setattr(clickhouse.arte_source, "load_build", lambda *args: source)
     calls = []
 
     def load_market(config, funnel, dependencies, **kwargs):
@@ -288,16 +292,50 @@ def test_certified_day_loader_source_binding_and_corruption(tmp_path, monkeypatc
         "v6_day_root": current,
         "v6_previous_root": previous,
         "v6_runtime_root": tmp_path,
+        "v7_cache": False,
     }
     loaded = v7.prepare_session(
         prepared.config, Funnel(), strategy.dependencies, **kwargs
     )
     assert loaded.metrics["v7"]["rows"] == 3 and len(calls) == 1
     assert loaded.source_key != prepared.source_key
+    # Build a retained copy after full certification, then require byte/seal
+    # checks on reuse. No upstream arrays are substituted by unverified data.
+    cached_kwargs = {**kwargs, "v7_cache": True}
+    first_copy = v7.prepare_session(
+        prepared.config, Funnel(), strategy.dependencies, **cached_kwargs
+    )
+    assert not first_copy.metrics["v7_cache"]["reused"]
+    reuse = v7.prepare_session(
+        prepared.config, Funnel(), strategy.dependencies, **cached_kwargs
+    )
+    assert reuse.metrics["v7_cache"]["reused"]
+    assert reuse.features[1000].equals(first_copy.features[1000])
+    assert reuse.source_key == first_copy.source_key
+    from research.vectorized_backtest.v1.torch_backtest.v7_cache import (
+        cache_path,
+        producer_seals,
+    )
+
+    folder, _ = cache_path(
+        prepared.config,
+        Funnel(),
+        strategy.dependencies,
+        producer_seals(current, previous, tmp_path),
+    )
+    seal = json.loads((folder / "complete.json").read_text())
+    cache_file = folder / seal["file"]
+    with cache_file.open("r+b") as stream:
+        stream.write(b"BROKEN")
+    with pytest.raises(EncodingError, match="Corrupt V7 projection"):
+        v7.prepare_session(
+            prepared.config, Funnel(), strategy.dependencies, **cached_kwargs
+        )
+    calls_before_mismatch = len(calls)
     source["build_id"] = "wrong-build"
     with pytest.raises(EncodingError, match="same pinned"):
         v7.prepare_session(prepared.config, Funnel(), strategy.dependencies, **kwargs)
-    assert len(calls) == 1  # Source mismatch fails before ClickHouse fetching.
+    assert len(calls) == calls_before_mismatch  # Mismatch fails before fetching.
     source["build_id"] = "build"
     array = np.load(current / "bank" / "levels.npy", mmap_mode="r+")
     array[0, 0, 0, 0] = 0.5
@@ -305,3 +343,60 @@ def test_certified_day_loader_source_binding_and_corruption(tmp_path, monkeypatc
     del array
     with pytest.raises(ValueError, match="hash mismatch"):
         v7.prepare_session(prepared.config, Funnel(), strategy.dependencies, **kwargs)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph test")
+@pytest.mark.parametrize("graph_steps", [2, 3, 8])
+@pytest.mark.parametrize("strategy_ms", [100, 1000])
+def test_multi_tick_graph_exact_tail_and_parameter_updates(graph_steps, strategy_ms):
+    prepared, _, bank = level_fixture(strategy_ms)
+    p, c = v7_example(1)
+    strategy = compile_strategy(p, c)
+    prepared = v7.attach_level_features(
+        prepared, bank, strategy.dependencies, certificate="dummy"
+    )
+    tape = to_tensors(prepared, strategy, device="cuda")
+    values = [[1, 10, 0.1, 0.995], [3, 10, 0.1, 0.995]]
+    baseline = ReplayRunner(strategy, tape, values=values).run()
+    captured = ReplayRunner(
+        strategy, tape, values=values, backend="compiled_graph", graph_steps=graph_steps
+    )
+    actual = captured.run()
+    torch.testing.assert_close(
+        actual["accounts"], baseline["accounts"], rtol=0, atol=1e-7
+    )
+    for key, value in baseline["state"].items():
+        torch.testing.assert_close(actual["state"][key], value, rtol=0, atol=1e-7)
+    steps = min(graph_steps, tape.market.shape[0])
+    assert actual["graph_launches"] == (tape.market.shape[0] + steps - 1) // steps
+    captured.set_parameters(list(reversed(values)))
+    assert captured.run()["filled_shares"].cpu().tolist() == [0, 4]
+
+
+def test_shared_source_receipt_rejects_wrong_day_changed_manifest_and_forgery(
+    tmp_path, monkeypatch
+):
+    _, prepared = prepared_fixture()
+    manifest = tmp_path / "market.json"
+    manifest.write_text('{"test":true}', encoding="utf-8")
+    config = replace(prepared.config, manifest=manifest)
+    source = {"build_id": "build", "definition_hash": "hash", "units": {}}
+    reads = []
+
+    def load(*args):
+        reads.append(args)
+        return source
+
+    monkeypatch.setattr(clickhouse.arte_source, "load_build", load)
+    receipt = clickhouse.certify_source(config)
+    assert len(reads) == 1
+    for invalid in (
+        replace(receipt, day=date(2026, 8, 17)),
+        replace(receipt, _authority=None),
+    ):
+        with pytest.raises(EncodingError, match="receipt differs"):
+            clickhouse.prepare_session(config, Funnel(), (), source_receipt=invalid)
+    manifest.write_text('{"changed":true}', encoding="utf-8")
+    with pytest.raises(EncodingError, match="receipt differs"):
+        clickhouse.prepare_session(config, Funnel(), (), source_receipt=receipt)
+    assert len(reads) == 1

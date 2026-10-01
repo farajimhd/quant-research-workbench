@@ -181,11 +181,15 @@ bank. It never generates structural levels or reads retrospective levels as an
 intraday substitute. Missing listing/bank certificates fail closed; certified
 listings with no V7 coverage retain V6's masked empty slots.
 
-Bank integrity verification hashes the complete current/prior bank files once
-when preparing the session, including non-watchlist data. This can be expensive
-over the workstation share and is reported separately from projection/replay.
-Repeated objective evaluations reuse the resident tape. The benchmark results
-below predate this adapter and do not include that V7 certificate cost.
+On a projection-cache miss, bank integrity verification hashes the complete
+current/prior bank files, including non-watchlist data. The verified watchlist
+projection is then retained under the runtime root. Subsequent preparations
+check producer seal bytes, the pinned market source and the retained projection's
+SHA256 before consuming that copy. They do not reread upstream bank arrays.
+Use `--reaudit-v7` when a fresh upstream byte audit is required. Changed producer
+seals create a new cache identity; corruption of the retained copy fails closed.
+Repeated objective evaluations reuse the resident tape. See
+[PERFORMANCE.md](PERFORMANCE.md) for the full-session profile and cache semantics.
 
 To run the new policy, add these arguments to the launcher command below:
 
@@ -274,6 +278,13 @@ Choose `eager` for CPU, `compile` for Torch compilation, `cudagraph` for capture
 or `compiled_graph` for compilation plus capture. Unsupported backends or
 compilation failures raise errors; there is no silent fallback.
 
+`--graph-steps 32` captures 32 sequential ticks per submission, with a separate
+exact remainder graph. It preserves causal state and reduces host launches;
+the default remains 1 because measured replay gains are small. Add
+`--profile-kernels` to record a bounded mid-session CUDA trace outside benchmark
+timings. `--baseline-report PATH` checks full exported accounts and final state
+against a saved run already validated with `--compare-polars`.
+
 ## Measured results
 
 Real ARTE data for **2026-08-18, America/New_York**, laptop RTX 5090 Laptop GPU,
@@ -320,6 +331,9 @@ The number of concurrent candidates also remains bounded by state memory.
 | `examples.py` | Seeded original policy and searchable source-history policy |
 | `vocabulary.py` | Operation labels and constraints for future search |
 | `v7.py` | V6 fixed-slot atomic catalog and certified day-bank adapter |
+| `v7_cache.py` | Hashed retained V7 projection and producer-seal binding |
+| `profiling.py` | Bounded causal-prefix CUDA kernel sample |
+| `validation.py` | Full comparison against a Polars-verified saved run |
 | `reference.py` | Independent offline source-window/Polars oracle |
 | `export.py` | Explicit host reporting boundary |
 | `run_backtest.py` | Real-data launcher, timing and immutable run artifacts |
