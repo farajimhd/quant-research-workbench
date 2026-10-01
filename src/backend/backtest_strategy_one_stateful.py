@@ -58,11 +58,11 @@ def propose_certified_strategy_one_entry(
         raise ValueError("Strategy 1 candidate quote is from the future")
     if reentry is not None and not isinstance(reentry, StrategyOneReentryWitness):
         raise TypeError("Strategy 1 re-entry witness is not typed")
-    if strategy_number in (12, 13, 14, 15) and not recent_bos_entry(
+    if strategy_number in (12, 13, 14, 15, 16) and not recent_bos_entry(
             boundary_ms=fact.boundary_ms,
             bos_break_boundary_ms=fact.bos_break_boundary_ms):
         return StrategyOneEntryDecision("recent_supported_bos_required")
-    if strategy_number in (13, 14, 15):
+    if strategy_number in (13, 14, 15, 16):
         if (not isinstance(momentum, RisingMomentumWitness)
                 or momentum.ticker != fact.ticker or momentum.boundary_ms != fact.boundary_ms):
             raise ValueError("Strategy 13 requires source-bound momentum witness")
@@ -78,6 +78,6 @@ def propose_certified_strategy_one_entry(
         fact.target_ordinal, bid_int, ask_int, now_us - quote_at,
         reentry)
     decision = propose_strategy_one_entry(evidence, financial)
-    if decision.proposal is not None and strategy_number in (13, 14, 15):
+    if decision.proposal is not None and strategy_number in (13, 14, 15, 16):
         return replace(decision, proposal=replace(decision.proposal, momentum=momentum))
     return decision

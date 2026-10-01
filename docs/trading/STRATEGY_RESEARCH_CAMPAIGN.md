@@ -1249,3 +1249,40 @@ then observed equal full product fingerprints; the next ordinary certified
 attempt is tracked separately in `strategy15-four-session-campaign-v3.json`.
 A stable inventory sample is not certification and never authorizes trading by
 itself. Four saved runs and their reviews still remain required.
+
+### Strategy 15 actual failure and Strategy 16 operational correction
+
+Strategy 15 PM18 run `2f67ae6e-b2d7-4052-b427-01d95e043d47` completed flat,
+25 positions, net +951.795870, broker-observed marked drawdown 1139.903080.
+Against Strategy 14's +1397.479805 and marked drawdown 1218.190215, net fell
+445.683935 while marked drawdown improved 78.287135. XOS accounts for -493.954710
+of ticker delta. Two formerly profitable holdings were cut into losses, combined
+-514.918125 impact. Four additional entries netted +5.069110; extra reentries
+were not the main regression. The exact saved-report decomposition is retained
+in `strategy15-pm18-xos-regression-v1.json`, SHA256
+`06c3c1ad87d7f84dbf563e62723c5f2dd87864bf69fdd6088b4ad2074384ac56`.
+
+PM19 run `b21867bf-92bb-4880-82fd-bfe2acfd5fa6` passed source preflight but
+failed at session liquidation. The factory emitted the Strategy 15 session
+reason; runtime admission and typed memory still fell back to Strategy 14's
+reason. No PM19 profit or completed terminal evidence is claimed. Campaign V3
+stopped at this confirmed terminal failure; its run/log and the completed PM18
+report remain immutable. No Strategy 15 process remains active.
+
+Strategy 16 is the explicit operational successor to the exact published 15
+configuration. It preserves all 15 trading policies and replaces the three
+independent reason expressions with one installed-number-validated
+`numbered_session_exit_reason` authority. Factory, runtime admission and typed
+memory use that same function. A normalized manifest policy exposes this repair.
+Reviewed source seals bind the immutable reason map, helper and all three full
+calling functions. No source products, tables or trading-clock rules change.
+
+640 integration tests passed in 41.27 seconds, including actual factory-to-runtime
+to-memory admission for every session-exit number 2–16, rejection of the wrong
+predecessor reason, four independent source mutations, whole 5s failure inputs,
+restored manager window dispatch, original release inheritance and extended-only
+sessions/public-resume guards across the installed catalog. The first integration
+attempt retained 611 passing tests and one stale unapproved-number assertion;
+that assertion now rejects 17 while new 16 durability checks pass. Backend and
+frontend restart reached ready. Publication and four actual Strategy 16 backtests
+remain required; source tests establish engineering acceptance, not profitability.

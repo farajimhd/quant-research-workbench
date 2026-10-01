@@ -274,7 +274,7 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
                 position_high_hash=_digest([row["content_hash"] for row in highs]),
                 closed_position_count=len(closed),
                 closed_position_hash=_digest([row["content_hash"] for row in closed]))
-    if first_held or any(proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15) for _, proposal in state.submitted):
+    if first_held or any(proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16) for _, proposal in state.submitted):
         seal.update(first_held_count=len(first_held),
                     first_held_hash=_digest([row["content_hash"] for row in first_held]))
     return ManagerSnapshotRows(
@@ -509,7 +509,7 @@ def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneMan
     """
     from .arte_strategy_one_entry_journal import load_committed_strategy_one_entry_page
     wanted = {(key, proposal.boundary_ms): proposal for key, proposal in state.submitted
-              if proposal.strategy_number in (13, 14, 15)}
+              if proposal.strategy_number in (13, 14, 15, 16)}
     if not wanted:
         return state
     found, after = {}, 0

@@ -99,7 +99,7 @@ def test_nine_failure_waits_for_whole_post_fill_bar_and_preserves_entry_source(n
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('number', (9, 10, 11, 12, 13, 14, 15))
+@pytest.mark.parametrize('number', (9, 10, 11, 12, 13, 14, 15, 16))
 @pytest.mark.parametrize('boundary', (90_000, 95_000))
 def test_failure_window_dispatch_survives_manager_restore(number, boundary):
     from types import SimpleNamespace

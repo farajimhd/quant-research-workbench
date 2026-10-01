@@ -113,7 +113,7 @@ def test_failure_source_binds_its_exact_successor_number(strategy_number):
             intents, (source_event, *base.events), (entry,))
 
 
-@pytest.mark.parametrize('strategy_number', [8, 16, True])
+@pytest.mark.parametrize('strategy_number', [8, 17, True])
 def test_projector_rejects_unapproved_failure_consumers(strategy_number):
     witness, intent, base, *_ = fixture()
     with pytest.raises(ValueError, match='Strategy 9'):
@@ -262,17 +262,18 @@ def test_ancestry_bulk_read_fails_closed(fault):
     assert len(client.queries) == 1
 
 
+@pytest.mark.parametrize("strategy_number", [15, 16])
 @pytest.mark.parametrize("boundary_ms", [100_000, 3_600_000])
-def test_strategy_fifteen_normalized_failure_remains_eligible_entire_holding(boundary_ms):
+def test_strategy_fifteen_normalized_failure_remains_eligible_entire_holding(boundary_ms, strategy_number):
     from src.trading_runtime.arte_journal_writer import typed_row
     witness = replace(fixture()[0], boundary_ms=boundary_ms, first_held_boundary_ms=39_900)
-    _, intent, base, row, source, source_event, entry = fixture(15, witness)
+    _, intent, base, row, source, source_event, entry = fixture(strategy_number, witness)
     intents = (source, *dict(_sealed_families(base))["trading_strategy_intent_v1"])
     sealed = seal_followthrough_rows(None, (row,), intents, (source_event, *base.events), (entry,))
     assert len(sealed) == 1
     assert restore_failure(sealed[0]) == witness
     assert sealed[0] == typed_row(FAILURE.name, row)
-    assert sealed[0]["strategy_number"] == 15
+    assert sealed[0]["strategy_number"] == strategy_number
     assert intent.reason == "strategy_nine_followthrough_failure" and intent.metadata == {}
     for number in (11, 12, 13, 14):
         with pytest.raises(ValueError, match="first-minute eligibility"):

@@ -136,7 +136,7 @@ def fixed_strategy_one_runtime_version_check(
     current = backend_source_fingerprint()
     if current != LOADED_BACKEND_FINGERPRINT:
         problems.append("Backend source changed after startup; restart the backend.")
-    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15) and dict(strategy.get("numbered_release") or {}).get(
+    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16) and dict(strategy.get("numbered_release") or {}).get(
             "approved_code_fingerprint") != current:
         problems.append(f"Strategy {number} approved code fingerprint differs from the loaded source.")
     certificate = ""
