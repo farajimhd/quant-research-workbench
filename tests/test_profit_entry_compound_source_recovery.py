@@ -89,6 +89,28 @@ def test_entry_sharing_profit_commit_recovers_exact_source_and_preceding_proof(m
     merged = coalesce_v4_units((V4ProfitGivebackBatch(profit_base, row), subsequent))
     publish_compound_v4(client, merged, verified_prior_prefix=prefix, first_price_source=source)
     final = load_verified_v4_prefix(client, source.run_id, first_price_source=source)
+    from src.trading_runtime.arte_profit_giveback_reader_v4 import load_committed_profit_giveback
+    recovered_profit = load_committed_profit_giveback(client, final,
+        profit_base.events[0]['record_id'], first_price_source=source)
+    assert recovered_profit['source_entry_intent_id'] == entry_intent.intent_id
+    assert recovered_profit['batch_id'] == merged.base.batch_id
+    assert recovered_profit['source_manager_checkpoint_sequence'] == 7
+    with pytest.raises(ValueError, match='native source authority'):
+        load_committed_profit_giveback(client, final,
+            profit_base.events[0]['record_id'], first_price_source=object())
+    with pytest.raises(RuntimeError, match='unique committed witness'):
+        load_committed_profit_giveback(client, final, str(UUID(int=9999)),
+            first_price_source=source)
+    from src.trading_runtime import arte_profit_giveback_reader_v4 as profit_reader
+    with monkeypatch.context() as cold_patch:
+        for changed, message in (
+                ([recovered_profit, recovered_profit], 'unique committed witness'),
+                ([{**recovered_profit, 'batch_id': str(UUID(int=9999))}], 'outside'),
+                ([{**recovered_profit, 'bid': float(recovered_profit['bid']) + .01}], 'typed hash')):
+            cold_patch.setattr(profit_reader, '_rows', lambda *args, result=changed: result)
+            with pytest.raises(RuntimeError, match=message):
+                load_committed_profit_giveback(client, final,
+                    profit_base.events[0]['record_id'], first_price_source=source)
     page = load_committed_strategy_one_entry_page(client, final, first_price_source=source)
     assert [entry.proposal for entry in page.entries] == [proposal, subsequent_proposal]
     observed = []
