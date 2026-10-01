@@ -1962,3 +1962,24 @@ Receipt strategy19-additional-entry-source-audit-v1.json SHA256
 All root campaign/review/diagnostic subprocesses finished; no new agents were
 spawned or reused this turn. Goal remains active: neither original four-session
 target nor repeatable edge is achieved.
+
+### Strategy20 staged first-setup price comparison
+
+Strategy20 is staged from Strategy19: premarket additionally requires the first
+setup's completed 1s close to exceed the immediately preceding completed 1s
+high, with both producer validity flags present. First PM momentum50%, current
+momentum10%, sizing, costs and after-hours behavior remain inherited. Missing
+adjacent bars reject without carrying older observations. Integer prices retain
+UInt64 precision. The compiler selects the parent's immutable first indices;
+later breakouts cannot replace a failed anchor. Arrays and policy/content tokens
+are frozen. This stage grants no runtime admission or source certification.
+
+The saved source screen retains all Strategy19 original-date winners but still
+loses on Aug04; screened sums are not backtest profit. Aug05/Aug10 remain outside
+tuning. Source evidence is under the campaign runtime root in
+strategy18-19-causal-entry-candle-features-v1.json and
+strategy19-aug04-development-candle-features-v1.json. The staged reducer passed
+74 focused existing/new tests; the added anchor compiler passed32 focused tests.
+Certified bars loading, normalized price evidence, numbered registration,
+release/source certification and actual development backtests remain pending.
+No Strategy20 backtest or app activation has occurred.
