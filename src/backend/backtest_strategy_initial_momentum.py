@@ -18,7 +18,7 @@ from .backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
 from .backtest_strategy_one_static_gate import compile_static_entry_gate
 from .backtest_strategy_rising_momentum import CertifiedRisingMomentumPlan, _frozen
 from src.trading_runtime.strategy_initial_strong_momentum import (
-    InitialStrongMomentumWitness, initial_strong_momentum_entry_mask,
+    InitialStrongMomentumWitness, InitialMomentumSelectionWitness, initial_strong_momentum_entry_mask,
     initial_strong_momentum_entry, POLICY_ID,
 )
 
@@ -90,6 +90,10 @@ class CertifiedInitialMomentumPlan:
         if not initial_strong_momentum_entry(self.momentum.lookup(ticker, boundary_ms), anchor):
             raise ValueError("Initial momentum scalar differs from native selection")
         return anchor
+
+    def selection_witness(self, ticker: str, boundary_ms: int) -> InitialMomentumSelectionWitness:
+        return InitialMomentumSelectionWitness(self.lookup(ticker, boundary_ms),
+            self.candidates.token, self.entry.token, self.token)
 
 
 def compile_initial_momentum_plan(candidates, entry, momentum) -> CertifiedInitialMomentumPlan:

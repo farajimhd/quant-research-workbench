@@ -27,6 +27,7 @@ MISSING_INITIAL_PROTECTION = 1 << 3
 SESSION_ACTIVATION_REQUIRED = 1 << 4
 RECENT_BOS_REQUIRED = 1 << 5
 RISING_MOMENTUM_REQUIRED = 1 << 6
+INITIAL_MOMENTUM_REQUIRED = 1 << 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +40,7 @@ class StrategyOneStaticGate:
         known_bits = (MISSING_FROZEN_GAP | MISSING_COMPLETED_BOS
                       | MISSING_BOS_SUPPORT | MISSING_INITIAL_PROTECTION
                       | SESSION_ACTIVATION_REQUIRED | RECENT_BOS_REQUIRED
-                      | RISING_MOMENTUM_REQUIRED)
+                      | RISING_MOMENTUM_REQUIRED | INITIAL_MOMENTUM_REQUIRED)
         if (self.rejection_mask.dtype != np.uint8
                 or self.eligible_indices.dtype != np.int64
                 or self.rejection_mask.shape != (len(self.facts),)
@@ -56,7 +57,7 @@ class StrategyOneStaticGate:
 
 def compile_static_entry_gate(
     candidates: CertifiedCandidatePlan, entry: CertifiedEntryEvidencePlan,
-    *, strategy_number: int = 1, momentum_plan=None,
+    *, strategy_number: int = 1, momentum_plan=None, initial_momentum_plan=None,
 ) -> StrategyOneStaticGate:
     """Vectorize only position-independent rules over a certified run prefix.
 
@@ -106,7 +107,7 @@ def compile_static_entry_gate(
                | (~bos).astype(np.uint8) * MISSING_COMPLETED_BOS
                | (~support).astype(np.uint8) * MISSING_BOS_SUPPORT
                | (~protection).astype(np.uint8) * MISSING_INITIAL_PROTECTION)
-    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
+    if strategy_number in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18):
         # Shape (candidate_count,): compare original sealed episode clocks.
         # The completed opening bucket belongs to the preceding session.
         boundaries = np.fromiter((fact.boundary_ms for fact in facts), dtype=np.int64)
@@ -115,7 +116,7 @@ def compile_static_entry_gate(
             ((starts > 0) & (boundaries < 19_500_000))
             | ((starts > 43_200_000) & (boundaries < 57_000_000))))
         reasons |= (~same_session).astype(np.uint8) * SESSION_ACTIVATION_REQUIRED
-    if strategy_number in (12, 13, 14, 15, 16, 17):
+    if strategy_number in (12, 13, 14, 15, 16, 17, 18):
         from src.trading_runtime.strategy_recent_bos_entry import recent_bos_entry_mask
         # Existing sealed scalar clocks become aligned (N,) arrays once.
         # Missing breaks use zero and retain the ordinary missing-BOS bit.
@@ -123,7 +124,7 @@ def compile_static_entry_gate(
             (fact.bos_break_boundary_ms or 0 for fact in facts), dtype=np.int64)
         recent = recent_bos_entry_mask(boundaries, break_boundaries)
         reasons |= (~recent).astype(np.uint8) * RECENT_BOS_REQUIRED
-    if strategy_number in (13, 14, 15, 16, 17):
+    if strategy_number in (13, 14, 15, 16, 17, 18):
         from src.backend.backtest_strategy_rising_momentum import CertifiedRisingMomentumPlan
         if (not isinstance(momentum_plan, CertifiedRisingMomentumPlan)
                 or momentum_plan.source_build_id != candidates.source_build_id
@@ -133,6 +134,16 @@ def compile_static_entry_gate(
         if np.any((reasons == 0) & ~momentum_plan.requested_mask):
             raise ValueError("Strategy 13 momentum requests omit base-eligible candidates")
         reasons |= (~momentum_plan.eligible_mask(strategy_number)).astype(np.uint8) * RISING_MOMENTUM_REQUIRED
+    if strategy_number == 18:
+        from src.backend.backtest_strategy_initial_momentum import CertifiedInitialMomentumPlan
+        if (type(initial_momentum_plan) is not CertifiedInitialMomentumPlan
+                or initial_momentum_plan.candidates is not candidates
+                or initial_momentum_plan.entry is not entry
+                or initial_momentum_plan.momentum is not momentum_plan):
+            raise ValueError("Strategy 18 lacks exact certified initial momentum selection")
+        reasons |= (~initial_momentum_plan.eligible_mask).astype(np.uint8) * INITIAL_MOMENTUM_REQUIRED
+    elif initial_momentum_plan is not None:
+        raise ValueError("Earlier strategy cannot use initial momentum selection")
     return StrategyOneStaticGate(
         tuple(facts), reasons, np.flatnonzero(reasons == 0).astype(np.int64))
 

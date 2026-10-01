@@ -195,16 +195,20 @@ async def run_certified_strategy_one_session(
     visible_activations = project_activation_plan(
         activations, candidates, through_boundary_ms=through_boundary_ms)
     momentum_plan = None
-    if runtime.config.strategy_revision in (13, 14, 15, 16, 17):
+    initial_momentum_plan = None
+    if runtime.config.strategy_revision in (13, 14, 15, 16, 17, 18):
         from src.backend.backtest_strategy_rising_momentum import load_rising_momentum_plan
         base_gate = compile_static_entry_gate(visible, entry, strategy_number=12)
         with closing(client_factory()) as momentum_client:
             momentum_plan = load_rising_momentum_plan(
                 market, visible, client=momentum_client,
                 candidate_indices=base_gate.eligible_indices)
+        if runtime.config.strategy_revision == 18:
+            from src.backend.backtest_strategy_initial_momentum import compile_initial_momentum_plan
+            initial_momentum_plan = compile_initial_momentum_plan(visible, entry, momentum_plan)
     full_gate = compile_static_entry_gate(
         visible, entry, strategy_number=runtime.config.strategy_revision,
-        momentum_plan=momentum_plan)
+        momentum_plan=momentum_plan, initial_momentum_plan=initial_momentum_plan)
     survivors, activation_schedule = project_static_survivors(
         visible, visible_activations, full_gate)
     # The scheduler sees only survivors. Its local gate must index exactly
@@ -315,6 +319,7 @@ async def run_certified_strategy_one_session(
             return await run_strategy_one_fixed_session(
                 scheduler, entry, evidence, manager, runtime=runtime,
                 static_gate=surviving_gate, assignments=assignments, momentum_plan=momentum_plan,
+                initial_momentum_plan=initial_momentum_plan,
                 market_plan=projected, client_factory=client_factory,
                 before_boundary=before_boundary,
                 finish_boundary=finish_boundary,
@@ -329,6 +334,7 @@ async def run_strategy_one_fixed_session(
     manager: StrategyOneManagementRunner, *, runtime: Any,
     static_gate: StrategyOneStaticGate,
     momentum_plan=None,
+    initial_momentum_plan=None,
     assignments: Sequence[StrategyAssignment],
     market_plan: CertifiedMarketDayPlan | None = None,
     client_factory: Callable[[], Any] | None = None,
@@ -354,7 +360,7 @@ async def run_strategy_one_fixed_session(
             or not isinstance(getattr(runtime, "journal", None), BacktestMemoryJournal)
             or config is None or config.mode != RunMode.BACKTEST
             or config.strategy_id != STRATEGY_ID
-            or config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)
+            or config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
             or not callable(getattr(runtime, "process_liquidity_boundary", None))
             or not callable(getattr(broker, "financially_active_tickers", None))
             or not callable(getattr(broker, "positions", None))
@@ -392,13 +398,13 @@ async def run_strategy_one_fixed_session(
     async def observe_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
         # Consume the bucket ending at the cutoff first. Cancel acquisition
         # remainder at its completed clock before any later bucket can fill.
-        if config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
+        if config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18):
             await runtime.advance_numbered_session_clock(work.boundary_ms)
         await evidence.observe_completed_seconds(work)
 
     async def finish_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
         await finish_boundary(work)
-        if config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17) and work.boundary_ms in (19_800_000, 57_600_000):
+        if config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18) and work.boundary_ms in (19_800_000, 57_600_000):
             active = broker.financially_active_tickers()
             if active:
                 raise RuntimeError(f"Strategy {config.strategy_revision} session ended with residual exposure/orders: {active}")
@@ -482,7 +488,8 @@ async def run_strategy_one_fixed_session(
             observe_activation=evidence.observe_activation,
             observe_completed_seconds=observe_numbered_boundary,
             static_gate=static_gate, stage_time=stage_time,
-            strategy_number=config.strategy_revision, momentum_plan=momentum_plan)
+            strategy_number=config.strategy_revision, momentum_plan=momentum_plan,
+            initial_momentum_plan=initial_momentum_plan)
     finally:
         try:
             if prior_close_reader is not None:

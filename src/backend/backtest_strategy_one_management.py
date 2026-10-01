@@ -114,7 +114,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position high lacks its active position")
         sources = dict(state.submitted)
         required = {key for key in keys["positions"]
-                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17)}
+                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18)}
         if keys["first_held_boundaries"] != required:
             raise ValueError("Strategy 9 position lacks its first held boundary")
         for key, boundary in state.first_held_boundaries:
@@ -187,11 +187,21 @@ class StrategyOneManagementRunner:
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         from src.trading_runtime.strategy_rising_momentum_witness import numbered_momentum_entry
         for _, proposal in state.submitted:
-            if proposal.strategy_number in (13, 14, 15, 16, 17) and (
+            if proposal.strategy_number in (13, 14, 15, 16, 17, 18) and (
                     not numbered_momentum_entry(proposal.momentum, proposal.strategy_number)
                     or proposal.momentum.ticker != proposal.ticker
                     or proposal.momentum.boundary_ms != proposal.boundary_ms):
                 raise ValueError("Strategy 13 manager recovery lacks its committed momentum source")
+            if proposal.strategy_number == 18:
+                from src.trading_runtime.strategy_initial_strong_momentum import (
+                    validate_initial_momentum_selection, initial_strong_momentum_entry,
+                )
+                validate_initial_momentum_selection(proposal.momentum, proposal.initial_momentum,
+                                                   episode_start_ms=proposal.episode_start_ms)
+                if not initial_strong_momentum_entry(proposal.momentum, proposal.initial_momentum.initial):
+                    raise ValueError("Strategy 18 manager recovery lacks strong first-setup source")
+            elif proposal.initial_momentum is not None:
+                raise ValueError("Earlier manager cannot restore initial momentum selection")
         self._submitted = dict(state.submitted)
         self._positions = dict(state.positions)
         self._pending_breaks = {key: [ResistanceBreak(
@@ -305,7 +315,7 @@ class StrategyOneManagementRunner:
             # The installed number owns eligibility; old seals retain the
             # original unbounded predicate and first-held checkpoint contract.
             failure_rule = (early_followthrough_failure
-                            if self.contract.strategy_number in (11, 12, 13, 14, 17)
+                            if self.contract.strategy_number in (11, 12, 13, 14, 17, 18)
                             else followthrough_failure)
             witness = failure_rule(FollowThroughFailureInput(
                 boundary_ms, self._first_held_boundaries[key],

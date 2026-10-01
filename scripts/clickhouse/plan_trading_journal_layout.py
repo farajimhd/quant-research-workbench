@@ -33,6 +33,7 @@ from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
+from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_order_modify_command_v1 import MODIFY_COMMAND
 from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
@@ -76,7 +77,7 @@ def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
         return V4_COMMIT_TABLES + (V4_ORDER_COMMAND_LINEAGE,
                                    ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
                                    RESERVATION_REASON,
-                                   ACKNOWLEDGEMENT, CANCEL, REPRICE, FAILURE, MOMENTUM,
+                                   ACKNOWLEDGEMENT, CANCEL, REPRICE, FAILURE, MOMENTUM, INITIAL_MOMENTUM,
                                    *RISK_ACTION_TABLES,
                                    *PROTECTION_CHANGE_TABLES,
                                    *PROTECTION_RECONCILIATION_TABLES)

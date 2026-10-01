@@ -133,8 +133,8 @@ def test_twelfth_recent_bos_source_guard_rejects_mutation(tmp_path, before, afte
 
 
 @pytest.mark.parametrize("path,key,before,after", [
-    ("backtest_strategy_one_static_gate.py", "static_path", "strategy_number in (12, 13, 14, 15, 16, 17)", "strategy_number in (11, 12, 13, 14, 17)"),
-    ("backtest_strategy_one_stateful.py", "adapter_path", "strategy_number in (12, 13, 14, 15, 16, 17)", "strategy_number == 11"),
+    ("backtest_strategy_one_static_gate.py", "static_path", "strategy_number in (12, 13, 14, 15, 16, 17, 18)", "strategy_number in (11, 12, 13, 14, 17, 18)"),
+    ("backtest_strategy_one_stateful.py", "adapter_path", "strategy_number in (12, 13, 14, 15, 16, 17, 18)", "strategy_number == 11"),
     ("backtest_strategy_one_coordinator.py", "coordinator_path", "strategy_number=strategy_number", "strategy_number=11"),
 ])
 def test_twelfth_source_guard_rejects_route_mutation(tmp_path, path, key, before, after):
@@ -153,8 +153,8 @@ def test_twelfth_inherited_early_rule_manager_route_is_source_bound(tmp_path):
     from src.backend.backtest_fixed_v4_certification import certify_early_followthrough_failure_v4_source
     original = Path("src/backend/backtest_strategy_one_management.py")
     altered = tmp_path / original.name
-    assert "self.contract.strategy_number in (11, 12, 13, 14, 17)" in original.read_text()
-    altered.write_text(original.read_text().replace("self.contract.strategy_number in (11, 12, 13, 14, 17)", "self.contract.strategy_number == 11"))
+    assert "self.contract.strategy_number in (11, 12, 13, 14, 17, 18)" in original.read_text()
+    altered.write_text(original.read_text().replace("self.contract.strategy_number in (11, 12, 13, 14, 17, 18)", "self.contract.strategy_number == 11"))
     with pytest.raises(ValueError, match="Strategy 11"):
         certify_early_followthrough_failure_v4_source(management_path=altered)
 
@@ -211,8 +211,8 @@ def test_twelfth_intent_source_guard_rejects_missing_factory_gate(tmp_path):
     from src.backend.backtest_fixed_v4_certification import certify_recent_bos_entry_source
     source = Path("src/trading_runtime/strategy_one_intent.py")
     altered = tmp_path / source.name
-    assert "proposal.strategy_number in (12, 13, 14, 15, 16, 17)" in source.read_text()
-    altered.write_text(source.read_text().replace("proposal.strategy_number in (12, 13, 14, 15, 16, 17)", "proposal.strategy_number == 11"))
+    assert "proposal.strategy_number in (12, 13, 14, 15, 16, 17, 18)" in source.read_text()
+    altered.write_text(source.read_text().replace("proposal.strategy_number in (12, 13, 14, 15, 16, 17, 18)", "proposal.strategy_number == 11"))
     with pytest.raises(ValueError, match="Strategy 12"):
         certify_recent_bos_entry_source(intent_path=altered)
 
@@ -248,8 +248,8 @@ def test_twelfth_raw_entry_source_guard_rejects_missing_gate(tmp_path):
     from src.backend.backtest_fixed_v4_certification import certify_recent_bos_entry_source
     source = Path("src/trading_runtime/arte_journal_commit_v4.py")
     altered = tmp_path / source.name
-    assert 'row["strategy_number"] in (12, 13, 14, 15, 16, 17)' in source.read_text()
-    altered.write_text(source.read_text().replace('row["strategy_number"] in (12, 13, 14, 15, 16, 17)', 'row["strategy_number"] == 11'))
+    assert 'row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18)' in source.read_text()
+    altered.write_text(source.read_text().replace('row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18)', 'row["strategy_number"] == 11'))
     with pytest.raises(ValueError, match="Strategy 12"):
         certify_recent_bos_entry_source(commit_path=altered)
 

@@ -51,6 +51,10 @@ from .arte_followthrough_failure_v4 import FAILURE, seal_followthrough_rows
 from .arte_rising_momentum_entry_v4 import (
     MOMENTUM, seal_rising_momentum_rows, momentum_select_columns, decode_momentum_row,
 )
+from .arte_initial_momentum_entry_v4 import (
+    INITIAL_MOMENTUM, seal_initial_momentum_rows, initial_momentum_select_columns,
+    decode_initial_momentum_row,
+)
 
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
@@ -467,13 +471,16 @@ def _load_verified_details_v4(
         family_specs.append((name, tuple(column for column, _ in contract.columns),
                              family["row_count"]))
     row_sets = (
-        _batched_detail_rows_v4(client, tuple(spec for spec in family_specs if spec[0] != MOMENTUM.name), filters)
+        _batched_detail_rows_v4(client, tuple(spec for spec in family_specs
+            if spec[0] not in (MOMENTUM.name, INITIAL_MOMENTUM.name)), filters)
         if batched_readback else None
     )
     for name, column_names, row_count in family_specs:
-        if name == MOMENTUM.name:
-            rows = [decode_momentum_row(row) for row in _rows(client,
-                f"SELECT {momentum_select_columns()} FROM arte.{name} "
+        if name in (MOMENTUM.name, INITIAL_MOMENTUM.name):
+            columns = momentum_select_columns if name == MOMENTUM.name else initial_momentum_select_columns
+            decode = decode_momentum_row if name == MOMENTUM.name else decode_initial_momentum_row
+            rows = [decode(row) for row in _rows(client,
+                f"SELECT {columns()} FROM arte.{name} "
                 f"{filters}LIMIT {row_count + 1} FORMAT JSONEachRow")]
         else:
             rows = (row_sets[name] if row_sets is not None else _rows(
@@ -494,7 +501,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, MOMENTUM.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -550,6 +557,10 @@ def _load_verified_details_v4(
         seal_rising_momentum_rows(related_rows.get(MOMENTUM.name, ()), children,
                                  related_rows.get("trading_strategy_intent_v1", ()),
                                  related_rows.get("trading_event_v1", ()))
+        seal_initial_momentum_rows(related_rows.get(INITIAL_MOMENTUM.name, ()), children,
+                                 related_rows.get("trading_strategy_intent_v1", ()),
+                                 related_rows.get("trading_event_v1", ()),
+                                 related_rows.get(MOMENTUM.name, ()))
     except ValueError as exc:
         raise RuntimeError("V4 Strategy 13 momentum evidence differs from its parent") from exc
     add_parents = {str(UUID(str(row["record_id"]))): row for row in
@@ -884,14 +895,15 @@ def publish_reservation_reason_batch_v4(client, batch, *, reasons) -> str:
 
 
 def publish_strategy_one_entry_batch_v4(
-    client, batch, *, entry_evidence=(), add_evidence=(), momentum_evidence=(),
+    client, batch, *, entry_evidence=(), add_evidence=(), momentum_evidence=(), initial_momentum_evidence=(),
 ) -> str:
     """Commit one numbered acquisition and its scalar child on the writer lane."""
     if bool(entry_evidence) == bool(add_evidence):
         raise ValueError("Strategy 1 acquisition needs exactly one evidence family")
     return _publish_typed_batch_v4(
         client, batch, strategy_one_entry_rows=entry_evidence,
-        strategy_one_add_rows=add_evidence, rising_momentum_rows=momentum_evidence)
+        strategy_one_add_rows=add_evidence, rising_momentum_rows=momentum_evidence,
+        initial_momentum_rows=initial_momentum_evidence)
 
 
 def publish_oms_tactic_batch_v4(client, batch, *, tactic_state, tactic_steps=()) -> str:
@@ -1079,7 +1091,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or parent["action"] != "enter_long"
             or parent["protection_profile_id"]
                != "early-squeeze-fixed-stop-full-target"
-            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)
+            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
             or row["boundary_ms"] != boundary_ms
             or elapsed.microseconds % 1_000
             or Decimal(str(row["frozen_gap"])) <= 0
@@ -1088,7 +1100,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or not row["assignment_id"] or not row["target_level_id"]
             or not row["bos_support_level_id"]):
         raise ValueError("V4 Strategy 1 entry evidence differs from its typed parent")
-    if row["strategy_number"] in (12, 13, 14, 15, 16, 17):
+    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18):
         from .strategy_recent_bos_entry import recent_bos_entry
         if not recent_bos_entry(boundary_ms=row["boundary_ms"],
                                 bos_break_boundary_ms=row["bos_break_boundary_ms"]):
@@ -1157,7 +1169,7 @@ def _validate_strategy_one_add_link(row, parent, event, run_id, batch_id):
 
 
 def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_one_entry_rows=(),
-                           rising_momentum_rows=(),
+                           rising_momentum_rows=(), initial_momentum_rows=(),
                             strategy_one_add_rows=(),
                             oms_tactic_rows=None,
                             portfolio_allocation_row=None,
@@ -1506,7 +1518,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
     strategy_one_commands = {
         str(UUID(str(row["record_id"]))) for row in command_rows
         if str(row["strategy_id"]) == "early-squeeze-strategy"
-        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)
+        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
     }
     lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)
                          for row in batch.v4_command_lineages)
@@ -1532,6 +1544,9 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
     momentum_rows = seal_rising_momentum_rows(rising_momentum_rows, entry_rows,
         dict(base_families)["trading_strategy_intent_v1"],
         dict(base_families)["trading_event_v1"])
+    initial_rows = seal_initial_momentum_rows(initial_momentum_rows, entry_rows,
+        dict(base_families)["trading_strategy_intent_v1"],
+        dict(base_families)["trading_event_v1"], momentum_rows)
     add_rows = _sealed_strategy_one_add_rows(
         batch, base_families, strategy_one_add_rows)
     # Compound micro-preparation cannot look up an entry in a sibling unit
@@ -1586,6 +1601,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
     if momentum_rows:
         families += ((MOMENTUM.name, momentum_rows),)
+    if initial_rows:
+        families += ((INITIAL_MOMENTUM.name, initial_rows),)
     if add_rows:
         families += ((ADD_EVIDENCE.name, add_rows),)
     if allocation_rows:

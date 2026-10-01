@@ -7,6 +7,7 @@ prove that a supplied first setup is the earliest eligible setup by themselves.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 import numpy as np
 
 from .strategy_rising_momentum_witness import RisingMomentumWitness, validate_momentum_witness
@@ -85,6 +86,27 @@ def initial_strong_momentum_entry_mask(
 class InitialStrongMomentumWitness:
     episode_start_ms: int
     first_setup: RisingMomentumWitness
+
+
+@dataclass(frozen=True, slots=True)
+class InitialMomentumSelectionWitness:
+    """Typed anchor plus the exact certified plans which selected initiality."""
+    initial: InitialStrongMomentumWitness
+    candidate_plan_token: str
+    entry_plan_token: str
+    selection_token: str
+
+
+def validate_initial_momentum_selection(current, selection, *, episode_start_ms):
+    if (type(selection) is not InitialMomentumSelectionWitness
+            or type(episode_start_ms) is not int
+            or type(selection.initial) is not InitialStrongMomentumWitness
+            or selection.initial.episode_start_ms != episode_start_ms
+            or any(type(token) is not str or re.fullmatch(r'[0-9a-f]{64}', token) is None
+                   for token in (selection.candidate_plan_token,
+                                 selection.entry_plan_token, selection.selection_token))):
+        raise ValueError('Initial momentum selection lacks exact certified plan identity')
+    validate_initial_strong_momentum_witness(current, selection.initial)
 
 
 def validate_initial_strong_momentum_witness(

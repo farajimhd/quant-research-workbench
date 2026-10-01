@@ -27,6 +27,7 @@ def propose_certified_strategy_one_entry(
     *, reentry: StrategyOneReentryWitness | None = None,
     strategy_number: int = 1,
     momentum: RisingMomentumWitness | None = None,
+    initial_momentum=None,
 ) -> StrategyOneEntryDecision:
     """Use only the certified completed row and exact producer-owned scalars."""
     numbered_fixed_strategy(strategy_number)
@@ -58,11 +59,11 @@ def propose_certified_strategy_one_entry(
         raise ValueError("Strategy 1 candidate quote is from the future")
     if reentry is not None and not isinstance(reentry, StrategyOneReentryWitness):
         raise TypeError("Strategy 1 re-entry witness is not typed")
-    if strategy_number in (12, 13, 14, 15, 16, 17) and not recent_bos_entry(
+    if strategy_number in (12, 13, 14, 15, 16, 17, 18) and not recent_bos_entry(
             boundary_ms=fact.boundary_ms,
             bos_break_boundary_ms=fact.bos_break_boundary_ms):
         return StrategyOneEntryDecision("recent_supported_bos_required")
-    if strategy_number in (13, 14, 15, 16, 17):
+    if strategy_number in (13, 14, 15, 16, 17, 18):
         if (not isinstance(momentum, RisingMomentumWitness)
                 or momentum.ticker != fact.ticker or momentum.boundary_ms != fact.boundary_ms):
             raise ValueError("Strategy 13 requires source-bound momentum witness")
@@ -70,6 +71,16 @@ def propose_certified_strategy_one_entry(
             return StrategyOneEntryDecision("rising_completed_momentum_required")
     elif momentum is not None:
         raise ValueError("Earlier strategy cannot carry momentum evidence")
+    if strategy_number == 18:
+        from src.trading_runtime.strategy_initial_strong_momentum import (
+            validate_initial_momentum_selection, initial_strong_momentum_entry,
+        )
+        validate_initial_momentum_selection(momentum, initial_momentum,
+                                           episode_start_ms=fact.episode_start_ms)
+        if not initial_strong_momentum_entry(momentum, initial_momentum.initial):
+            return StrategyOneEntryDecision("initial_strong_momentum_required")
+    elif initial_momentum is not None:
+        raise ValueError("Earlier strategy cannot carry initial momentum selection")
     evidence = StrategyOneEntryInput(
         fact.ticker, fact.boundary_ms, fact.episode_start_ms,
         activation.average_gap, fact.bos_break_boundary_ms,
@@ -78,6 +89,7 @@ def propose_certified_strategy_one_entry(
         fact.target_ordinal, bid_int, ask_int, now_us - quote_at,
         reentry)
     decision = propose_strategy_one_entry(evidence, financial)
-    if decision.proposal is not None and strategy_number in (13, 14, 15, 16, 17):
-        return replace(decision, proposal=replace(decision.proposal, momentum=momentum))
+    if decision.proposal is not None and strategy_number in (13, 14, 15, 16, 17, 18):
+        return replace(decision, proposal=replace(decision.proposal, momentum=momentum,
+                                                 initial_momentum=initial_momentum))
     return decision

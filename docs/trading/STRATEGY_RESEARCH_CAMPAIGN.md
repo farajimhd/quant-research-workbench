@@ -1545,3 +1545,63 @@ numbered execution integration, publication and all four actual sessions remain
 required. No service restart or workstation source synchronization was needed
 for this staged compiler. One existing worker completed the pure-rule lane;
 zero new agents, failures or interruptions, and no worker remains active.
+
+### Strategy 18 normalized entry integration
+
+Strategy 18 now has a numbered Backtest-only release, pinned to exact Strategy
+17 configuration `strategy-one-17:4613cbda-319a-4847-ba03-63fa5af580a8` and payload
+`d0b4205c9532afc034849ed439dd397af8494973095dc683424a7f929ca83fe4`.
+Its only behavioral change is requiring both current and first-base-setup
+strong-10s momentum. Sizing, costs, fixed target, structural stop ratchets,
+extended-session activation/cutoff/liquidation, recent BOS, no adds, no 30s
+trailing and the inclusive first-held 60s failure window remain inherited.
+
+`InitialMomentumSelectionWitness` keeps the typed first-setup witness with
+candidate/entry/selection plan tokens. Native source execution compiles the
+selection over full visible certified candidates before survivor pruning and
+threads it through the static gate and sparse scalar admission. Earlier
+versions reject this new witness; 18 requires it. Manager restoration validates
+both strong observations and episode/source identity and recovers the full
+anchor from the committed source rather than copying market values into the
+manager snapshot.
+
+The new `trading_initial_momentum_entry_v4` normalized companion retains two
+completed producer observations per 18 entry, original entry and episode clocks,
+first-setup boundary, exact Float64 values and source/build/attempt/market and
+selection tokens. Writer, direct and compound publication, commit-family
+readback, cold entry pages and per-source recovery require the exact 2:1
+companion graph. IEEE-bit projections preserve producer precision. Per-source
+recovery separately rereads and compares the committed anchor, rejecting forged
+selection tokens. The companion belongs to the existing SSD contract and exact
+grant authorities; layout/provisioning include it, but no DDL or grant change
+has yet occurred at this checkpoint.
+
+Registry, parent, configuration publication/selection, session-exit reasons,
+saved history (including compact SQL), reports and capability/source guards now
+explicitly admit 18. Existing approved trading release artifacts were not
+replaced. Reviewed source seals include the whole initial rule, certified
+compiler and companion modules plus shared native/scalar/publication/recovery
+routes; mutation tests reject weakened first-setup selection and companion
+cardinality. Runtime source-seal change receipts are retained as
+`strategy18-reviewed-source-seal-delta-v1.json` and
+`strategy18-cold-anchor-source-seal-delta-v2.json`.
+
+Final integrated validation passed **724 tests in 58.86s**. Coverage includes
+all numbered configuration releases, pure/native rules, certified source gates,
+scalar entry factories, direct/compound cold commits, manager snapshots,
+execution/coordinator/runtime admission, history/review, typed projection and
+exact grants/layout. Earlier runs exposed stale uninstalled-number/catalog and
+source-mutation fixtures, and a stale reviewed per-source hash after adding the
+anchor reread; all were repaired and included in the final passing run. The new
+direct/compound tests also exercise exact anchor restoration, missing-anchor
+rejection before inserts and forged per-source selection rejection. CLI help
+and scoped diff checks passed. Two existing workers completed the normalized
+companion and release lanes; zero new agents, worker failures or interruptions.
+
+Next required steps: commit/push and pin this exact source locally and on the
+workstation; create only the missing companion table after explicit SSD policy
+validation; reconcile exact runner/operator grants and verify actual placement;
+publish the unique immutable 18 configuration; execute and cold-audit all four
+certified $10,000 extended-hours sessions. AH still requires prior-day V7 seed
+and regular-session warmup. No Strategy 18 publication, backtest, P&L or target
+achievement is claimed yet. No service restart was needed during integration.

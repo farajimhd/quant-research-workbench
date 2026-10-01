@@ -98,6 +98,7 @@ if TYPE_CHECKING:
 
 from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
+from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[FAILURE.name] = FAILURE
@@ -109,6 +110,7 @@ _CONTRACTS.update({table.name: table for table in (
 )})
 _CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[MOMENTUM.name] = MOMENTUM
+_CONTRACTS[INITIAL_MOMENTUM.name] = INITIAL_MOMENTUM
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ADD_EVIDENCE.name] = ADD_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
@@ -562,6 +564,7 @@ class V4StrategyOneEntryBatch:
     entry_evidence: tuple[Mapping[str, Any], ...]
     add_evidence: tuple[Mapping[str, Any], ...] = ()
     momentum_evidence: tuple[Mapping[str, Any], ...] = ()
+    initial_momentum_evidence: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if (not isinstance(self.base, TypedJournalBatch)
@@ -574,6 +577,8 @@ class V4StrategyOneEntryBatch:
             MappingProxyType(dict(row)) for row in self.add_evidence))
         object.__setattr__(self, "momentum_evidence", tuple(
             MappingProxyType(dict(row)) for row in self.momentum_evidence))
+        object.__setattr__(self, "initial_momentum_evidence", tuple(
+            MappingProxyType(dict(row)) for row in self.initial_momentum_evidence))
 
 
 @dataclass(frozen=True, slots=True)
@@ -2111,7 +2116,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     )
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
-                 ENTRY_EVIDENCE, ADD_EVIDENCE, MOMENTUM, V4_ALLOCATION,
+                 ENTRY_EVIDENCE, ADD_EVIDENCE, MOMENTUM, INITIAL_MOMENTUM, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
                  *OMS_TACTIC_TABLES, FAILURE,
@@ -2137,7 +2142,7 @@ def v4_journal_write_tables() -> frozenset[str]:
             | frozenset({V4_ORDER_COMMAND_LINEAGE.name})
             | PORTFOLIO_SNAPSHOT_WRITE_TABLES
             | frozenset({
-                ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, MOMENTUM.name, V4_ALLOCATION.name,
+                ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, V4_ALLOCATION.name,
                 RESERVATION_REASON.name, ACKNOWLEDGEMENT.name,
                 CANCEL.name, REPRICE.name,
                 "trading_backtest_account_snapshot_v2",
@@ -4761,7 +4766,8 @@ class ArteJournalWriter:
                     committed_id = publish_strategy_one_entry_batch_v4(
                         self._client, unit.base,
                         entry_evidence=unit.entry_evidence,
-                        add_evidence=unit.add_evidence, momentum_evidence=unit.momentum_evidence)
+                        add_evidence=unit.add_evidence, momentum_evidence=unit.momentum_evidence,
+                        initial_momentum_evidence=unit.initial_momentum_evidence)
                 elif isinstance(group[0][0], V4OmsTacticBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_oms_tactic_batch_v4,
