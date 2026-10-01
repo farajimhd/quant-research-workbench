@@ -17,18 +17,21 @@ def bracket_loss(logits: torch.Tensor, sizes: torch.Tensor,
                  size_fraction: float | None = None,
                  oracle_log_distance: float | None = None,
                  action_weight: float = 1.,
+                 wait_hold: bool = False,
                  ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Score one ordered teacher action with shape [1+N+3H].
 
     Token 0 is HOLD; 1..N are ENTER_LONG; the next H tokens each are
     EXIT_LONG, SET_STOP, SET_TARGET. Stop distance is log(entry/stop), target
     distance is log(target/entry); both are positive and scale-free.
+    With wait_hold=True, token zero is WAIT and H ticker HOLD tokens follow
+    targets. Neither no-order class receives conditional regression labels.
     """
     if not math.isfinite(action_weight) or action_weight <= 0:
         raise ValueError('Invalid action loss weight')
     listings, holdings = sizes.numel(), stop_distances.numel()
     if (logits.ndim != 1 or target_distances.shape != (holdings,) or
-            logits.shape != (1 + listings + 3 * holdings,) or
+            logits.shape != (1 + listings + (4 if wait_hold else 3) * holdings,) or
             not 0 <= token < logits.numel() or
             not torch.isfinite(logits[token]) or
             (token == 0 and (size_fraction is not None or

@@ -37,7 +37,7 @@ class HybridDistribution:
             raise ValueError('Token outside action axis')
         if 1 <= token <= self.listings:
             return 1
-        if token >= 1 + self.listings + self.holdings:
+        if 1 + self.listings + self.holdings <= token < 1 + self.listings + 3*self.holdings:
             return 2
         return 0
 
@@ -65,7 +65,7 @@ class HybridDistribution:
     def tensor_log_prob(self,token,latent):
         """Scalar token/latent stay on device; same joint density as log_prob."""
         kind=torch.where((token>0)&(token<=self.listings),1,
-            torch.where(token>=1+self.listings+self.holdings,2,0))
+            torch.where((token>=1+self.listings+self.holdings)&(token<1+self.listings+3*self.holdings),2,0))
         location=self.locations.gather(0,token.reshape(1)).squeeze(0)
         scale=self.scales.gather(0,token.reshape(1)).squeeze(0)
         normal=-.5*((latent-location)/scale).square()-scale.log()-.5*math.log(2*math.pi)
@@ -76,7 +76,7 @@ class HybridDistribution:
         """Avoid the reference sample's int(CUDA token) synchronization."""
         token=torch.multinomial(self.logits.softmax(0),1).squeeze(0)
         kind=torch.where((token>0)&(token<=self.listings),1,
-            torch.where(token>=1+self.listings+self.holdings,2,0))
+            torch.where((token>=1+self.listings+self.holdings)&(token<1+self.listings+3*self.holdings),2,0))
         location=self.locations.gather(0,token.reshape(1)).squeeze(0)
         scale=self.scales.gather(0,token.reshape(1)).squeeze(0)
         latent=torch.where(kind>0,location+scale*torch.randn_like(location),0.)
@@ -98,7 +98,7 @@ def tensor_batch_statistics(decoded,tokens,latents):
     location=torch.stack([d.locations for d in distributions]).gather(1,tokens[:,None]).squeeze(1)
     scale=torch.stack([d.scales for d in distributions]).gather(1,tokens[:,None]).squeeze(1)
     kind=torch.where((tokens>0)&(tokens<=first.listings),1,
-        torch.where(tokens>=1+first.listings+first.holdings,2,0))
+        torch.where((tokens>=1+first.listings+first.holdings)&(tokens<1+first.listings+3*first.holdings),2,0))
     normal=-.5*((latents-location)/scale).square()-scale.log()-.5*math.log(2*math.pi)
     jac=torch.where(kind==1,F.logsigmoid(latents)+F.logsigmoid(-latents),F.logsigmoid(latents))
     probability=logits.log_softmax(1).gather(1,tokens[:,None]).squeeze(1)+torch.where(kind>0,normal-jac,0.)
@@ -111,8 +111,8 @@ class BracketActorCritic(BracketPolicy):
     No temporal attention or future-return input. Critic gradients do not
     alter actor representations; its targets must come from policy rollouts.
     """
-    def __init__(self, width: int = 128):
-        super().__init__(width)
+    def __init__(self, width: int = 128, *, wait_hold: bool = False):
+        super().__init__(width, wait_hold=wait_hold)
         self.log_scale = nn.Parameter(torch.full((3,), -1.0))
         self.critic = nn.Sequential(nn.Linear(2 * width + 9, width), nn.Tanh(), nn.Linear(width, 1))
 
@@ -126,6 +126,9 @@ class BracketActorCritic(BracketPolicy):
                                logits.new_zeros(h), stops, targets))
         scale = self.log_scale.clamp(-5, 2).exp()
         scales = torch.cat((scale[0].expand(1+n+h), scale[1].expand(h), scale[2].expand(h)))
+        if self.decoder.wait_hold:
+            locations = torch.cat((locations, logits.new_zeros(h)))
+            scales = torch.cat((scales, scale[0].expand(h)))
         critic_market = self.critic_market_embeddings(listing_embeddings)
         risk = account.new_zeros(2)
         if len(held_index) and held_features.shape[1] >= 11:
@@ -165,6 +168,9 @@ class BracketActorCritic(BracketPolicy):
                                logits.new_zeros(b, h), stops, targets), dim=1)
         scale = self.log_scale.clamp(-5, 2).exp()
         scales = torch.cat((scale[0].expand(1+n+h), scale[1].expand(h), scale[2].expand(h)))
+        if self.decoder.wait_hold:
+            locations = torch.cat((locations, logits.new_zeros(b, h)), dim=1)
+            scales = torch.cat((scales, scale[0].expand(h)))
         risk = account.new_zeros(b, 2)
         if h and held_features.shape[2] >= 11:
             weights = held_features[:, :, 0]*held_features[:, :, 1]/account[:, 1:2].clamp_min(1)

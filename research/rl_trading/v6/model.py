@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from torch.nn import functional as F
+from research.rl_trading.v6.action_contract import ACTION_VERSION
 
 from research.rl_trading.v6.features import (CONTEXT_CANDLES, LEVEL_NAMES,
                                              LEVELS_PER_SIDE, SCALAR_NAMES)
@@ -119,15 +120,19 @@ class BracketActionDecoder(nn.Module):
     Decoder output is a proposal only. The OMS validates tick and quote rules.
     """
 
-    def __init__(self, width: int = 128):
+    def __init__(self, width: int = 128, *, wait_hold: bool = False):
         super().__init__()
         if width < 1:
             raise ValueError('Invalid action width')
         self.width = width
+        self.wait_hold = wait_hold
+        self.action_version = ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1'
         self.account = nn.Sequential(nn.Linear(7, width), nn.LayerNorm(width))
         self.holding = nn.Sequential(
             nn.Linear(width + HELD_FEATURE_WIDTH, width), nn.LayerNorm(width))
         self.hold_head = nn.Linear(width, 1)
+        if wait_hold:
+            self.wait_head = nn.Linear(width, 1)
         self.enter_head = nn.Linear(width, 1)
         self.exit_head = nn.Linear(width, 1)
         self.stop_head = nn.Linear(width, 1)
@@ -190,7 +195,8 @@ class BracketActionDecoder(nn.Module):
         listed = self._head_features(listings + context[None])  # [N,D].
         held = self._head_features(self.holding(torch.cat(
             (listings[held_index], held_scaled), dim=1)) + context[None])
-        logits = torch.cat((self.hold_head(self._head_features(context)).view(1),
+        no_order_head = self.wait_head if self.wait_hold else self.hold_head
+        logits = torch.cat((no_order_head(self._head_features(context)).view(1),
             self.enter_head(listed).flatten(),
             self.exit_head(held).flatten(),
             self.stop_head(held).flatten(),
@@ -198,6 +204,10 @@ class BracketActionDecoder(nn.Module):
         mask = torch.cat((torch.ones(1, dtype=torch.bool,
                                       device=listings.device), enter_allowed,
                           exit_allowed, stop_allowed, target_allowed))
+        if self.wait_hold:
+            # [H] HOLD targets only the causal held identities, never N slots.
+            logits = torch.cat((logits, self.hold_head(held).flatten()))
+            mask = torch.cat((mask, torch.ones_like(exit_allowed)))
         logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
         size = self.size_head(listed).flatten().sigmoid()
         stop_distance = self.stop_distance_head(held).flatten()
@@ -210,6 +220,8 @@ class BracketActionDecoder(nn.Module):
 
         Only the leading observation axis is batched. No reduction mixes
         observations, time, account state, or holding identities.
+        The opt-in six-class axis is [WAIT, N entries, H exits, H stops,
+        H targets, H ticker HOLDs], of width 1+N+4H.
         """
         b, n, d = listings.shape
         h = held_index.shape[1]
@@ -236,11 +248,15 @@ class BracketActionDecoder(nn.Module):
         identities = held_index[:, :, None].expand(b, h, d)
         held = self._head_features(self.holding(torch.cat((listings.gather(1, identities),
             held_scaled), dim=2)) + context[:, None])  # [B,H,D]
-        logits = torch.cat((self.hold_head(self._head_features(context)), self.enter_head(listed).squeeze(-1),
+        no_order_head = self.wait_head if self.wait_hold else self.hold_head
+        logits = torch.cat((no_order_head(self._head_features(context)), self.enter_head(listed).squeeze(-1),
             self.exit_head(held).squeeze(-1), self.stop_head(held).squeeze(-1),
             self.target_head(held).squeeze(-1)), dim=1)
         mask = torch.cat((torch.ones(b, 1, device=listings.device, dtype=torch.bool),
             enter_allowed, exit_allowed, stop_allowed, target_allowed), dim=1)
+        if self.wait_hold:
+            logits = torch.cat((logits, self.hold_head(held).squeeze(-1)), dim=1)
+            mask = torch.cat((mask, torch.ones_like(exit_allowed)), dim=1)
         logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
         return (logits, self.size_head(listed).squeeze(-1).sigmoid(),
                 self.stop_distance_head(held).squeeze(-1), self.target_distance_head(held).squeeze(-1))
@@ -267,10 +283,10 @@ class BracketPolicy(nn.Module):
 
     ACTION_COUNT = 5  # HOLD, ENTER_LONG, EXIT_LONG, SET_STOP, SET_TARGET.
 
-    def __init__(self, width: int = 128):
+    def __init__(self, width: int = 128, *, wait_hold: bool = False):
         super().__init__()
         self.encoder = ActualCandleEncoder(width=width)
-        self.decoder = BracketActionDecoder(width=width)
+        self.decoder = BracketActionDecoder(width=width, wait_hold=wait_hold)
         self.action_type = nn.Embedding(self.ACTION_COUNT, width)
         # Selected listing embedding, action embedding, requested cash
         # fraction, filled fraction, and realized net P&L divided by equity.

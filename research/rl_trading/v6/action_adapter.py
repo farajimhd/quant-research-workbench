@@ -28,16 +28,19 @@ def decode_proposal(logits: torch.Tensor, sizes: torch.Tensor,
                     held_index: torch.Tensor,
                     entry_prices: tuple[float, ...],
                     held_tick_sizes: tuple[float, ...],
+                    wait_hold: bool = False,
                     ) -> ProposedOrder:
     """Decode [1+N+3H] masked logits without accessing future execution.
 
     Stop and target heads predict positive log distances from the confirmed
     entry price. Both sell levels round down to the supplied order increment.
     Invalid order geometry fails closed instead of clipping a prediction.
+    wait_hold=True selects [1+N+4H]: WAIT is global, while the last H tokens
+    identify held listings to HOLD. Both are no-order proposals.
     """
     listings = sizes.numel()
     holdings = len(entry_prices)
-    if (logits.ndim != 1 or logits.numel() != 1+listings+3*holdings or
+    if (logits.ndim != 1 or logits.numel() != 1+listings+(4 if wait_hold else 3)*holdings or
             stop_distances.shape != (holdings,) or
             target_distances.shape != (holdings,) or
             held_index.shape != (holdings,) or
@@ -47,7 +50,7 @@ def decode_proposal(logits: torch.Tensor, sizes: torch.Tensor,
         raise ValueError('Malformed V6 action proposal axes')
     token = int(logits.argmax().item())
     if token == 0:
-        return ProposedOrder('hold', None)
+        return ProposedOrder('wait' if wait_hold else 'hold', None)
     if token <= listings:
         fraction = float(sizes[token-1].item())
         if not math.isfinite(fraction) or not 0 <= fraction <= 1:
@@ -56,6 +59,8 @@ def decode_proposal(logits: torch.Tensor, sizes: torch.Tensor,
                              cash_fraction=fraction)
     base = 1+listings
     action, slot = divmod(token-base, holdings)
+    if wait_hold and action == 3:
+        return ProposedOrder('hold', int(held_index[slot].item()))
     if not 0 <= action < 3:
         raise ValueError('Invalid held action token')
     listing = int(held_index[slot].item())
