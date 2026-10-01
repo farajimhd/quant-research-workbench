@@ -1,7 +1,9 @@
 """Staged exact-integer first-price companion; no table/writer admission."""
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 import re
 from uuid import UUID, NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 from .arte_journal_schema import TableContract
 from .strategy_initial_price_break import FirstSetupPriceBreakWitness, first_setup_price_break, PREMARKET_END_MS
@@ -10,6 +12,7 @@ from .strategy_initial_strong_momentum import (
     initial_strong_momentum_entry,
 )
 from .strategy_initial_momentum_growth import first_setup_momentum_growth_entry
+from .strategy_rising_momentum_witness import RisingMomentumWitness
 
 FIRST_PRICE = TableContract('trading_first_price_entry_v4', (
     ('record_id', 'UUID'), ('parent_record_id', 'UUID'), ('run_id', 'String'),
@@ -77,15 +80,25 @@ def project_first_price_entry(current, selection, price, *, price_source_token,
         'price_source_token': price_source_token},)
 
 
-def restore_first_price_entry(rows, current, selection):
+def restore_first_price_entry(rows, current, selection, *, expected_price,
+                              expected_price_source_token):
+    """Restore only against independently supplied certified source evidence.
+
+    Row-contained tokens cannot authenticate themselves. The caller must obtain
+    expected values from the certified source plan or its verified source audit.
+    """
     if selection.initial.first_setup.boundary_ms >= PREMARKET_END_MS:
         if rows:
             raise ValueError('After-hours cannot carry first-price companions')
         _bind(current, selection, None)
+        if expected_price is not None:
+            raise ValueError('After-hours source cannot contain a price witness')
         return None
     if len(rows) != 1:
         raise ValueError('Premarket requires exactly one first-price companion')
     row = rows[0]
+    if row['price_source_token'] != expected_price_source_token:
+        raise ValueError('First price source seal differs from certified authority')
     flags = (row['current_price_valid'], row['prior_extremes_valid'])
     if any(type(v) is not int or v not in (0, 1) for v in flags):
         raise ValueError('First price flags must be exact binary integers')
@@ -98,4 +111,87 @@ def restore_first_price_entry(rows, current, selection):
                                        'parent_record_id', 'event_month')})[0]
     if any(type(row[name]) is not type(value) or row[name] != value for name, value in projected.items()):
         raise ValueError('First price row differs from original entry selection')
+    if type(expected_price) is not FirstSetupPriceBreakWitness or price != expected_price:
+        raise ValueError('First price values differ from certified source authority')
     return price
+
+
+@dataclass(frozen=True, slots=True)
+class FirstPriceEntryAuthority:
+    """Per-entry evidence supplied by a separately certified compiler/audit."""
+    parent_record_id: str
+    current: RisingMomentumWitness
+    selection: InitialMomentumSelectionWitness
+    price: FirstSetupPriceBreakWitness | None
+    price_source_token: str
+
+    def __post_init__(self):
+        parent = self.parent_record_id
+        if type(parent) is not str or str(UUID(parent)) != parent or not UUID(parent).int:
+            raise ValueError('First price authority needs canonical entry parent')
+        if (type(self.price_source_token) is not str
+                or not re.fullmatch('[0-9a-f]{64}', self.price_source_token)):
+            raise ValueError('First price authority requires certified source token')
+        _bind(self.current, self.selection, self.price)
+
+
+def seal_first_price_rows(rows, entries, intents, events, authorities):
+    """Bind complete Strategy20 entry graph to independent source receipts.
+
+    The table must be registered by the journal integration before calling this
+    sealer. This function neither registers it nor installs operational tables.
+    """
+    from .arte_journal_writer import typed_row
+    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] == 20}
+    parents = {row['record_id']: row for row in intents}
+    source_events = {row['record_id']: row for row in events}
+    if (len(required) != sum(row['strategy_number'] == 20 for row in entries)
+            or len(parents) != len(intents) or len(source_events) != len(events)
+            or any(type(authority) is not FirstPriceEntryAuthority for authority in authorities)):
+        raise ValueError('First price graph has ambiguous parents or untyped authority')
+    certified = {authority.parent_record_id: authority for authority in authorities}
+    if len(certified) != len(authorities) or set(certified) != set(required):
+        raise ValueError('First price graph lacks exact entry authority population')
+    sealed = tuple(typed_row(FIRST_PRICE.name,
+        {name: value for name, value in row.items() if name != 'content_hash'}) for row in rows)
+    if (len({row['record_id'] for row in sealed}) != len(sealed)
+            or any(row['parent_record_id'] not in required for row in sealed)
+            or any('content_hash' in old and old['content_hash'] != new['content_hash']
+                   for old, new in zip(rows, sealed))):
+        raise ValueError('First price graph has extra, duplicate or changed companions')
+    # Build the sparse parent index once; avoid scanning all rows for each entry.
+    grouped = {}
+    for row in sealed:
+        grouped.setdefault(row['parent_record_id'], []).append(row)
+    for parent, entry in required.items():
+        authority = certified[parent]
+        intent, event = parents.get(parent), source_events.get(parent)
+        if (intent is None or event is None
+                or intent['action'] != 'enter_long' or intent['reason'] != 'strategy_one_entry'
+                or event['category'] != 'strategy' or event['entity_type'] != 'strategy_intent'
+                or event['entity_id'] != intent['intent_id']
+                or event['account_id'] != intent['account_id']
+                or intent['ticker'] != authority.current.ticker
+                or entry['boundary_ms'] != authority.current.boundary_ms
+                or entry['episode_start_ms'] != authority.selection.initial.episode_start_ms
+                or any(intent[name] != entry[name] or event[name] != entry[name]
+                       for name in ('run_id', 'batch_id', 'event_month'))):
+            raise ValueError('First price graph has unrelated entry/intent/event scope')
+        selected = grouped.get(parent, ())
+        if any(row[name] != entry[name] for row in selected
+               for name in ('run_id', 'batch_id', 'event_month')):
+            raise ValueError('First price companion differs from entry run scope')
+        restore_first_price_entry(selected, authority.current, authority.selection,
+            expected_price=authority.price, expected_price_source_token=authority.price_source_token)
+        at = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
+        if at.tzinfo is None:
+            raise ValueError('First price entry source clock must be timezone-aware')
+        local = at.astimezone(ZoneInfo('America/New_York'))
+        expected = datetime.combine(local.date(), datetime.min.time(), ZoneInfo('America/New_York'))
+        expected += timedelta(hours=4, milliseconds=entry['boundary_ms'])
+        identity = (f"strategy-20:{local.date().isoformat()}:{entry['assignment_id']}:"
+                    f"{intent['account_id']}:{intent['ticker']}:{entry['boundary_ms']}:"
+                    f"{entry['episode_start_ms']}")
+        if at != expected or intent['intent_id'] != str(uuid5(NAMESPACE_URL, identity)):
+            raise ValueError('First price parent differs from exact numbered source clock')
+    return sealed

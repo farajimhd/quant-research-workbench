@@ -2014,3 +2014,14 @@ companion. Focused new source/selection/journal and existing anchor checks
 passed81 tests. This contract is not registered in production writers and no
 table was installed: whole-graph sealing, source-token crosslinks, journal
 recovery, operator storage/grants and numbered runtime admission remain required.
+
+First-price restoration now requires independently supplied expected witness
+and price-source seal: row-contained values cannot authenticate themselves.
+The staged graph sealer checks the exact20 entry population, independent typed
+source receipts, parent intents/events, run/batch/month scope, deterministic
+record identities, timezone-aware source clocks and content hashes. Missing,
+extra, duplicate or changed evidence fails closed. Sparse row groups are indexed
+once per batch. AH restoration accepts only an empty price companion population.
+Focused source/compiler/new-and-existing journal checks passed96 tests. Writer
+registration and operational persistence remain pending; no actual20 result
+or source-plan deployment is claimed by these staged tests.
