@@ -2025,3 +2025,44 @@ once per batch. AH restoration accepts only an empty price companion population.
 Focused source/compiler/new-and-existing journal checks passed96 tests. Writer
 registration and operational persistence remain pending; no actual20 result
 or source-plan deployment is claimed by these staged tests.
+
+### Certified Strategy20 source audit and development big-move study
+
+The new bars loader/compiler ran read-only on all four original certified19
+session prefixes. All saved-entry scalar lookups and original anchor checks
+passed. Receipt strategy20-certified-price-source-development-audit-v1.json
+SHA256 df196008cb0f3585abac6cde4799f25708c631b6856df78ce7a5cbb24a8cca96.
+This is source integration evidence, not an actual20 portfolio backtest.
+
+User requested comparing large moves across all development dates. A certified
+completed1s-bar study now covers88 earliest Strategy12 structurally eligible
+episodes across Aug04/18/19 PM/AH, including episodes19 never traded. Exact
+source attempts are pinned; only PM/AH price paths are queried. Native ClickHouse
+range windows compute prior60s volume/trades and future15m extremes. Future
+extremes label outcomes only and cannot become entry inputs or executable PnL.
+This population does not include market moves lacking a Strategy12 episode.
+Right-censored near-end observations are marked and excluded from comparison.
+
+There are18 uncensored episodes with at least20% future15m upside; Strategy19
+traded7 of them. Median prior60s volume/trades are219227.5/1925 for big episodes
+versus247888/2068 for the68 other uncensored episodes. Higher absolute volume
+therefore does not separate winners here. Only6/18 big first setups pass PM50%
+10s growth, compared with50% of the other cohort: this descriptive observation
+questions stronger first-setup momentum as a general opportunity filter. AH
+retains10%, so this PM50% feature is not the AH admission rule. Median BOS age
+is3.8s versus5.5s; sample is small and ticker/episode outcomes are correlated.
+Missed opportunities include SLE63.1%, AMIX57.9%, ZNB48.8% and EHGO31.6% from
+the corresponding first anchor. These are hindsight bounds, not tradable gains.
+Future15m minimum prices may occur after peaks; do not use them to choose an
+early-stop threshold without tracing the price path before each peak.
+
+Artifacts under campaign runtime root:
+development-big-move-episode-study-v1.json SHA256
+4c4ead0b5b4b777b2915e3568c35501517921bfa14fcbb0dfbe9e695a314d064;
+development-big-move-feature-comparison-v1.json SHA256
+ebcfb584f139de4d39424c63b8daf1bb14300b424ad3b5505895b8d701b0db0e;
+development-big-move-feature-comparison-v1.md contains per-episode source
+features, bounds, actual19 position counts/PnL and entry delays. No holdout
+sources researched, no float fallback, no services restarted. Both read-only
+jobs are terminal. Next: trace missed-anchor rejection and before-peak paths,
+complete20 runtime admission, then evaluate actual portfolio behavior.
