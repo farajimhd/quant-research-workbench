@@ -1230,3 +1230,22 @@ tests. Managed backend and frontend restart reached ready. Strategy 15 source
 integration is accepted; publication, four actual saved app-route backtests,
 per-position review and comparison remain required. No Strategy 15 profit is
 claimed. The goal remains active and Strategy 14 remains at two qualifying sessions.
+
+Strategy 15 source was committed and pushed as
+`ac05ab5ab88fe904112ec712098f6235eff06632`, pinned in laptop
+`strategy15-reproduction` and workstation
+`quant-research-workbench-strategy15-ac05ab5ab` checkouts. Publication certified
+revision `strategy-one-15:9612bd76-0faa-4b40-a13a-54515c2fb53f`, 983 nodes,
+payload `fdc313a3e446d7d8f7e9b038da573c367ccfc5e5cc8d56fd94a919f842c2ccd2`,
+release certificate `e23614ed9ce1a4e5f253287af8e91bf0930779ca8823a81a89da60a1144a27ae`,
+source fingerprint `b2c8d92b4adee72c2cfa64a6fb314ff19d67008367bdb135af64e5aa6b2acae2`.
+
+The first two actual app-route attempts launched no journal run: required
+`causal_v7_seed` preflight rejected changing V7 interval physical parts during
+the cold read. Both failed logs/manifests remain immutable under runtime
+`strategy15-four-session-campaign-v1.json` and `-v2.json`. No source or
+certificate gate was changed. A read-only five-second inventory comparison
+then observed equal full product fingerprints; the next ordinary certified
+attempt is tracked separately in `strategy15-four-session-campaign-v3.json`.
+A stable inventory sample is not certification and never authorizes trading by
+itself. Four saved runs and their reviews still remain required.
