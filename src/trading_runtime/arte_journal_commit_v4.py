@@ -49,6 +49,7 @@ from src.backend.backtest_protection_change_v3 import (
 
 from .arte_followthrough_failure_v4 import FAILURE, seal_followthrough_rows
 from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, seal_profit_giveback_rows
+from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, seal_confirmed_ah_rows
 from .arte_rising_momentum_entry_v4 import (
     MOMENTUM, seal_rising_momentum_rows, momentum_select_columns, decode_momentum_row,
 )
@@ -597,7 +598,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -642,6 +643,20 @@ def _load_verified_details_v4(
             related_rows.get('trading_strategy_intent_v1', ()),
             related_rows.get('trading_event_v1', ()),
             prefix=verified_prior_prefix, first_price_source=first_price_source)
+    from .strategy_confirmed_ah_failure_exit import REASON as confirmed_ah_reason
+    confirmation_rows = related_rows.get(CONFIRMED_AH_FAILURE.name, ())
+    if confirmation_rows or any(row['reason'] == confirmed_ah_reason for row in
+                               related_rows.get('trading_strategy_intent_v1', ())):
+        if verified_prior_prefix is None:
+            raise RuntimeError('AH confirmation readback requires its verified preceding prefix')
+        # Every raw row hash was checked above before adapting native UInts.
+        unsigned = {name for name, kind in CONFIRMED_AH_FAILURE.columns if kind.startswith('UInt')}
+        adapted = tuple({k: int(v) if k in unsigned else v for k, v in row.items()}
+                        for row in confirmation_rows)
+        seal_confirmed_ah_rows(client, adapted,
+            related_rows.get('trading_strategy_intent_v1', ()),
+            related_rows.get('trading_event_v1', ()),
+            verified_prefix=verified_prior_prefix, first_price_source=first_price_source)
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
                if row["reason"] == "strategy_one_entry"}
@@ -1320,7 +1335,7 @@ def _validate_strategy_one_add_link(row, parent, event, run_id, batch_id):
 
 
 def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_one_entry_rows=(),
-                           profit_giveback_rows=(), verified_prior_prefix=None, first_price_source=None,
+                           profit_giveback_rows=(), confirmed_ah_rows=(), verified_prior_prefix=None, first_price_source=None,
                            rising_momentum_rows=(), initial_momentum_rows=(),
                            first_price_rows=(), first_price_authorities=(),
                             strategy_one_add_rows=(),
@@ -1366,11 +1381,11 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         if (any(getattr(batch, name) for name in (
                 "backtest_cursors", "backtest_market_authorities",
                 "backtest_progress", "prepared_v7_leases"))
-                or broker_snapshot_rows is not None or profit_giveback_rows):
+                or broker_snapshot_rows is not None or profit_giveback_rows or confirmed_ah_rows):
             raise ValueError("Live V4 cannot publish Backtest-only families")
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
-            strategy_one_entry_rows, followthrough_rows, profit_giveback_rows, portfolio_allocation_row,
+            strategy_one_entry_rows, followthrough_rows, profit_giveback_rows, confirmed_ah_rows, portfolio_allocation_row,
             oms_tactic_rows,
             reservation_reason_rows,
             broker_acknowledgement_row, broker_acknowledgement_v5_row,
@@ -1725,6 +1740,13 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             dict(base_families)['trading_strategy_intent_v1'],
             dict(base_families)['trading_event_v1'], prefix=verified_prior_prefix,
             first_price_source=first_price_source))
+    confirmation_rows = (tuple(typed_row(CONFIRMED_AH_FAILURE.name, {
+        k: v for k, v in row.items() if k != 'content_hash'})
+        for row in confirmed_ah_rows) if _prepare_only else
+        seal_confirmed_ah_rows(client, confirmed_ah_rows,
+            dict(base_families)['trading_strategy_intent_v1'],
+            dict(base_families)['trading_event_v1'], verified_prefix=verified_prior_prefix,
+            first_price_source=first_price_source))
     tactic_states = ()
     tactic_steps = ()
     if oms_tactic_rows is not None:
@@ -1766,6 +1788,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += ((FAILURE.name, failure_rows),)
     if profit_rows:
         families += ((PROFIT_GIVEBACK.name, profit_rows),)
+    if confirmation_rows:
+        families += ((CONFIRMED_AH_FAILURE.name, confirmation_rows),)
     if entry_rows:
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
     if momentum_rows:
@@ -1943,7 +1967,7 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
 
     live_lease = getattr(client, "live_v4_lease", None)
     dispatch = client.typed_insert_dispatch
-    if any(name == PROFIT_GIVEBACK.name and rows for name, rows in families):
+    if any(name in (PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name) and rows for name, rows in families):
         if (live_lease is not None or type(verified_prior_prefix) is not V4CommittedPrefix
                 or verified_prior_prefix.run_id != batch.run_id
                 or verified_prior_prefix.status != 'running'
