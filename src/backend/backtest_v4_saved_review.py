@@ -38,6 +38,92 @@ _V4_PERFORMANCE_CACHE = AuditedSessionCache(
 )
 
 
+def _saved_twenty_price_source(client, run_id: str, context: dict, release):
+    """Rebuild native entry authority from the fenced definition and market seals.
+
+    Journal entry values never supply native prices. This work runs only on a
+    cold attestation; the bounded cache retains scalar financial evidence only.
+    """
+    from contextlib import closing
+    from datetime import date, time, timedelta
+    from src.trading_runtime.arte_backtest_definition import (
+        load_backtest_definition, reconstruct_backtest_definition_from_arte,
+    )
+    from src.backend.replay_run_service import backtest_preflight
+    from src.backend.backtest_market_data import (
+        certified_market_plan_from_arte, configuration_tickers,
+        readonly_clickhouse_client,
+    )
+    from src.backend.backtest_liquidity_price import certify_price_level_plan
+    from src.backend.backtest_strategy_one_plan import certify_strategy_one_fixed_plans
+    from src.backend.backtest_strategy_one_static_gate import compile_static_entry_gate
+    from src.backend.backtest_strategy_rising_momentum import load_rising_momentum_plan
+    from src.backend.backtest_strategy_initial_momentum_growth import compile_initial_momentum_growth_plan
+    from src.backend.backtest_strategy_first_price_source import load_first_price_source
+    from src.backend.backtest_strategy_certified_price_break import (
+        CertifiedPriceReadbackAuthority, compile_certified_price_break_plan,
+    )
+    from src.backend.backtest_strategy_one_candidate_store import project_candidate_plan
+
+    def local_clock(value):
+        if type(value) is not int or not 0 <= value < 86_400_000:
+            raise ValueError("Saved native source has an invalid session clock")
+        hour, remainder = divmod(value, 3_600_000)
+        minute, remainder = divmod(remainder, 60_000)
+        second, remainder = divmod(remainder, 1_000)
+        return time(hour, minute, second, remainder * 1_000)
+
+    saved = load_backtest_definition(client, run_id, run_context=context)
+    parent = saved["definition"]
+    revision = release.revision()
+    preflight = backtest_preflight(
+        anchor_date=date.fromisoformat(context["session_date"]) + timedelta(days=1),
+        session_count=1, start_time=local_clock(parent["start_local_ms"]),
+        end_time=local_clock(parent["end_local_ms"]),
+        initial_cash=float(parent["initial_cash"]),
+        tickers=tuple(row["ticker"] for row in saved["tickers"]),
+        configuration_revision=revision,
+        experimental_structure_book=parent["structure_book"],
+    )
+    definition = reconstruct_backtest_definition_from_arte(
+        saved, context, revision, preflight)
+    pins = definition.market_data_plan
+    market = certified_market_plan_from_arte(
+        sessions=[date.fromisoformat(value) for value in pins["sessions"]],
+        tickers=configuration_tickers(release.payload, definition.tickers),
+        configuration=release.payload,
+    )
+    if market.token != pins["token"]:
+        raise ValueError("Saved native market plan differs from its fenced definition")
+
+    def reader():
+        return readonly_clickhouse_client(market_stream=True, v3_read_principal=True)
+
+    with closing(reader()) as source_client:
+        prices = certify_price_level_plan(
+            market, source_client, read_client_factory=reader)
+    if prices.token != pins["price_level_plan_token"]:
+        raise ValueError("Saved native passive-fill plan changed")
+    fixed = certify_strategy_one_fixed_plans(
+        market, prices, market_pins=pins,
+        v7_pins=definition.causal_v7_plan, client_factory=reader)
+    visible = project_candidate_plan(
+        fixed.candidates, through_boundary_ms=parent["end_local_ms"] - 14_400_000)
+    if not visible.prepared:
+        # Preserve the execution runner's sealed empty-prefix behavior.
+        # Prefix verification will reject any entry in this empty horizon.
+        return None
+    base_gate = compile_static_entry_gate(visible, fixed.entry, strategy_number=12)
+    with closing(reader()) as source_client:
+        momentum = load_rising_momentum_plan(
+            market, visible, client=source_client,
+            candidate_indices=base_gate.eligible_indices)
+        initial = compile_initial_momentum_growth_plan(visible, fixed.entry, momentum)
+        source = load_first_price_source(market, initial, client=source_client)
+    return CertifiedPriceReadbackAuthority(
+        run_id, compile_certified_price_break_plan(source))
+
+
 def _terminal_financial_accounts(client, prefix, account_ids: tuple[str, ...]) -> dict:
     table = "trading_backtest_account_snapshot_v2"
     columns = ",".join(name for name, _ in _CONTRACTS[table].columns)
@@ -81,7 +167,7 @@ def _terminal_attestation(client, normalized: str,
             or not is_numbered_fixed_strategy(context["strategy_id"], int(context["strategy_revision"]))
             or context["evaluation_interval_ms"] != 100):
         raise ValueError("Saved review accepts only installed immutable numbered strategies at 100 ms")
-    if int(context["strategy_revision"]) in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
+    if int(context["strategy_revision"]) in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20):
         from contextlib import closing
         from src.backend.backtest_market_data import readonly_clickhouse_client
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
@@ -98,7 +184,12 @@ def _terminal_attestation(client, normalized: str,
             attestation = candidate
             break
     if attestation is None:
-        prefix = load_verified_v4_prefix(client, normalized)
+        if int(context["strategy_revision"]) == 20:
+            source = _saved_twenty_price_source(client, normalized, context, release)
+            prefix = load_verified_v4_prefix(
+                client, normalized, first_price_source=source)
+        else:
+            prefix = load_verified_v4_prefix(client, normalized)
         if prefix is None or prefix.status not in {"completed", "stopped", "failed"}:
             raise ValueError("Saved review requires a cold-verified terminal V4 run")
         accounts = {

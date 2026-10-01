@@ -3679,6 +3679,7 @@ class _TerminalBacktestUnit:
     batch: TypedJournalBatch
     captured: tuple[CapturedPortfolioSnapshot, ...]
     broker_snapshots: Any | None = None
+    first_price_source: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4372,6 +4373,7 @@ class ArteJournalWriter:
         self, batch: TypedJournalBatch,
         captured: tuple[CapturedPortfolioSnapshot, ...],
         broker_snapshots: Any | None = None,
+        *, first_price_source=None,
     ) -> Future[str]:
         """Enqueue terminal events and every account recovery image as one unit.
 
@@ -4391,6 +4393,12 @@ class ArteJournalWriter:
         if (self._journal_profile != "backtest_v4"
                 and broker_snapshots is not None):
             raise ValueError("Broker snapshot rows belong only to V4 terminal")
+        if first_price_source is not None:
+            from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+            if (self._journal_profile != "backtest_v4"
+                    or type(first_price_source) is not CertifiedPriceReadbackAuthority
+                    or first_price_source.run_id != self._run_id):
+                raise ValueError("Terminal queue lacks its native run source")
 
         if (not isinstance(batch, TypedJournalBatch)
                 or self._run_mode != "backtest"
@@ -4409,7 +4417,8 @@ class ArteJournalWriter:
             receipt: Future[str] = Future()
             try:
                 self._queue.put_nowait((
-                    _TerminalBacktestUnit(batch, tuple(captured), broker_snapshots),
+                    _TerminalBacktestUnit(batch, tuple(captured), broker_snapshots,
+                                          first_price_source),
                     receipt))
             except Full as exc:
                 raise JournalQueueFull("Terminal Backtest queue is full; stop execution") from exc
@@ -4867,7 +4876,9 @@ class ArteJournalWriter:
                         )
                         prefix = publish_terminal_typed_batch_v4(
                             self._client, unit.batch, captures=unit.captured,
-                            broker_snapshots=unit.broker_snapshots)
+                            broker_snapshots=unit.broker_snapshots,
+                            **({"first_price_source": unit.first_price_source}
+                               if unit.first_price_source is not None else {}))
                         committed_id = prefix.last_batch_id
                     else:
                         from src.trading_runtime.arte_backtest_snapshot_anchor import (

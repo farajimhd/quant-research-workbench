@@ -1,4 +1,4 @@
-"""Staged20 typed journal round trips; no release or operational DDL is installed."""
+"""Native20 typed journal round trips; fixtures perform no operational DDL."""
 from dataclasses import replace
 from datetime import date
 import json
@@ -137,7 +137,7 @@ def test_twenty_manager_scalar_snapshot_recovers_witnesses_from_real_typed_entry
     assert reference.submitted[0][1].momentum is None
     restored = attach_committed_momentum_sources(client, prefix, reference, first_price_source=source)
     assert restored == state
-    runner = manager()  # Existing installed policy only; no20 release registration.
+    runner = manager()  # Existing manager fixture; release admission is tested separately.
     runner.runtime.run_id = source.run_id
     runner.restore_state(restored, first_price_source=source)
     assert runner.capture_state(boundary_ms=42000) == state
@@ -285,3 +285,62 @@ def test_manager_writer_transports_native_source_through_actual_queue(monkeypatc
         assert len(seen) == 1
     finally:
         writer.close()
+
+
+def test_native_twenty_terminal_cold_verification_requires_original_source(monkeypatch):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_terminal_broker_snapshot_v4 import project_v4_terminal_broker_batch
+    from src.backend.backtest_terminal_snapshot_v2 import ACCOUNT_METRICS, position_set_sha256
+    from src.trading_runtime import arte_journal_writer as writer_module
+    from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
+    from src.trading_runtime.arte_journal_commit_v4 import publish_terminal_typed_batch_v4
+    from tests.test_arte_journal_commit_v4 import captured
+
+    market, parent = authority()
+    source = CertifiedPriceReadbackAuthority('native-twenty-terminal',
+        compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars())))
+    entry, proposal, _ = prepared_entry(source, 1, 31000, str(UUID(int=0)))
+    client = attached_v4_client(ExactBits())
+    publish_strategy_one_entry_batch_v4(client, entry.base,
+        entry_evidence=entry.entry_evidence, momentum_evidence=entry.momentum_evidence,
+        initial_momentum_evidence=entry.initial_momentum_evidence,
+        first_price_evidence=entry.first_price_evidence,
+        first_price_authorities=entry.first_price_authorities)
+    at = datetime(2026, 8, 18, 13, 30, tzinfo=timezone.utc)
+    journal = BacktestMemoryJournal(run_id=source.run_id, initial_sequence=1)
+    account = {name: {'amount': 1000.0, 'currency': 'USD', 'timestamp': 123}
+               for name, _ in ACCOUNT_METRICS}
+    try:
+        journal.append(run_id=source.run_id, category='snapshot', entity_type='portfolio',
+            entity_id=proposal.account_id, account_id=proposal.account_id, event_time=at,
+            payload={**account, 'snapshot_id': str(uuid4()), 'expected_position_count': 0,
+                     'position_set_sha256': position_set_sha256(())})
+        journal.append(run_id=source.run_id, category='lifecycle', entity_type='run',
+            entity_id=source.run_id, event_time=at,
+            payload={'status': 'completed', 'processed_events': 3})
+        terminal = project_v4_terminal_broker_batch(tuple(journal.unfenced_records()),
+            run_id=source.run_id, account_ids=(proposal.account_id,), attempt_id=str(uuid4()),
+            run_month=date(2026, 8, 1), prior_batch_id=entry.base.batch_id,
+            source_cursor='2026-08-18:19800000')
+    finally:
+        journal.close()
+    capture = replace(captured(), run_id=source.run_id, account_id=proposal.account_id,
+                      state_revision=3, snapshot_at=at)
+    monkeypatch.setattr(writer_module, 'load_typed_run_context', lambda *_:
+        {'mode': 'backtest', 'account_ids': (proposal.account_id,),
+         'strategy_revision': 20, 'session_date': '2026-08-18'})
+    anchored = []
+    monkeypatch.setattr(anchors, '_publish_terminal_snapshots_after_verified_prefix',
+        lambda _client, prefix, captures, context: anchored.append(prefix))
+    with pytest.raises((ValueError, RuntimeError)):
+        publish_terminal_typed_batch_v4(client, terminal.base, captures=(capture,),
+                                      broker_snapshots=terminal.broker_snapshots)
+    assert not anchored
+    prefix = publish_terminal_typed_batch_v4(client, terminal.base, captures=(capture,),
+        broker_snapshots=terminal.broker_snapshots, first_price_source=source)
+    assert prefix.status == 'completed' and prefix.last_sequence == 3
+    assert len(anchored) == 1
+    assert load_committed_strategy_one_entry_page(
+        client, prefix, first_price_source=source).entries[0].proposal == proposal

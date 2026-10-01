@@ -41,6 +41,72 @@ def _prefix():
                              "completed", (BATCH,))
 
 
+@pytest.mark.parametrize('changed_market', [False, True])
+def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch, changed_market):
+    from test_backtest_strategy_first_price_source import authority, Bars
+    from src.backend import backtest_market_data as markets
+    from src.backend import replay_run_service as service
+    from src.backend import backtest_liquidity_price as liquidity
+    from src.backend import backtest_strategy_one_plan as fixed_plans
+    from src.backend import backtest_strategy_rising_momentum as momentum
+    from src.backend import backtest_strategy_one_candidate_store as candidates
+    from src.trading_runtime import arte_backtest_definition as definitions
+    from src.backend.backtest_strategy_certified_price_break import (
+        CertifiedPriceReadbackAuthority, compile_certified_price_break_plan,
+    )
+    from src.backend.backtest_strategy_first_price_source import load_first_price_source
+
+    market, parent = authority()
+    source_client = Bars()
+    source_client.close = lambda: None
+    pins = {'sessions': market.sessions, 'token': 'f' * 64 if changed_market else market.token,
+            'price_level_plan_token': 'a' * 64}
+    definition = SimpleNamespace(market_data_plan=pins, causal_v7_plan={'token': 'b' * 64},
+                                 tickers=market.tickers)
+    saved = {'definition': {'start_local_ms': 14_400_000, 'end_local_ms': 34_200_000,
+                            'initial_cash': 10_000.0, 'structure_book': ''},
+             'tickers': [{'ticker': ticker} for ticker in market.tickers]}
+    revision = {'revision_id': 'test-twenty-revision', 'payload': {}}
+    release = SimpleNamespace(payload={}, revision=lambda: revision)
+    calls = []
+    monkeypatch.setattr(definitions, 'load_backtest_definition',
+        lambda client, run, *, run_context: calls.append(('definition', run_context)) or saved)
+    def preflight(**kwargs):
+        calls.append(('preflight', kwargs))
+        return {'ready': True}
+    monkeypatch.setattr(service, 'backtest_preflight', preflight)
+    monkeypatch.setattr(definitions, 'reconstruct_backtest_definition_from_arte',
+        lambda actual, context, selected, prepared: definition)
+    monkeypatch.setattr(markets, 'certified_market_plan_from_arte', lambda **_: market)
+    monkeypatch.setattr(markets, 'configuration_tickers', lambda payload, tickers: tickers)
+    monkeypatch.setattr(markets, 'readonly_clickhouse_client', lambda **_: source_client)
+    monkeypatch.setattr(liquidity, 'certify_price_level_plan',
+        lambda *_a, **_k: SimpleNamespace(token=pins['price_level_plan_token']))
+    monkeypatch.setattr(fixed_plans, 'certify_strategy_one_fixed_plans',
+        lambda *_a, **_k: SimpleNamespace(candidates=parent.candidates, entry=parent.entry))
+    monkeypatch.setattr(momentum, 'load_rising_momentum_plan', lambda *_a, **_k: parent.momentum)
+    def horizon(full, *, through_boundary_ms):
+        # The shared native fixture is already projected. Production receives
+        # the full certified product from the independent fixed-plan bootstrap.
+        assert full is parent.candidates and through_boundary_ms == 19_800_000
+        return parent.candidates
+    monkeypatch.setattr(candidates, 'project_candidate_plan', horizon)
+    context = {**_context(), 'strategy_revision': 20}
+    if changed_market:
+        with pytest.raises(ValueError, match='fenced definition'):
+            review._saved_twenty_price_source(Client(), RUN, context, release)
+        assert not source_client.queries
+    else:
+        source = review._saved_twenty_price_source(Client(), RUN, context, release)
+        expected = compile_certified_price_break_plan(
+            load_first_price_source(market, parent, client=Bars()))
+        assert type(source) is CertifiedPriceReadbackAuthority
+        assert source.run_id == RUN and source.plan.token == expected.token
+        assert calls[0] == ('definition', context)
+        assert calls[1][1]['initial_cash'] == 10_000.0
+        assert calls[1][1]['configuration_revision'] is revision
+
+
 def test_terminal_page_requires_verified_context_prefix_and_snapshot(monkeypatch):
     order = []
 

@@ -1402,10 +1402,11 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE
     from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
     from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
+    from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE
     assert len(observed) == 2
     assert {table.name for table in observed[0]} == {
         table.name for table in (*fixed_backtest_v2_contracts(),
-                                 *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE, FAILURE, MOMENTUM, INITIAL_MOMENTUM,
+                                 *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE, FAILURE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE,
                                  ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
                                  RESERVATION_REASON,
                                      ACKNOWLEDGEMENT, CANCEL, REPRICE,
@@ -1424,7 +1425,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
             frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
-                V4_ORDER_COMMAND_LINEAGE.name, FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name,
+                V4_ORDER_COMMAND_LINEAGE.name, FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
             ENTRY_EVIDENCE.name, ADD_EVIDENCE.name,
             V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,

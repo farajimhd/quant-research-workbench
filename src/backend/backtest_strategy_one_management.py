@@ -327,7 +327,7 @@ class StrategyOneManagementRunner:
             # The installed number owns eligibility; old seals retain the
             # original unbounded predicate and first-held checkpoint contract.
             failure_rule = (early_followthrough_failure
-                            if self.contract.strategy_number in (11, 12, 13, 14, 17, 18, 19)
+                            if self.contract.strategy_number in (11, 12, 13, 14, 17, 18, 19, 20)
                             else followthrough_failure)
             witness = failure_rule(FollowThroughFailureInput(
                 boundary_ms, self._first_held_boundaries[key],

@@ -750,7 +750,9 @@ class BacktestTypedJournalPublisher:
                 source_cursor=self._source_cursor)
             batch = unit.base
             submitted = self.writer.submit_terminal_backtest(
-                batch, captures, unit.broker_snapshots)
+                batch, captures, unit.broker_snapshots,
+                **({"first_price_source": self._first_price_source}
+                   if self._first_price_source is not None else {}))
             committed = await asyncio.wrap_future(submitted)
             if str(UUID(str(committed))) != batch.batch_id:
                 raise RuntimeError("V4 terminal writer changed the batch ID")

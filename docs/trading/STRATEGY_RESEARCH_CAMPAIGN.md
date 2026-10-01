@@ -2301,3 +2301,37 @@ write. No source/market rows were inserted. Deployment receipt:
 The initial stdin evidence probe stalled without creating a receipt; its
 identified process was stopped. The bounded runtime-file probe completed using
 the provisioner's pinned endpoint. Numbered release and actual20 PnL remain open.
+
+### Strategy20 numbered release and cold terminal review
+
+The immutable numbered registry, configuration compiler/publisher, launch
+certifier, management, OMS, session liquidation and saved-history paths now
+recognize20. The compiler derives only from the exact installed19 revision
+`strategy-one-19:24339a6e-8a8c-4c4d-a187-6b756edce405`, payload
+`eb0e317c9eaada759e9b4d1d9b6f366506663fefa2e7375ff113c882b6840c8e`.
+The sole entry change is the frozen first premarket setup's completed1s close
+strictly exceeding its immediately prior completed1s high. Missing/invalid
+adjacent source bars reject that original setup without selecting a later one.
+AH eligibility, financial parameters, costs, original ask cap, V7 seed/warmup,
+targets, protection and inclusive first-held60000ms failure window inherit19.
+Live and public interrupted-run resume remain closed.
+
+Terminal publication transports the exact native source through the immutable
+writer queue and requires cold prefix verification before snapshot anchoring.
+An entry-bearing20 journal fails that audit without native authority; the same
+terminal suffix can recover with its original certified authority. Empty sealed
+horizons retain the runner's no-entry behavior. Saved review reconstructs its
+native source from the independently fenced definition, exact released
+configuration, rechecked market/passive-fill/V7 seals and sparse producer reads;
+journal price values never supply native authority. Reconstruction occurs only
+on a cold attestation, with existing bounded scalar-only financial caching.
+
+372 focused checks passed, including native20 entry-to-terminal cold recovery,
+rejection of changed market tokens, inherited financial/configuration equality,
+registered Backtest-only execution and complete19/20 source certification.
+Saved-review bootstrap unit tests use explicit certified-plan fixtures and do
+not substitute for operational execution. Reviewed terminal-route AST receipt:
+`strategy20-terminal-source-reviewed-seals-v1.json`. The publisher's real
+`--help` path and scoped `git diff --check` passed. Immutable configuration
+publication, real20 portfolio runs, populated UI readback and first-write SSD
+part placement remain pending; screened19 trade sums are not20 PnL.

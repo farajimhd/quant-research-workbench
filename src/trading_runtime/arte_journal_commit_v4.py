@@ -1020,7 +1020,7 @@ def publish_protection_reconciliation_batch_v4(
 
 
 def publish_terminal_typed_batch_v4(
-    client, batch, *, captures, broker_snapshots=None,
+    client, batch, *, captures, broker_snapshots=None, first_price_source=None,
 ) -> V4CommittedPrefix:
     """Commit one lifecycle-last suffix, then anchor every account recovery.
 
@@ -1072,6 +1072,15 @@ def publish_terminal_typed_batch_v4(
                    for row in captures)):
         raise ValueError("V4 terminal account captures are incomplete")
     context = load_typed_run_context(client, batch.run_id)
+    if first_price_source is not None:
+        from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+        if (type(first_price_source) is not CertifiedPriceReadbackAuthority
+                or first_price_source.run_id != batch.run_id
+                or first_price_source.plan.source.market.sessions !=
+                   (str(context["session_date"]),)):
+            raise ValueError("Strategy20 terminal lacks its native session source")
+    # Empty certified sessions have no native entry plan. The cold prefix
+    # below still rejects any Strategy20 entry when native authority is absent.
     if (context["mode"] != "backtest"
             or set(context["account_ids"]) != {row.account_id for row in captures}):
         raise ValueError("V4 terminal account membership differs from run context")
@@ -1082,7 +1091,9 @@ def publish_terminal_typed_batch_v4(
         raise ValueError("V4 terminal broker evidence differs from run accounts")
     _publish_typed_batch_v4(client, batch,
                             broker_snapshot_rows=broker_snapshots)
-    prefix = load_verified_v4_prefix(client, batch.run_id)
+    prefix = (load_verified_v4_prefix(client, batch.run_id)
+              if first_price_source is None else load_verified_v4_prefix(
+                  client, batch.run_id, first_price_source=first_price_source))
     if (prefix is None or prefix.status != batch.status
             or prefix.last_batch_id != batch.batch_id
             or prefix.last_sequence != batch.last_sequence):
@@ -1569,7 +1580,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
     strategy_one_commands = {
         str(UUID(str(row["record_id"]))) for row in command_rows
         if str(row["strategy_id"]) == "early-squeeze-strategy"
-        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
     }
     lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)
                          for row in batch.v4_command_lineages)
