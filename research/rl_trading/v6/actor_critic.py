@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
+import math
 import torch
 from torch import nn
 from torch.distributions import Categorical, Normal
@@ -60,6 +61,48 @@ class HybridDistribution:
         parameter = (latent.sigmoid() if kind == 1 else
                      F.softplus(latent) if kind == 2 else latent)
         return token, latent, parameter, self.log_prob(token, latent)
+
+    def tensor_log_prob(self,token,latent):
+        """Scalar token/latent stay on device; same joint density as log_prob."""
+        kind=torch.where((token>0)&(token<=self.listings),1,
+            torch.where(token>=1+self.listings+self.holdings,2,0))
+        location=self.locations.gather(0,token.reshape(1)).squeeze(0)
+        scale=self.scales.gather(0,token.reshape(1)).squeeze(0)
+        normal=-.5*((latent-location)/scale).square()-scale.log()-.5*math.log(2*math.pi)
+        jac=torch.where(kind==1,F.logsigmoid(latent)+F.logsigmoid(-latent),F.logsigmoid(latent))
+        return self.logits.log_softmax(0).gather(0,token.reshape(1)).squeeze(0)+torch.where(kind>0,normal-jac,0.)
+
+    def sample_tensor(self):
+        """Avoid the reference sample's int(CUDA token) synchronization."""
+        token=torch.multinomial(self.logits.softmax(0),1).squeeze(0)
+        kind=torch.where((token>0)&(token<=self.listings),1,
+            torch.where(token>=1+self.listings+self.holdings,2,0))
+        location=self.locations.gather(0,token.reshape(1)).squeeze(0)
+        scale=self.scales.gather(0,token.reshape(1)).squeeze(0)
+        latent=torch.where(kind>0,location+scale*torch.randn_like(location),0.)
+        parameter=torch.where(kind==1,latent.sigmoid(),torch.where(kind==2,F.softplus(latent),0.))
+        return token,latent,parameter,self.tensor_log_prob(token,latent)
+
+
+def tensor_batch_statistics(decoded,tokens,latents):
+    """Independent [B,A] density/entropy lanes; no time-axis attention.
+
+    Packets have equal action axes. All sampled tokens and Gaussian latents
+    remain on device; reductions operate on each packet's action dimension.
+    """
+    distributions,values=zip(*decoded)
+    first=distributions[0]
+    if any((d.listings,d.holdings)!=(first.listings,first.holdings) for d in distributions):
+        raise ValueError('Unequal batched hybrid action axes')
+    logits=torch.stack([d.logits for d in distributions])
+    location=torch.stack([d.locations for d in distributions]).gather(1,tokens[:,None]).squeeze(1)
+    scale=torch.stack([d.scales for d in distributions]).gather(1,tokens[:,None]).squeeze(1)
+    kind=torch.where((tokens>0)&(tokens<=first.listings),1,
+        torch.where(tokens>=1+first.listings+first.holdings,2,0))
+    normal=-.5*((latents-location)/scale).square()-scale.log()-.5*math.log(2*math.pi)
+    jac=torch.where(kind==1,F.logsigmoid(latents)+F.logsigmoid(-latents),F.logsigmoid(latents))
+    probability=logits.log_softmax(1).gather(1,tokens[:,None]).squeeze(1)+torch.where(kind>0,normal-jac,0.)
+    return probability,torch.stack(values),Categorical(logits=logits).entropy()
 
 
 class BracketActorCritic(BracketPolicy):
@@ -134,7 +177,7 @@ class BracketActorCritic(BracketPolicy):
 
 
 def elapsed_gae(rewards, values, terminated, elapsed_seconds, *, bootstrap,
-                gamma: float = .999, trace_decay: float = .95):
+                gamma: float = .999, trace_decay: float = .95,parallel_scan=False):
     """Detached [T] advantages; same-clock orders incur no time discount.
 
     Terminal clears continuation. Truncation must supply a causal bootstrap
@@ -147,6 +190,23 @@ def elapsed_gae(rewards, values, terminated, elapsed_seconds, *, bootstrap,
             for x in (rewards, values, elapsed_seconds, bootstrap))):
         raise ValueError('Invalid chronological rollout')
     with torch.no_grad():
+        if parallel_scan:
+            # Reverse affine recurrence y[t]=delta[t]+coefficient[t]*y[t+1].
+            # [T] lanes compose at doubling offsets: O(log T) launches and
+            # O(T) memory, preserving zero-time and terminal transitions.
+            continuation=(~terminated).to(rewards.dtype)
+            discount=gamma**elapsed_seconds
+            following=torch.cat((values[1:],bootstrap.reshape(1)))
+            delta=rewards+continuation*discount*following-values
+            result=delta.flip(0)
+            coefficient=(continuation*discount*trace_decay**elapsed_seconds).flip(0)
+            offset=1
+            while offset<rewards.numel():
+                result=torch.cat((result[:offset],result[offset:]+coefficient[offset:]*result[:-offset]))
+                coefficient=torch.cat((coefficient[:offset],coefficient[offset:]*coefficient[:-offset]))
+                offset*=2
+            advantages=result.flip(0)
+            return advantages,advantages+values.detach()
         advantages = torch.zeros_like(rewards)
         carry = rewards.new_zeros(())
         following = bootstrap

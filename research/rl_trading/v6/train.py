@@ -8,6 +8,7 @@ import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':4096:8')
 import argparse
+from contextlib import closing
 from dataclasses import asdict
 from datetime import date
 import json
@@ -98,6 +99,12 @@ def main(argv=None):
         help='Explicit teacher-only continuation from a verified parent run last.pt')
     parser.add_argument('--clocks-per-chunk',type=int,default=32)
     parser.add_argument('--max-orders-per-second',type=int,default=64)
+    parser.add_argument('--broker-engine',choices=('reference','tensor-100ms'),default='reference',
+        help='Versioned approximate GPU broker uses one proposal per second')
+    parser.add_argument('--broker-participation',type=float,default=.1)
+    parser.add_argument('--compile-broker',action='store_true',
+        help='Compile fixed-shape tensor fill kernels; startup compilation is separate')
+    parser.add_argument('--decoder-batch-size',type=int,default=1)
     parser.add_argument('--replay-every',type=int,default=1)
     parser.add_argument('--log-every-seconds',type=float,default=60.)
     parser.add_argument('--luld-root',type=Path,required=True,
@@ -126,6 +133,14 @@ def main(argv=None):
         raise ValueError('Teacher initialization must run at least 10 epochs')
     if args.teacher_only and args.teacher_epochs > 20:
         raise ValueError('Teacher-only training is capped at 20 epochs')
+    if not 0<args.broker_participation<=1 or args.decoder_batch_size<1:
+        raise ValueError('Invalid GPU broker or decoder bounds')
+    if args.compile_broker:
+        if args.broker_engine!='tensor-100ms':
+            raise ValueError('Compiled broker requires the tensor-100ms environment')
+        compiler=runtime/'rl-v6-compiler-cache'/_commit()
+        os.environ['TORCHINDUCTOR_CACHE_DIR']=str(compiler/'inductor')
+        os.environ['TRITON_CACHE_DIR']=str(compiler/'triton')
     if args.teacher_lr_schedule=='cosine':
         cosine_warmup(0,args.teacher_epochs,args.learning_rate,args.warmup_epochs,args.minimum_lr_ratio)
     if args.resume_from and (not args.teacher_only or not args.resume_from.resolve().is_relative_to(runtime)):
@@ -161,6 +176,8 @@ def main(argv=None):
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
         'teacher_role':'candle_only_actor_initialization',
+        'environment_version':'rl-v6-tensor-participation-100ms-v1' if args.broker_engine=='tensor-100ms' else 'reference-quote-oms',
+        'decision_cadence':'one_proposal_per_second' if args.broker_engine=='tensor-100ms' else 'bounded_same_clock_proposals',
         'validation_contract':'development_teacher_labels_trading_validation_pending' if args.teacher_only else 'trading_replay',
         'reward':'quote_delta_equity_minus_separate_modeled_halt_and_terminal_exposure_shaping_v2',
         'risk_penalty':asdict(risk),'luld_certificates':luld_certificates,
@@ -175,7 +192,8 @@ def main(argv=None):
         if parent_payload['manifest_hash']!=parent_manifest['hash']:
             raise ValueError('Parent checkpoint manifest mismatch')
         ignored={'run_root','teacher_lr_schedule','warmup_epochs','minimum_lr_ratio','resume_from'}
-        current=manifest['config']; previous=parent_manifest['config']
+        current=manifest['config']; previous={'broker_engine':'reference','compile_broker':False,
+            'broker_participation':.1,'decoder_batch_size':1,**parent_manifest['config']}
         if ({k:v for k,v in current.items() if k not in ignored} !=
                 {k:v for k,v in previous.items() if k not in ignored} or
                 manifest['dataset_sha256']!=parent_manifest['dataset_sha256'] or
@@ -239,6 +257,27 @@ def main(argv=None):
             print(json.dumps({'phase':prefix,'metrics':metrics},default=str),flush=True)
             with (run/'metrics.jsonl').open('a',encoding='utf-8') as out:
                 out.write(json.dumps({'step':progress['wandb_step'],'phase':prefix,'metrics':metrics},default=str)+'\n')
+        def tensor_collect(session,provider,tickers,*,max_clocks=None,deterministic=False):
+            from research.rl_trading.v6.tensor_broker import TensorBroker,BrokerConfig
+            from research.rl_trading.v6.tensor_rollout import collect_tensor_session
+            from research.rl_trading.v6.broker_shards import BrokerShards,VERSION
+            start=next(session.candle_events()).close_us
+            finish=bounds(session.day)[1] if max_clocks is None else min(bounds(session.day)[1],start+max_clocks*1_000_000)
+            namespace=digest((VERSION,provider.source['build_id'],tickers,
+                [(t,provider.attempts[t]) for t in tickers]))[:20]
+            shards=BrokerShards(provider,tickers,runtime/'rl-v6-broker-shards'/str(session.day)/namespace,
+                                runtime_root=runtime)
+            broker=TensorBroker(len(tickers),device=device,config=BrokerConfig(
+                participation=args.broker_participation,risk=risk))
+            if args.compile_broker:
+                broker.compile_step()
+            pulse_tensor=PeriodicProgress(lambda values:log('progress/tensor_rollout',
+                {**values,'day':str(session.day)}),seconds=args.log_every_seconds)
+            with closing(shards.buckets(start,finish,device=device,luld=provider.luld)) as tape:
+                collection=collect_tensor_session(policy,session,broker,tape,
+                    device=device,max_clocks=max_clocks,deterministic=deterministic,
+                    progress_callback=lambda clock,count:pulse_tensor({'close_us':clock,'policy_steps':count}))
+            return collection
         def pulse(prefix,day,epoch):
             return PeriodicProgress(lambda values:log(prefix,{**values,'day':str(day),'epoch':epoch+1}),
                                     seconds=args.log_every_seconds)
@@ -250,8 +289,12 @@ def main(argv=None):
                 session=open_day(dataset['days'][0])
                 provider,tickers=evidence(session)
                 try:
-                    env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
-                    frames,steps,smoke=collect_session(policy,session,env,device=device,max_clocks=5,max_orders_per_second=4)
+                    if args.broker_engine=='tensor-100ms':
+                        env=tensor_collect(session,provider,tickers,max_clocks=5)
+                        frames,steps,smoke=env.frames,env.steps,env.summary
+                    else:
+                        env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
+                        frames,steps,smoke=collect_session(policy,session,env,device=device,max_clocks=5,max_orders_per_second=4)
                     audit.update(real_reconstruction=audit_reconstruction(policy,session,frames,device=device),
                                  smoke_metrics=smoke,execution_evidence=provider.certificate())
                 finally: provider.reader.close()
@@ -308,12 +351,19 @@ def main(argv=None):
                         else:
                             provider,tickers=evidence(session)
                             try:
-                                env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
-                                frames,steps,result=collect_session(policy,session,env,device=device,
-                                    max_orders_per_second=args.max_orders_per_second,
-                                    progress_callback=pulse('progress/rollout',session.day,epoch))
+                                if args.broker_engine=='tensor-100ms':
+                                    env=tensor_collect(session,provider,tickers)
+                                    frames,steps,result=env.frames,env.steps,env.summary
+                                else:
+                                    env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
+                                    frames,steps,result=collect_session(policy,session,env,device=device,
+                                        max_orders_per_second=args.max_orders_per_second,
+                                        progress_callback=pulse('progress/rollout',session.day,epoch))
                                 result['ppo']=update_session(policy,optimizer,session,frames,steps,device=device,
                                     epochs=args.ppo_updates,clocks_per_chunk=args.clocks_per_chunk,
+                                    decoder_batch_size=args.decoder_batch_size,
+                                    bootstrap=env.bootstrap if args.broker_engine=='tensor-100ms' else None,
+                                    batch_candle_projection=args.broker_engine=='tensor-100ms',
                                     progress_callback=pulse('progress/ppo',session.day,epoch))
                                 result['execution_evidence']=provider.certificate()
                                 del frames,steps,env
@@ -346,20 +396,30 @@ def main(argv=None):
                             session=open_day(entry)
                             provider,tickers=evidence(session)
                             try:
-                                env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
-                                frames,steps,summary=collect_session(policy,session,env,device=device,
-                                    max_orders_per_second=args.max_orders_per_second,deterministic=True,
-                                    progress_callback=pulse('progress/replay',session.day,epoch))
+                                if args.broker_engine=='tensor-100ms':
+                                    env=tensor_collect(session,provider,tickers,deterministic=True)
+                                    frames,steps,summary=env.frames,env.steps,env.summary
+                                else:
+                                    env=BracketEnvironment(tickers,provider,luld=provider.luld,risk_penalty=risk)
+                                    frames,steps,summary=collect_session(policy,session,env,device=device,
+                                        max_orders_per_second=args.max_orders_per_second,deterministic=True,
+                                        progress_callback=pulse('progress/replay',session.day,epoch))
                                 quote_cert=run/'quote-evidence'/checkpoint.stem/f'{session.day}.json'
                                 _write_json(quote_cert,provider.certificate())
-                                replay_root,_=save_replay(env.journal,session,checkpoint,runtime_root=runtime,
-                                    source_commit=manifest['source_commit'],quote_evidence_certificate=quote_cert)
+                                if args.broker_engine=='tensor-100ms':
+                                    from research.rl_trading.v6.tensor_artifacts import save_tensor_replay
+                                    replay_root,_=save_tensor_replay(env,session,checkpoint,runtime_root=runtime,
+                                        source_commit=manifest['source_commit'],quote_evidence_certificate=quote_cert)
+                                else:
+                                    replay_root,_=save_replay(env.journal,session,checkpoint,runtime_root=runtime,
+                                        source_commit=manifest['source_commit'],quote_evidence_certificate=quote_cert)
                                 summary.update(day=str(session.day),replay_root=str(replay_root))
                                 log('replay/development' if entry['role']=='development' else 'replay/train_in_sample',summary)
-                                artifact=wandb.Artifact(f'{checkpoint.stem}-{session.day}',type='model-replay-ledger')
-                                for name in ('orders.parquet','positions.parquet','equity.parquet','metrics.json','complete.json'):
-                                    artifact.add_file(str(replay_root/name))
-                                logger.log_artifact(artifact)
+                                if logger:
+                                    artifact=wandb.Artifact(f'{checkpoint.stem}-{session.day}',type='model-replay-ledger')
+                                    for name in ('orders.parquet','positions.parquet','equity.parquet','metrics.json','complete.json'):
+                                        artifact.add_file(str(replay_root/name))
+                                    logger.log_artifact(artifact)
                                 if entry['role']=='development': summaries.append(summary)
                                 del frames,steps,env
                             finally: provider.reader.close()

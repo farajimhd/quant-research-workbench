@@ -47,6 +47,12 @@ def _initialize(policy, session, device):
 
 
 def _remember(policy,state,memory,outcomes):
+    from research.rl_trading.v6.tensor_broker import TensorOutcomes
+    if isinstance(outcomes,tuple) and len(outcomes)==1 and isinstance(outcomes[0],TensorOutcomes):
+        outcomes=outcomes[0]
+    if isinstance(outcomes,TensorOutcomes):
+        return policy.remember_sequence(memory,state.embeddings()[outcomes.listing],
+            outcomes.action,outcomes.requested_fraction,outcomes.filled_fraction,outcomes.net_over_equity)
     for outcome in outcomes:
         embedding = state.embeddings()[outcome.listing]
         memory = policy.remember_execution(memory,embedding,action=outcome.action,
@@ -56,7 +62,13 @@ def _remember(policy,state,memory,outcomes):
     return memory
 
 
-def _advance(policy,state,session,frame,device):
+def _advance(policy,state,session,frame,device,*,prepared=None):
+    if prepared is not None:
+        scalar_np,indices,scalar,levels,projected=prepared
+        state.advance(policy.encoder,indices,scalar,levels,projected=projected,
+                      identity_keys=frame.indices.tolist())
+        policy.observe_market(state,frame.clock,frame.indices,scalar_np)
+        return scalar_np
     scalar_np = np.asarray(session.bank.scalar[frame.rows])
     scalar = torch.from_numpy(scalar_np.copy()).to(device)
     levels = torch.from_numpy(np.asarray(session.bank.levels[frame.rows]).copy()).to(device)
@@ -66,8 +78,42 @@ def _advance(policy,state,session,frame,device):
     return scalar_np
 
 
+def prepare_candle_chunk(policy,session,chunk,device):
+    """One bounded host gather/transfer and local candle projection GEMM.
+
+    Projection is per-row, with no temporal attention. Future chunk rows may
+    be resident, but history/ranking consume only the current frame's slice.
+    The caller's bounded BPTT chunk owns this graph; no stale encoder cache.
+    """
+    rows=np.concatenate([f.rows for f in chunk])
+    scalar_np=np.asarray(session.bank.scalar[rows]).copy()
+    scalar=torch.from_numpy(scalar_np).to(device)
+    levels=torch.from_numpy(np.asarray(session.bank.levels[rows]).copy()).to(device)
+    indices=torch.as_tensor(np.concatenate([f.indices for f in chunk]),device=device,dtype=torch.long)
+    projected=policy.encoder.project(policy.encoder._input(scalar,levels))
+    result=[];cursor=0
+    for frame in chunk:
+        stop=cursor+len(frame.rows)
+        result.append((scalar_np[cursor:stop],indices[cursor:stop],scalar[cursor:stop],
+                       levels[cursor:stop],projected[cursor:stop]))
+        cursor=stop
+    return result
+
+
 def _distribution(policy,state,memory,step,indices,scalar,device, *, prepare=False):
     obs = step.observation
+    from research.rl_trading.v6.tensor_broker import TensorObservation
+    if isinstance(obs,TensorObservation):
+        # Ranking currently retains a CPU identity control plane. This bounded
+        # identity transfer is explicit; broker arithmetic never crosses back.
+        policy.set_pending(obs.pending_index.detach().cpu().tolist())
+        masks=dict(enter_allowed=obs.enter_allowed,exit_allowed=obs.exit_allowed,
+                   stop_allowed=obs.stop_allowed,target_allowed=obs.target_allowed)
+        if prepare:
+            market,masks=policy.prepare_market(state.embeddings(),obs.held_index,masks)
+            return market,obs.account,obs.held_index,obs.held_features,memory.memory,masks
+        return policy.distribution_and_value(state.embeddings(),obs.account,
+            obs.held_index,obs.held_features,memory,**masks)
     pending = np.asarray(step.pending_indices,dtype=np.int64)
     enter = causal_enter_mask(len(state.encoded),indices,scalar,
         cash=float(obs.account[0]),reserved_cash=float(obs.account[5]),
@@ -199,7 +245,7 @@ def collect_session(policy, session, environment, *, device,
 def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
                    clocks_per_chunk=32,gamma=.999,trace_decay=.95,clip=.2,
                    entropy_coefficient=.01,target_kl=.02,progress_callback=None,
-                   decoder_batch_size=1):
+                   decoder_batch_size=1,bootstrap=None,batch_candle_projection=False):
     """Rebuild from session warm-up per PPO epoch; backprop bounded chunks.
 
     Gradients accumulate over chunks; weights change only after reconstruction
@@ -207,13 +253,18 @@ def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
     """
     if epochs<1 or clocks_per_chunk<1 or decoder_batch_size<1 or not steps:
         raise ValueError('Invalid chronological PPO bounds')
-    rewards = torch.tensor([s.reward for s in steps],device=device)
-    old_values = torch.tensor([s.old_value for s in steps],device=device)
-    old = torch.tensor([s.old_log_prob for s in steps],device=device)
+    def evidence(name):
+        values=[getattr(s,name) for s in steps]
+        return torch.stack([v.detach().to(device) if isinstance(v,torch.Tensor)
+            else torch.tensor(v,device=device) for v in values])
+    rewards = evidence('reward')
+    old_values = evidence('old_value')
+    old = evidence('old_log_prob')
     terminals = torch.tensor([s.terminal for s in steps],device=device,dtype=torch.bool)
     elapsed = torch.tensor([s.elapsed for s in steps],device=device)
     advantages,returns = elapsed_gae(rewards,old_values,terminals,elapsed,
-        bootstrap=rewards.new_zeros(()),gamma=gamma,trace_decay=trace_decay)
+        bootstrap=rewards.new_zeros(()) if bootstrap is None else bootstrap.detach().to(device),gamma=gamma,trace_decay=trace_decay,
+        parallel_scan=batch_candle_projection)
     if advantages.numel()>1:
         advantages = (advantages-advantages.mean())/(advantages.std(unbiased=False)+1e-8)
     metrics = {}
@@ -224,21 +275,30 @@ def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
         optimizer.zero_grad(set_to_none=True)
         iterator = iter(frames)
         while chunk := tuple(islice(iterator,clocks_per_chunk)):
+            prepared=prepare_candle_chunk(policy,session,chunk,device) if batch_candle_projection else [None]*len(chunk)
             likelihoods,values,entropies = [],[],[]
             pending = []
             def flush():
                 if not pending:
                     return
                 decoded = policy.decode_batch([packet for packet, _ in pending])
+                if batch_candle_projection:
+                    from research.rl_trading.v6.actor_critic import tensor_batch_statistics
+                    tokens=torch.stack([step.token for _,step in pending])
+                    latents=torch.stack([step.latent for _,step in pending])
+                    log_probs,batch_values,batch_entropies=tensor_batch_statistics(decoded,tokens,latents)
+                    likelihoods.extend(log_probs.unbind());values.extend(batch_values.unbind())
+                    entropies.extend(batch_entropies.unbind());pending.clear()
+                    return
                 for (dist, value), (_, step) in zip(decoded, pending):
-                    latent = dist.logits.new_tensor(step.latent)
-                    likelihoods.append(dist.log_prob(step.token,latent))
+                    latent = step.latent.to(device) if isinstance(step.latent,torch.Tensor) else dist.logits.new_tensor(step.latent)
+                    likelihoods.append(dist.tensor_log_prob(step.token,latent) if isinstance(step.token,torch.Tensor) else dist.log_prob(step.token,latent))
                     values.append(value)
                     entropies.append(dist.categorical.entropy())
                 pending.clear()
-            for frame in chunk:
+            for frame,projection in zip(chunk,prepared):
                 memory = _remember(policy,state,memory,frame.outcomes)
-                scalar = _advance(policy,state,session,frame,device)
+                scalar = _advance(policy,state,session,frame,device,prepared=projection)
                 for step in frame.steps:
                     if decoder_batch_size > 1:
                         packet = _distribution(policy,state,memory,step,frame.indices,scalar,device,prepare=True)
@@ -249,8 +309,8 @@ def update_session(policy,optimizer,session,frames,steps,*,device,epochs=4,
                             flush()
                     else:
                         dist,value = _distribution(policy,state,memory,step,frame.indices,scalar,device)
-                        latent = dist.logits.new_tensor(step.latent)
-                        likelihoods.append(dist.log_prob(step.token,latent))
+                        latent = step.latent.to(device) if isinstance(step.latent,torch.Tensor) else dist.logits.new_tensor(step.latent)
+                        likelihoods.append(dist.tensor_log_prob(step.token,latent) if isinstance(step.token,torch.Tensor) else dist.log_prob(step.token,latent))
                         values.append(value)
                         entropies.append(dist.categorical.entropy())
                     if step.immediate_outcome is not None:
@@ -305,12 +365,14 @@ def audit_reconstruction(policy,session,frames,*,device):
         scalar = _advance(policy,state,session,frame,device)
         for step in frame.steps:
             dist,value = _distribution(policy,state,memory,step,frame.indices,scalar,device)
-            likelihood = dist.log_prob(step.token,dist.logits.new_tensor(step.latent))
+            latent=step.latent.to(device) if isinstance(step.latent,torch.Tensor) else dist.logits.new_tensor(step.latent)
+            likelihood = dist.tensor_log_prob(step.token,latent) if isinstance(step.token,torch.Tensor) else dist.log_prob(step.token,latent)
             if not torch.isfinite(likelihood) or not torch.isfinite(value):
                 raise ValueError('Nonfinite real model reconstruction')
-            error = max(abs(float(likelihood)-step.old_log_prob),abs(float(value)-step.old_value))
+            old_log_prob=float(step.old_log_prob);old_value=float(step.old_value)
+            error = max(abs(float(likelihood)-old_log_prob),abs(float(value)-old_value))
             largest = max(largest,error)
-            if error > 1e-5*max(1.,abs(step.old_log_prob),abs(step.old_value))+1e-5:
+            if error > 1e-5*max(1.,abs(old_log_prob),abs(old_value))+1e-5:
                 raise ValueError('Real collection/reconstruction differs')
             count += 1
             if step.immediate_outcome is not None:

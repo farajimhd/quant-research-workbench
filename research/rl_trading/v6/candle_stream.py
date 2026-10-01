@@ -68,7 +68,7 @@ class SparseCandleState:
 
     def advance(self, encoder: ActualCandleEncoder,
                 listing_index: torch.Tensor, scalar: torch.Tensor,
-                levels: torch.Tensor) -> None:
+                levels: torch.Tensor, *, projected=None, identity_keys=None) -> None:
         """Apply one close-clock event with K distinct observed listings.
 
         A single indexed tensor update retains the bounded chunk's graph.
@@ -82,13 +82,18 @@ class SparseCandleState:
         # validate there rather than synchronizing GPU unique/min/max results
         # and copying the identical axis again for graph bookkeeping.
         keys = listing_index.detach().cpu().tolist()
+        if identity_keys is not None and list(identity_keys)!=keys:
+            raise ValueError('Sparse identity control-plane mismatch')
         if len(set(keys)) != len(keys) or (keys and
                 (min(keys) < 0 or max(keys) >= self.history.shape[0])):
             raise ValueError('Invalid sparse close event listing axis')
         if not keys:
             return
         previous = self._history_for_keys(listing_index, keys)
-        projected = encoder.project(encoder._input(scalar, levels))
+        if projected is None:
+            projected = encoder.project(encoder._input(scalar, levels))
+        elif projected.shape!=(listing_index.numel(),encoder.width):
+            raise ValueError('Prepared candle projection shape mismatch')
         updated = torch.cat((previous[:, 1:], projected[:, None]), dim=1)
         weighted = (updated * encoder.lag[:, 0, :].T[None]).sum(dim=1)
         encoded = encoder.norm(F.gelu(weighted))

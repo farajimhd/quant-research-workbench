@@ -226,6 +226,7 @@ class ArteExecutionSource:
                 'broker_attempts_sha256':sha256(json.dumps(self.attempts,sort_keys=True).encode()).hexdigest(),
                 'execution_read_sha256':self.read_hash.hexdigest(),
                 'query_count':self.query_count,'rows_read':self.rows_read,
-                'execution_read_contract':'joined-quote-extrema-and-batched-target-v2',
+                'execution_read_contract':getattr(self,'broker_shard_contract','joined-quote-extrema-and-batched-target-v2'),
+                'broker_shard_certificates':getattr(self,'broker_shard_certificates',{}),
                 'price_plan_tokens':{t:p.token for t,p in self.price_plans.items()},
-                'scope':'only_requested_order_and_held_buckets_not_full_day_grid'}
+                'scope':getattr(self,'broker_shard_scope','only_requested_order_and_held_buckets_not_full_day_grid')}

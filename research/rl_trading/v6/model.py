@@ -312,3 +312,29 @@ class BracketPolicy(nn.Module):
                               realized_net_over_equity))
         update = torch.cat((listing_embedding, token, values))
         return ExecutedActionState(self.action_gru(update, state.memory))
+
+    def remember_sequence(self,state,embeddings,actions,requested,filled,net):
+        """Fused ordered GRU sequence using the existing GRUCell parameters.
+
+        Inputs [K,D], [K], [K], [K], [K] are actual execution outcomes,
+        already sorted by bucket and identity. Output remains [D]. No event
+        pooling or changed architecture; the temporary GRU shares Parameters
+        and is deliberately not registered as a second checkpoint authority.
+        """
+        if embeddings.shape[0]==0:
+            return state
+        sequence=getattr(self,'_execution_sequence',None)
+        if sequence is None:
+            sequence=nn.GRU(self.action_gru.input_size,self.action_gru.hidden_size)
+            sequence.weight_ih_l0=self.action_gru.weight_ih
+            sequence.weight_hh_l0=self.action_gru.weight_hh
+            sequence.bias_ih_l0=self.action_gru.bias_ih
+            sequence.bias_hh_l0=self.action_gru.bias_hh
+            object.__setattr__(self,'_execution_sequence',sequence)
+        values=torch.stack((requested,filled,net),dim=1).to(embeddings.dtype)
+        inputs=torch.cat((embeddings,self.action_type(actions),values),dim=1)
+        # cuDNN TF32 RNN gradients differ materially from the reference FP32
+        # GRUCell on Blackwell. Keep precision equal before claiming parity.
+        with torch.backends.cudnn.flags(allow_tf32=False):
+            _,last=sequence(inputs[:,None,:],state.memory[None,None,:])
+        return ExecutedActionState(last[0,0])
