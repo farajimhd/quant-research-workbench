@@ -564,4 +564,3 @@ def test_native_premarket_quarter_failure_routes_only_new_number(number):
         if number == 25:
             assert exits[0][2] == intent.intent_id
     asyncio.run(run())
-
