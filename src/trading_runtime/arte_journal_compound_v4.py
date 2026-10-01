@@ -30,12 +30,13 @@ from .arte_oms_tactic_projection import (
 
 from .arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch, seal_followthrough_rows
 from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch, seal_profit_giveback_rows
+from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, V4ConfirmedAhFailureBatch
 from .arte_rising_momentum_entry_v4 import MOMENTUM, seal_rising_momentum_rows
 from .arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM, seal_initial_momentum_rows
 from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
 
 _CHILD_KEYS = (
-    "followthrough_failures", "profit_givebacks", "command_lineages",
+    "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "command_lineages",
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
@@ -43,7 +44,7 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
-    "followthrough_failures", "profit_givebacks", "command_lineages",
+    "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "command_lineages",
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
@@ -76,6 +77,8 @@ class V4CompoundBatch:
 
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if type(unit) is V4ConfirmedAhFailureBatch:
+        return (("confirmed_ah_failures", unit.confirmation),)
     if type(unit) is V4ProfitGivebackBatch:
         return (("profit_givebacks", unit.profit),)
     if type(unit) is V4FollowThroughFailureBatch:
@@ -251,6 +254,8 @@ def prepare_compound_v4_families(
 
     if type(compound) is not V4CompoundBatch:
         raise TypeError("V4 mixed preparation requires a compound batch")
+    if compound.children['confirmed_ah_failures']:
+        raise ValueError('Confirmed AH compound publication requires complete native commit registration')
     if getattr(client, "live_v4_lease", None) is not None and any(
             getattr(compound.base, name) for name in (
                 "backtest_cursors", "backtest_market_authorities",
@@ -261,6 +266,7 @@ def prepare_compound_v4_families(
     table_for_key = {
         "followthrough_failures": FAILURE.name,
         "profit_givebacks": PROFIT_GIVEBACK.name,
+        "confirmed_ah_failures": CONFIRMED_AH_FAILURE.name,
         "command_lineages": V4_ORDER_COMMAND_LINEAGE.name,
         "entry_evidence": ENTRY_EVIDENCE.name,
         "momentum_evidence": MOMENTUM.name,

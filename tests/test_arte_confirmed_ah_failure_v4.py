@@ -216,3 +216,21 @@ def test_prepared_graph_sealing_uses_registered_native_hashing(monkeypatch):
     _verify_stored_row(CONFIRMED_AH_FAILURE.name, sealed[0])
     with pytest.raises(ValueError):
         seal_confirmed_ah_rows(None, [dict(row, initial_stop=1.82)], [parent], [event], verified_prefix=prefix)
+
+
+def test_compound_retains_confirmation_and_blocks_incomplete_publication(monkeypatch):
+    from types import SimpleNamespace
+    from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+    from src.trading_runtime.arte_journal_compound_v4 import coalesce_v4_units, prepare_compound_v4_families
+    row, base = prepared_transport(monkeypatch)
+    unit = V4ConfirmedAhFailureBatch(base, row)
+    next_id = str(uuid4())
+    event = dict(base.events[0], record_id=str(uuid4()), sequence=66, batch_id=next_id)
+    continuation = replace(base, batch_id=next_id, prior_batch_id=base.batch_id,
+                           first_sequence=66, last_sequence=66, events=(event,), intents=())
+    compound = coalesce_v4_units((unit, continuation))
+    assert len(compound.children['confirmed_ah_failures']) == 1
+    assert compound.children['confirmed_ah_failures'][0]['ten_second_macd_line'] == row['ten_second_macd_line']
+    assert unit.confirmation['batch_id'] == base.batch_id
+    with pytest.raises(ValueError, match='complete native commit registration'):
+        prepare_compound_v4_families(SimpleNamespace(), compound)
