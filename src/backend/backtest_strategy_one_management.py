@@ -120,7 +120,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position high lacks its active position")
         sources = dict(state.submitted)
         required = {key for key in keys["positions"]
-                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33)}
+                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34)}
         if keys["first_held_boundaries"] != required:
             raise ValueError("Strategy 9 position lacks its first held boundary")
         for key, boundary in state.first_held_boundaries:
@@ -193,19 +193,19 @@ class StrategyOneManagementRunner:
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         from src.trading_runtime.strategy_rising_momentum_witness import numbered_momentum_entry
         for _, proposal in state.submitted:
-            if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33):
+            if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
                 from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority, certified_price_entry_intent
                 if (type(first_price_source) is not CertifiedPriceReadbackAuthority
                         or first_price_source.run_id != getattr(self.runtime, 'run_id', None)):
                     raise ValueError("Strategy20 manager recovery lacks its native source context")
                 certified_price_entry_intent(first_price_source.plan, proposal,
                     session_date=date.fromisoformat(first_price_source.plan.source.market.sessions[0]))
-            if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33) and (
+            if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34) and (
                     not numbered_momentum_entry(proposal.momentum, proposal.strategy_number)
                     or proposal.momentum.ticker != proposal.ticker
                     or proposal.momentum.boundary_ms != proposal.boundary_ms):
                 raise ValueError("Strategy 13 manager recovery lacks its committed momentum source")
-            if proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33):
+            if proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
                 from src.trading_runtime.strategy_initial_strong_momentum import (
                     validate_initial_momentum_selection, initial_strong_momentum_entry,
                 )
@@ -237,7 +237,7 @@ class StrategyOneManagementRunner:
 
     def profit_arming_requests(self, *, boundary_ms: int) -> tuple:
         """Freeze all newly armed positions against one completed capture."""
-        if self.contract.strategy_number not in (31, 32, 33):
+        if self.contract.strategy_number not in (31, 32, 33, 34):
             return ()
         from decimal import Decimal
         from src.trading_runtime.strategy_profit_giveback_arm import profit_arm_candidate
@@ -312,7 +312,7 @@ class StrategyOneManagementRunner:
         if not isinstance(financial, StrategyOneFinancialView):
             raise TypeError("Strategy 1 management needs typed financial state")
         key = (financial.account_id, financial.assignment_id, financial.ticker)
-        if self.contract.strategy_number in (31, 32, 33):
+        if self.contract.strategy_number in (31, 32, 33, 34):
             self._profit_arm_financials[key] = financial
         if financial.position_quantity <= 0:
             if not financial.pending_entry and not financial.pending_exit:
@@ -384,7 +384,7 @@ class StrategyOneManagementRunner:
             from src.trading_runtime.strategy_persistent_risk_failure import persistent_risk_failure
             from src.trading_runtime.strategy_zero_regime_risk_failure import zero_regime_risk_failure
             failure_rule = (zero_regime_risk_failure
-                            if self.contract.strategy_number in (30, 31, 32, 33)
+                            if self.contract.strategy_number in (30, 31, 32, 33, 34)
                             else persistent_risk_failure
                             if self.contract.strategy_number == 29
                             else premarket_quarter_risk_failure
@@ -404,18 +404,18 @@ class StrategyOneManagementRunner:
                 # Reuse the runtime's cached, exact native source validation;
                 # the older constructor deliberately excludes price entries.
                 entry = (self.runtime._strategy_one_entry_intent(source)
-                         if self.contract.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33)
+                         if self.contract.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34)
                          else strategy_one_entry_intent(
                              source, session_date=self.runtime.config.anchor_date))
                 await self.runtime.submit_followthrough_failure(
                     financial, witness, entry.intent_id)
-                if self.contract.strategy_number in (31, 32, 33):
+                if self.contract.strategy_number in (31, 32, 33, 34):
                     # The pre-submission financial view cannot attest that
                     # the position is still available for arming after OMS.
                     # Refresh it on a later management boundary if held.
                     self._profit_arm_financials.pop(key, None)
                 return
-            if self.contract.strategy_number in (31, 32, 33):
+            if self.contract.strategy_number in (31, 32, 33, 34):
                 from src.trading_runtime.strategy_profit_giveback import ProfitGivebackInput, profit_giveback
                 reference = self._profit_arm_references.get(key)
                 # Confirmation belongs to finish(), so even an arm selected
@@ -429,6 +429,23 @@ class StrategyOneManagementRunner:
                         await self.runtime.submit_profit_giveback(
                             financial, profit_witness, entry.intent_id, reference)
                         return
+            if self.contract.strategy_number == 34:
+                from src.trading_runtime.strategy_confirmed_ah_risk_failure import (
+                    ConfirmedAhRiskFailureInput, confirmed_ah_risk_failure,
+                )
+                # Reuse the completed producer frame; no additional reads or
+                # candle construction occur in the management loop. Inherited
+                # failure and armed-profit exits above retain first priority.
+                ten = resolutions.get(10_000) or {}
+                confirmed_ah = confirmed_ah_risk_failure(ConfirmedAhRiskFailureInput(
+                    completed, ten.get("boundary_ms"), ten.get("price_valid") == 1,
+                    ten.get("macd_line"), ten.get("macd_signal")))
+                if confirmed_ah is not None:
+                    entry = self.runtime._strategy_one_entry_intent(source)
+                    await self.runtime.submit_confirmed_ah_failure(
+                        financial, confirmed_ah, entry.intent_id)
+                    self._profit_arm_financials.pop(key, None)
+                    return
         pending = self._pending_breaks.setdefault(key, [])
         # A failed OMS acknowledgement retries the same completed boundary.
         # Preserve witnesses once, not once per retry.
