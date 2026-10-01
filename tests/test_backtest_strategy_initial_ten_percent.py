@@ -74,7 +74,7 @@ def test_staged_policy_cannot_bypass_installed_price_parent_authority():
         stage_initial_price_break_plan(relaxed, ())
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     with pytest.raises(ValueError, match='No installed'):
-        numbered_fixed_strategy(29)
+        numbered_fixed_strategy(30)
     policy = first_setup_ten_percent_policy_payload()
     assert policy['fraction'] == 0.10
     assert policy['changed_session_scope'] == 'premarket_only'

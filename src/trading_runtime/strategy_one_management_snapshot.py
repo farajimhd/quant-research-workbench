@@ -199,7 +199,7 @@ def project_manager_snapshot(*, run_id: str, session_date: date,
     """Validate capture sources before encoding their nonredundant references."""
     StrategyOneManagementRunner._validate_capture(state, max_pending_breaks=max_pending_breaks)
     for _, proposal in state.submitted:
-        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28):
+        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29):
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority, certified_price_entry_intent
             if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id != run_id:
                 raise ValueError("Strategy20 manager capture requires its native source context")
@@ -302,7 +302,7 @@ def _project_manager_snapshot_scalar(*, run_id: str, session_date: date,
                 position_high_hash=_digest([row["content_hash"] for row in highs]),
                 closed_position_count=len(closed),
                 closed_position_hash=_digest([row["content_hash"] for row in closed]))
-    if first_held or any(proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28) for _, proposal in state.submitted):
+    if first_held or any(proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29) for _, proposal in state.submitted):
         seal.update(first_held_count=len(first_held),
                     first_held_hash=_digest([row["content_hash"] for row in first_held]))
     return ManagerSnapshotRows(
@@ -542,11 +542,11 @@ def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneMan
     """
     from .arte_strategy_one_entry_journal import load_committed_strategy_one_entry_page
     wanted = {(key, proposal.boundary_ms): proposal for key, proposal in state.submitted
-              if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28)}
+              if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29)}
     if not wanted:
         return state
     def reference(value):
-        if value.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28):
+        if value.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29):
             return replace(value, momentum=None, initial_momentum=None,
                            first_price=None, price_source_token=None)
         return replace(value, momentum=None, initial_momentum=None)

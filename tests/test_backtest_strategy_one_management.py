@@ -522,8 +522,9 @@ def test_typed_manager_capture_restores_pending_entry_position_and_breaks():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('number', (24, 25, 26, 27, 28))
-def test_native_premarket_quarter_failure_routes_only_new_number(number):
+@pytest.mark.parametrize('number', (24, 25, 26, 27, 28, 29))
+@pytest.mark.parametrize('boundary,half_risk_offset', ((45_000, .01), (100_000, -.01), (100_000, .01)))
+def test_native_premarket_failure_preserves_parent_and_routes_late_rule(number, boundary, half_risk_offset):
     from types import SimpleNamespace, MethodType
     from uuid import UUID
     from test_strategy_twenty_entry_recovery import (
@@ -534,7 +535,7 @@ def test_native_premarket_quarter_failure_routes_only_new_number(number):
     from src.trading_runtime.runtime import TradingRuntime, RunMode
 
     async def run():
-        if number in (26, 27, 28):
+        if number in (26, 27, 28, 29):
             from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
             market, parent = relaxed_authority()
         else:
@@ -556,15 +557,16 @@ def test_native_premarket_quarter_failure_routes_only_new_number(number):
         await manager.on_entry_proposal(proposal)
         financial = replace(_financial(), assignment_id=proposal.assignment_id)
         await manager.on_management(financial, {}, 31100)
-        boundary = 45000
-        price = round((proposal.reference_ask + proposal.initial_stop) / 2 + .01, 4)
+        price = round((proposal.reference_ask + proposal.initial_stop) / 2 + half_risk_offset, 4)
         source.rows[boundary] = replace(_evidence(boundary), bid=price, ask=price+.01)
         rows = _add_rows(boundary)
         rows[100]['quote_timestamp_us'] = int(market_day_boundary(runtime.config.anchor_date, boundary).timestamp()*1_000_000)
         rows[5000] = {'boundary_ms': boundary, 'price_valid': 1,
             'close_int': round(price*10000), 'macd_line': -.2, 'macd_signal': -.1}
         await manager.on_management(financial, rows, boundary)
-        assert len(exits) == int(number in (25, 26, 27, 28))
-        if number in (25, 26, 27, 28):
+        expected = (number in (25, 26, 27, 28, 29) if boundary == 45_000
+                    else number == 29 and half_risk_offset < 0)
+        assert len(exits) == int(expected)
+        if expected:
             assert exits[0][2] == intent.intent_id
     asyncio.run(run())
