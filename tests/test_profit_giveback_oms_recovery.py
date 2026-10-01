@@ -46,7 +46,7 @@ def prepared(strategy_number=31):
     return group, source, history, reservation, decision, row
 
 
-@pytest.mark.parametrize('number', [31, 32, 33])
+@pytest.mark.parametrize('number', [31, 32, 33, 34])
 def test_full_profit_exit_reconstructs_exact_order_and_portfolio_assignment(number):
     group, source, history, reservation, decision, row = prepared(strategy_number=number)
     approved, _ = _approved_strategy_one_oms_intent(
@@ -58,7 +58,7 @@ def test_full_profit_exit_reconstructs_exact_order_and_portfolio_assignment(numb
         run_id=history.run_id, strategy_id='early-squeeze-strategy', strategy_revision=number)
 
 
-@pytest.mark.parametrize('number', [31, 32, 33])
+@pytest.mark.parametrize('number', [31, 32, 33, 34])
 def test_profit_row_cannot_cross_numbered_oms_group(number):
     group, source, history, reservation, decision, row = prepared(strategy_number=number)
     with pytest.raises(ValueError, match='exact committed scalar witness'):
@@ -118,3 +118,15 @@ def test_cold_join_routes_exact_native_source_to_profit_reader(monkeypatch, numb
     assert calls == [(client, prefix, source.record_id, authority)]
     assert len(result) == 1 and result[0].approved_intent.reason == source.intent.reason
     assert result[0].approved_intent.metadata['assignment_id'] == reservation['assignment_id']
+
+
+def test_prepared34_cold_join_remains_closed_until_installed_contract():
+    from src.trading_runtime.arte_oms_projection import load_recovered_strategy_one_oms_lineage
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    group, source, history, _, _, _ = prepared(strategy_number=34)
+    prefix = V4CommittedPrefix(history.run_id, 12, group.group['batch_id'],
+        '2026-08-04:10000', 'running', history.committed_batch_ids)
+    with pytest.raises(ValueError, match='No installed numbered'):
+        load_recovered_strategy_one_oms_lineage(object(), prefix,
+            allowed_accounts=frozenset({source.account_id}), protection_history=history,
+            strategy_number=34)
