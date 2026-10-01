@@ -40,6 +40,33 @@ def test_sparse_training_state_matches_actual_candle_encoder_and_detaches():
     assert not state.embeddings().requires_grad
 
 
+@pytest.mark.parametrize('device', ['cpu']+(['cuda'] if torch.cuda.is_available() else []))
+def test_optimizer_boundary_refresh_matches_current_weight_prefix_with_actual_candle_gaps(device):
+    torch.manual_seed(99)
+    encoder = ActualCandleEncoder(8).to(device)
+    state = SparseCandleState.empty(encoder, 3, device=torch.device(device),
+                                   dtype=torch.float32, refreshable=True)
+    scalar = torch.randn(4, 37, device=device)
+    levels = torch.randn(4, 2, 5, 11, device=device)
+    state.advance(encoder, torch.tensor([0, 1], device=device), scalar[:2], levels[:2])
+    state.advance(encoder, torch.tensor([0], device=device), scalar[2:3], levels[2:3])
+    optimizer = torch.optim.Adam(encoder.parameters(), lr=.003)
+    state.embeddings()[0].square().sum().backward()
+    optimizer.step(); optimizer.zero_grad(set_to_none=True)
+    state.detach()
+    state.refresh_projection(encoder, batch_size=1)
+    torch.testing.assert_close(state.embeddings()[0],
+        encoder.encode_listing(scalar[[0, 2]], levels[[0, 2]])[-1], atol=2e-5, rtol=2e-5)
+    torch.testing.assert_close(state.embeddings()[1],
+        encoder.encode_listing(scalar[1:2], levels[1:2])[-1], atol=2e-5, rtol=2e-5)
+    assert not state.embeddings()[2].any()
+    assert not state.history.requires_grad and not state.raw_history.requires_grad
+    assert state.seen.tolist() == [2, 1, 0]
+    state.advance(encoder, torch.tensor([0], device=device), scalar[3:], levels[3:])
+    torch.testing.assert_close(state.embeddings()[0],
+        encoder.encode_listing(scalar[[0, 2, 3]], levels[[0, 2, 3]])[-1], atol=2e-5, rtol=2e-5)
+
+
 def test_batched_sparse_updates_preserve_independent_listing_histories():
     torch.manual_seed(29)
     encoder = ActualCandleEncoder(width=8)

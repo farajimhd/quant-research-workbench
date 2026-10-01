@@ -214,7 +214,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         session.bank.close_us, clocks_per_chunk, wait_hold=wait_hold)
         if teacher_loss == 'balanced-v2' and not evaluation else (None, None))
     state = SparseCandleState.empty(policy.encoder, listings, device=device,
-                                    dtype=torch.float32)
+                                    dtype=torch.float32, refreshable=wait_hold)
     seed_previous_session(state, policy.encoder, session.listings,
                           session.previous)
     action_state = policy.initial_action_state(device=device,
@@ -355,6 +355,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     conditional_sum[slot] += float(torch.stack(values).sum())
                     conditional_count[slot] += len(values)
         state.detach()
+        if pending_losses and not evaluation and wait_hold:
+            state.refresh_projection(policy.encoder)
         action_state = action_state.detach()
         if progress_callback:
             progress_callback({'close_us':chunk[-1].close_us,

@@ -24,6 +24,8 @@ class SparseCandleState:
     encoded: torch.Tensor  # [N,D], most recent completed actual candle.
     seen: torch.Tensor  # [N], actual observed count; not clock seconds.
     _updates: dict[int, tuple[torch.Tensor, int]] = field(default_factory=dict, repr=False)
+    raw_history: torch.Tensor | None = None  # Optional [N,120,F], observations only.
+    raw_present: torch.Tensor | None = None  # [N,120], distinguishes padding from real zero candles.
 
     def history_for(self, indices: torch.Tensor) -> torch.Tensor:
         """Gather [K,120,D] only, including this BPTT chunk's sparse graph.
@@ -57,14 +59,42 @@ class SparseCandleState:
 
     @classmethod
     def empty(cls, encoder: ActualCandleEncoder, listings: int, *,
-              device: torch.device, dtype: torch.dtype) -> 'SparseCandleState':
+              device: torch.device, dtype: torch.dtype, refreshable=False) -> 'SparseCandleState':
         if listings < 1:
             raise ValueError('Session has no listings')
-        return cls(torch.zeros(listings, encoder.history_candles, encoder.width,
+        state = cls(torch.zeros(listings, encoder.history_candles, encoder.width,
                                device=device, dtype=dtype),
                    torch.zeros(listings, encoder.width, device=device,
                                dtype=dtype),
                    torch.zeros(listings, device=device, dtype=torch.long))
+        if refreshable:
+            state.raw_history = torch.zeros(listings, encoder.history_candles,
+                encoder.project.in_features, device=device, dtype=dtype)
+            state.raw_present = torch.zeros(listings, encoder.history_candles,
+                                            device=device, dtype=torch.bool)
+        return state
+
+    @torch.no_grad()
+    def refresh_projection(self, encoder, *, batch_size=256):
+        """Reproject detached causal history after an optimizer update.
+
+        Bounded [B,120,F] batches use the current projection, lag and norm.
+        Padding stays zero despite projection bias. No future candle enters
+        this cache and no graph is retained across the BPTT boundary.
+        """
+        if self.raw_history is None or self.raw_present is None or self._updates:
+            raise ValueError('Projection refresh requires committed raw candle state')
+        if batch_size < 1:
+            raise ValueError('Positive projection refresh batch size required')
+        for start in range(0, len(self.history), batch_size):
+            end = start+batch_size
+            projected = encoder.project(self.raw_history[start:end])
+            projected *= self.raw_present[start:end, :, None]
+            self.history[start:end] = projected
+            weighted = (projected*encoder.lag[:, 0, :].T[None]).sum(1)
+            encoded = encoder.norm(F.gelu(weighted))
+            self.encoded[start:end] = torch.where(self.seen[start:end, None]>0,
+                                                   encoded, torch.zeros_like(encoded))
 
     def advance(self, encoder: ActualCandleEncoder,
                 listing_index: torch.Tensor, scalar: torch.Tensor,
@@ -90,10 +120,18 @@ class SparseCandleState:
         if not keys:
             return
         previous = self._history_for_keys(listing_index, keys)
+        if projected is not None and projected.shape!=(listing_index.numel(),encoder.width):
+            raise ValueError('Prepared candle projection shape mismatch')
+        if self.raw_history is not None:
+            with torch.no_grad():
+                raw = encoder._input(scalar, levels).detach()
+                self.raw_history[listing_index] = torch.cat(
+                    (self.raw_history[listing_index, 1:], raw[:, None]), dim=1)
+                self.raw_present[listing_index] = torch.cat(
+                    (self.raw_present[listing_index, 1:],
+                     torch.ones(len(keys), 1, device=listing_index.device, dtype=torch.bool)), dim=1)
         if projected is None:
             projected = encoder.project(encoder._input(scalar, levels))
-        elif projected.shape!=(listing_index.numel(),encoder.width):
-            raise ValueError('Prepared candle projection shape mismatch')
         updated = torch.cat((previous[:, 1:], projected[:, None]), dim=1)
         weighted = (updated * encoder.lag[:, 0, :].T[None]).sum(dim=1)
         encoded = encoder.norm(F.gelu(weighted))
@@ -168,6 +206,12 @@ def seed_previous_session(state: SparseCandleState,
         state.seen[start:start+len(identities)] = torch.from_numpy(
             present.sum(1).astype(np.int64)).to(state.history.device)
         state.history[start:start+len(identities)] = projected
+        if state.raw_history is not None:
+            state.raw_history[start:start+len(identities)] = encoder._input(
+                flat_scalar.to(state.history.device), flat_levels.to(state.history.device)).reshape(
+                    len(identities), length, encoder.project.in_features)
+            state.raw_present[start:start+len(identities)] = torch.from_numpy(present).to(
+                device=state.history.device, dtype=torch.bool)
         weighted = (state.history[start:start+len(identities)] *
                     encoder.lag[:, 0, :].T[None]).sum(dim=1)
         state.encoded[start:start+len(identities)] = encoder.norm(

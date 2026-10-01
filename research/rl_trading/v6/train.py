@@ -27,7 +27,8 @@ from research.rl_trading.v6.market_attention import MarketAttentionConfig
 from research.rl_trading.v6.ranked_policy import RankedBracketActorCritic
 from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.identity_map import certify_identity_map, open_identity_map
-from research.rl_trading.v6.teacher_data import load_teacher
+from research.rl_trading.v6.teacher_data import load_teacher, load_wait_hold_teacher
+from research.rl_trading.v6.action_contract import ACTION_VERSION
 from research.rl_trading.v6.training import train_session
 from research.rl_trading.v6.learning_rate import cosine_warmup
 from research.rl_trading.v6.environment_source import ArteExecutionSource
@@ -91,6 +92,8 @@ def main(argv=None):
         help='Teacher initialization and per-epoch development label evaluation; no trading replay or PPO')
     parser.add_argument('--teacher-loss',choices=('legacy','balanced-v2'),default='legacy',
         help='Versioned action balancing and fixed per-session block normalization')
+    parser.add_argument('--action-contract', choices=('legacy','wait-hold'), default='legacy',
+        help='Explicit six-class WAIT and held-ticker HOLD contract with weighted causal label migration')
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
     parser.add_argument('--learning-rate',type=float,default=3e-4)
@@ -171,11 +174,16 @@ def main(argv=None):
     random.seed(args.seed)
     torch.backends.cudnn.deterministic=True
     torch.backends.cudnn.benchmark=False
-    policy=RankedBracketActorCritic(config=ranking).to(device)
+    wait_hold = args.action_contract == 'wait-hold'
+    teacher_loader = load_wait_hold_teacher if wait_hold else load_teacher
+    policy=RankedBracketActorCritic(config=ranking, wait_hold=wait_hold).to(device)
     optimizer=torch.optim.Adam(policy.parameters(),lr=args.learning_rate)
     from research.rl_trading.v6.model import DECODER_VERSION
     manifest={'version':'rl-trading-v6-attention-ppo-run-1','dataset_sha256':file_hash(args.dataset),
         'decoder_version':DECODER_VERSION,
+        'action_version':ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1',
+        'teacher_no_order_labels':'all_causal_held_identities_weighted_1_over_H' if wait_hold else 'portfolio_hold',
+        'history_cache':'raw_causal_reprojection_after_teacher_optimizer' if wait_hold else 'detached_projected_history',
         'ranking':asdict(ranking),'source_commit':_commit(),
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
@@ -198,9 +206,11 @@ def main(argv=None):
         if parent_manifest.get('decoder_version') != DECODER_VERSION:
             raise ValueError('Parent decoder activation contract differs; '
                 'explicit validated migration is required before continuation')
+        if parent_manifest.get('action_version', 'rl-v6-five-action-v1') != manifest['action_version']:
+            raise ValueError('Parent WAIT/HOLD head and label contract differs; start a fresh audited run')
         ignored={'run_root','teacher_lr_schedule','warmup_epochs','minimum_lr_ratio','resume_from','teacher_loss'}
         current=manifest['config']; previous={'broker_engine':'reference','compile_broker':False,
-            'broker_participation':.1,'decoder_batch_size':1,**parent_manifest['config']}
+            'broker_participation':.1,'decoder_batch_size':1,'action_contract':'legacy',**parent_manifest['config']}
         if ({k:v for k,v in current.items() if k not in ignored} !=
                 {k:v for k,v in previous.items() if k not in ignored} or
                 manifest['dataset_sha256']!=parent_manifest['dataset_sha256'] or
@@ -348,7 +358,7 @@ def main(argv=None):
                                 position=epoch+(day_index+(clock-start_clock)/(end_clock-start_clock))/len(train_days)
                                 return cosine_warmup(position,args.teacher_epochs,args.learning_rate,
                                     args.warmup_epochs,args.minimum_lr_ratio)
-                            decisions,outcomes=load_teacher(Path(entry['teacher_root']),session,runtime_root=runtime)
+                            decisions,outcomes=teacher_loader(Path(entry['teacher_root']),session,runtime_root=runtime)
                             result=asdict(train_session(policy,optimizer,session,decisions,outcomes,
                                 device=device,clocks_per_chunk=args.clocks_per_chunk,
                                 teacher_loss=args.teacher_loss,
@@ -390,7 +400,7 @@ def main(argv=None):
                     if args.teacher_only:
                         for entry in dev_days:
                             session=open_day(entry)
-                            decisions,outcomes=load_teacher(Path(entry['teacher_root']),session,runtime_root=runtime,audit_development=True)
+                            decisions,outcomes=teacher_loader(Path(entry['teacher_root']),session,runtime_root=runtime,audit_development=True)
                             result=asdict(train_session(policy,None,session,decisions,outcomes,
                                 device=device,clocks_per_chunk=args.clocks_per_chunk,evaluation=True,
                                 progress_callback=pulse('progress/teacher_validation',session.day,epoch)))
