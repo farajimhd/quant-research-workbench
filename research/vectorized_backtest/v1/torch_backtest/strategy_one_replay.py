@@ -1253,7 +1253,10 @@ class StrategyOneReplay:
         self._manage = torch.compile(self._manage, fullgraph=True)
         self._decisions = torch.compile(self._decisions, fullgraph=True)
         self._prepare_funding = torch.compile(self._prepare_funding, fullgraph=True)
-        self._admit = torch.compile(self._admit, fullgraph=True)
+        # Batch, listing count and lexical listing selectors are setup constants.
+        # Automatic symbolic generalization makes scatter-fusion analysis grow
+        # pathologically for B>1 and offers no benefit to fixed-topology search.
+        self._admit = torch.compile(self._admit, fullgraph=True, dynamic=False)
         self._record = torch.compile(self._record, fullgraph=True)
         self._copy_masked = torch.compile(self._copy_masked, fullgraph=True)
         if self.unified:
