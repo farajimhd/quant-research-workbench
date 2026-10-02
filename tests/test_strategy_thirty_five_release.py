@@ -1,4 +1,4 @@
-"""Prepared exact-parent derivation, preserved trading authority and closed admission."""
+"""Installed exact-parent derivation, preserved trading authority and sealed policy."""
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
@@ -39,7 +39,7 @@ def test_declaration_inherits_parent_inputs_and_all_existing_exits():
         replace(release, behavior_specification='foreign').verify()
 
 
-def test_compiler_preserves_trading_data_and_source_without_granting_installation():
+def test_installed_compiler_preserves_trading_data_and_source():
     source = source_fixture()
     before = deepcopy(source.payload)
     result = compile_strategy_thirty_five_configuration(source, **APPROVAL)
@@ -52,14 +52,13 @@ def test_compiler_preserves_trading_data_and_source_without_granting_installatio
         assert payload['strategy'][name] == before['strategy'][name]
     assert child.verify_prepared_strategy_thirty_five_manifest(payload['strategy'])
     assert result['source_candidate_hash'] == child.PARENT_PAYLOAD_HASH
-    with pytest.raises(ValueError):
-        child.verify_strategy_thirty_five_manifest(payload['strategy'])
+    assert child.verify_strategy_thirty_five_manifest(payload['strategy'])
 
 
 @pytest.mark.parametrize('policy', [*child.INHERITED_POLICIES, 'profit_protection_policy',
                                   'confirmed_ah_failure_policy', 'liquidity_fade_policy'])
 def test_even_resealed_policy_mutations_reject(policy):
-    strategy = compile_strategy_thirty_five_configuration(source_fixture(), **APPROVAL)['payload']['strategy']
+    strategy = child.derive_strategy_thirty_five_configuration(source_fixture(), **APPROVAL)['payload']['strategy']
     manifest = strategy['numbered_release']
     manifest[policy] = {'foreign': True}
     manifest['manifest_hash'] = sha256(canonical_json({k: v for k, v in manifest.items() if k != 'manifest_hash'}).encode()).hexdigest()
@@ -72,3 +71,39 @@ def test_even_resealed_policy_mutations_reject(policy):
 def test_foreign_parent_identity_rejects(changes):
     with pytest.raises(ValueError, match='exact pinned certified Strategy 34'):
         compile_strategy_thirty_five_configuration(replace(source_fixture(), **changes), **APPROVAL)
+
+
+def test_native_configuration_selection_and_envelope_use_installed35(monkeypatch):
+    from src.backend import backtest_strategy_one_configuration as configurations
+    from pipelines.strategy_one.configuration_publisher import _verified_numbered_envelope
+    from src.trading_runtime.strategy_registry import numbered_strategy_parent
+    result = child.derive_strategy_thirty_five_configuration(source_fixture(), **APPROVAL)
+    assert configurations.is_numbered_fixed_configuration(result['payload'])
+    payload, nodes = _verified_numbered_envelope(result)
+    assert nodes and payload == result['payload']
+    assert numbered_strategy_parent(35) == 34
+    assert child.verify_installed_strategy_thirty_five_release(
+        payload['strategy']['numbered_release']) == child.release_contract()
+    selected = replace(source_fixture(),
+        attempt_id='00000000-0000-0000-0000-000000000035', payload=payload)
+    calls = []
+    def certified_fixture(client, number):
+        calls.append(number)
+        return selected
+    monkeypatch.setattr(configurations, 'certify_numbered_configuration', certified_fixture)
+    revision = configurations.selected_numbered_revision(client=object(),
+        revision_id='strategy-one-35:00000000-0000-0000-0000-000000000035')
+    assert revision == selected.revision() and calls == [35]
+
+
+@pytest.mark.parametrize('mode', ['live', 'paper', 'replay', 'backtest_debug', 'backtest'])
+def test_installed35_constructor_rejects_non_native_execution(mode):
+    from datetime import date
+    from types import SimpleNamespace
+    from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
+    config = RunConfig(RunMode(mode), 'early-squeeze-strategy', 35,
+                       ('DU1',), date(2026, 8, 18))
+    with pytest.raises(RuntimeError, match='Numbered fixed strategy requires typed Backtest'):
+        TradingRuntime(config, broker=object(),
+                       strategy=SimpleNamespace(strategy_id=config.strategy_id, revision=35, automatic=True),
+                       journal=object())

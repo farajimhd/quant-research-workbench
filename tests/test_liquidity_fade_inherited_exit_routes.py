@@ -164,17 +164,32 @@ def test_incomplete35_exit_lineage_rejects(family, change):
         _approved_strategy_one_oms_intent(group, source, history, reservation, decision, **kwargs)
 
 
-def test_cold35_oms_stays_closed_until_complete_release_is_installed(monkeypatch):
-    from unittest.mock import Mock
+@pytest.mark.parametrize('family', ['ah', 'liquidity'])
+def test_installed35_cold_oms_routes_exact_native_exit_source(monkeypatch, family):
     from src.trading_runtime import arte_oms_projection as oms
+    from src.trading_runtime import arte_intent_projection as intents
+    from src.trading_runtime import arte_liquidity_fade_reader_v4 as liquidity_reader
+    from src.trading_runtime import arte_confirmed_ah_failure_v4 as ah_reader
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
-    group, source, history, _, _, _ = oms_case('liquidity')
+    group, source, history, reservation, decision, row = oms_case(family)
     prefix = V4CommittedPrefix(history.run_id, 12, group.group['batch_id'],
         'cursor', 'running', history.committed_batch_ids)
-    reader = Mock()
-    monkeypatch.setattr(oms, 'load_latest_committed_oms_groups', reader)
-    with pytest.raises(ValueError, match='No installed'):
-        oms.load_recovered_strategy_one_oms_lineage(object(), prefix,
-            allowed_accounts=frozenset({source.account_id}), protection_history=history,
-            strategy_number=35)
-    reader.assert_not_called()
+    calls = []
+    monkeypatch.setattr(oms, 'load_latest_committed_oms_groups', lambda *a, **k: (group,))
+    monkeypatch.setattr(intents, 'load_committed_strategy_intent_page', lambda *a, **k: (source,))
+    monkeypatch.setattr(oms, 'load_committed_oms_admission_page', lambda *a, **k: {12: reservation})
+    monkeypatch.setattr(oms, 'load_committed_oms_decision_page', lambda *a, **k: {12: decision})
+    def read(client, proof, record_id):
+        calls.append((client, proof, record_id))
+        return row, None
+    if family == 'liquidity':
+        monkeypatch.setattr(liquidity_reader, 'load_liquidity_fade_failure', read)
+    else:
+        monkeypatch.setattr(ah_reader, 'load_confirmed_ah_failure', read)
+    client = object()
+    result = oms.load_recovered_strategy_one_oms_lineage(client, prefix,
+        allowed_accounts=frozenset({source.account_id}), protection_history=history,
+        strategy_number=35)
+    assert calls == [(client, prefix, source.record_id)]
+    assert len(result) == 1 and result[0].approved_intent.reason == source.intent.reason
+    assert result[0].approved_intent.metadata['assignment_id'] == reservation['assignment_id']

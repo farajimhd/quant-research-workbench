@@ -95,11 +95,13 @@ def test_each_native_companion_rejects_missing_or_crossed_authority(family, chan
         else: seal_first_price_rows(changed, (child,), (parent,), (event,), (price.authority,))
 
 
-def test_prepared_graph_does_not_grant_installed_execution():
+def test_installed35_preserves_parent_capabilities():
     native_graph()
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
-    with pytest.raises(ValueError, match='No installed'):
-        numbered_fixed_strategy(35)
+    contract = numbered_fixed_strategy(35)
+    assert contract.strategy_number == 35 and contract.allows_session_exit
+    assert not contract.allows_adds and not contract.allows_completed_30s_trailing
+    assert not contract.allows_target_escalation and contract.caps_entry_at_reference_ask
 
 
 @pytest.mark.parametrize('change', [None, 'missing_price', 'changed_entry_hash', 'foreign_attempt'])

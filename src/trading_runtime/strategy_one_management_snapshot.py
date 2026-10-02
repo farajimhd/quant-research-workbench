@@ -542,11 +542,11 @@ def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneMan
     """
     from .arte_strategy_one_entry_journal import load_committed_strategy_one_entry_page
     wanted = {(key, proposal.boundary_ms): proposal for key, proposal in state.submitted
-              if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34)}
+              if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)}
     if not wanted:
         return state
     def reference(value):
-        if value.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
+        if value.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35):
             return replace(value, momentum=None, initial_momentum=None,
                            first_price=None, price_source_token=None)
         return replace(value, momentum=None, initial_momentum=None)
