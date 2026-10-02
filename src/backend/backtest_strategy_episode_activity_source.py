@@ -64,3 +64,24 @@ class EpisodeActivityReadbackAuthority:
             result.append(EntryActivityAuthority(parent, witness, episode_start))
             seen.add(parent)
         return tuple(result)
+
+
+def certified_episode_activity_witness(authority, proposal, *, session_date):
+    """Recheck the cached full-prefix proof at sparse runtime/manager boundaries."""
+    from datetime import date
+    from .backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+    from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+    if (type(authority) is not CertifiedPriceReadbackAuthority
+            or type(proposal) is not StrategyOneEntryProposal
+            or type(proposal.strategy_number) is not int or proposal.strategy_number != 37
+            or type(session_date) is not date
+            or type(authority.entry_activity_source) is not EpisodeActivityReadbackAuthority
+            or authority.entry_activity_source.run_id != authority.run_id
+            or authority.entry_activity_source.plan.parent is not authority.plan
+            or authority.entry_activity_source.plan.market.sessions != (session_date.isoformat(),)):
+        raise ValueError('Strategy37 requires its exact certified episode activity source')
+    source = authority.entry_activity_source
+    native, anchor, _ = source.gate.admission_witness(proposal.ticker, proposal.boundary_ms)
+    if type(proposal.episode_start_ms) is not int or proposal.episode_start_ms != anchor:
+        raise ValueError('Strategy37 proposal differs from original native episode')
+    return validate_entry_activity_witness(replace(native, activity_source_token=source.gate.token))

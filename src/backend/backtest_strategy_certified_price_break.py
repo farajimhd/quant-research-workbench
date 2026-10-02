@@ -148,8 +148,9 @@ class CertifiedPriceReadbackAuthority:
             raise ValueError('Price readback requires exact run and certified plan')
         if self.entry_activity_source is not None:
             from .backtest_strategy_entry_activity_source import EntryActivityReadbackAuthority
+            from .backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
             source = self.entry_activity_source
-            if (type(source) is not EntryActivityReadbackAuthority
+            if (type(source) not in (EntryActivityReadbackAuthority, EpisodeActivityReadbackAuthority)
                     or source.run_id != self.run_id or source.plan.parent is not self.plan):
                 raise ValueError('Price and activity readback require the same certified run and parent plan')
 

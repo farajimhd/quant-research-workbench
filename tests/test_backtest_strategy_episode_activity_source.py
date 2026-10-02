@@ -6,7 +6,9 @@ import pytest
 from test_backtest_strategy_entry_activity_source import source_authority, ActivityBars
 from src.backend.backtest_strategy_entry_activity_source import load_entry_activity_plan
 from src.backend.backtest_strategy_episode_activity_gate import compile_episode_activity_static_gate
-from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
+from src.backend.backtest_strategy_episode_activity_source import (
+    EpisodeActivityReadbackAuthority, certified_episode_activity_witness,
+)
 
 
 def authority(mode='normal', ten_percent=True):
@@ -52,3 +54,27 @@ def test_readback_uses_exact_number_run_and_original_episode_identity():
         source.resolve('another-run',(entry,),(intent,))
     with pytest.raises(ValueError, match='duplicate'):
         source.resolve('episode-run',(entry,),(intent,intent))
+
+
+def test_cached_manager_guard_rejects_wrong_run_number_episode_and_prefix():
+    from datetime import date
+    from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+    from src.backend.backtest_strategy_entry_activity_source import EntryActivityReadbackAuthority
+    from test_strategy_one_intent import _proposal
+    source = authority()
+    parent = CertifiedPriceReadbackAuthority(source.run_id,source.plan.parent,source)
+    proposal = replace(_proposal(),strategy_number=37,ticker='AAA',boundary_ms=41000,
+                       episode_start_ms=30000)
+    day = date.fromisoformat(source.plan.market.sessions[0])
+    assert certified_episode_activity_witness(parent,proposal,session_date=day) == source.witness('AAA',41000)
+    for changed in (replace(proposal,strategy_number=36),replace(proposal,episode_start_ms=30100)):
+        with pytest.raises(ValueError):
+            certified_episode_activity_witness(parent,changed,session_date=day)
+    legacy = CertifiedPriceReadbackAuthority(source.run_id,source.plan.parent,
+        EntryActivityReadbackAuthority(source.run_id,source.plan))
+    with pytest.raises(ValueError,match='exact certified'):
+        certified_episode_activity_witness(legacy,proposal,session_date=day)
+    blocked = authority('fade')
+    with pytest.raises(ValueError,match='admitted causal prefix'):
+        certified_episode_activity_witness(CertifiedPriceReadbackAuthority(blocked.run_id,
+            blocked.plan.parent,blocked),proposal,session_date=day)

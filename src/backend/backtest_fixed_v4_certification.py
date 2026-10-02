@@ -996,7 +996,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                         'append_strategy_one_protection_intent': '584aaedd9d01f75a4c1abd41792c835b58b690ad107a6a44ddcf6e436748d5cf'},
  'backend/backtest_market_plan_cache.py': {'selected_product_inventory_fingerprint': '2a24f97bf8d162e0d979c01fedbaba02de6e37cdaa0da48c482700c31211f355'},
  'backend/backtest_saved_source_authority.py': {'__module__': 'bb486b3cd6337d13ab5bfa9aea9e6614ab8e5a5a3bac558b06194cc240d8a5fc'},
- 'backend/backtest_strategy_certified_price_break.py': {'__module__': '5e0f0b67941ee438748176becd38e04f6deeb89925b8cd3beff28a08f7cbc85d'},
+ 'backend/backtest_strategy_certified_price_break.py': {'__module__': '32e9d4d05789128cc3425afa208e365d078f36a858076f2a7241d6b3ea0b52b3'},
  'backend/backtest_strategy_first_price_source.py': {'__module__': '8c711095ee81bbe5541a6c0a208f1380effdb057039976c43f8ffcee1afed268'},
  'backend/backtest_strategy_initial_momentum.py': {'__module__': '954446cab169240a183801637b4f61b27f90d45467b065ef428760d1ed5a48df'},
  'backend/backtest_strategy_initial_momentum_growth.py': {'__module__': '33bf35371d2216a5361e735959cdd1e48a65be3a5d8f04ec3d79cd277d199485'},
