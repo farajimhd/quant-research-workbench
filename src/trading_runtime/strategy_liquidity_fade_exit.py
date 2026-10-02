@@ -17,9 +17,9 @@ REASON = "strategy_thirty_five_liquidity_fade_failure"
 
 def liquidity_fade_reason(strategy_number):
     """Number the intent without changing its independently verified exit rule."""
-    if type(strategy_number) is not int or strategy_number not in (35, 36, 37):
-        raise ValueError('Liquidity fade exit requires Strategy 35 through 37')
-    return {35: REASON, 36: 'strategy_thirty_six_liquidity_fade_failure', 37: 'strategy_thirty_seven_liquidity_fade_failure'}[strategy_number]
+    if type(strategy_number) is not int or strategy_number not in (35, 36, 37, 38):
+        raise ValueError('Liquidity fade exit requires Strategy 35 through 38')
+    return {35: REASON, 36: 'strategy_thirty_six_liquidity_fade_failure', 37: 'strategy_thirty_seven_liquidity_fade_failure', 38: 'strategy_thirty_eight_liquidity_fade_failure'}[strategy_number]
 
 
 def validate_liquidity_fade_witness(witness):
