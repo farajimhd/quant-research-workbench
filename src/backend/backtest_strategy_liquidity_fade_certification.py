@@ -6,6 +6,9 @@ from pathlib import Path
 
 
 LIQUIDITY_FADE_SOURCE_AST = {
+    'src/trading_runtime/strategy_liquidity_fade_checkpoint_reference.py': '2bf2d32ba8e66f95d6646c3f364937dd342fe25af9cd3311632e50bf958369d8',
+    'src/backend/replay_run_service.py': 'acd6d0f2d1466576e782a7a0b62dc77488a145cc449a4251d175270f78e66780',
+    'src/backend/backtest_strategy_one_execution.py': '102c195fb3d12550699d5767554b62be85bd57776529905152949d47124e80c7',
     'src/backend/backtest_strategy_liquidity_fade.py': '39b5849330dfbb618216d9f0944b0dd2549444b2ab0ee2f5d33f3eed131621ed',
     'src/trading_runtime/strategy_liquidity_fade_failure.py': '25ec4e6e986c8cd684740d9140ac5b659b36f386170d3bad6ce2af2e5569350e',
     'src/trading_runtime/strategy_liquidity_fade_exit.py': '2ae17b94d208e79b07343b159a70f231f940faaf9b9aaf23be8500b3e243aa14',
@@ -22,7 +25,7 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/arte_liquidity_fade_reader_v4.py': 'de0080bdf30bae6cb32105ee52d369f6769cf472888ccacdf6bba974b4648acf',
     'src/trading_runtime/arte_journal_writer.py': '8664ce757cda248dcf5f3b53b3eb804878ae7de4ad26c3216bf68c8a5b973c9d',
     'src/trading_runtime/strategy_liquidity_fade_checkpoint.py': '3868ef8025c20487a29e67b5ff44f424cc085a87ca4c7ed8898f2be3caeace53',
-    'src/backend/backtest_strategy_one_management.py': '16d5f12119c203dd89dd83d3d558724ea51fb20e76a0cf15dd54bb9b489c4925',
+    'src/backend/backtest_strategy_one_management.py': '2afd93a156ce2925ae93c4705687851876b8b4a0c59e052a787caa9fd48081ad',
     'src/trading_runtime/strategy_one_management_snapshot.py': '31b474619299ae5734892c869b2885d19606b640a66cefad12a9d4e7566cfcd0',
     'src/trading_runtime/strategy_liquidity_fade_financial_checkpoint.py': '4fc9fcec9ccb62c6f1b591b51cf7a15cfca278f8365c25783572d269ff593220',
     'src/trading_runtime/strategy_one_broker_match_snapshot.py': 'c104a2420df90e936d594b95b47125195523130f69388043be66f3c0527f1262',

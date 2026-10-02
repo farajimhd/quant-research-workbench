@@ -338,6 +338,11 @@ async def run_certified_strategy_one_session(
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)
+            if runtime.config.strategy_revision == 35:
+                from .backtest_strategy_liquidity_fade_loader import load_compiled_liquidity_fade_lookup
+                liquidity_lookup = await asyncio.to_thread(load_compiled_liquidity_fade_lookup,
+                    reader, plan=evidence_market, session_date=runtime.config.anchor_date)
+                manager.bind_liquidity_fade_lookup(liquidity_lookup, evidence_market)
             if resume_manager_state is not None:
                 if runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
                     manager.restore_state(resume_manager_state, first_price_source=price_authority)

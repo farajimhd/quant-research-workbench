@@ -60,6 +60,28 @@ class StrategyOneManagementState:
     first_held_boundaries: tuple[tuple[ManagerKey, int], ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class LiquidityFadeCheckpointRequest:
+    """Completed decision pending an exact native manager/broker checkpoint."""
+    witness: Any
+    financial: StrategyOneFinancialView
+    source_entry_intent_id: str
+    observation_source: Mapping[str, Any]
+
+    def __post_init__(self):
+        from uuid import UUID
+        from src.trading_runtime.strategy_liquidity_fade_exit import validate_liquidity_fade_witness, validate_liquidity_fade_financial
+        from src.trading_runtime.arte_liquidity_fade_failure_v4 import validate_liquidity_observation_source
+        validate_liquidity_fade_witness(self.witness)
+        validate_liquidity_fade_financial(self.financial)
+        if (type(self.source_entry_intent_id) is not str
+                or str(UUID(self.source_entry_intent_id)) != self.source_entry_intent_id
+                or UUID(self.source_entry_intent_id).int == 0):
+            raise ValueError('Liquidity checkpoint request lacks its original entry identity')
+        validate_liquidity_observation_source(self.observation_source)
+        object.__setattr__(self, 'observation_source', MappingProxyType(dict(self.observation_source)))
+
+
 class StrategyOneManagementRunner:
     """Keep only active position state; abort on unowned or unconfirmed risk."""
 
@@ -93,6 +115,48 @@ class StrategyOneManagementRunner:
         # checkpoint rather than manufacture a durable reference from highs.
         self._profit_arm_references: dict[ManagerKey, Any] = {}
         self._profit_arm_financials: dict[ManagerKey, StrategyOneFinancialView] = {}
+        self._liquidity_lookup = None
+        self._liquidity_sources = None
+        self._liquidity_requests: dict[ManagerKey, LiquidityFadeCheckpointRequest] = {}
+        self._liquidity_latest_five_second: dict[str, Mapping] = {}
+
+    def bind_liquidity_fade_lookup(self, lookup, market_plan) -> None:
+        """Bind one independently certified, precompiled source before replay."""
+        from .backtest_strategy_liquidity_fade import CompiledLiquidityFadeLookup
+        from .backtest_market_data import CertifiedMarketDayPlan
+        if (self.contract.strategy_number != 35 or self._liquidity_lookup is not None
+                or type(lookup) is not CompiledLiquidityFadeLookup or type(market_plan) is not CertifiedMarketDayPlan
+                or lookup.session_date != self.runtime.config.anchor_date
+                or market_plan.sessions != (lookup.session_date.isoformat(),)
+                or lookup.source_build_id != market_plan.build_id or lookup.market_plan_token != market_plan.token
+                or not {100, 5000}.issubset(market_plan.required_resolutions_ms)):
+            raise ValueError('Liquidity manager lacks its exact prepared session lookup')
+        sources = {}
+        for ticker in market_plan.tickers:
+            refs = dict(source_build_id=market_plan.build_id, source_market_plan_token=market_plan.token)
+            for stage, field in (('bars', 'source_bars_attempt_id'), ('technical', 'source_indicators_attempt_id'),
+                                 ('broker_100ms', 'source_liquidity_attempt_id')):
+                matches = [unit for unit in market_plan.units if unit.ticker == ticker and unit.stage == stage
+                           and unit.session_date == market_plan.sessions[0]]
+                if len(matches) != 1 or matches[0].build_id != market_plan.build_id:
+                    raise ValueError('Liquidity manager has missing or ambiguous pinned producer units')
+                refs[field] = matches[0].attempt_id
+            from src.trading_runtime.arte_liquidity_fade_failure_v4 import validate_liquidity_observation_source
+            validate_liquidity_observation_source(refs)
+            sources[ticker] = MappingProxyType(refs)
+        self._liquidity_lookup, self._liquidity_sources = lookup, MappingProxyType(sources)
+
+    def liquidity_fade_requests(self, *, boundary_ms: int) -> tuple:
+        """Return same-boundary requests; none is an order or durable reference."""
+        requests = tuple(value for _, value in sorted(self._liquidity_requests.items()))
+        if any(value.witness.boundary_ms != boundary_ms for value in requests):
+            raise RuntimeError('Liquidity candidate was not fenced before advancing the boundary')
+        return requests
+
+    def complete_liquidity_fade_requests(self, requests: tuple, *, boundary_ms: int) -> None:
+        if requests != self.liquidity_fade_requests(boundary_ms=boundary_ms):
+            raise ValueError('Liquidity checkpoint completion changed its pending decisions')
+        self._liquidity_requests.clear()
 
     @staticmethod
     def _validate_capture(state: StrategyOneManagementState, *,
@@ -193,19 +257,19 @@ class StrategyOneManagementRunner:
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
         from src.trading_runtime.strategy_rising_momentum_witness import numbered_momentum_entry
         for _, proposal in state.submitted:
-            if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
+            if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35):
                 from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority, certified_price_entry_intent
                 if (type(first_price_source) is not CertifiedPriceReadbackAuthority
                         or first_price_source.run_id != getattr(self.runtime, 'run_id', None)):
                     raise ValueError("Strategy20 manager recovery lacks its native source context")
                 certified_price_entry_intent(first_price_source.plan, proposal,
                     session_date=date.fromisoformat(first_price_source.plan.source.market.sessions[0]))
-            if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34) and (
+            if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35) and (
                     not numbered_momentum_entry(proposal.momentum, proposal.strategy_number)
                     or proposal.momentum.ticker != proposal.ticker
                     or proposal.momentum.boundary_ms != proposal.boundary_ms):
                 raise ValueError("Strategy 13 manager recovery lacks its committed momentum source")
-            if proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
+            if proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35):
                 from src.trading_runtime.strategy_initial_strong_momentum import (
                     validate_initial_momentum_selection, initial_strong_momentum_entry,
                 )
@@ -237,7 +301,7 @@ class StrategyOneManagementRunner:
 
     def profit_arming_requests(self, *, boundary_ms: int) -> tuple:
         """Freeze all newly armed positions against one completed capture."""
-        if self.contract.strategy_number not in (31, 32, 33, 34):
+        if self.contract.strategy_number not in (31, 32, 33, 34, 35):
             return ()
         from decimal import Decimal
         from src.trading_runtime.strategy_profit_giveback_arm import profit_arm_candidate
@@ -312,7 +376,7 @@ class StrategyOneManagementRunner:
         if not isinstance(financial, StrategyOneFinancialView):
             raise TypeError("Strategy 1 management needs typed financial state")
         key = (financial.account_id, financial.assignment_id, financial.ticker)
-        if self.contract.strategy_number in (31, 32, 33, 34):
+        if self.contract.strategy_number in (31, 32, 33, 34, 35):
             self._profit_arm_financials[key] = financial
         if financial.position_quantity <= 0:
             if not financial.pending_entry and not financial.pending_exit:
@@ -384,7 +448,7 @@ class StrategyOneManagementRunner:
             from src.trading_runtime.strategy_persistent_risk_failure import persistent_risk_failure
             from src.trading_runtime.strategy_zero_regime_risk_failure import zero_regime_risk_failure
             failure_rule = (zero_regime_risk_failure
-                            if self.contract.strategy_number in (30, 31, 32, 33, 34)
+                            if self.contract.strategy_number in (30, 31, 32, 33, 34, 35)
                             else persistent_risk_failure
                             if self.contract.strategy_number == 29
                             else premarket_quarter_risk_failure
@@ -404,18 +468,18 @@ class StrategyOneManagementRunner:
                 # Reuse the runtime's cached, exact native source validation;
                 # the older constructor deliberately excludes price entries.
                 entry = (self.runtime._strategy_one_entry_intent(source)
-                         if self.contract.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34)
+                         if self.contract.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
                          else strategy_one_entry_intent(
                              source, session_date=self.runtime.config.anchor_date))
                 await self.runtime.submit_followthrough_failure(
                     financial, witness, entry.intent_id)
-                if self.contract.strategy_number in (31, 32, 33, 34):
+                if self.contract.strategy_number in (31, 32, 33, 34, 35):
                     # The pre-submission financial view cannot attest that
                     # the position is still available for arming after OMS.
                     # Refresh it on a later management boundary if held.
                     self._profit_arm_financials.pop(key, None)
                 return
-            if self.contract.strategy_number in (31, 32, 33, 34):
+            if self.contract.strategy_number in (31, 32, 33, 34, 35):
                 from src.trading_runtime.strategy_profit_giveback import ProfitGivebackInput, profit_giveback
                 reference = self._profit_arm_references.get(key)
                 # Confirmation belongs to finish(), so even an arm selected
@@ -429,7 +493,7 @@ class StrategyOneManagementRunner:
                         await self.runtime.submit_profit_giveback(
                             financial, profit_witness, entry.intent_id, reference)
                         return
-            if self.contract.strategy_number == 34:
+            if self.contract.strategy_number in (34, 35):
                 from src.trading_runtime.strategy_confirmed_ah_risk_failure import (
                     ConfirmedAhRiskFailureInput, confirmed_ah_risk_failure,
                 )
@@ -444,6 +508,49 @@ class StrategyOneManagementRunner:
                     entry = self.runtime._strategy_one_entry_intent(source)
                     await self.runtime.submit_confirmed_ah_failure(
                         financial, confirmed_ah, entry.intent_id)
+                    self._profit_arm_financials.pop(key, None)
+                    return
+        if self.contract.strategy_number == 35:
+            if self._liquidity_lookup is None:
+                raise RuntimeError('Strategy 35 requires its precompiled liquidity source')
+            from src.trading_runtime.strategy_liquidity_fade_failure import LiquidityFadeInput, liquidity_fade_failure
+            from src.trading_runtime.strategy_followthrough_failure import FollowThroughFailureInput
+            from src.backend.backtest_market_data import market_day_boundary
+            completed_bar = resolutions.get(5000)
+            if completed_bar is not None:
+                completed_at = completed_bar.get('boundary_ms')
+                if (type(completed_at) is not int or completed_at % 5000
+                        or not 0 < completed_at <= boundary_ms):
+                    raise ValueError('Liquidity manager received a forming or invalid completed bar')
+                self._liquidity_latest_five_second[financial.ticker] = MappingProxyType({
+                    name: completed_bar.get(name) for name in
+                    ('boundary_ms', 'close_int', 'price_valid', 'macd_line', 'macd_signal')})
+            window = self._liquidity_lookup.window_at(financial.ticker, boundary_ms)
+            if window is not None:
+                bar = self._liquidity_latest_five_second.get(financial.ticker) or {}
+                quote = resolutions.get(100) or {}
+                at = market_day_boundary(self.runtime.config.anchor_date, boundary_ms)
+                from datetime import datetime, timezone
+                elapsed = at.astimezone(timezone.utc)-datetime(1970, 1, 1, tzinfo=timezone.utc)
+                now_us = (elapsed.days*86400+elapsed.seconds)*1_000_000+elapsed.microseconds
+                quote_us = quote.get('quote_timestamp_us')
+                age_us = (now_us-quote_us
+                          if type(quote_us) is int and quote.get('quote_valid') == 1 else None)
+                candidate = liquidity_fade_failure(LiquidityFadeInput(FollowThroughFailureInput(
+                    boundary_ms, self._first_held_boundaries[key], source.reference_ask, source.initial_stop,
+                    bar.get('boundary_ms'), bar.get('close_int'), bar.get('price_valid') == 1,
+                    bar.get('macd_line'), bar.get('macd_signal'), evidence.bid, evidence.ask, age_us,
+                    financial.position_quantity, financial.pending_exit), window.candles))
+                if candidate is not None:
+                    entry = self.runtime._strategy_one_entry_intent(source)
+                    request = LiquidityFadeCheckpointRequest(candidate, financial, entry.intent_id,
+                                                            self._liquidity_sources[financial.ticker])
+                    previous_request = self._liquidity_requests.get(key)
+                    if previous_request is not None and previous_request != request:
+                        raise RuntimeError('Liquidity checkpoint retry changed its completed decision')
+                    if len(self._liquidity_requests) >= 65_536 and key not in self._liquidity_requests:
+                        raise RuntimeError('Liquidity checkpoint candidates exceed the bounded assignment inventory')
+                    self._liquidity_requests[key] = request
                     self._profit_arm_financials.pop(key, None)
                     return
         pending = self._pending_breaks.setdefault(key, [])

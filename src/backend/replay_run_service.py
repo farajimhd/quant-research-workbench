@@ -2640,6 +2640,46 @@ class ReplayRunController:
             self._record_stage_time('profit_arm_confirmation', started)
         return references
 
+    async def _confirm_liquidity_fade_checkpoint(self, requests: tuple, *, event_time):
+        """Fence the completed decision before ordinary Portfolio/OMS submission."""
+        manager, publisher = self._strategy_one_manager, self._journal_publisher
+        boundary = dict(self._source_cursor).get('boundary_ms')
+        if (self.definition.mode != RunMode.BACKTEST or manager.contract.strategy_number != 35
+                or publisher is None or publisher.writer.journal_profile != 'backtest_v4'
+                or self._fixed_keeper_session is None or not requests
+                or requests != manager.liquidity_fade_requests(boundary_ms=boundary)):
+            raise RuntimeError('Liquidity exit lacks its completed native Backtest boundary')
+        from .backtest_strategy_one_financial import read_strategy_one_financial_view
+        assignments = {(item.account_id, item.assignment_id, item.ticker): item
+                       for item in self._runtime.strategy.assignments()}
+        for request in requests:
+            view = request.financial
+            assignment = assignments.get((view.account_id, view.assignment_id, view.ticker))
+            if assignment is None or await read_strategy_one_financial_view(
+                    assignment, self._runtime.broker, self._runtime.order_manager) != view:
+                raise RuntimeError('Liquidity completed decision financial state changed before checkpoint')
+        receipt = await self._save_restart_checkpoint_responsive(event_time)
+        from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
+        from src.trading_runtime.strategy_one_management_snapshot import ManagedManagerSnapshotHeadReader
+        from src.trading_runtime.strategy_one_broker_match_snapshot import ManagedBrokerMatchHeadReader
+        from src.trading_runtime.strategy_liquidity_fade_checkpoint_reference import confirm_liquidity_fade_checkpoint_sources
+        def confirm():
+            with closing(backtest_v4_operator_client_from_env()) as reader:
+                return confirm_liquidity_fade_checkpoint_sources(reader,
+                    ManagedManagerSnapshotHeadReader(self._fixed_keeper_session),
+                    ManagedBrokerMatchHeadReader(self._fixed_keeper_session), requests, receipt,
+                    run_id=self.run_id, first_price_source=publisher._first_price_source)
+        task = asyncio.create_task(asyncio.to_thread(confirm))
+        try:
+            references = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+        for request, source in zip(requests, references, strict=True):
+            await self._runtime.submit_liquidity_fade_failure(request.financial, request.witness,
+                request.source_entry_intent_id, source)
+        manager.complete_liquidity_fade_requests(requests, boundary_ms=boundary)
+
     def _prepare_terminal_v2_handoff(self, verified_prefix, *, committed_at):
         """Inactive fixed-Backtest handoff; publication still needs admission.
 
@@ -3712,6 +3752,10 @@ class ReplayRunController:
             self.processed_events += len(work.broker_rows)
             await self._after_event(at)
             manager = self._strategy_one_manager
+            if manager.contract.strategy_number == 35:
+                liquidity_requests = manager.liquidity_fade_requests(boundary_ms=work.boundary_ms)
+                if liquidity_requests:
+                    await self._confirm_liquidity_fade_checkpoint(liquidity_requests, event_time=at)
             if manager.contract.strategy_number in (31, 32, 33, 34):
                 requests = manager.profit_arming_requests(boundary_ms=work.boundary_ms)
                 if requests:
