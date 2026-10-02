@@ -80,4 +80,4 @@ def test_installed_release_matches_prepared_exact_parent_declaration():
     assert numbered_strategy(36) == child.release_contract()
     assert child.verify_strategy_thirty_six_manifest(strategy)
     with pytest.raises(ValueError):
-        numbered_strategy(37)
+        numbered_strategy(38)

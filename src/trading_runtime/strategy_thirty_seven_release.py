@@ -1,4 +1,4 @@
-"""Prepared exact-parent Strategy37 contract; public registration stays closed."""
+"""Exact-parent Strategy37 contract with sealed Backtest-only registration."""
 from copy import deepcopy
 from hashlib import sha256
 import re
@@ -84,6 +84,23 @@ def verify_prepared_strategy_thirty_seven_manifest(strategy):
     seal = sha256(canonical_json({k: v for k, v in manifest.items() if k != 'manifest_hash'}).encode()).hexdigest()
     if manifest['manifest_hash'] != seal:
         raise ValueError('Strategy37 prepared manifest seal differs')
+    return manifest
+
+
+def verify_installed_strategy_thirty_seven_release(manifest):
+    from .strategy_registry import numbered_strategy, fixed_strategy_executor
+    installed = numbered_strategy(37)
+    expected = release_contract()
+    fixed_strategy_executor(installed.executor_strategy_id, installed.executor_revision).verify()
+    if (installed != expected or manifest.get('contract') != expected.canonical_payload()
+            or manifest.get('approved_digest') != expected.approved_digest):
+        raise ValueError('Strategy37 published release differs from installed approval')
+    return installed
+
+
+def verify_strategy_thirty_seven_manifest(strategy):
+    manifest = verify_prepared_strategy_thirty_seven_manifest(strategy)
+    verify_installed_strategy_thirty_seven_release(manifest)
     return manifest
 
 

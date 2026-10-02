@@ -65,7 +65,7 @@ def test_nineteen_inherits_eighteen_execution_capabilities_and_session_authority
         assert getattr(child, name) == getattr(parent, name)
     assert numbered_session_exit_reason(19) == 'strategy_nineteen_session_exit'
     with pytest.raises(ValueError, match='No installed'):
-        numbered_fixed_strategy(35)
+        numbered_fixed_strategy(38)
 
 
 def test_thirty_four_matches_parent_capabilities_and_session_boundaries():
