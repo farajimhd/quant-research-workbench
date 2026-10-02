@@ -153,3 +153,12 @@ def test_pool_cache(monkeypatch,tmp_path):
     np.testing.assert_array_equal(cold.targets,warm.targets)
     assert cold.token == warm.token and cold.metrics['reused']==0 and warm.metrics['reused']==2
     assert events[-1]['completed']==2 and events[-1]['total']==2
+
+
+def test_replay_source_seal_is_independent_of_cold_or_warm_timings():
+    from research.vectorized_backtest.v2.torch_backtest.prepare import tape_fingerprint
+    cold = dict(source_key='source',structural_token='causal-stream',seed_token='prior',
+                preparation={'seconds':100},structural_preparation={'reused':0,'workers':2})
+    warm = {**cold,'preparation':{'seconds':2},'structural_preparation':{'reused':100,'workers':32}}
+    assert tape_fingerprint(cold)==tape_fingerprint(warm)
+    assert tape_fingerprint(cold)!=tape_fingerprint({**warm,'structural_token':'different-bars'})

@@ -19,6 +19,13 @@ from .source import arte_sql as sql
 from .tape import SqueezeTape
 
 
+def tape_fingerprint(provenance):
+    """Seal source/algorithm authority, never cache hits or elapsed timings."""
+    stable = {k:v for k,v in provenance.items()
+              if k not in ('preparation', 'structural_preparation', 'fingerprint')}
+    return sha256(json.dumps(stable, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
 def dependencies():
     wanted = {"open@1000ms", "close@1000ms", "high@1000ms", "low@1000ms", "volume@1000ms",
               "trade_count@1000ms"}
@@ -45,7 +52,7 @@ def liquidity_sql(market, names, day, origin_us, lo, hi):
       FROM arte.liquidity_100ms_v1 WHERE build_id={sql.literal(market.build_id)}
       AND session_date=toDate({sql.literal(day)}) AND (ticker,attempt_id) IN ({pairs})
       AND bucket_index>={(lo-origin_us)//100000} AND bucket_index<{(hi-origin_us)//100000}
-      GROUP BY ticker,time_us ORDER BY ticker,time_us"""
+      GROUP BY ticker,time_us ORDER BY ticker,time_us FORMAT ArrowStream"""
 
 
 def _align(frame, tickers, clocks, column, *, carry=False, tolerance=None):
@@ -173,7 +180,7 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0, structur
                   "structural_preparation": structure.metrics,
                   "structural_authority": "prior-session-seed-plus-causal-completed-1s-stream",
                   "preparation": prepared.metrics}
-    provenance["fingerprint"] = sha256(json.dumps(provenance, sort_keys=True).encode()).hexdigest()
+    provenance["fingerprint"] = tape_fingerprint(provenance)
     return SqueezeTape(tickers, tensor(clocks // 1_000_000),
         tensor((watch["admitted_at_us"].to_numpy() + 999999) // 1_000_000),
         tensor(close), tensor(observed), tensor(high), tensor(low), tensor(arrays.pop("vwap")),

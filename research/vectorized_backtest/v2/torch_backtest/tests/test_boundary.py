@@ -78,6 +78,7 @@ def test_liquidity_query_pins_attempts_and_completed_local_midnight_buckets():
     assert "build_id='b'" in statement and "toUUID('x')" in statement
     assert "bucket_index>=10" in statement and "bucket_index<30" in statement
     assert "sum(execution_notional)" in statement
+    assert statement.endswith("FORMAT ArrowStream")
     assert "argMax(cumulative_execution_notional" in statement
     assert "quote_timestamp_us<=last_event_us" in statement
     assert "last_event_us<1000000+(toInt64(bucket_index)+1)*100000" in statement
