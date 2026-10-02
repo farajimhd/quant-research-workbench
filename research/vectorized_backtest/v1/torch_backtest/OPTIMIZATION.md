@@ -109,7 +109,7 @@ GPU memory is bounded with transfer headroom checks; there is no silent CPU
 fallback or ticker truncation. The monitor may fix a defect and launch a new
 bounded training run, but must never tune against validation outcomes.
 
-## Measured audit and current campaign
+## Measured audit and completed campaign
 
 The corrected default replay covers 19,800 one-second intervals on Aug 18,
 04:00–09:30 ET, in 28.35 s; the 39,600-interval 500 ms version takes 56.71 s.
@@ -126,16 +126,48 @@ existing captured CUDA graphs remain usable. Search requires captured one-step
 graphs, so there is no eager fallback after this reset. The failed receipt is
 preserved; a fresh campaign uses the corrected source identity.
 
-The failed campaign's training-only observations are diagnostic, not final
-validation results: its one-session winner earned $3,506.93 versus the default
-$3,160.51 on Aug 18. Its two-session winner reduced activity to zero entries on
-Aug 18 and one on Aug 19. This demonstrates the inactivity incentive discussed
-above; it does not establish out-of-sample profitability. Batched replay took
-about 30.7 s on Aug 18 and 39.7 s on Aug 19 for eight independent candidates.
-Cold setup for those session shapes took 81.85 s and 591.99 s respectively.
+The corrected campaign completed both eight-generation training phases and
+independent Aug 20 validation at a **1 s main clock**. Every session has 19,800
+intervals and independent $10,000 starting cash. The compiler lifecycle fix
+reproduced both previous training winners exactly. All nine reported candidate
+accounts ended with zero open positions, and final risk-adjusted scores were
+independently recomputed from the saved results.
 
-The corrected campaign is monitored under runtime run
-`strategy_search/bffc924a099e46a898102665f9eaea3c`. Its checkpoints, status and
-eventual `report.json` are the authority for completion; validation was pending
-when this progress note was written. No validation score is used to change the
-objective, budget, mutation schedule or winner selection.
+| Session / split | Candidate | Net P&L | Max drawdown | Entry episodes | Fills |
+|---|---|---:|---:|---:|---:|
+| Aug 18 / training | Default | $3,160.51 | $1,351.13 | 26 | 182 |
+| Aug 18 / training | One-session winner | $3,506.93 | $1,410.95 | 28 | 209 |
+| Aug 18 / training | Two-session winner | $0.00 | $0.00 | 0 | 0 |
+| Aug 19 / training | Default | -$2,368.05 | $3,117.15 | 32 | 217 |
+| Aug 19 / training | One-session winner | -$2,150.61 | $3,044.75 | 32 | 216 |
+| Aug 19 / training | Two-session winner | $2.17 | $29.49 | 1 | 7 |
+| Aug 20 / validation | Default | $859.82 | $1,602.66 | 25 | 194 |
+| Aug 20 / validation | One-session winner | $221.98 | $2,185.94 | 25 | 209 |
+| Aug 20 / validation | Two-session winner | -$2.38 | $18.40 | 2 | 8 |
+
+The one-session winner improved training P&L but underperformed the default on
+validation, with greater validation drawdown. The two-session winner maximized
+the selected risk-adjusted training objective largely by avoiding trading.
+Neither optimized policy improved validation fitness over the default. This
+is a completed search experiment, not an accepted profitable strategy.
+
+Phase 1 improved fitness from 0.248494 to 0.280146 at generation four. Phase 2
+improved its best population fitness from -0.010857 to -0.000656 by generation
+four. Both then plateaued for four generations; bounded diversity increases
+did not improve the winners within the budget. A plateau is not proof of a
+global optimum. No extra search or objective change was triggered by validation.
+
+The final batched replay timings were **30.69 s** on Aug 18, **39.11 s** on
+Aug 19 and **30.67 s** on Aug 20. These are eight-lane full-session timings;
+finalist evaluation uses three unique policies plus five duplicate padding
+lanes to retain the compiled batch shape. Training setup took 38.79 s and
+549.35 s for Aug 18 and Aug 19, additional to replay. New session shapes still
+have substantial cold compilation cost; warm replay is not end-to-end latency.
+The 500 ms audit above is separate; this search did not optimize at 500 ms.
+
+Immutable authority: [completed report](</D:/TradingML/runtimes/vectorized_backtest/strategy_search/bffc924a099e46a898102665f9eaea3c/report.json>)
+and [completion verification](</D:/TradingML/runtimes/vectorized_backtest/strategy_search/bffc924a099e46a898102665f9eaea3c/completion_verification.json>).
+The run retains 16 generation receipts, frozen winners, RNG checkpoints,
+certified input identities and source hashes. Completion verification matched
+all 32 pinned package source files. Validation was never used to change the
+objective, budget, mutation schedule or winner selection. Monitoring can stop.
