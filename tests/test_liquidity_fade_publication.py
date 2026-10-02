@@ -74,3 +74,27 @@ def test_empty_family_is_noop_without_cold_reads(monkeypatch):
     context = dict(data[4], financial_views={})
     assert prepare_liquidity_fade_publication_rows(data[0], (), (), (), **context) == ()
     assert not data[0].queries and not data[5][9] and not data[6][8]
+
+
+@pytest.mark.parametrize("number", [37, 38])
+def test_episode_release_exit_cannot_skip_missing_liquidity_child(monkeypatch, number):
+    from src.trading_runtime.strategy_liquidity_fade_exit import liquidity_fade_reason
+    from src.trading_runtime.strategy_liquidity_fade_publication import prepare_native_liquidity_fade_rows
+    data = integrated_case(monkeypatch)
+    parent = dict(data[2], reason=liquidity_fade_reason(number))
+    context = dict(data[4], financial_views={})
+    with pytest.raises(ValueError):
+        prepare_liquidity_fade_publication_rows(data[0], (), (parent,), (data[3],), **context)
+    with pytest.raises(ValueError):
+        prepare_native_liquidity_fade_rows(None, (), (parent,), (),
+            verified_prefix=None, first_price_source=None)
+    assert not data[0].queries
+
+
+@pytest.mark.parametrize("number", [37, 38])
+def test_episode_release_exit_cannot_skip_missing_afterhours_child(number):
+    from src.trading_runtime.strategy_confirmed_ah_failure_source import validate_confirmed_ah_rows
+    from src.trading_runtime.strategy_confirmed_ah_failure_exit import confirmed_ah_reason
+    parent = dict(record_id="parent", reason=confirmed_ah_reason(number))
+    with pytest.raises(ValueError, match="missing, extra or duplicate parents"):
+        validate_confirmed_ah_rows(None, (), (parent,), (), verified_prefix=None)

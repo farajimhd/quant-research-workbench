@@ -95,6 +95,8 @@ def test_installed_compiler_requires_full_inherited_execution_proof():
     'src/trading_runtime/strategy_registry.py',
     'src/trading_runtime/numbered_fixed_strategy.py',
     'src/backend/backtest_strategy_one_configuration.py',
+    'pipelines/strategy_one/configuration_publisher.py',
+    'scripts/clickhouse/publish_strategy_thirty_eight_configuration.py',
 ])
 def test_release_certificate_rejects_unreviewed_source(relative, tmp_path):
     from pathlib import Path

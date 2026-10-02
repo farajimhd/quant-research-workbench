@@ -116,3 +116,14 @@ def test_installed_child_does_not_grant_unknown_successor_admission():
     assert numbered_fixed_strategy(36).strategy_number == 36
     with pytest.raises(ValueError):
         numbered_fixed_strategy(39)
+
+
+@pytest.mark.parametrize("number", [37, 38])
+def test_episode_release_preserves_original_held_risk(number):
+    w, held, state, _ = prepared_case()
+    key, original = state.submitted[0]
+    proposal = replace(original, strategy_number=number)
+    rebound = replace(state, submitted=((key, proposal),))
+    assert validate_liquidity_fade_state(w, rebound, held) == proposal
+    with pytest.raises(ValueError):
+        validate_liquidity_fade_state(w, replace(rebound, submitted=((key, replace(proposal, initial_stop=2.29)),)), held)
