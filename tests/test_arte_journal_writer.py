@@ -647,6 +647,68 @@ def test_runtime_config_and_accounts_require_a_verified_context_fence() -> None:
                                   account_ids=("DU1", "DU2"))
 
 
+def _decode_binary_insert(sql: bytes) -> str:
+    """Interpret the actual binary request in the in-memory journal fixture."""
+    import struct
+    from datetime import date, datetime, timedelta, timezone
+    from decimal import Decimal, localcontext
+    from uuid import UUID
+    header, payload = sql.split(b'\n', 1)
+    text = header.decode('utf-8')
+    name = text.split('arte.', 1)[1].split(' ', 1)[0]
+    columns = writer_module._CONTRACTS[name].columns
+    offset = 0
+
+    def take(size):
+        nonlocal offset
+        result = payload[offset:offset + size]
+        assert len(result) == size
+        offset += size
+        return result
+
+    def read(kind):
+        if kind.startswith('Nullable('):
+            return None if take(1) == b'\x01' else read(kind[9:-1])
+        if kind in {'String', 'LowCardinality(String)'}:
+            size = shift = 0
+            while True:
+                byte = take(1)[0]
+                size |= (byte & 127) << shift
+                if byte < 128:
+                    break
+                shift += 7
+            return take(size).decode('utf-8')
+        if kind == 'FixedString(64)':
+            return take(64).decode('utf-8')
+        if kind == 'UUID':
+            high, low = struct.unpack('<QQ', take(16))
+            return str(UUID(int=(high << 64) | low))
+        if kind == 'Date':
+            return (date(1970, 1, 1) + timedelta(days=struct.unpack('<H', take(2))[0])).isoformat()
+        if kind == "DateTime64(6, 'UTC')":
+            ticks = struct.unpack('<q', take(8))[0]
+            return (datetime(1970, 1, 1, tzinfo=timezone.utc)
+                    + timedelta(microseconds=ticks)).isoformat(timespec='microseconds')
+        decimal = re.fullmatch(r'Decimal\((\d+),\s*(\d+)\)', kind)
+        if decimal:
+            precision, scale = map(int, decimal.groups())
+            width = 4 if precision <= 9 else 8 if precision <= 18 else 16 if precision <= 38 else 32
+            number = int.from_bytes(take(width), 'little', signed=True)
+            with localcontext() as context:
+                context.prec = 100
+                return format(Decimal(number).scaleb(-scale), f'.{scale}f')
+        formats = {'Float64': 'd', 'UInt8': 'B', 'UInt16': 'H', 'UInt32': 'I',
+                   'UInt64': 'Q', 'Int32': 'i', 'Int64': 'q', 'Bool': '?'}
+        packing = struct.Struct('<' + formats[kind])
+        return packing.unpack(take(packing.size))[0]
+
+    rows = []
+    while offset < len(payload):
+        rows.append({column: read(kind) for column, kind in columns})
+    return text.replace('FORMAT RowBinary', 'FORMAT JSONEachRow') + '\n' + '\n'.join(
+        json.dumps(row) for row in rows)
+
+
 class MemoryClient:
     def __init__(self) -> None:
         self.tables: dict[str, list[dict]] = {}
@@ -654,7 +716,9 @@ class MemoryClient:
         self.insert_sql: list[str] = []
         self.selects: list[str] = []
 
-    def execute(self, sql: str) -> str:
+    def execute(self, sql: str | bytes) -> str:
+        if isinstance(sql, bytes):
+            sql = _decode_binary_insert(sql)
         if sql.startswith("INSERT INTO arte."):
             name = sql.split("arte.", 1)[1].split(" ", 1)[0]
             self.inserts.append(name)

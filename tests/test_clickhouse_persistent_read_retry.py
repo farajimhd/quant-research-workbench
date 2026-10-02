@@ -33,6 +33,7 @@ def test_reconnects_one_plain_select_after_transport_close(monkeypatch, failure)
 
 
 @pytest.mark.parametrize("sql", ["INSERT INTO arte.x VALUES (1)",
+                                       b"INSERT INTO arte.x FORMAT RowBinary\n\xff\x00\x80",
                                        "ALTER TABLE arte.x DELETE WHERE 1",
                                        "WITH 1 AS x SELECT x"])
 @pytest.mark.parametrize("failure", [
@@ -74,3 +75,30 @@ def test_writer_reopens_idle_socket_before_sending_insert(monkeypatch):
     assert client._connection is not first
     assert first.request.call_count == 1
     assert client._connection.request.call_count == 1
+
+
+def test_binary_insert_body_is_sent_without_utf8_conversion(monkeypatch):
+    connection = MagicMock()
+    response = MagicMock(status=200, reason='OK', will_close=False)
+    response.read.return_value = b''
+    connection.getresponse.return_value = response
+    client = ClickHouseHttpClient('http://localhost:8123', 'writer', 'secret', persistent=True)
+    monkeypatch.setattr(client, '_new_connection', lambda: connection)
+    payload = b'INSERT INTO arte.x FORMAT RowBinary\n\xff\x00\x80'
+    assert client.execute(payload, query_id='binary-1') == ''
+    assert connection.request.call_args.kwargs['body'] is payload
+    assert connection.request.call_args.kwargs['headers']['Content-Type'] == 'application/octet-stream'
+
+
+def test_nonpersistent_binary_insert_body_is_sent_without_conversion(monkeypatch):
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b''
+    requests = []
+    def open_request(req, timeout):
+        requests.append(req)
+        return response
+    monkeypatch.setattr('research.mlops.clickhouse.request.urlopen', open_request)
+    client = ClickHouseHttpClient('http://localhost:8123', 'writer', 'secret')
+    payload = b'INSERT INTO arte.x FORMAT RowBinary\n\xff\x00\x80'
+    assert client.execute(payload) == ''
+    assert requests[0].data is payload

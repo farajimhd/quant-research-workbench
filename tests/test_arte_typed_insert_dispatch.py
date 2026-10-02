@@ -151,6 +151,33 @@ class Client:
         return ""
 
 
+def test_binary_insert_identity_covers_payload_and_seals_exact_request():
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run('run-1')
+    reserve_direct(authority)
+    header = SQL.partition('\n')[0].replace('FORMAT JSONEachRow', 'FORMAT RowBinary')
+    request = header.encode() + b'\n\xff\x00\x80'
+    client = Client(authority)
+    authority.execute_typed_insert(client, run_id='run-1', table='trading_event_v1',
+        token='batch-1', sql=request, batch_id=BATCH_ID, batch_last_sequence=1)
+    assert client.calls[0][0] is request
+    with pytest.raises(KeeperUnavailable, match='differs from parent identity'):
+        authority.seal_verified_operation(run_id='run-1', table='trading_event_v1',
+            token='batch-1', sql=request[:-1] + b'\x81', batch_id=BATCH_ID, batch_last_sequence=1)
+    authority.seal_verified_operation(run_id='run-1', table='trading_event_v1',
+        token='batch-1', sql=request, batch_id=BATCH_ID, batch_last_sequence=1)
+
+
+def test_binary_payload_cannot_supply_missing_header_settings():
+    authority = TypedInsertDispatch(Keeper())
+    request = (b'INSERT INTO arte.trading_event_v1 (run_id) FORMAT RowBinary\n'
+               b'async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,insert_deduplication_token=x')
+    with pytest.raises(ValueError, match='acknowledged arte INSERT'):
+        authority.execute_typed_insert(Client(authority), run_id='run-1',
+            table='trading_event_v1', token='batch-1', sql=request,
+            batch_id=BATCH_ID, batch_last_sequence=1)
+
+
 def test_typed_ack_does_not_rewrite_shared_gate() -> None:
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")

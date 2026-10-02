@@ -311,8 +311,9 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     lease.assert_current()
 
     class _V4RunnerClient(ClickHouseHttpClient):
-        def execute(self, sql: str, **kwargs: Any) -> Any:
-            if isinstance(sql, str) and sql.lstrip().upper().startswith("INSERT "):
+        def execute(self, sql: str | bytes, **kwargs: Any) -> Any:
+            prefix = b"INSERT " if isinstance(sql, bytes) else "INSERT "
+            if sql.lstrip().upper().startswith(prefix):
                 self.backtest_v4_lease.assert_current()
             return super().execute(sql, **kwargs)
 
@@ -1602,7 +1603,7 @@ def _insert(
     dispatch_policy_hash: str | None = None,
     dispatch_sync_account_id: str | None = None,
     dispatch_sync_revision: int | None = None,
-) -> str | None:
+) -> str | bytes | None:
     contract_name = (_profile_table(name, journal_profile)
                      if journal_profile == "backtest_v3" and name == "trading_commit_v1"
                      else name)
@@ -1611,15 +1612,25 @@ def _insert(
     if not rows:
         return None
     columns = tuple(column for column, _ in _CONTRACTS[contract_name].columns)
-    body = "\n".join(canonical_json(_wire_row(contract_name, row)) for row in rows)
-    # Canonical Float64 hashes require correctly rounded decimal parsing.
-    # The fast server parser can change one bit even for Python round-trip text.
-    sql = (
+    wire_rows = tuple(_wire_row(contract_name, row) for row in rows)
+    # On pre-26.7 servers precise_float_parsing does not govern JSON input.
+    # Binary Float64 transport preserves canonical hash bits and the same
+    # acknowledged asynchronous INSERT and Keeper request identity contract.
+    binary = (journal_profile == "backtest_v4" and any(
+        "Float64" in kind for _, kind in _CONTRACTS[contract_name].columns))
+    header = (
         f"INSERT INTO arte.{_profile_table(name, journal_profile)} ({','.join(columns)}) "
         f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
         f"precise_float_parsing=1,"
-        f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}"
+        f"insert_deduplication_token={_literal(token)} FORMAT "
     )
+    if binary:
+        from src.trading_runtime.arte_journal_rowbinary import encode_journal_rows
+        sql = ((header + "RowBinary\n").encode('utf-8') + encode_journal_rows(
+            tuple(_CONTRACTS[contract_name].columns), wire_rows))
+    else:
+        body = "\n".join(canonical_json(row) for row in wire_rows)
+        sql = header + "JSONEachRow\n" + body
     dispatch = getattr(client, "typed_insert_dispatch", None)
     sync_dispatch = getattr(client, "typed_sync_insert_dispatch", None)
     if dispatch_sync_account_id is not None:

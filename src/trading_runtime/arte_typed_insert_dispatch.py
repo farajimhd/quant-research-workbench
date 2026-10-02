@@ -262,15 +262,37 @@ def _decode_policy_gate(value: bytes) -> _PolicyGate:
     return gate
 
 
+def _request_bytes(sql: str | bytes) -> bytes:
+    """Keeper identity covers the complete request, including binary payload."""
+    if isinstance(sql, bytes):
+        return sql
+    if isinstance(sql, str):
+        return sql.encode('utf-8')
+    raise TypeError('Typed INSERT request must be text or exact bytes')
+
+
+def _request_header(sql: str | bytes) -> str:
+    # Only the first line is SQL for a RowBinary request. Its opaque payload
+    # must neither be searched for settings nor decoded as UTF-8.
+    if isinstance(sql, bytes):
+        header, separator, _ = sql.partition(b'\n')
+        if not separator or not header.endswith(b' FORMAT RowBinary'):
+            raise ValueError('Binary typed INSERT requires a RowBinary header')
+        return header.decode('utf-8', errors='strict')
+    if isinstance(sql, str):
+        return sql.partition('\n')[0]
+    raise TypeError('Typed INSERT request must be text or exact bytes')
+
+
 def _operation_wire(run_id: str, table: str, query_id: str,
-                    token: str, sql: str, batch_id: str,
+                    token: str, sql: str | bytes, batch_id: str,
                     sequence: int, status: str) -> bytes:
     if status not in {"pending", "acknowledged", "sealed"}:
         raise ValueError("Typed dispatch operation status is invalid")
     if type(sequence) is not int or sequence < 0:
         raise ValueError("Typed dispatch requires a nonnegative parent sequence")
     return ("3\n" + "\n".join((run_id, table, query_id,
-            sha256(token.encode()).hexdigest(), sha256(sql.encode()).hexdigest(),
+            sha256(token.encode()).hexdigest(), sha256(_request_bytes(sql)).hexdigest(),
             batch_id, str(sequence), status))).encode()
 
 
@@ -545,7 +567,7 @@ class TypedInsertDispatch:
         raise KeeperUnavailable("Typed batch reservation CAS contended")
 
     def execute_typed_insert(self, client: Any, *, run_id: str, table: str,
-                             token: str, sql: str,
+                             token: str, sql: str | bytes,
                              batch_id: str | None = None,
                              batch_last_sequence: int | None = None,
                              terminal_account_id: str | None = None,
@@ -555,11 +577,12 @@ class TypedInsertDispatch:
                              evidence_snapshot_hash: str | None = None,
                              campaign_snapshot_hash: str | None = None,
                              oms_observation_snapshot_hash: str | None = None) -> None:
+        header = _request_header(sql)
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
-                or not sql.startswith(f"INSERT INTO arte.{table} (")
+                or not header.startswith(f"INSERT INTO arte.{table} (")
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1"
-                   not in sql
-                or "insert_deduplication_token=" not in sql):
+                   not in header
+                or "insert_deduplication_token=" not in header):
             raise ValueError("Typed dispatch requires the acknowledged arte INSERT contract")
         if (type(batch_last_sequence) is not int or batch_last_sequence < 0
                 or not isinstance(batch_id, str)
@@ -729,7 +752,7 @@ class TypedInsertDispatch:
         raise KeeperUnavailable("Typed dispatch acknowledgement CAS contended")
 
     def seal_verified_operation(self, *, run_id: str, table: str, token: str,
-                                sql: str | None = None,
+                                sql: str | bytes | None = None,
                                 required: bool = True,
                                 batch_id: str | None = None,
                                 batch_last_sequence: int | None = None,
@@ -771,7 +794,7 @@ class TypedInsertDispatch:
                     or parts[6] != batch_id
                     or type(batch_last_sequence) is not int
                     or parts[7] != str(batch_last_sequence)
-                    or (sql is not None and parts[5] != sha256(sql.encode()).hexdigest())):
+                    or (sql is not None and parts[5] != sha256(_request_bytes(sql)).hexdigest())):
                 raise KeeperUnavailable("Typed dispatch operation differs from parent identity")
             if parts[8] == "sealed":
                 return

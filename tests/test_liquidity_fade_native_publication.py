@@ -26,6 +26,26 @@ def native_unit():
         prior_batch_id='00000000-0000-0000-0000-000000000005'), row)
 
 
+def test_real_float_family_insert_uses_binary_and_preserves_exact_hash():
+    import struct
+    from src.trading_runtime.arte_journal_writer import _insert, _canonical_typed_content
+    from src.trading_runtime.journal_contract import canonical_json
+    from hashlib import sha256
+    row = dict(native_unit().failure)
+    row['macd_line'] = 5.810210334455945e-05
+    sealed = typed_row(LIQUIDITY_FADE_FAILURE.name, row)
+    target = MemoryClient()
+    request = _insert(target, LIQUIDITY_FADE_FAILURE.name, (sealed,), 'exact-float-test',
+                      journal_profile='backtest_v4')
+    assert isinstance(request, bytes)
+    assert request.split(b'\n', 1)[0].endswith(b'FORMAT RowBinary')
+    saved = target.tables[LIQUIDITY_FADE_FAILURE.name][0]
+    assert struct.pack('<d', saved['macd_line']) == struct.pack('<d', row['macd_line'])
+    content = {key: value for key, value in saved.items() if key != 'content_hash'}
+    assert sha256(canonical_json(_canonical_typed_content(
+        LIQUIDITY_FADE_FAILURE.name, content, stored_utc=True)).encode()).hexdigest() == saved['content_hash']
+
+
 def client():
     def forbidden(*args, **kwargs):
         raise AssertionError('Preparation/gate rejection must not execute SQL')

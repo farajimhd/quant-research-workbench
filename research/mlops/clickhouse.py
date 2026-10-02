@@ -299,7 +299,11 @@ class ClickHouseHttpClient:
         if self.persistent and self._parsed_url.scheme not in {"http", "https"}:
             raise ValueError("persistent ClickHouse HTTP requires an http or https base URL")
 
-    def execute(self, sql: str, *, query_id: str | None = None) -> str:
+    def execute(self, sql: str | bytes, *, query_id: str | None = None) -> str:
+        # Binary INSERT requests include an ASCII SQL header followed by the
+        # exact format payload. Never decode or re-encode their data bytes.
+        if not isinstance(sql, (str, bytes)):
+            raise TypeError("ClickHouse request must be SQL text or exact bytes")
         params = dict(self.default_query_params)
         if query_id:
             params["query_id"] = query_id
@@ -313,11 +317,11 @@ class ClickHouseHttpClient:
                 # is safe to replay once on the fresh socket. An INSERT with
                 # no response has ambiguous commit status and must instead
                 # be resolved by its caller's typed/Keeper authority.
-                if re.match(r"\s*SELECT\b", sql, re.IGNORECASE) is None:
+                if not isinstance(sql, str) or re.match(r"\s*SELECT\b", sql, re.IGNORECASE) is None:
                     raise
                 return self._execute_persistent(sql, params)
         url = self._request_url(params)
-        req = request.Request(url, data=sql.encode("utf-8"), method="POST")
+        req = request.Request(url, data=sql if isinstance(sql, bytes) else sql.encode("utf-8"), method="POST")
         if self.user:
             req.add_header("X-ClickHouse-User", self.user)
         if self.password:
@@ -467,8 +471,9 @@ class ClickHouseHttpClient:
             timeout=self.timeout_seconds,
         )
 
-    def _execute_persistent(self, sql: str, params: Mapping[str, str]) -> str:
-        headers = {"Content-Type": "text/plain; charset=utf-8"}
+    def _execute_persistent(self, sql: str | bytes, params: Mapping[str, str]) -> str:
+        headers = {"Content-Type": "application/octet-stream" if isinstance(sql, bytes)
+                   else "text/plain; charset=utf-8"}
         if self.user:
             headers["X-ClickHouse-User"] = self.user
         if self.password:
@@ -488,7 +493,7 @@ class ClickHouseHttpClient:
                 self._connection.request(
                     "POST",
                     self._request_path(params),
-                    body=sql.encode("utf-8"),
+                    body=sql if isinstance(sql, bytes) else sql.encode("utf-8"),
                     headers=headers,
                 )
                 response = self._connection.getresponse()

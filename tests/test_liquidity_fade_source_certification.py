@@ -10,10 +10,13 @@ from src.backend.backtest_strategy_liquidity_fade_certification import (
 def test_prepared_source_proof_is_deterministic_and_fully_pinned():
     proof = certify_prepared_liquidity_fade_source()
     assert len(proof) == 64 and proof == certify_prepared_liquidity_fade_source()
-    assert len(LIQUIDITY_FADE_SOURCE_AST) == 57
+    assert len(LIQUIDITY_FADE_SOURCE_AST) == 60
     assert {
         'src/trading_runtime/strategy_half_risk_liquidity_fade.py',
         'src/backend/backtest_strategy_half_risk_liquidity_fade.py',
+        'src/trading_runtime/arte_journal_rowbinary.py',
+        'src/trading_runtime/arte_typed_insert_dispatch.py',
+        'research/mlops/clickhouse.py',
     }.issubset(LIQUIDITY_FADE_SOURCE_AST)
 
 
