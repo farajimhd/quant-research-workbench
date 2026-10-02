@@ -26,6 +26,15 @@ def main():
                     for size, viewport in [('normal',dict(width=1600,height=1000)),('compact',dict(width=1280,height=720))]:
                         context = browser.new_context(viewport=viewport)
                         context.add_init_script(f"localStorage.setItem('quant-research-workbench.theme','{theme}');localStorage.setItem('quant-research-workbench.ui-scale','{scale}');")
+                        context.add_init_script("""window.researchTextRows=[];
+                          const original=CanvasRenderingContext2D.prototype.fillText;
+                          CanvasRenderingContext2D.prototype.fillText=function(text,x,y,...rest){
+                            const width=this.measureText(String(text)).width;
+                            const cx=x+(this.textAlign==='center'?0:this.textAlign==='right'||this.textAlign==='end'?-width/2:width/2);
+                            window.researchTextRows.push({text:String(text),x:cx,y});
+                            if(window.researchTextRows.length>50000)window.researchTextRows.splice(0,10000);
+                            return original.call(this,text,x,y,...rest);
+                          };""")
                         page = context.new_page()
                         page.on('pageerror', lambda error: errors.append(str(error)))
                         responses = []
@@ -57,6 +66,14 @@ def main():
                         page.locator('.research-path-content:visible .research-page').evaluate('(el)=>el.scrollTop=0')
                         page.wait_for_timeout(300)
                         page.screenshot(path=str(output/(name+'-chart.png')))
+                        painted = page.evaluate('window.researchTextRows')
+                        for action, raw_field in [('ENTRY','entry_gain'),('EXIT','exit_gain')]:
+                            candidates = [r for r in responses[0]['labels'] if r['action']==action]
+                            assert any(any(a['text']==f"{r['label_value']:.3f}" and
+                                           b['text']==f"{r[raw_field]:.4f}" and
+                                           abs(a['x']-b['x'])<1 and b['y']>a['y']
+                                           for a in painted for b in painted if b['text']==f"{r[raw_field]:.4f}")
+                                       for r in candidates), f'{name}: {action} raw row not beneath quality'
                         page.get_by_role('button',name='Exit fullscreen Price-action candles & labels',exact=True).click()
                         assert not page.evaluate('document.documentElement.scrollWidth > window.innerWidth+2')
                         if theme=='light' and scale==1 and size=='normal':

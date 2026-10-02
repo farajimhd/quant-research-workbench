@@ -61,7 +61,8 @@ export function PriceActionResearch() {
       position: r.action === "EXIT" ? "aboveBar" : "belowBar", size: .5,
       shape: r.action === "ENTRY" ? "arrowUp" : r.action === "EXIT" ? "arrowDown" : "circle",
       color: r.action === "ENTRY" ? "var(--success)" : r.action === "EXIT" ? "var(--danger)" : r.action === "HOLD" ? "var(--info)" : "var(--muted-foreground)",
-      text: r.action === "WAIT" || (r.action === "HOLD" && !holdNumbers) ? "" : r.label_value.toFixed(3) })) }), [chart, holdNumbers]);
+      text: r.action === "WAIT" || (r.action === "HOLD" && !holdNumbers) ? "" : r.label_value.toFixed(3),
+      secondaryText: r.action === "ENTRY" ? r.entry_gain.toFixed(4) : r.action === "EXIT" && r.exit_gain != null ? r.exit_gain.toFixed(4) : undefined })) }), [chart, holdNumbers]);
   if (!experiment) return <div className="research-page">{error ? <div className="canvas-inline-error" role="alert">{error}<button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Retry experiment</button></div> : <LoadingState label="Loading saved price-action experiment" />}</div>;
   return <ResearchCanvas storageKey="price-action:NVDA:2026-07-31" titles={titles}
     icons={{ architecture: <Network size={14} />, analytics: <Microscope size={14} />, chart: <ChartCandlestick size={14} /> }}
@@ -98,7 +99,7 @@ export function PriceActionResearch() {
         <div><dt>EXIT quality · reference entry</dt><dd>{number(row.exit_quality)}</dd></div><div><dt>Local exit price gain</dt><dd>{number(row.exit_gain)}</dd></div>
         <div><dt>Reference entry price</dt><dd>{number(row.entry_basis)}</dd></div><div><dt>Reference sequence label</dt><dd>{row.reference_action}</dd></div>
         <div><dt>Next opportunity carry · separate</dt><dd>{number(row.carried_next_pair_value)}</dd></div></dl></div>}
-      <p className="research-muted">Marker numbers are local quality scores, not cumulative P&amp;L or probabilities. Gray dots = WAIT; blue dots = HOLD in the reference context.</p>
+      <p className="research-muted">Arrow numbers: normalized quality above, raw gain ($/share) below. Gray dots = WAIT; blue dots = HOLD in the reference context.</p>
       {experiment.both_opportunities > 0 && <p className="research-muted">{experiment.both_opportunities} candles qualify for both alternatives. Combined view shows EXIT; use ENTRY / WAIT to inspect their entry opportunities.</p>}
       <details><summary>Source & parameters</summary><p>{experiment.price_source}</p><p>{experiment.version} · tf={experiment.config.timeframe_seconds}s · {experiment.semantics}</p></details></div>,
       chart: <div className="research-chart-container research-price-action-chart"><div className="research-controls">
@@ -107,7 +108,7 @@ export function PriceActionResearch() {
         <button className="button secondary compact" disabled={busy || !chart?.previous_available} onClick={() => { setStart(chart!.start_us-900e6); setSelectedClock(null); }}>Previous 15 min</button>
         <span>{chart ? `${clock(chart.start_us-1e6)}–${clock(chart.end_us-1e6)} ET · 1s` : "Loading window"}</span>
         <button className="button secondary compact" disabled={busy || !chart?.next_available} onClick={() => { setStart(chart!.end_us); setSelectedClock(null); }}>Next 15 min</button></div>
-      <p className="research-muted">1s MACD: green ≥ signal, red &lt; signal · Arrows: ENTRY ↑ / EXIT ↓ · Numbers: local quality 0–1 · HOLD: blue · WAIT: gray</p>
+      <p className="research-muted">1s MACD: green ≥ signal, red &lt; signal · ENTRY ↑ / EXIT ↓ · Top: quality 0–1 · Bottom: raw gain $/share · HOLD: blue · WAIT: gray</p>
       <label className="research-checkbox"><input type="checkbox" checked={holdNumbers} onChange={e => setHoldNumbers(e.target.checked)} /><span>Show HOLD values</span></label>
       {busy ? <LoadingState fill label="Loading saved price-action labels" /> : error ? <div className="canvas-inline-error" role="alert">{error}<button onClick={() => setAttempt(a => a+1)}>Retry chart</button></div> : chart?.candles.length ?
         <ChartPanel ticker={experiment.ticker} timeframe="1s" timeframes={["1s"]} payload={payload}
@@ -118,6 +119,7 @@ export function PriceActionResearch() {
           persistedOnly initialFitMode="last_market_day" settingsStorageKey="research.price-action.chart.v2"
           appearanceDefaults={{ legendGutterVisible: false, rightLegendGutterVisible: false }} /> : <div className="research-empty">No valid-price candles in this window.</div>}
       <details className="research-label-detail"><summary>Read the labels on this chart</summary>
+        <p>Each arrow has two rows: normalized quality first, then the saved unnormalized gain in dollars per share (four decimal places). ENTRY uses discounted future gain; EXIT uses undiscounted gain from the reference entry. Optional HOLD numbers remain quality complements; no raw HOLD value is defined. WAIT has no text.</p>
         <p>ENTRY gain = maximum of (later L close − current close) × 0.5^(elapsed seconds / {experiment.config.half_life_seconds}). ENTRY quality = this positive gain / best positive gain in the S→L pair. Quality ≥ {(threshold*100).toFixed(0)}% shows an up arrow.</p>
         <p>The reference entry is the pair’s best discounted entry. EXIT gain = current L close − reference entry close; EXIT quality = clip(gain / best subsequent L gain, 0, 1). Quality ≥ {(threshold*100).toFixed(0)}% shows a red down arrow. Both exit clocks must follow the reference entry.</p>
         <p>Several arrows describe alternative opportunities. The “Selected reference pair” view shows just one chronological entry/exit pair per profitable S→L pair. Blue HOLD dots lie between those reference points; gray WAIT dots lie outside. Flat/held views preserve each conditional alternative. Carry is a discounted maximum with the next opportunity; it is not added to quality scores.</p>

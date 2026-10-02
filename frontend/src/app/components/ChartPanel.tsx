@@ -341,6 +341,8 @@ export type ChartLabelOption = {
 type AnySeriesApi = ISeriesApi<SeriesType>;
 type CandleSeriesDatum = Candle | { time: number };
 type ChartMarker = SeriesMarker<Time> & {
+  /** Optional second text row; rendered without an additional visible shape. */
+  secondaryText?: string;
   displayItemId?: string;
   preset?: ChartPreset;
   settingsId?: string;
@@ -5484,15 +5486,24 @@ function markersForSelection(
       const preset = settings?.preset === "tactical" || settings?.preset === "context" ? settings.preset : "micro";
       return marker.preset === preset;
     })
-    .map((marker, index) => ({
-      color: resolveChartColor(typeof marker.color === "string" ? marker.color : "#1E3A5F"),
-      id: marker.id ?? `${marker.displayItemId ?? "marker"}:${marker.time}:${index}`,
-      position: markerPosition(marker.position),
-      shape: markerShape(marker.shape),
-      size: clampNumber(marker.size, 0.1, 4, 1),
-      text: typeof marker.text === "string" && marker.text.trim() ? marker.text : undefined,
-      time: marker.time as Time
-    }));
+    .flatMap((marker, index): SeriesMarker<Time>[] => {
+      const primary: SeriesMarker<Time> = {
+        color: resolveChartColor(typeof marker.color === "string" ? marker.color : "#1E3A5F"),
+        id: marker.id ?? `${marker.displayItemId ?? "marker"}:${marker.time}:${index}`,
+        position: markerPosition(marker.position),
+        shape: markerShape(marker.shape),
+        size: clampNumber(marker.size, 0.1, 4, 1),
+        text: typeof marker.text === "string" && marker.text.trim() ? marker.text : undefined,
+        time: marker.time as Time
+      };
+      if (!marker.secondaryText?.trim() || !primary.text) return [primary];
+      // Above-bar stacking runs upwards: put the raw row nearest the arrow
+      // so the normalized row remains above it in screen reading order.
+      const secondary = { ...primary, id: `${primary.id}:secondary`, size: 0, text: marker.secondaryText };
+      return primary.position === "aboveBar"
+        ? [{ ...primary, text: marker.secondaryText }, { ...secondary, text: primary.text }]
+        : [primary, secondary];
+    });
 }
 
 function markerPosition(value: unknown): "aboveBar" | "belowBar" | "inBar" {
