@@ -130,7 +130,8 @@ def test_changed_native_reference_or_position_rejects_all_requests(monkeypatch,c
 
 
 @pytest.mark.parametrize('failure', [None, 'financial', 'checkpoint', 'confirmation'])
-def test_controller_fences_and_confirms_before_submitting(monkeypatch, failure):
+@pytest.mark.parametrize('number', [35, 36, 37, 38])
+def test_controller_fences_and_confirms_before_submitting(monkeypatch, failure, number):
     from src.backend.replay_run_service import ReplayRunController, RunMode
     request, receipt, _, _, _, _ = reference_case(monkeypatch)
     calls = []
@@ -140,7 +141,7 @@ def test_controller_fences_and_confirms_before_submitting(monkeypatch, failure):
     controller._source_cursor = {'boundary_ms': request.witness.boundary_ms}
     controller._fixed_keeper_session = object()
     controller._strategy_one_manager = SimpleNamespace(
-        contract=SimpleNamespace(strategy_number=35),
+        contract=SimpleNamespace(strategy_number=number),
         liquidity_fade_requests=lambda **_: (request,),
         complete_liquidity_fade_requests=lambda *a, **k: calls.append('clear'))
     controller._journal_publisher = SimpleNamespace(
