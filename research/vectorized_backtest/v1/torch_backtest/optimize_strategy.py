@@ -70,7 +70,16 @@ class SessionObjective:
             protection_values=decoded["protection"],
             action_values=decoded["actions"],
         )
+        # Dynamo's guard cache belongs to Python code objects, not to a session.
+        # Listing-specialized broker kernels otherwise accumulate guards across
+        # different tapes and eventually exhaust the cache on validation setup.
+        # Already resident runners execute captured CUDA graphs (graph_steps=1),
+        # which own their device work independently of these Python guard caches.
+        # Reset only at this sequential setup boundary; never during a replay.
+        torch.compiler.reset()
         self.replay.compile()
+        if self.replay.graph is None or self.replay.graph_steps != 1:
+            raise RuntimeError("Search requires a captured one-step CUDA runner")
         self.setup_seconds = perf_counter() - started
         print(
             f"Resident runner ready {session['session_date']}: setup={self.setup_seconds:.2f}s",

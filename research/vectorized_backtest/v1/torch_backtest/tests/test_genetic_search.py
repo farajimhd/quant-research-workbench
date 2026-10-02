@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import torch
 
 from research.vectorized_backtest.v1.torch_backtest.genetic_search import (
     StrategySpace,
@@ -12,6 +13,41 @@ from research.vectorized_backtest.v1.torch_backtest.genetic_search import (
 from research.vectorized_backtest.v1.torch_backtest.search_sessions import (
     validate_split,
 )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Requires captured CUDA graphs"
+)
+def test_compiler_reset_preserves_resident_graph_across_session_shapes():
+    """Clearing Python guards must not invalidate an earlier session's GPU work."""
+    torch.compiler.reset()
+
+    def operation(value):
+        return value.square() + 1
+
+    first = torch.ones(8, device="cuda", dtype=torch.float64)
+    compiled = torch.compile(operation, fullgraph=True, dynamic=False)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for _ in range(3):
+            compiled(first)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        output = compiled(first)
+    torch.cuda.synchronize()
+
+    # A new market tape has a different listing shape. Its compilation should
+    # not consume the former session's guard budget or disable its captured work.
+    torch.compiler.reset()
+    second = torch.full((13,), 3.0, device="cuda", dtype=torch.float64)
+    assert torch.equal(compiled(second), torch.full_like(second, 10.0))
+    first.fill_(2)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert torch.equal(output, torch.full_like(first, 5.0))
+    torch.compiler.reset()
 
 
 def test_default_roundtrip_and_every_evolved_candidate_satisfies_engine_contract():
