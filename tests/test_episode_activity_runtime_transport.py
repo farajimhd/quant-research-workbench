@@ -90,10 +90,11 @@ def test_actual_memory_prefix_projects_all_strategy37_companions_with_prefix_sou
         unit.initial_momentum_evidence,unit.first_price_evidence) for row in family)
 
 
-def test_manager_capture_requires_strategy37_episode_prefix_authority():
+@pytest.mark.parametrize('number', [37, 38])
+def test_manager_capture_requires_strategy37_episode_prefix_authority(number):
     from src.backend.backtest_strategy_one_management import StrategyOneManagementState
     from src.trading_runtime.strategy_one_management_snapshot import project_manager_snapshot
-    runtime, source, proposal, day = context()
+    runtime, source, proposal, day = context(number)
     key = (proposal.account_id, proposal.assignment_id, proposal.ticker)
     state = StrategyOneManagementState(proposal.boundary_ms, ((key, proposal),), (), ())
     rows = project_manager_snapshot(run_id=runtime.run_id, session_date=day,
