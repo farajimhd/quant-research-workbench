@@ -30,7 +30,9 @@ actual valid-price 1s candles. Invalid-price activity rows are counted explicitl
 and their targets remain in the detail table without snapping to nearby candles.
 Decision timestamps refer to candle close; plotted candles start one second
 earlier. Charts use 15-minute pages and preserve overlapping episode rows.
-Original long MACD episodes appear as green regions; saved MACD channels appear
+Original long hindsight entry-to-exit spans appear as green regions, using
+`entry_hint_us`/`exit_hint_us`, not MACD `start_us`/`end_us`. Extended training
+labels may continue outside the shaded span; saved MACD channels appear
 in the shared oscillator pane. One half-size marker is displayed per labeled
 candle for all training episodes by default, or the selected episode and branch.
 Overlapping same-clock rows share one marker; text lists distinct saved

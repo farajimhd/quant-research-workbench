@@ -45,6 +45,17 @@ def test_run_window_keeps_exact_probabilities_and_original_weights():
     assert result['held']['sample_weight'].to_list() == [.01, .01]
 
 
+def test_shading_uses_hindsight_hints_and_excludes_macd_only_tail():
+    episodes = pl.DataFrame(dict(listing_id=['a', 'a', 'a'], direction=[1, 1, -1],
+        start_us=[10_000_000]*3, end_us=[40_000_000]*3,
+        entry_hint_us=[8_000_000, 12_000_000, 8_000_000],
+        exit_hint_us=[20_000_000, 25_000_000, 20_000_000]))
+    original, regions = audit.hindsight_regions(episodes, 'a', 7_000_000, 9_000_000)
+    assert original.height == 1  # Hindsight entry precedes the MACD interval.
+    assert (regions[0]['start'], regions[0]['end']) == (7, 19)
+    assert audit.hindsight_regions(episodes, 'a', 30_000_000, 35_000_000)[0].is_empty()
+
+
 def test_routes_reject_invalid_requests_and_expose_no_writers():
     app = FastAPI(); app.include_router(router)
     client = TestClient(app)

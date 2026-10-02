@@ -56,6 +56,21 @@ def training_frames(day, frames):
     return {**frames, **{b: frames[b].filter((pl.col('time_us') >= begin) & (pl.col('time_us') < end)) for b in ('flat', 'held')}}
 
 
+def hindsight_regions(episodes, listing_id, start, end):
+    """Shade hindsight entry-to-exit, not the enclosing MACD sign interval.
+
+    Hints are completed-candle clocks; chart coordinates are candle starts.
+    Keep overlapping original episodes independently, as in the label source.
+    """
+    original = episodes.filter((pl.col('listing_id') == listing_id) &
+        (pl.col('direction') == 1) & (pl.col('exit_hint_us') >= start) &
+        (pl.col('entry_hint_us') < end))
+    regions = [dict(start=r['entry_hint_us']//1_000_000-1,
+                    end=r['exit_hint_us']//1_000_000-1,
+                    color='var(--success)', label='') for r in original.iter_rows(named=True)]
+    return original, regions
+
+
 def runtime():
     root = Path(os.environ.get('RL_V6_AUDIT_RUNTIME_ROOT', DEFAULT_ROOT)).resolve()
     if not root.is_dir():
@@ -294,8 +309,7 @@ def chart(day, listing_id, episode_uid, branch, start_us, seconds):
             line, signal = [float(row[SCALAR_NAMES.index('macd_'+name+'_rel')]) * float(np.exp(float(row[SCALAR_NAMES.index('log_close')]))) for name in ('line', 'signal')]
             data.append(dict(time=int(clock)//1_000_000-1, value=line if column == 'macd_line' else signal if column == 'macd_signal' else line-signal))
         oscillator.append(dict(column=column, label=label, paneKey='macd', style='histogram' if column == 'macd_histogram' else 'line', color=color, lineWidth=1, data=data))
-    original = frames['episodes'].filter((pl.col('listing_id') == listing_id) & (pl.col('direction') == 1) & (pl.col('end_us') >= start) & (pl.col('start_us') < end))
-    regions = [dict(start=r['start_us']//1_000_000-1, end=r['end_us']//1_000_000-1, color='rgba(34,197,94,0.10)', label='') for r in original.iter_rows(named=True)]
+    original, regions = hindsight_regions(frames['episodes'], listing_id, start, end)
     return dict(ticker=frame['ticker'][0], candles=candles, labels=target_rows, branch=branch,
                 start_us=start, end_us=end, seconds=seconds, omitted_invalid_price_rows=int((~valid).sum()),
                 source='SHA-verified V6 packed 1s candles (decoded float32 log prices)',
