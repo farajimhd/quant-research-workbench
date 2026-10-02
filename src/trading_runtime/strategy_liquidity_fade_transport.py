@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
-from .arte_liquidity_fade_failure_v4 import restore_liquidity_fade_failure, project_liquidity_fade_failure
+from .arte_liquidity_fade_failure_v4 import (
+    restore_liquidity_fade_failure, project_liquidity_fade_failure, CHECKPOINT_REFERENCE_FIELDS,
+)
 from .strategy_liquidity_fade_exit import liquidity_fade_exit_intent
 
 
@@ -44,7 +46,8 @@ class V4LiquidityFadeFailureBatch:
                 or parent['event_month'] != row['event_month']
                 or event['category'] != 'strategy' or event['entity_type'] != 'strategy_intent'
                 or parent['intent_id'] != event['entity_id']
-                or event['sequence'] != self.base.first_sequence):
+                or event['sequence'] != self.base.first_sequence
+                or row['source_manager_checkpoint_sequence'] >= event['sequence']):
             raise ValueError('Liquidity batch differs from its exact event/intent envelope')
         at = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
         if at.tzinfo is None:
@@ -57,7 +60,8 @@ class V4LiquidityFadeFailureBatch:
         if expected.event_time != at.astimezone(timezone.utc):
             raise ValueError('Liquidity batch event clock differs from its witness')
         source = {key: row[key] for key in ('source_build_id', 'source_market_plan_token',
-                  'source_bars_attempt_id', 'source_indicators_attempt_id', 'source_liquidity_attempt_id')}
+                  'source_bars_attempt_id', 'source_indicators_attempt_id', 'source_liquidity_attempt_id',
+                  *CHECKPOINT_REFERENCE_FIELDS)}
         projected = project_liquidity_fade_failure(witness, expected, financial, session_date=day,
             source_entry_intent_id=row['source_entry_intent_id'], run_id=row['run_id'],
             batch_id=row['batch_id'], parent_record_id=row['parent_record_id'], **source)

@@ -22,6 +22,9 @@ LIQUIDITY_FADE_FAILURE = TableContract("trading_liquidity_fade_failure_v4", (
     ("source_build_id", "String"), ("source_bars_attempt_id", "UUID"),
     ("source_indicators_attempt_id", "UUID"), ("source_liquidity_attempt_id", "UUID"),
     ("source_market_plan_token", "FixedString(64)"),
+    ("source_manager_snapshot_id", "UUID"),
+    ("source_manager_checkpoint_sequence", "UInt64"),
+    ("source_manager_snapshot_hash", "FixedString(64)"),
     ("boundary_ms", "UInt32"), ("first_held_boundary_ms", "UInt32"),
     ("reference_ask", "Decimal(38, 18)"), ("initial_stop", "Decimal(38, 18)"),
     ("completed_five_second_boundary_ms", "UInt32"), ("completed_close_int", "UInt64"),
@@ -32,6 +35,21 @@ LIQUIDITY_FADE_FAILURE = TableContract("trading_liquidity_fade_failure_v4", (
     ("content_hash", "FixedString(64)"),
 ), "toYYYYMM(event_month)", "run_id, parent_record_id, record_id")
 TABLES = (LIQUIDITY_FADE_FAILURE,)
+
+CHECKPOINT_REFERENCE_FIELDS = (
+    "source_manager_snapshot_id", "source_manager_checkpoint_sequence", "source_manager_snapshot_hash",
+)
+
+
+def validate_liquidity_checkpoint_reference(row):
+    """Require an exact manager pointer; native verification is separate."""
+    identity = row.get("source_manager_snapshot_id")
+    sequence = row.get("source_manager_checkpoint_sequence")
+    digest = row.get("source_manager_snapshot_hash")
+    if (type(identity) is not str or str(UUID(identity)) != identity or UUID(identity).int == 0
+            or type(sequence) is not int or not 0 < sequence < 2**64
+            or type(digest) is not str or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise ValueError("Liquidity fade lacks an exact manager checkpoint reference")
 
 
 def validate_liquidity_observation_source(row):
@@ -50,6 +68,7 @@ def project_liquidity_fade_failure(
     witness, intent, financial, *, session_date, source_entry_intent_id,
     run_id, batch_id, parent_record_id, source_build_id, source_bars_attempt_id,
     source_indicators_attempt_id, source_liquidity_attempt_id, source_market_plan_token,
+    source_manager_snapshot_id, source_manager_checkpoint_sequence, source_manager_snapshot_hash,
 ):
     """Project the exact prepared factory intent, retaining producer identities."""
     expected = liquidity_fade_exit_intent(witness, financial,
@@ -63,12 +82,16 @@ def project_liquidity_fade_failure(
                   source_liquidity_attempt_id=source_liquidity_attempt_id,
                   source_market_plan_token=source_market_plan_token)
     validate_liquidity_observation_source(source)
+    checkpoint = dict(source_manager_snapshot_id=source_manager_snapshot_id,
+                      source_manager_checkpoint_sequence=source_manager_checkpoint_sequence,
+                      source_manager_snapshot_hash=source_manager_snapshot_hash)
+    validate_liquidity_checkpoint_reference(checkpoint)
     return dict(
         record_id=str(uuid5(NAMESPACE_URL, f"{run_id}:{parent_record_id}:liquidity-fade-failure")),
         parent_record_id=parent_record_id, run_id=run_id,
         event_month=intent.event_time.strftime("%Y-%m-01"), batch_id=batch_id,
         strategy_number=35, source_entry_intent_id=source_entry_intent_id,
-        assignment_id=financial.assignment_id, **source,
+        assignment_id=financial.assignment_id, **source, **checkpoint,
         **{f.name: getattr(witness, f.name) for f in fields(LiquidityFadeFailure) if f.name != "candles"},
         **{f"trade_count_{i}": c.trade_count for i, c in enumerate(witness.candles)},
     )
@@ -80,6 +103,7 @@ def restore_liquidity_fade_failure(row):
     if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] != 35:
         raise ValueError("Liquidity fade belongs only to its complete Strategy 35 family")
     validate_liquidity_observation_source(row)
+    validate_liquidity_checkpoint_reference(row)
     integers = {name for name, kind in LIQUIDITY_FADE_FAILURE.columns if kind.startswith("UInt")}
     if any(type(row[name]) is not int for name in integers):
         raise ValueError("Liquidity fade requires exact integer producer authority")

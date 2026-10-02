@@ -46,6 +46,7 @@ def test_exact_factory_transport_freezes_values_with_scalar_codec_only():
     ('row', 'record_id', '00000000-0000-0000-0000-000000000001'),
     ('row', 'run_id', 'other'), ('row', 'source_entry_intent_id', '00000000-0000-0000-0000-000000000001'),
     ('row', 'content_hash', 'a'*64), ('event', 'sequence', 66), ('event', 'entity_type', 'signal'),
+    ('row', 'source_manager_checkpoint_sequence', 65),
     ('event', 'event_time', '2026-08-10T20:26:47.500000+00:00'),
     ('event', 'account_id', 'other'), ('parent', 'execution_quote_source', 'other'),
     ('parent', 'action', 'reduce'), ('parent', 'reason', 'foreign'),

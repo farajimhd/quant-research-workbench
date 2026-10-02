@@ -120,7 +120,7 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position high lacks its active position")
         sources = dict(state.submitted)
         required = {key for key in keys["positions"]
-                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34)}
+                    if sources[key].strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)}
         if keys["first_held_boundaries"] != required:
             raise ValueError("Strategy 9 position lacks its first held boundary")
         for key, boundary in state.first_held_boundaries:

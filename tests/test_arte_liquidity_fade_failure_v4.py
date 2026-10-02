@@ -28,7 +28,9 @@ def prepared_case():
     row = project_liquidity_fade_failure(w, intent, held, **args, run_id="run",
         batch_id=IDENTITY, parent_record_id=IDENTITY, source_build_id="a"*64,
         source_bars_attempt_id=IDENTITY, source_indicators_attempt_id=IDENTITY,
-        source_liquidity_attempt_id=IDENTITY, source_market_plan_token="b"*64)
+        source_liquidity_attempt_id=IDENTITY, source_market_plan_token="b"*64,
+        source_manager_snapshot_id=IDENTITY, source_manager_checkpoint_sequence=64,
+        source_manager_snapshot_hash="c"*64)
     key = held.account_id, held.assignment_id, held.ticker
     proposal = StrategyOneEntryProposal(held.assignment_id, held.account_id, held.ticker,
         44_780_000, 44_770_000, 2.33, 2.30, 2.40, "R1", .07, 44_779_000, "S1", 35)
@@ -53,6 +55,10 @@ def test_complete_scalar_roundtrip_preserves_both_clocks_four_counts_and_source(
     ("completed_five_second_boundary_ms", 44_810_000), ("first_held_boundary_ms", 44_785_100),
     ("macd_line", float("nan")), ("source_market_plan_token", "bad"),
     ("source_indicators_attempt_id", "bad"), ("source_liquidity_attempt_id", "bad"),
+    ("source_manager_snapshot_id", "bad"),
+    ("source_manager_snapshot_id", "00000000-0000-0000-0000-000000000000"),
+    ("source_manager_snapshot_hash", "bad"), ("source_manager_checkpoint_sequence", True),
+    ("source_manager_checkpoint_sequence", 0), ("source_manager_checkpoint_sequence", 2**64),
 ])
 def test_changed_missing_or_malformed_scalar_authority_rejects(field, value):
     *_, row = prepared_case()

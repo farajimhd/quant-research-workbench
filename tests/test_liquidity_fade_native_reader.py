@@ -7,7 +7,9 @@ import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.arte_journal_writer import typed_row, _canonical_typed_content
-from src.trading_runtime.arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE, project_liquidity_fade_failure
+from src.trading_runtime.arte_liquidity_fade_failure_v4 import (
+    LIQUIDITY_FADE_FAILURE, project_liquidity_fade_failure, CHECKPOINT_REFERENCE_FIELDS,
+)
 from src.trading_runtime.arte_liquidity_fade_reader_v4 import load_liquidity_fade_failure
 from src.trading_runtime.strategy_liquidity_fade_failure import LiquidityFadeCandle
 from src.trading_runtime.strategy_liquidity_fade_exit import liquidity_fade_exit_intent
@@ -56,7 +58,7 @@ def test_native_counts_above_float_precision_are_retained_exactly():
     projected = project_liquidity_fade_failure(witness, intent, financial, **args,
         **{key: row[key] for key in ('run_id', 'batch_id', 'parent_record_id',
            'source_build_id', 'source_market_plan_token', 'source_bars_attempt_id',
-           'source_indicators_attempt_id', 'source_liquidity_attempt_id')})
+           'source_indicators_attempt_id', 'source_liquidity_attempt_id', *CHECKPOINT_REFERENCE_FIELDS)})
     sealed = typed_row(LIQUIDITY_FADE_FAILURE.name, projected)
     for i in range(4):
         sealed[f'trade_count_{i}'] = str(sealed[f'trade_count_{i}'])
