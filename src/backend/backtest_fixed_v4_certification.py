@@ -977,10 +977,10 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
 # routes. Exact canonical AST seals bind the tested implementation; a later
 # behavior change gets a new numbered release. Comments/line endings do not
 # affect these seals. The run separately pins its complete backend fingerprint.
-_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'BacktestMemoryJournal': '544cd0be2d732d3099ec73a4d87c5d8670c6f8f0c65d37e1f89ba6521983d0d8', 'mark_fenced': '8cd7c50ca0a615ff9ed75ca54cfbffca41b94e8d74920adcefaa7d5fcca93855', 'append_profit_giveback_exit': '39562f84fadaedc24802e2e8d805b99b199e7d6b411c8ab7dee93a7c913b6bb5', 'profit_giveback_exit_for_record': '961b81e4f28658ccfafcdeae95bac8c0c1aa4951f989a86cd819bab86212ed40',
+_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'BacktestMemoryJournal': '991e3a9fb45efd62ce85964c919ff0a43b0d7d1502883bdb2889a01e804f45db', 'mark_fenced': '8cd7c50ca0a615ff9ed75ca54cfbffca41b94e8d74920adcefaa7d5fcca93855', 'append_profit_giveback_exit': '39562f84fadaedc24802e2e8d805b99b199e7d6b411c8ab7dee93a7c913b6bb5', 'profit_giveback_exit_for_record': '961b81e4f28658ccfafcdeae95bac8c0c1aa4951f989a86cd819bab86212ed40',
                                         'append_followthrough_exit': 'e09108c5177afb8638e8bc70b7f3503c5ac39176bdce9f0af9310d85c4f8796a',
                                         'append_strategy_one_intent': 'c99efb7110ceaa3386b05d29c2be46b9f38b2075eac3b3ef91a51b67c74aec55',
-                                        'append_strategy_one_protection_intent': '89f30010ede38620f82b8b9d1805cafe403d7b8d3feb4d3dc217e719ea3f9802'},
+                                        'append_strategy_one_protection_intent': '584aaedd9d01f75a4c1abd41792c835b58b690ad107a6a44ddcf6e436748d5cf'},
  'backend/backtest_market_plan_cache.py': {'selected_product_inventory_fingerprint': '2a24f97bf8d162e0d979c01fedbaba02de6e37cdaa0da48c482700c31211f355'},
  'backend/backtest_saved_source_authority.py': {'__module__': 'bb486b3cd6337d13ab5bfa9aea9e6614ab8e5a5a3bac558b06194cc240d8a5fc'},
  'backend/backtest_strategy_certified_price_break.py': {'__module__': '5e0f0b67941ee438748176becd38e04f6deeb89925b8cd3beff28a08f7cbc85d'},
@@ -1065,7 +1065,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'trading_runtime/runtime.py': {'submit_followthrough_failure': '7d31e1d26e44ca6667f996735520b5f78d386b8826b1ae40e5106bced2c577ac', 'submit_profit_giveback': 'fcd638576f375df9e6649800c40675f8a71520ce92020441bba3ca268f71df1c', '_execute_intents': '2f49a204361a5baa66e37cf6811f5ea3c4219ce113cdc35d7491cb58126156bf',
                                 '_strategy_one_entry_intent': 'f15c940ccdc21311577ce1e536182f7fedcbfacfa751b833350f0741235ce63a',
                                 'bind_strategy_one_price_source': 'bf5cc99da37efc8a765c03530f107289a3dc6e73729a133795e878bedeffe0ff',
-                                'submit_strategy_one_proposal': 'fc58db489cc261c7a0d1be3ad722cf98c317af6e3ed3d29f55a96f44cf086024'},
+                                'submit_strategy_one_proposal': '6ecc7ca11be0eb64ef41c788e0d0b58627a34109a4c3c7fabae7e1f5153cb770'},
  'trading_runtime/strategy_followthrough_exit.py': {'__module__': '369e348f8a0be9d057c09b61f28ee8724d4736469cd7c4624b8dd78c5ed43b76'},
  'trading_runtime/strategy_initial_momentum_growth.py': {'__module__': '68d66854b639e67a5d3734aaaf1a61ce015963d6841746a59c4ad85390761606'},
  'trading_runtime/strategy_initial_price_break.py': {'__module__': '5279377acee015b28239ecd1949657fb1ce66731835a6190b686bf54a38ce3ce'},
@@ -1134,7 +1134,7 @@ def certify_rising_momentum_entry_source(*, source_overrides: dict[str, Path] | 
     return sha256(json.dumps(observations, separators=(",", ":")).encode()).hexdigest()
 
 
-_SESSION_EXIT_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_numbered_session_exit_intent': '4cb32fab01fc40ff530064dc49a8849709675d3bfe05406b7cd413c23a10f17a'},
+_SESSION_EXIT_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_numbered_session_exit_intent': '5e619f0c6ace1614e0821d9b6acd594b7567be447494187d9c54219f1ed989f0'},
  'trading_runtime/numbered_fixed_strategy.py': {'_SESSION_EXIT_REASONS': 'd0825218a11822b5e7c8db710bcde8040b0735fe012053e548111892cf13b82e',
                                                 'numbered_session_exit_reason': '210f5211d9f9a3ca40a881298b00de8be3465a21941376ee44885efe952c7565'},
  'trading_runtime/numbered_session_exit.py': {'numbered_session_exit_intent': 'ef9bf3c91d18c5059f3d58ea844397a0d764b7cad9188a865a4d7260e85d0550'},

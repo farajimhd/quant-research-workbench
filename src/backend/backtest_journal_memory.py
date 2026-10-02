@@ -195,7 +195,7 @@ class BacktestMemoryJournal:
                     "replace_protective_stop", "replace_profit_target"}
                 or intent.metadata or not account_id
                 or strategy_id != STRATEGY_ID
-                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
+                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
                 or (intent.action == "replace_profit_target"
                     and (intent.reason != "ordinal_resistance_target"
                          or intent.profit_target_price is None
@@ -225,7 +225,7 @@ class BacktestMemoryJournal:
         from src.trading_runtime.signals import StrategyIntent
         if (not isinstance(intent, StrategyIntent) or intent.action != "exit"
                 or intent.reason != numbered_session_exit_reason(strategy_revision) or intent.metadata
-                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
+                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
                 or not account_id):
             raise ValueError("Session exit requires Strategy 2 normalized scalar source")
         with self._lock:

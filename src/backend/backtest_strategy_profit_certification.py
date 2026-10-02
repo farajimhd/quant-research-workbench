@@ -6,7 +6,7 @@ import json
 
 REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'__module__': '80081bad3f76f67437dcb8a507cb28551bbddac332ee9cd40bc53934273e48b5'},
  'pipelines/strategy_one/strategy_thirty_one_configuration.py': {'__module__': 'c17761f3c1bf325c59735b02ded012194a378946a3a50d984044cda6b1582515'},
- 'src/backend/backtest_journal_memory.py': {'__module__': '7e55871a7f133b9890696730e772dab0111b2c185e7dcbd10e4e824fc18dba06'},
+ 'src/backend/backtest_journal_memory.py': {'__module__': 'b93041380117c358d0f7b14f2452450eeb5183909653721feaa6752b9e523abd'},
  'src/backend/backtest_strategy_one_configuration.py': {'__module__': 'a3157672b364f52abfbfe66d8ebdd0bda3e9f87506ef396349562644f83f37bf'},
  'src/backend/backtest_strategy_one_coordinator.py': {'__module__': 'cbb70c053c61230aacdd5df2555804f6c9ae6bece533fe00f240855cab1e8a93'},
  'src/backend/backtest_strategy_one_execution.py': {'__module__': 'ec3ce757c835302831536b8678c251fe1ce158375a112c114c0320fcfa74968a'},
@@ -23,7 +23,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/trading_runtime/arte_profit_giveback_reader_v4.py': {'__module__': '0cf0f1628422ba7c5400099068b7cfcd0e9fa0ff47f49d7b6051189480ac40a3'},
  'src/trading_runtime/arte_profit_giveback_v4.py': {'__module__': 'eb9bdd2ab1e237775cf2c661ffd23d297be8f6176ba8e364a81f8c74f8e39b7e'},
  'src/trading_runtime/numbered_fixed_strategy.py': {'__module__': '868c244eaa13d6921067c8177b1797acc093cd7943d8f466c5cf69d1fc94895f'},
- 'src/trading_runtime/runtime.py': {'__module__': '331033696afed9862afa7f758fea08be10cd0654749a8ac6ff6879499e48c1cb'},
+ 'src/trading_runtime/runtime.py': {'__module__': '6873227c20b948211785c80507878de0e3dea5a03bea3f0361fba57efa856878'},
  'src/trading_runtime/strategy_one_management_snapshot.py': {'__module__': 'b61466191c397b7320cffa38d2e1127615e4968dd18a287608605a657f602172'},
  'src/trading_runtime/strategy_profit_giveback.py': {'__module__': 'cc23fe27ca6db49c4139a481f364bfc26088b0dea01d1f542ea2f98f79072d10'},
  'src/trading_runtime/strategy_profit_giveback_arm.py': {'__module__': '50cdeaee216cc08ddf24c1f5b8fb50a2553528c189aa1990506cea8261d66315'},

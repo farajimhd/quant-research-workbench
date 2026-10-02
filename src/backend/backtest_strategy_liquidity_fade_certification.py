@@ -57,10 +57,10 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/arte_journal_commit_v4.py': 'e64437ceee0702932aa2c39a6975e99deb13994887818366e2709da0722057e8',
     'src/trading_runtime/arte_journal_compound_v4.py': '4bf6f9f059a1ea2a8797842e7ab7750385df573c7e10920c0bd6c599d3592067',
     'src/backend/backtest_strategy_certified_price_break.py': '5e0f0b67941ee438748176becd38e04f6deeb89925b8cd3beff28a08f7cbc85d',
-    'src/backend/backtest_journal_memory.py': '7e55871a7f133b9890696730e772dab0111b2c185e7dcbd10e4e824fc18dba06',
+    'src/backend/backtest_journal_memory.py': 'b93041380117c358d0f7b14f2452450eeb5183909653721feaa6752b9e523abd',
     'src/backend/backtest_typed_projection.py': '1b76a74195d612057549a860c5212b3fbfab810151d37305d2e4a01b89e7cf6e',
     'src/backend/backtest_typed_publisher.py': '3215412966de8d38227427e09ff7059aad06b54cfc1f0d94e7c70c82dc7b3cee',
-    'src/trading_runtime/runtime.py': '331033696afed9862afa7f758fea08be10cd0654749a8ac6ff6879499e48c1cb',
+    'src/trading_runtime/runtime.py': '6873227c20b948211785c80507878de0e3dea5a03bea3f0361fba57efa856878',
 }
 
 
