@@ -194,7 +194,7 @@ def project_pending_backtest_v4_prefix(
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
         if (kind == ("command", "order")
-                and (expected_config or {}).get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+                and (expected_config or {}).get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                 and (expected_config or {}).get("strategy_id") ==
                     "early-squeeze-strategy"):
             from src.trading_runtime.arte_journal_projection import order_command_batch
@@ -418,17 +418,18 @@ def project_pending_backtest_v4_prefix(
                 raise RuntimeError("Follow-through intent lacks its normalized witness")
             if (kind == ('strategy', 'strategy_intent')
                     and record.payload.get('reason') in {
-                        profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36)}
+                        profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37)}
                     and profit_source is None):
                 raise RuntimeError('Profit intent lacks its normalized witness')
             if (kind == ('strategy', 'strategy_intent')
                     and record.payload.get('reason') in ('strategy_thirty_four_confirmed_ah_failure',
                                                         'strategy_thirty_five_confirmed_ah_failure',
-                                                        'strategy_thirty_six_confirmed_ah_failure')
+                                                        'strategy_thirty_six_confirmed_ah_failure',
+                                                        'strategy_thirty_seven_confirmed_ah_failure')
                     and confirmation_source is None):
                 raise RuntimeError('AH confirmation intent lacks its normalized witness')
             if (kind == ('strategy', 'strategy_intent') and record.payload.get('reason') in {
-                    liquidity_fade_reason(number) for number in (35, 36)}
+                    liquidity_fade_reason(number) for number in (35, 36, 37)}
                     and liquidity_source is None):
                 raise RuntimeError('Liquidity intent lacks its normalized witness')
             if sidecar is None and add_sidecar is None:
@@ -438,7 +439,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("strategy_id") == "early-squeeze-strategy"
-                        and record.payload.get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+                        and record.payload.get("strategy_revision") in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                         and record.payload.get("action") in {
                             "replace_protective_stop", "replace_profit_target"}
                         and protection_source is None):
@@ -584,7 +585,7 @@ def project_pending_backtest_v4_prefix(
                     or source[1].reference_price != witness.reference_ask
                     or source[1].invalidation_price != witness.initial_stop
                     or assignment != arm.candidate.assignment_id
-                    or record.payload['strategy_revision'] not in (31, 32, 33, 34, 35, 36)):
+                    or record.payload['strategy_revision'] not in (31, 32, 33, 34, 35, 36, 37)):
                 raise RuntimeError('Profit exit requires its exact original typed entry source')
             financial = StrategyOneFinancialView(assignment, record.account_id, intent.ticker,
                 AssignmentStatus.WATCHING, StrategyPermissions(), intent.quantity,
@@ -618,7 +619,7 @@ def project_pending_backtest_v4_prefix(
                     or source[1].invalidation_price != witness.five_second.initial_stop
                     or journal.assignment_for_intent(source_entry_id) != financial.assignment_id
                     or type(record.payload.get('strategy_revision')) is not int
-                    or record.payload['strategy_revision'] not in (34, 35, 36)):
+                    or record.payload['strategy_revision'] not in (34, 35, 36, 37)):
                 raise RuntimeError('AH confirmation requires its exact original typed entry source')
             confirmation = project_confirmed_ah_failure(
                 witness, intent, financial, session_date=session_date,
@@ -648,7 +649,7 @@ def project_pending_backtest_v4_prefix(
                     or source[1].invalidation_price != witness.initial_stop
                     or journal.assignment_for_intent(source_entry_id) != financial.assignment_id
                     or type(record.payload.get('strategy_revision')) is not int
-                    or record.payload['strategy_revision'] not in (35, 36)
+                    or record.payload['strategy_revision'] not in (35, 36, 37)
                     or record.payload.get('strategy_id') != 'early-squeeze-strategy'):
                 raise RuntimeError('Liquidity exit requires its exact original typed entry source')
             failure = project_liquidity_fade_failure(witness, intent, financial,

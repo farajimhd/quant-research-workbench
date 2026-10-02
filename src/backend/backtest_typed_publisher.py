@@ -311,7 +311,7 @@ class BacktestTypedJournalPublisher:
                 or source.run_id != self.journal.run_id
                 or self.writer.journal_profile != 'backtest_v4'
                 or not isinstance(self.expected_config, dict)
-                or self.expected_config.get('strategy_revision') not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+                or self.expected_config.get('strategy_revision') not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                 or self.expected_config.get('strategy_id') != 'early-squeeze-strategy'
                 or type(self.fixed_market_parent_plan) is not CertifiedMarketDayPlan
                 or source.plan.source.market.token != self.fixed_market_parent_plan.token
@@ -320,6 +320,10 @@ class BacktestTypedJournalPublisher:
             raise ValueError("Strategy20 publisher source lacks its exact unbound run")
         if self.expected_config['strategy_revision'] == 36 and source.entry_activity_source is None:
             raise ValueError('Strategy 36 publisher binding lacks certified activity source')
+        if self.expected_config['strategy_revision'] == 37:
+            from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
+            if type(source.entry_activity_source) is not EpisodeActivityReadbackAuthority:
+                raise ValueError('Strategy 37 publisher binding lacks certified episode prefix')
         # run_month partitions the execution's creation date. Native entries
         # refer to the historical market session, which can be another month.
         self._first_price_source = source
@@ -475,7 +479,7 @@ class BacktestTypedJournalPublisher:
                             if sidecar is None:
                                 raise RuntimeError("Committed Strategy 1 acquisition lost its source")
                             proposal, session_date = sidecar
-                            if source_unit.entry_evidence and proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
+                            if source_unit.entry_evidence and proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
                                 from .backtest_strategy_certified_price_break import (
                                     CertifiedPriceReadbackAuthority, certified_price_entry_intent,
                                 )

@@ -29,7 +29,7 @@ def test_inherited_ah_factory_preserves_policy_and_uses_separate_identity():
 
 
 @pytest.mark.parametrize('generic', [False, True])
-@pytest.mark.parametrize('number', [35, 36])
+@pytest.mark.parametrize('number', [35, 36, 37])
 def test_numbered_ah_runtime_retains_witness_and_requires_normalized_dispatch(generic, number):
     runtime, _, _ = runtime_fixture(strategy_number=number)
     witness, financial, args, _, _ = ah_case()

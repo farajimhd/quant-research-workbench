@@ -39,7 +39,7 @@ def test_numbered_factory_preserves_trade_fields_and_distinct_identity(number, r
     assert replace(current, intent_id=previous.intent_id, reason=previous.reason) == previous
 
 
-@pytest.mark.parametrize('number', [True, 31., '32', 30, 37])
+@pytest.mark.parametrize('number', [True, 31., '32', 30, 38])
 def test_unsupported_or_untyped_number_cannot_create_profit_exit(number):
     with pytest.raises(ValueError):
         intent(strategy_number=number)

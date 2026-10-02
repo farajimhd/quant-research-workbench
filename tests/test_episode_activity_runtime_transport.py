@@ -99,3 +99,22 @@ def test_manager_capture_requires_strategy37_episode_prefix_authority():
     with pytest.raises(ValueError, match='episode'):
         project_manager_snapshot(run_id=runtime.run_id, session_date=day,
             checkpoint_sequence=1, state=state, first_price_source=parent_only)
+
+
+def test_strategy37_entry_envelope_rejects_parent_activity_authority():
+    from uuid import UUID
+    from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
+    from src.backend.backtest_strategy_entry_activity_source import EntryActivityReadbackAuthority
+    runtime, source, proposal, day = context()
+    intent = TradingRuntime._strategy_one_entry_intent(runtime, proposal)
+    runtime.journal.append_strategy_one_intent(intent=intent, proposal=proposal,
+        session_date=day, account_id=proposal.account_id, strategy_id=runtime.config.strategy_id,
+        strategy_revision=37, first_price_source=source)
+    unit = project_pending_backtest_v4_prefix(runtime.journal, attempt_id=str(UUID(int=3702)),
+        run_month=day.replace(day=1), prior_sequence=0, through_sequence=1,
+        first_price_source=source, expected_config={'mode':'backtest',
+            'strategy_id':runtime.config.strategy_id,'strategy_revision':37})[0]
+    parent = CertifiedPriceReadbackAuthority(source.run_id, source.plan,
+        EntryActivityReadbackAuthority(source.run_id, source.entry_activity_source.plan))
+    with pytest.raises(ValueError, match='episode prefix'):
+        replace(unit, first_price_source=parent, entry_activity_evidence=())

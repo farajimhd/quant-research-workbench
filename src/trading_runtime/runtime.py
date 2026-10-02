@@ -919,24 +919,24 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
-        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
+        if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
             from .strategy_one_intent import require_no_replacement_capital
             require_no_replacement_capital(evaluation.intents)
             if any(intent.action not in {"enter_long", "add_long", "replace_protective_stop",
                                          "replace_profit_target", "exit"}
                    for intent in evaluation.intents):
                 raise ValueError("Strategy 2 action is outside its sealed contract")
-            if self.config.strategy_revision in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36) and any(
+            if self.config.strategy_revision in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37) and any(
                     intent.action == "add_long" for intent in evaluation.intents):
                 raise ValueError(f"Strategy {self.config.strategy_revision} forbids add acquisitions")
         from .strategy_liquidity_fade_exit import liquidity_fade_reason, liquidity_fade_exit_intent
-        liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36)}
+        liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36, 37)}
         if liquidity_fade_source is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
             from .strategy_one_stateful import StrategyOneFinancialView
             if (type(liquidity_fade_source) is not tuple or len(liquidity_fade_source) != 4
                     or self.config.mode != RunMode.BACKTEST or self.config.strategy_id != STRATEGY_ID
-                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision not in (35, 36)
+                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision not in (35, 36, 37)
                     or not isinstance(self.journal, BacktestMemoryJournal)
                     or event is not None or followthrough_source is not None or profit_giveback_source is not None
                     or confirmed_ah_source is not None or numbered_exit_assignment_id is not None
@@ -958,7 +958,7 @@ class TradingRuntime:
             if (type(confirmed_ah_source) is not tuple or len(confirmed_ah_source) != 3
                     or self.config.mode != RunMode.BACKTEST
                     or self.config.strategy_id != STRATEGY_ID
-                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision not in (34, 35, 36)
+                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision not in (34, 35, 36, 37)
                     or not isinstance(self.journal, BacktestMemoryJournal)
                     or event is not None or followthrough_source is not None or profit_giveback_source is not None
                     or numbered_exit_assignment_id is not None or strategy_one_assignment_id is not None
@@ -971,10 +971,10 @@ class TradingRuntime:
                         source_entry_intent_id=source_entry_intent_id,
                         strategy_number=self.config.strategy_revision),)):
                 raise ValueError('Strategy 34 AH exit differs from its immutable factory')
-        elif any(intent.reason in {confirmed_ah_reason(number) for number in (34, 35, 36)} for intent in evaluation.intents):
+        elif any(intent.reason in {confirmed_ah_reason(number) for number in (34, 35, 36, 37)} for intent in evaluation.intents):
             raise ValueError('Strategy 34 AH exit lacks its normalized witness')
         from .strategy_profit_giveback_exit import profit_giveback_reason
-        profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36)}
+        profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37)}
         if profit_giveback_source is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
             from .strategy_profit_giveback_exit import profit_giveback_exit_intent
@@ -982,7 +982,7 @@ class TradingRuntime:
             from .strategy_one_stateful import StrategyOneFinancialView
             if (type(profit_giveback_source) is not tuple or len(profit_giveback_source) != 4
                     or self.config.mode != RunMode.BACKTEST
-                    or self.config.strategy_id != STRATEGY_ID or self.config.strategy_revision not in (31, 32, 33, 34, 35, 36)
+                    or self.config.strategy_id != STRATEGY_ID or self.config.strategy_revision not in (31, 32, 33, 34, 35, 36, 37)
                     or not isinstance(self.journal, BacktestMemoryJournal)
                     or event is not None or followthrough_source is not None
                     or numbered_exit_assignment_id is not None
@@ -1008,7 +1008,7 @@ class TradingRuntime:
             validate_numbered_failure(witness, self.config.strategy_revision)
             if (self.config.mode != RunMode.BACKTEST
                     or self.config.strategy_id != STRATEGY_ID
-                    or self.config.strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+                    or self.config.strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                     or not isinstance(self.journal, BacktestMemoryJournal)
                     or event is not None or account_id != financial.account_id
                     or numbered_exit_assignment_id is not None
@@ -1018,13 +1018,13 @@ class TradingRuntime:
                     or evaluation.intents != (followthrough_exit_intent(
                         witness, financial, session_date=self.config.anchor_date,
                         source_entry_intent_id=source_entry_intent_id,
-                        strategy_number=self.config.strategy_revision if self.config.strategy_revision in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36) else 9),)):
+                        strategy_number=self.config.strategy_revision if self.config.strategy_revision in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37) else 9),)):
                 raise ValueError("Strategy 9 failure exit lacks exact typed authority")
         elif any(intent.reason == "strategy_nine_followthrough_failure"
                  for intent in evaluation.intents):
             raise ValueError("Strategy 9 failure exit lacks its normalized witness")
         if numbered_exit_assignment_id is not None:
-            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                     or not numbered_exit_assignment_id or event is not None
                     or any(intent.action != "exit" or intent.metadata
                            or intent.reason != numbered_session_exit_reason(self.config.strategy_revision)
@@ -1349,7 +1349,7 @@ class TradingRuntime:
         intent = followthrough_exit_intent(
             witness, financial, session_date=self.config.anchor_date,
             source_entry_intent_id=source_entry_intent_id,
-            strategy_number=self.config.strategy_revision if self.config.strategy_revision in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36) else 9)
+            strategy_number=self.config.strategy_revision if self.config.strategy_revision in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37) else 9)
         return await self._execute_intents(
             StrategyEvaluation(intents=(intent,)), financial.account_id, None,
             followthrough_source=(witness, financial, source_entry_intent_id))
@@ -1448,7 +1448,7 @@ class TradingRuntime:
                     or type(self.config.strategy_revision) is not int or self.config.strategy_revision != 37):
                 raise ValueError('Strategy37 runtime entry lacks its exact native source')
             return certified_episode_entry_intent(source, proposal, session_date=self.config.anchor_date)
-        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
+        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
             from src.backend.backtest_strategy_certified_price_break import (
                 CertifiedPriceReadbackAuthority, certified_price_entry_intent,
             )
@@ -1457,7 +1457,7 @@ class TradingRuntime:
                     or source.run_id != self.run_id
                     or self.config.mode != RunMode.BACKTEST
                     or self.config.strategy_id != 'early-squeeze-strategy'
-                    or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+                    or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                     or self.config.strategy_revision != proposal.strategy_number):
                 raise ValueError("Strategy20 runtime entry lacks its native source")
             if proposal.strategy_number == 36:
@@ -1484,7 +1484,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneEntryProposal)
                 or proposal.strategy_number != self.config.strategy_revision
@@ -1512,7 +1512,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or not isinstance(proposal, StrategyOneAddProposal)
                 or proposal.strategy_number != self.config.strategy_revision
@@ -1543,7 +1543,7 @@ class TradingRuntime:
 
         if (self.config.mode != RunMode.BACKTEST
                 or self.config.strategy_id != STRATEGY_ID
-                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+                or self.config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                 or not isinstance(self.journal, BacktestMemoryJournal)
                 or getattr(financial, "account_id", None) not in self.config.account_ids):
             raise ValueError("Strategy 1 protection needs its numbered Backtest runtime")

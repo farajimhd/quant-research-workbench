@@ -110,7 +110,7 @@ def project_liquidity_fade_failure(
 def restore_liquidity_fade_failure(row):
     """Replay complete scalars after raw stored hashes and UInt adaptation."""
     columns = {name for name, _ in LIQUIDITY_FADE_FAILURE.columns} - {"content_hash"}
-    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] not in (35, 36):
+    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] not in (35, 36, 37):
         raise ValueError("Liquidity fade belongs only to its complete Strategy 35 or 36 family")
     validate_liquidity_observation_source(row)
     validate_liquidity_checkpoint_reference(row)
