@@ -226,7 +226,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         bound = [node for node in ast.walk(manager) if isinstance(node, ast.Call)
                  and isinstance(node.func, ast.Name) and node.func.id == "advance_protection"]
         if (len(trailing.body) != 1
-                or ast.unparse(trailing.body[0]) != "return self.strategy_number not in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)"
+                or ast.unparse(trailing.body[0]) != "return self.strategy_number not in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)"
                 or len(bound) != 1 or not any(key.arg == "allows_completed_30s_trailing"
                     and ast.unparse(key.value) == "self.contract.allows_completed_30s_trailing"
                     for key in bound[0].keywords)):
@@ -259,7 +259,7 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
                     and isinstance(node.func, ast.Name) and node.func.id == "ExecutionPolicy"]
         envelope_keys = {key.arg: ast.unparse(key.value) for key in envelopes[0].keywords} if len(envelopes) == 1 else {}
         policy_keys = {key.arg: ast.unparse(key.value) for key in policies[0].keywords} if len(policies) == 1 else {}
-        if (len(cap.body) != 1 or ast.unparse(cap.body[0]) != "return self.strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)"
+        if (len(cap.body) != 1 or ast.unparse(cap.body[0]) != "return self.strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)"
                 or envelope_keys.get("maximum_buy_price") != "proposal.reference_ask if numbered_fixed_strategy(proposal.strategy_number).caps_entry_at_reference_ask else None"
                 or envelope_keys.get("persist_until_cancelled") != "True"
                 or policy_keys.get("partial_fill_policy") != "PartialFillPolicy.COMPLETE_REMAINDER"):
@@ -304,7 +304,7 @@ def certify_early_followthrough_failure_v4_source(*, source_path: Path | None = 
     assignments = [n for n in ast.walk(trees[1]) if isinstance(n, ast.Assign)
                    and any(isinstance(t, ast.Name) and t.id == "failure_rule" for t in n.targets)]
     if (len(assignments) != 1 or ast.unparse(assignments[0].value)
-            != "zero_regime_risk_failure if self.contract.strategy_number in (30, 31, 32, 33, 34, 35) else persistent_risk_failure if self.contract.strategy_number == 29 else premarket_quarter_risk_failure if self.contract.strategy_number in (25, 26, 27, 28) else early_followthrough_failure if self.contract.strategy_number in (11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24) else followthrough_failure"):
+            != "zero_regime_risk_failure if self.contract.strategy_number in (30, 31, 32, 33, 34, 35, 36) else persistent_risk_failure if self.contract.strategy_number == 29 else premarket_quarter_risk_failure if self.contract.strategy_number in (25, 26, 27, 28) else early_followthrough_failure if self.contract.strategy_number in (11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24) else followthrough_failure"):
         raise ValueError("Strategy 11 early failure predicate is not exclusively routed")
     numbered = [n for n in trees[2].body if isinstance(n, ast.FunctionDef)
                 and n.name == "validate_numbered_failure"]
@@ -400,7 +400,7 @@ def certify_followthrough_failure_v4_source() -> str:
     selectors = [n for n in ast.walk(management) if isinstance(n, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == "failure_rule" for t in n.targets)]
     if (len(selectors) != 1 or ast.unparse(selectors[0].value)
-            != "zero_regime_risk_failure if self.contract.strategy_number in (30, 31, 32, 33, 34, 35) else persistent_risk_failure if self.contract.strategy_number == 29 else premarket_quarter_risk_failure if self.contract.strategy_number in (25, 26, 27, 28) else early_followthrough_failure if self.contract.strategy_number in (11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24) else followthrough_failure"):
+            != "zero_regime_risk_failure if self.contract.strategy_number in (30, 31, 32, 33, 34, 35, 36) else persistent_risk_failure if self.contract.strategy_number == 29 else premarket_quarter_risk_failure if self.contract.strategy_number in (25, 26, 27, 28) else early_followthrough_failure if self.contract.strategy_number in (11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24) else followthrough_failure"):
         raise ValueError("Original failure rule must remain routed exclusively to Strategy 9/10")
     submit = named(trees[3], "submit_followthrough_failure")
     execute = named(trees[3], "_execute_intents")
@@ -990,12 +990,12 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'backend/backtest_strategy_initial_price_break.py': {'__module__': '6e48bc02aa9a734e70327db977531d967f85f469ed30208341768d3ed2701208'},
  'backend/backtest_strategy_initial_ten_percent.py': {'__module__': '73b8b04654cd8ebef2a8906908bac4c82fa06616fb4d50d19f73442f7f07f420'},
  'backend/backtest_strategy_one_configuration.py': {'__module__': 'a3157672b364f52abfbfe66d8ebdd0bda3e9f87506ef396349562644f83f37bf'},
- 'backend/backtest_strategy_one_coordinator.py': {'run_strategy_one_proposals': '68c46a3d60676b692d250db2e732b27a16285368be6842f8ea2d74d2781e7510'},
+ 'backend/backtest_strategy_one_coordinator.py': {'run_strategy_one_proposals': '67803a61f333c62937d89ad70af9dac952475cd6781675176d468a3d8ece51da'},
  'backend/backtest_strategy_one_execution.py': {'run_certified_strategy_one_session': 'f46f4f08d9212867d255d4fff665e363ff221f2199fb33e7b1694935696decd1',
                                                 'run_strategy_one_fixed_session': 'ece2dea52d75838a274c7be5ad01d11ec03680d0c28fbc84b057f109fffd6008'},
- 'backend/backtest_strategy_one_management.py': {'__init__': 'd2302383942594edc2eb9a0b1b0c314ff75d5b5fc63ee835349ad81ffc27c397', 'profit_arming_requests': 'cd318116330f7d0c959a4e30260c4a5f374b5debe4e3c0248f9e69dcac417528', 'accept_profit_arming_references': '3887b6c277a19ddd561fe092695fdd895d5c6fd8616e434cfc644853767eafdd', '_validate_capture': 'eea5ca262a6add3c7d31e0c93ba3cacffcfa68c879b2458461be2e26aad63684',
-                                                 'on_management': 'f0d1fc3724c703520e6ea7be123a2c6ad3d75a5f6a2a8c4115574d0045cf029c',
-                                                 'restore_state': '6bfe68ad5bca9464a29a30ef4fecb4504e5ff41cf779a46dda2151cfdf30bd34'},
+ 'backend/backtest_strategy_one_management.py': {'__init__': 'd2302383942594edc2eb9a0b1b0c314ff75d5b5fc63ee835349ad81ffc27c397', 'profit_arming_requests': 'c4099e1647ad7ed7725c801739dcbaaa4683cbf588835eb2f0a1aadf3c9e0bf9', 'accept_profit_arming_references': '3887b6c277a19ddd561fe092695fdd895d5c6fd8616e434cfc644853767eafdd', '_validate_capture': '54121a613311af36d16a3f6cde4430b0c133e731054bc17f153234ebb6377d17',
+                                                 'on_management': '069b09777dc924751d27348358171932573c71db1a80ba25665f5364eebadcda',
+                                                 'restore_state': '704ef53c787ec12dcf18e1b0c3c3eff3629f7b38a942c8b20cb23c77d74638c2'},
  'backend/backtest_strategy_one_stateful.py': {'propose_certified_strategy_one_entry': '3d1f757e2845b029cdfe98b1ec0a8ed0213081268b27ef044de6b2ccf98ba9a1'},
  'backend/backtest_strategy_one_static_gate.py': {'compile_static_entry_gate': 'e6d2f747557dfbe005d492fa4a24ef671f47736961196cd1ca27ec2da438d0e5'},
  'backend/backtest_strategy_one_v7_interval_store.py': {'certify_v7_interval_plan': '3e5a6b0150e9225821f165971f4c2526d41c2d9934c50bdbaa9101c295c219aa'},
@@ -1009,7 +1009,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'backend/backtest_v4_saved_review.py': {'_saved_twenty_price_source': '03afabfc5d8692b6fcad7ef7257ba77b27252918f90efd14cbe0a88ae62aeac5',
                                          '_terminal_attestation': 'a72937b75b7ee20a85b5680d9b99762f8e6ac471eb2ed9587ed21daa0979eb7f'},
  'backend/historical_runtime_versions.py': {'__module__': '96941bdcb6b84439c3ba3f0d1fc0deb9cde238746088d1b284284aa0969857ec'},
- 'backend/replay_run_service.py': {'_save_restart_checkpoint_responsive': '2e2ae0fd1f66145caf790b865f5146cb614386c6b451ad1c00b29a5401347482', '_confirm_profit_arming_checkpoint': '12db9b476ac9bf366006f2c6895d749681605cd290012d56e5d7be0aa2c47bee', '_run_strategy_one_fixed_days': 'b18b973adc99b762ab3d2e46567c613643fb00d676c68a3affe42b5d0719ebac',
+ 'backend/replay_run_service.py': {'_save_restart_checkpoint_responsive': '2e2ae0fd1f66145caf790b865f5146cb614386c6b451ad1c00b29a5401347482', '_confirm_profit_arming_checkpoint': 'fa52418e2bcfbbf3227e1460bb97c6bbffdccd7adddca9afc6978827a8059049', '_run_strategy_one_fixed_days': '3e8825dd566e072f54a1bdf476601aaf24ddbd2c84ab07c94f05782021cf1fc6',
                                    'backtest_preflight': 'd60aecbd6be87d19f5dcafea4c350974859a3253d9af6fa575190be14d5a1e83'},
  'trading_runtime/arte_backtest_definition.py': {'_reconstruct_backtest_definition': '5848ac310bcb92ba03e71eae9dc962f757191951fb77389c46eaa946779e86d0',
                                                  'reconstruct_backtest_definition_from_arte': 'f9f64dcd409d411db63d2057246b597e9a499df7b899f4afd46b708cd3f08f61',
@@ -1054,14 +1054,14 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'trading_runtime/arte_profit_giveback_v4.py': {'__module__': 'eb9bdd2ab1e237775cf2c661ffd23d297be8f6176ba8e364a81f8c74f8e39b7e'},
  'trading_runtime/strategy_profit_giveback.py': {'__module__': 'cc23fe27ca6db49c4139a481f364bfc26088b0dea01d1f542ea2f98f79072d10'},
  'trading_runtime/strategy_profit_giveback_exit.py': {'__module__': '8ebeed831c920f733251d466baccaee7bb69af8b6386950e28f10f6290b38082'},
- 'trading_runtime/strategy_profit_giveback_arm.py': {'__module__': 'eb21ab1d2a25c5d411f4c6c1e109fb9f1e5290e1727585f49dbb5279d213059e'},
+ 'trading_runtime/strategy_profit_giveback_arm.py': {'__module__': '50cdeaee216cc08ddf24c1f5b8fb50a2553528c189aa1990506cea8261d66315'},
  'trading_runtime/strategy_profit_giveback_arm_reference.py': {'__module__': '87352243161430f4a0f88321acd26b93d3cf69d69a99594d1b01dabe6ee36cf6'},
  'trading_runtime/strategy_profit_giveback_source.py': {'__module__': '6789c7f48ba035a8aa87e60991c82250a21e0464b1e66ad26b7fa57b076d6fba'},
  'trading_runtime/arte_rising_momentum_entry_v4.py': {'__module__': '32e9c6274783b916757f3b6a1ff8b991fac73a9c371912a2aaef379a0a3620c4'},
  'trading_runtime/arte_strategy_one_entry_journal.py': {'load_committed_strategy_one_entry_page': 'cb36bbd562cf732eb47916b67e32672c819fba01fc47d6b5997324e6c68f8117',
                                                         'load_committed_strategy_one_source': 'eb29931f2a0a8f70c1f735b75d1a857dbe69fe6709d3069baa4e8bf3c635676b',
                                                         'project_strategy_one_entry_evidence': '13c5a167ca69ecc368209275225d83758f429598a29431ebbad039f8d250a403'},
- 'trading_runtime/numbered_fixed_strategy.py': {'__module__': 'fd1f4afae0ea2d0b3604c4bffb76a7d28e0132f470de587db4380c2ee8c0898f'},
+ 'trading_runtime/numbered_fixed_strategy.py': {'__module__': '868c244eaa13d6921067c8177b1797acc093cd7943d8f466c5cf69d1fc94895f'},
  'trading_runtime/runtime.py': {'submit_followthrough_failure': '7d31e1d26e44ca6667f996735520b5f78d386b8826b1ae40e5106bced2c577ac', 'submit_profit_giveback': 'fcd638576f375df9e6649800c40675f8a71520ce92020441bba3ca268f71df1c', '_execute_intents': '2f49a204361a5baa66e37cf6811f5ea3c4219ce113cdc35d7491cb58126156bf',
                                 '_strategy_one_entry_intent': 'f15c940ccdc21311577ce1e536182f7fedcbfacfa751b833350f0741235ce63a',
                                 'bind_strategy_one_price_source': 'bf5cc99da37efc8a765c03530f107289a3dc6e73729a133795e878bedeffe0ff',
@@ -1075,10 +1075,10 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'trading_runtime/strategy_one_campaign_snapshot.py': {'__module__': 'c0dc6663aeb6c5d4f658056f24830a22823daeb8c3f03a0426c9a2f4bb6b56c2'},
  'trading_runtime/strategy_one_evidence_snapshot.py': {'__module__': 'b231921b43f4b332e4e0d5141aa8f4920d9cbcc2b55ef8ce8d8f12f003415a75'},
  'trading_runtime/strategy_one_intent.py': {'strategy_one_entry_intent': 'bca3aaf81302ccc413e61fc5d5b33905b376b93de4fe334dbf84036ed5a83873'},
- 'trading_runtime/strategy_one_management_snapshot.py': {'_project_manager_snapshot_scalar': '30d024104f63e5842ded576458fb09365577adea0af9de7429b7eb33a1fb3ef4',
-                                                         'attach_committed_momentum_sources': 'a381d7e33c475322652f8b52cae264a3adddf30af3fd03951f124dc782edc335',
+ 'trading_runtime/strategy_one_management_snapshot.py': {'_project_manager_snapshot_scalar': '70cc57512b2e863385f0bae17da34577ec0106f97cc158150c1c469d437ee173',
+                                                         'attach_committed_momentum_sources': '3060afd41d26d3dbdf742104bcb29ad50e62c4dbc73a248671cf8a8ca9e16b9c',
                                                          'load_attested_manager_snapshot': 'b7334c9c67638563a9cacdeb2376cabb1a376a372eac47389f24f5bf19602a3e',
-                                                         'project_manager_snapshot': '2951217c27049f2dec34d0677495c3823bcf7170ca3e322e79d17ac847b79f29',
+                                                         'project_manager_snapshot': '6037b23add3b01501e3d542a7eecd3437cd6d28db5a29cf5d47f8454c280f300',
                                                          'publish_manager_snapshot': '04aaa35af64ca161463ab2107ee92d40753b17b2f71b75d91a9ce95539410364',
                                                          'restore_manager_snapshot': 'f6f786343523ee899d73e9c9f561e9b0815f35208625db374325e523d59e6f17'},
  'trading_runtime/strategy_one_oms_observation_snapshot.py': {'__module__': 'd8f2ad09022bb5af10c3257113a604b32c3d6c0e2a263e8eb9c0a0d45731033b'},
@@ -1135,7 +1135,7 @@ def certify_rising_momentum_entry_source(*, source_overrides: dict[str, Path] | 
 
 
 _SESSION_EXIT_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_numbered_session_exit_intent': '4cb32fab01fc40ff530064dc49a8849709675d3bfe05406b7cd413c23a10f17a'},
- 'trading_runtime/numbered_fixed_strategy.py': {'_SESSION_EXIT_REASONS': 'cf034ce803e41e79d24b35464708dfb38088ab0e3f97d3d93bf3ca39ae47a682',
+ 'trading_runtime/numbered_fixed_strategy.py': {'_SESSION_EXIT_REASONS': 'd0825218a11822b5e7c8db710bcde8040b0735fe012053e548111892cf13b82e',
                                                 'numbered_session_exit_reason': '210f5211d9f9a3ca40a881298b00de8be3465a21941376ee44885efe952c7565'},
  'trading_runtime/numbered_session_exit.py': {'numbered_session_exit_intent': 'ef9bf3c91d18c5059f3d58ea844397a0d764b7cad9188a865a4d7260e85d0550'},
  'trading_runtime/runtime.py': {'_execute_intents': '2f49a204361a5baa66e37cf6811f5ea3c4219ce113cdc35d7491cb58126156bf'}}

@@ -95,7 +95,7 @@ def test_fourteen_reason_cannot_enter_successor_runtime_or_typed_memory(number):
     assert value.journal.pending_record_count == 0
 
 
-@pytest.mark.parametrize('number', [True, 19.0, '19', 1, 35])
+@pytest.mark.parametrize('number', [True, 19.0, '19', 1, 36])
 def test_reason_helper_retains_installed_typed_contract_guard(number):
     with pytest.raises(ValueError):
         numbered_session_exit_reason(number)

@@ -177,6 +177,27 @@ class EntryActivityReadbackAuthority:
         return tuple(result)
 
 
+def certified_entry_activity_witness(authority, proposal, *, session_date):
+    """Recheck cached entry eligibility at manager capture and restore.
+
+    This complements the inherited price/proposal proof. It makes no database
+    query and never reconstructs counts from a snapshot or an exit's claims.
+    """
+    from datetime import date
+    from .backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+    from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+    if (type(authority) is not CertifiedPriceReadbackAuthority
+            or type(proposal) is not StrategyOneEntryProposal
+            or type(proposal.strategy_number) is not int or proposal.strategy_number != 36
+            or type(session_date) is not date
+            or type(authority.entry_activity_source) is not EntryActivityReadbackAuthority
+            or authority.entry_activity_source.run_id != authority.run_id
+            or authority.entry_activity_source.plan.parent is not authority.plan
+            or authority.entry_activity_source.plan.market.sessions != (session_date.isoformat(),)):
+        raise ValueError('Strategy36 manager requires its exact certified entry activity source')
+    return authority.entry_activity_source.plan.witness(proposal.ticker, proposal.boundary_ms)
+
+
 def load_entry_activity_plan(market, parent, *, client):
     """Read only parent survivors in bounded exact-key Arrow projections.
 
