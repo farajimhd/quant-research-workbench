@@ -40,13 +40,17 @@ def seal_certified_entry_activity_rows(rows, entries, intents, events, *, run_id
     Row-contained tokens and producer-supplied witnesses never authorize cold
     readback. Older numbered entries need no activity source or companions.
     """
-    required = tuple(row for row in entries if row['strategy_number'] == 36)
+    required = tuple(row for row in entries if row['strategy_number'] in (36, 37))
     if not required:
         if rows:
-            raise ValueError('Entry activity companions have no Strategy 36 parent')
+            raise ValueError('Entry activity companions have no Strategy 36 parent or Strategy 37 parent')
         return ()
     from src.backend.backtest_strategy_entry_activity_source import EntryActivityReadbackAuthority
-    if type(source) is not EntryActivityReadbackAuthority or source.run_id != run_id:
+    from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
+    source_types = {36: EntryActivityReadbackAuthority, 37: EpisodeActivityReadbackAuthority}
+    if (len({row['strategy_number'] for row in required}) != 1
+            or type(source) is not source_types[required[0]['strategy_number']]
+            or source.run_id != run_id):
         raise ValueError('Entry activity requires independent certified run source')
     parents = {row['parent_record_id'] for row in required}
     selected_intents = tuple(row for row in intents if row['record_id'] in parents)
@@ -55,9 +59,12 @@ def seal_certified_entry_activity_rows(rows, entries, intents, events, *, run_id
         tuple(row for row in events if row['record_id'] in parents), authorities)
 
 
-def project_entry_activity(witness, *, run_id, batch_id, parent_record_id, event_month):
+def project_entry_activity(witness, *, run_id, batch_id, parent_record_id, event_month,
+                           strategy_number=36):
     """Project independently supplied evidence; row-contained seals grant nothing."""
     validate_entry_activity_witness(witness)
+    if type(strategy_number) is not int or strategy_number not in (36, 37):
+        raise ValueError('Entry activity projection requires exact supported strategy number')
     if type(run_id) is not str or not run_id:
         raise ValueError('Entry activity requires exact run identity')
     for value in (batch_id, parent_record_id):
@@ -68,7 +75,7 @@ def project_entry_activity(witness, *, run_id, batch_id, parent_record_id, event
         raise ValueError('Entry activity month differs from exact UTC source clock')
     row = dict(record_id=str(uuid5(NAMESPACE_URL, f'{parent_record_id}:entry-activity:5000')),
                parent_record_id=parent_record_id, run_id=run_id, event_month=event_month,
-               batch_id=batch_id, strategy_number=36, ticker=witness.ticker,
+               batch_id=batch_id, strategy_number=strategy_number, ticker=witness.ticker,
                session_date=witness.session_date, boundary_ms=witness.boundary_ms,
                history_active=int(witness.history_active))
     row.update({name: getattr(witness, name) for name in _SOURCE_FIELDS})
@@ -79,14 +86,15 @@ def project_entry_activity(witness, *, run_id, batch_id, parent_record_id, event
 
 
 def restore_entry_activity(rows, *, expected_witness, run_id, batch_id,
-                           parent_record_id, event_month):
+                           parent_record_id, event_month, strategy_number=36):
     """Compare one row against a separately reconstructed certified witness.
 
     The journal reader must verify its ordinary content hash before this source
     comparison. This function cannot authenticate row-contained source tokens.
     """
     expected = project_entry_activity(expected_witness, run_id=run_id, batch_id=batch_id,
-                                      parent_record_id=parent_record_id, event_month=event_month)
+                                      parent_record_id=parent_record_id, event_month=event_month,
+                                      strategy_number=strategy_number)
     if len(rows) != 1:
         raise ValueError('Entry activity requires exactly one accepted-entry companion')
     row = rows[0]
@@ -127,10 +135,10 @@ def seal_entry_activity_rows(rows, entries, intents, events, authorities):
     from .arte_journal_writer import typed_row, _datetime_wire, _CONTRACTS
     if _CONTRACTS.get(ENTRY_ACTIVITY.name) != ENTRY_ACTIVITY:
         raise ValueError('Entry activity table contract is not registered by journal integration')
-    required = {r['parent_record_id']: r for r in entries if r['strategy_number'] == 36}
+    required = {r['parent_record_id']: r for r in entries if r['strategy_number'] in (36, 37)}
     parents = {r['record_id']: r for r in intents}
     source_events = {r['record_id']: r for r in events}
-    if (len(required) != sum(r['strategy_number'] == 36 for r in entries)
+    if (len(required) != sum(r['strategy_number'] in (36, 37) for r in entries)
             or len(parents) != len(intents) or len(source_events) != len(events)
             or any(type(a) is not EntryActivityAuthority for a in authorities)):
         raise ValueError('Entry activity graph has ambiguous parents or untyped authority')
@@ -160,7 +168,7 @@ def seal_entry_activity_rows(rows, entries, intents, events, authorities):
                 or any(str(intent[name]) != str(entry[name]) or str(event[name]) != str(entry[name])
                        for name in ('run_id', 'batch_id', 'event_month'))):
             raise ValueError('Entry activity graph has unrelated entry, intent or event scope')
-        identity = (f"strategy-36:{witness.session_date}:{entry['assignment_id']}:"
+        identity = (f"strategy-{entry['strategy_number']}:{witness.session_date}:{entry['assignment_id']}:"
                     f"{intent['account_id']}:{witness.ticker}:{witness.boundary_ms}:{authority.episode_start_ms}")
         if intent['intent_id'] != str(uuid5(NAMESPACE_URL, identity)):
             raise ValueError('Entry activity graph differs from numbered intent identity')
@@ -174,5 +182,6 @@ def seal_entry_activity_rows(rows, entries, intents, events, authorities):
             raise ValueError('Entry activity graph differs from native event clock')
         restore_entry_activity(grouped.get(parent, ()), expected_witness=witness,
                                run_id=entry['run_id'], batch_id=entry['batch_id'],
-                               parent_record_id=parent, event_month=str(entry['event_month']))
+                               parent_record_id=parent, event_month=str(entry['event_month']),
+                               strategy_number=entry['strategy_number'])
     return sealed

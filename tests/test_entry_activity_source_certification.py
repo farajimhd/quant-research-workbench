@@ -17,7 +17,7 @@ def test_installed_compiler_and_full_parent_projection_are_certified():
     assert is_numbered_fixed_configuration(result['payload'])
     proof = certify_numbered_fixed_v4_projection(36)
     assert len(proof) == 64 and proof != certify_numbered_fixed_v4_projection(35)
-    assert len(ENTRY_ACTIVITY_SOURCE_AST) == 26
+    assert len(ENTRY_ACTIVITY_SOURCE_AST) == 29
 
 
 @pytest.mark.parametrize('relative', tuple(ENTRY_ACTIVITY_SOURCE_AST))
