@@ -86,7 +86,7 @@ def test_installed_compiler_requires_full_inherited_execution_proof():
     assert child.verify_strategy_thirty_eight_manifest(result['payload']['strategy'])
     assert len(certify_numbered_fixed_v4_projection(38)) == 64
     with pytest.raises(ValueError):
-        numbered_strategy(39)
+        numbered_strategy(40)
 
 
 @pytest.mark.parametrize('relative', [

@@ -40,8 +40,10 @@ def test_exact_factory_transport_freezes_values_with_scalar_codec_only():
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     assert numbered_fixed_strategy(35).strategy_number == 35
     assert numbered_fixed_strategy(36).strategy_number == 36
+    for number in (37, 38, 39):
+        assert numbered_fixed_strategy(number).strategy_number == number
     with pytest.raises(ValueError):
-        numbered_fixed_strategy(37)
+        numbered_fixed_strategy(40)
 
 
 @pytest.mark.parametrize('target,field,value', [

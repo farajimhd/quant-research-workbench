@@ -267,7 +267,7 @@ class StrategyOneManagementRunner:
                     raise ValueError("Strategy20 manager recovery lacks its native source context")
                 certified_price_entry_intent(first_price_source.plan, proposal,
                     session_date=date.fromisoformat(first_price_source.plan.source.market.sessions[0]))
-                if proposal.strategy_number in (37, 38):
+                if proposal.strategy_number in (37, 38, 39):
                     from .backtest_strategy_episode_activity_source import certified_episode_activity_witness
                     certified_episode_activity_witness(first_price_source, proposal,
                         session_date=date.fromisoformat(first_price_source.plan.source.market.sessions[0]))

@@ -1,4 +1,4 @@
-"""Prepared exact-parent Strategy39 specification; execution is not installed."""
+"""Exact-parent Strategy39 contract with sealed Backtest-only registration."""
 from copy import deepcopy
 from hashlib import sha256
 import re
@@ -86,7 +86,7 @@ def verify_prepared_strategy_thirty_nine_manifest(strategy):
 
 
 def verify_installed_strategy_thirty_nine_release(manifest):
-    """An explicit fail-closed boundary until complete installation is proven."""
+    """Require the exact installed sealed release; publication needs full source proof."""
     from .strategy_registry import numbered_strategy, fixed_strategy_executor
     installed = numbered_strategy(39)
     expected = release_contract()

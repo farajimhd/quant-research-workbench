@@ -1,4 +1,4 @@
-"""Prepared specification tests; Strategy39 remains uninstalled and unpublished."""
+"""Exact-parent Strategy39 release and full inherited source approval checks."""
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
@@ -54,7 +54,47 @@ def test_resealed_policy_mutation_is_rejected(policy):
     with pytest.raises(ValueError,match='pinned policy'):child.verify_prepared_strategy_thirty_nine_manifest(strategy)
 
 
-def test_prepared_manifest_does_not_grant_installed_execution():
-    strategy=child.derive_strategy_thirty_nine_configuration(source_fixture(),**APPROVAL)['payload']['strategy']
-    assert child.verify_prepared_strategy_thirty_nine_manifest(strategy)
-    with pytest.raises(ValueError):child.verify_strategy_thirty_nine_manifest(strategy)
+def test_installed_release_requires_full_inherited_execution_proof():
+    from pipelines.strategy_one.strategy_thirty_nine_configuration import compile_strategy_thirty_nine_configuration
+    from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
+    from src.backend.backtest_strategy_one_configuration import is_numbered_fixed_configuration
+    from src.trading_runtime.strategy_registry import numbered_strategy, numbered_strategy_parent
+    result=compile_strategy_thirty_nine_configuration(source_fixture(),**APPROVAL)
+    assert child.verify_strategy_thirty_nine_manifest(result['payload']['strategy'])
+    assert numbered_strategy(39)==child.release_contract()
+    assert numbered_strategy_parent(39)==38
+    assert is_numbered_fixed_configuration(result['payload'])
+    assert len(certify_numbered_fixed_v4_projection(39))==64
+    with pytest.raises(ValueError):numbered_strategy(40)
+
+
+def test_installed_capabilities_preserve_parent_session_and_order_policy():
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    previous,current=numbered_fixed_strategy(38),numbered_fixed_strategy(39)
+    for name in ('allows_session_exit','allows_adds','allows_completed_30s_trailing',
+                 'allows_target_escalation','caps_entry_at_reference_ask','allows_followthrough_failure_exit'):
+        assert getattr(current,name)==getattr(previous,name)
+    for boundary in (0,100,19_499_900,19_500_000,19_740_000,19_800_000,
+                     43_200_000,43_200_100,57_000_000,57_300_000,57_600_000):
+        for name in ('entry_allowed','acquisition_cutoff','liquidation_due'):
+            assert getattr(current,name)(boundary)==getattr(previous,name)(boundary)
+        for episode in (0,100,19_500_000,43_200_000,43_200_100):
+            assert current.activation_allowed(boundary,episode)==previous.activation_allowed(boundary,episode)
+
+
+@pytest.mark.parametrize('relative',[
+    'src/trading_runtime/strategy_thirty_nine_release.py',
+    'pipelines/strategy_one/strategy_thirty_nine_configuration.py',
+    'src/trading_runtime/strategy_registry.py',
+    'src/trading_runtime/numbered_fixed_strategy.py',
+    'src/backend/backtest_strategy_one_configuration.py',
+    'pipelines/strategy_one/configuration_publisher.py',
+    'scripts/clickhouse/publish_strategy_thirty_nine_configuration.py',
+])
+def test_release_certificate_rejects_unreviewed_source(relative,tmp_path):
+    from pathlib import Path
+    from src.backend.backtest_strategy_thirty_nine_certification import certify_strategy_thirty_nine_source
+    changed=tmp_path/'changed.py'
+    changed.write_text(Path(relative).read_text(encoding='utf-8')+'\nUNREVIEWED_CHANGE = True\n',encoding='utf-8')
+    with pytest.raises(ValueError,match='pinned release source changed'):
+        certify_strategy_thirty_nine_source(source_overrides={relative:changed})

@@ -29,7 +29,7 @@ def test_inherited_ah_factory_preserves_policy_and_uses_separate_identity():
 
 
 @pytest.mark.parametrize('generic', [False, True])
-@pytest.mark.parametrize('number', [35, 36, 37, 38])
+@pytest.mark.parametrize('number', [35, 36, 37, 38, 39])
 def test_numbered_ah_runtime_retains_witness_and_requires_normalized_dispatch(generic, number):
     runtime, _, _ = runtime_fixture(strategy_number=number)
     witness, financial, args, _, _ = ah_case()
@@ -57,7 +57,7 @@ def test_numbered_ah_runtime_retains_witness_and_requires_normalized_dispatch(ge
         runtime.journal.close()
 
 
-@pytest.mark.parametrize('number', [35, 36, 37, 38])
+@pytest.mark.parametrize('number', [35, 36, 37, 38, 39])
 def test_numbered_ah_projection_requires_original_entry_and_preserves_numbered_scalar(number):
     from datetime import date, timedelta
     from uuid import uuid4
@@ -140,7 +140,7 @@ def oms_case(family, strategy_number=35):
 
 
 @pytest.mark.parametrize('family', ['ah', 'liquidity'])
-@pytest.mark.parametrize('number', [35, 36, 37, 38])
+@pytest.mark.parametrize('number', [35, 36, 37, 38, 39])
 def test_complete_numbered_exit_reconstructs_exact_approved_order(family, number):
     group, source, history, reservation, decision, row = oms_case(family, number)
     kwargs = {'confirmed_ah_row' if family == 'ah' else 'liquidity_fade_row': row}
@@ -154,7 +154,7 @@ def test_complete_numbered_exit_reconstructs_exact_approved_order(family, number
 
 @pytest.mark.parametrize('family', ['ah', 'liquidity'])
 @pytest.mark.parametrize('change', ['missing', 'no_admission', 'quantity', 'parent', 'revision', 'assignment', 'cross_number'])
-@pytest.mark.parametrize('number', [35, 36, 37, 38])
+@pytest.mark.parametrize('number', [35, 36, 37, 38, 39])
 def test_incomplete_numbered_exit_lineage_rejects(family, change, number):
     group, source, history, reservation, decision, row = oms_case(family, number)
     if change == 'missing': row = None

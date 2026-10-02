@@ -31,7 +31,7 @@ def context(number=37):
     return runtime,parent,proposal,day
 
 
-@pytest.mark.parametrize('number', [37, 38])
+@pytest.mark.parametrize('number', [37, 38, 39])
 def test_runtime_intent_and_atomic_memory_sidecar_preserve_strategy37_identity(number):
     runtime,source,proposal,day = context(number)
     intent = TradingRuntime._strategy_one_entry_intent(runtime,proposal)
@@ -43,7 +43,7 @@ def test_runtime_intent_and_atomic_memory_sidecar_preserve_strategy37_identity(n
     assert runtime.journal.strategy_one_entry_for_record(record.record_id) == (proposal,day)
 
 
-@pytest.mark.parametrize('number', [37, 38])
+@pytest.mark.parametrize('number', [37, 38, 39])
 def test_runtime_requires_same_backtest_number_and_memory_requires_native_source(number):
     runtime,source,proposal,day = context(number)
     intent = TradingRuntime._strategy_one_entry_intent(runtime,proposal)
@@ -56,7 +56,7 @@ def test_runtime_requires_same_backtest_number_and_memory_requires_native_source
             strategy_revision=number,first_price_source=None)
 
 
-@pytest.mark.parametrize('number', [37, 38])
+@pytest.mark.parametrize('number', [37, 38, 39])
 def test_runtime_source_binding_rejects_missing_episode_authority(number):
     runtime,source,_,_ = context(number)
     runtime._strategy_one_price_source = None
@@ -65,7 +65,7 @@ def test_runtime_source_binding_rejects_missing_episode_authority(number):
             CertifiedPriceReadbackAuthority(source.run_id,source.plan))
 
 
-@pytest.mark.parametrize('number', [37, 38])
+@pytest.mark.parametrize('number', [37, 38, 39])
 def test_actual_memory_prefix_projects_all_strategy37_companions_with_prefix_source(number):
     from uuid import UUID
     from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
@@ -90,7 +90,7 @@ def test_actual_memory_prefix_projects_all_strategy37_companions_with_prefix_sou
         unit.initial_momentum_evidence,unit.first_price_evidence) for row in family)
 
 
-@pytest.mark.parametrize('number', [37, 38])
+@pytest.mark.parametrize('number', [37, 38, 39])
 def test_manager_capture_requires_strategy37_episode_prefix_authority(number):
     from src.backend.backtest_strategy_one_management import StrategyOneManagementState
     from src.trading_runtime.strategy_one_management_snapshot import project_manager_snapshot
@@ -106,7 +106,7 @@ def test_manager_capture_requires_strategy37_episode_prefix_authority(number):
             checkpoint_sequence=1, state=state, first_price_source=parent_only)
 
 
-@pytest.mark.parametrize('number', [37, 38])
+@pytest.mark.parametrize('number', [37, 38, 39])
 def test_strategy37_entry_envelope_rejects_parent_activity_authority(number):
     from uuid import UUID
     from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix

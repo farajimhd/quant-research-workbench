@@ -1,4 +1,4 @@
-"""Independent episode-prefix readback for Strategies37 and38."""
+"""Independent episode-prefix readback for Strategies37 through39."""
 from dataclasses import dataclass, replace
 from uuid import NAMESPACE_URL, uuid5
 
@@ -24,7 +24,7 @@ class EpisodeActivityReadbackAuthority:
     def __post_init__(self):
         if (type(self.run_id) is not str or not self.run_id
                 or type(self.gate) is not EpisodeActivityStaticGate
-                or type(self.strategy_number) is not int or self.strategy_number not in (37, 38)):
+                or type(self.strategy_number) is not int or self.strategy_number not in (37, 38, 39)):
             raise ValueError('Episode activity readback requires exact run and certified gate')
         _source_parent_number(self.gate.activity.parent, 35)
 
@@ -75,7 +75,7 @@ def certified_episode_activity_witness(authority, proposal, *, session_date):
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     if (type(authority) is not CertifiedPriceReadbackAuthority
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (37, 38)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (37, 38, 39)
             or type(session_date) is not date
             or type(authority.entry_activity_source) is not EpisodeActivityReadbackAuthority
             or proposal.strategy_number != authority.entry_activity_source.strategy_number
