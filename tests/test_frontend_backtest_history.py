@@ -186,7 +186,7 @@ class BacktestHistoryTests(unittest.TestCase):
                 table = page.get_by_role("region", name="Recent backtests table", exact=True)
                 table.wait_for()
                 self.assertIn("Strategy 1", table.locator(".backtest-strategy-group").inner_text())
-                table.get_by_role("button", name="Show sessions for", exact=False).first.click()
+                table.locator(".backtest-group-toggle[aria-expanded=false]").first.click()
                 self.assertEqual(table.locator(".backtest-session-rows:visible th strong").inner_text(), "strategy")
                 self.assertNotIn("Candidate", table.inner_text())
                 if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
@@ -243,7 +243,7 @@ class BacktestHistoryTests(unittest.TestCase):
                                 page.goto('http://127.0.0.1:5173/#backtest-trading')
                                 table = page.get_by_role('region', name='Recent backtests table', exact=True)
                                 table.wait_for(timeout=5000)
-                                table.get_by_role("button", name="Show sessions for", exact=False).first.click()
+                                table.locator(".backtest-group-toggle[aria-expanded=false]").first.click()
                                 # Readiness has its own debounce after indicator warmup.
                                 for _ in range(50):
                                     if held:
@@ -256,7 +256,7 @@ class BacktestHistoryTests(unittest.TestCase):
                                     page.get_by_role('button', name='Refresh runs', exact=True).click()
                                 page.wait_for_function("document.querySelector('.backtest-run-history').getAttribute('aria-busy') === 'false'")
                                 self.assertEqual(len(reads), 2)
-                                table.get_by_role("button", name="Show sessions for", exact=False).first.click()
+                                table.locator(".backtest-group-toggle[aria-expanded=false]").first.click()
                                 page.get_by_role('button', name='Resume backtest saved-01', exact=True).click()
                                 table.get_by_role('alert').filter(has_text='Test intercepted resume').wait_for()
                                 self.assertEqual(len(mutations), 1)
@@ -304,8 +304,8 @@ class BacktestHistoryTests(unittest.TestCase):
                 page.goto("http://127.0.0.1:5173/#backtest-trading")
                 table = page.get_by_role("region", name="Recent backtests table", exact=True)
                 table.wait_for()
-                while table.get_by_role("button", name="Show sessions for", exact=False).count():
-                    table.get_by_role("button", name="Show sessions for", exact=False).first.click()
+                while table.locator(".backtest-group-toggle[aria-expanded=false]").count():
+                    table.locator(".backtest-group-toggle[aria-expanded=false]").first.click()
                 # Wheel input must reach history inside the clipped Canvas shell.
                 # scroll_into_view/click auto-scrolling can hide an overflow:hidden bug.
                 setup = page.locator(".mode-launch-page")
@@ -316,9 +316,9 @@ class BacktestHistoryTests(unittest.TestCase):
                 page.mouse.move(500, 350)
                 page.mouse.wheel(0, 10000)
                 page.wait_for_function("document.querySelector('.mode-launch-page').scrollTop > 0")
-                footer = page.get_by_role("button", name="Older", exact=True)
+                footer = page.locator(".backtest-run-history footer")
                 page.wait_for_function("document.querySelector('.backtest-run-history footer').getBoundingClientRect().bottom <= innerHeight")
-                self.assertTrue(footer.is_visible())
+                self.assertTrue(page.get_by_role("button", name="Last page", exact=True).is_visible())
                 self.assertEqual(table.locator(".backtest-session-rows:visible tr").count(), 10)
                 self.assertEqual(table.locator(".backtest-session-rows:visible th strong").all_text_contents(),
                                  [f"run-{i:04d}" for i in range(11, 1, -1)])
@@ -333,11 +333,11 @@ class BacktestHistoryTests(unittest.TestCase):
                 table.get_by_role("alert").filter(has_text="Checkpoint rejected by backend").wait_for()
                 self.assertTrue(mutations[-1][0].endswith("/run-0008/commands"))
                 self.assertEqual(mutations[-1][1], {"command": "play"})
-                page.get_by_role("button", name="Older", exact=True).click()
-                while table.get_by_role("button", name="Show sessions for", exact=False).count():
-                    table.get_by_role("button", name="Show sessions for", exact=False).first.click()
+                page.get_by_role("button", name="Next page", exact=True).click()
+                while table.locator(".backtest-group-toggle[aria-expanded=false]").count():
+                    table.locator(".backtest-group-toggle[aria-expanded=false]").first.click()
                 self.assertEqual(table.locator(".backtest-session-rows:visible tr").count(), 2)
-                page.get_by_role("button", name="Newer", exact=True).click()
+                page.get_by_role("button", name="Previous page", exact=True).click()
                 page.get_by_role("button", name="Review backtest run-0009", exact=True).click()
                 page.wait_for_url("**backtest_run=run-0009#backtest-trading")
                 self.assertEqual(len(mutations), 2)
@@ -356,6 +356,7 @@ class BacktestHistoryTests(unittest.TestCase):
         rows[3].update(status="failed")
         # Same strategy number, distinct frozen parameters, separate card.
         rows[4].update(configuration_content_hash="b" * 64, comparison_group_key="b" * 64)
+        rows.append({**rows[4], "run_id": "saved-5", "strategy_revision": 35, "comparison_group_key": "c" * 64})
         summaries = [dict(net_pnl=100, episode_count=2, win_count=1, win_rate="0.5", total_fees=2),
                      dict(net_pnl=999, episode_count=9, win_count=9, win_rate=1, total_fees=9),
                      dict(net_pnl=-40, episode_count=3, win_count=1, win_rate="0.333333", total_fees=3)]
@@ -379,7 +380,7 @@ class BacktestHistoryTests(unittest.TestCase):
                                     route.fulfill(json={"rows": [dict(run_id=f"saved-{i}",
                                         verified_sequence=10, status="available", report={"summary": summaries[i]})
                                         if i < 3 else dict(run_id=f"saved-{i}", status="unavailable", error="Missing journal evidence")
-                                        for i in range(5)]})
+                                        for i in range(6)]})
                                 elif path.endswith("/configuration-options"):
                                     route.fulfill(json={"candidates": [], "available_run_plans": [], "error": ""})
                                 else:
@@ -392,23 +393,30 @@ class BacktestHistoryTests(unittest.TestCase):
                             self.assertEqual(history.locator("table").count(), 1)
                             self.assertEqual(page.locator(".backtest-history-note").count(), 0)
                             first = table.locator(".backtest-strategy-group").first
-                            self.assertIn("2 / 2 completed sessions", first.inner_text())
+                            self.assertIn("2 / 2 sessions", first.inner_text().lower())
                             self.assertIn("40%", first.inner_text())
-                            self.assertEqual(table.locator(".backtest-strategy-group").count(), 2)
+                            self.assertEqual(table.locator(".backtest-strategy-group").count(), 3)
                             self.assertEqual(table.locator(".backtest-session-rows:visible").count(), 0)
                             diagnostics = history.locator("footer .backtest-performance-errors")
                             self.assertEqual(diagnostics.locator("li").count(), 1)
-                            self.assertIn("2 runs", diagnostics.locator("summary").inner_text())
+                            self.assertIn("3 runs", diagnostics.locator("summary").inner_text())
                             self.assertFalse(diagnostics.evaluate("el => el.open"))
                             diagnostics.locator("summary").focus()
                             page.keyboard.press("Enter")
-                            self.assertIn("Missing journal evidence (2 runs)", diagnostics.inner_text())
+                            self.assertIn("Missing journal evidence (3 runs)", diagnostics.inner_text())
                             if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
                                 output = Path(os.environ["BACKTEST_HISTORY_EVIDENCE"])
                                 output.mkdir(parents=True, exist_ok=True)
                                 history.locator("footer").screenshot(path=str(output / f"footer-{theme}-{scale}-{width}.png"))
                             diagnostics.locator("summary").click()
-                            first.locator(".backtest-group-toggle").focus()
+                            search = history.get_by_role("searchbox", name="Search strategy numbers")
+                            search.fill("34")
+                            self.assertEqual(table.locator(".backtest-strategy-group").count(), 2)
+                            search.fill("999")
+                            self.assertEqual(table.locator(".backtest-strategy-group").count(), 0)
+                            self.assertTrue(table.get_by_text("No strategies match", exact=False).is_visible())
+                            search.fill("")
+                            first.focus()
                             page.keyboard.press("Enter")
                             sessions = table.locator(".backtest-session-rows:visible")
                             self.assertEqual(sessions.locator("tr").count(), 4)
@@ -420,7 +428,7 @@ class BacktestHistoryTests(unittest.TestCase):
                             if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
                                 table.evaluate("el => el.scrollLeft = 0")
                                 history.screenshot(path=str(output / f"performance-{theme}-{scale}-{width}.png"))
-                            first.locator(".backtest-group-toggle").click()
+                            first.locator("td.numeric").first.click()
                             self.assertEqual(table.locator(".backtest-session-rows:visible").count(), 0)
                             page.close()
             finally:

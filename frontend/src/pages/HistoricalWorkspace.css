@@ -2334,41 +2334,73 @@
   .backtest-v4-canvas-review > .canvas-config-toolbar .canvas-mode-context-slot > span { display: none; }
 }
 
-/* Recent backtests: comparable strategy cohorts above the session-level evidence. */
-.backtest-history-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; padding-block: 12px; border-block: 1px solid var(--border); }
-.backtest-history-overview dt, .backtest-history-run-heading > span { color: var(--muted-foreground); font-size: 12px; }
-.backtest-history-overview dd { margin: 4px 0 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.backtest-run-history h3 { font-size: 14px; margin: 16px 0 6px; }
-.backtest-history-run-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-.backtest-run-history .backtest-history-scroll table { min-width: 1000px; }
-.backtest-run-history .backtest-history-scroll .numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.backtest-run-history .backtest-history-scroll tbody th { white-space: normal; min-width: 160px; }
-.backtest-run-history .backtest-positive { color: var(--foreground); border-left: 2px solid var(--semantic-positive); }
-.backtest-run-history .backtest-negative { color: var(--semantic-negative); }
-.backtest-group-selected { background: var(--surface-alt); }
-.backtest-run-history > .backtest-history-scroll th { background: var(--surface-alt); }
-.backtest-run-history > .backtest-history-scroll thead th { position: sticky; top: 0; }
-
-.backtest-run-history > .backtest-history-scroll[aria-label="Recent backtests table"] :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); border-left: 1px solid var(--border); min-width: 170px; }
-
-.backtest-run-history .backtest-positive { background: var(--semantic-positive-bg); }
-.backtest-run-history .backtest-negative { background: var(--semantic-negative-bg); }
-.backtest-status { display: inline-block; padding-left: 6px; border-left: 3px solid currentColor; font-weight: 600; }
-.backtest-status-completed { color: var(--foreground); border-left-color: var(--semantic-positive); }
-.backtest-status-failed { color: var(--destructive); }
-.backtest-status-active { color: var(--accent); }
-.backtest-status-incomplete, .backtest-coverage-incomplete { color: var(--semantic-mixed); }
-.backtest-group-selected { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+/* Recent backtests reuse the Canvas table grammar and semantic tokens. */
+.backtest-run-history > .backtest-history-scroll table { min-width: 1060px; border-collapse: separate; border-spacing: 0; }
+.backtest-run-history > .backtest-history-scroll :is(th, td) { padding: 6px 10px; vertical-align: middle; border-bottom-color: color-mix(in oklab, var(--border) 58%, transparent); }
+.backtest-run-history > .backtest-history-scroll thead th { background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface)); color: var(--muted-foreground); font-size: calc(8.25px * var(--app-readable-scale, 1)); font-weight: 650; height: calc(30px * var(--app-readable-scale, 1)); letter-spacing: .025em; text-transform: uppercase; }
+.backtest-run-history > .backtest-history-scroll tbody th { position: static; font-size: 11.5px; letter-spacing: 0; text-transform: none; white-space: normal; font-weight: 500; background: transparent; }
+.backtest-run-history > .backtest-history-scroll .numeric { text-align: right; font-variant-numeric: lining-nums tabular-nums; white-space: nowrap; font-weight: 540; }
+.backtest-run-history > .backtest-history-scroll tbody .numeric { font-size: 11.5px; }
+.backtest-run-history > .backtest-history-scroll[aria-label="Recent backtests table"] :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); border-left: 1px solid var(--border); min-width: 150px; }
+.backtest-run-history .backtest-positive { color: color-mix(in oklab, var(--semantic-positive) 72%, var(--foreground)); background: var(--semantic-positive-bg); }
+.backtest-run-history .backtest-negative { color: color-mix(in oklab, var(--semantic-negative) 72%, var(--foreground)); background: var(--semantic-negative-bg); }
+.backtest-coverage-incomplete { color: var(--semantic-mixed); }
+.backtest-group-selected { background: var(--accent-soft); }
 .backtest-performance-errors { width: 100%; color: var(--muted-foreground); font-size: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
 .backtest-performance-errors summary { cursor: pointer; color: var(--semantic-mixed); }
 .backtest-performance-errors ul { max-height: 120px; overflow-y: auto; margin-bottom: 0; }
 .backtest-performance-errors li { margin-block: 4px; overflow-wrap: anywhere; }
 
-.backtest-strategy-group { background: var(--surface-alt); }
+.backtest-strategy-group { background: var(--surface); }
 .backtest-group-toggle { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; color: var(--foreground); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
 .backtest-group-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .backtest-group-count { color: var(--muted-foreground); font-weight: 400; white-space: nowrap; }
 .backtest-session-rows[hidden] { display: none; }
 .backtest-run-history > .backtest-history-scroll .backtest-session-rows th { padding-left: 28px; background: var(--surface); font-weight: 400; }
 .backtest-run-history > .backtest-history-scroll td { vertical-align: middle; }
-.backtest-run-history > .backtest-history-scroll th:first-child { min-width: 240px; }
+.backtest-run-history > .backtest-history-scroll th:first-child { min-width: 180px; }
+
+.backtest-history-toolbar { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.backtest-strategy-search { display: grid; gap: 4px; font-size: 12px; color: var(--muted-foreground); }
+.backtest-strategy-search input { font: inherit; color: var(--foreground); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; min-width: 160px; max-width: 100%; }
+.backtest-strategy-search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.backtest-history-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.backtest-history-pagination button { display: inline-flex; align-items: center; gap: 4px; }
+.backtest-history-pagination svg { width: 1em; height: 1em; }
+.backtest-history-pagination > span { color: var(--muted-foreground); padding-inline: 6px; font-variant-numeric: tabular-nums; }
+
+.backtest-strategy-group { cursor: pointer; }
+.backtest-strategy-group:hover { background: var(--accent-soft); }
+.backtest-strategy-group:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.backtest-run-history > .backtest-history-scroll .backtest-history-datetime { min-width: 130px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.backtest-run-history > .backtest-history-scroll .backtest-history-datetime small { max-width: 160px; white-space: normal; }
+
+.backtest-run-history > .backtest-history-scroll tbody th > .backtest-group-toggle { color: var(--foreground); font-size: 11.5px; font-weight: 620; letter-spacing: 0; text-transform: none; min-height: 20px; padding: 0; width: auto; }
+.backtest-run-history small { font-size: 10px; line-height: 1.2; margin-top: 3px; }
+.backtest-run-history > .backtest-history-scroll .backtest-session-rows tr:hover > th { background: transparent; }
+.backtest-run-history > .backtest-history-scroll .backtest-group-selected { background: var(--accent-soft); }
+
+.backtest-run-history > .backtest-history-scroll td:nth-child(8) { white-space: normal; min-width: 130px; }
+
+/* Summary rows anchor each cohort; nested sessions remain secondary evidence. */
+.backtest-run-history > .backtest-history-scroll .backtest-strategy-group > :is(th, td) { background: var(--surface-alt); border-top: 1px solid var(--border); font-weight: 620; }
+.backtest-run-history > .backtest-history-scroll .backtest-strategy-group:hover > :is(th, td),
+.backtest-run-history > .backtest-history-scroll .backtest-group-selected > :is(th, td) { background: var(--accent-soft); }
+.backtest-run-history > .backtest-history-scroll .backtest-strategy-group > .backtest-positive { background: var(--semantic-positive-bg); color: color-mix(in oklab, var(--semantic-positive) 72%, var(--foreground)); font-weight: 700; }
+.backtest-run-history > .backtest-history-scroll .backtest-strategy-group > .backtest-negative { background: var(--semantic-negative-bg); color: color-mix(in oklab, var(--semantic-negative) 72%, var(--foreground)); font-weight: 700; }
+.backtest-run-history > .backtest-history-scroll .backtest-session-rows > tr > :is(th, td) { background: var(--surface); border-bottom-style: dotted; font-weight: 400; }
+.backtest-run-history > .backtest-history-scroll .backtest-session-rows > tr:hover > :is(th, td) { background: var(--surface-alt); }
+.backtest-run-history > .backtest-history-scroll .backtest-session-rows th { position: relative; padding-left: 30px; }
+.backtest-session-branch { position: absolute; left: 12px; color: var(--muted-foreground); }
+.backtest-session-rows th strong { font-weight: 500; }
+.backtest-run-history > .backtest-history-scroll .backtest-session-rows .backtest-positive { color: color-mix(in oklab, var(--semantic-positive) 72%, var(--foreground)); }
+.backtest-run-history > .backtest-history-scroll .backtest-session-rows .backtest-negative { color: color-mix(in oklab, var(--semantic-negative) 72%, var(--foreground)); }
+
+.backtest-run-history > .backtest-history-scroll[aria-label="Recent backtests table"] tbody :is(th, td):last-child { z-index: 4; }
+.backtest-run-history > .backtest-history-scroll[aria-label="Recent backtests table"] thead th:last-child { z-index: 5; }
+.backtest-run-history > .backtest-history-scroll .backtest-group-selected > :is(th, td),
+.backtest-run-history > .backtest-history-scroll .backtest-strategy-group:hover > :is(th, td) { background: color-mix(in oklab, var(--accent) 8%, var(--surface)); }
+.backtest-run-history > .backtest-history-scroll .backtest-group-selected > .backtest-positive,
+.backtest-run-history > .backtest-history-scroll .backtest-strategy-group:hover > .backtest-positive { background: var(--semantic-positive-bg); }
+.backtest-run-history > .backtest-history-scroll .backtest-group-selected > .backtest-negative,
+.backtest-run-history > .backtest-history-scroll .backtest-strategy-group:hover > .backtest-negative { background: var(--semantic-negative-bg); }

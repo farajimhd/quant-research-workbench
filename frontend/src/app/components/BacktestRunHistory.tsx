@@ -1,3 +1,4 @@
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Fragment, useEffect, useState } from "react";
 import { api } from "../../api/client";
 import type { PerformanceJournalReport } from "../../features/canvas/contracts";
@@ -38,7 +39,6 @@ const identity = (row: RunRow) => row.strategy_revision ? `Strategy ${row.strate
 // Unknown identities remain separate; a revision alone does not establish identical configuration.
 const groupKey = (row: RunRow) => row.comparison_group_key || row.run_id;
 const terminal = (row: RunRow) => ["completed", "stopped", "failed"].includes(row.status);
-const statusClass = (status: string) => status === "completed" ? "backtest-status-completed" : status === "failed" ? "backtest-status-failed" : ["running", "preparing"].includes(status) ? "backtest-status-active" : "backtest-status-incomplete";
 const pnlClass = (value: number | null) => value == null || value === 0 ? "" : value > 0 ? "backtest-positive" : "backtest-negative";
 
 export function BacktestRunHistory({ onReview, onResumed }: {
@@ -53,6 +53,7 @@ export function BacktestRunHistory({ onReview, onResumed }: {
   const [refresh, setRefresh] = useState(0);
   const [performance, setPerformance] = useState<Record<string, Performance>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -128,7 +129,8 @@ export function BacktestRunHistory({ onReview, onResumed }: {
 
   const groups = new Map<string, RunRow[]>();
   rows.forEach(row => { const key = groupKey(row); groups.set(key, [...(groups.get(key) || []), row]); });
-  const pages = Math.max(1, Math.ceil(groups.size / PAGE_SIZE));
+  const filteredGroups = [...groups].filter(([, runs]) => String(runs[0].strategy_revision ?? runs[0].configuration_revision ?? "").includes(search.trim()));
+  const pages = Math.max(1, Math.ceil(filteredGroups.length / PAGE_SIZE));
   const performanceErrors = new Map<string, number>();
   Object.values(performance).forEach(result => {
     if (result.error) performanceErrors.set(result.error, (performanceErrors.get(result.error) || 0) + 1);
@@ -143,9 +145,19 @@ export function BacktestRunHistory({ onReview, onResumed }: {
       <button className="button secondary compact" type="button" disabled={loading || Boolean(busy)} onClick={() => setRefresh(value => value + 1)}>{loading ? "Loading…" : "Refresh runs"}</button></header>
     {error ? <p role="alert">Could not refresh backtests: {error}{rows.length ? " Showing the previously loaded list." : ""}</p> : null}
     {!rows.length ? <p role="status">{loading ? "Loading recent backtests…" : error ? "Use Refresh runs to try again." : "No saved backtests yet."}</p> : <>
-      <div className="backtest-history-scroll" role="region" aria-label="Recent backtests table" tabIndex={0}><table>
-        <thead><tr><th scope="col">Strategy / session</th><th scope="col" className="numeric" title="Closed-trade P&L after final commissions in USD. Group totals use the newest completed run per session.">Net P&amp;L · USD</th><th scope="col" className="numeric">Closed trades</th><th scope="col" className="numeric">Win rate</th><th scope="col" className="numeric">Fees · USD</th><th scope="col">Status / coverage</th><th scope="col">Controls</th></tr></thead>
-        {[...groups].slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(([key, runs]) => {
+      <div className="backtest-history-toolbar">
+        <label className="backtest-strategy-search"><span>Strategy number</span><input type="search" inputMode="numeric" aria-label="Search strategy numbers" placeholder="e.g. 34" value={search} onChange={event => { setSearch(event.target.value); setPage(0); }} /></label>
+        <nav className="backtest-history-pagination" aria-label="Backtest strategy pages">
+          <button className="button secondary compact" type="button" aria-label="First page" disabled={page === 0 || Boolean(busy)} onClick={() => setPage(0)}><ChevronsLeft aria-hidden="true" />First</button>
+          <button className="button secondary compact" type="button" aria-label="Previous page" disabled={page === 0 || Boolean(busy)} onClick={() => setPage(value => value - 1)}><ChevronLeft aria-hidden="true" />Previous</button>
+          <span role="status">{filteredGroups.length ? `Page ${page + 1} of ${pages}` : "No matching strategies"}</span>
+          <button className="button secondary compact" type="button" aria-label="Next page" disabled={page + 1 >= pages || Boolean(busy)} onClick={() => setPage(value => value + 1)}>Next<ChevronRight aria-hidden="true" /></button>
+          <button className="button secondary compact" type="button" aria-label="Last page" disabled={page + 1 >= pages || Boolean(busy)} onClick={() => setPage(pages - 1)}>Last<ChevronsRight aria-hidden="true" /></button>
+        </nav>
+      </div>
+      <div className="backtest-history-scroll" role="region" aria-label="Recent backtests table" tabIndex={0}><table className="market-list-table backtest-history-table">
+        <thead><tr><th scope="col">Strategy / run</th><th scope="col">Date / time · ET</th><th scope="col" className="numeric">Initial cash · USD</th><th scope="col" className="numeric" title="Closed-trade P&L after final commissions in USD. Group totals use the newest completed run per session.">Net P&amp;L · USD</th><th scope="col" className="numeric">Closed trades</th><th scope="col" className="numeric">Win rate</th><th scope="col" className="numeric">Fees · USD</th><th scope="col">Status / coverage</th><th scope="col">Controls</th></tr></thead>
+        {filteredGroups.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(([key, runs]) => {
           const sessions = new Map<string, RunRow>();
           runs.filter(row => row.status === "completed" && row.session_date).forEach(row => { if (!sessions.has(row.session_date)) sessions.set(row.session_date, row); });
           const reports = [...sessions.values()].map(row => performance[row.run_id]?.report).filter((report): report is Pick<PerformanceJournalReport, "summary"> => Boolean(report));
@@ -154,15 +166,17 @@ export function BacktestRunHistory({ onReview, onResumed }: {
           const sessionDates = [...new Set(runs.map(row => row.session_date).filter(Boolean))].sort();
           const open = expanded.has(key), id = `backtest-sessions-${key}`;
           return <Fragment key={key}>
-            <tbody><tr className={`backtest-strategy-group ${open ? "backtest-group-selected" : ""}`}>
-              <th scope="row"><button className="backtest-group-toggle" type="button" aria-expanded={open} aria-controls={id} onClick={() => toggle(key)}><span aria-hidden="true">{open ? "▾" : "▸"}</span> {identity(first)} <span className="backtest-group-count">{sessionDates.length} {sessionDates.length === 1 ? "session" : "sessions"}</span></button>
-                <small title={`Configuration ${first.configuration_content_hash || "unknown"}; source ${first.code_fingerprint || "unknown"}`}>Config {first.configuration_content_hash?.slice(0, 8) || "unknown"} · Source {first.code_fingerprint?.slice(0, 8) || "unknown"}</small>
-                <small>Cash {money(numeric(first.initial_cash))}</small>
-                <small>{sessionDates[0] || "Session unavailable"}{sessionDates.length > 1 ? ` – ${sessionDates.at(-1)}` : ""}</small>
+            <tbody><tr className={`backtest-strategy-group ${open ? "backtest-group-selected" : ""}`} tabIndex={0} aria-expanded={open} aria-controls={id} aria-label={`${identity(first)}, ${sessionDates.length} sessions`} onClick={() => toggle(key)} onKeyDown={event => {
+              if (event.target === event.currentTarget && ["Enter", " "].includes(event.key)) { event.preventDefault(); toggle(key); }
+            }}>
+              <th scope="row"><button className="backtest-group-toggle" type="button" aria-expanded={open} aria-controls={id} onClick={event => { event.stopPropagation(); toggle(key); }}><span aria-hidden="true">{open ? "▾" : "▸"}</span> {identity(first)}</button>
+                <small title={`Configuration ${first.configuration_content_hash || "unknown"}; source ${first.code_fingerprint || "unknown"}`}>Variant {key.slice(0, 8)}</small>
               </th>
+              <td className="backtest-history-datetime">{sessionDates[0] || "—"}{sessionDates.length > 1 ? <small>to {sessionDates.at(-1)}</small> : null}</td>
+              <td className="numeric">{money(numeric(first.initial_cash))}</td>
               <td className={`numeric ${pnlClass(pnl)}`}>{money(pnl)}</td><td className="numeric">{trades == null ? "—" : trades.toLocaleString()}</td><td className="numeric">{percent(trades && wins != null ? wins / trades : null)}</td><td className="numeric">{money(sum("total_fees"))}</td>
-              <td className={reports.length < sessions.size ? "backtest-coverage-incomplete" : ""}>{reports.length} / {sessions.size} completed sessions<small>{runs.filter(row => row.status !== "completed").length || "No"} incomplete runs</small></td>
-              <td><button className="button secondary compact" type="button" aria-expanded={open} aria-controls={id} aria-label={`${open ? "Hide" : "Show"} sessions for ${identity(first)} ${key.slice(0, 8)}`} onClick={() => toggle(key)}>{open ? "Hide sessions" : "Show sessions"}</button></td>
+              <td className={reports.length < sessions.size ? "backtest-coverage-incomplete" : ""}><span className="table-category-badge" data-tone={reports.length === sessions.size && sessions.size > 0 ? "positive" : "warning"} data-emphasis="medium">{reports.length} / {sessions.size} sessions</span>{runs.some(row => row.status !== "completed") ? <small>{runs.filter(row => row.status !== "completed").length} incomplete runs</small> : null}</td>
+              <td className="backtest-group-count">{sessionDates.length} {sessionDates.length === 1 ? "session" : "sessions"}</td>
             </tr></tbody>
             <tbody id={id} hidden={!open} className="backtest-session-rows">{runs.map(row => {
               const recordedV4 = row.journal_backend === "arte_typed_journal_v4";
@@ -173,10 +187,12 @@ export function BacktestRunHistory({ onReview, onResumed }: {
               const summary = performance[row.run_id]?.report?.summary;
               const pnl = numeric(summary?.net_pnl), count = numeric(summary?.episode_count);
               return <tr key={row.run_id}>
-                <th scope="row">{row.session_date || "Session unavailable"}<small><strong title={row.run_id}>{row.run_id.slice(0, 8)}</strong> · {row.tickers?.length ? row.tickers.join(", ") : "Configured universe"}</small><small><time dateTime={row.created_at}>Created {dateTime(row.created_at)} ET</time></small></th>
+                <th scope="row"><span className="backtest-session-branch" aria-hidden="true">↳</span><strong title={row.run_id}>{row.run_id.slice(0, 8)}</strong><small>{row.tickers?.length ? row.tickers.join(", ") : "Configured universe"}</small></th>
+                <td className="backtest-history-datetime">{row.session_date || "—"}<small><time dateTime={row.created_at} title="Run created at">{dateTime(row.created_at)}</time></small></td>
+                <td className="numeric">{money(numeric(row.initial_cash))}</td>
                 <td className={`numeric ${pnlClass(pnl)}`}>{money(pnl)}{performance[row.run_id]?.error ? <small title={performance[row.run_id].error}>Unavailable</small> : !summary ? <small>{recordedV4 && terminal(row) ? performance[row.run_id]?.status === "verifying" ? "Verifying…" : "Queued" : recordedV4 ? "Not terminal" : "Open review"}</small> : row.status !== "completed" ? <small>Partial run</small> : null}</td>
                 <td className="numeric">{count?.toLocaleString() ?? "—"}</td><td className="numeric">{count ? percent(numeric(summary?.win_rate)) : "—"}</td><td className="numeric">{money(numeric(summary?.total_fees))}</td>
-                <td><span className={`backtest-status ${statusClass(row.status)}`}>{row.status.replaceAll("_", " ")}</span>{row.status === "running" && row.resident === false ? <small>No app runner attached</small> : null}</td>
+                <td><span className="table-category-badge" data-emphasis="strong" data-tone={row.status === "completed" ? "positive" : row.status === "failed" ? "negative" : ["running", "preparing"].includes(row.status) ? "info" : "warning"}><span>{row.status.replaceAll("_", " ")}</span></span>{row.status === "running" && row.resident === false ? <small>No app runner attached</small> : null}</td>
                 <td><div className="backtest-history-actions"><button className="button secondary compact" type="button" disabled={!reviewable || Boolean(busy)} aria-label={`Review backtest ${row.run_id.slice(0, 8)}`} onClick={() => onReview(row.run_id)}>Review</button>
                   <button className="button secondary compact" type="button" disabled={!resumable || Boolean(busy)} aria-label={`Resume backtest ${row.run_id.slice(0, 8)}`} onClick={() => void resume(row)}>{busy === row.run_id ? "Resuming…" : "Resume"}</button></div>
                   {actionError?.runId === row.run_id ? <p role="alert">{actionError.message} Refresh runs before retrying.</p> : null}
@@ -185,11 +201,9 @@ export function BacktestRunHistory({ onReview, onResumed }: {
             })}</tbody>
           </Fragment>;
         })}
+        {!filteredGroups.length ? <tbody><tr><td colSpan={9}>No strategies match “{search}”.</td></tr></tbody> : null}
       </table></div>
-      <footer><span>Page {page + 1} of {pages}{pendingCount ? ` · Verifying ${pendingCount} runs` : ""}</span><div className="backtest-history-actions">
-        <button className="button secondary compact" type="button" disabled={page === 0 || Boolean(busy)} onClick={() => setPage(value => value - 1)}>Newer</button>
-        <button className="button secondary compact" type="button" disabled={page + 1 >= pages || Boolean(busy)} onClick={() => setPage(value => value + 1)}>Older</button>
-      </div>
+      <footer><span>{pendingCount ? `Verifying ${pendingCount} runs` : ""}</span>
         {unavailableCount ? <details className="backtest-performance-errors"><summary>Performance issues · {unavailableCount} {unavailableCount === 1 ? "run" : "runs"}</summary><ul>{[...performanceErrors].map(([message, count]) => <li key={message}>{message} <span>({count} {count === 1 ? "run" : "runs"})</span></li>)}</ul></details> : null}
       </footer>
     </>}
