@@ -1,5 +1,6 @@
 """Prepared source-bound entry activity projection; no numbered admission."""
 from dataclasses import dataclass
+from bisect import bisect_left
 from hashlib import sha256
 
 import numpy as np
@@ -101,6 +102,79 @@ class CertifiedEntryActivityPlan:
             raise ValueError('Entry activity content seal differs')
         for name in ('requested_mask', 'candle_boundaries_ms', 'trade_counts', 'observed', 'eligible_mask'):
             object.__setattr__(self, name, _frozen(getattr(self, name)))
+
+    def witness(self, ticker, boundary_ms):
+        """Produce scalar evidence only for independently admitted source keys."""
+        from src.trading_runtime.strategy_entry_activity_fade import EntryActivityCandle
+        from src.trading_runtime.strategy_entry_activity_witness import (
+            EntryActivityWitness, validate_entry_activity_witness,
+        )
+        if type(ticker) is not str or type(boundary_ms) is not int:
+            raise ValueError('Entry activity lookup needs exact typed candidate identity')
+        key = (ticker, boundary_ms)
+        index = bisect_left(self.parent.momentum.keys, key)
+        if (index >= len(self.parent.momentum.keys) or self.parent.momentum.keys[index] != key
+                or not self.eligible_mask[index]):
+            raise ValueError('Entry activity lookup is outside admitted source keys')
+        candles = tuple(EntryActivityCandle(int(self.candle_boundaries_ms[index, column]),
+                                          int(self.trade_counts[index, column]))
+                        if self.observed[index, column] else None for column in range(4))
+        return validate_entry_activity_witness(EntryActivityWitness(
+            ticker, self.market.sessions[0], boundary_ms, self.market.build_id,
+            self.source_attempts[index], self.market.token, self.token,
+            self.parent.candidates.token, self.parent.entry.token, self.parent.token, candles))
+
+
+@dataclass(frozen=True, slots=True)
+class EntryActivityReadbackAuthority:
+    """Use row identity only; all observed values come from the certified plan."""
+    run_id: str
+    plan: CertifiedEntryActivityPlan
+
+    def __post_init__(self):
+        from .backtest_strategy_certified_price_break import _source_parent_number
+        if (type(self.run_id) is not str or not self.run_id
+                or type(self.plan) is not CertifiedEntryActivityPlan):
+            raise ValueError('Entry activity readback requires exact run and source plan')
+        # Strategy36 must inherit the same ten-percent first-setup authority as
+        # its pinned Strategy35 parent, never the legacy fifty-percent plan.
+        _source_parent_number(self.plan.parent, 35)
+
+    def resolve(self, run_id, entries, intents):
+        from uuid import NAMESPACE_URL, uuid5
+        from src.trading_runtime.arte_entry_activity_v4 import EntryActivityAuthority, activity_event_instant
+        if run_id != self.run_id:
+            raise ValueError('Entry activity readback differs from certified run')
+        parents = {row['record_id']: row for row in intents}
+        if len(parents) != len(intents):
+            raise ValueError('Entry activity readback has duplicate intent parents')
+        result, seen = [], set()
+        for row in entries:
+            if row['strategy_number'] != 36:
+                continue
+            parent = row['parent_record_id']
+            intent = parents.get(parent)
+            if (type(row['strategy_number']) is not int or parent in seen or intent is None
+                    or row['run_id'] != run_id or intent['run_id'] != run_id
+                    or row['batch_id'] != intent['batch_id']
+                    or row['event_month'] != intent['event_month']
+                    or intent['action'] != 'enter_long' or intent['reason'] != 'strategy_one_entry'):
+                raise ValueError('Entry activity readback has unrelated entry or intent scope')
+            key = (intent['ticker'], row['boundary_ms'])
+            witness = self.plan.witness(*key)
+            selection = self.plan.parent.selection_witness(*key)
+            month = activity_event_instant(witness).date().replace(day=1).isoformat()
+            if (row['episode_start_ms'] != selection.initial.episode_start_ms
+                    or str(row['event_month']) != month):
+                raise ValueError('Entry activity readback differs from native clock or episode')
+            identity = (f"strategy-36:{witness.session_date}:{row['assignment_id']}:"
+                        f"{intent['account_id']}:{witness.ticker}:{witness.boundary_ms}:"
+                        f"{selection.initial.episode_start_ms}")
+            if intent['intent_id'] != str(uuid5(NAMESPACE_URL, identity)):
+                raise ValueError('Entry activity parent differs from exact numbered intent identity')
+            result.append(EntryActivityAuthority(parent, witness, selection.initial.episode_start_ms))
+            seen.add(parent)
+        return tuple(result)
 
 
 def load_entry_activity_plan(market, parent, *, client):

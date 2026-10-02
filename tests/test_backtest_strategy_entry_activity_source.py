@@ -10,9 +10,10 @@ from src.backend.backtest_strategy_first_price_source import load_first_price_so
 from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan
 from src.backend.backtest_strategy_entry_activity_source import load_entry_activity_plan
 from src.backend.backtest_strategy_initial_momentum_growth import compile_initial_momentum_growth_plan
+from src.backend.backtest_strategy_initial_ten_percent import compile_initial_ten_percent_plan
 
 
-def source_authority():
+def source_authority(*, ten_percent=False):
     market, parent = authority()
     # The older comparison fixture expands decision clocks only. Complete its
     # source-index/protection arrays before exercising the real survivor path.
@@ -23,7 +24,8 @@ def source_authority():
                        stop_bar_boundary_ms=np.repeat(row.stop_bar_boundary_ms[:1], n),
                        stop_low_int=np.repeat(row.stop_low_int[:1], n))
     candidates = replace(parent.candidates, prepared=(prepared,))
-    parent = compile_initial_momentum_growth_plan(candidates, parent.entry, parent.momentum)
+    compile_parent = compile_initial_ten_percent_plan if ten_percent else compile_initial_momentum_growth_plan
+    parent = compile_parent(candidates, parent.entry, parent.momentum)
     market = replace(market, required_resolutions_ms=tuple(sorted(set(market.required_resolutions_ms) | {5000})))
     return market, compile_certified_price_break_plan(load_first_price_source(market, parent, client=Bars()))
 
