@@ -7,10 +7,10 @@ import polars as pl
 
 from research.rl_trading.v6.bank import SessionBank
 from research.rl_trading.v6.session_data import PackedSession
-from research.rl_trading.v6.teacher_data import VERSION, load_teacher
+from research.rl_trading.v6.teacher_data import VERSION, _load_legacy_teacher_for_historical_audit as load_teacher
 
 
-def test_certified_sparse_teacher_loader_rejects_old_contract(tmp_path):
+def test_historical_sparse_teacher_audit_rejects_bad_evidence(tmp_path):
     root = tmp_path / 'teacher'
     root.mkdir()
     bank = SessionBank(tmp_path / 'bank',

@@ -211,6 +211,7 @@ def main(argv=None):
     parser.add_argument('--workers',type=int,default=8)
     parser.add_argument('--listings-per-shard',type=int,default=32)
     parser.add_argument('--canary',action='store_true')
+    parser.add_argument('--source-commit',help='Exact pushed commit for an immutable archive snapshot')
     args = parser.parse_args(argv)
     runtime=args.runtime_root.resolve(); output=args.output.resolve()
     if not runtime.is_dir() or not output.is_relative_to(runtime) or not 1<=args.workers<=16 or not 1<=args.listings_per_shard<=64:
@@ -225,6 +226,16 @@ def main(argv=None):
     write_run_manifest(output/'manifest.json', repo_root=Path(__file__).resolve().parents[3],model_family='rl_trading',
         version=VERSION,job_type='replace_all_saved_labels',run_name=output.name,args=vars(args),config=config,
         data_roots={'source_manifest':str(args.source_manifest)},output_root=output,secret_keys=())
+    manifest=json.loads((output/'manifest.json').read_text())
+    if args.source_commit:
+        if len(args.source_commit)!=40 or any(c not in '0123456789abcdef' for c in args.source_commit):
+            raise ValueError('Source snapshot requires an exact 40-character pushed commit')
+        if manifest['git_commit'] not in ('unknown',args.source_commit): raise ValueError('Source commit differs from checkout')
+        manifest['git_commit']=args.source_commit
+    if manifest['git_commit']=='unknown': raise ValueError('Pass --source-commit for an archive snapshot')
+    manifest['producer_files_sha256']={name:file_hash(Path(__file__).parent/name) for name in
+        ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py','run_prepare_labels.py')}
+    write_json(output/'manifest.json',manifest)
     def progress(**more):
         state=dict(version=VERSION,algorithm=ALGORITHM,elapsed_seconds=time.time()-started,completed_days=len(records),failed=failed,**more)
         write_json(state_path,state); print(json.dumps(state),flush=True)

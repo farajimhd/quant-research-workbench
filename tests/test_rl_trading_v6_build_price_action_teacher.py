@@ -10,7 +10,7 @@ from research.rl_trading.v6.bank import SessionBank
 from research.rl_trading.v6.build_price_action_brackets import VERSION as BRACKETS_VERSION
 from research.rl_trading.v6.features import SCALAR_NAMES
 from research.rl_trading.v6.session_data import PackedSession
-from research.rl_trading.v6.teacher_data import load_teacher
+from research.rl_trading.v6.teacher_data import _load_legacy_teacher_for_historical_audit as load_teacher
 
 
 def test_teacher_writer_certifies_only_bar_sidecar_and_reloads(tmp_path,
