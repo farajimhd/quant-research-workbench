@@ -135,3 +135,69 @@ The immutable report is
 `D:/TradingML/runtimes/vectorized_backtest/categorical_qualification/7013cf12554a44d39d6346f72e3fa60a/report.json`.
 Unit tests additionally exercise class/output behavior, invalid IDs, causal
 admission fences, grouping/padding/scatter, and interrupted solver recovery.
+
+
+## Completed random categorical experiment — 2026-10-02
+
+Campaign `febeafd36a644911ae5e5c1326521261` used a repaired random `[8,912]`
+population, seed 20261002 and eight generations in each phase. Default was not
+injected into phase one. Training used Aug18, then Aug18+Aug19; each replay
+started an independent $10,000 account. Both winners were frozen before Aug20
+**preobserved evaluation**, which never influenced selection or mutation.
+
+| Session | Candidate | Net P&L | Max drawdown | Entries | Fills | Open positions |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 2026-08-18 | Default | $3,160.51 | $1,351.13 | 26 | 182 | 0 |
+| 2026-08-18 | One-session winner | $2,509.66 | $1,162.84 | 14 | 108 | 0 |
+| 2026-08-18 | Two-session winner | $0.00 | $0.00 | 0 | 0 | 0 |
+| 2026-08-19 | Default | $-2,368.05 | $3,117.15 | 32 | 217 | 0 |
+| 2026-08-19 | One-session winner | $-865.69 | $1,627.63 | 14 | 121 | 0 |
+| 2026-08-19 | Two-session winner | $562.75 | $485.41 | 1 | 15 | 0 |
+| 2026-08-20 | Default | $859.82 | $1,602.66 | 25 | 194 | 0 |
+| 2026-08-20 | One-session winner | $-400.55 | $2,119.06 | 11 | 77 | 0 |
+| 2026-08-20 | Two-session winner | $0.00 | $0.00 | 0 | 0 | 0 |
+
+The one-session winner's Aug18 fitness was 0.19282386025. Over both training
+sessions the frozen default/one-session/two-session scores were
+-0.14119163925 / -0.0297552116875 / 0.0089679282897095. Aug20 scores were
+0.00584921975 / -0.14600794675 / 0. Both searched finalists failed to beat default
+on this evaluation. The two-session winner's inactivity on Aug18 and Aug20 is
+permitted by this experiment's unchanged objective, not proof of generalization.
+
+The read-only first-entry audit found a weak semantic operand substitution:
+`boundary_ms - episode_start_ms <= closed_boundary_ms`. Before the first
+position, the RHS is zero. Eager evaluation reproduced zero eligible Aug18
+entries and one Aug19 entry. This evidence does not demonstrate a GPU reset or
+scatter bug, nor does it certify every arbitrary program. V3 separately adds
+semantic operand restrictions and optional activity constraints; this v1
+campaign was not changed or retuned midway.
+
+### Timing and verification
+
+All sessions contain 19,800 one-second slots (04:00–09:30 New York). Finalist
+results reuse an eight-lane batch with duplicate padding and three distinct
+compiled topologies. The following times cover the whole three-topology batch,
+not an individual finalist:
+
+| Session | Compile/capture | Prepared replay |
+| --- | ---: | ---: |
+| 2026-08-18 | 121.62s | 92.55s |
+| 2026-08-19 | 146.70s | 117.56s |
+| 2026-08-20 | 168.06s | 92.09s |
+
+Summed training compile/capture and prepared replay times were 2,491.56s /
+1,962.55s in phase one and 5,682.03s / 4,498.42s in phase two. These exclude
+certification, source preparation, schema construction, mutation/repair and
+checkpoint overhead and must not be presented as total campaign wall time.
+
+Completion checks verified all 16 generation receipts against the objective,
+all 35 pinned Python source hashes, both frozen decodes against the original
+training-source program schema, winner fitness/membership in evaluated
+populations, finalist identities, and final training/evaluation score arrays.
+The worker has exited; no retry or additional evaluation was needed. Existing
+Kazoo background warnings were preserved and did not prevent completion.
+
+Immutable runtime evidence:
+`D:/TradingML/runtimes/vectorized_backtest/strategy_search/febeafd36a644911ae5e5c1326521261/report.json`
+and `completion_verification.json`. No fresh-holdout performance or global
+optimality is claimed. No market-data or live-trading writes occurred.
