@@ -487,7 +487,7 @@ def load_committed_strategy_intent_page(
         source_batch = None
         if include_source_batch:
             from src.trading_runtime.arte_journal_commit_v4 import (
-                V4CommittedPrefix, load_verified_commit_v4,
+                V4CommittedPrefix, load_verified_commit_v4, verified_batch_predecessor,
             )
             from src.trading_runtime.arte_journal_writer import typed_row
             if not isinstance(prefix, V4CommittedPrefix):
@@ -496,7 +496,11 @@ def load_committed_strategy_intent_page(
             if batch_id not in commits:
                 commits[batch_id], _ = load_verified_commit_v4(
                     client, run_id=prefix.run_id, batch_id=batch_id,
-                    **({'first_price_source': first_price_source}
+                    # Nested exits must verify strictly against the source
+                    # batch's predecessor, never its containing/latest prefix.
+                    **({'first_price_source': first_price_source,
+                        'verified_prior_prefix': verified_batch_predecessor(
+                            client, prefix, batch_id)}
                        if first_price_source is not None else {}))
             commit = commits[batch_id]
             recorded_at = datetime.fromisoformat(str(event["recorded_at"]))

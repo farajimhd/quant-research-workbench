@@ -257,6 +257,7 @@ def test_v4_cold_intent_reconstructs_verified_source_with_slices(monkeypatch, wi
     assert len(calls) == 1
     if with_authority:
         assert calls[0]['first_price_source'] is authority
+        assert calls[0]['verified_prior_prefix'] is None
     else:
         assert 'first_price_source' not in calls[0]
     assert len(recovered) == 1
@@ -685,3 +686,45 @@ def test_v4_amended_command_requires_exact_oms_revision_even_with_proof():
     assert prefix is not None
     with pytest.raises(RuntimeError, match="lacks an exact OMS group revision"):
         load_committed_strategy_one_command_page(client, prefix)
+
+
+def test_native_cold_intent_uses_its_exact_predecessor_inside_later_prefix(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4 as commits
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    client = attached_v4_client()
+    run_id = 'backtest:cold-intent-predecessor'
+    batches = []
+    prior = '00000000-0000-0000-0000-000000000000'
+    for sequence in (1, 2, 3):
+        source = intent()
+        current = strategy_intent_batch(
+            source, run_id=run_id, run_month=date(2026, 8, 1), account_id='DU1',
+            attempt_id=str(uuid4()), batch_id=str(uuid4()), prior_batch_id=prior,
+            sequence=sequence, source_cursor=f'boundary-{sequence}',
+            run_status='running', recorded_at=source.event_time)
+        commits.publish_base_typed_batch_v4(client, current)
+        batches.append(current)
+        prior = current.batch_id
+    prefix = commits.load_verified_v4_prefix(client, run_id)
+    original = commits.load_verified_commit_v4
+    calls = []
+    authority = object()
+    def verified(*args, **kwargs):
+        calls.append(kwargs.copy())
+        # Base-only fixture: retain real committed hashes and predecessor gate.
+        kwargs.pop('first_price_source')
+        return original(*args, **kwargs)
+    monkeypatch.setattr(commits, 'load_verified_commit_v4', verified)
+    selected = batches[1]
+    recovered = load_committed_strategy_intent_page(
+        client, prefix, record_ids=(selected.events[0]['record_id'],),
+        include_source_batch=True, first_price_source=authority)
+    assert len(recovered) == len(calls) == 1
+    assert recovered[0].source_batch == selected
+    assert calls[0]['first_price_source'] is authority
+    predecessor = calls[0]['verified_prior_prefix']
+    assert predecessor.batch_ids == (batches[0].batch_id,)
+    assert predecessor.last_sequence == 1
+    assert predecessor.last_batch_id == batches[0].batch_id
+    assert selected.batch_id not in predecessor.batch_ids
+    assert batches[2].batch_id not in predecessor.batch_ids
