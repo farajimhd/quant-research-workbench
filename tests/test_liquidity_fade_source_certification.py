@@ -10,7 +10,7 @@ from src.backend.backtest_strategy_liquidity_fade_certification import (
 def test_prepared_source_proof_is_deterministic_and_fully_pinned():
     proof = certify_prepared_liquidity_fade_source()
     assert len(proof) == 64 and proof == certify_prepared_liquidity_fade_source()
-    assert len(LIQUIDITY_FADE_SOURCE_AST) == 34
+    assert len(LIQUIDITY_FADE_SOURCE_AST) == 39
 
 
 @pytest.mark.parametrize('relative', tuple(LIQUIDITY_FADE_SOURCE_AST))

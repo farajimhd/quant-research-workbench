@@ -6,6 +6,11 @@ from pathlib import Path
 
 
 LIQUIDITY_FADE_SOURCE_AST = {
+    'src/trading_runtime/arte_strategy_one_entry_journal.py': '8cca19a37ae307716282bfdf79e8d9efd610d4d54d66ee5dedfa744f36a5d4de',
+    'src/trading_runtime/strategy_rising_momentum_witness.py': '38d37a88754b664ca4edd13f1dfb1ed1b27b0b8fba74f29d0055e5e13504270d',
+    'src/trading_runtime/arte_rising_momentum_entry_v4.py': 'e1d0497365cbac3d7a469e830222d018863f472ecf8f4564af1ba04bdbf83aeb',
+    'src/trading_runtime/arte_initial_momentum_entry_v4.py': 'a5d5bf98eab9d2ef186bf6c816d847264d1b595a6413a02b96439bee6fade130',
+    'src/trading_runtime/arte_first_price_entry_v4.py': 'd5cdb37515b24c127113ad38256c9379e2abbe2a2fc70fd321ef4d777f3f76a1',
     'src/trading_runtime/strategy_liquidity_fade_checkpoint_reference.py': '2bf2d32ba8e66f95d6646c3f364937dd342fe25af9cd3311632e50bf958369d8',
     'src/backend/replay_run_service.py': 'acd6d0f2d1466576e782a7a0b62dc77488a145cc449a4251d175270f78e66780',
     'src/backend/backtest_strategy_one_execution.py': '102c195fb3d12550699d5767554b62be85bd57776529905152949d47124e80c7',
@@ -35,7 +40,7 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/strategy_liquidity_fade_publication.py': '2bb3b9c31207b9f2ea2a5ab7e8c6ed3c0b5fb07fcdf2a5e5599c051119017edf',
     'src/trading_runtime/arte_journal_commit_v4.py': '13fd9224d0f01a0d7fb654c7a939a29528dbed4e604713e1f7a2e44487828aba',
     'src/trading_runtime/arte_journal_compound_v4.py': '4965c541673e52dffff094d170ef4a255f58fd2eeb154c3bfa2bf34c78b14c8b',
-    'src/backend/backtest_strategy_certified_price_break.py': '25f4c07b74d1862a7579bf3ed7f69e0be6adb7c3734165fbef44a81498e84d23',
+    'src/backend/backtest_strategy_certified_price_break.py': '0d2975f0451b6c54e43622794adb7b4b2d266f90414f491cdc6beb40b3f5abda',
     'src/backend/backtest_journal_memory.py': '98af96c56278f5158cbf272a220fd4333d890217702c9b565e7173b4021ce60f',
     'src/backend/backtest_typed_projection.py': '905e4247b02e1592f281a656b7f96fef2cd782669f32f671b941c0e557918e41',
     'src/backend/backtest_typed_publisher.py': '61b48da127c109c782e8333af9c5ef746854966833f36f6d327b55dcb4119d32',
