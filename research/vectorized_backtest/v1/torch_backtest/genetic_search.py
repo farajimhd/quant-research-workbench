@@ -119,7 +119,7 @@ class StrategySpace:
         }
 
 
-def initial_population(space, rng, size, seed=None):
+def initial_population(space, rng, size, seed=None, *, random_only=False):
     if size < 4:
         raise ValueError("Population requires at least four independent candidates")
     population = (
@@ -127,6 +127,18 @@ def initial_population(space, rng, size, seed=None):
         if hasattr(space, "sample")
         else rng.uniform(space.low, space.high, (size, len(space.dimensions)))
     )
+    if random_only:
+        if seed is not None:
+            raise ValueError("Random initialization cannot also use a seed candidate")
+        # Sample actual class IDs, then repair coupled graph constraints. This
+        # mode randomizes every class coordinate rather than sparse mutations
+        # around the default program. Numeric coordinates come from sample().
+        for coordinate, gene in enumerate(
+            getattr(space, "genes", ()),
+            space.numeric_count if hasattr(space, "genes") else 0,
+        ):
+            population[:, coordinate] = rng.choice(gene.allowed, size=size)
+        return space.repair(population)
     population[0] = space.default if seed is None else seed
     if seed is not None:
         population[1] = space.default

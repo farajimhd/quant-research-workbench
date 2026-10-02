@@ -113,9 +113,27 @@ class SessionObjective:
 def run_phase(evaluators, space, args, output, phase, checkpoint, seed):
     rng = np.random.default_rng(args.seed + phase)
     if checkpoint is None:
-        population = initial_population(space, rng, args.population, seed)
+        population = initial_population(
+            space,
+            rng,
+            args.population,
+            seed,
+            random_only=seed is None
+            and getattr(args, "initialization", "default") == "random",
+        )
         best, best_score, start, stagnant = None, None, 0, 0
         history = []
+        save(
+            output / f"phase_{phase}_initial_population.json",
+            {
+                "initialization": "winner_seeded"
+                if seed is not None
+                else getattr(args, "initialization", "default"),
+                "population": population.tolist(),
+                "decoded": space.decode(population),
+                "rejected_class_edits": getattr(space, "rejected_edits", 0),
+            },
+        )
     else:
         rng.bit_generator.state = checkpoint["rng"]
         if hasattr(space, "rejected_edits"):
@@ -128,6 +146,20 @@ def run_phase(evaluators, space, args, output, phase, checkpoint, seed):
             checkpoint["history"],
         )
     for generation in range(start, args.generations):
+        save(
+            output / "status.json",
+            {
+                "status": "training",
+                "phase": phase,
+                "active_generation": generation,
+                "completed_generations": generation,
+                "generation_cap": args.generations,
+            },
+        )
+        print(
+            f"Phase {phase} generation {generation + 1}/{args.generations}: evaluating",
+            flush=True,
+        )
         results = [evaluate(population) for evaluate in evaluators]
         scores = objective(results, **args.weights)
         index = int(np.argmax(scores))
@@ -208,6 +240,12 @@ def run_phase(evaluators, space, args, output, phase, checkpoint, seed):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--initialization",
+        choices=("default", "random"),
+        default="default",
+        help="First-phase population: include released default or randomize all genes",
+    )
     parser.add_argument(
         "--search-mode",
         choices=("categorical", "numeric"),
@@ -306,6 +344,7 @@ def main(argv=None):
         "weights": args.weights,
         "validation_preobserved": args.validation_preobserved,
         "search_mode": args.search_mode,
+        "initialization": args.initialization,
         "source_hashes": code,
     }
     if args.resume:

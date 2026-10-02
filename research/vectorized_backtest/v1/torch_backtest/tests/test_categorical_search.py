@@ -51,6 +51,26 @@ def test_class_ids_are_discrete_and_bad_ids_fail(space):
         space.repair(rows)
 
 
+def test_random_initialization_changes_classes_and_has_no_default_lane(space):
+    first = initial_population(space, np.random.default_rng(812), 4, random_only=True)
+    repeated = initial_population(
+        space, np.random.default_rng(812), 4, random_only=True
+    )
+    assert np.array_equal(first, repeated)
+    assert not np.any(np.all(first == space.default, axis=1))
+    assert np.all(
+        (first[:, space.numeric_count :] != space.default[space.numeric_count :]).sum(
+            -1
+        )
+        > 2
+    )
+    space.decode(first)
+    with pytest.raises(ValueError, match="seed candidate"):
+        initial_population(
+            space, np.random.default_rng(812), 4, space.default, random_only=True
+        )
+
+
 def test_operation_and_input_output_ids_change_real_expressions(space):
     # Constant capital output has a direct alternate typed ratio input node:
     # use an entry Boolean output selector instead, with a named atomic gate.

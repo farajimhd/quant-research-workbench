@@ -119,6 +119,9 @@ class GroupedSessionObjective:
                 )
         parameters = candidate["parameters"]
         started = perf_counter()
+        print(
+            f"Compiling {self.session['session_date']} topology {key[:12]}", flush=True
+        )
         runner = StrategyOneReplay(
             self.tape,
             candidates=parameters["entry"] * self.size,
@@ -149,6 +152,9 @@ class GroupedSessionObjective:
             )
         self.compile_seconds += perf_counter() - started
         self.compiled_topologies += 1
+        print(
+            f"Compiled topology {key[:12]}: {perf_counter() - started:.2f}s", flush=True
+        )
         self.runners[key] = runner
         return runner
 
@@ -180,6 +186,11 @@ class GroupedSessionObjective:
             )
             runner.update_candidates(**parameters)
             observed = runner.run(slots=slots)
+            print(
+                f"Replayed {self.session['session_date']} topology {decoded[indices[0]]['topology'][:12]}: "
+                f"{len(indices)} candidates, {observed['replay_seconds']:.2f}s",
+                flush=True,
+            )
             for key in keys:
                 for lane, index in enumerate(indices):
                     result[key][index] = observed[key][lane]

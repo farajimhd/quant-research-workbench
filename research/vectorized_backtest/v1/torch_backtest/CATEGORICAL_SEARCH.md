@@ -99,6 +99,14 @@ The flag records that the default Aug 20 evaluation has already been examined.
 Provide new certified later run IDs to obtain a fresh untouched holdout.
 This command does not authorize data generation or writes to market tables.
 
+Add `--initialization random` to randomize every numeric and categorical
+coordinate in the first population without inserting a default lane. Coupled
+type/shape constraints are repaired deterministically; the saved initial
+population contains the complete executable tensors and rejection count.
+Phase two continues from the first phase's training winner. The default is
+evaluated as a frozen baseline after search. Initialization is part of the
+restart identity, and per-topology compile/replay progress is printed.
+
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 & C:/Users/g835l/miniconda3/envs/ml4t/python.exe -B -m research.vectorized_backtest.v1.torch_backtest.audit_categorical --cache D:/TradingML/runtimes/vectorized_backtest/strategy_one_audit/f0cadde7a53f4425ac110526fab97a82/tape --prefix-ms 600000 --clock-ms 1000
