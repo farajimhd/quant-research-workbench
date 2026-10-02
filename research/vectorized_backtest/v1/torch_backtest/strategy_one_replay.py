@@ -56,11 +56,13 @@ def amend_book(book, management, target, stop):
 
 
 class StrategyOneReplay:
+    clock_ms = 100  # Legacy contract for isolated reducer/oracle construction.
+
     def __init__(
         self,
         tape,
         *,
-        broker_ms=100,
+        broker_ms=None,
         initial_cash=10_000,
         candidates=None,
         maximum_fills=8192,
@@ -72,12 +74,27 @@ class StrategyOneReplay:
         protection_program=None,
         action_graphs=None,
         action_values=None,
+        graph_steps=None,
     ):
-        if broker_ms not in (100, 1000):
-            raise ValueError("Broker clock must be 100ms or 1s")
+        self.clock_ms = getattr(tape, "manifest", {}).get("clock_ms", 100)
+        self.unified = self.clock_ms != 100
+        if self.unified:
+            from .unified_clock import validate_clock
+
+            validate_clock(self.clock_ms)
+        broker_ms = self.clock_ms if broker_ms is None else broker_ms
+        if self.unified and broker_ms != self.clock_ms:
+            raise ValueError("Unified broker and policy clocks must match")
+        if broker_ms not in ((self.clock_ms,) if self.unified else (100, 1000)):
+            raise ValueError(
+                "Legacy broker supports 100ms/1s; unified broker uses its main clock"
+            )
         self.tape, self.broker_ms = tape, broker_ms
         self.entry_graph = (entry_graph or released_entry_graph()).validate()
-        self.add_graph = (add_graph or released_add_graph()).validate()
+        from .unified_clock import unified_add_graph
+
+        default_add = unified_add_graph() if self.unified else released_add_graph()
+        self.add_graph = (add_graph or default_add).validate()
         self.action_graphs = (
             released_action_graphs() if action_graphs is None else action_graphs
         )
@@ -98,7 +115,7 @@ class StrategyOneReplay:
         self.feature_bank = feature_bank
         builtins = {
             item.name
-            for graph in (released_entry_graph(), released_add_graph())
+            for graph in (released_entry_graph(), default_add)
             for item in graph.inputs
         }
         builtins |= {
@@ -110,7 +127,7 @@ class StrategyOneReplay:
         }
         units = {
             item.name: item.unit
-            for graph in (released_entry_graph(), released_add_graph())
+            for graph in (released_entry_graph(), default_add)
             for item in graph.inputs
         }
         units.update(
@@ -124,7 +141,7 @@ class StrategyOneReplay:
         )
         kinds = {
             item.name: item.kind
-            for graph in (released_entry_graph(), released_add_graph())
+            for graph in (released_entry_graph(), default_add)
             for item in graph.inputs
         }
         kinds.update(
@@ -150,9 +167,18 @@ class StrategyOneReplay:
             raise ValueError(
                 "Market feature atoms cannot replace financial/causal engine inputs"
             )
+        if (
+            self.unified
+            and feature_bank is not None
+            and any(
+                atom.source == "bars" and atom.resolution_ms < self.clock_ms
+                for atom in feature_bank.atoms
+            )
+        ):
+            raise ValueError("Strategy feature timeframe is below the main clock")
         if feature_bank is not None and (
             feature_bank.values.shape
-            != (tape.through_ms // 100, len(tape.tickers), len(extra))
+            != (tape.through_ms // self.clock_ms, len(tape.tickers), len(extra))
             or feature_bank.values.device != tape.facts.device
         ):
             raise ValueError(
@@ -288,7 +314,11 @@ class StrategyOneReplay:
         self.entry_step = self.entry_graph.evaluate
         self.add_step = self.add_graph.evaluate
         self.graph = None
-        self.graph_steps = 32
+        self.graph_steps = (
+            (1 if self.unified else 32) if graph_steps is None else graph_steps
+        )
+        if type(self.graph_steps) is not int or not 1 <= self.graph_steps <= 128:
+            raise ValueError("CUDA graph block must contain 1..128 main-clock steps")
         self.compile_seconds = 0
         self.capture_seconds = 0
         self.reprice_step = reprice_book
@@ -354,7 +384,9 @@ class StrategyOneReplay:
     def _market(self, resolution):
         # The bank begins with the first completed source bucket. At 1.2s,
         # the 1s input is the bucket ending 1.0s, never the one ending 2.0s.
-        completed = (self.index + 1).div(resolution // 100, rounding_mode="floor")
+        completed = (self.index + 1).div(
+            resolution // self.clock_ms, rounding_mode="floor"
+        )
         row = self._slice(self.tape.market[resolution], (completed - 1).clamp_min(0))
         row = torch.where((completed > 0).reshape(1, 1, 1), row, 0)
         return {name: row[..., channel] for channel, name in enumerate(MARKET_FIELDS)}
@@ -776,7 +808,7 @@ class StrategyOneReplay:
             "current_purchase_groups": st["purchase_groups"].to(torch.int64),
             "bars_valid": (hundred["price_valid"] > 0)
             & (second["price_valid"] > 0)
-            & (hundred["indicator_resolution_ms"] == 100)
+            & (self.unified | (hundred["indicator_resolution_ms"] == 100))
             & (second["indicator_resolution_ms"] == 1000),
             "bar_100_boundary_ms": at.to(torch.int64),
             "bar_1s_boundary_ms": (at // 1000 * 1000).to(torch.int64),
@@ -796,6 +828,11 @@ class StrategyOneReplay:
             "stop": self.protection.stop,
             "target": self.protection.target,
         }
+        if self.unified:
+            # Main-clock price evidence and the completed 1s indicator are
+            # separately named atoms. No 100ms input is available to policies.
+            ax["bar_base_boundary_ms"] = ax["bar_100_boundary_ms"]
+            ax["close_base_int"] = ax["close_100_int"]
         # Search arrays are evaluated as primitives, then Portfolio admission
         # folds shared reservations in the same ticker order as the app.
         ex = {
@@ -958,12 +995,15 @@ class StrategyOneReplay:
             st["purchase_groups"][:, listing].add_(accepted.to(torch.float64))
             add[:, listing] &= ~accepted
 
-    def tick(self):
+    def _observe_inputs(self):
+        """Fuse quote witnesses and source slicing before order processing."""
+        # `hundred` is the legacy internal name for the MAIN-clock bar. In
+        # unified mode it is 500ms/1s; no 100ms feature tensor is retained.
         st = self.state
-        boundary = (self.index + 1) * 100
+        boundary = (self.index + 1) * self.clock_ms
         at = boundary.reshape(()).expand(self.b, self.n)
         hundred, second, thirty = (
-            self._market(100),
+            self._market(self.clock_ms),
             self._market(1000),
             self._market(30_000),
         )
@@ -995,11 +1035,27 @@ class StrategyOneReplay:
         global_event = ((hundred["present"] > 0) & active_before).any(-1) | fact[
             "candidate_valid"
         ].any(-1)
-        for listing, book in enumerate(self.books):
-            self.reprice_step(book, st["last_ask"][:, listing], global_event)
+        return (
+            boundary,
+            at,
+            hundred,
+            second,
+            thirty,
+            fact,
+            source_before,
+            active_before,
+            fresh,
+            bid,
+            ask,
+            global_event,
+        )
 
+    def _broker_inputs(self, boundary):
+        """Gather the completed interval and histogram once for all listings."""
         source = self.tape.broker[self.broker_ms]
-        interval_index = self.index.div(self.broker_ms // 100, rounding_mode="floor")
+        interval_index = self.index.div(
+            self.broker_ms // self.clock_ms, rounding_mode="floor"
+        )
         row = self._slice(source["market"], interval_index)
         broker_row = {name: row[..., i] for i, name in enumerate(MARKET_FIELDS)}
         pointers = source["pointers"].index_select(0, interval_index).squeeze(0)
@@ -1010,52 +1066,82 @@ class StrategyOneReplay:
             (offsets[None, :] < pointers[:, 1:2])[..., None], price_rows, 0
         )
         broker_tick = boundary.remainder(self.broker_ms) == 0
+        return broker_row, price_rows, broker_tick
+
+    def _match_account(self, listing, broker_row, price_rows, broker_tick, boundary):
+        """Fuse one lexical cash transition with its broker and ledger updates."""
+        st = self.state
+        book = self.books[listing]
+        x = {name: broker_row[name][:, listing] for name in MARKET_FIELDS}
+        x.update(
+            {
+                "boundary_ms": boundary.reshape(()).expand(self.b),
+                "interval_start_ms": (boundary - self.broker_ms)
+                .reshape(())
+                .expand(self.b),
+                "present": (x["present"] > 0) & broker_tick.reshape(()),
+                "quote_valid": (x["quote_valid"] > 0)
+                & (x["quote_age_us"] >= 0)
+                & (x["quote_age_us"] <= 1_000_000),
+                "bid": x["bid_int"] / 10_000,
+                "ask": x["ask_int"] / 10_000,
+                "low": torch.where(x["extremes_valid"] > 0, x["low_int"] / 10_000, 0),
+                "price_int": price_rows[listing, :, 0].expand(self.b, -1),
+                "price_volume": price_rows[listing, :, 1].expand(self.b, -1),
+            }
+        )
+        previously_filled = book.group_acquired[:, 0] > 0
+        cash, qty, avg, risk, alloc_avg, realized, fees, fills = self.broker_step(
+            book,
+            x,
+            self.cash,
+            st["quantity"][:, listing],
+            st["average"][:, listing],
+            st["allocated_risk"][:, listing],
+            st["allocated_average"][:, listing],
+            1.0,
+            0.25,
+            5.0,
+        )
+        self.cash.copy_(cash)
+        self.realized.add_(realized)
+        self.fees.add_(fees)
+        st["quantity"][:, listing].copy_(qty)
+        st["average"][:, listing].copy_(avg)
+        st["allocated_risk"][:, listing].copy_(risk)
+        st["allocated_average"][:, listing].copy_(alloc_avg)
+        st["completed_entries"][:, listing].add_(
+            (~previously_filled & (book.group_acquired[:, 0] > 0)).to(torch.float64)
+        )
+        return fills
+
+    def tick(self):
+        st = self.state
+        (
+            boundary,
+            at,
+            hundred,
+            second,
+            thirty,
+            fact,
+            source_before,
+            active_before,
+            fresh,
+            bid,
+            ask,
+            global_event,
+        ) = self._observe_inputs()
+        for listing, book in enumerate(self.books):
+            self.reprice_step(book, st["last_ask"][:, listing], global_event)
+
+        broker_row, price_rows, broker_tick = self._broker_inputs(boundary)
         events = []
         for listing, book in enumerate(self.books):
-            x = {name: broker_row[name][:, listing] for name in MARKET_FIELDS}
-            x.update(
-                {
-                    "boundary_ms": boundary.reshape(()).expand(self.b),
-                    "interval_start_ms": (boundary - self.broker_ms)
-                    .reshape(())
-                    .expand(self.b),
-                    "present": (x["present"] > 0) & broker_tick.reshape(()),
-                    "quote_valid": (x["quote_valid"] > 0)
-                    & (x["quote_age_us"] >= 0)
-                    & (x["quote_age_us"] <= 1_000_000),
-                    "bid": x["bid_int"] / 10_000,
-                    "ask": x["ask_int"] / 10_000,
-                    "low": torch.where(
-                        x["extremes_valid"] > 0, x["low_int"] / 10_000, 0
-                    ),
-                    "price_int": price_rows[listing, :, 0].expand(self.b, -1),
-                    "price_volume": price_rows[listing, :, 1].expand(self.b, -1),
-                }
+            events.append(
+                self._match_account(
+                    listing, broker_row, price_rows, broker_tick, boundary
+                )
             )
-            previously_filled = book.group_acquired[:, 0] > 0
-            cash, qty, avg, risk, alloc_avg, realized, fees, fills = self.broker_step(
-                book,
-                x,
-                self.cash,
-                st["quantity"][:, listing],
-                st["average"][:, listing],
-                st["allocated_risk"][:, listing],
-                st["allocated_average"][:, listing],
-                1.0,
-                0.25,
-                5.0,
-            )
-            self.cash.copy_(cash)
-            self.realized.add_(realized)
-            self.fees.add_(fees)
-            st["quantity"][:, listing].copy_(qty)
-            st["average"][:, listing].copy_(avg)
-            st["allocated_risk"][:, listing].copy_(risk)
-            st["allocated_average"][:, listing].copy_(alloc_avg)
-            st["completed_entries"][:, listing].add_(
-                (~previously_filled & (book.group_acquired[:, 0] > 0)).to(torch.float64)
-            )
-            events.append(fills)
         self._record(torch.stack(events, 1), boundary)
 
         pending, management, breaks, old_accepted, lower, upper = self._manage(
@@ -1116,7 +1202,13 @@ class StrategyOneReplay:
         with torch.inference_mode():
             self.tick()
         self.reset()
-        self.broker_step = torch.compile(match_listing, fullgraph=True)
+        # The enclosing compiled account transition inlines the functional
+        # broker, so gathering, matching and financial writes can fuse.
+        self.broker_step = (
+            match_listing
+            if self.unified
+            else torch.compile(match_listing, fullgraph=True)
+        )
         self.entry_step = torch.compile(self.entry_graph.evaluate, fullgraph=True)
         self.add_step = torch.compile(self.add_graph.evaluate, fullgraph=True)
         self.action_steps = {
@@ -1131,6 +1223,10 @@ class StrategyOneReplay:
         self._admit = torch.compile(self._admit, fullgraph=True)
         self._record = torch.compile(self._record, fullgraph=True)
         self._copy_masked = torch.compile(self._copy_masked, fullgraph=True)
+        if self.unified:
+            self._observe_inputs = torch.compile(self._observe_inputs, fullgraph=True)
+            self._broker_inputs = torch.compile(self._broker_inputs, fullgraph=True)
+            self._match_account = torch.compile(self._match_account, fullgraph=True)
         self.compiled_step = self.tick
         with torch.inference_mode():
             self.compiled_step()
@@ -1159,8 +1255,8 @@ class StrategyOneReplay:
 
     def run(self, *, slots=None, progress=print):
         """Measured replay only; setup/transfer/compile costs remain separate."""
-        slots = self.tape.through_ms // 100 if slots is None else slots
-        if not 1 <= slots <= self.tape.through_ms // 100:
+        slots = self.tape.through_ms // self.clock_ms if slots is None else slots
+        if not 1 <= slots <= self.tape.through_ms // self.clock_ms:
             raise ValueError("Replay prefix exceeds the resident causal tape")
         self.reset()
         step = self.compiled_step or self.tick
@@ -1190,7 +1286,10 @@ class StrategyOneReplay:
         ).sum(-1)
         return {
             "broker_ms": self.broker_ms,
-            "strategy_ms": 100,
+            "strategy_ms": self.clock_ms,
+            "policy_contract": self.tape.manifest.get(
+                "policy_contract", "faithful-strategy-one-v1"
+            ),
             "strategy_slots": slots,
             "replay_seconds": elapsed,
             "compile_seconds": self.compile_seconds,

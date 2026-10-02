@@ -1,8 +1,9 @@
-"""Certify Strategy 1 inputs and compare saved app / GPU 100ms / GPU 1s.
+"""Certify source inputs and compare saved app with faithful/unified GPU replay.
 
 SELECT-only inputs, immutable runtime evidence, separately measured setup and
-replay. The 1s variant changes the broker clock; strategy observations remain
-100ms. Saved app timing is documentary evidence, not a fresh app measurement.
+replay. The faithful audit keeps a 100ms strategy with 100ms/1s brokers.
+The unified launcher defaults to one 1s strategy/broker clock; 500ms is also
+supported. Saved app timing is historical evidence, not a fresh app run.
 """
 
 import argparse
@@ -15,6 +16,7 @@ from dataclasses import asdict
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
+from statistics import median
 from time import perf_counter
 from uuid import uuid4
 
@@ -128,7 +130,7 @@ def episodes_from_fills(fills):
     return completed, list(active.values())
 
 
-def main(argv=None):
+def main(argv=None, *, unified=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", default="51dcacfb-bc9e-44a0-a9c8-8e2d2f103156")
     parser.add_argument(
@@ -146,15 +148,54 @@ def main(argv=None):
         type=int,
         help="Diagnostic prefix only; never reported as full comparison",
     )
-    parser.add_argument(
-        "--broker", type=int, choices=(100, 1000), nargs="+", default=[100, 1000]
-    )
+    if not unified:
+        parser.add_argument(
+            "--broker", type=int, choices=(100, 500, 1000), nargs="+", default=None
+        )
+    else:
+        parser.set_defaults(broker=None)
     parser.add_argument(
         "--profile-kernels",
         action="store_true",
         help="Trace one static GPU tick after each measured replay",
     )
+    parser.add_argument(
+        "--clock-ms",
+        type=int,
+        choices=(500, 1000) if unified else (100, 500, 1000),
+        default=1000 if unified else 100,
+        help=(
+            "Shared policy/broker clock, default 1000ms; no finer strategy features"
+            if unified
+            else "100 preserves the faithful audit; 500/1000 select a unified research clock"
+        ),
+    )
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Independent reset/replay measurements on the prepared GPU tape",
+    )
+    parser.add_argument(
+        "--graph-steps",
+        type=int,
+        default=None,
+        help="Captured main-clock block length; unified default 1 avoids large graph setup",
+    )
     args = parser.parse_args(argv)
+    args.broker = args.broker or (
+        [100, 1000] if args.clock_ms == 100 else [args.clock_ms]
+    )
+    if args.repeats < 1 or (args.clock_ms != 100 and args.broker != [args.clock_ms]):
+        parser.error(
+            "Positive repeats and matching unified broker/policy clocks are required"
+        )
+    if args.clock_ms == 100 and 500 in args.broker:
+        parser.error("500ms matching requires the unified 500ms clock")
+    if args.graph_steps is not None and not 1 <= args.graph_steps <= 128:
+        parser.error("Captured graph block must contain 1..128 steps")
+    if args.slots is not None and args.slots < 1:
+        parser.error("Diagnostic prefix must contain at least one step")
     if not RUNTIME.is_dir() or not args.runtime.resolve().is_relative_to(
         RUNTIME.resolve()
     ):
@@ -229,7 +270,7 @@ def main(argv=None):
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for the requested GPU comparison")
     setup = perf_counter()
-    tape = prepare(cache).to("cuda")
+    tape = prepare(cache, clock_ms=args.clock_ms).to("cuda")
     torch.cuda.synchronize()
     timings["prepare_and_transfer_seconds"] = perf_counter() - setup
     session = fixed.market.sessions[0]
@@ -238,7 +279,7 @@ def main(argv=None):
 
         session = date.fromisoformat(str(session))
     expected = reference_fills(
-        performance, session, (args.slots * 100) if args.slots else through
+        performance, session, (args.slots * args.clock_ms) if args.slots else through
     )
     summary = performance["report"]["summary"]
     report = {
@@ -246,7 +287,8 @@ def main(argv=None):
         "comparison_complete": False,
         "session_date": str(session),
         "through_ms": through,
-        "strategy_ms": 100,
+        "strategy_ms": args.clock_ms,
+        "policy_contract": tape.manifest["policy_contract"],
         "configuration_hash": release.payload_hash,
         "source_tokens": tape.manifest,
         "verified_sequence": performance["verified_sequence"],
@@ -292,13 +334,28 @@ def main(argv=None):
     for broker_ms in args.broker:
         stage = perf_counter()
         replay = StrategyOneReplay(
-            tape, broker_ms=broker_ms, initial_cash=float(definition["initial_cash"])
+            tape,
+            broker_ms=broker_ms,
+            initial_cash=float(definition["initial_cash"]),
+            graph_steps=args.graph_steps,
         )
         replay.compile()
         progress(
             f"Compiled {broker_ms}ms broker in {replay.compile_seconds:.3f}s; capture {replay.capture_seconds:.3f}s"
         )
-        result = replay.run(slots=args.slots, progress=progress)
+        runs = [
+            replay.run(slots=args.slots, progress=progress) for _ in range(args.repeats)
+        ]
+        result = runs[-1]
+        result["replay_repeats_seconds"] = [row["replay_seconds"] for row in runs]
+        result["replay_seconds"] = median(result["replay_repeats_seconds"])
+        if any(
+            row["net_pnl"] != result["net_pnl"]
+            or row["fill_count"] != result["fill_count"]
+            or row["open_quantities"] != result["open_quantities"]
+            for row in runs
+        ):
+            raise RuntimeError("Independent GPU repeats diverged")
         count = int(replay.fill_count[0].item())
         result["fills"] = [
             {
@@ -343,34 +400,14 @@ def main(argv=None):
         ):
             raise RuntimeError("Closed fill-ledger episodes differ from GPU P&L")
         result["app_fill_comparison"] = fill_comparison(expected, result["fills"])
+        result["graph_steps"] = replay.graph_steps
         result["setup_and_replay_seconds"] = perf_counter() - stage
         if args.profile_kernels:
-            replay.reset()
-            with (
-                torch.inference_mode(),
-                torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ]
-                ) as profile,
-            ):
-                replay.tick()
-                torch.cuda.synchronize()
-            profile.export_chrome_trace(str(run / f"kernels_{broker_ms}.json"))
-            events = [
-                event
-                for event in profile.events()
-                if event.device_type == torch.autograd.DeviceType.CUDA
-            ]
-            result["profile"] = {
-                "strategy_ticks": 1,
-                "kernel_count": len(events),
-                "profiled_device_microseconds": sum(
-                    event.self_device_time_total for event in events
-                ),
-                "excluded_from_replay_timing": True,
-            }
+            from .stage_profile import profile_stages
+
+            result["profile"] = profile_stages(
+                replay, run / f"kernels_{broker_ms}.json"
+            )
         write(run / f"gpu_{broker_ms}.json", result)
         write(
             run / f"policy_{broker_ms}.json",
@@ -405,10 +442,9 @@ def main(argv=None):
         )
         del replay
         torch.cuda.empty_cache()
-    report["comparison_complete"] = args.slots is None and set(args.broker) == {
-        100,
-        1000,
-    }
+    report["comparison_complete"] = args.slots is None and (
+        args.clock_ms != 100 or set(args.broker) == {100, 1000}
+    )
     report["full_elapsed_seconds"] = perf_counter() - started
     report["faithful_100ms_parity"] = (
         report["gpu"].get("100", {}).get("app_fill_comparison", {}).get("equal", False)
@@ -416,13 +452,19 @@ def main(argv=None):
     report["comparison_status"] = (
         "diagnostic_prefix"
         if args.slots
+        else "unified_approximation_complete"
+        if args.clock_ms != 100
         else "complete_and_parity_verified"
         if report["faithful_100ms_parity"] and report["comparison_complete"]
         else "executed_with_divergences"
     )
     write(run / "report.json", report)
     progress("Comparison artifact: " + str(run / "report.json"))
-    return 0 if args.slots or report["faithful_100ms_parity"] else 2
+    return (
+        0
+        if args.slots or args.clock_ms != 100 or report["faithful_100ms_parity"]
+        else 2
+    )
 
 
 if __name__ == "__main__":

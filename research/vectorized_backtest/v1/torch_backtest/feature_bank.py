@@ -168,7 +168,9 @@ class FeatureAtom:
 @dataclass
 class FeatureBank:
     atoms: tuple[FeatureAtom, ...]
-    values: torch.Tensor  # [T_100ms,N,F]; only selected dependencies are materialized.
+    values: (
+        torch.Tensor
+    )  # [T_main_clock,N,F]; only selected dependencies are materialized.
     evidence: dict
 
     def at(self, index, batch):
@@ -230,6 +232,7 @@ def prepare_features(
     baselines=None,
     reference_updates=None,
     maximum_bytes=2 * 1024**3,
+    clock_ms=100,
 ):
     """Prepare only the policy's declared inputs; never use journal entries.
 
@@ -239,13 +242,19 @@ def prepare_features(
     unavailable float/share values remain unknown. Required RVOL baselines
     must validate before any replay starts. Later availability cannot leak back.
     """
+    if clock_ms != 100:
+        from .unified_clock import validate_clock
+
+        validate_clock(clock_ms)
     atoms = tuple(atom.validate() for atom in atoms)
+    if any(atom.source == "bars" and atom.resolution_ms < clock_ms for atom in atoms):
+        raise ValueError("Strategy feature timeframe is below the main clock")
     if len({atom.name for atom in atoms}) != len(atoms):
         raise ValueError("Feature atoms need unique names")
     directory = Path(directory)
     manifest = json.loads((directory / "manifest.json").read_text())
     required_bytes = (
-        manifest["through_ms"] // 100 * len(manifest["files"]) * len(atoms) * 8
+        manifest["through_ms"] // clock_ms * len(manifest["files"]) * len(atoms) * 8
     )
     if required_bytes > maximum_bytes:
         raise MemoryError(
@@ -254,7 +263,7 @@ def prepare_features(
     # Call the main tape verifier first: it owns all path/hash/key checks.
     from .strategy_one_tape import prepare
 
-    verified = prepare(directory)
+    verified = prepare(directory, clock_ms=clock_ms)
     tickers, through = verified.tickers, verified.through_ms
     del verified
     frames = [pl.read_parquet(row["path"]) for row in manifest["files"]]
@@ -263,10 +272,57 @@ def prepare_features(
     if not isinstance(session, date):
         session = date.fromisoformat(str(session))
     clocks = pl.DataFrame(
-        {"boundary_ms": pl.int_range(100, through + 100, step=100, eager=True)}
+        {
+            "boundary_ms": pl.int_range(
+                clock_ms, through + clock_ms, step=clock_ms, eager=True
+            )
+        }
     )
     origin = market_day_boundary(session, 0)
-    columns, evidence = [], {"session_date": str(session), "sources": {}}
+    if clock_ms == 500 and any(
+        atom.source == "bars" and atom.resolution_ms == 500 for atom in atoms
+    ):
+        from .strategy_one_tape import aggregate_liquidity
+
+        # Only additive quantities, prices, quotes and their validity flags can
+        # be derived this way. Indicators require their own certified timeframe.
+        fine = source.filter(pl.col("resolution_ms") == 100).with_columns(
+            pl.col("ticker")
+            .replace_strict({ticker: i for i, ticker in enumerate(tickers)})
+            .alias("listing"),
+            pl.lit(1).alias("present"),
+        )
+        coarse = aggregate_liquidity(
+            fine, 500, round(origin.timestamp() * 1_000_000)
+        ).with_columns(
+            pl.col("listing").replace_strict(dict(enumerate(tickers))).alias("ticker")
+        )
+        derived = set(coarse.columns) - {
+            "macd_line",
+            "macd_signal",
+            "indicator_resolution_ms",
+        }
+        if any(
+            atom.source == "bars"
+            and atom.resolution_ms == 500
+            and atom.field not in derived
+            for atom in atoms
+        ):
+            raise ValueError(
+                "Requested 500ms indicator/field has no certified source or aggregation contract"
+            )
+        source = pl.concat([source, coarse], how="diagonal_relaxed")
+    columns, evidence = (
+        [],
+        {
+            "session_date": str(session),
+            "main_clock_ms": clock_ms,
+            "derived_500ms_bars": "certified-100ms-liquidity-aggregation-v1"
+            if clock_ms == 500
+            else None,
+            "sources": {},
+        },
+    )
     for atom in atoms:
         listing_columns = []
         for ticker in tickers:
@@ -411,6 +467,6 @@ def prepare_features(
     values = (
         torch.stack(columns, -1)
         if columns
-        else torch.empty((through // 100, len(tickers), 0), dtype=torch.float64)
+        else torch.empty((through // clock_ms, len(tickers), 0), dtype=torch.float64)
     )
     return FeatureBank(atoms, values, evidence)

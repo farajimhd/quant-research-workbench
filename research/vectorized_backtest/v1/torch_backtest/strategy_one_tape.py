@@ -152,14 +152,121 @@ def _histogram(frame, slots, n, resolution):
     }
 
 
-def prepare(directory, *, maximum_bytes=8 * 1024**3):
-    """Validate file hashes/keys, then pack a bounded 100ms strategy tape.
+def aggregate_liquidity(frame, resolution, origin_us):
+    """Lossless capacity aggregation; sampled quote sizes are never summed.
 
-    Strategy clock stays 100ms in both comparisons. The 1s broker uses only
-    completed ten-bucket intervals: summed eligible-price volume, price-bearing
-    OHLC, and the final available NBBO/sizes. A displayed size is sampled once,
-    not summed ten times. Orders must exist by the interval's start to fill.
+    Fine bars are source evidence only. [start,end) source intervals become a
+    completed coarse interval at end. Preserve first/last valid prices, full
+    extremes, summed execution capacity, merged price levels and NBBO age.
+    Sparse absence is zero activity under the certified source contract.
     """
+    source = frame.with_columns(
+        (((pl.col("boundary_ms") - 1) // resolution + 1) * resolution).alias(
+            "boundary_ms"
+        )
+    ).sort("listing", "boundary_ms")
+    keys = ["boundary_ms", "listing"]
+    price = pl.col("price_valid") == 1
+    extreme = pl.col("extremes_valid") == 1
+    quote = pl.col("quote_valid") == 1
+    quotes = ("bid_int", "ask_int", "bid_size", "ask_size", "quote_timestamp_us")
+    sums = tuple(
+        name
+        for name in (
+            "volume",
+            "notional",
+            "execution_notional",
+            "trade_count",
+            "source_trade_count",
+            "event_count",
+            "quote_event_count",
+        )
+        if name in source.columns
+    )
+    cumulative = tuple(
+        name
+        for name in (
+            "cumulative_volume",
+            "cumulative_notional",
+            "cumulative_execution_volume",
+            "cumulative_execution_notional",
+            "previous_close",
+        )
+        if name in source.columns
+    )
+    bars = source.group_by(keys).agg(
+        pl.col("present").max(),
+        pl.col("price_valid").max(),
+        pl.col("extremes_valid").max(),
+        pl.col("open_int").filter(price).first().fill_null(0),
+        pl.col("close_int").filter(price).last().fill_null(0),
+        pl.col("high_int").filter(extreme).max().fill_null(0),
+        pl.col("low_int").filter(extreme & (pl.col("low_int") > 0)).min().fill_null(0),
+        *[pl.col(name).filter(quote).last().fill_null(0) for name in quotes],
+        pl.col("quote_valid").max(),
+        pl.col("execution_volume").sum(),
+        *[pl.col(name).sum() for name in sums],
+        *[pl.col(name).last() for name in cumulative],
+        *[pl.col(name).min() for name in ("first_event_us",) if name in source.columns],
+        *[pl.col(name).max() for name in ("last_event_us",) if name in source.columns],
+    )
+    # Reduce equal-price capacities rather than growing the ragged histogram
+    # tenfold. Keep every price level; no top-k clipping or invented liquidity.
+    levels = (
+        source.select(*keys, "execution_price_levels")
+        .explode("execution_price_levels")
+        .unnest("execution_price_levels")
+        .drop_nulls("1")
+        .group_by(*keys, "1")
+        .agg(pl.col("2").sum())
+        .sort(*keys, "1")
+        .group_by(keys)
+        .agg(pl.struct("1", "2").alias("execution_price_levels"))
+    )
+    bars = bars.join(levels, on=keys, how="left").sort("listing", "boundary_ms")
+    if "execution_notional" in bars.columns:
+        bars = bars.with_columns(
+            pl.when(pl.col("execution_volume") > 0)
+            .then(pl.col("execution_notional") / pl.col("execution_volume"))
+            .otherwise(None)
+            .alias("execution_vwap")
+        )
+    return bars.with_columns(
+        ((pl.col("ask_int") - pl.col("bid_int")) / 10000).alias("spread"),
+        pl.lit(resolution).alias("resolution_ms"),
+        (
+            origin_us
+            + pl.col("boundary_ms") * 1000
+            - pl.col("quote_timestamp_us").cast(pl.Int64)
+        ).alias("quote_age_us"),
+        pl.lit(float("nan")).alias("macd_line"),
+        pl.lit(float("nan")).alias("macd_signal"),
+        pl.lit(0).alias("indicator_resolution_ms"),
+        pl.when(pl.col("price_valid") == 1)
+        .then(pl.col("close_int"))
+        .otherwise(None)
+        .forward_fill()
+        .shift(1)
+        .over("listing")
+        .fill_null(0)
+        .alias("previous_bar_close_int"),
+    )
+
+
+def prepare(directory, *, maximum_bytes=8 * 1024**3, clock_ms=100):
+    """Validate hashes/keys, then pack a bounded main-clock strategy tape.
+
+    clock_ms=100 preserves the faithful comparison. The unified 500/1000ms
+    variants aggregate source liquidity before packing and retain no sub-clock
+    feature bank. Displayed sizes are sampled, never summed. Orders must exist
+    by the completed interval's start to fill. Certified candidate events are
+    sampled at the latest event in each completed main-clock bucket; this is
+    an explicit research approximation, not a new upstream search universe.
+    """
+    if clock_ms != 100:
+        from .unified_clock import validate_clock
+
+        validate_clock(clock_ms)
     directory = Path(directory).resolve()
     root = Path("D:/TradingML/runtimes").resolve()
     if not directory.is_relative_to(root):
@@ -174,7 +281,11 @@ def prepare(directory, *, maximum_bytes=8 * 1024**3):
         raise ValueError("Certified producer-fact cache hash changed")
     source = json.loads(facts_bytes.decode("utf-8"))
     tickers = tuple(row["ticker"] for row in manifest["files"])
-    slots, n = manifest["through_ms"] // 100, len(tickers)
+    if manifest["through_ms"] % clock_ms:
+        raise ValueError(
+            "Session end must align with the main clock; no tail truncation"
+        )
+    slots, n = manifest["through_ms"] // clock_ms, len(tickers)
     frames = []
     for listing, row in enumerate(manifest["files"]):
         path = Path(row["path"]).resolve()
@@ -221,12 +332,30 @@ def prepare(directory, *, maximum_bytes=8 * 1024**3):
         .fill_null(0)
         .alias("previous_bar_close_int"),
     )
-    market = {100: _pack(market100, slots, n, MARKET_FIELDS, resolution=100)}
+    base = (
+        market100
+        if clock_ms == 100
+        else aggregate_liquidity(market100, clock_ms, origin)
+    )
+    if clock_ms == 1000:
+        indicators = full.filter(pl.col("resolution_ms") == 1000).select(
+            "boundary_ms",
+            "listing",
+            "macd_line",
+            "macd_signal",
+            "indicator_resolution_ms",
+        )
+        base = base.drop("macd_line", "macd_signal", "indicator_resolution_ms").join(
+            indicators, on=["boundary_ms", "listing"], how="left"
+        )
+    market = {clock_ms: _pack(base, slots, n, MARKET_FIELDS, resolution=clock_ms)}
     for resolution in (1000, 30_000):
+        if resolution == clock_ms:
+            continue
         subset = full.filter(pl.col("resolution_ms") == resolution)
         market[resolution] = _pack(
             subset,
-            slots // (resolution // 100),
+            manifest["through_ms"] // resolution,
             n,
             MARKET_FIELDS,
             resolution=resolution,
@@ -254,7 +383,7 @@ def prepare(directory, *, maximum_bytes=8 * 1024**3):
         {identity: index for index, identity in enumerate(ids)} for ids in dictionaries
     ]
     d = max(map(len, dictionaries))
-    seconds = slots // 10
+    seconds = manifest["through_ms"] // 1000
     estimated = (seconds + 1) * n * d * 4 * 8 + slots * n * (
         len(MARKET_FIELDS) + len(FACT_FIELDS) + 4
     ) * 8
@@ -289,7 +418,7 @@ def prepare(directory, *, maximum_bytes=8 * 1024**3):
                     row["role"] == "resistance",
                 )
         valid = np.r_[0, np.asarray(clocks[ticker], dtype=np.int64)]
-        boundaries = np.arange(1, slots + 1, dtype=np.int64) * 100
+        boundaries = np.arange(1, slots + 1, dtype=np.int64) * clock_ms
         gclock[:, listing] = valid[np.searchsorted(valid, boundaries, side="right") - 1]
         starts = np.asarray(
             sorted(
@@ -302,13 +431,13 @@ def prepare(directory, *, maximum_bytes=8 * 1024**3):
             dtype=np.int64,
         )
         starts = starts[(starts > 0) & (starts <= manifest["through_ms"])]
-        activation_clock[starts // 100 - 1, listing] = starts
+        activation_clock[(starts - 1) // clock_ms, listing] = starts
     facts = np.zeros((slots, n, len(FACT_FIELDS)), dtype=np.float64)
     gaps = {
         (row["ticker"], row["episode_start_ms"]): row["average_gap"]
         for row in source["activations"]
     }
-    for row in source["candidates"]:
+    for row in sorted(source["candidates"], key=lambda row: row["boundary_ms"]):
         listing = tickers.index(row["ticker"])
         values = (
             1,
@@ -322,66 +451,82 @@ def prepare(directory, *, maximum_bytes=8 * 1024**3):
             identity_maps[listing][row["target_level_id"]],
             row["target_ordinal"],
         )
-        facts[row["boundary_ms"] // 100 - 1, listing] = values
-    broker = {100: {"market": market[100], **_histogram(market100, slots, n, 100)}}
-    # The coarse broker contract changes fill approximation only, never the
-    # certified 100ms strategy observations or their source-history clocks.
-    coarse = market100.with_columns(
-        ((pl.col("boundary_ms") - 1) // 1000 + 1).mul(1000).alias("boundary_ms")
-    )
-    last_fields = [
-        name
-        for name in MARKET_FIELDS
-        if name
-        not in {
-            "high_int",
-            "low_int",
-            "extremes_valid",
-            "execution_volume",
-            "price_valid",
+        facts[(row["boundary_ms"] - 1) // clock_ms, listing] = values
+    if clock_ms != 100:
+        # Matching sees only the completed main-clock interval. Fine source
+        # buckets never become replay steps or searched feature dependencies.
+        broker = {
+            clock_ms: {
+                "market": _pack(base, slots, n, MARKET_FIELDS, resolution=clock_ms),
+                **_histogram(base, slots, n, clock_ms),
+            }
         }
-    ]
-    # quote_age_us was relative to the last observed 100ms boundary. Add its
-    # distance to this completed second rather than introducing a future quote.
-    bars = (
-        coarse.group_by("boundary_ms", "listing")
-        .agg(
-            *[pl.col(name).last() for name in last_fields],
-            pl.col("price_valid").max(),
-            pl.col("extremes_valid").max(),
-            pl.when(pl.col("extremes_valid") == 1)
-            .then(pl.col("high_int"))
-            .otherwise(0)
-            .max()
-            .alias("high_int"),
-            pl.when((pl.col("extremes_valid") == 1) & (pl.col("low_int") > 0))
-            .then(pl.col("low_int"))
-            .otherwise(None)
-            .min()
-            .fill_null(0)
-            .alias("low_int"),
-            pl.col("execution_volume").sum(),
-            pl.col("execution_price_levels")
-            .flatten()
-            .drop_nulls()
-            .alias("execution_price_levels"),
-            pl.col("quote_timestamp_us").last(),
+    else:
+        broker = {100: {"market": market[100], **_histogram(market100, slots, n, 100)}}
+        # The coarse broker contract changes fill approximation only, never the
+        # certified 100ms strategy observations or their source-history clocks.
+        coarse = market100.with_columns(
+            ((pl.col("boundary_ms") - 1) // 1000 + 1).mul(1000).alias("boundary_ms")
         )
-        .with_columns(
-            (
-                origin
-                + pl.col("boundary_ms") * 1000
-                - pl.col("quote_timestamp_us").cast(pl.Int64)
-            ).alias("quote_age_us")
+        last_fields = [
+            name
+            for name in MARKET_FIELDS
+            if name
+            not in {
+                "high_int",
+                "low_int",
+                "extremes_valid",
+                "execution_volume",
+                "price_valid",
+            }
+        ]
+        # quote_age_us was relative to the last observed 100ms boundary. Add its
+        # distance to this completed second rather than introducing a future quote.
+        bars = (
+            coarse.group_by("boundary_ms", "listing")
+            .agg(
+                *[pl.col(name).last() for name in last_fields],
+                pl.col("price_valid").max(),
+                pl.col("extremes_valid").max(),
+                pl.when(pl.col("extremes_valid") == 1)
+                .then(pl.col("high_int"))
+                .otherwise(0)
+                .max()
+                .alias("high_int"),
+                pl.when((pl.col("extremes_valid") == 1) & (pl.col("low_int") > 0))
+                .then(pl.col("low_int"))
+                .otherwise(None)
+                .min()
+                .fill_null(0)
+                .alias("low_int"),
+                pl.col("execution_volume").sum(),
+                pl.col("execution_price_levels")
+                .flatten()
+                .drop_nulls()
+                .alias("execution_price_levels"),
+                pl.col("quote_timestamp_us").last(),
+            )
+            .with_columns(
+                (
+                    origin
+                    + pl.col("boundary_ms") * 1000
+                    - pl.col("quote_timestamp_us").cast(pl.Int64)
+                ).alias("quote_age_us")
+            )
         )
-    )
-    broker[1000] = {
-        "market": _pack(bars, seconds, n, MARKET_FIELDS, resolution=1000),
-        **_histogram(bars, seconds, n, 1000),
-    }
+        broker[1000] = {
+            "market": _pack(bars, seconds, n, MARKET_FIELDS, resolution=1000),
+            **_histogram(bars, seconds, n, 1000),
+        }
     manifest = {
         **manifest,
         "listing_count": n,
+        "clock_ms": clock_ms,
+        "policy_contract": "unified-strategy-one-approximation-v1"
+        if clock_ms != 100
+        else "faithful-strategy-one-v1",
+        "candidate_sampling": "latest certified candidate in each completed interval",
+        "feature_resolutions_ms": sorted(market),
         "strategy_slots": slots,
         "identities": d,
         "resident_estimate_bytes": estimated,

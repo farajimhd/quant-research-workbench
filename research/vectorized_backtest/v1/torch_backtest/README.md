@@ -15,6 +15,13 @@ Portfolio reservations and OCA orders. See the [Strategy 1 audit](STRATEGY_ONE_A
 for its validation, comparison and performance limitations. The subsecond
 benchmarks below belong to the simpler `ReplayRunner` contract.
 
+The new [unified-clock replay](UNIFIED_CLOCK.md) defaults to one **1 s policy
+and broker clock**, rejects sub-clock strategy features, and aggregates source
+liquidity before transfer. Its full Aug 18 premarket replay measured **39.15 s**;
+500 ms measured **78.31 s**. These are prepared-replay timings. The 1 s policy
+changes P&L substantially, and initial verification/JIT/capture costs are
+additional; see the linked contract and complete comparison before using it.
+
 ## The pipeline
 
 ```text
