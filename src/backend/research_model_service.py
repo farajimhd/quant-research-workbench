@@ -3,6 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from research.rl_trading.v6 import label_audit
+from research.rl_trading.v6 import price_action_labels
 
 router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'])
 
@@ -17,6 +18,17 @@ def read(call, *args):
 @router.get('')
 def models():
     return label_audit.catalog()
+
+
+@router.get('/v6/price-action')
+def price_action_metadata():
+    return read(price_action_labels.metadata)
+
+
+@router.get('/v6/price-action/chart')
+def price_action_chart(start_us: int | None = None,
+                       seconds: int = Query(900, ge=60, le=3600)):
+    return read(price_action_labels.chart, start_us, seconds)
 
 
 @router.get('/v6/preflight')

@@ -8,8 +8,9 @@ if (!python) {
 }
 
 const researchReview = process.argv.includes("--research-teacher");
-const reviewScript = fileURLToPath(new URL(researchReview ? "./research_teacher_review.py" : "./ui_review.py", import.meta.url));
-const result = spawnSync(python, [reviewScript, ...process.argv.slice(2).filter(arg => arg !== "--research-teacher")], {
+const priceActionReview = process.argv.includes("--research-price-action");
+const reviewScript = fileURLToPath(new URL(priceActionReview ? "./research_price_action_review.py" : researchReview ? "./research_teacher_review.py" : "./ui_review.py", import.meta.url));
+const result = spawnSync(python, [reviewScript, ...process.argv.slice(2).filter(arg => !["--research-teacher", "--research-price-action"].includes(arg))], {
   env: process.env,
   stdio: "inherit",
 });

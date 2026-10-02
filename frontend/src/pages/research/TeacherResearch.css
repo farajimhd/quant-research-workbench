@@ -1,4 +1,13 @@
 /* Research-only shell; Canvas and charts retain shared application styling. */
+.research-path-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.research-path-nav { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 0; }
+.research-path-content { flex: 1; min-height: 0; }
+.research-path-content[hidden] { display: none; }
+.research-field { display: grid; gap: .4rem; font-size: .75rem; }
+.research-field select { width: 100%; background: var(--surface-alt); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; padding: .5rem; font: inherit; }
+.research-chart-container > .research-checkbox { display: inline-flex; align-items: center; justify-content: flex-start; align-self: flex-start; gap: .5rem; width: auto; font-size: .75rem; }
+.research-chart-container .research-checkbox input { width: 1rem; min-width: 0; height: 1rem; flex: 0 0 1rem; padding: 0; margin: 0; }
+.research-checkbox span { white-space: nowrap; }
 .research-page { padding: 16px; min-height: 0; height: 100%; overflow: auto; color: var(--foreground); }
 .research-heading, .research-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .research-page h1 { font-size: 1.25rem; margin: 0; }

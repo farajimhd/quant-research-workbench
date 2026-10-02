@@ -30,10 +30,9 @@ actual valid-price 1s candles. Invalid-price activity rows are counted explicitl
 and their targets remain in the detail table without snapping to nearby candles.
 Decision timestamps refer to candle close; plotted candles start one second
 earlier. Charts use 15-minute pages and preserve overlapping episode rows.
-Original long hindsight entry-to-exit spans appear as green regions, using
-`entry_hint_us`/`exit_hint_us`, not MACD `start_us`/`end_us`. Extended training
-labels may continue outside the shaded span; saved MACD channels appear
-in the shared oscillator pane. One half-size marker is displayed per labeled
+Both Research paths now shade observed 1s MACD sign episodes: green for
+MACD >= signal, red for MACD < signal. Shading is independent of unchanged
+saved teacher targets. Saved MACD channels appear in the shared oscillator pane. One half-size marker is displayed per labeled
 candle for all training episodes by default, or the selected episode and branch.
 Overlapping same-clock rows share one marker; text lists distinct saved
 probabilities. Different hard targets use a square, without selecting or
@@ -74,3 +73,7 @@ original episode files: zero mismatches. Original RTH class counts match all
 The snapshot episode loader source text equals current source after newline
 normalization; execution attachment source hashes also match. This verifies
 source/scope identity, not whether hindsight target semantics are useful.
+
+The separate **Price-action experiment** path displays an isolated NVDA full-RTH
+price-action label product. See [PRICE_ACTION_LABELS.md](PRICE_ACTION_LABELS.md)
+for its zero-cost algorithm, source, parameters and reproduction command.

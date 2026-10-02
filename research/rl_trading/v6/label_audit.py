@@ -78,6 +78,29 @@ def runtime():
     return root
 
 
+def macd_regions(clocks, scalar, start, end):
+    """1s MACD runs from observed valid-price/indicator candles; equality is long.
+
+    Missing-price rows have no fabricated candle. Runs follow successive usable
+    samples, with candle-start coordinates and exclusive interval ends.
+    """
+    valid = ((scalar[:, SCALAR_NAMES.index('bar_price_valid')] == 1) &
+             (scalar[:, SCALAR_NAMES.index('bar_extremes_valid')] == 1) &
+             (scalar[:, SCALAR_NAMES.index('indicator_available')] == 1))
+    times, raw = clocks[valid], scalar[valid]
+    if not len(times):
+        return []
+    long = raw[:, SCALAR_NAMES.index('macd_line_rel')] >= raw[:, SCALAR_NAMES.index('macd_signal_rel')]
+    boundaries = np.flatnonzero(np.r_[True, long[1:] != long[:-1]])
+    regions = []
+    for a, b in zip(boundaries, np.r_[boundaries[1:], len(times)]):
+        left = int(times[a]); right = int(times[b]) if b < len(times) else int(times[-1])+1_000_000
+        if right > start and left < end:
+            regions.append(dict(start=left//1_000_000-1, end=right//1_000_000-1,
+                color='var(--success)' if long[a] else 'var(--danger)', label=''))
+    return regions
+
+
 def relocate(value, root):
     """Map the certified workstation D: root to its explicitly configured mount."""
     relative = Path(value).relative_to(Path('D:/TradingML/runtimes'))
@@ -309,7 +332,8 @@ def chart(day, listing_id, episode_uid, branch, start_us, seconds):
             line, signal = [float(row[SCALAR_NAMES.index('macd_'+name+'_rel')]) * float(np.exp(float(row[SCALAR_NAMES.index('log_close')]))) for name in ('line', 'signal')]
             data.append(dict(time=int(clock)//1_000_000-1, value=line if column == 'macd_line' else signal if column == 'macd_signal' else line-signal))
         oscillator.append(dict(column=column, label=label, paneKey='macd', style='histogram' if column == 'macd_histogram' else 'line', color=color, lineWidth=1, data=data))
-    original, regions = hindsight_regions(frames['episodes'], listing_id, start, end)
+    original, _ = hindsight_regions(frames['episodes'], listing_id, start, end)
+    regions = macd_regions(item_clocks, item_scalar, start, end)
     return dict(ticker=frame['ticker'][0], candles=candles, labels=target_rows, branch=branch,
                 start_us=start, end_us=end, seconds=seconds, omitted_invalid_price_rows=int((~valid).sum()),
                 source='SHA-verified V6 packed 1s candles (decoded float32 log prices)',
