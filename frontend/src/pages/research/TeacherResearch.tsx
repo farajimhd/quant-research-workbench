@@ -116,7 +116,7 @@ function LabelChart({ day, listing, tickers, onListing }: { day: string; listing
       markers.push({ id: `target-${i}`, time: time as UTCTimestamp,
         position: !mixed && exit ? "aboveBar" : "belowBar", size: .5,
         shape: mixed ? "square" : positive ? (exit ? "arrowDown" : "arrowUp") : "circle",
-        color: mixed ? "var(--warning)" : positive ? (exit ? "var(--danger)" : "var(--success)") : "var(--muted-foreground)",
+        color: mixed ? "var(--warning)" : positive ? (exit ? "var(--danger)" : "var(--success)") : label.branch === "held" ? "var(--info)" : "var(--muted-foreground)",
         text: label.branch === "flat" && group.every(row => row.probability === 0) ? "" : [...new Set(group.map(row => `${(row.probability * 100).toFixed(1)}%`))].join(" / ") });
     }
     return { candles: chart?.candles ?? [], volume: [], overlay_series: [], oscillator_series: chart?.oscillator_series ?? [], regions: (chart?.regions ?? []).map(r => ({ ...r, color: researchBandColor(r.color) })), markers };

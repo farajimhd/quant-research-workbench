@@ -37,7 +37,9 @@ def main():
                             if '/price-action/chart' in parsed.path:
                                 assert len(data['candles']) == len(data['labels'])
                                 assert {'var(--success)','var(--danger)'} <= {r['color'] for r in data['regions']}
-                                assert any(r['action']=='EXIT' for r in data['labels'])
+                                assert all(0<=r['label_value']<=1 for r in data['labels'])
+                                if data['view']=='flat':
+                                    assert set(r['action'] for r in data['labels'])<= {'ENTRY','WAIT'}
                                 responses.append(data)
                             route.fulfill(response=response)
                         page.route('**/api/research/models**',proxy)
@@ -81,6 +83,17 @@ def main():
                             page.get_by_label('Price-action candle',exact=True).select_option(index=10)
                             assert page.locator('.research-candle-values').is_visible()
                             page.get_by_label('Show HOLD values',exact=True).check()
+                            page.get_by_label('Opportunity quality threshold',exact=True).select_option('0.95')
+                            page.locator('.research-price-action-chart .chart-shell').wait_for()
+                            page.get_by_label('Opportunity label view',exact=True).select_option('reference')
+                            page.locator('.research-price-action-chart .chart-shell').wait_for()
+                            page.get_by_label('Opportunity label view',exact=True).select_option('flat')
+                            page.locator('.research-price-action-chart .chart-shell').wait_for()
+                            page.get_by_label('Opportunity label view',exact=True).select_option('held')
+                            page.locator('.research-price-action-chart .chart-shell').wait_for()
+                            page.get_by_label('Opportunity label view',exact=True).select_option('combined')
+                            page.get_by_label('Opportunity quality threshold',exact=True).select_option('0.9')
+                            page.locator('.research-price-action-chart .chart-shell').wait_for()
                             page.get_by_label('Price-action episode pair',exact=True).select_option(index=200)
                             page.locator('.research-price-action-chart .chart-shell').wait_for()
                             assert page.get_by_label('Price-action episode pair',exact=True).input_value()=='201'

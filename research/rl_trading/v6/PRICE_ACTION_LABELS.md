@@ -1,71 +1,83 @@
-# Long price-action experiment v1
+# Long swing-opportunity labels v2
 
-Research → **Price-action experiment** displays NVDA, 2026-07-31, the full
-09:30–16:00 ET session. This isolated product is not used by the saved teacher
-run and does not modify its certified labels. There is no fill model, fee,
-slippage, liquidity constraint, sizing, stop execution or target execution.
+Research → **Price-action experiment** now displays pair-local opportunity
+quality for NVDA, 2026-07-31, 09:30–16:00 ET. This separate product is not used
+by the saved teacher run. Original teacher targets and V1 artifacts are intact.
+There are no fills, fees, slippage or sizing; stop/target remain references.
 
-The source is the SHA-verified V6 packed bank, decoded from float32 log OHLC
-and saved 1s MACD. Of 23,400 activity slots, 22,748 have valid prices/extremes;
-652 remain unlabelled, without forward filling. Approximate source volume is
-105,636,231. Default discount half-life is 30 elapsed seconds; stop offset is
-0.01 price units. The adapter currently supports `tf=1s` only.
+The source is the SHA-verified V1 decoded candle product, whose consumed bank
+clock/scalar hashes and bank certificate are retained in the V2 proof. V1
+classification/value fields are never used: the adapter selects only clock,
+OHLC and 1s MACD columns. There are 22,748 valid-price candles and 652 invalid
+price/extreme activity rows that remain unlabelled, without forward filling.
 
-MACD >= signal defines long, otherwise short, including equality in long.
-Successive observed usable indicator samples define sign runs. Each long run
-pairs with its previous short run; a first long run has no preceding short.
-Missing-price seconds receive no artificial candles or labels.
+## Local opportunity scores
 
-Pair references use minimum open/close over S+L, maximum open/close over L,
-start minus offset for stop, and maximum high over L for target. Their difference
-is a reference range, not necessarily a chronologically achievable trade.
-These references do not constrain this initial action-value algorithm.
+MACD >= signal is long, otherwise short. Each long episode pairs with its
+preceding short episode, or stands alone if the session starts long. Pair
+geometry uses minimum open/close over S+L, maximum open/close over L, start
+minus offset for stop, and maximum high over L for target. Geometry remains
+descriptive; action values use closes and enforce chronological order.
 
-For each valid close, work backward through the session. ENTRY considers every
-later close j: discount(now,j) × [close(j) − close(now) + discounted best flat
-value after j]. WAIT carries the next candle's best flat value. EXIT includes
-the current trade's price change once and adds discounted flat continuation;
-HOLD discounts the best later exit. Choose the greater value; exact ties prefer
-WAIT/HOLD, and the last candle cannot enter. The forward sequence begins flat
-and always closes an existing position by session end. This is long-only;
-either MACD direction can contain an ENTRY or EXIT, and a pair may contain
-multiple trades. MACD geometry supplies visual context, not an entry gate.
+For every candle i in a pair:
 
-Arrays are O(N) memory with O(N²) future-exit comparisons, bounded to this one
-RTH ticker. The generated run took about five seconds after source access.
-It contains 1,779 MACD episodes, 889 S→L pairs and 6,019 closed price-action
-trades. Sum of undiscounted price changes is 231.042982; session-start discounted
-value is 1.488468. These distinct quantities are hindsight price-action outputs.
+- Entry gain = max positive `(close[j] - close[i]) * 2^(-elapsed_seconds/30)`
+  over strictly later candles j in this pair's L episode; zero if none qualify.
+- Entry quality = entry gain / the pair's largest entry gain, or zero if the
+  pair has no positive gain.
+- Reference entry = earliest candle with the largest discounted entry gain.
+  Reference exit = earliest highest strictly subsequent L close. The best
+  discounted exit can differ from the highest close; both clocks are recorded.
+- Exit gain = current L close minus reference entry close, only after entry.
+  Exit quality = clip(exit gain / best subsequent L gain, 0, 1).
 
-The chart shows one half-size marker per valid candle. ENTRY is an up arrow
-below, EXIT a red down arrow above; numbers show the chosen discounted action
-value in price units. WAIT has no text. HOLD numbers are optional. The candle
-inspector gives all flat alternatives and the actual sequence's held context,
-entry basis, realized price change and future continuation. Flat and held
-values are conditional alternatives, not a four-way action choice.
+The default threshold is 90%; the UI also offers 80%, 95% and 100%. Qualifying
+ENTRY/EXIT candles are **alternative opportunities**, not repeated executions.
+Each profitable pair has exactly one chronological reference entry/exit pair.
+Carry compares the next best opportunity with the local opportunity using
+elapsed-time discount at a common clock; it is not added to any quality score.
 
-Both Research paths shade **MACD sign episodes**, green for >= signal, red for
-< signal. Original teacher probability values remain unchanged. Both paths
-retain their mounted chart across sidebar/path navigation; container geometry
-and closed state use separate Research-only storage keys.
+Blue HOLD dots indicate the reference-held interval, gray WAIT dots are outside
+it. HOLD's optional number is 1 - exit quality (1 when no eligible L exit yet);
+WAIT has no text. These quality/complement scores are not probabilities.
 
-Reproduce or verify the default immutable product:
+The combined view shows entry and exit opportunities over the reference
+context. If both conditional alternatives qualify at one clock it shows EXIT
+and exposes the conflict count. ENTRY/WAIT and EXIT/HOLD views preserve each
+alternative independently. The reference view shows only the single selected
+pair and its intervening HOLD candles. All views retain one marker per candle.
+MACD sign shading remains green/red in both Research paths.
 
-```powershell
-$env:PYTHONDONTWRITEBYTECODE='1'
-python -B research/rl_trading/v6/run_price_action_labels.py
-```
+## Saved full-session result
 
-Artifacts are under
-`D:/TradingML/runtimes/rl-v6-price-action-long-v1/NVDA/2026-07-31-r2`.
-The first preliminary product remains intact in the neighboring original-date
-directory. r2 aligns episode ends with the next observed sign-change boundary;
-the labels and price-action sequence are unchanged. A different half-life or
-offset requires a new `--output-dir`. That output does not change the pinned UI.
+At 90%: 889 S→L pairs, 888 positive reference trades, 2,258 entry-opportunity
+candles and 2,108 exit-opportunity candles. 514 pairs have several qualifying
+entries; 498 have several exits. No candle qualifies for both at this threshold.
+The reference ledger's summed undiscounted price change is 122.788402.
+All displayed quality scores are bounded by 0 and 1. Reference positions do not
+overlap, and all exits follow their entries. V1's 6,019-trade result remains a
+separate historical experiment, not the current chart authority.
 
-Review the real experiment through the managed frontend:
+Reproduce or verify the pinned product:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python -B scripts/run_frontend.py ui:review -- --research-price-action --output-dir D:/TradingML/runtimes/rl-v6-price-action-ui-review
+python -B research/rl_trading/v6/run_price_action_opportunities.py
 ```
+
+Artifacts: `D:/TradingML/runtimes/rl-v6-price-action-long-v2/NVDA/2026-07-31-r2`.
+The provisional V2 directory remains intact. r2 discounts carry to a common
+pair-start clock; local qualities and selected reference positions are identical.
+Producer parameters require a new `--output-dir`; the chart threshold and view
+classify the saved scores on demand without rewriting the product. The source
+adapter currently accepts tf=1s only.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B scripts/run_frontend.py ui:review -- --research-price-action --output-dir D:/TradingML/runtimes/rl-v6-opportunity-ui-review
+```
+
+Research retains both mounted paths through sidebar/path navigation. Container
+geometry and closed state persist in independent Research-only storage keys.
+V1 can still be reproduced with `run_price_action_labels.py`; no teacher or PPO
+training is launched by these scripts or read-only API endpoints.

@@ -3,7 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from research.rl_trading.v6 import label_audit
-from research.rl_trading.v6 import price_action_labels
+from research.rl_trading.v6 import price_action_opportunities as price_action_labels
 
 router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'])
 
@@ -21,14 +21,16 @@ def models():
 
 
 @router.get('/v6/price-action')
-def price_action_metadata():
-    return read(price_action_labels.metadata)
+def price_action_metadata(quality_threshold: float = Query(.9, gt=0, le=1)):
+    return read(price_action_labels.metadata, quality_threshold)
 
 
 @router.get('/v6/price-action/chart')
 def price_action_chart(start_us: int | None = None,
-                       seconds: int = Query(900, ge=60, le=3600)):
-    return read(price_action_labels.chart, start_us, seconds)
+                       seconds: int = Query(900, ge=60, le=3600),
+                       quality_threshold: float = Query(.9, gt=0, le=1),
+                       view: Literal['combined','flat','held','reference'] = 'combined'):
+    return read(price_action_labels.chart, start_us, seconds, quality_threshold, view)
 
 
 @router.get('/v6/preflight')

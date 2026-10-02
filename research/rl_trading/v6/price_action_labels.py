@@ -38,15 +38,8 @@ class Config:
             raise ValueError('Stop offset must be nonnegative and finite')
 
 
-def calculate(bars: pl.DataFrame, config=Config()):
-    """Return every observed candle, pair geometry and one consistent sequence.
-
-    Input columns time_us/OHLC/MACD describe completed 1s candles. Flat arrays
-    F[N+1], wait[N], enter[N], best_exit[N] are computed backward. For each
-    entry i, candidate exits j>i score d(i,j)*(close[j]-close[i]+d(j,j+1)*F[j+1]).
-    Numpy evaluates each future-exit vector without an N-by-N retained matrix.
-    Complexity O(N^2) time and O(N) working memory; bounded to one RTH ticker.
-    """
+def episode_geometry(bars: pl.DataFrame, config=Config()):
+    """Validate observed price candles and construct shared MACD S-to-L pairs."""
     config.validate()
     needed = ['time_us', 'open', 'high', 'low', 'close', 'macd_line', 'macd_signal']
     if not set(needed) <= set(bars.columns) or bars.height < 2:
@@ -84,6 +77,21 @@ def calculate(bars: pl.DataFrame, config=Config()):
                 best_stop=start_price-config.stop_offset, best_target=e['max_high'],
                 reference_range=e['max_co']-start_price))
         previous = e
+    return frame, episodes, pairs
+
+
+def calculate(bars: pl.DataFrame, config=Config()):
+    """Return every observed candle, pair geometry and one consistent sequence.
+
+    Input columns time_us/OHLC/MACD describe completed 1s candles. Flat arrays
+    F[N+1], wait[N], enter[N], best_exit[N] are computed backward. For each
+    entry i, candidate exits j>i score d(i,j)*(close[j]-close[i]+d(j,j+1)*F[j+1]).
+    Numpy evaluates each future-exit vector without an N-by-N retained matrix.
+    Complexity O(N^2) time and O(N) working memory; bounded to one RTH ticker.
+    """
+    frame, episodes, pairs = episode_geometry(bars, config)
+    times = bars['time_us'].to_numpy()
+    price = bars['close'].to_numpy().astype(np.float64)
     n = len(price)
     elapsed = (times-times[0]).astype(np.float64)/1e6  # [N], actual elapsed seconds
     discount = np.exp2(-np.diff(elapsed)/config.half_life_seconds)  # [N-1]

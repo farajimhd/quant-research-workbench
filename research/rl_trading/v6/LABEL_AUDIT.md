@@ -38,7 +38,7 @@ Overlapping same-clock rows share one marker; text lists distinct saved
 probabilities. Different hard targets use a square, without selecting or
 averaging contexts. All source rows of that context remain
 in details. EXIT uses a red down arrow above its candle with soft target probability above; other markers and probabilities appear below.
-WAIT with zero ENTRY probability has no text. This run trained classification
+HOLD uses blue dots; WAIT uses gray dots. WAIT with zero ENTRY probability has no text. This run trained classification
 only: marker numbers are the saved probabilities, not source score/profit
 calculation inputs or a PPO reward. Source calculation inputs remain in details.
 Sidebar navigation hides Research while keeping its canvas and native chart
@@ -75,5 +75,5 @@ normalization; execution attachment source hashes also match. This verifies
 source/scope identity, not whether hindsight target semantics are useful.
 
 The separate **Price-action experiment** path displays an isolated NVDA full-RTH
-price-action label product. See [PRICE_ACTION_LABELS.md](PRICE_ACTION_LABELS.md)
+pair-local swing-opportunity label product with bounded quality scores. See [PRICE_ACTION_LABELS.md](PRICE_ACTION_LABELS.md)
 for its zero-cost algorithm, source, parameters and reproduction command.

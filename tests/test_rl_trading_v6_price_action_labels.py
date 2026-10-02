@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from research.rl_trading.v6 import price_action_labels as pa
 from research.rl_trading.v6 import label_audit as audit
 from src.backend.research_model_service import router
+from src.backend import research_model_service
 
 
 def bars(prices, seconds=None, signs=None):
@@ -106,7 +107,7 @@ def test_macd_regions_use_sign_equality_and_not_hindsight_hints():
 
 
 def test_price_action_routes_are_read_only_and_bound_windows(monkeypatch):
-    monkeypatch.setattr(pa,'metadata',lambda:dict(ticker='NVDA',status='experimental_not_training_labels'))
+    monkeypatch.setattr(research_model_service.price_action_labels,'metadata',lambda threshold:dict(ticker='NVDA',status='experimental_not_training_labels'))
     app = FastAPI(); app.include_router(router); client = TestClient(app)
     assert client.get('/api/research/models/v6/price-action').json()['ticker'] == 'NVDA'
     assert client.post('/api/research/models/v6/price-action').status_code == 405
