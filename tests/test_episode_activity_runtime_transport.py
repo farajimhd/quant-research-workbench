@@ -65,27 +65,28 @@ def test_runtime_source_binding_rejects_missing_episode_authority(number):
             CertifiedPriceReadbackAuthority(source.run_id,source.plan))
 
 
-def test_actual_memory_prefix_projects_all_strategy37_companions_with_prefix_source():
+@pytest.mark.parametrize('number', [37, 38])
+def test_actual_memory_prefix_projects_all_strategy37_companions_with_prefix_source(number):
     from uuid import UUID
     from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
-    runtime,source,proposal,day = context()
+    runtime,source,proposal,day = context(number)
     intent = TradingRuntime._strategy_one_entry_intent(runtime,proposal)
     runtime.journal.append_strategy_one_intent(intent=intent,proposal=proposal,
         session_date=day,account_id=proposal.account_id,strategy_id=runtime.config.strategy_id,
-        strategy_revision=37,first_price_source=source)
+        strategy_revision=number,first_price_source=source)
     units = project_pending_backtest_v4_prefix(runtime.journal,attempt_id=str(UUID(int=3701)),
         run_month=day.replace(day=1),prior_sequence=0,through_sequence=1,
         first_price_source=source,expected_config={'mode':'backtest',
-            'strategy_id':runtime.config.strategy_id,'strategy_revision':37})
+            'strategy_id':runtime.config.strategy_id,'strategy_revision':number})
     assert len(units) == 1
     unit = units[0]
-    assert unit.entry_evidence[0]['strategy_number'] == 37
+    assert unit.entry_evidence[0]['strategy_number'] == number
     assert len(unit.momentum_evidence) == 2
     assert unit.initial_momentum_evidence and unit.first_price_evidence
     assert unit.first_price_source is source
-    assert unit.entry_activity_evidence[0]['strategy_number'] == 37
+    assert unit.entry_activity_evidence[0]['strategy_number'] == number
     assert unit.entry_activity_evidence[0]['activity_source_token'] == source.entry_activity_source.gate.token
-    assert all(row['strategy_number'] == 37 for family in (unit.momentum_evidence,
+    assert all(row['strategy_number'] == number for family in (unit.momentum_evidence,
         unit.initial_momentum_evidence,unit.first_price_evidence) for row in family)
 
 
@@ -104,19 +105,20 @@ def test_manager_capture_requires_strategy37_episode_prefix_authority():
             checkpoint_sequence=1, state=state, first_price_source=parent_only)
 
 
-def test_strategy37_entry_envelope_rejects_parent_activity_authority():
+@pytest.mark.parametrize('number', [37, 38])
+def test_strategy37_entry_envelope_rejects_parent_activity_authority(number):
     from uuid import UUID
     from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
     from src.backend.backtest_strategy_entry_activity_source import EntryActivityReadbackAuthority
-    runtime, source, proposal, day = context()
+    runtime, source, proposal, day = context(number)
     intent = TradingRuntime._strategy_one_entry_intent(runtime, proposal)
     runtime.journal.append_strategy_one_intent(intent=intent, proposal=proposal,
         session_date=day, account_id=proposal.account_id, strategy_id=runtime.config.strategy_id,
-        strategy_revision=37, first_price_source=source)
+        strategy_revision=number, first_price_source=source)
     unit = project_pending_backtest_v4_prefix(runtime.journal, attempt_id=str(UUID(int=3702)),
         run_month=day.replace(day=1), prior_sequence=0, through_sequence=1,
         first_price_source=source, expected_config={'mode':'backtest',
-            'strategy_id':runtime.config.strategy_id,'strategy_revision':37})[0]
+            'strategy_id':runtime.config.strategy_id,'strategy_revision':number})[0]
     parent = CertifiedPriceReadbackAuthority(source.run_id, source.plan,
         EntryActivityReadbackAuthority(source.run_id, source.entry_activity_source.plan))
     with pytest.raises(ValueError, match='episode prefix'):

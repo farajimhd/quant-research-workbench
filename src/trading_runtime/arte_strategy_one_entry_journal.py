@@ -53,13 +53,13 @@ def project_strategy_one_entry_evidence(
         raise ValueError("Strategy 1 entry evidence identity is incomplete")
     batch = str(UUID(batch_id))
     parent = str(UUID(parent_record_id))
-    if proposal.strategy_number == 37:
+    if proposal.strategy_number in (37, 38):
         from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
         from src.backend.backtest_strategy_episode_activity_source import certified_episode_entry_intent
         if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id != run_id:
             raise ValueError('Strategy37 entry projection requires its exact native source')
         expected = certified_episode_entry_intent(first_price_source, proposal, session_date=session_date)
-    elif proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
+    elif proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):
         from src.backend.backtest_strategy_certified_price_break import (
             CertifiedPriceReadbackAuthority, certified_price_entry_intent,
         )
@@ -164,7 +164,7 @@ def load_committed_strategy_one_entry_page(
     if len(rows) != len(ids):
         raise RuntimeError("Committed Strategy 1 entry evidence is missing or duplicated")
     momentum_rows = ()
-    if any(row["strategy_number"] in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37) for row in rows):
+    if any(row["strategy_number"] in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38) for row in rows):
         momentum_rows = tuple(decode_momentum_row(row) for row in _rows(client,
             f"SELECT {momentum_select_columns()} FROM arte.{MOMENTUM.name} "
             f"WHERE run_id={_literal(prefix.run_id)} AND parent_record_id IN ({sql_ids}) "
@@ -172,14 +172,14 @@ def load_committed_strategy_one_entry_page(
         seal_rising_momentum_rows(momentum_rows, rows, parent_intents, parent_events)
     allowed_batches = set(prefix.batch_ids)
     initial_rows = ()
-    if any(row["strategy_number"] in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37) for row in rows):
+    if any(row["strategy_number"] in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38) for row in rows):
         initial_rows = tuple(decode_initial_momentum_row(row) for row in _rows(client,
             f"SELECT {initial_momentum_select_columns()} FROM arte.{INITIAL_MOMENTUM.name} "
             f"WHERE run_id={_literal(prefix.run_id)} AND parent_record_id IN ({sql_ids}) "
             f"LIMIT {2 * len(ids) + 1} FORMAT JSONEachRow"))
         seal_initial_momentum_rows(initial_rows, rows, parent_intents, parent_events, momentum_rows)
     price_by_parent = {}
-    if any(row["strategy_number"] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37) for row in rows):
+    if any(row["strategy_number"] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38) for row in rows):
         from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
         from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
         if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id != prefix.run_id:
@@ -193,7 +193,7 @@ def load_committed_strategy_one_entry_page(
         seal_first_price_rows(price_rows, rows, parent_intents, parent_events, authorities)
         for price_row in price_rows:
             price_by_parent.setdefault(price_row['parent_record_id'], []).append(price_row)
-    if any(row['strategy_number'] in (36, 37) for row in rows):
+    if any(row['strategy_number'] in (36, 37, 38) for row in rows):
         from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activity_rows
         columns = ','.join(name for name, _ in ENTRY_ACTIVITY.columns)
         stored_activity = tuple(_rows(client,
@@ -232,7 +232,7 @@ def load_committed_strategy_one_entry_page(
                 or row["record_id"] != str(uuid5(
                     NAMESPACE_URL, f"{parent}:strategy-one-entry"))
                 or row["event_month"] != session_date.replace(day=1).isoformat()
-                or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)):
+                or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38)):
             raise RuntimeError("Committed Strategy 1 entry evidence changed")
         intent = recovered.intent
         if intent.invalidation_price is None or intent.profit_target_price is None:
@@ -247,22 +247,26 @@ def load_committed_strategy_one_entry_page(
             restore_rising_momentum(tuple(r for r in momentum_rows if r["parent_record_id"] == parent),
                 ticker=intent.ticker, boundary_ms=int(row["boundary_ms"]),
                 strategy_number=row["strategy_number"])
-            if row["strategy_number"] in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37) else None,
+            if row["strategy_number"] in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38) else None,
         )
-        if proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
+        if proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):
             from dataclasses import replace
             proposal = replace(proposal, initial_momentum=restore_initial_momentum(
                 tuple(r for r in initial_rows if r["parent_record_id"] == parent),
                 ticker=intent.ticker, boundary_ms=proposal.boundary_ms,
                 episode_start_ms=proposal.episode_start_ms, current_momentum=proposal.momentum,
                 strategy_number=proposal.strategy_number))
-        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
+        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):
             from src.backend.backtest_strategy_certified_price_break import (
                 restore_certified_price_proposal, certified_price_entry_intent,
             )
             proposal = restore_certified_price_proposal(first_price_source, proposal,
                 tuple(price_by_parent.get(parent, ())), parent_record_id=parent, batch_id=recovered.batch_id)
-            expected_intent = certified_price_entry_intent(first_price_source.plan, proposal, session_date=session_date)
+            if proposal.strategy_number in (37, 38):
+                from src.backend.backtest_strategy_episode_activity_source import certified_episode_entry_intent
+                expected_intent = certified_episode_entry_intent(first_price_source, proposal, session_date=session_date)
+            else:
+                expected_intent = certified_price_entry_intent(first_price_source.plan, proposal, session_date=session_date)
         else:
             expected_intent = strategy_one_entry_intent(proposal, session_date=session_date)
         if expected_intent != intent:
@@ -300,7 +304,7 @@ def load_committed_strategy_one_source(
         client, run_id=prefix.run_id, batch_id=entry.batch_id, **context)
     if not commit['first_sequence'] <= entry.sequence <= commit['last_sequence']:
         raise RuntimeError('Strategy 1 source is outside its committed batch')
-    if entry.proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
+    if entry.proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):
         companions = tuple(decode_momentum_row(row) for row in _rows(client,
             f"SELECT {momentum_select_columns()} FROM arte.{MOMENTUM.name} "
             f"WHERE run_id={_literal(prefix.run_id)} "
@@ -312,7 +316,7 @@ def load_committed_strategy_one_source(
                                          strategy_number=entry.proposal.strategy_number)
         if actual != entry.proposal.momentum:
             raise RuntimeError("Strategy 13 source differs from its committed momentum detail")
-        if entry.proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
+        if entry.proposal.strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):
             anchors = tuple(decode_initial_momentum_row(row) for row in _rows(client,
                 f"SELECT {initial_momentum_select_columns()} FROM arte.{INITIAL_MOMENTUM.name} "
                 f"WHERE run_id={_literal(prefix.run_id)} "
@@ -325,7 +329,7 @@ def load_committed_strategy_one_source(
                 strategy_number=entry.proposal.strategy_number)
             if initial != entry.proposal.initial_momentum:
                 raise RuntimeError("Strategy 18 source differs from committed first-setup selection")
-        if entry.proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
+        if entry.proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):
             from dataclasses import replace
             from .arte_first_price_entry_v4 import FIRST_PRICE
             from src.backend.backtest_strategy_certified_price_break import restore_certified_price_proposal
