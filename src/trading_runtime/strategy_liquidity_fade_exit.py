@@ -15,6 +15,13 @@ from .strategy_one_stateful import StrategyOneFinancialView
 REASON = "strategy_thirty_five_liquidity_fade_failure"
 
 
+def liquidity_fade_reason(strategy_number):
+    """Number the intent without changing its independently verified exit rule."""
+    if type(strategy_number) is not int or strategy_number not in (35, 36):
+        raise ValueError('Liquidity fade exit requires Strategy 35 or 36')
+    return {35: REASON, 36: 'strategy_thirty_six_liquidity_fade_failure'}[strategy_number]
+
+
 def validate_liquidity_fade_witness(witness):
     """Replay complete observations; scalar validity is not source attestation."""
     if type(witness) is not LiquidityFadeFailure:
@@ -42,21 +49,22 @@ def validate_liquidity_fade_financial(financial):
         raise ValueError("Liquidity fade exit requires exact held financial authority")
 
 
-def liquidity_fade_exit_intent(witness, financial, *, session_date, source_entry_intent_id):
+def liquidity_fade_exit_intent(witness, financial, *, session_date, source_entry_intent_id, strategy_number=35):
     """Use inherited Portfolio/OMS execution, never a direct broker command."""
+    reason = liquidity_fade_reason(strategy_number)
     validate_liquidity_fade_witness(witness)
     validate_liquidity_fade_financial(financial)
     UUID(source_entry_intent_id)
     if type(session_date) is not date:
         raise ValueError("Liquidity fade exit requires an exact session date")
     at = datetime.combine(session_date, time(4), ZoneInfo("America/New_York")) + timedelta(milliseconds=witness.boundary_ms)
-    identity = (f"strategy-35-liquidity-fade-exit:{session_date}:{financial.account_id}:"
+    identity = (f"strategy-{strategy_number}-liquidity-fade-exit:{session_date}:{financial.account_id}:"
                 f"{financial.assignment_id}:{financial.ticker}:{source_entry_intent_id}:{witness.boundary_ms}")
     return StrategyIntent(
         intent_id=str(uuid5(NAMESPACE_URL, identity)), ticker=financial.ticker,
         event_time=at.astimezone(timezone.utc), action="exit",
         quantity=float(financial.position_quantity), reference_price=witness.bid,
-        urgency="urgent", outside_rth=True, reason=REASON, metadata={},
+        urgency="urgent", outside_rth=True, reason=reason, metadata={},
         execution_policy=ExecutionPolicy(
             policy_id="strategy-adaptive_urgent", name=ExecutionPolicyName.ADAPTIVE_URGENT,
             envelope=ExecutionEnvelope(persist_until_cancelled=True),

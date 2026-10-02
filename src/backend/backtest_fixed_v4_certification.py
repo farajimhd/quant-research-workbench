@@ -1053,7 +1053,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                             'v4_storage_contracts': '74673f56137f80754160338c3ca5c2b2008bcfcb05b40cdea7b7e20ab778faaf'},
  'trading_runtime/arte_profit_giveback_v4.py': {'__module__': '3410ccea46575c540e58036cf537f72a26cc47e50ba5f75664722b62748fe7de'},
  'trading_runtime/strategy_profit_giveback.py': {'__module__': 'cc23fe27ca6db49c4139a481f364bfc26088b0dea01d1f542ea2f98f79072d10'},
- 'trading_runtime/strategy_profit_giveback_exit.py': {'__module__': 'e459143bcdc9d1e2b58af0dd842df3dae6d21dada0e8b3d11a108a50f5fdaa6a'},
+ 'trading_runtime/strategy_profit_giveback_exit.py': {'__module__': '8ebeed831c920f733251d466baccaee7bb69af8b6386950e28f10f6290b38082'},
  'trading_runtime/strategy_profit_giveback_arm.py': {'__module__': 'eb21ab1d2a25c5d411f4c6c1e109fb9f1e5290e1727585f49dbb5279d213059e'},
  'trading_runtime/strategy_profit_giveback_arm_reference.py': {'__module__': '87352243161430f4a0f88321acd26b93d3cf69d69a99594d1b01dabe6ee36cf6'},
  'trading_runtime/strategy_profit_giveback_source.py': {'__module__': 'e8b5daf8cafdfbede62b3ed042956554494e1dac840a48fb30d3995d83126f42'},

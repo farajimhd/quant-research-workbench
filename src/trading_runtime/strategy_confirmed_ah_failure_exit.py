@@ -17,9 +17,10 @@ REASON = 'strategy_thirty_four_confirmed_ah_failure'
 
 def confirmed_ah_reason(strategy_number):
     """Retain the parent's identity and assign its successor an exact reason."""
-    if type(strategy_number) is not int or strategy_number not in (34, 35):
-        raise ValueError('AH confirmation requires Strategy 34 or 35')
-    return {34: REASON, 35: 'strategy_thirty_five_confirmed_ah_failure'}[strategy_number]
+    if type(strategy_number) is not int or strategy_number not in (34, 35, 36):
+        raise ValueError('AH confirmation requires Strategy 34 through 36')
+    return {34: REASON, 35: 'strategy_thirty_five_confirmed_ah_failure',
+            36: 'strategy_thirty_six_confirmed_ah_failure'}[strategy_number]
 
 
 def validate_confirmed_ah_witness(witness):

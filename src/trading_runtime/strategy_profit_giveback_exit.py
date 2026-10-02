@@ -17,12 +17,13 @@ REASON = 'strategy_thirty_one_profit_giveback'
 
 def profit_giveback_reason(strategy_number: int) -> str:
     """One exact numbered identity shared by factory, persistence and recovery."""
-    if type(strategy_number) is not int or strategy_number not in (31, 32, 33, 34, 35):
-        raise ValueError('Profit protection requires Strategy 31, 32, 33 or 34')
+    if type(strategy_number) is not int or strategy_number not in (31, 32, 33, 34, 35, 36):
+        raise ValueError('Profit protection requires Strategy 31 through 36')
     return {31: REASON, 32: 'strategy_thirty_two_profit_giveback',
             33: 'strategy_thirty_three_profit_giveback',
             34: 'strategy_thirty_four_profit_giveback',
-            35: 'strategy_thirty_five_profit_giveback'}[strategy_number]
+            35: 'strategy_thirty_five_profit_giveback',
+            36: 'strategy_thirty_six_profit_giveback'}[strategy_number]
 
 
 def validate_profit_giveback_witness(witness: ProfitGivebackWitness) -> None:

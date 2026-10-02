@@ -28,7 +28,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/trading_runtime/strategy_profit_giveback.py': {'__module__': 'cc23fe27ca6db49c4139a481f364bfc26088b0dea01d1f542ea2f98f79072d10'},
  'src/trading_runtime/strategy_profit_giveback_arm.py': {'__module__': 'eb21ab1d2a25c5d411f4c6c1e109fb9f1e5290e1727585f49dbb5279d213059e'},
  'src/trading_runtime/strategy_profit_giveback_arm_reference.py': {'__module__': '87352243161430f4a0f88321acd26b93d3cf69d69a99594d1b01dabe6ee36cf6'},
- 'src/trading_runtime/strategy_profit_giveback_exit.py': {'__module__': 'e459143bcdc9d1e2b58af0dd842df3dae6d21dada0e8b3d11a108a50f5fdaa6a'},
+ 'src/trading_runtime/strategy_profit_giveback_exit.py': {'__module__': '8ebeed831c920f733251d466baccaee7bb69af8b6386950e28f10f6290b38082'},
  'src/trading_runtime/strategy_profit_giveback_source.py': {'__module__': 'e8b5daf8cafdfbede62b3ed042956554494e1dac840a48fb30d3995d83126f42'},
  'src/trading_runtime/strategy_registry.py': {'__module__': 'e04450c9bbbc4a6b3b312a820735c38b7c2dc9fe323aa6d087853c833d3b2ca9'},
  'src/trading_runtime/strategy_thirty_one_release.py': {'__module__': '2fcd0c7c34073032bf96e2007a901bd8fa99d120d6290a904e13a4e2c94f290e'},

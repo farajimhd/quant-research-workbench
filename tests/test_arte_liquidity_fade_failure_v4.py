@@ -110,7 +110,8 @@ def test_a_parent_or_changed_original_risk_cannot_be_relabelled(field, value):
         validate_liquidity_fade_state(w, replace(state, submitted=((key, replace(source, **{field: value})),)), held)
 
 
-def test_prepared_candidate_has_no_installed_runtime_admission():
+def test_installed_parent_does_not_grant_prepared_successor_admission():
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    assert numbered_fixed_strategy(35).strategy_number == 35
     with pytest.raises(ValueError):
-        numbered_fixed_strategy(35)
+        numbered_fixed_strategy(36)
