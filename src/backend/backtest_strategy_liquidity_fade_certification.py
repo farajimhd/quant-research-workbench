@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 LIQUIDITY_FADE_SOURCE_AST = {
-    'src/trading_runtime/strategy_half_risk_liquidity_fade.py': '2011cbc215acc9608d87531a2e22f93b63a603a056c1bbff04b4dfcb333e7286',
+    'src/trading_runtime/strategy_half_risk_liquidity_fade.py': 'a1c831ca875a550b557b70738727b962b7f6949a7e9863c975000ddd8b7dd8bc',
     'src/backend/backtest_strategy_half_risk_liquidity_fade.py': '266015bf39f14014f1705a8729499b472b8803b5ad5d7619b9f69677f5ed0718',
 
     'scripts/clickhouse/publish_strategy_thirty_five_configuration.py': '4ea3528baf3efb8b60699af4bb9ee81b5c693c01360912dc86d7a2691fba547b',
@@ -33,16 +33,16 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/strategy_liquidity_fade_checkpoint_reference.py': '2bf2d32ba8e66f95d6646c3f364937dd342fe25af9cd3311632e50bf958369d8',
     'src/backend/replay_run_service.py': '630ac301b866f7471e80082f29d5721672bb60ab8ef9ac2e3e429f9e64170605',
     'src/backend/backtest_strategy_one_execution.py': 'eb79647935683952adfb6735e2eb0004e5e418dab1cb1f149813ee29270aff4c',
-    'src/backend/backtest_strategy_liquidity_fade.py': '2262ffe427107eafe3d6d2e74431516bb55f5ba401efc0deeac3584b389e5c63',
+    'src/backend/backtest_strategy_liquidity_fade.py': '46ff877355462d2a46cebb81c8bf751000ef4a98d7bb45feff94d098e8c999e8',
     'src/trading_runtime/strategy_liquidity_fade_failure.py': '25ec4e6e986c8cd684740d9140ac5b659b36f386170d3bad6ce2af2e5569350e',
-    'src/trading_runtime/strategy_liquidity_fade_exit.py': 'af069bc7e705adb3d7ffbf70ff45925fd2ecd6a25f3d9f471f4e4dd40291b09b',
-    'src/trading_runtime/arte_liquidity_fade_failure_v4.py': 'd2bf2492b926949f69fb815886cce559a0ae274ea4937eadda5163ee4a52b120',
+    'src/trading_runtime/strategy_liquidity_fade_exit.py': 'dda193b4da2db3db98c1026ae3c53eedf86b1895c02a1b978fdef6d16c2f9322',
+    'src/trading_runtime/arte_liquidity_fade_failure_v4.py': 'f7c53e5a13c630d48b858e676fbd8b25e4679ff4865ee242a2649ed8c6746b42',
     'src/trading_runtime/strategy_liquidity_fade_source.py': 'bad5cf8604b46cc678dadea78aed716a8b828612bc5b45a69c86bbb5244977eb',
     'src/trading_runtime/strategy_liquidity_fade_market_source.py': 'fde06254872bf85500bafa0564d68753c6a908665539b7f3cbb3a7a296083127',
     'src/trading_runtime/strategy_thirty_five_release.py': 'f0e45aba520f8792f65b375929d39063107a209b9b458c559be043d2fe64cfcd',
     'pipelines/strategy_one/strategy_thirty_five_configuration.py': '21bfe1c3c954a7535bf49c3b6a1a0b94cab0f1693c8f8bd0e3e8511856184abe',
     'src/trading_runtime/strategy_liquidity_fade_transport.py': 'd3801bf25d21f372be32000aaef5b5f9a86ba168c37a40a5e9afe0f836184dfe',
-    'src/backend/backtest_strategy_liquidity_fade_loader.py': '2bd26158ad11dcbb6546ce71c0f5d4348d218235421dcbda98a206c8bc958a1e',
+    'src/backend/backtest_strategy_liquidity_fade_loader.py': '31a52a9f40c88fea85012d441db2f86deb0d6e9ef37003dcee15cfc0f8267d60',
     'src/trading_runtime/strategy_liquidity_fade_entry_source.py': 'b411bf1a156f61414df8b765eb3f3606d98f79c9c541d781ef86329949238ef0',
     'src/backend/backtest_strategy_liquidity_fade_decision.py': '7aaf49f043a2c30da30ed3a24303e27e80082c7d5b0af510aac06ee1ed68a1b0',
     'src/backend/backtest_strategy_one_financial.py': 'f184a0f434aabb3895b1323d2a22056acb30b4ab9bf301cb8356b1eea2591f0d',

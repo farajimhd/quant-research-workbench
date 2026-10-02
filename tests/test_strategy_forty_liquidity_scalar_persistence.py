@@ -20,9 +20,9 @@ from test_arte_liquidity_fade_failure_v4 import prepared_case, IDENTITY
 
 
 def projected(value):
-    witness=numbered_liquidity_fade_failure(value,strategy_number=39)
+    witness=numbered_liquidity_fade_failure(value,strategy_number=40)
     _,financial,_,template=prepared_case()
-    args=dict(session_date=date(2026,8,18),source_entry_intent_id=IDENTITY,strategy_number=39)
+    args=dict(session_date=date(2026,8,18),source_entry_intent_id=IDENTITY,strategy_number=40)
     intent=liquidity_fade_exit_intent(witness,financial,**args)
     fields=('run_id','batch_id','parent_record_id','source_build_id','source_bars_attempt_id',
         'source_indicators_attempt_id','source_liquidity_attempt_id','source_market_plan_token',
@@ -39,8 +39,8 @@ def projected(value):
 def test_normalized_scalar_roundtrip_preserves_version_and_inherited_priority(counts,kind):
     witness,_,intent,row=projected(supplied(counts=counts))
     assert type(witness) is kind
-    assert intent.reason=='strategy_thirty_nine_liquidity_fade_failure'
-    assert row['strategy_number']==39
+    assert intent.reason=='strategy_forty_liquidity_fade_failure'
+    assert row['strategy_number']==40
     assert set(row)=={name for name,_ in LIQUIDITY_FADE_FAILURE.columns}-{'content_hash'}
     assert restore_liquidity_fade_failure(row)==witness
     assert type(restore_liquidity_fade_failure(row)) is kind
@@ -60,9 +60,9 @@ def test_additional_witness_cannot_displace_an_eligible_inherited_exit():
     value=supplied(counts=(100,100,30,20))
     additional=half_risk_liquidity_fade_failure(value)
     assert type(additional) is HalfRiskLiquidityFadeFailure
-    assert type(numbered_liquidity_fade_failure(value,strategy_number=39)) is LiquidityFadeFailure
+    assert type(numbered_liquidity_fade_failure(value,strategy_number=40)) is LiquidityFadeFailure
     with pytest.raises(ValueError,match='producer observations'):
-        validate_liquidity_fade_witness(additional,strategy_number=39)
+        validate_liquidity_fade_witness(additional,strategy_number=40)
 
 
 @pytest.mark.parametrize('field,value',[
@@ -85,6 +85,6 @@ def test_additional_namespace_does_not_reuse_parent_intent_identity():
         assert getattr(new,field)==getattr(old,field)
 
 
-@pytest.mark.parametrize('number',[True,34,41,'39'])
+@pytest.mark.parametrize('number',[True,34,41,'40'])
 def test_policy_selector_rejects_unknown_or_coerced_number(number):
     with pytest.raises(ValueError):numbered_liquidity_fade_failure(supplied(),strategy_number=number)
