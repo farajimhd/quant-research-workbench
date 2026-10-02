@@ -16,6 +16,8 @@ from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.arte_profit_giveback_v4 import V4ProfitGivebackBatch
 from src.trading_runtime.strategy_profit_giveback_exit import profit_giveback_reason
 from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+from src.trading_runtime.strategy_liquidity_fade_transport import V4LiquidityFadeFailureBatch
+from src.trading_runtime.strategy_liquidity_fade_exit import REASON as LIQUIDITY_REASON
 from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
 from src.trading_runtime.arte_oms_tactic_projection import (
     V4OmsTacticBatch, tactic_rows,
@@ -187,6 +189,8 @@ def project_pending_backtest_v4_prefix(
         kind = (record.category, record.entity_type)
         confirmation_source = (journal.confirmed_ah_exit_for_record(record.record_id)
                                if kind == ('strategy', 'strategy_intent') else None)
+        liquidity_source = (journal.liquidity_fade_exit_for_record(record.record_id)
+                            if kind == ('strategy', 'strategy_intent') else None)
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
         if (kind == ("command", "order")
@@ -406,7 +410,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Session exit has conflicting source authorities")
                 protection_source = session_exit_source
             if sum(value is not None for value in (
-                    sidecar, add_sidecar, protection_source, failure_source, profit_source, confirmation_source)) > 1:
+                    sidecar, add_sidecar, protection_source, failure_source, profit_source, confirmation_source, liquidity_source)) > 1:
                 raise RuntimeError("Strategy 1 intent has two source authorities")
             if (kind == ("strategy", "strategy_intent")
                     and record.payload.get("reason") == "strategy_nine_followthrough_failure"
@@ -421,6 +425,9 @@ def project_pending_backtest_v4_prefix(
                     and record.payload.get('reason') == 'strategy_thirty_four_confirmed_ah_failure'
                     and confirmation_source is None):
                 raise RuntimeError('AH confirmation intent lacks its normalized witness')
+            if (kind == ('strategy', 'strategy_intent') and record.payload.get('reason') == LIQUIDITY_REASON
+                    and liquidity_source is None):
+                raise RuntimeError('Liquidity intent lacks its normalized witness')
             if sidecar is None and add_sidecar is None:
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("reason") in {
@@ -597,6 +604,33 @@ def project_pending_backtest_v4_prefix(
                 batch_id=batch.batch_id, parent_record_id=record.record_id,
             )
             unit = V4ConfirmedAhFailureBatch(batch, confirmation)
+            sources[intent.intent_id] = (batch, intent)
+        if liquidity_source is not None:
+            from src.trading_runtime.arte_liquidity_fade_failure_v4 import project_liquidity_fade_failure
+            intent, witness, financial, source_entry_id, session_date, observation_source = liquidity_source
+            payload = {key: value for key, value in record.payload.items()
+                       if key not in {'strategy_id', 'strategy_revision', 'correlation_id', 'causation_id'}}
+            source = sources.get(source_entry_id)
+            if (record.entity_id != intent.intent_id or record.account_id != financial.account_id
+                    or canonical_json(payload) != canonical_json(intent.payload())
+                    or source is None or source[0].run_id != record.run_id
+                    or not source[0].last_sequence < observation_source['source_manager_checkpoint_sequence'] < record.sequence
+                    or len(source[0].intents) != 1 or len(source[0].events) != 1
+                    or source[0].events[0]['account_id'] != record.account_id
+                    or source[0].events[0]['entity_id'] != source_entry_id
+                    or source[0].intents[0]['intent_id'] != source_entry_id
+                    or source[1].intent_id != source_entry_id or source[1].ticker != intent.ticker
+                    or source[1].action != 'enter_long' or source[1].reason != 'strategy_one_entry'
+                    or source[1].reference_price != witness.reference_ask
+                    or source[1].invalidation_price != witness.initial_stop
+                    or journal.assignment_for_intent(source_entry_id) != financial.assignment_id
+                    or record.payload.get('strategy_revision') != 35
+                    or record.payload.get('strategy_id') != 'early-squeeze-strategy'):
+                raise RuntimeError('Liquidity exit requires its exact original typed entry source')
+            failure = project_liquidity_fade_failure(witness, intent, financial,
+                session_date=session_date, source_entry_intent_id=source_entry_id, run_id=batch.run_id,
+                batch_id=batch.batch_id, parent_record_id=record.record_id, **observation_source)
+            unit = V4LiquidityFadeFailureBatch(batch, failure)
             sources[intent.intent_id] = (batch, intent)
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
         if (base.first_sequence != sequence or base.last_sequence != sequence

@@ -908,6 +908,7 @@ class TradingRuntime:
         followthrough_source: tuple | None = None,
         profit_giveback_source: tuple | None = None,
         confirmed_ah_source: tuple | None = None,
+        liquidity_fade_source: tuple | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -928,6 +929,26 @@ class TradingRuntime:
             if self.config.strategy_revision in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34) and any(
                     intent.action == "add_long" for intent in evaluation.intents):
                 raise ValueError(f"Strategy {self.config.strategy_revision} forbids add acquisitions")
+        from .strategy_liquidity_fade_exit import REASON as liquidity_reason, liquidity_fade_exit_intent
+        if liquidity_fade_source is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            from .strategy_one_stateful import StrategyOneFinancialView
+            if (type(liquidity_fade_source) is not tuple or len(liquidity_fade_source) != 4
+                    or self.config.mode != RunMode.BACKTEST or self.config.strategy_id != STRATEGY_ID
+                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision != 35
+                    or not isinstance(self.journal, BacktestMemoryJournal)
+                    or event is not None or followthrough_source is not None or profit_giveback_source is not None
+                    or confirmed_ah_source is not None or numbered_exit_assignment_id is not None
+                    or strategy_one_assignment_id is not None or strategy_one_proposal is not None
+                    or strategy_one_add_proposal is not None):
+                raise ValueError('Strategy 35 liquidity exit lacks exact typed authority')
+            witness, financial, source_entry_intent_id, observation_source = liquidity_fade_source
+            if (type(financial) is not StrategyOneFinancialView or account_id != financial.account_id
+                    or evaluation.intents != (liquidity_fade_exit_intent(witness, financial,
+                        session_date=self.config.anchor_date, source_entry_intent_id=source_entry_intent_id),)):
+                raise ValueError('Strategy 35 liquidity exit differs from its immutable factory')
+        elif any(intent.reason == liquidity_reason for intent in evaluation.intents):
+            raise ValueError('Strategy 35 liquidity exit lacks its normalized witness')
         from .strategy_confirmed_ah_failure_exit import REASON as confirmed_ah_reason, confirmed_ah_exit_intent
         if confirmed_ah_source is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -1088,6 +1109,12 @@ class TradingRuntime:
                     assignment_id=financial.assignment_id,
                     account_id=account_id, strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
+            elif liquidity_fade_source is not None:
+                witness, financial, source_entry_intent_id, observation_source = liquidity_fade_source
+                self.journal.append_liquidity_fade_exit(intent=intent, witness=witness, financial=financial,
+                    source_entry_intent_id=source_entry_intent_id, observation_source=observation_source,
+                    session_date=self.config.anchor_date, strategy_id=self.config.strategy_id,
+                    strategy_revision=self.config.strategy_revision)
             elif confirmed_ah_source is not None:
                 witness, financial, source_entry_intent_id = confirmed_ah_source
                 self.journal.append_confirmed_ah_exit(
@@ -1173,6 +1200,8 @@ class TradingRuntime:
                              if profit_giveback_source is not None
                              else confirmed_ah_source[1].assignment_id
                              if confirmed_ah_source is not None
+                             else liquidity_fade_source[1].assignment_id
+                             if liquidity_fade_source is not None
                              else numbered_exit_assignment_id)
             if assignment_id is None:
                 decision, approved_intent = await self.portfolio.approve(
@@ -1342,6 +1371,14 @@ class TradingRuntime:
         return await self._execute_intents(
             StrategyEvaluation(intents=(intent,)), financial.account_id, None,
             confirmed_ah_source=(witness, financial, source_entry_intent_id))
+
+    async def submit_liquidity_fade_failure(self, financial, witness, source_entry_intent_id, observation_source):
+        """Send a fully witnessed liquidity exit through shared Portfolio/OMS."""
+        from .strategy_liquidity_fade_exit import liquidity_fade_exit_intent
+        intent = liquidity_fade_exit_intent(witness, financial, session_date=self.config.anchor_date,
+                                          source_entry_intent_id=source_entry_intent_id)
+        return await self._execute_intents(StrategyEvaluation(intents=(intent,)), financial.account_id, None,
+            liquidity_fade_source=(witness, financial, source_entry_intent_id, observation_source))
 
     async def submit_numbered_session_exit(self, financial, resolutions, boundary_ms):
         """Submit once per live exit; fills belong to later broker liquidity."""

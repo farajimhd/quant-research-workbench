@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from copy import deepcopy
 from itertools import chain
 from threading import RLock
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
@@ -44,6 +45,8 @@ class BacktestMemoryJournal:
         self._profit_giveback_intents: dict[str, Any] = {}
         self._confirmed_ah_exits: dict[str, Any] = {}
         self._confirmed_ah_intents: dict[str, Any] = {}
+        self._liquidity_fade_exits: dict[str, Any] = {}
+        self._liquidity_fade_intents: dict[str, Any] = {}
         self._entry_assignments: dict[str, str] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
@@ -319,6 +322,55 @@ class BacktestMemoryJournal:
     def confirmed_ah_exit_for_record(self, record_id):
         with self._lock:
             return self._confirmed_ah_exits.get(record_id)
+
+    def append_liquidity_fade_exit(self, *, intent, witness, financial,
+                                   source_entry_intent_id, session_date, observation_source,
+                                   strategy_id, strategy_revision):
+        """Buffer the exact exit and immutable native checkpoint/producer refs.
+
+        References describe claims pending cold native verification. This cache
+        never grants persistence, source certification or order admission.
+        """
+        from src.trading_runtime.strategy_liquidity_fade_exit import liquidity_fade_exit_intent
+        from src.trading_runtime.arte_liquidity_fade_failure_v4 import (
+            CHECKPOINT_REFERENCE_FIELDS, validate_liquidity_checkpoint_reference,
+            validate_liquidity_observation_source,
+        )
+        expected = liquidity_fade_exit_intent(witness, financial,
+            session_date=session_date, source_entry_intent_id=source_entry_intent_id)
+        fields = {'source_build_id', 'source_market_plan_token', 'source_bars_attempt_id',
+                  'source_indicators_attempt_id', 'source_liquidity_attempt_id', *CHECKPOINT_REFERENCE_FIELDS}
+        if (strategy_id != 'early-squeeze-strategy' or type(strategy_revision) is not int
+                or strategy_revision != 35 or intent != expected
+                or not isinstance(observation_source, Mapping) or set(observation_source) != fields):
+            raise ValueError('Liquidity journal requires exact Strategy 35 factory and complete references')
+        refs = dict(observation_source)
+        validate_liquidity_observation_source(refs)
+        validate_liquidity_checkpoint_reference(refs)
+        source = (intent, witness, financial, source_entry_intent_id, session_date, MappingProxyType(refs))
+        with self._lock:
+            existing = self._entry_assignments.get(source_entry_intent_id)
+            if existing is not None and existing != financial.assignment_id:
+                raise ValueError('Liquidity exit changed original entry assignment')
+            prior = self._liquidity_fade_intents.get(intent.intent_id)
+            if prior is not None:
+                record, previous = prior
+                if previous != source:
+                    raise ValueError('Liquidity exit retry changed immutable witness or references')
+                return record
+            if refs['source_manager_checkpoint_sequence'] > self._next_sequence:
+                raise ValueError('Liquidity exit checkpoint must precede its journal event')
+            record = self.append(run_id=self.run_id, category='strategy', entity_type='strategy_intent',
+                entity_id=intent.intent_id, account_id=financial.account_id, event_time=intent.event_time,
+                payload={**intent.payload(), 'strategy_id': strategy_id, 'strategy_revision': strategy_revision})
+            self._entry_assignments[source_entry_intent_id] = financial.assignment_id
+            self._liquidity_fade_intents[intent.intent_id] = (record, source)
+            self._liquidity_fade_exits[record.record_id] = source
+            return record
+
+    def liquidity_fade_exit_for_record(self, record_id):
+        with self._lock:
+            return self._liquidity_fade_exits.get(record_id)
 
     def append_profit_giveback_exit(self, *, intent, witness, source_entry_intent_id,
                                    arm_reference, account_id, strategy_id,
@@ -624,6 +676,7 @@ class BacktestMemoryJournal:
                     self._numbered_session_exits.pop(record.record_id, None)
                     self._followthrough_exits.pop(record.record_id, None)
                     self._profit_giveback_exits.pop(record.record_id, None)
+                    self._liquidity_fade_exits.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
                     self._order_requests.pop(record.record_id, None)

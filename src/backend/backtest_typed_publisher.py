@@ -19,6 +19,7 @@ from src.backend.backtest_typed_projection import (
 from src.trading_runtime.arte_followthrough_failure_v4 import V4FollowThroughFailureBatch
 from src.trading_runtime.arte_profit_giveback_v4 import V4ProfitGivebackBatch
 from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
+from src.trading_runtime.strategy_liquidity_fade_transport import V4LiquidityFadeFailureBatch
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch,
     V4StrategyOneEntryBatch, V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
@@ -54,7 +55,7 @@ def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
             raise ValueError('V4 publication prefix exceeds its event bound')
     if len(units) == 1:
         return units
-    if not any(type(unit) in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch) for unit in units):
+    if not any(type(unit) in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch) for unit in units):
         return (coalesce_v4_units(units, max_events=max_events),)
     # These exits load their original entry from a sealed predecessor. They
     # must begin a new commit even when the entry and exit fit in one chunk.
@@ -98,7 +99,7 @@ def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
                 prior_intents[identity] = (original, final_hashes[identity])
         groups.append(group)
     for unit in units:
-        if type(unit) in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch) and pending:
+        if type(unit) in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch) and pending:
             flush()
             pending = []
         pending.append(unit)
@@ -326,6 +327,7 @@ class BacktestTypedJournalPublisher:
             | V4StrategyOneEntryBatch | V4FollowThroughFailureBatch
             | V4ProfitGivebackBatch
             | V4ConfirmedAhFailureBatch
+            | V4LiquidityFadeFailureBatch
             | V4PortfolioAllocationBatch | V4ReservationReasonBatch
             | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
             | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
@@ -400,7 +402,7 @@ class BacktestTypedJournalPublisher:
                 for unit in batches:
                     batch = unit.base if isinstance(
                         unit, (V3SqueezeBatch, V4CompoundBatch,
-                               V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch,
+                               V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
@@ -413,7 +415,7 @@ class BacktestTypedJournalPublisher:
                         raise RuntimeError("Typed Backtest batch chain is not contiguous")
                     receipt = (self.writer.submit_compound_v4(unit,
                                     **({'first_price_source': self._first_price_source}
-                                       if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] else {}))
+                                       if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures'] else {}))
                                if isinstance(unit, V4CompoundBatch)
                                else self.writer.submit_profit_exit_v4(unit,
                                     first_price_source=self._first_price_source)
@@ -421,6 +423,9 @@ class BacktestTypedJournalPublisher:
                                else self.writer.submit_confirmed_ah_exit_v4(unit,
                                     first_price_source=self._first_price_source)
                                if isinstance(unit, V4ConfirmedAhFailureBatch)
+                               else self.writer.submit_liquidity_fade_exit_v4(unit,
+                                    first_price_source=self._first_price_source)
+                               if isinstance(unit, V4LiquidityFadeFailureBatch)
                                else self.writer.submit_followthrough_exit_v4(unit)
                                if isinstance(unit, V4FollowThroughFailureBatch)
                                else self.writer.submit_strategy_one_entry_v4(unit)
@@ -510,6 +515,14 @@ class BacktestTypedJournalPublisher:
                             if sidecar is None:
                                 raise RuntimeError('Committed AH confirmation lost its immutable source')
                             intent, _, _, _, _ = sidecar
+                            self._committed_strategy_intents[intent.intent_id] = (
+                                _committed_intent_source(batch, parent_id), intent)
+                        elif isinstance(source_unit, V4LiquidityFadeFailureBatch):
+                            parent_id = source_unit.base.events[0]['record_id']
+                            sidecar = self.journal.liquidity_fade_exit_for_record(parent_id)
+                            if sidecar is None:
+                                raise RuntimeError('Committed liquidity exit lost its immutable source')
+                            intent = sidecar[0]
                             self._committed_strategy_intents[intent.intent_id] = (
                                 _committed_intent_source(batch, parent_id), intent)
                         elif (self.writer.journal_profile == "backtest_v4"

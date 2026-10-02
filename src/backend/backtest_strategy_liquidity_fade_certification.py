@@ -33,6 +33,10 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/arte_journal_commit_v4.py': '13fd9224d0f01a0d7fb654c7a939a29528dbed4e604713e1f7a2e44487828aba',
     'src/trading_runtime/arte_journal_compound_v4.py': '4965c541673e52dffff094d170ef4a255f58fd2eeb154c3bfa2bf34c78b14c8b',
     'src/backend/backtest_strategy_certified_price_break.py': '25f4c07b74d1862a7579bf3ed7f69e0be6adb7c3734165fbef44a81498e84d23',
+    'src/backend/backtest_journal_memory.py': '98af96c56278f5158cbf272a220fd4333d890217702c9b565e7173b4021ce60f',
+    'src/backend/backtest_typed_projection.py': '905e4247b02e1592f281a656b7f96fef2cd782669f32f671b941c0e557918e41',
+    'src/backend/backtest_typed_publisher.py': '61b48da127c109c782e8333af9c5ef746854966833f36f6d327b55dcb4119d32',
+    'src/trading_runtime/runtime.py': '463f35bc6bfdf7748615f5108ff143779ebf505bb7b820f732a4ecddb1d07b16',
 }
 
 
