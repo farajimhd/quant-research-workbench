@@ -1,4 +1,4 @@
-"""Prepared exact-parent Strategy40 precision repair; execution not installed."""
+"""Exact-parent Strategy40 precision repair with sealed Backtest registration."""
 from copy import deepcopy
 from hashlib import sha256
 import re

@@ -29,7 +29,7 @@ def test_prefix_token_binds_native_candle_proof_without_changing_observations():
         authority(ten_percent=False)
 
 
-@pytest.mark.parametrize('number', [True, 36, 40, '38'])
+@pytest.mark.parametrize('number', [True, 36, 41, '38'])
 def test_prefix_authority_rejects_unsupported_or_noninteger_number(number):
     with pytest.raises(ValueError, match='exact run and certified gate'):
         authority(number=number)
@@ -41,7 +41,7 @@ def test_cold_source_does_not_accept_later_recovery_in_vetoed_episode():
         source.witness(source.gate.facts[1].ticker, 41000)
 
 
-@pytest.mark.parametrize('number', [37, 38, 39])
+@pytest.mark.parametrize('number', [37, 38, 39, 40])
 def test_readback_uses_exact_number_run_and_original_episode_identity(number):
     source = authority(number=number)
     witness = source.witness(source.gate.facts[1].ticker, 41000)
@@ -64,7 +64,7 @@ def test_readback_uses_exact_number_run_and_original_episode_identity(number):
         source.resolve('episode-run',(entry,),(intent,intent))
 
 
-@pytest.mark.parametrize('number', [37, 38, 39])
+@pytest.mark.parametrize('number', [37, 38, 39, 40])
 def test_cached_manager_guard_rejects_wrong_run_number_episode_and_prefix(number):
     from datetime import date
     from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
@@ -77,7 +77,7 @@ def test_cached_manager_guard_rejects_wrong_run_number_episode_and_prefix(number
     day = date.fromisoformat(source.plan.market.sessions[0])
     assert certified_episode_activity_witness(parent,proposal,session_date=day) == source.witness('AAA',41000)
     for changed in (replace(proposal,strategy_number=36),
-                    replace(proposal,strategy_number=37 if number==39 else 75-number),
+                    replace(proposal,strategy_number=37 if number in (39,40) else 75-number),
                     replace(proposal,episode_start_ms=30100)):
         with pytest.raises(ValueError):
             certified_episode_activity_witness(parent,changed,session_date=day)
@@ -91,7 +91,7 @@ def test_cached_manager_guard_rejects_wrong_run_number_episode_and_prefix(number
             blocked.plan.parent,blocked),proposal,session_date=day)
 
 
-@pytest.mark.parametrize('number', [37, 38, 39])
+@pytest.mark.parametrize('number', [37, 38, 39, 40])
 def test_complete_parent_entry_binding_changes_only_number_and_deterministic_identity(number):
     from datetime import date
     from src.backend.backtest_strategy_certified_price_break import (

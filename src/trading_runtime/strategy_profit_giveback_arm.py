@@ -45,7 +45,7 @@ def profit_arm_candidate(state, financial, *, already_checkpointed: bool) -> Pro
     source=families['submitted'][key]
     high=families['position_highs'][key]
     first=families['first_held_boundaries'][key]
-    if (type(source) is not StrategyOneEntryProposal or source.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39)
+    if (type(source) is not StrategyOneEntryProposal or source.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40)
             or (source.account_id,source.assignment_id,source.ticker)!=key
             or type(high) is not int or not 0<high<2**64
             or type(first) is not int or first%100

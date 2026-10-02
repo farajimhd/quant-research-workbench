@@ -65,7 +65,7 @@ def test_installed_release_requires_full_inherited_execution_proof():
     assert numbered_strategy_parent(39)==38
     assert is_numbered_fixed_configuration(result['payload'])
     assert len(certify_numbered_fixed_v4_projection(39))==64
-    with pytest.raises(ValueError):numbered_strategy(40)
+    with pytest.raises(ValueError):numbered_strategy(41)
 
 
 def test_installed_capabilities_preserve_parent_session_and_order_policy():

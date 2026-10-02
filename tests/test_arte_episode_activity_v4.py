@@ -33,7 +33,7 @@ def seal(row, entry, intent, event, authority):
         run_id='activity-run',source=authority)
 
 
-@pytest.mark.parametrize('number', [37, 38, 39])
+@pytest.mark.parametrize('number', [37, 38, 39, 40])
 def test_normalized_episode_companion_is_reconstructed_from_independent_full_prefix(number):
     args = graph37(number)
     sealed = seal(*args)

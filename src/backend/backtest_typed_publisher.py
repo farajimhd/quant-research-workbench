@@ -311,7 +311,7 @@ class BacktestTypedJournalPublisher:
                 or source.run_id != self.journal.run_id
                 or self.writer.journal_profile != 'backtest_v4'
                 or not isinstance(self.expected_config, dict)
-                or self.expected_config.get('strategy_revision') not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39)
+                or self.expected_config.get('strategy_revision') not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40)
                 or self.expected_config.get('strategy_id') != 'early-squeeze-strategy'
                 or type(self.fixed_market_parent_plan) is not CertifiedMarketDayPlan
                 or source.plan.source.market.token != self.fixed_market_parent_plan.token
@@ -320,7 +320,7 @@ class BacktestTypedJournalPublisher:
             raise ValueError("Strategy20 publisher source lacks its exact unbound run")
         if self.expected_config['strategy_revision'] == 36 and source.entry_activity_source is None:
             raise ValueError('Strategy 36 publisher binding lacks certified activity source')
-        if self.expected_config['strategy_revision'] in (37, 38, 39):
+        if self.expected_config['strategy_revision'] in (37, 38, 39, 40):
             from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
             if (type(source.entry_activity_source) is not EpisodeActivityReadbackAuthority
                     or source.entry_activity_source.strategy_number != self.expected_config['strategy_revision']):
@@ -480,7 +480,7 @@ class BacktestTypedJournalPublisher:
                             if sidecar is None:
                                 raise RuntimeError("Committed Strategy 1 acquisition lost its source")
                             proposal, session_date = sidecar
-                            if source_unit.entry_evidence and proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39):
+                            if source_unit.entry_evidence and proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40):
                                 from .backtest_strategy_certified_price_break import (
                                     CertifiedPriceReadbackAuthority, certified_price_entry_intent,
                                 )
@@ -488,7 +488,7 @@ class BacktestTypedJournalPublisher:
                                 if (type(source) is not CertifiedPriceReadbackAuthority
                                         or source.run_id != self.journal.run_id):
                                     raise ValueError('Committed native entry lacks its exact source')
-                                if proposal.strategy_number in (37, 38, 39):
+                                if proposal.strategy_number in (37, 38, 39, 40):
                                     from .backtest_strategy_episode_activity_source import certified_episode_entry_intent
                                     intent = certified_episode_entry_intent(source, proposal, session_date=session_date)
                                 else:
