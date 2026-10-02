@@ -5,7 +5,7 @@ from itertools import combinations, product
 import json
 import math
 
-VERSION = "squeeze-grid-v2-1"
+VERSION = "squeeze-grid-v2-2"
 MACD_SECONDS = (1, 5, 10, 30)
 MAX_POSITIONS = 15
 
@@ -139,7 +139,7 @@ def grid_manifest(settings=Settings()):
              "implementation_sha256": code_hash(),
              "candidate_count": 4320, "candidates": [asdict(c) for c in build_grid()],
              "execution_contract": "completed-1s-next-interval-quote-bound-v2",
-             "capital": "all-free-cash-one-batch-ranked-tickers",
+             "capital": "cash-after-pending-buys-and-protective-fee-reserves-one-batch-ranked-tickers",
              "structural": "entry-frozen-distinct-resistance-lower-minus-tick",
              "rotation": "one-weakest-position-exit-then-revalidate-new-batch"}
     value["approval_digest"] = sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

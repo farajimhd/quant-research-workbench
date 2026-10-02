@@ -288,7 +288,15 @@ measured candidate-seconds/second within declared resource headroom, rather than
 allocating VRAM merely to fill it. Preserve at least 10 GiB or 15% of total GPU
 memory; account for state, bounded fill buffers and capture intermediates.
 An explicit `--batch N` measures that choice. No OOM/CPU fallback is hidden.
-FP64 money/account arithmetic remains intact. The session tape is shared across
+Money and commission arithmetic use FP64. Cash sizing reserves pending buy costs and conservative
+future exit commissions for held and pending shares. Each new position reserves
+its buy minimum plus the four independent protective-order minima, and one
+per-share charge for buying and exiting. Paid minima, cancelled parent shares,
+and completed exits release their cover; future sale proceeds are never assumed
+to fund fees. This prevents low-value partial exits from making cash negative.
+Commission multiplication explicitly uses FP64, including cumulative shares.
+The grid version is `squeeze-grid-v2-2`; earlier financial results cannot be
+resumed or merged under the corrected code identity. The session tape is shared across
 all configuration lanes; a selected batch/graph is reused in place. Subsequent
 days still enforce current tape and state headroom. Default tape limit is 48 GiB;
 The workstation ledger default is 65,536 fills per account (overflow fails

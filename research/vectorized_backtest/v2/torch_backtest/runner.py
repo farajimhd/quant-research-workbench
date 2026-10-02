@@ -151,6 +151,19 @@ class SqueezeRunner:
         # Scalar device index selects [1,N,...] → [N,...]; no host .item().
         return getattr(self.tape, name).index_select(0, self.index.reshape(1)).squeeze(0)
 
+    def _exit_fee_reserve(self):
+        """[B,N,M] conservative cash cover for filled and pending positions.
+
+        Shares can exit only once, but protection may switch between the four
+        independent fee histories. Future commissions are bounded by one
+        per-share charge plus every role's unpaid minimum. Reserve without
+        assuming future sale proceeds; a small sale can cost more than it pays.
+        """
+        shares = self.quantity + self.remaining
+        unpaid_minima = (self.settings.minimum_order_fee - self.exit_paid).clamp_min(0).sum(-1)
+        reserve = shares.to(torch.float64) * self.settings.fee_per_share + unpaid_minima
+        return torch.where(shares > 0, reserve, 0)
+
     def _log(self, qty, price, fee, now, side, reason):
         """Compact device ledger [B,E,9]; fail closed on capacity exhaustion."""
         shape = (self.b, self.n * 15)
@@ -185,7 +198,7 @@ class SqueezeRunner:
         old_filled = self.exit_filled.gather(-1, role).squeeze(-1)
         old_paid = self.exit_paid.gather(-1, role).squeeze(-1)
         fee = torch.where(sold > 0, torch.maximum(torch.full_like(old_paid, s.minimum_order_fee),
-                          (old_filled + sold) * s.fee_per_share) - old_paid, 0)
+                          (old_filled + sold).to(torch.float64) * s.fee_per_share) - old_paid, 0)
         self.exit_filled.scatter_add_(-1, role, sold[..., None])
         self.exit_paid.scatter_add_(-1, role, fee[..., None])
         self.realized.add_(((sell_price - self.average) * sold - fee).sum((1, 2)))
@@ -205,7 +218,7 @@ class SqueezeRunner:
         bought = proportional_fill(wanted, (capacity - sold.sum(-1)).clamp_min(0))
         cumulative = self.buy_filled + bought
         buy_fee = torch.where(bought > 0, torch.maximum(torch.full_like(self.buy_paid, s.minimum_order_fee),
-                              cumulative * s.fee_per_share) - self.buy_paid, 0)
+                              cumulative.to(torch.float64) * s.fee_per_share) - self.buy_paid, 0)
         spend = (buy_price * bought + buy_fee).sum((1, 2))
         self.financial_error.logical_or_(spend > self.cash + 1e-7)
         self.cash.sub_(spend)
@@ -320,9 +333,11 @@ class SqueezeRunner:
         incoming = common_score[None] + 0.15 * up / (up + down)
         pending_total = (self.remaining * self.buy_limit).sum((1, 2))
         remaining_fee = (torch.maximum(torch.full_like(self.buy_paid, s.minimum_order_fee),
-                         (self.buy_filled + self.remaining) * s.fee_per_share) - self.buy_paid).clamp_min(0)
+                         (self.buy_filled + self.remaining).to(torch.float64) * s.fee_per_share) - self.buy_paid).clamp_min(0)
         pending_total += torch.where(self.remaining > 0, remaining_fee, 0).sum((1, 2))
-        free_cash = (self.cash - pending_total).clamp_min(0)
+        # Held shares and unfilled parents retain their exit fee cover. Do not
+        # spend that cash on another ticker before its protective orders finish.
+        free_cash = (self.cash - pending_total - self._exit_fee_reserve().sum((1, 2))).clamp_min(0)
         # An outstanding replacement waits for its exact position to finish.
         flat_qty = self.quantity.reshape(self.b, -1)
         outgoing_done = flat_qty.gather(1, self.rotation_exit_slot.clamp_min(0)[:, None]).squeeze(1) == 0
@@ -337,10 +352,12 @@ class SqueezeRunner:
                    torch.where(p[:, 5, None, None] == 1, 1 / torch.log1p(self.rank), torch.log1p(self.rank)))
         weights = torch.where(slots, weights, 0)
         weights = weights / weights.sum(-1, keepdim=True)
-        # Conservative reservation includes all M independent minimum fees.
-        budget = (free_cash - p[:, 4] * s.minimum_order_fee).clamp_min(0)
+        # Each new slot reserves its buy minimum and all distinct exit minima.
+        # Buy and exit per-share charges each occur once across partial fills.
+        exit_roles = self.exit_paid.shape[-1]
+        budget = (free_cash - p[:, 4].to(torch.float64) * (1 + exit_roles) * s.minimum_order_fee).clamp_min(0)
         limit = ask.nan_to_num(0) * (1 + s.maximum_entry_drift_fraction)
-        desired = torch.floor(budget[:, None, None] * weights / (limit[None, :, None] + s.fee_per_share)).to(torch.int64)
+        desired = torch.floor(budget[:, None, None] * weights / (limit[None, :, None] + 2 * s.fee_per_share)).to(torch.int64)
         size_ok = ((~slots) | (desired >= 1)).all(-1)
         chosen_ready = (ranked_ready & choose_mask).any(-1) & ~waiting
         can_enter = chosen_ready & (size_ok & choose_mask).any(-1)

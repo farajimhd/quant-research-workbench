@@ -85,6 +85,56 @@ def test_independent_decimal_accounting_oracle():
     assert result["fees"].tolist() == [10]
 
 
+def test_existing_small_positions_keep_exit_cash_before_next_entry():
+    tape = synthetic_tape(prices=torch.full((30, 2), 0.90))
+    runner = SqueezeRunner(tape, [Candidate("signal", positions=15)])
+    runner.index.fill_(8)
+    runner.cash.fill_(80)
+    runner.quantity[0, 0] = 1
+    runner.buy_filled[0, 0] = 1
+    runner.used[0, 0] = True
+    runner.average[0, 0] = 0.9
+    runner.stop[0, 0] = 0.7
+    runner.target[0, 0] = 2
+    runner.first_fill[0, 0] = 8
+    runner.last_high[0, 0] = 8
+    # Independent bound: 15 held shares × $0.005 plus 4 × 15 unpaid
+    # protective-order minima. A new batch needs its own commissions too.
+    assert runner._exit_fee_reserve().sum().item() == pytest.approx(60.075)
+    runner.tick()
+    assert runner.entered.item() == 0
+    assert runner.requested_quantity[0, 1].sum().item() == 0
+    assert runner.cash.item() == 80
+
+
+def test_exit_reserve_releases_paid_minima_and_cancelled_parent_shares():
+    runner = SqueezeRunner(synthetic_tape(), [candidate()])
+    runner.quantity[0, 0, 0] = 1
+    runner.remaining[0, 0, 0] = 9
+    runner.exit_paid[0, 0, 0, 0] = 1
+    assert runner._exit_fee_reserve().sum().item() == pytest.approx(3.05)
+    runner.remaining.zero_()
+    assert runner._exit_fee_reserve().sum().item() == pytest.approx(3.005)
+    runner.quantity.zero_()
+    assert runner._exit_fee_reserve().sum().item() == 0
+
+
+def test_partial_commissions_match_decimal_per_share_oracle():
+    tape = synthetic_tape(prices=torch.full((30, 1), 0.9, dtype=torch.float64))
+    runner = SqueezeRunner(tape, [candidate()])
+    runner.cash.fill_(10000)
+    runner.remaining[0, 0, 0] = 246
+    runner.buy_limit[0, 0, 0] = 0.91
+    runner.buy_deadline[0, 0, 0] = 5
+    args = (torch.tensor(1), tape.close[0], tape.low[0], tape.high[0],
+            tape.quote_valid[0], tape.bid[0], tape.ask[0], tape.volume[0],
+            tape.fill_price[0], tape.observed[0])
+    runner._broker(*args)
+    expected_fee = float(Decimal(246) * Decimal("0.005"))
+    assert runner.fees.item() == pytest.approx(expected_fee, abs=1e-12)
+    assert runner.cash.item() == pytest.approx(10000 - 246 * 0.905 - expected_fee, abs=1e-10)
+
+
 def test_capacity_remainder_partial_fills_and_per_order_commission():
     wanted = torch.tensor([[[19, 19, 19, 19, 19]]])
     fill = proportional_fill(wanted, torch.tensor([[3]]))
