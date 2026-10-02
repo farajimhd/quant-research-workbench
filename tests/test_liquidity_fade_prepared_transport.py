@@ -28,7 +28,7 @@ def transport():
     return row, base
 
 
-def test_exact_factory_transport_freezes_values_without_registering_family():
+def test_exact_factory_transport_freezes_values_with_scalar_codec_only():
     row, base = transport()
     unit = V4LiquidityFadeFailureBatch(base, row)
     row['bid'] = 1
@@ -36,7 +36,10 @@ def test_exact_factory_transport_freezes_values_without_registering_family():
     with pytest.raises(TypeError):
         unit.failure['bid'] = 1
     from src.trading_runtime.arte_journal_writer import _CONTRACTS
-    assert LIQUIDITY_FADE_FAILURE.name not in _CONTRACTS
+    assert _CONTRACTS[LIQUIDITY_FADE_FAILURE.name] is LIQUIDITY_FADE_FAILURE
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    with pytest.raises(ValueError):
+        numbered_fixed_strategy(35)
 
 
 @pytest.mark.parametrize('target,field,value', [
