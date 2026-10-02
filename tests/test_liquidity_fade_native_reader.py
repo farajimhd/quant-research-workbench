@@ -107,15 +107,20 @@ def test_invalid_prefix_rejects_before_query(change):
     assert not client.queries
 
 
-def test_codec_registration_does_not_admit_new_compound_envelope():
+def test_installed_codec_accepts_exact_compound_envelope_but_rejects_subclasses():
     from src.trading_runtime.arte_journal_compound_v4 import _unit_children, _publication_kwargs
     from src.trading_runtime.strategy_liquidity_fade_transport import V4LiquidityFadeFailureBatch
     from test_liquidity_fade_prepared_transport import transport
     row, base = transport()
     unit = V4LiquidityFadeFailureBatch(base, row)
+    assert _unit_children(unit) == (("liquidity_fade_failures", row),)
+    assert _publication_kwargs(unit) == {"liquidity_fade_rows": (row,)}
+    class ForeignEnvelope(V4LiquidityFadeFailureBatch):
+        pass
+    foreign = ForeignEnvelope(base, row)
     for check in (_unit_children, _publication_kwargs):
         with pytest.raises(TypeError):
-            check(unit)
+            check(foreign)
 
 
 def test_new_scalar_contract_retains_explicit_ssd_policy():

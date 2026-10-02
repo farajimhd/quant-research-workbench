@@ -218,7 +218,8 @@ def test_restore_roundtrips_absent_optional_policy_and_full_rule_values():
     assert restore_strategy_intent(project_strategy_intent(complex_intent)) == complex_intent
 
 
-def test_v4_cold_intent_reconstructs_verified_source_with_slices():
+@pytest.mark.parametrize('with_authority', [False, True])
+def test_v4_cold_intent_reconstructs_verified_source_with_slices(monkeypatch, with_authority):
     from src.trading_runtime.arte_journal_commit_v4 import (
         load_verified_v4_prefix, publish_base_typed_batch_v4,
     )
@@ -239,8 +240,25 @@ def test_v4_cold_intent_reconstructs_verified_source_with_slices():
     publish_base_typed_batch_v4(client, batch)
     prefix = load_verified_v4_prefix(client, run_id)
     assert prefix is not None
+    from src.trading_runtime import arte_journal_commit_v4 as commits
+    original = commits.load_verified_commit_v4
+    authority = object()
+    calls = []
+    def verified(*args, **kwargs):
+        calls.append(kwargs.copy())
+        # This base-only fixture has no native price companion. Verify the
+        # forwarding boundary, then retain the real base fence/hash verifier.
+        kwargs.pop('first_price_source', None)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(commits, 'load_verified_commit_v4', verified)
     recovered = load_committed_strategy_intent_page(
-        client, prefix, include_source_batch=True)
+        client, prefix, include_source_batch=True,
+        **({'first_price_source': authority} if with_authority else {}))
+    assert len(calls) == 1
+    if with_authority:
+        assert calls[0]['first_price_source'] is authority
+    else:
+        assert 'first_price_source' not in calls[0]
     assert len(recovered) == 1
     assert recovered[0].intent == source
     assert recovered[0].source_batch == batch

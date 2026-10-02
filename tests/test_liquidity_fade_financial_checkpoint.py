@@ -189,6 +189,15 @@ def test_missing_ambiguous_or_foreign_oms_lineage_rejects(monkeypatch, mode):
         load(case(monkeypatch, lineage_transform=changed))
 
 
-def test_native_strategy35_oms_installation_gate_is_still_closed(monkeypatch):
-    with pytest.raises(ValueError):
-        load(case(monkeypatch, mock_oms=False))
+def test_installed_strategy35_requires_complete_committed_protection_history(monkeypatch):
+    data = case(monkeypatch, mock_oms=False)
+    calls = []
+    def missing_history(client, prefix, **kwargs):
+        calls.append((client, prefix, kwargs))
+        raise RuntimeError('Committed protection evidence is missing')
+    monkeypatch.setattr(
+        'src.trading_runtime.arte_journal_reader.load_complete_typed_protection_history',
+        missing_history)
+    with pytest.raises(RuntimeError, match='Committed protection evidence is missing'):
+        load(data)
+    assert calls == [(None, data[3], {'page_size': 1000, 'max_events': 100000})]

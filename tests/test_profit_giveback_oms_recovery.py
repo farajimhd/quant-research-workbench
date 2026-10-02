@@ -102,7 +102,11 @@ def test_cold_join_routes_exact_native_source_to_profit_reader(monkeypatch, numb
     prefix = V4CommittedPrefix(history.run_id, 12, group.group['batch_id'],
         '2026-08-04:10000', 'running', history.committed_batch_ids)
     monkeypatch.setattr(oms, 'load_latest_committed_oms_groups', lambda *a, **k: (group,))
-    monkeypatch.setattr(intents, 'load_committed_strategy_intent_page', lambda *a, **k: (source,))
+    intent_calls = []
+    def load_intents(*args, **kwargs):
+        intent_calls.append(kwargs)
+        return (source,)
+    monkeypatch.setattr(intents, 'load_committed_strategy_intent_page', load_intents)
     monkeypatch.setattr(oms, 'load_committed_oms_admission_page', lambda *a, **k: {12: reservation})
     monkeypatch.setattr(oms, 'load_committed_oms_decision_page', lambda *a, **k: {12: decision})
     authority = object()
@@ -115,6 +119,8 @@ def test_cold_join_routes_exact_native_source_to_profit_reader(monkeypatch, numb
     result = oms.load_recovered_strategy_one_oms_lineage(client, prefix,
         allowed_accounts=frozenset({source.account_id}), protection_history=history,
         strategy_number=number, first_price_source=authority)
+    assert intent_calls[0]['first_price_source'] is authority
+    assert intent_calls[0]['include_source_batch'] is True
     assert calls == [(client, prefix, source.record_id, authority)]
     assert len(result) == 1 and result[0].approved_intent.reason == source.intent.reason
     assert result[0].approved_intent.metadata['assignment_id'] == reservation['assignment_id']

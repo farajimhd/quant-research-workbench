@@ -100,3 +100,18 @@ def test_cold_reader_is_three_bounded_pinned_selects_and_rejects_ambiguity():
                    (bars, (indicator,), ())):
         with pytest.raises(ValueError):
             load_liquidity_fade_market_observations(Reader(groups), w, source, **args)
+
+
+def test_same_population_projection_is_not_original_entry_authority():
+    from src.backend.backtest_market_data import project_market_day_plan
+    witness, source, bars, indicator, quote, args = native_case()
+    original = args['plan']
+    projected = project_market_day_plan(original, original.tickers)
+    assert projected.tickers == original.tickers
+    assert projected.units == original.units
+    assert projected.token != original.token
+    assert validate_liquidity_fade_market_observations(
+        witness, source, bars, indicator, quote, **args) == witness
+    with pytest.raises(ValueError):
+        validate_liquidity_fade_market_observations(
+            witness, source, bars, indicator, quote, **dict(args, plan=projected))

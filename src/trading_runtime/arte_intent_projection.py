@@ -372,6 +372,7 @@ def load_committed_strategy_intent_page(
     limit: int = 200, max_slices: int = 4096,
     record_ids: tuple[str, ...] | None = None,
     include_source_batch: bool = False,
+    first_price_source: Any = None,
 ) -> tuple[RecoveredIntent, ...]:
     """Read one bounded, fully typed intent page from a verified prefix."""
     if not _valid_prefix(prefix):
@@ -494,7 +495,9 @@ def load_committed_strategy_intent_page(
             batch_id = str(UUID(str(event["batch_id"])))
             if batch_id not in commits:
                 commits[batch_id], _ = load_verified_commit_v4(
-                    client, run_id=prefix.run_id, batch_id=batch_id)
+                    client, run_id=prefix.run_id, batch_id=batch_id,
+                    **({'first_price_source': first_price_source}
+                       if first_price_source is not None else {}))
             commit = commits[batch_id]
             recorded_at = datetime.fromisoformat(str(event["recorded_at"]))
             if recorded_at.tzinfo is None:
