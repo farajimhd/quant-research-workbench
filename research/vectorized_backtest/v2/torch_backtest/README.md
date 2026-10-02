@@ -246,6 +246,18 @@ remain visible during long database queries. A failed job retains its database
 reason and a redacted traceback in `error.json`, alongside the request receipt;
 the terminal shows the reason instead of a generic exception class.
 
+All runs require the build's pinned preopen snapshot `is_tradable=1` population.
+Reference Gateway's tradability rules include positive IBKR conid, supported
+listing scope and no open mapping issue. This is historical eligibility evidence,
+not a query of today's universe or a guarantee that IBKR accepts every order.
+The operator-declared LGHL broker identity/tradability exclusion is enabled by
+default. `--exclude-tickers LGHL OTHER` adds explicit research exclusions; the
+same arguments must be repeated on resume. Snapshot counts and content hashes
+are verified before exclusions; both LGHL identity rows are retained in the
+population eligibility artifact, with counts and reasons. Eligibility and
+exclusions are sealed into the job/campaign request, source-cache identity and
+tape provenance. The 4,320 parameter combinations are unchanged.
+
 The workstation path requires the 96 GB CUDA GPU (at least 80 GiB physical
 memory). Default `--batch auto` measures compiled CUDA graph batches
 32/64/128/256/512/1024 on a 128-second timing witness, with synthetic admission

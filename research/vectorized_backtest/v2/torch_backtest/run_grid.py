@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import polars as pl
 import torch
 
-from .encoding.config import Session
+from .encoding.config import Session, DEFAULT_EXCLUDED_TICKERS
 from .grid import Settings, build_grid, grid_manifest
 from .prepare import prepare_tape
 from .progress import preparation_event
@@ -129,6 +129,7 @@ def main(argv=None, *, progress=None, preloaded=None):
     parser.add_argument("--dates", nargs="+", help="Explicit YYYY-MM-DD sessions; no hidden default population")
     parser.add_argument("--start", default="04:00")
     parser.add_argument("--end", default="09:30")
+    parser.add_argument("--exclude-tickers", nargs="*", default=list(DEFAULT_EXCLUDED_TICKERS))
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--backend", choices=("eager", "compile", "cudagraph", "compiled_graph"), default="compiled_graph")
@@ -165,6 +166,7 @@ def main(argv=None, *, progress=None, preloaded=None):
     commit = source_revision(repo)
     run = require_runtime(args.resume or runtime / "campaigns" / uuid4().hex)
     request = {"grid": manifest["approval_digest"], "code": code_hash(), "commit": commit,
+               "population_rule": "pinned-preopen-is_tradable=1", "excluded_tickers": sorted(args.exclude_tickers),
                "market_manifest_hash": file_hash(args.manifest), "dates": args.dates,
                "market_ledger": str(args.ledger.resolve()), "start": args.start, "end": args.end,
                "batch": args.batch, "device": args.device, "backend": args.backend,
@@ -190,7 +192,7 @@ def main(argv=None, *, progress=None, preloaded=None):
             session = Session(args.manifest, args.ledger, runtime / "source_cache",
                 datetime.fromisoformat(f"{day}T{args.start}").replace(tzinfo=ny),
                 datetime.fromisoformat(f"{day}T{args.end}").replace(tzinfo=ny), warmup_seconds=57600,
-                max_prepared_gib=args.maximum_tape_gib)
+                max_prepared_gib=args.maximum_tape_gib, excluded_tickers=tuple(sorted(args.exclude_tickers)))
             tape = (preloaded.pop(day) if preloaded and day in preloaded else
                     prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib,
                         progress=(lambda value: progress(preparation_event(value))) if progress else print)

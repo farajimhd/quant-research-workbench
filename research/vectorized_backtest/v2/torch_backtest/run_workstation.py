@@ -24,7 +24,7 @@ import torch
 
 from research.vectorized_backtest.v2.torch_backtest.availability import (
     WINDOWS, configure_reader, discover_sources, select_dates, session_bounds)
-from research.vectorized_backtest.v2.torch_backtest.encoding.config import Session
+from research.vectorized_backtest.v2.torch_backtest.encoding.config import Session, DEFAULT_EXCLUDED_TICKERS
 from research.vectorized_backtest.v2.torch_backtest.grid import Settings, build_grid, grid_manifest
 from research.vectorized_backtest.v2.torch_backtest.gpu import calibrate, memory_plan
 from research.vectorized_backtest.v2.torch_backtest.prepare import prepare_tape
@@ -48,6 +48,8 @@ def parser():
     p.add_argument("--runtime", type=Path, default=DEFAULT)
     p.add_argument("--resume", type=Path, help="Resume the exact workstation job directory")
     p.add_argument("--plain", action="store_true", help="No live panel (also automatic for redirected output)")
+    p.add_argument("--exclude-tickers", nargs="*", default=list(DEFAULT_EXCLUDED_TICKERS),
+                   help="Explicit research exclusions after certified tradability; default LGHL")
     return p
 
 
@@ -80,6 +82,7 @@ def main(argv=None):
         except PackageNotFoundError:
             compiler_version = None
         request = {"command": args.command, "units": units, "closed_calendar_dates": closed,
+                   "population_rule": "pinned-preopen-is_tradable=1", "excluded_tickers": sorted(args.exclude_tickers),
                    "code": code_hash(), "commit": source_revision(REPO), "grid": manifest["approval_digest"],
                    "batch": args.batch, "maximum_tape_gib": args.maximum_tape_gib,
                    "maximum_fills": args.maximum_fills, "graph_steps": args.graph_steps,
@@ -134,7 +137,8 @@ def main(argv=None):
                     session = Session(Path(first["manifest"]), Path(first["ledger"]), runtime / "source_cache",
                         datetime.fromisoformat(f"{first['day']}T{start}").replace(tzinfo=ZoneInfo("America/New_York")),
                         datetime.fromisoformat(f"{first['day']}T{end}").replace(tzinfo=ZoneInfo("America/New_York")),
-                        max_prepared_gib=args.maximum_tape_gib, warmup_seconds=57600)
+                        max_prepared_gib=args.maximum_tape_gib, warmup_seconds=57600,
+                        excluded_tickers=tuple(sorted(args.exclude_tickers)))
                     tape = prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib,
                         progress=lambda v: progress(preparation_event(v))).to("cuda", args.maximum_tape_gib)
                     progress({"listings": len(tape.tickers), "tape_gib": tape.bytes/1024**3})
@@ -152,6 +156,7 @@ def main(argv=None):
                     return 0
                 group_run = job / "campaigns" / f"{index:02}-{first['session']}-{first['build_id'][:12]}"
                 command = ["--execute", "--approval-digest", manifest["approval_digest"], "--runtime", str(runtime),
+                    "--exclude-tickers", *args.exclude_tickers,
                     "--resume", str(group_run), "--manifest", first["manifest"], "--ledger", first["ledger"],
                     "--dates", *[u["day"] for u in group], "--start", start, "--end", end,
                     "--batch", str(gpu["batch"]), "--device", "cuda", "--backend", "compiled_graph",

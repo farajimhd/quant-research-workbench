@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+DEFAULT_EXCLUDED_TICKERS = ("LGHL",)
+
 
 @dataclass(frozen=True)
 class Session:
@@ -18,6 +20,7 @@ class Session:
     fetch_tickers: int = 64
     max_prepared_gib: float = 2.0
     warmup_seconds: int = 3600
+    excluded_tickers: tuple[str, ...] = DEFAULT_EXCLUDED_TICKERS
 
 
 @dataclass(frozen=True)

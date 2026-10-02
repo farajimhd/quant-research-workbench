@@ -30,7 +30,7 @@ from .config import Funnel, Session
 from .core import AtomicInput, EncodingError
 
 NY = ZoneInfo("America/New_York")
-VERSION = "atomic-watchlist-window-torch-v2-2"
+VERSION = "atomic-watchlist-window-torch-v2-3-tradable"
 _SOURCE_AUTHORITY = object()
 
 
@@ -249,7 +249,12 @@ def prepare_session(
     ):
         raise EncodingError("Certified source receipt differs from session inputs")
     source = receipt.source
-    names = sorted(source["units"][str(day)])
+    if len(set(config.excluded_tickers)) != len(config.excluded_tickers) or any(
+            not isinstance(t, str) or not t or t != t.strip().upper() for t in config.excluded_tickers):
+        raise EncodingError("Exclusions require unique, nonempty uppercase ticker names")
+    names = sorted(set(source["units"][str(day)]) - set(config.excluded_tickers))
+    if not names:
+        raise EncodingError("Research exclusions leave no tradable population")
     broker_attempts(source, config.ledger, day, set(names))
     signature = {
         "version": VERSION,
@@ -276,7 +281,11 @@ def prepare_session(
         assert_liquidity_storage(reader)
         if progress:
             progress({"stage": "Certify population identity", "message": "Checking pinned preopen identity snapshot and content hash"})
-        members, _ = arte_source.population(reader, source, day, diagnostic_directory=cache)
+        members, population = arte_source.population(reader, source, day, diagnostic_directory=cache,
+                                                     excluded_tickers=config.excluded_tickers)
+        if progress:
+            progress({"stage": "Tradable population selected", "completed": len(members), "total": len(names),
+                      "message": f"{len(members):,} certified tradable tickers; explicit exclusions: {', '.join(config.excluded_tickers) or 'none'}"})
         identities = pl.DataFrame(members).select(
             "ticker", pl.col("listing_id").cast(pl.String)
         )
@@ -601,6 +610,7 @@ def prepare_session(
         temporary.replace(complete)
     metrics = {
         "population": len(names),
+        "eligibility": population['eligibility'],
         "price_candidates": candidate_count,
         "watchlist": watchlist.height,
         "broker_rows": broker.height,

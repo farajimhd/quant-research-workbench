@@ -76,7 +76,7 @@ def storage_check(c):
     return dict(tables=tables, parts=parts)
 
 
-def population(c, source, day, *, diagnostic_directory=None):
+def population(c, source, day, *, diagnostic_directory=None, excluded_tickers=()):
     saved = [p for p in source['definition']['plan']['population'] if p['session_date'] == str(day)]
     if len(saved) != 1:
         raise ValueError('Missing unique build population certificate')
@@ -104,8 +104,21 @@ def population(c, source, day, *, diagnostic_directory=None):
         f'FROM q_live.feature_tradable_universe_snapshot_v2 WHERE {where} AND is_tradable=1 ORDER BY ticker,symbol_id,listing_id')
     if digest(members) != saved['snapshot_hash']:
         raise ValueError('Population no longer matches source build')
-    selected = set(source['units'][str(day)])
+    planned = set(source['units'][str(day)])
+    selected = planned - set(excluded_tickers)
     rows = [r for r in members if r['ticker'] in selected]
+    eligibility = dict(authority='q_live.feature_tradable_universe_snapshot_v2',
+        snapshot_id=cert['snapshot_id'], revision=cert['revision'], session=str(day),
+        rule='pinned preopen is_tradable=1; explicit research exclusions applied after full snapshot verification',
+        planned_tickers=len(planned), eligible_tickers=len(selected),
+        snapshot_nontradable_rows=int(cert['row_count'])-int(cert['tradable_count']),
+        requested_exclusions=sorted(excluded_tickers), excluded_tickers=sorted(planned & set(excluded_tickers)),
+        excluded_identity_rows=[r for r in members if r['ticker'] in planned & set(excluded_tickers)],
+        exclusion_reasons={ticker: ('operator-declared LGHL broker identity/tradability issue' if ticker == 'LGHL'
+                                   else 'explicit operator research exclusion') for ticker in sorted(excluded_tickers)})
+    if diagnostic_directory is not None:
+        from ..runtime import require_runtime, write_json
+        write_json(require_runtime(diagnostic_directory) / 'population-eligibility.json', eligibility)
     counts = Counter(r['ticker'] for r in rows)
     listings = Counter(r['listing_id'] for r in rows)
     missing = sorted(selected - set(counts))
@@ -127,7 +140,7 @@ def population(c, source, day, *, diagnostic_directory=None):
         raise ValueError('Population identity rejected: ' + '; '.join(reasons) +
                          f'. {len(selected):,} planned tickers, {len(rows):,} snapshot rows. '
                          'Repair the certified population or explicitly approve a research exclusion; no rows excluded.')
-    return rows, saved
+    return rows, {**saved, 'eligibility': eligibility}
 
 
 def selection(source, day, ticker, stage):

@@ -163,6 +163,23 @@ def test_certified_duplicate_ticker_is_named_without_dropping_rows(tmp_path, mon
     report = json.loads((tmp_path / 'population-identity-error.json').read_text())
     assert report['excluded_rows'] == 0 and len(report['rejected_identity_rows']) == 2
     assert report['planned_tickers'] == 1 and report['snapshot_rows'] == 2
+    members.append(dict(ticker='A', symbol_id='c', listing_id='three', security_id='a', source_run_id='r', inserted_at='t'))
+    certificate.update(row_count=3, tradable_count=3)
+    source['definition']['plan']['population'][0]['snapshot_hash'] = digest(members)
+    source['units'][str(day)]['A'] = {}
+    def verified_query(c, statement):
+        if 'count()' in statement:
+            return [dict(n=3, tradable=3, source_hash=3)]
+        assert 'AND is_tradable=1' in statement
+        return members
+    monkeypatch.setattr(arte_source, 'query', verified_query)
+    selected, saved = arte_source.population(None, source, day, excluded_tickers=('LGHL',), diagnostic_directory=tmp_path)
+    assert [r['ticker'] for r in selected] == ['A']
+    assert len(saved['eligibility']['excluded_identity_rows']) == 2
+    assert saved['eligibility']['excluded_tickers'] == ['LGHL']
+    source['definition']['plan']['population'][0]['snapshot_hash'] = 'tampered'
+    with pytest.raises(ValueError, match='Population no longer matches'):
+        arte_source.population(None, source, day, excluded_tickers=('LGHL',))
 
 
 def test_later_window_admission_preserves_daily_episode_history():
@@ -196,6 +213,7 @@ def test_workstation_launcher_groups_sources_and_windows_without_starting_grid(t
     assert launch.main(["run", "--runtime", str(tmp_path / "run"), "--sessions", "regular", "afterhours", "--plain"]) == 0
     assert len(calls) == 4  # Two source builds × two independently reset windows.
     assert all(c[c.index("--batch")+1] == "32" for c in calls)
+    assert all(c[c.index("--exclude-tickers")+1] == "LGHL" for c in calls)
     run = next((tmp_path / "run" / "jobs").iterdir())
     assert json.loads((run / "job.json").read_text())["status"] == "complete"
 
