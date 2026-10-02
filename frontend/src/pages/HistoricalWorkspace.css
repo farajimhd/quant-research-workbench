@@ -121,7 +121,7 @@
 .backtest-v4-quote small, .backtest-v4-quote em { color: var(--muted-foreground); font-size: 10px; font-style: normal; }
 .backtest-v4-quote strong { font-size: 13px; }
 @media (max-width: 1100px) {
-  .backtest-run-history > .backtest-history-scroll :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); min-width: 170px; border-left: 1px solid var(--border); }
+  .backtest-run-history > .backtest-history-scroll[aria-label="Recent backtests table"] :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); min-width: 170px; border-left: 1px solid var(--border); }
   .backtest-v4-review > .backtest-history-scroll :is(th, td):last-child { position: static; border-left: 0; }
 }
 
@@ -2333,3 +2333,32 @@
 @media (max-width: 640px) {
   .backtest-v4-canvas-review > .canvas-config-toolbar .canvas-mode-context-slot > span { display: none; }
 }
+
+/* Recent backtests: comparable strategy cohorts above the session-level evidence. */
+.backtest-history-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; padding-block: 12px; border-block: 1px solid var(--border); }
+.backtest-history-overview dt, .backtest-history-note, .backtest-history-run-heading > span { color: var(--muted-foreground); font-size: 12px; }
+.backtest-history-overview dd { margin: 4px 0 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.backtest-run-history h3 { font-size: 14px; margin: 16px 0 6px; }
+.backtest-history-run-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.backtest-run-history .backtest-history-scroll table { min-width: 1000px; }
+.backtest-run-history .backtest-history-scroll .numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.backtest-run-history .backtest-history-scroll tbody th { white-space: normal; min-width: 160px; }
+.backtest-run-history .backtest-positive { color: var(--foreground); border-left: 2px solid var(--semantic-positive); }
+.backtest-run-history .backtest-negative { color: var(--semantic-negative); }
+.backtest-group-selected { background: var(--surface-alt); }
+.backtest-run-history > .backtest-history-scroll th { background: var(--surface-alt); }
+.backtest-run-history > .backtest-history-scroll thead th { position: sticky; top: 0; }
+
+.backtest-run-history > .backtest-history-scroll[aria-label="Recent backtests table"] :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); border-left: 1px solid var(--border); min-width: 170px; }
+
+.backtest-run-history .backtest-positive { background: var(--semantic-positive-bg); }
+.backtest-run-history .backtest-negative { background: var(--semantic-negative-bg); }
+.backtest-status { display: inline-block; padding-left: 6px; border-left: 3px solid currentColor; font-weight: 600; }
+.backtest-status-completed { color: var(--foreground); border-left-color: var(--semantic-positive); }
+.backtest-status-failed { color: var(--destructive); }
+.backtest-status-active { color: var(--accent); }
+.backtest-status-incomplete, .backtest-coverage-incomplete { color: var(--semantic-mixed); }
+.backtest-group-selected { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+.backtest-performance-errors { color: var(--destructive); font-size: 12px; padding-block: 8px; }
+.backtest-performance-errors summary { cursor: pointer; }
+.backtest-performance-errors li { margin-block: 4px; overflow-wrap: anywhere; }
