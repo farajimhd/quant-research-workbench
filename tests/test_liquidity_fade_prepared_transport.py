@@ -43,7 +43,7 @@ def test_exact_factory_transport_freezes_values_with_scalar_codec_only():
     for number in (37, 38, 39):
         assert numbered_fixed_strategy(number).strategy_number == number
     with pytest.raises(ValueError):
-        numbered_fixed_strategy(41)
+        numbered_fixed_strategy(42)
 
 
 @pytest.mark.parametrize('target,field,value', [

@@ -56,7 +56,44 @@ def test_resealed_policy_mutation_cannot_change_trading_rule(policy):
 
 
 
-def test_prepared41_does_not_admit_uninstalled_execution():
-    from src.trading_runtime.strategy_registry import numbered_strategy
-    with pytest.raises(ValueError):
-        numbered_strategy(41)
+def test_installed_release_requires_complete_parent_and_registered_source_proof():
+    from pipelines.strategy_one.strategy_forty_one_configuration import compile_strategy_forty_one_configuration
+    from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
+    from src.trading_runtime.strategy_registry import numbered_strategy,numbered_strategy_parent
+    result=compile_strategy_forty_one_configuration(source_fixture(),**APPROVAL)
+    assert child.verify_strategy_forty_one_manifest(result['payload']['strategy'])
+    assert numbered_strategy(41)==child.release_contract() and numbered_strategy_parent(41)==40
+    assert len(certify_numbered_fixed_v4_projection(41))==64
+    with pytest.raises(ValueError):numbered_strategy(42)
+
+
+@pytest.mark.parametrize('relative',[
+    'src/trading_runtime/strategy_forty_one_release.py',
+    'pipelines/strategy_one/strategy_forty_one_configuration.py',
+    'src/trading_runtime/strategy_registry.py',
+    'src/trading_runtime/numbered_fixed_strategy.py',
+    'src/backend/backtest_strategy_one_configuration.py',
+    'pipelines/strategy_one/configuration_publisher.py',
+    'scripts/clickhouse/publish_strategy_forty_one_configuration.py',
+])
+def test_certificate_rejects_unreviewed_registration_and_source(relative,tmp_path):
+    from pathlib import Path
+    from src.backend.backtest_strategy_forty_one_certification import certify_strategy_forty_one_source
+    changed=tmp_path/'changed.py'
+    changed.write_text(Path(relative).read_text(encoding='utf-8')+'\nUNREVIEWED_CHANGE=True\n',encoding='utf-8')
+    with pytest.raises(ValueError,match='pinned release source changed'):
+        certify_strategy_forty_one_source(source_overrides={relative:changed})
+
+
+def test_installed_capabilities_preserve_parent_session_and_order_policy():
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    previous,current=numbered_fixed_strategy(40),numbered_fixed_strategy(41)
+    for name in ('allows_session_exit','allows_adds','allows_completed_30s_trailing',
+                 'allows_target_escalation','caps_entry_at_reference_ask','allows_followthrough_failure_exit'):
+        assert getattr(current,name)==getattr(previous,name)
+    for boundary in (0,100,19_499_900,19_500_000,19_740_000,19_800_000,
+                     43_200_000,43_200_100,57_000_000,57_300_000,57_600_000):
+        for name in ('entry_allowed','acquisition_cutoff','liquidation_due'):
+            assert getattr(current,name)(boundary)==getattr(previous,name)(boundary)
+        for episode in (0,100,19_500_000,43_200_000,43_200_100):
+            assert current.activation_allowed(boundary,episode)==previous.activation_allowed(boundary,episode)

@@ -1,4 +1,4 @@
-"""Prepared exact-parent Strategy41 binary transport successor; registration remains separate."""
+"""Exact-parent Strategy41 binary transport repair with sealed Backtest registration."""
 from copy import deepcopy
 from hashlib import sha256
 import re

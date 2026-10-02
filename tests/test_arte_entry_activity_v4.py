@@ -192,7 +192,7 @@ def test_encoding_and_installed_release_leave_unknown_number_closed():
     assert _CONTRACTS[ENTRY_ACTIVITY.name] is ENTRY_ACTIVITY
     assert numbered_strategy(36).number == 36
     with pytest.raises(ValueError):
-        numbered_strategy(39)
+        numbered_strategy(42)
 
 
 def test_sealer_requires_encoding_registration(monkeypatch):

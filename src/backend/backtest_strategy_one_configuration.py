@@ -56,7 +56,7 @@ class CertifiedStrategyOneConfiguration:
 
 def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> CertifiedStrategyOneConfiguration:
     """Exactly one coverage-last release may own each supported immutable number."""
-    if type(strategy_number) is not int or strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40):
+    if type(strategy_number) is not int or strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41):
         raise ValueError("Unsupported numbered fixed strategy")
     releases = [json.loads(line) for line in client.execute(
         "SELECT release_attempt_id,strategy_id,source_candidate_id,"
@@ -92,7 +92,7 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
             or strategy.get("strategy_number") != strategy_number
             or strategy.get("execution_interval") != "100ms"):
         raise RuntimeError(f"Strategy {strategy_number} typed configuration is not the numbered 100ms contract")
-    if strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40):
+    if strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41):
         is_numbered_fixed_configuration(payload)
         _validate_strategy_two_payload(payload)
         from src.trading_runtime.strategy_registry import numbered_strategy_parent
@@ -174,8 +174,10 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
             from src.trading_runtime.strategy_thirty_eight_release import derive_strategy_thirty_eight_configuration as derive
         elif strategy_number == 39:
             from src.trading_runtime.strategy_thirty_nine_release import derive_strategy_thirty_nine_configuration as derive
-        else:
+        elif strategy_number == 40:
             from src.trading_runtime.strategy_forty_release import derive_strategy_forty_configuration as derive
+        else:
+            from src.trading_runtime.strategy_forty_one_release import derive_strategy_forty_one_configuration as derive
         manifest = strategy["numbered_release"]
         expected = derive(source,
             approved_code_commit=manifest["approved_code_commit"],
@@ -225,7 +227,7 @@ def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
     number = strategy.get("strategy_number")
     if number is None:
         return False
-    if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40):
+    if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41):
         raise ValueError("Unknown numbered fixed strategy")
     if number == 1:
         return True  # Existing full-release boundaries retain exact identity checks.
@@ -305,8 +307,10 @@ def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
         from src.trading_runtime.strategy_thirty_eight_release import verify_strategy_thirty_eight_manifest as verify
     elif number == 39:
         from src.trading_runtime.strategy_thirty_nine_release import verify_strategy_thirty_nine_manifest as verify
-    else:
+    elif number == 40:
         from src.trading_runtime.strategy_forty_release import verify_strategy_forty_manifest as verify
+    else:
+        from src.trading_runtime.strategy_forty_one_release import verify_strategy_forty_one_manifest as verify
     verify(strategy)
     return True
 
@@ -329,7 +333,7 @@ def selected_numbered_revision(*, revision_id: str = "", run_plan_id: str = "",
         if client is not None:
             kwargs["client"] = client
         return selected_strategy_one_revision(**kwargs)
-    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40):[0-9a-fA-F-]{36}", revision_id):
+    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41):[0-9a-fA-F-]{36}", revision_id):
         raise ValueError("Unknown immutable numbered configuration identity")
     if client is None:
         from src.backend.backtest_market_data import readonly_clickhouse_client
