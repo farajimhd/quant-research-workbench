@@ -85,3 +85,35 @@ def certified_episode_activity_witness(authority, proposal, *, session_date):
     if type(proposal.episode_start_ms) is not int or proposal.episode_start_ms != anchor:
         raise ValueError('Strategy37 proposal differs from original native episode')
     return validate_entry_activity_witness(replace(native, activity_source_token=source.gate.token))
+
+
+def bind_episode_activity_proposal(authority, parent_proposal, *, session_date):
+    """Bind exact Strategy36 validation to Strategy37 after its prefix admits.
+
+    The parent factory validates every financial field and original source
+    anchor. No quantity, protection, sizing, price or cost is recalculated here.
+    The internal parent intent is never submitted or journaled.
+    """
+    from .backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority, certified_price_entry_intent
+    from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+    if (type(authority) is not CertifiedPriceReadbackAuthority
+            or type(parent_proposal) is not StrategyOneEntryProposal
+            or type(parent_proposal.strategy_number) is not int or parent_proposal.strategy_number != 36):
+        raise ValueError('Episode proposal requires exact certified Strategy36 parent')
+    certified_price_entry_intent(authority.plan, parent_proposal, session_date=session_date)
+    proposal = replace(parent_proposal, strategy_number=37)
+    certified_episode_activity_witness(authority, proposal, session_date=session_date)
+    return proposal
+
+
+def certified_episode_entry_intent(authority, proposal, *, session_date):
+    """Create one Strategy37 identity after parent rebinding and prefix proof."""
+    from .backtest_strategy_certified_price_break import certified_price_entry_intent
+    certified_episode_activity_witness(authority, proposal, session_date=session_date)
+    parent = replace(proposal, strategy_number=36)
+    # The parent intent factory performs complete native rebinding itself.
+    # Avoid repeating that work through the proposal adapter on each entry.
+    intent = certified_price_entry_intent(authority.plan, parent, session_date=session_date)
+    identity = (f'strategy-37:{session_date.isoformat()}:{proposal.assignment_id}:'
+                f'{proposal.account_id}:{proposal.ticker}:{proposal.boundary_ms}:{proposal.episode_start_ms}')
+    return replace(intent, intent_id=str(uuid5(NAMESPACE_URL, identity)))

@@ -14,7 +14,7 @@ ENTRY_ACTIVITY_SOURCE_AST = {
     'src/trading_runtime/strategy_entry_activity_fade.py': '78219596eedb2c3de41ed0597f4e5bde5efea9d68854645f2786ad53fa5c4b75',
     'src/trading_runtime/strategy_entry_activity_witness.py': 'ce4bfd96579271bd7d7124e700c40824e9c870266ff05d9ea10b50bcb4d72bc8',
     'src/trading_runtime/arte_entry_activity_v4.py': '48444688e3f5f03d0908be0232297cf37c80cc86881b58688d1a9a162a1bc707',
-    'src/backend/backtest_strategy_episode_activity_source.py': 'c779acd0505e709b48f17ab866eb8580f08c53a06e0ad790ff09166f9238b883',
+    'src/backend/backtest_strategy_episode_activity_source.py': '5f711f0d4c9e4f3e67dad2cf8f5bf2f5f19892e9cc08ef4a73c878451c28bca7',
     'src/backend/backtest_strategy_episode_activity_gate.py': '43eaa3e95701f32ab02f5af501ca0e019b03ed91badb8f1bcb62ced3918510b5',
     'src/trading_runtime/strategy_episode_activity_veto.py': 'cb96806e4594bdb2b087b1c12925ee80d296e1313984dce6329f3eee4b911e06',
     'src/backend/backtest_strategy_entry_activity_gate.py': 'a128c7856cbc77854871961ec4d582b5f44b9bdeee517f6dde61360811fd02d4',
