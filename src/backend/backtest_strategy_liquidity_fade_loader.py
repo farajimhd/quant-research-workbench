@@ -37,7 +37,7 @@ def load_compiled_liquidity_fade_lookup(client, *, plan, session_date, max_rows=
             or {u.ticker for u in units} != set(plan.tickers)
             or any(u.build_id != plan.build_id or u.session_date != session_date.isoformat() for u in units)):
         raise ValueError('Liquidity loader has missing, duplicate or foreign native bar units')
-    if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39, 40):
+    if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39, 40, 41):
         raise ValueError('Liquidity loader requires an exact supported strategy number')
     selected = plan.tickers if tickers is None else tickers
     if (type(selected) is not tuple or any(type(t) is not str or not t for t in selected)

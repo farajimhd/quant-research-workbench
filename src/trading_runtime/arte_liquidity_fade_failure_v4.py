@@ -110,8 +110,8 @@ def project_liquidity_fade_failure(
 def restore_liquidity_fade_failure(row):
     """Replay complete scalars after raw stored hashes and UInt adaptation."""
     columns = {name for name, _ in LIQUIDITY_FADE_FAILURE.columns} - {"content_hash"}
-    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] not in (35, 36, 37, 38, 39, 40):
-        raise ValueError("Liquidity fade requires its complete version-bound Strategy 35 through 39 family")
+    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] not in (35, 36, 37, 38, 39, 40, 41):
+        raise ValueError("Liquidity fade requires its complete version-bound Strategy 35 through 41 family")
     validate_liquidity_observation_source(row)
     validate_liquidity_checkpoint_reference(row)
     integers = {name for name, kind in LIQUIDITY_FADE_FAILURE.columns if kind.startswith("UInt")}
@@ -136,7 +136,7 @@ def restore_liquidity_fade_failure(row):
     witness_type = LiquidityFadeFailure
     prior = values['candles'][0].trade_count + values['candles'][1].trade_count
     recent = values['candles'][2].trade_count + values['candles'][3].trade_count
-    if row['strategy_number'] in (39, 40) and 4 * recent > prior:
+    if row['strategy_number'] in (39, 40, 41) and 4 * recent > prior:
         from .strategy_half_risk_liquidity_fade import HalfRiskLiquidityFadeFailure
         witness_type = HalfRiskLiquidityFadeFailure
     witness = witness_type(**values)
