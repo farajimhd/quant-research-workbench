@@ -434,3 +434,72 @@ class BacktestHistoryTests(unittest.TestCase):
                             page.close()
             finally:
                 browser.close()
+
+    def test_strategy_group_sorting_uses_totals_and_session_dates(self):
+        from pathlib import Path
+        from playwright.sync_api import sync_playwright
+        rows = [dict(run_id=f"sort-{i}", created_at=f"2026-10-{6-i:02d}T12:00:00Z",
+                     session_date=["2026-08-21", "2026-08-21", "2026-08-24", "2026-08-25", "2026-08-23", ""][i],
+                     status="completed", strategy_revision=34 if i < 3 else i+32, initial_cash=10000,
+                     comparison_group_key=("a" if i < 3 else "b" if i == 3 else "c" if i == 4 else "d") * 64,
+                     start_local_ms=14400000, end_local_ms=34200000,
+                     journal_backend="arte_typed_journal_v4", journal_sequence=10, v4_review_available=True)
+                for i in range(6)]
+        summaries = [dict(net_pnl=pnl, episode_count=1, win_count=int(pnl > 0), win_rate=int(pnl > 0), total_fees=1)
+                     for pnl in (100, 999, -40, -10, 0)]
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                for theme in ("light", "dark"):
+                    for scale in (0.8, 1, 1.25):
+                        for width in (1440, 900):
+                            page = browser.new_page(viewport={"width": width, "height": 900})
+                            page.add_init_script(f"localStorage.setItem('quant-research-workbench.theme','{theme}');localStorage.setItem('quant-research-workbench.ui-scale','{scale}')")
+                            errors = []
+                            page.on("pageerror", lambda e: errors.append(str(e)))
+                            def handle(route):
+                                path = route.request.url.split("?")[0]
+                                if path.endswith("/backtest/runs"):
+                                    route.fulfill(json={"rows": rows})
+                                elif path.endswith("/history-performance"):
+                                    route.fulfill(json={"rows": [dict(run_id=f"sort-{i}", status="available", verified_sequence=10,
+                                        report={"summary": summaries[i]}) if i < 5 else dict(run_id="sort-5", status="unavailable", error="Missing evidence") for i in range(6)]})
+                                elif path.endswith("/configuration-options"):
+                                    route.fulfill(json={"candidates": [], "available_run_plans": [], "error": ""})
+                                else:
+                                    route.fulfill(json={"items": [], "checks": []})
+                            page.route("**/api/trading/**", handle)
+                            page.goto("http://127.0.0.1:5173/#backtest-trading")
+                            table = page.get_by_role("region", name="Recent backtests table", exact=True)
+                            table.get_by_text("$60.00", exact=True).wait_for()
+                            def order():
+                                return table.locator(".backtest-strategy-group").evaluate_all("rows => rows.map(row => row.getAttribute('aria-controls').replace('backtest-sessions-', '')[0])")
+                            group_a = table.locator('.backtest-strategy-group[aria-controls="backtest-sessions-' + "a" * 64 + '"]')
+                            group_a.click()
+                            pnl = table.get_by_role("button", name="Sort strategies by net P&L", exact=True)
+                            date = table.get_by_role("button", name="Sort strategies by date", exact=True)
+                            pnl.click()
+                            self.assertEqual(order(), ["a", "c", "b", "d"])
+                            self.assertEqual(pnl.locator("..").get_attribute("aria-sort"), "descending")
+                            pnl.click()
+                            self.assertEqual(order(), ["b", "c", "a", "d"])
+                            self.assertEqual(pnl.locator("..").get_attribute("aria-sort"), "ascending")
+                            self.assertEqual(table.locator(".backtest-session-rows:visible tr").count(), 3)
+                            date.click()
+                            self.assertEqual(order(), ["b", "a", "c", "d"])
+                            self.assertEqual(date.locator("..").get_attribute("aria-sort"), "descending")
+                            self.assertEqual(pnl.locator("..").get_attribute("aria-sort"), "none")
+                            date.focus()
+                            page.keyboard.press("Enter")
+                            self.assertEqual(order(), ["c", "a", "b", "d"])
+                            self.assertEqual(date.locator("..").get_attribute("aria-sort"), "ascending")
+                            self.assertFalse(errors)
+                            self.assertFalse(page.evaluate("document.documentElement.scrollWidth > innerWidth"))
+                            if os.environ.get("BACKTEST_HISTORY_EVIDENCE"):
+                                output = Path(os.environ["BACKTEST_HISTORY_EVIDENCE"])
+                                output.mkdir(parents=True, exist_ok=True)
+                                table.evaluate("el => el.scrollLeft = 0")
+                                page.locator(".backtest-run-history").screenshot(path=str(output / f"sorting-{theme}-{scale}-{width}.png"))
+                            page.close()
+            finally:
+                browser.close()

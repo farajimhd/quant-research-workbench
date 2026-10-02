@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Fragment, useEffect, useState } from "react";
 import { api } from "../../api/client";
 import type { PerformanceJournalReport } from "../../features/canvas/contracts";
@@ -45,6 +45,24 @@ const groupKey = (row: RunRow) => row.comparison_group_key || row.run_id;
 const terminal = (row: RunRow) => ["completed", "stopped", "failed"].includes(row.status);
 const pnlClass = (value: number | null) => value == null || value === 0 ? "" : value > 0 ? "backtest-positive" : "backtest-negative";
 
+// Share the displayed cohort summary with sorting so retries and partial runs
+// cannot change the ranking independently of the values shown in the table.
+function summarize(runs: RunRow[], performance: Record<string, Performance>) {
+  const sessions = new Map<string, RunRow>();
+  runs.filter(row => row.status === "completed" && row.session_date).forEach(row => {
+    if (!sessions.has(row.session_date)) sessions.set(row.session_date, row);
+  });
+  const reports = [...sessions.values()].map(row => performance[row.run_id]?.report)
+    .filter((report): report is Pick<PerformanceJournalReport, "summary"> => Boolean(report));
+  const sum = (field: string) => reports.length && reports.every(report => numeric(report.summary[field]) != null)
+    ? reports.reduce((total, report) => total + Number(report.summary[field]), 0) : null;
+  const sessionDates = [...new Set(runs.map(row => row.session_date).filter(Boolean))].sort();
+  const latestDate = sessionDates.at(-1);
+  const sortDate = latestDate && Number.isFinite(Date.parse(latestDate))
+    ? Date.parse(latestDate) + (runs[0].start_local_ms ?? 0) : null;
+  return { sessions, reports, sum, sessionDates, sortDate, pnl: sum("net_pnl") };
+}
+
 export function BacktestRunHistory({ onReview, onResumed }: {
   onReview: (runId: string) => void;
   onResumed: (run: CanvasReplayRun) => void;
@@ -59,6 +77,7 @@ export function BacktestRunHistory({ onReview, onResumed }: {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
+  const [sort, setSort] = useState<{ column: "pnl" | "date"; direction: "ascending" | "descending" } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
@@ -133,7 +152,27 @@ export function BacktestRunHistory({ onReview, onResumed }: {
 
   const groups = new Map<string, RunRow[]>();
   rows.forEach(row => { const key = groupKey(row); groups.set(key, [...(groups.get(key) || []), row]); });
+  const summaries = new Map([...groups].map(([key, runs]) => [key, summarize(runs, performance)]));
   const filteredGroups = [...groups].filter(([, runs]) => String(runs[0].strategy_revision ?? runs[0].configuration_revision ?? "").includes(search.trim()));
+  if (sort) filteredGroups.sort(([aKey, aRuns], [bKey, bRuns]) => {
+    const a = summaries.get(aKey)!, b = summaries.get(bKey)!;
+    const aValue = sort.column === "pnl" ? a.pnl : a.sortDate;
+    const bValue = sort.column === "pnl" ? b.pnl : b.sortDate;
+    // Unknown performance/dates stay last in both directions, never as zero.
+    if (aValue == null && bValue != null) return 1;
+    if (bValue == null && aValue != null) return -1;
+    const delta = aValue != null && bValue != null ? aValue - bValue : 0;
+    return delta * (sort.direction === "ascending" ? 1 : -1)
+      || createdTime(bRuns[0].created_at) - createdTime(aRuns[0].created_at) || aKey.localeCompare(bKey);
+  });
+  function changeSort(column: "pnl" | "date") {
+    setSort(current => ({ column, direction: current?.column === column && current.direction === "descending" ? "ascending" : "descending" }));
+    setPage(0);
+  }
+  function sortIcon(column: "pnl" | "date") {
+    const Icon = sort?.column !== column ? ArrowUpDown : sort.direction === "ascending" ? ArrowUp : ArrowDown;
+    return <Icon aria-hidden="true" />;
+  }
   const pages = Math.max(1, Math.ceil(filteredGroups.length / PAGE_SIZE));
   const performanceErrors = new Map<string, number>();
   Object.values(performance).forEach(result => {
@@ -160,14 +199,10 @@ export function BacktestRunHistory({ onReview, onResumed }: {
         </nav>
       </div>
       <div className="backtest-history-scroll" role="region" aria-label="Recent backtests table" tabIndex={0}><table className="market-list-table backtest-history-table">
-        <thead><tr><th scope="col">Strategy / run</th><th scope="col">Date / time · ET</th><th scope="col" className="numeric">Initial cash · USD</th><th scope="col" className="numeric" title="Closed-trade P&L after final commissions in USD. Group totals use the newest completed run per session.">Net P&amp;L · USD</th><th scope="col" className="numeric">Closed trades</th><th scope="col" className="numeric">Win rate</th><th scope="col" className="numeric">Fees · USD</th><th scope="col">Status / coverage</th><th scope="col">Controls</th></tr></thead>
+        <thead><tr><th scope="col">Strategy / run</th><th scope="col" aria-sort={sort?.column === "date" ? sort.direction : "none"}><button type="button" aria-label="Sort strategies by date" title="Sort by latest session date and configured start time in ET" onClick={() => changeSort("date")}>Date / time · ET{sortIcon("date")}</button></th><th scope="col" className="numeric">Initial cash · USD</th><th scope="col" className="numeric" aria-sort={sort?.column === "pnl" ? sort.direction : "none"} title="Closed-trade P&L after final commissions in USD. Group totals use the newest completed run per session."><button type="button" aria-label="Sort strategies by net P&L" onClick={() => changeSort("pnl")}>Net P&amp;L · USD{sortIcon("pnl")}</button></th><th scope="col" className="numeric">Closed trades</th><th scope="col" className="numeric">Win rate</th><th scope="col" className="numeric">Fees · USD</th><th scope="col">Status / coverage</th><th scope="col">Controls</th></tr></thead>
         {filteredGroups.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(([key, runs]) => {
-          const sessions = new Map<string, RunRow>();
-          runs.filter(row => row.status === "completed" && row.session_date).forEach(row => { if (!sessions.has(row.session_date)) sessions.set(row.session_date, row); });
-          const reports = [...sessions.values()].map(row => performance[row.run_id]?.report).filter((report): report is Pick<PerformanceJournalReport, "summary"> => Boolean(report));
-          const sum = (field: string) => reports.length && reports.every(report => numeric(report.summary[field]) != null) ? reports.reduce((total, report) => total + Number(report.summary[field]), 0) : null;
-          const pnl = sum("net_pnl"), trades = sum("episode_count"), wins = sum("win_count"), first = runs[0];
-          const sessionDates = [...new Set(runs.map(row => row.session_date).filter(Boolean))].sort();
+          const { sessions, reports, sum, sessionDates, pnl } = summaries.get(key)!;
+          const trades = sum("episode_count"), wins = sum("win_count"), first = runs[0];
           const open = expanded.has(key), id = `backtest-sessions-${key}`;
           return <Fragment key={key}>
             <tbody><tr className={`backtest-strategy-group ${open ? "backtest-group-selected" : ""}`} tabIndex={0} aria-expanded={open} aria-controls={id} aria-label={`${identity(first)}, ${sessionDates.length} sessions`} onClick={() => toggle(key)} onKeyDown={event => {

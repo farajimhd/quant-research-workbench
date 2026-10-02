@@ -2404,3 +2404,7 @@
 .backtest-run-history > .backtest-history-scroll .backtest-strategy-group:hover > .backtest-positive { background: var(--semantic-positive-bg); }
 .backtest-run-history > .backtest-history-scroll .backtest-group-selected > .backtest-negative,
 .backtest-run-history > .backtest-history-scroll .backtest-strategy-group:hover > .backtest-negative { background: var(--semantic-negative-bg); }
+
+.backtest-run-history > .backtest-history-scroll thead th > button { padding: 0; min-height: inherit; }
+.backtest-run-history > .backtest-history-scroll thead th.numeric > button { justify-content: flex-end; }
+.backtest-run-history > .backtest-history-scroll thead th[aria-sort]:not([aria-sort="none"]) { color: var(--foreground); }
