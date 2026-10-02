@@ -27,6 +27,7 @@ const TypographyPublicSansPage = lazy(() => import("./pages/TypographySystemPage
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => pageFromHash(window.location.hash) ?? "real-live-trading");
+  const [researchVisited, setResearchVisited] = useState(page === "research-workspace");
   const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
   const [liveStatus, setLiveStatus] = useState<MarketStatus>(() => liveMarketStatus(null));
   const currentPage = useRef(page);
@@ -48,6 +49,7 @@ export function App() {
 
   useEffect(() => {
     if (pageFromHash(window.location.hash) !== page) window.location.hash = page;
+    if (page === "research-workspace") setResearchVisited(true);
     if (page !== "real-live-trading") setTopbarCenter(null);
   }, [page]);
 
@@ -63,6 +65,13 @@ export function App() {
       topbarCenter={topbarCenter}
       topbarStatus={page === "real-live-trading" ? <MarketStatusBadge value={liveStatus} /> : null}
     >
+      {/* Keep the Research canvas and native chart alive across sidebar routes.
+          Its own Suspense boundary cannot replace the active route's content. */}
+      <div className={`page-cache-panel${page === "research-workspace" ? " active" : ""}`} hidden={page !== "research-workspace"}>
+        <PageSuspense>
+          {(researchVisited || page === "research-workspace") && <ResearchWorkspacePage />}
+        </PageSuspense>
+      </div>
       <PageSuspense>
         <RouteContent
           page={page}
@@ -89,7 +98,6 @@ function RouteContent({ onMarketStatusChange, onPageChange, onTopbarCenterChange
   if (page === "replay-trading") return <ActivePage><ReplayTradingPage /></ActivePage>;
   if (page === "backtest-trading") return <ActivePage><HistoricalTradingPage mode="backtest" /></ActivePage>;
   if (page === "backtest-debug") return <ActivePage><BacktestDebugPage /></ActivePage>;
-  if (page === "research-workspace") return <ActivePage><ResearchWorkspacePage /></ActivePage>;
   if (page === "labeler") return <ActivePage><LabelerPage /></ActivePage>;
   if (page === "canvas-configuration") return <ActivePage><CanvasConfigurationPage /></ActivePage>;
 

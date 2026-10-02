@@ -22,7 +22,7 @@ def main():
     if not output.is_relative_to(Path('D:/TradingML/runtimes').resolve()):
         raise ValueError('Review output must remain under runtime root')
     output.mkdir(parents=True, exist_ok=True)
-    records, errors = [], []
+    records, errors, navigation_checks = [], [], []
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
@@ -71,14 +71,29 @@ def main():
                             page.locator('.research-chart-container .chart-shell').wait_for(timeout=600000)
                             restored = page.locator('[data-window-kind="architecture"]').evaluate('(element) => ({ x: parseFloat(element.style.left), y: parseFloat(element.style.top), w: parseFloat(element.style.width), h: parseFloat(element.style.height) })')
                             assert all(abs(restored[k] - geometry[k]) < 1 for k in ('x', 'y', 'w', 'h'))
-                            page.get_by_role('link', name='Public Sans Roles', exact=True).click()
-                            page.locator('.research-chart-container').wait_for(state='detached')
-                            page.get_by_role('link', name='Research', exact=True).click()
-                            page.locator('.research-chart-container .chart-shell').wait_for(timeout=10000)
-                            assert page.get_by_label('Label branch', exact=True).input_value() == 'flat'
-                            assert page.get_by_role('button', name='Preflight labels').count() == 0
                             page.get_by_label('Label branch', exact=True).select_option('held')
                             page.locator('.research-chart-container .chart-shell').wait_for(timeout=600000)
+                            research_requests = []
+                            page.on('request', lambda request: research_requests.append(request.url) if '/api/research/models' in request.url else None)
+                            chart_node = page.locator('.research-chart-container .chart-shell').element_handle()
+                            chart_canvas = page.locator('.research-chart-container canvas').first.element_handle()
+                            for destination in ('Public Sans Roles', 'Labeler'):
+                                request_count = len(research_requests)
+                                page.get_by_role('link', name=destination, exact=True).click()
+                                page.locator('.research-chart-container').wait_for(state='hidden')
+                                assert chart_node.evaluate('(element) => element.isConnected')
+                                assert chart_canvas.evaluate('(element) => element.isConnected')
+                                page.get_by_role('link', name='Research', exact=True).click()
+                                page.locator('.research-chart-container .chart-shell').wait_for(timeout=10000)
+                                page.wait_for_timeout(300)
+                                assert page.get_by_label('Label branch', exact=True).input_value() == 'held'
+                                assert page.get_by_role('button', name='Preflight labels').count() == 0
+                                assert chart_node.evaluate('(element) => element === document.querySelector(".research-chart-container .chart-shell")')
+                                assert chart_canvas.evaluate('(element) => element === document.querySelector(".research-chart-container canvas")')
+                                assert len(research_requests) == request_count, research_requests[request_count:]
+                                returned = page.locator('[data-window-kind="architecture"]').evaluate('(element) => ({ x: parseFloat(element.style.left), y: parseFloat(element.style.top), w: parseFloat(element.style.width), h: parseFloat(element.style.height) })')
+                                assert all(abs(returned[k] - geometry[k]) < 1 for k in ('x', 'y', 'w', 'h'))
+                                navigation_checks.append(dict(destination=destination, same_chart_nodes=True, research_requests=0, branch='held', geometry_preserved=True))
                             page.get_by_role('button', name='Fullscreen Candles & hindsight labels', exact=True).click()
                             page.wait_for_timeout(300)
                             page.screenshot(path=str(output / 'held-exit-chart.png'))
@@ -106,7 +121,7 @@ def main():
                         context.close()
         finally:
             browser.close()
-    report = dict(scenarios=records, page_errors=errors, api_url=args.api_url, source='real saved teacher labels', development_chart_checked=not args.skip_development_chart)
+    report = dict(scenarios=records, page_errors=errors, navigation_checks=navigation_checks, api_url=args.api_url, source='real saved teacher labels', development_chart_checked=not args.skip_development_chart)
     (output / 'report.json').write_text(json.dumps(report, indent=2))
     print(json.dumps(report))
     if errors:

@@ -42,8 +42,10 @@ in details. EXIT uses a red down arrow above its candle with soft target probabi
 WAIT with zero ENTRY probability has no text. This run trained classification
 only: marker numbers are the saved probabilities, not source score/profit
 calculation inputs or a PPO reward. Source calculation inputs remain in details.
-Route navigation retains the audited workspace, filters, container layouts and
-a bounded 32-window response cache for the app session. Container geometry and
+Sidebar navigation hides Research while keeping its canvas and native chart
+mounted, preserving the audited workspace, filters, chart view and container
+layouts without another preflight or chart request. A bounded 32-window response
+cache also retains loaded chart responses for the app session. Container geometry and
 closed state persist in Research-only browser local storage across reloads;
 reload still requires a fresh data preflight. Labels cannot be edited in this workflow.
 

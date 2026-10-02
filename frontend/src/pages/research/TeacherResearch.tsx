@@ -84,6 +84,8 @@ function TeacherCanvas({ audit, onBack }: { audit: Audit; onBack: () => void }) 
     if (!surface.current) return;
     const element = surface.current;
     const measure = () => {
+      // A hidden, retained route has no width; keep its last visible layout.
+      if (element.clientWidth === 0) return;
       setWidth(element.clientWidth);
       const zoom = Number(getComputedStyle(document.documentElement).getPropertyValue("--app-zoom")) || 1;
       // Viewport pixels -> app CSS pixels. Do not measure a content-sized parent:
