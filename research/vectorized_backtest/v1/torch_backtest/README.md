@@ -22,10 +22,13 @@ liquidity before transfer. Its full Aug 18 premarket replay measured **28.35 s**
 changes P&L substantially, and initial verification/JIT/capture costs are
 additional; see the linked contract and complete comparison before using it.
 
-The [audited genetic search](OPTIMIZATION.md) evolves a `[B,10]` parameter
+The [audited genetic search](OPTIMIZATION.md) now evolves a `[B,14]` parameter
 population, trains first on one session and then two, and evaluates frozen
 winners on separate later validation data. Amendment timing uses the causal
 v2 contract; old v1 timing/P&L receipts remain historical evidence only.
+The expanded numeric catalog includes addition ordinal bounds and initial
+stop/target distance multipliers. Structural constants and instruction labels
+remain fixed; the earlier ten-parameter experiment is documented separately.
 
 ## The pipeline
 

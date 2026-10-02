@@ -34,21 +34,30 @@ from .strategy_one_tape import prepare
 def compare(cache, clock, prefix_ms):
     space = StrategySpace()
     population = np.tile(space.default, (3, 1))
-    population[:, 3] = np.linspace(space.low[3], space.high[3], 3)
+    capital = space.indices["capital_mandate_fraction"]
+    population[:, capital] = np.linspace(space.low[capital], space.high[capital], 3)
     values = space.decode(population)
     tape = prepare(cache, clock_ms=clock)
     cpu = StrategyOneReplay(
         tape,
         candidates=values["entry"],
+        entry_graph=space.entry,
+        add_graph=space.add,
+        action_graphs=space.actions,
         protection_values=values["protection"],
         action_values=values["actions"],
     )
     gpu = StrategyOneReplay(
         tape.to("cuda"),
         candidates=values["entry"],
+        entry_graph=space.entry,
+        add_graph=space.add,
+        action_graphs=space.actions,
         protection_values=values["protection"],
         action_values=values["actions"],
     )
+    cpu.update_candidates(**values)
+    gpu.update_candidates(**values)
     gpu.compile()
     print(
         f"Qualified setup {clock}ms: compile={gpu.compile_seconds:.2f}s capture={gpu.capture_seconds:.2f}s",

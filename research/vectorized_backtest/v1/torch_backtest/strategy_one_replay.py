@@ -331,7 +331,7 @@ class StrategyOneReplay:
         self.amend_step = amend_book
         self.reset()
 
-    def update_candidates(self, *, entry=None, protection=None, actions=None):
+    def update_candidates(self, *, entry=None, add=None, protection=None, actions=None):
         """Reuse compiled graphs for checked thresholds with unchanged topology.
 
         Search calls this between complete independent replays. Rule/input
@@ -345,6 +345,13 @@ class StrategyOneReplay:
                     "Candidate batch shape changes require new compilation"
                 )
             self.theta.copy_(values)
+        if add is not None:
+            values = self.add_graph.parameters(add, self.theta.device)
+            if values.shape != self.add_theta.shape:
+                raise ValueError(
+                    "Addition parameter batch shape cannot change during search"
+                )
+            self.add_theta.copy_(values)
         if protection is not None:
             self.protection_policy.update(protection)
         for name, rows in (actions or {}).items():

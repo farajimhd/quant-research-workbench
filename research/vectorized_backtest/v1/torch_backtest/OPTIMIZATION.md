@@ -21,7 +21,37 @@ live-broker equivalence or guarantee that no undiscovered defect exists.
 The 100 ms MACD addition gate remains intentionally removed in BOTH coarse
 variants; completed 1 s MACD remains. A close aggregate app P&L is not an oracle.
 
-## Search representation
+## Expanded numeric search (second experiment)
+
+The current optimizer discovers every nonfixed numeric slot across entry,
+addition and all three action graphs, then appends protection thresholds.
+The genome is now `[B,14]`: three entry values, two addition ordinal bounds,
+capital fraction, stop distance multiplier, target distance multiplier and
+six protection values. The ten-parameter results below describe the previous
+experiment and must not be attributed to this expanded search.
+
+| New parameter | Range | Default | Meaning |
+|---|---|---:|---|
+| Minimum addition purchase ordinal | 2–3, integer | 2 | Earliest allowed additional purchase |
+| Maximum addition purchase ordinal | 2–3, integer | 3 | Latest allowed purchase; at least the minimum |
+| Initial stop distance multiplier | 0.25–2 | 1 | Distance below causal bid, relative to certified stop |
+| Initial target distance multiplier | 0.25–3 | 1 | Distance above causal ask, relative to certified target |
+
+Multiplier one adds exactly zero to the original bracket. The engine still
+checks bracket validity, cash and liquidity. The three-group broker envelope
+does not allow a fourth purchase; ordinal bounds cannot expand that capacity.
+Addition theta is updated in place before each independent replay, like entry
+and action theta. Topology and structural literals remain fixed. Numeric
+slots are discovered from declared graph contracts, not hardcoded slices.
+
+The expanded experiment starts with a fresh population and RNG; no previous
+winner or checkpoint seeds it. It retains the objective and 8×8 budget per
+phase. A SELECT-only inventory found no later source session with the same
+configuration. Aug 20 can therefore be reported as previously observed
+evaluation data, excluded from optimization, but not as a fresh untouched
+holdout. A new certified later session is needed for stronger acceptance.
+
+## Previous ten-parameter search representation
 
 The optimizer genome is **`[B,10]`**, where B is the population size. Three entry
 thresholds, capital fraction and six protection parameters are decoded into

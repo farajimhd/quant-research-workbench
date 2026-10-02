@@ -67,8 +67,49 @@ def test_default_roundtrip_and_every_evolved_candidate_satisfies_engine_contract
         ).sum(-1)
         population = next_population(space, rng, population, scores, diversify=True)
         space.decode(population)
-        assert np.all(population[:, 5] <= population[:, 6])
+        assert np.all(
+            population[:, space.indices["first_target_breaks"]]
+            <= population[:, space.indices["second_target_breaks"]]
+        )
         assert np.array_equal(population[0], space.default)
+
+
+def test_full_numeric_catalog_scatter_and_bracket_distances():
+    """Every eligible graph slot must be searched; structural literals stay fixed."""
+    space = StrategySpace()
+    assert len(space.dimensions) == 14
+    assert len(space.slots) == sum(
+        t.minimum < t.maximum for g in space.graphs.values() for t in g.thresholds
+    )
+    decoded = space.decode([space.default])
+    for name, graph in space.graphs.items():
+        rows = decoded[name] if name in ("entry", "add") else decoded["actions"][name]
+        assert rows == [list(graph.values)]
+    inputs = {
+        name: torch.tensor([[value]], dtype=torch.float64)
+        for name, value in {"bid": 10, "ask": 10.1, "stop": 9, "target": 12}.items()
+    }
+    for name, expected in (("initial_stop", 9), ("initial_target", 12)):
+        graph = space.actions[name]
+        assert (
+            graph.evaluate(inputs, graph.parameters([graph.values], "cpu")).item()
+            == expected
+        )
+    genome = space.default.copy()
+    genome[space.indices["initial_stop_distance_multiplier"]] = 0.5
+    genome[space.indices["initial_target_distance_multiplier"]] = 2
+    changed = space.decode([genome])
+    for name, expected in (("initial_stop", 9.5), ("initial_target", 13.9)):
+        graph = space.actions[name]
+        value = graph.evaluate(
+            inputs, graph.parameters(changed["actions"][name], "cpu")
+        )
+        assert value.item() == pytest.approx(expected)
+    # An add range [3,2] is repaired to [3,3], never allowing purchase 4.
+    genome[space.indices["minimum_add_purchase_ordinal"]] = 3
+    genome[space.indices["maximum_add_purchase_ordinal"]] = 2
+    repaired = space.repair([genome])
+    assert repaired[0, space.indices["maximum_add_purchase_ordinal"]] == 3
 
 
 def test_rng_checkpoint_continues_identically():

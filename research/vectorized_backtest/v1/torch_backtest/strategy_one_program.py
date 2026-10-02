@@ -153,3 +153,38 @@ def released_action_graphs():
             output_unit="price",
         ),
     }
+
+
+def searchable_action_graphs():
+    """Research brackets: scale distance to causal bid/ask, not price itself.
+
+    Multiplier one returns the certified bracket exactly (zero adjustment).
+    Engine bracket validation still rejects crossed/nonpositive prices.
+    These graphs do not alter the faithful released action contracts.
+    """
+    graphs = released_action_graphs()
+    graphs["initial_stop"] = trace(
+        lambda x: x["stop"] + ((x["bid"] - x["stop"]) - (x["bid"] - x["stop"]) * 1.0),
+        (Input(0, "stop", "real", "price"), Input(1, "bid", "real", "price")),
+        gate=False,
+        output_unit="price",
+        bounds={
+            (float, 1.0): Threshold(
+                "initial_stop_distance_multiplier", 0.25, 2, False, "ratio"
+            )
+        },
+    )
+    graphs["initial_target"] = trace(
+        lambda x: (
+            x["target"] + ((x["target"] - x["ask"]) * 1.0 - (x["target"] - x["ask"]))
+        ),
+        (Input(0, "target", "real", "price"), Input(1, "ask", "real", "price")),
+        gate=False,
+        output_unit="price",
+        bounds={
+            (float, 1.0): Threshold(
+                "initial_target_distance_multiplier", 0.25, 3, False, "ratio"
+            )
+        },
+    )
+    return graphs

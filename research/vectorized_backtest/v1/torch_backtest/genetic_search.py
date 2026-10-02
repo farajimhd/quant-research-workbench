@@ -1,15 +1,15 @@
 """Bounded, deterministic genetic search over the numeric atomic policy ABI.
 
-Genome [B,10] contains ONLY adjustable values. Fixed literals and categorical
+Genome [B,P] contains ONLY adjustable values. Fixed literals and categorical
 instruction arrays stay in the compiled graphs. Global search is heuristic:
 this solver never claims a certified global optimum.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
-from .strategy_one_program import released_action_graphs, released_entry_graph
+from .strategy_one_program import released_entry_graph, searchable_action_graphs
 from .strategy_one_tensor_policy import PROTECTION_PARAMETERS, AtomicReducer
 
 
@@ -27,64 +27,96 @@ class StrategySpace:
 
     def __init__(self):
         self.entry = released_entry_graph()
-        self.actions = released_action_graphs()
-        self.entry_indices = [
-            i for i, t in enumerate(self.entry.thresholds) if t.minimum < t.maximum
-        ]
-        if len(self.entry_indices) != 3:
-            raise ValueError(
-                "Strategy search ABI requires exactly three entry dimensions"
-            )
-        capital = self.actions["capital_fraction"].thresholds[0]
-        self.dimensions = (
-            tuple(
-                Dimension(t.name, t.minimum, t.maximum, t.integer, self.entry.values[i])
-                for i, t in enumerate(self.entry.thresholds)
-                if i in self.entry_indices
-            )
-            + (
-                Dimension(
-                    capital.name,
-                    capital.minimum,
-                    capital.maximum,
-                    capital.integer,
-                    self.actions["capital_fraction"].values[0],
-                ),
-            )
-            + tuple(
-                Dimension(name, low, high, True, value)
-                for name, value, low, high in PROTECTION_PARAMETERS
-            )
+        from .atomic_graph import Threshold
+        from .unified_clock import unified_add_graph
+
+        self.add = unified_add_graph()
+        # Only purchase bounds become searchable. Alignment, price scale and
+        # quote equality tolerances remain structural execution contracts.
+        self.add = replace(
+            self.add,
+            thresholds=tuple(
+                Threshold("minimum_add_purchase_ordinal", 2, 3, True, "count")
+                if value == 2 and threshold.integer
+                else Threshold("maximum_add_purchase_ordinal", 2, 3, True, "count")
+                if value == 3 and threshold.integer
+                else threshold
+                for value, threshold in zip(self.add.values, self.add.thresholds)
+            ),
+        ).validate()
+        self.actions = searchable_action_graphs()
+        self.graphs = {"entry": self.entry, "add": self.add, **self.actions}
+        self.slots = []
+        dimensions = []
+        for component, graph in self.graphs.items():
+            for index, threshold in enumerate(graph.thresholds):
+                if threshold.minimum < threshold.maximum:
+                    self.slots.append((component, index))
+                    dimensions.append(
+                        Dimension(
+                            threshold.name,
+                            threshold.minimum,
+                            threshold.maximum,
+                            threshold.integer,
+                            graph.values[index],
+                        )
+                    )
+        self.protection_start = len(dimensions)
+        dimensions.extend(
+            Dimension(name, low, high, True, value)
+            for name, value, low, high in PROTECTION_PARAMETERS
         )
+        self.dimensions = tuple(dimensions)
+        self.indices = {d.name: i for i, d in enumerate(self.dimensions)}
+        if len(self.indices) != len(self.dimensions):
+            raise ValueError("Search parameter names must be unique")
         self.low = np.array([d.minimum for d in self.dimensions])
         self.high = np.array([d.maximum for d in self.dimensions])
         self.integer = np.array([d.integer for d in self.dimensions])
         self.default = np.array([d.default for d in self.dimensions])
 
     def repair(self, values):
-        """Project bounds, integer coordinates and ordered target breakpoints."""
+        """Project declared bounds and ordered categorical/count thresholds."""
         rows = np.asarray(values, dtype=np.float64)
         if (
             rows.ndim != 2
             or rows.shape[1] != len(self.dimensions)
             or not np.isfinite(rows).all()
         ):
-            raise ValueError("Genome must be finite [B,10]")
+            raise ValueError(f"Genome must be finite [B,{len(self.dimensions)}]")
         rows = np.clip(rows, self.low, self.high)
         rows[:, self.integer] = np.rint(rows[:, self.integer])
-        rows[:, 6] = np.maximum(rows[:, 5], rows[:, 6])
+        for first, second in (
+            ("first_target_breaks", "second_target_breaks"),
+            ("minimum_add_purchase_ordinal", "maximum_add_purchase_ordinal"),
+        ):
+            a, b = self.indices[first], self.indices[second]
+            rows[:, b] = np.maximum(rows[:, a], rows[:, b])
         return rows
 
     def decode(self, values):
+        """Scatter every eligible coordinate into its complete component tensor.
+
+        Fixed literals are restored from graph defaults, never optimized as
+        thresholds. All component tensors are validated before device updates.
+        """
         rows = self.repair(values)
-        entry = np.tile(self.entry.values, (len(rows), 1))
-        entry[:, self.entry_indices] = rows[:, :3]
-        protection = rows[:, 4:].astype(np.int64).tolist()
-        self.entry.parameters(entry, "cpu")
+        expanded = {
+            name: np.tile(graph.values, (len(rows), 1))
+            for name, graph in self.graphs.items()
+        }
+        for coordinate, (component, index) in enumerate(self.slots):
+            expanded[component][:, index] = rows[:, coordinate]
+        for name, graph in self.graphs.items():
+            graph.parameters(expanded[name].tolist(), "cpu")
+        protection = rows[:, self.protection_start :].astype(np.int64).tolist()
         AtomicReducer.checked_values(protection, len(rows))
-        actions = {"capital_fraction": rows[:, 3:4].tolist()}
-        self.actions["capital_fraction"].parameters(actions["capital_fraction"], "cpu")
-        return {"entry": entry.tolist(), "protection": protection, "actions": actions}
+        return {
+            "entry": expanded["entry"].tolist(),
+            "add": expanded["add"].tolist(),
+            "protection": protection,
+            "actions": {name: expanded[name].tolist() for name in self.actions},
+        }
 
 
 def initial_population(space, rng, size, seed=None):

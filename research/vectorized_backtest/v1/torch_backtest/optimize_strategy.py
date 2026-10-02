@@ -42,7 +42,7 @@ def save(path, value):
 class SessionObjective:
     """One resident tape/compiled runner reused for every training population.
 
-    [B,10] genomes decode into policy tensors. Market [T,N,F] is shared across
+    [B,P] genomes decode into policy tensors. Market [T,N,F] is shared across
     B independent accounts. Session tapes are transferred one at a time when
     their objective is constructed; a memory budget is enforced before upload.
     """
@@ -67,6 +67,9 @@ class SessionObjective:
         self.replay = StrategyOneReplay(
             tape,
             candidates=decoded["entry"],
+            entry_graph=space.entry,
+            add_graph=space.add,
+            action_graphs=space.actions,
             protection_values=decoded["protection"],
             action_values=decoded["actions"],
         )
@@ -203,6 +206,11 @@ def run_phase(evaluators, space, args, output, phase, checkpoint, seed):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--validation-preobserved",
+        action="store_true",
+        help="Label evaluation dates already examined in prior experiments; never a fresh holdout",
+    )
+    parser.add_argument(
         "--train-run-id",
         action="append",
         help="Exactly two certified saved source runs",
@@ -287,6 +295,7 @@ def main(argv=None):
         "seed": args.seed,
         "tolerance": args.tolerance,
         "weights": args.weights,
+        "validation_preobserved": args.validation_preobserved,
         "source_hashes": code,
     }
     if args.resume:
@@ -317,6 +326,9 @@ def main(argv=None):
                 "identity": identity,
                 "sessions": sessions,
                 "parameter_dimensions": [asdict(d) for d in space.dimensions],
+                "numeric_policy_graphs": {
+                    name: asdict(graph) for name, graph in space.graphs.items()
+                },
                 "policy_contract": "unified-strategy-one-causal-v2",
                 "funnel": "frozen-release-population",
                 "commit": subprocess.check_output(
@@ -407,6 +419,7 @@ def main(argv=None):
                 :3
             ].tolist(),
             "validation_used_for_selection": False,
+            "validation_preobserved": args.validation_preobserved,
             "global_optimum_certified": False,
         }
         save(output / "report.json", report)
