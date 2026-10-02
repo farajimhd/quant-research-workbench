@@ -11,20 +11,20 @@ from src.trading_runtime.arte_entry_activity_v4 import (
 )
 
 
-def graph37():
+def graph37(number=37):
     native = plan()
-    authority = EpisodeActivityReadbackAuthority('activity-run', compile_episode_activity_static_gate(native))
+    authority = EpisodeActivityReadbackAuthority('activity-run', compile_episode_activity_static_gate(native),number)
     witness = authority.witness('AAA', 41000)
     _, entry, intent = graph(native)
-    entry['strategy_number'] = 37
-    identity = f'strategy-37:{witness.session_date}:assignment:account:AAA:41000:30000'
+    entry['strategy_number'] = number
+    identity = f'strategy-{number}:{witness.session_date}:assignment:account:AAA:41000:30000'
     intent['intent_id'] = str(uuid5(NAMESPACE_URL, identity))
     event = dict(record_id=PARENT,run_id=entry['run_id'],batch_id=BATCH,
         event_month=entry['event_month'],category='strategy',entity_type='strategy_intent',
         entity_id=intent['intent_id'],account_id='account',
         event_time=activity_event_instant(witness).isoformat())
     row = project_entry_activity(witness,run_id='activity-run',batch_id=BATCH,
-        parent_record_id=PARENT,event_month=entry['event_month'],strategy_number=37)
+        parent_record_id=PARENT,event_month=entry['event_month'],strategy_number=number)
     return row, entry, intent, event, authority
 
 
@@ -33,10 +33,11 @@ def seal(row, entry, intent, event, authority):
         run_id='activity-run',source=authority)
 
 
-def test_normalized_episode_companion_is_reconstructed_from_independent_full_prefix():
-    args = graph37()
+@pytest.mark.parametrize('number', [37, 38])
+def test_normalized_episode_companion_is_reconstructed_from_independent_full_prefix(number):
+    args = graph37(number)
     sealed = seal(*args)
-    assert sealed[0]['strategy_number'] == 37
+    assert sealed[0]['strategy_number'] == number
     assert sealed[0]['activity_source_token'] == args[4].gate.token
     assert [sealed[0][f'candle_{i}_trade_count'] for i in range(4)] == [100] * 4
     assert seal(sealed[0],*args[1:]) == sealed
@@ -65,3 +66,10 @@ def test_current_candle_pass_cannot_bypass_independently_vetoed_prefix():
     faded = EpisodeActivityReadbackAuthority('activity-run',compile_episode_activity_static_gate(plan('fade')))
     with pytest.raises(ValueError,match='admitted causal prefix'):
         seal(row,entry,intent,event,faded)
+
+
+def test_strategy37_authority_cannot_authorize_strategy38_identity():
+    from dataclasses import replace
+    row, entry, intent, event, source = graph37(38)
+    with pytest.raises(ValueError, match='another numbered entry'):
+        seal(row, entry, intent, event, replace(source, strategy_number=37))

@@ -1,4 +1,4 @@
-"""Prepared independent Strategy37 prefix readback; no journal admission yet."""
+"""Independent episode-prefix readback for Strategies37 and38."""
 from dataclasses import dataclass, replace
 from uuid import NAMESPACE_URL, uuid5
 
@@ -19,10 +19,12 @@ class EpisodeActivityReadbackAuthority:
     """
     run_id: str
     gate: EpisodeActivityStaticGate
+    strategy_number: int = 37
 
     def __post_init__(self):
         if (type(self.run_id) is not str or not self.run_id
-                or type(self.gate) is not EpisodeActivityStaticGate):
+                or type(self.gate) is not EpisodeActivityStaticGate
+                or type(self.strategy_number) is not int or self.strategy_number not in (37, 38)):
             raise ValueError('Episode activity readback requires exact run and certified gate')
         _source_parent_number(self.gate.activity.parent, 35)
 
@@ -42,7 +44,7 @@ class EpisodeActivityReadbackAuthority:
             raise ValueError('Episode activity readback has duplicate intent parents')
         result, seen = [], set()
         for row in entries:
-            if row['strategy_number'] != 37:
+            if row['strategy_number'] != self.strategy_number:
                 raise ValueError('Episode activity readback received another numbered entry')
             parent = row['parent_record_id']
             intent = parents.get(parent)
@@ -56,7 +58,7 @@ class EpisodeActivityReadbackAuthority:
             witness = self.witness(*key)
             _, episode_start, _ = self.gate.admission_witness(*key)
             month = activity_event_instant(witness).date().replace(day=1).isoformat()
-            identity = (f"strategy-37:{witness.session_date}:{row['assignment_id']}:"
+            identity = (f"strategy-{self.strategy_number}:{witness.session_date}:{row['assignment_id']}:"
                         f"{intent['account_id']}:{witness.ticker}:{witness.boundary_ms}:{episode_start}")
             if (row['episode_start_ms'] != episode_start or str(row['event_month']) != month
                     or intent['intent_id'] != str(uuid5(NAMESPACE_URL, identity))):
@@ -73,9 +75,10 @@ def certified_episode_activity_witness(authority, proposal, *, session_date):
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     if (type(authority) is not CertifiedPriceReadbackAuthority
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number != 37
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (37, 38)
             or type(session_date) is not date
             or type(authority.entry_activity_source) is not EpisodeActivityReadbackAuthority
+            or proposal.strategy_number != authority.entry_activity_source.strategy_number
             or authority.entry_activity_source.run_id != authority.run_id
             or authority.entry_activity_source.plan.parent is not authority.plan
             or authority.entry_activity_source.plan.market.sessions != (session_date.isoformat(),)):
@@ -101,7 +104,9 @@ def bind_episode_activity_proposal(authority, parent_proposal, *, session_date):
             or type(parent_proposal.strategy_number) is not int or parent_proposal.strategy_number != 36):
         raise ValueError('Episode proposal requires exact certified Strategy36 parent')
     certified_price_entry_intent(authority.plan, parent_proposal, session_date=session_date)
-    proposal = replace(parent_proposal, strategy_number=37)
+    if type(authority.entry_activity_source) is not EpisodeActivityReadbackAuthority:
+        raise ValueError('Episode proposal requires its exact certified prefix authority')
+    proposal = replace(parent_proposal, strategy_number=authority.entry_activity_source.strategy_number)
     certified_episode_activity_witness(authority, proposal, session_date=session_date)
     return proposal
 
@@ -114,6 +119,6 @@ def certified_episode_entry_intent(authority, proposal, *, session_date):
     # The parent intent factory performs complete native rebinding itself.
     # Avoid repeating that work through the proposal adapter on each entry.
     intent = certified_price_entry_intent(authority.plan, parent, session_date=session_date)
-    identity = (f'strategy-37:{session_date.isoformat()}:{proposal.assignment_id}:'
+    identity = (f'strategy-{proposal.strategy_number}:{session_date.isoformat()}:{proposal.assignment_id}:'
                 f'{proposal.account_id}:{proposal.ticker}:{proposal.boundary_ms}:{proposal.episode_start_ms}')
     return replace(intent, intent_id=str(uuid5(NAMESPACE_URL, identity)))

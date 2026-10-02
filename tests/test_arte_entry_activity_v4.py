@@ -192,7 +192,7 @@ def test_encoding_and_installed_release_leave_unknown_number_closed():
     assert _CONTRACTS[ENTRY_ACTIVITY.name] is ENTRY_ACTIVITY
     assert numbered_strategy(36).number == 36
     with pytest.raises(ValueError):
-        numbered_strategy(37)
+        numbered_strategy(38)
 
 
 def test_sealer_requires_encoding_registration(monkeypatch):
@@ -218,5 +218,5 @@ def test_cold_source_resolution_requires_independent_plan_and_complete_companion
         seal_certified_entry_activity_rows((), entries, intents, events,
             run_id='activity-run', source=source)
     assert seal_certified_entry_activity_rows((), (), (), (), run_id='old-run') == ()
-    with pytest.raises(ValueError, match='no Strategy 36 parent'):
+    with pytest.raises(ValueError, match='no supported numbered parent'):
         seal_certified_entry_activity_rows(rows, (), (), (), run_id='old-run')
