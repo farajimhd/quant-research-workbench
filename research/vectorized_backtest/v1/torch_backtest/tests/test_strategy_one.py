@@ -20,6 +20,10 @@ from research.vectorized_backtest.v1.torch_backtest.strategy_one import (
     observe_resistance,
     validate_strategy_one_array,
 )
+from research.vectorized_backtest.v1.torch_backtest.strategy_one_program import (
+    released_add_graph,
+    released_entry_graph,
+)
 from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
 from src.trading_runtime.strategy_one_position import (
     ProtectionState,
@@ -146,6 +150,8 @@ def test_entry_against_app(device, variant):
     }
     x = {key: tensor(value, device) for key, value in values.items()}
     actual = entry_admission(x).item()
+    graph = released_entry_graph()
+    assert graph.evaluate(x, graph.parameters(graph.values, device)).item() == actual
     assert actual == (
         propose_strategy_one_entry(evidence, financial).proposal is not None
     )
@@ -217,6 +223,18 @@ def test_protection_multiple_breaks_refusal_and_retry_against_app(
             price_bearing_bar=True,
         )
         proposed, stop_changed, target_changed, _ = advance_protection(state, x)
+        from research.vectorized_backtest.v1.torch_backtest.strategy_one_tensor_policy import (
+            AtomicReducer,
+        )
+
+        atomic, *atomic_events = AtomicReducer("protection", state.stop.shape, device)(
+            state, x
+        )
+        assert atomic.stop.item() == proposed.stop.item()
+        assert atomic.target.item() == proposed.target.item()
+        assert atomic.accepted.tolist() == proposed.accepted.tolist()
+        assert atomic_events[0].item() == stop_changed.item()
+        assert atomic_events[1].item() == target_changed.item()
         assert proposed.stop.item() == expected.state.stop
         assert proposed.target.item() == expected.state.target
         assert proposed.earned_groups.item() == expected.state.earned_groups
@@ -391,8 +409,12 @@ def test_add_against_app(device, variant):
         "stop": 9.0,
         "target": 12.0,
     }
-    actual = add_admission(
-        {key: tensor(value, device) for key, value in values.items()}
+    x = {key: tensor(value, device) for key, value in values.items()}
+    actual = add_admission(x)
+    graph = released_add_graph()
+    assert (
+        graph.evaluate(x, graph.parameters(graph.values, device)).item()
+        == actual.item()
     )
     assert actual.item() == (expected is not None)
 

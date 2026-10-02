@@ -120,8 +120,10 @@ def entry_admission(x):
         & torch.isfinite(x["target"])
         & fresh
         & (x["stop"] > 0)
-        & (x["stop"] < x["bid_int"] / 10000)
-        & (x["ask_int"] / 10000 < x["target"])
+        # Float scale literal remains distinct from the integer 10,000ms
+        # reentry threshold in the atomic parameter table.
+        & (torch.round(x["stop"] * 10000.0) < x["bid_int"])
+        & (x["ask_int"] < torch.round(x["target"] * 10000.0))
     )
 
 
@@ -214,7 +216,16 @@ def observe_resistance(state, x):
     ), new
 
 
-def advance_protection(state, x):
+def advance_protection(
+    state,
+    x,
+    group_size=3,
+    first_target_breaks=3,
+    second_target_breaks=5,
+    first_ordinal=3,
+    second_ordinal=2,
+    last_ordinal=1,
+):
     """Propose the app's ordered target-then-stop transition on device.
 
     `break_id/lower` are producer-certified eligible events sorted by
@@ -243,10 +254,13 @@ def advance_protection(state, x):
     accepted = accepted.to(torch.bool)
     rank = new.to(torch.int64).cumsum(-1)
     total = state.pending_count + new.sum(-1)
-    completed = total // 3
-    count = total.remainder(3)
+    completed = total // group_size
+    count = total.remainder(group_size)
     # Groups are zero-based relative to the unfinished triple at this call.
-    group = (state.pending_count[..., None] + rank - 1) // 3
+    divisor = (
+        group_size[..., None] if isinstance(group_size, torch.Tensor) else group_size
+    )
+    group = (state.pending_count[..., None] + rank - 1) // divisor
     last_earned = torch.where(
         new & (group == completed[..., None] - 1), lower, float("inf")
     ).amin(-1)
@@ -264,16 +278,26 @@ def advance_protection(state, x):
     earned = state.earned_groups + completed
 
     breaks = accepted.sum(-1)
-    ordinal = torch.where(breaks <= 3, 3, torch.where(breaks <= 5, 2, 1))
+    ordinal = torch.where(
+        breaks <= first_target_breaks,
+        first_ordinal,
+        torch.where(breaks <= second_target_breaks, second_ordinal, last_ordinal),
+    )
     midpoint, identity = x["overhead_midpoint"], x["overhead_id"]
     tick = x["tick"]
     price = torch.floor(midpoint / tick[..., None] + 0.5 + 1e-9) * tick[..., None]
     price = torch.round(price * 1e10) / 1e10
-    visible = (identity > 0) & torch.isfinite(price) & (price > x["ask"][..., None])
+    visible = (
+        (identity > 0)
+        & torch.isfinite(price)
+        & (torch.round(price * 10000) > torch.round(x["ask"][..., None] * 10000))
+    )
     ranked = visible.to(torch.int64).cumsum(-1)
     selected = visible & (ranked == ordinal[..., None])
     proposed_target = torch.where(selected, price, -float("inf")).amax(-1)
-    target_changed = x["price_bearing_bar"] & (proposed_target > state.target)
+    target_changed = x["price_bearing_bar"] & (
+        torch.round(proposed_target * 10000) > torch.round(state.target * 10000)
+    )
     target = torch.where(target_changed, proposed_target, state.target)
 
     # Resistance wins only when executable. A rejected resistance proposal
@@ -282,8 +306,8 @@ def advance_protection(state, x):
     resistance = below(earned_min, tick)
     use_resistance = (
         (earned > state.applied_groups)
-        & (resistance > state.stop)
-        & (resistance < limit)
+        & (torch.round(resistance * 10000) > torch.round(state.stop * 10000))
+        & (torch.round(resistance * 10000) < torch.round(limit * 10000))
     )
     swing = below(x["low_int"] / 10000, tick)
     low_clock = x["low_boundary_ms"]
@@ -295,7 +319,11 @@ def advance_protection(state, x):
         & x["low_valid"]
         & (x["low_int"] > 0)
     )
-    use_swing = valid_low & (swing > state.stop) & (swing < limit)
+    use_swing = (
+        valid_low
+        & (torch.round(swing * 10000) > torch.round(state.stop * 10000))
+        & (torch.round(swing * 10000) < torch.round(limit * 10000))
+    )
     stop_changed = use_resistance | use_swing
     stop = torch.where(
         use_resistance, resistance, torch.where(use_swing, swing, state.stop)
@@ -326,7 +354,9 @@ def confirm_protection(previous, proposed, stop_confirmed, target_confirmed):
     # A GPU-side assertion preserves the app's fail-closed confirmation fence.
     # It does not synchronize a scalar to Python on every management boundary.
     torch._assert_async(
-        torch.all((stop > 0) & (stop < target)),
+        torch.all(
+            (stop > 0) & (torch.round(stop * 10000) < torch.round(target * 10000))
+        ),
         "Strategy 1 confirmed stop would cross working target",
     )
     return ProtectionRegisters(
@@ -386,6 +416,6 @@ def add_admission(x):
         & ((x["bid"] - x["fresh_bid"]).abs() <= 1e-9)
         & ((x["ask"] - x["fresh_ask"]).abs() <= 1e-9)
         & (x["stop"] > 0)
-        & (x["stop"] < x["bid"])
-        & (x["ask"] < x["target"])
+        & (torch.round(x["stop"] * 10000) < torch.round(x["bid"] * 10000))
+        & (torch.round(x["ask"] * 10000) < torch.round(x["target"] * 10000))
     )
