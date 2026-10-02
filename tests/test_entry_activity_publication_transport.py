@@ -95,7 +95,9 @@ def test_backtest_activity_family_requires_ssd_preflight_without_live_grants():
     from src.trading_runtime.arte_entry_activity_v4 import ENTRY_ACTIVITY
     from src.trading_runtime.arte_journal_writer import v4_storage_contracts, v4_journal_write_tables
     from src.backend.live_strategy_one_v4_principal import desired_plan
+    from scripts.clickhouse.plan_trading_journal_layout import profile_contracts
     assert ENTRY_ACTIVITY in v4_storage_contracts()
+    assert ENTRY_ACTIVITY in profile_contracts('commit-v4')
     assert ENTRY_ACTIVITY.name in v4_journal_write_tables()
     assert "storage_policy = 'live_market_ssd'" in ENTRY_ACTIVITY.ddl()
     assert ENTRY_ACTIVITY.name not in desired_plan().insert_arte
