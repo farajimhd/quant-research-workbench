@@ -235,18 +235,23 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   grad_clip: float = 1., progress_callback=None,
                   evaluation: bool = False, learning_rate_for_clock=None,
                   teacher_loss: str = 'legacy',
-                  learning_start_us: int | None = None) -> TrainingMetrics:
+                  learning_start_us: int | None = None,
+                  evaluate_train: bool = False) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Decisions use current completed candles and outcomes up to that close.
     Outcomes after a decision are applied only on a later clock. The encoder
     and action GRU state detach after each optimizer chunk, never mid-order.
-    Evaluation accepts development sessions only, builds no autograd graph,
+    Evaluation accepts development sessions by default; evaluate_train also
+    permits authentic train sessions for fixed-checkpoint fit audits. It builds no autograd graph,
     and never reads or mutates an optimizer.
     An optional learning start retains all earlier candle events as warmup;
     callers must supply only labels at or after that completed-clock fence.
     """
-    if (session.role not in (('development',) if evaluation else ('train',)) or clocks_per_chunk < 1 or grad_clip <= 0 or
+    if evaluate_train and not evaluation:
+        raise ValueError('Training-set evaluation requires evaluation mode')
+    evaluation_roles = ('development', 'train') if evaluate_train else ('development',)
+    if (session.role not in (evaluation_roles if evaluation else ('train',)) or clocks_per_chunk < 1 or grad_clip <= 0 or
             not decisions or teacher_loss not in ('legacy', 'balanced-v2')):
         raise ValueError('V6 trainer requires a train session and labels')
     listings = len(session.listings)

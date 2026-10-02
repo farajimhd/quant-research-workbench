@@ -35,7 +35,8 @@ def test_session_balance_uses_fixed_denominator_and_mean_one_weights():
 @pytest.mark.parametrize('policy_type', [BracketPolicy, RankedBracketActorCritic])
 @pytest.mark.parametrize('evaluation', [False, True])
 @pytest.mark.parametrize('teacher_loss', ['legacy', 'balanced-v2'])
-def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_type, evaluation, teacher_loss):
+@pytest.mark.parametrize('evaluate_train', [False, True])
+def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_type, evaluation, teacher_loss, evaluate_train):
     clocks = np.asarray([1_000_000, 2_000_000, 1_000_000, 2_000_000],
                         dtype=np.int64)
     scalar = np.zeros((4, 37), dtype=np.float32)
@@ -43,7 +44,7 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
     bank = SessionBank(Path('unused'),
         {'offsets': {'A': [0, 2], 'B': [2, 4]}}, clocks,
         scalar, np.zeros((4, 2, 5, 11), dtype=np.float32))
-    session = PackedSession(date(2026, 7, 31), 'development' if evaluation else 'train', Path('unused'),
+    session = PackedSession(date(2026, 7, 31), 'development' if evaluation and not evaluate_train else 'train', Path('unused'),
                             'certificate', bank, None, ('A', 'B'))
     decisions = (
         TeacherDecision(1_000_000, 0, 1,
@@ -67,8 +68,24 @@ def test_v6_chronological_train_core_updates_encoder_and_bracket_heads(policy_ty
     before = policy.encoder.project.weight.detach().clone()
     all_before = {name:value.detach().clone() for name,value in policy.state_dict().items()}
     optimizer = torch.optim.AdamW(policy.parameters(), lr=.001)
+    if evaluate_train:
+        if not evaluation:
+            with pytest.raises(ValueError, match='requires evaluation mode'):
+                train_session(policy, optimizer, session, decisions, outcomes,
+                    device=torch.device('cpu'), evaluate_train=True)
+            return
+        with pytest.raises(ValueError):
+            train_session(policy, optimizer, session, decisions, outcomes,
+                device=torch.device('cpu'), evaluation=True)
+        from dataclasses import replace
+        for rejected_role in ('heldout', 'test'):
+            with pytest.raises(ValueError):
+                train_session(policy, optimizer, replace(session, role=rejected_role),
+                    decisions, outcomes, device=torch.device('cpu'),
+                    evaluation=True, evaluate_train=True)
     metrics = train_session(policy, optimizer, session, decisions, outcomes,
         device=torch.device('cpu'), clocks_per_chunk=2, evaluation=evaluation,
+        evaluate_train=evaluate_train,
         learning_rate_for_clock=lambda clock: .000123,
         teacher_loss=teacher_loss)
     assert metrics.decisions == 2 and metrics.execution_outcomes == 1
