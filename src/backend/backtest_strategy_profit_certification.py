@@ -11,7 +11,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/backend/backtest_strategy_one_coordinator.py': {'__module__': 'cbb70c053c61230aacdd5df2555804f6c9ae6bece533fe00f240855cab1e8a93'},
  'src/backend/backtest_strategy_one_execution.py': {'__module__': 'ec3ce757c835302831536b8678c251fe1ce158375a112c114c0320fcfa74968a'},
  'src/backend/backtest_strategy_one_management.py': {'__module__': 'f9b95068a998419ca84515ac0b5c04f5d75ec4aca77da157ecc8d8d788e7ea00'},
- 'src/backend/backtest_typed_projection.py': {'__module__': '1b76a74195d612057549a860c5212b3fbfab810151d37305d2e4a01b89e7cf6e'},
+ 'src/backend/backtest_typed_projection.py': {'__module__': '8e49df060d219ffa5fbf4f2eff4eddea86ca2fa5a9d1806405bc34f7b48e35e4'},
  'src/backend/backtest_typed_publisher.py': {'__module__': '3215412966de8d38227427e09ff7059aad06b54cfc1f0d94e7c70c82dc7b3cee'},
  'src/backend/replay_run_service.py': {'_confirm_profit_arming_checkpoint': 'fa52418e2bcfbbf3227e1460bb97c6bbffdccd7adddca9afc6978827a8059049',
                                        '_require_numbered_session_window': '7a316c6ffae3a461d9c193a3c257c6235f4ea5574661bff27f3d2243a55b5a6d',

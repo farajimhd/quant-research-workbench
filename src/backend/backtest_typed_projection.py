@@ -461,14 +461,18 @@ def project_pending_backtest_v4_prefix(
             elif sidecar is not None:
                 proposal, session_date = sidecar
                 price_rows, price_authorities = (), ()
-                if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
+                if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
                     from src.backend.backtest_strategy_certified_price_break import (
                         certified_price_entry_intent, project_certified_price_entry,
                     )
                     if first_price_source is None:
                         raise ValueError("Strategy20 V4 projection lacks its native price source")
-                    intent = certified_price_entry_intent(first_price_source.plan,
-                        proposal, session_date=session_date)
+                    if proposal.strategy_number == 37:
+                        from .backtest_strategy_episode_activity_source import certified_episode_entry_intent
+                        intent = certified_episode_entry_intent(first_price_source, proposal, session_date=session_date)
+                    else:
+                        intent = certified_price_entry_intent(first_price_source.plan,
+                            proposal, session_date=session_date)
                     price_packet = project_certified_price_entry(first_price_source.plan,
                         proposal, run_id=batch.run_id, batch_id=batch.batch_id,
                         parent_record_id=record.record_id,
@@ -489,20 +493,22 @@ def project_pending_backtest_v4_prefix(
                     run_id=batch.run_id, batch_id=batch.batch_id,
                     parent_record_id=record.record_id, event_month=evidence["event_month"])
                 activity_rows = ()
-                if proposal.strategy_number == 36:
+                if proposal.strategy_number in (36, 37):
                     from src.trading_runtime.arte_entry_activity_v4 import project_entry_activity
                     activity_source = getattr(first_price_source, 'entry_activity_source', None)
                     if activity_source is None:
                         raise ValueError('Strategy 36 V4 projection lacks certified activity source')
-                    activity_rows = (project_entry_activity(activity_source.plan.witness(
-                        proposal.ticker, proposal.boundary_ms), run_id=batch.run_id,
+                    witness = (activity_source.witness(proposal.ticker, proposal.boundary_ms)
+                               if proposal.strategy_number == 37 else
+                               activity_source.plan.witness(proposal.ticker, proposal.boundary_ms))
+                    activity_rows = (project_entry_activity(witness, run_id=batch.run_id,
                         batch_id=batch.batch_id, parent_record_id=record.record_id,
-                        event_month=evidence['event_month']),)
+                        event_month=evidence['event_month'], strategy_number=proposal.strategy_number),)
                 unit = V4StrategyOneEntryBatch(batch, (evidence,), momentum_evidence=momentum,
                     initial_momentum_evidence=initial, first_price_evidence=price_rows,
                     first_price_authorities=price_authorities,
                     entry_activity_evidence=activity_rows,
-                    first_price_source=first_price_source if proposal.strategy_number == 36 else None)
+                    first_price_source=first_price_source if proposal.strategy_number in (36, 37) else None)
                 prior_source = sources.get(intent.intent_id)
                 if prior_source is not None and prior_source != (batch, intent):
                     raise RuntimeError("V4 Strategy 1 intent identity was reused")
