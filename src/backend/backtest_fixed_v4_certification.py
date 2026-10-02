@@ -992,7 +992,7 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
                 if len(wrappers) != 1 or sha256(ast.unparse(wrappers[0]).encode()).hexdigest() != expected:
                     raise ValueError("Strategy 12 runtime entry wrapper differs from reviewed authority")
     raw_routes = [n for n in ast.walk(trees[8]) if isinstance(n, ast.If)
-                  and ast.unparse(n.test) == "row['strategy_number'] in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)"]
+                  and ast.unparse(n.test) == "row['strategy_number'] in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38)"]
     if len(raw_routes) != 1 or "if not recent_bos_entry(boundary_ms=row['boundary_ms'], bos_break_boundary_ms=row['bos_break_boundary_ms']):" not in ast.unparse(raw_routes[0]):
         raise ValueError("Strategy 12 raw normalized entry authority must reject forged stale BOS")
     return sha256(json.dumps(tuple((path.name, sha256(source.encode()).hexdigest())
@@ -1032,8 +1032,8 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                          '_publish_terminal_v4': 'f9eabf5aca42abc249a30d7d164fc8689a56b16c284c2a8bb523d823a3932ce4',
                                          'bind_first_price_source': 'e2147c192ca1dfb61582de466a5b8f39f9517656d1a124f3fabc94f68e10775b'},
  'backend/backtest_v4_history.py': {'__module__': '9ed3f860d27d2b6f776d4b42c0e9225fc84a75744504fa9dce60dcdd1326bd23'},
- 'backend/backtest_v4_saved_review.py': {'_saved_twenty_price_source': 'd2865554a9040a1809b890dd37914c85b66a31197ff23a6e9978a75886af425e',
-                                         '_terminal_attestation': '1517a6990108b57dd33a0df7f0edb841f94456f1d62ed4249d271a2d4dde5a53'},
+ 'backend/backtest_v4_saved_review.py': {'_saved_twenty_price_source': 'f644fe1cb61014fdebf8dd9e0a41deafb14623bcc46f2352840ba72767ad7a58',
+                                         '_terminal_attestation': '2941c193a18a29859c311f9cedc0207a56d8255a90821a0ee74d6a29a100065f'},
  'backend/historical_runtime_versions.py': {'__module__': '96941bdcb6b84439c3ba3f0d1fc0deb9cde238746088d1b284284aa0969857ec'},
  'backend/replay_run_service.py': {'_save_restart_checkpoint_responsive': '2e2ae0fd1f66145caf790b865f5146cb614386c6b451ad1c00b29a5401347482', '_confirm_profit_arming_checkpoint': 'fa5cc72ca024e2fecdf666c1a10db4d9df509b1ed9760a5fc88338cce3157088', '_run_strategy_one_fixed_days': 'ab437cc5037789f2730fb679533d50e07a35b1c25cfb1a8bc1e3fd90fa7c6dd8',
                                    'backtest_preflight': 'd60aecbd6be87d19f5dcafea4c350974859a3253d9af6fa575190be14d5a1e83'},
@@ -1046,10 +1046,10 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                                       'validate_numbered_failure': '5663c80d36dd4889b705e6a13feae31123ea57134757c0fcfe38889c30cedcb6'},
  'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': 'f0de98520463c616b03bfe72911b39c4ec21c146712cb7106e1f1b0cc5b9ffa9'},
  'trading_runtime/arte_journal_commit_v4.py': {'verified_batch_predecessor': 'e7f52f08e28175674cf663dbde1b17abf7bf53513884f7d2289fbdd4dfe63ecf',
-                                            '_load_verified_details_v4': 'af24c1deadc8441aeafd60aa2d5d0d82ed2659ade362c285b9d4bfae98c2222c',
+                                            '_load_verified_details_v4': '22a1a05bd0e44123deca7b7951bd8c90eec94c720edd570082d3d544b3c55a5c',
                                                '_publish_sealed_batch_v4': 'd61d78ce8fc293a05888b4b30c84449e96826f038997c10ad22a94ac886be597',
-                                               '_publish_typed_batch_v4': '20cd119d78d7186f693eb9c9c87cb89b471280920924b20300ed59989629f51a',
-                                               '_validate_strategy_one_entry_link': '98177f615552ee99b394e3500bf900d48d3cfa840b9c8993839e972bc831f591',
+                                               '_publish_typed_batch_v4': 'bd1493d8593de991aa1d0b7dd7bd149c9dd5ac65e1ccdbaad4b4a8aca051395d',
+                                               '_validate_strategy_one_entry_link': '7e48c3c409df22a5520e33c25df73b68eb2ac32069820ee3483e2905dcb1679a',
                                                'load_verified_commit_v4': '71fc21b37fb069157447a10aab38e978ae0c2da383037113437213f7859b080a',
                                                'load_verified_v4_prefix': '492e028bdedeb79943fa7430bac0e458a864e5061f8ac12feb50174f1298cb41',
                                                'load_writer_v4_snapshot_prefix': '72620b3f9a3bf95a93ecb5b7105972da2f08f19dda2d7143e26441bd41ddacc1',
@@ -1077,7 +1077,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                             'submit_terminal_backtest': '2cd75bbabb2057da72695abec3ca937c2d4370f6fe2391ea3612d378114c6344',
                                             'v4_journal_write_tables': '20ee05021d0ec95fc113482abcb0be770ba5d5407ebc6e4e903efe6982e4b3db',
                                             'v4_storage_contracts': '74673f56137f80754160338c3ca5c2b2008bcfcb05b40cdea7b7e20ab778faaf'},
- 'trading_runtime/arte_profit_giveback_v4.py': {'__module__': '665ef3655d5a912de59e669159e4c64fc384c2f048f36b8a95b97f7bdf627575'},
+ 'trading_runtime/arte_profit_giveback_v4.py': {'__module__': '64e57d21312e4957e0201048728229f980b9676d675b8325904659b0e6269095'},
  'trading_runtime/strategy_profit_giveback.py': {'__module__': 'cc23fe27ca6db49c4139a481f364bfc26088b0dea01d1f542ea2f98f79072d10'},
  'trading_runtime/strategy_profit_giveback_exit.py': {'__module__': '7334979286692791d71e19800838b0b8093c3e207a4b39346d2b43c2f9f24cf3'},
  'trading_runtime/strategy_profit_giveback_arm.py': {'__module__': '4a2f5ea411642e446f6b4cd71922676964fe773980b2f88c96efd66aee81585a'},
