@@ -31,6 +31,42 @@ def test_preflight_source_profile_uses_bounded_table_labels_not_sql(capsys):
     assert "private" not in output
 
 
+@pytest.mark.parametrize('by_source', [False, True])
+@pytest.mark.parametrize('fails', [False, True])
+def test_profiled_binary_insert_preserves_request_and_transport_result(
+    monkeypatch, capsys, by_source, fails,
+):
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    request = (b'INSERT INTO arte.trading_liquidity_fade_failure_v4 FORMAT RowBinary\n'
+               b'\xff\x00FROM arte.bars_v1 AND resolution_ms=1000 private-row')
+    seen = []
+    original_error = RuntimeError('transport failure')
+
+    def execute(_client, sql, **kwargs):
+        seen.append(sql)
+        if fails:
+            raise original_error
+        return 'acknowledged'
+
+    monkeypatch.setattr(ClickHouseHttpClient, 'execute', execute)
+    profile = _SqlCallProfile(by_source=by_source)
+    client = object.__new__(ClickHouseHttpClient)
+    with _profile_sql_calls(profile):
+        if fails:
+            with pytest.raises(RuntimeError) as caught:
+                client.execute(request)
+            assert caught.value is original_error
+        else:
+            assert client.execute(request) == 'acknowledged'
+    assert seen == [request] and seen[0] is request
+    assert _SqlCallProfile.category(request) == 'journal_insert'
+    assert _SqlCallProfile.source_category(request) == 'other_select'
+    profile.print_summary()
+    output = capsys.readouterr().out
+    assert 'calls=1' in output and 'private-row' not in output
+    assert 'arte.bars_v1' not in output
+
+
 def test_sql_profile_times_streaming_v7_iterator_without_retaining_sql(
     monkeypatch, capsys,
 ):

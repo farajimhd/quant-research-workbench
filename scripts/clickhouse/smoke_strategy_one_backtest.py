@@ -253,7 +253,15 @@ class _SqlCallProfile:
         self._v7_stream_iteration_seconds = 0.0
 
     @staticmethod
-    def category(sql: str) -> str:
+    def statement(sql: str | bytes) -> str:
+        """Classify only a bounded binary request header, never its row payload."""
+        if isinstance(sql, bytes):
+            return sql[:8192].split(b"\n", 1)[0].decode("utf-8", errors="replace")
+        return sql
+
+    @staticmethod
+    def category(sql: str | bytes) -> str:
+        sql = _SqlCallProfile.statement(sql)
         if "FROM arte.bars_v1" in sql and "AND resolution_ms=1000" in sql:
             return "v7_completed_second_read"
         journal = "arte.trading_" in sql.lower()
@@ -262,8 +270,9 @@ class _SqlCallProfile:
             "_insert" if insert else "_read")
 
     @staticmethod
-    def source_category(sql: str) -> str:
+    def source_category(sql: str | bytes) -> str:
         """Bounded diagnostic label; never retain SQL text or row values."""
+        sql = _SqlCallProfile.statement(sql)
         sources = set(re.findall(
             r"\b(?:FROM|JOIN)\s+((?:arte|system|q_live)\.[a-z_][a-z0-9_]*)\b",
             sql, flags=re.IGNORECASE))
@@ -273,7 +282,7 @@ class _SqlCallProfile:
             return next(iter(sources)).lower()
         return "multi_source_select"
 
-    def record(self, sql: str, elapsed: float) -> None:
+    def record(self, sql: str | bytes, elapsed: float) -> None:
         category = (self.source_category(sql) if self._by_source
                     else self.category(sql))
         with self._lock:
