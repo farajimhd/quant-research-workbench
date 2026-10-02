@@ -2,6 +2,7 @@
 from dataclasses import replace
 from datetime import date
 from uuid import UUID
+from types import SimpleNamespace
 
 import pytest
 
@@ -63,3 +64,38 @@ def test_compound_preserves_activity_counts_source_and_original_batch():
     assert _compound_price_source(merged, unit.first_price_source) is unit.first_price_source
     with pytest.raises(ValueError, match='conflicting certified source contexts'):
         _compound_price_source(merged, activity_unit().first_price_source)
+
+
+def test_scalar_runtime_rechecks_same_admitted_activity_keys_without_market_io():
+    from src.trading_runtime.runtime import TradingRuntime, RunMode
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_strategy_certified_price_break import bind_certified_price_break_proposal
+    from test_strategy_one_intent import _proposal
+    prepared = plan('fade')
+    activity = EntryActivityReadbackAuthority('activity-run', prepared)
+    source = CertifiedPriceReadbackAuthority('activity-run', prepared.parent, activity)
+    runtime = SimpleNamespace(config=SimpleNamespace(mode=RunMode.BACKTEST,
+        strategy_id='early-squeeze-strategy', strategy_revision=36, anchor_date=date(2026, 8, 18)),
+        run_id='activity-run', journal=BacktestMemoryJournal(run_id='activity-run'),
+        _strategy_one_price_source=None)
+    TradingRuntime.bind_strategy_one_price_source(runtime, source)
+    def proposal(boundary):
+        original = replace(_proposal(), strategy_number=18, boundary_ms=boundary,
+            momentum=source.plan.momentum.lookup('AAA', boundary),
+            initial_momentum=source.plan.source.parent.selection_witness('AAA', boundary))
+        return bind_certified_price_break_proposal(source.plan, original, strategy_number=36)
+    with pytest.raises(ValueError):
+        TradingRuntime._strategy_one_entry_intent(runtime, proposal(31000))
+    admitted = TradingRuntime._strategy_one_entry_intent(runtime, proposal(41000))
+    assert admitted.action == 'enter_long' and admitted.ticker == 'AAA'
+    assert prepared.eligible_mask.tolist() == [False, True]
+
+
+def test_backtest_activity_family_requires_ssd_preflight_without_live_grants():
+    from src.trading_runtime.arte_entry_activity_v4 import ENTRY_ACTIVITY
+    from src.trading_runtime.arte_journal_writer import v4_storage_contracts, v4_journal_write_tables
+    from src.backend.live_strategy_one_v4_principal import desired_plan
+    assert ENTRY_ACTIVITY in v4_storage_contracts()
+    assert ENTRY_ACTIVITY.name in v4_journal_write_tables()
+    assert "storage_policy = 'live_market_ssd'" in ENTRY_ACTIVITY.ddl()
+    assert ENTRY_ACTIVITY.name not in desired_plan().insert_arte

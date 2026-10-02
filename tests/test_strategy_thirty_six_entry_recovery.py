@@ -1,5 +1,6 @@
 """Strategy 36 native publication and cold recovery without operational DDL."""
 from uuid import UUID
+from datetime import date
 
 import pytest
 
@@ -50,3 +51,32 @@ def test_complete_activity_source_survives_native_publish_and_cold_entry_recover
     # Even an honestly rehashed stored row cannot replace source trade counts.
     with pytest.raises(ValueError, match='certified source evidence'):
         load_committed_strategy_one_entry_page(client, prefix, first_price_source=source)
+
+
+def test_real_memory_journal_projects_activity_companion_before_native_publication():
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
+    prepared = plan()
+    activity = EntryActivityReadbackAuthority('memory-thirty-six', prepared)
+    source = CertifiedPriceReadbackAuthority(activity.run_id, prepared.parent, activity)
+    _, proposal, intent = prepared_entry(source, 1, 31000, str(UUID(int=0)), strategy_number=36)
+    journal = BacktestMemoryJournal(run_id=source.run_id)
+    journal.append_strategy_one_intent(intent=intent, proposal=proposal,
+        session_date=date(2026, 8, 18), account_id=proposal.account_id,
+        strategy_id='early-squeeze-strategy', strategy_revision=36, first_price_source=source)
+    unit, = project_pending_backtest_v4_prefix(journal, attempt_id=str(UUID(int=102)),
+        run_month=date(2026, 8, 1), prior_sequence=0, through_sequence=1,
+        expected_config={'strategy_id': 'early-squeeze-strategy', 'strategy_revision': 36},
+        first_price_source=source)
+    assert unit.first_price_source is source and len(unit.entry_activity_evidence) == 1
+    row = unit.entry_activity_evidence[0]
+    assert [row[f'candle_{i}_trade_count'] for i in range(4)] == [100] * 4
+    client = attached_v4_client(ExactBits())
+    publish_strategy_one_entry_batch_v4(client, unit.base,
+        entry_evidence=unit.entry_evidence, momentum_evidence=unit.momentum_evidence,
+        initial_momentum_evidence=unit.initial_momentum_evidence,
+        first_price_evidence=unit.first_price_evidence, first_price_authorities=unit.first_price_authorities,
+        entry_activity_evidence=unit.entry_activity_evidence, first_price_source=source)
+    prefix = load_verified_v4_prefix(client, source.run_id, first_price_source=source)
+    page = load_committed_strategy_one_entry_page(client, prefix, first_price_source=source)
+    assert page.entries[0].proposal == proposal and page.entries[0].intent == intent

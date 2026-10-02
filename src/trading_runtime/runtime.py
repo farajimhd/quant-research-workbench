@@ -1416,7 +1416,7 @@ class TradingRuntime:
         """Bind one certified session plan before numbered20 entry admission."""
         from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
-        if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
+        if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
                 or self.config.strategy_id != 'early-squeeze-strategy'
                 or type(source) is not CertifiedPriceReadbackAuthority
                 or source.run_id != self.run_id
@@ -1425,11 +1425,13 @@ class TradingRuntime:
                 or self.journal.run_id != self.run_id
                 or self._strategy_one_price_source is not None):
             raise ValueError("Strategy20 runtime source lacks its exact unbound session")
+        if self.config.strategy_revision == 36 and source.entry_activity_source is None:
+            raise ValueError('Strategy 36 runtime binding lacks certified entry activity')
         self._strategy_one_price_source = source
 
     def _strategy_one_entry_intent(self, proposal: Any):
         """Validate entries against the cached source, without market I/O."""
-        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35):
+        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
             from src.backend.backtest_strategy_certified_price_break import (
                 CertifiedPriceReadbackAuthority, certified_price_entry_intent,
             )
@@ -1438,9 +1440,15 @@ class TradingRuntime:
                     or source.run_id != self.run_id
                     or self.config.mode != RunMode.BACKTEST
                     or self.config.strategy_id != 'early-squeeze-strategy'
-                    or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
+                    or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
                     or self.config.strategy_revision != proposal.strategy_number):
                 raise ValueError("Strategy20 runtime entry lacks its native source")
+            if proposal.strategy_number == 36:
+                if source.entry_activity_source is None:
+                    raise ValueError('Strategy 36 runtime entry lacks certified activity source')
+                # This cached scalar witness uses the same reducer as the
+                # vector gate; no market query or rolling calculation occurs.
+                source.entry_activity_source.plan.witness(proposal.ticker, proposal.boundary_ms)
             return certified_price_entry_intent(source.plan, proposal,
                 session_date=self.config.anchor_date)
         from .strategy_one_intent import strategy_one_entry_intent
