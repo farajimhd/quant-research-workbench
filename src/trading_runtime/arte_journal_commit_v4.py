@@ -50,6 +50,8 @@ from src.backend.backtest_protection_change_v3 import (
 from .arte_followthrough_failure_v4 import FAILURE, seal_followthrough_rows
 from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, seal_profit_giveback_rows
 from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, seal_confirmed_ah_rows
+from .arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
+from .strategy_liquidity_fade_publication import prepare_native_liquidity_fade_rows
 from .arte_rising_momentum_entry_v4 import (
     MOMENTUM, seal_rising_momentum_rows, momentum_select_columns, decode_momentum_row,
 )
@@ -598,7 +600,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -657,6 +659,15 @@ def _load_verified_details_v4(
             related_rows.get('trading_strategy_intent_v1', ()),
             related_rows.get('trading_event_v1', ()),
             verified_prefix=verified_prior_prefix, first_price_source=first_price_source)
+    # Stored hashes were verified above; adapt UInts only afterwards. Missing
+    # companion rows must reject as well as malformed or forged companions.
+    unsigned = {name for name, kind in LIQUIDITY_FADE_FAILURE.columns if kind.startswith('UInt')}
+    liquidity_rows = tuple({k: int(v) if k in unsigned else v for k, v in row.items()}
+                           for row in related_rows.get(LIQUIDITY_FADE_FAILURE.name, ()))
+    prepare_native_liquidity_fade_rows(client, liquidity_rows,
+        related_rows.get('trading_strategy_intent_v1', ()),
+        related_rows.get('trading_event_v1', ()), verified_prefix=verified_prior_prefix,
+        first_price_source=first_price_source)
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
                if row["reason"] == "strategy_one_entry"}
@@ -1335,7 +1346,7 @@ def _validate_strategy_one_add_link(row, parent, event, run_id, batch_id):
 
 
 def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_one_entry_rows=(),
-                           profit_giveback_rows=(), confirmed_ah_rows=(), verified_prior_prefix=None, first_price_source=None,
+                           profit_giveback_rows=(), confirmed_ah_rows=(), liquidity_fade_rows=(), verified_prior_prefix=None, first_price_source=None,
                            rising_momentum_rows=(), initial_momentum_rows=(),
                            first_price_rows=(), first_price_authorities=(),
                             strategy_one_add_rows=(),
@@ -1381,11 +1392,11 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         if (any(getattr(batch, name) for name in (
                 "backtest_cursors", "backtest_market_authorities",
                 "backtest_progress", "prepared_v7_leases"))
-                or broker_snapshot_rows is not None or profit_giveback_rows or confirmed_ah_rows):
+                or broker_snapshot_rows is not None or profit_giveback_rows or confirmed_ah_rows or liquidity_fade_rows):
             raise ValueError("Live V4 cannot publish Backtest-only families")
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
-            strategy_one_entry_rows, followthrough_rows, profit_giveback_rows, confirmed_ah_rows, portfolio_allocation_row,
+            strategy_one_entry_rows, followthrough_rows, profit_giveback_rows, confirmed_ah_rows, liquidity_fade_rows, portfolio_allocation_row,
             oms_tactic_rows,
             reservation_reason_rows,
             broker_acknowledgement_row, broker_acknowledgement_v5_row,
@@ -1747,6 +1758,13 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             dict(base_families)['trading_strategy_intent_v1'],
             dict(base_families)['trading_event_v1'], verified_prefix=verified_prior_prefix,
             first_price_source=first_price_source))
+    liquidity_rows = (tuple(typed_row(LIQUIDITY_FADE_FAILURE.name, {
+        k: v for k, v in row.items() if k != 'content_hash'})
+        for row in liquidity_fade_rows) if _prepare_only else
+        prepare_native_liquidity_fade_rows(client, liquidity_fade_rows,
+            dict(base_families)['trading_strategy_intent_v1'],
+            dict(base_families)['trading_event_v1'], verified_prefix=verified_prior_prefix,
+            first_price_source=first_price_source))
     tactic_states = ()
     tactic_steps = ()
     if oms_tactic_rows is not None:
@@ -1790,6 +1808,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += ((PROFIT_GIVEBACK.name, profit_rows),)
     if confirmation_rows:
         families += ((CONFIRMED_AH_FAILURE.name, confirmation_rows),)
+    if liquidity_rows:
+        families += ((LIQUIDITY_FADE_FAILURE.name, liquidity_rows),)
     if entry_rows:
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
     if momentum_rows:
@@ -1967,7 +1987,7 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
 
     live_lease = getattr(client, "live_v4_lease", None)
     dispatch = client.typed_insert_dispatch
-    if any(name in (PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name) and rows for name, rows in families):
+    if any(name in (PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name) and rows for name, rows in families):
         if (live_lease is not None or type(verified_prior_prefix) is not V4CommittedPrefix
                 or verified_prior_prefix.run_id != batch.run_id
                 or verified_prior_prefix.status != 'running'
@@ -1976,6 +1996,10 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                 or verified_prior_prefix.last_batch_id != batch.prior_batch_id
                 or verified_prior_prefix.last_sequence + 1 != batch.first_sequence):
             raise ValueError('Profit publication requires the exact verified Backtest predecessor')
+    prepare_native_liquidity_fade_rows(client, dict(families).get(LIQUIDITY_FADE_FAILURE.name, ()),
+        dict(base_families).get('trading_strategy_intent_v1', ()),
+        dict(base_families).get('trading_event_v1', ()), verified_prefix=verified_prior_prefix,
+        first_price_source=first_price_source)
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,

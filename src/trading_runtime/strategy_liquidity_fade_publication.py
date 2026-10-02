@@ -80,3 +80,35 @@ def prepare_liquidity_fade_publication_rows(client, rows, intents, events, **con
     from .arte_journal_writer import typed_row
     checked = validate_liquidity_fade_publication_rows(client, rows, intents, events, **context)
     return tuple(typed_row(LIQUIDITY_FADE_FAILURE.name, row) for row in checked)
+
+
+def prepare_native_liquidity_fade_rows(client, rows, intents, events, *,
+                                     verified_prefix, first_price_source):
+    """Use the run's existing certified source authority for native publication.
+
+    Factory replay views describe claimed exit preconditions only. The composed
+    reader independently checks their quantity and pending exits; permissions
+    and order admission remain the runtime's separate responsibility.
+    """
+    from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+    from .strategy_one_stateful import StrategyOneFinancialView
+    from .strategy_engine import AssignmentStatus, StrategyPermissions
+    parents = tuple(parent for parent in intents if parent['reason'] == REASON)
+    if not rows and not parents:
+        return ()
+    if (type(first_price_source) is not CertifiedPriceReadbackAuthority
+            or verified_prefix is None or first_price_source.run_id != verified_prefix.run_id):
+        raise ValueError('Liquidity publication requires its independently certified run market authority')
+    parent_map = {str(parent['record_id']): parent for parent in parents}
+    views = {}
+    for row in rows:
+        parent_id = str(row['parent_record_id'])
+        if parent_id not in parent_map:
+            raise ValueError('Liquidity native publication lacks its exact exit parent')
+        parent = parent_map[parent_id]
+        views[parent_id] = StrategyOneFinancialView(row['assignment_id'], parent['account_id'],
+            parent['ticker'], AssignmentStatus.MANAGING, StrategyPermissions(),
+            float(parent['quantity']), False, False, False, 1)
+    return prepare_liquidity_fade_publication_rows(client, tuple(rows), tuple(intents), tuple(events),
+        verified_prefix=verified_prefix, market_plan=first_price_source.plan.source.market,
+        financial_views=views, first_price_source=first_price_source)

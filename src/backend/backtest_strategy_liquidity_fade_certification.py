@@ -20,7 +20,7 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/backend/backtest_strategy_liquidity_fade_decision.py': '7aaf49f043a2c30da30ed3a24303e27e80082c7d5b0af510aac06ee1ed68a1b0',
     'src/backend/backtest_strategy_one_financial.py': 'f184a0f434aabb3895b1323d2a22056acb30b4ab9bf301cb8356b1eea2591f0d',
     'src/trading_runtime/arte_liquidity_fade_reader_v4.py': 'de0080bdf30bae6cb32105ee52d369f6769cf472888ccacdf6bba974b4648acf',
-    'src/trading_runtime/arte_journal_writer.py': '02a5ec429f8a086447af9e5f077264b3ebee6c4f106626ff235b437903e40b97',
+    'src/trading_runtime/arte_journal_writer.py': '8664ce757cda248dcf5f3b53b3eb804878ae7de4ad26c3216bf68c8a5b973c9d',
     'src/trading_runtime/strategy_liquidity_fade_checkpoint.py': '3868ef8025c20487a29e67b5ff44f424cc085a87ca4c7ed8898f2be3caeace53',
     'src/backend/backtest_strategy_one_management.py': '16d5f12119c203dd89dd83d3d558724ea51fb20e76a0cf15dd54bb9b489c4925',
     'src/trading_runtime/strategy_one_management_snapshot.py': '31b474619299ae5734892c869b2885d19606b640a66cefad12a9d4e7566cfcd0',
@@ -29,7 +29,10 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/arte_oms_projection.py': '72b320c9680f8eb03ad32181ea6a8594c847afb01a21a099eaef2e6bd245da07',
     'src/trading_runtime/arte_journal_projection.py': '62b7209c08d972952fa01d7099829471371071a33d3f25806dedce983ecda8ba',
     'src/trading_runtime/arte_intent_projection.py': '4499296baf688ccd93d81ac136a73cc416223a9a6291832736af7e776540e586',
-    'src/trading_runtime/strategy_liquidity_fade_publication.py': 'e6ac967fd4c27facd26e4251fcb2ae9dcc1524e5b711573675fa253a2667756f',
+    'src/trading_runtime/strategy_liquidity_fade_publication.py': '2bb3b9c31207b9f2ea2a5ab7e8c6ed3c0b5fb07fcdf2a5e5599c051119017edf',
+    'src/trading_runtime/arte_journal_commit_v4.py': '13fd9224d0f01a0d7fb654c7a939a29528dbed4e604713e1f7a2e44487828aba',
+    'src/trading_runtime/arte_journal_compound_v4.py': '4965c541673e52dffff094d170ef4a255f58fd2eeb154c3bfa2bf34c78b14c8b',
+    'src/backend/backtest_strategy_certified_price_break.py': '25f4c07b74d1862a7579bf3ed7f69e0be6adb7c3734165fbef44a81498e84d23',
 }
 
 

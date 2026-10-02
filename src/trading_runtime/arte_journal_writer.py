@@ -100,6 +100,7 @@ from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowT
 from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch
 from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, V4ConfirmedAhFailureBatch
 from src.trading_runtime.arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
+from src.trading_runtime.strategy_liquidity_fade_transport import V4LiquidityFadeFailureBatch
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
@@ -3983,7 +3984,7 @@ class ArteJournalWriter:
                 or type(unit) is not V4CompoundBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 compound requires its pinned writer")
-        if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures']:
+        if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures']:
             return self._submit_profit_publication(unit, first_price_source=first_price_source)
         if first_price_source is not None:
             raise ValueError('Compound price context requires a profit witness')
@@ -4050,14 +4051,15 @@ class ArteJournalWriter:
         from .arte_journal_compound_v4 import V4CompoundBatch
         from zoneinfo import ZoneInfo
         if (self._journal_profile != 'backtest_v4'
-                or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4CompoundBatch)
+                or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch, V4CompoundBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError('Profit publication requires its exact Backtest writer')
         # A compound may start with a present-day run-creation event. Only the
         # linked historical exit clocks attest the native market session.
-        exits = (unit.children['profit_givebacks'] + unit.children['confirmed_ah_failures']
+        exits = (unit.children['profit_givebacks'] + unit.children['confirmed_ah_failures'] + unit.children['liquidity_fade_failures']
                  if type(unit) is V4CompoundBatch else
                  (unit.profit,) if type(unit) is V4ProfitGivebackBatch else
+                 (unit.failure,) if type(unit) is V4LiquidityFadeFailureBatch else
                  (unit.confirmation,))
         events = {str(row['record_id']): row for row in unit.base.events}
         if not exits or len(events) != len(unit.base.events):
@@ -4095,6 +4097,13 @@ class ArteJournalWriter:
         """
         if type(unit) is not V4ConfirmedAhFailureBatch:
             raise ValueError('AH confirmation requires its exact typed envelope')
+        return self._submit_profit_publication(unit, first_price_source=first_price_source)
+
+    def submit_liquidity_fade_exit_v4(self, unit: V4LiquidityFadeFailureBatch, *,
+                                      first_price_source=None) -> Future[str]:
+        """Queue the native cold verifier on the existing preceding-prefix lane."""
+        if type(unit) is not V4LiquidityFadeFailureBatch:
+            raise ValueError('Liquidity fade requires its exact typed envelope')
         return self._submit_profit_publication(unit, first_price_source=first_price_source)
 
     def submit_oms_tactic_v4(self, unit) -> Future[str]:
@@ -4836,6 +4845,9 @@ class ArteJournalWriter:
                     elif type(unit) is V4ConfirmedAhFailureBatch:
                         committed_id = _publish_typed_batch_v4(self._client, unit.base,
                             confirmed_ah_rows=(unit.confirmation,), **context)
+                    elif type(unit) is V4LiquidityFadeFailureBatch:
+                        committed_id = _publish_typed_batch_v4(self._client, unit.base,
+                            liquidity_fade_rows=(unit.failure,), **context)
                     else:
                         committed_id = _publish_typed_batch_v4(self._client, unit.base,
                             profit_giveback_rows=(unit.profit,), **context)
