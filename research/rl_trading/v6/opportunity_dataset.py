@@ -4,6 +4,7 @@ Immutable bounded listing shards are certified before atomic publication.
 Only decoded certified OHLC/MACD are consumed; candidate tables are never read.
 """
 from dataclasses import asdict, replace
+import ast
 from datetime import date
 import argparse
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
@@ -32,7 +33,14 @@ def write_json(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix+'.tmp')
     temporary.write_text(json.dumps(value, sort_keys=True), encoding='utf-8')
-    temporary.replace(path)
+    # Windows readers may briefly deny delete-sharing during an atomic rename.
+    # Keep the old complete JSON intact and retry; never publish partial text.
+    for attempt in range(40):
+        try:
+            temporary.replace(path); break
+        except PermissionError:
+            if attempt==39: raise
+            time.sleep(.05)
 
 
 def verify_shard(root, binding=None):
@@ -226,6 +234,8 @@ def main(argv=None):
     parser.add_argument('--listings-per-shard',type=int,default=32)
     parser.add_argument('--canary',action='store_true')
     parser.add_argument('--source-commit',help='Exact pushed commit for an immutable archive snapshot')
+    parser.add_argument('--reuse-receipts-from-source',type=Path,
+        help='Explicitly verify/reuse completed receipts from a compatible immutable producer snapshot; no new shards permitted')
     args = parser.parse_args(argv)
     runtime=args.runtime_root.resolve(); output=args.output.resolve()
     if not runtime.is_dir() or not output.is_relative_to(runtime) or not 1<=args.workers<=16 or not 1<=args.listings_per_shard<=64:
@@ -235,6 +245,19 @@ def main(argv=None):
     if source.get('version')!='rl-trading-v6-forward-candle-day-roots' or sorted(roots)!=expected:
         raise ValueError('Inventory must contain all 19 saved forward banks; sealed holdout excluded')
     config=asdict(Config()); output.mkdir(parents=True,exist_ok=True)
+    producer=Path(__file__).parent
+    if args.reuse_receipts_from_source:
+        prior=args.reuse_receipts_from_source.resolve()/'research'/'rl_trading'/'v6'
+        if not prior.is_dir(): raise ValueError('Prior immutable producer snapshot unavailable')
+        for name in ('price_action_opportunities.py','price_action_labels.py'):
+            if file_hash(prior/name)!=file_hash(producer/name): raise ValueError('Cannot reuse receipts from a different label algorithm')
+        def worker_ast(path):
+            tree=ast.parse(path.read_text(encoding='utf-8'))
+            return {node.name:ast.dump(node,include_attributes=False) for node in tree.body
+                    if isinstance(node,ast.FunctionDef) and node.name in ('decoded_bars','build_shard')}
+        if worker_ast(prior/'opportunity_dataset.py')!=worker_ast(producer/'opportunity_dataset.py'):
+            raise ValueError('Receipt worker semantics changed; regeneration required')
+        producer=prior
     state_path=output/'progress.json'; started=time.time(); records=[]; failed=[]
     from research.mlops.manifest import write_run_manifest
     write_run_manifest(output/'manifest.json', repo_root=Path(__file__).resolve().parents[3],model_family='rl_trading',
@@ -249,6 +272,10 @@ def main(argv=None):
     if manifest['git_commit']=='unknown': raise ValueError('Pass --source-commit for an archive snapshot')
     manifest['producer_files_sha256']={name:file_hash(Path(__file__).parent/name) for name in
         ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py','run_prepare_labels.py')}
+    if args.reuse_receipts_from_source:
+        manifest['receipt_producer_files_sha256']={name:file_hash(producer/name) for name in
+            ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py')}
+        manifest['receipt_recovery_scope']='completed_shards_only; exact_algorithm_bytes_and_unchanged_worker_ast; no_new_generation'
     write_json(output/'manifest.json',manifest)
     def progress(**more):
         state=dict(version=VERSION,algorithm=ALGORITHM,elapsed_seconds=time.time()-started,completed_days=len(records),failed=failed,**more)
@@ -261,13 +288,15 @@ def main(argv=None):
         session=open_session(root,runtime_root=runtime,previous_root=Path(roots[previous]) if previous else None)
         bank_hash=file_hash(root/'complete.json'); config_hash=digest(config)
         binding=dict(day=day,bank_certificate_sha256=bank_hash,bank_manifest_sha256=file_hash(root/'bank'/'complete.json'),config_hash=config_hash,
-            producer_sha256={name:file_hash(Path(__file__).parent/name) for name in ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py')})
+            producer_sha256={name:file_hash(producer/name) for name in ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py')})
         identities=list(session.listings); original_identities=identities
         if args.canary: identities=identities[:2]
         del session
         folder=output/day; tasks=[]
         for index,left in enumerate(range(0,len(identities),args.listings_per_shard)):
             tasks.append((str(root/'bank'),str(folder/'shards'/f'{index:05d}'),identities[left:left+args.listings_per_shard],binding,config))
+        if args.reuse_receipts_from_source and any(not (Path(task[1])/'complete.json').is_file() for task in tasks):
+            raise ValueError('Compatible-source receipt recovery requires every shard already complete; no mixed-producer generation allowed')
         receipts=[]; queued=iter(tasks); pending={}; completed=0
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             def submit():

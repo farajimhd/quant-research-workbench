@@ -101,6 +101,21 @@ def test_bounded_audit_uses_authentic_population(tmp_path,monkeypatch):
     assert [(d.close_us,d.token,d.raw_entry_gain,d.raw_exit_gain) for d in actual]==[(d.close_us,d.token,d.raw_entry_gain,d.raw_exit_gain) for d in expected]
 
 
+def test_atomic_receipt_retry_preserves_old_json(tmp_path,monkeypatch):
+    path=tmp_path/'progress.json'; data.write_json(path,{'status':'old'})
+    original=Path.replace; attempts=[]
+    def racing_replace(temporary,destination):
+        attempts.append(1)
+        if len(attempts)<3:
+            assert json.loads(path.read_text())=={'status':'old'}
+            raise PermissionError('Reader denies delete sharing')
+        return original(temporary,destination)
+    monkeypatch.setattr(Path,'replace',racing_replace)
+    monkeypatch.setattr(data.time,'sleep',lambda seconds:None)
+    data.write_json(path,{'status':'new'})
+    assert len(attempts)==3 and json.loads(path.read_text())=={'status':'new'}
+
+
 @pytest.mark.parametrize('long',[True,False])
 def test_single_price_candle_is_accounted(long):
     bars=pl.DataFrame(dict(time_us=[1_000_000],open=[1.],high=[1.],low=[1.],close=[1.],macd_line=[1. if long else -1.],macd_signal=[0.]))

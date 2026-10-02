@@ -13,7 +13,9 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -B research/rl_trading/v6/run_prepare_labels.py --source-manifest D:/TradingML/runtimes/rl-v6-forward-40cd11fac/day-roots.json --output D:/TradingML/runtimes/rl-v6-swing-labels-v2 --workers 8 --listings-per-shard 32
 ```
 
-The same command resumes verified completed shards. `progress.json` reports
+The same command and exact producer source resume verified completed shards.
+Archive snapshots must also pass `--source-commit` with their full pushed SHA.
+`progress.json` reports
 day, active, queued, completed and failed units. All 19 saved days (context,
 16 train, two development) must complete before `dataset.json` and
 `D:/TradingML/runtimes/rl-v6-active-labels.json` are published. August 26 is
@@ -41,3 +43,10 @@ one-second refresh) are retained. The held observation is hypothetical;
 reference quantities may be fractional for prices exceeding the $10,000
 bookkeeping balance. Quantities never scale raw per-share value targets or
 claim a fill.
+
+Atomic JSON replacement retries transient Windows reader locks for at most
+two seconds. Explicit `--reuse-receipts-from-source <immutable snapshot>`
+allows controller-only recovery when every shard is already complete, the
+numeric algorithm files match byte-for-byte, and both worker function ASTs
+are unchanged. All receipt bytes/counts still verify. Missing receipts or
+changed numerical producers fail closed; no mixed-producer generation occurs.
