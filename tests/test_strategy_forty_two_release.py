@@ -1,18 +1,18 @@
-"""Prepared precision-only successor preserves every Strategy40 trading rule."""
+"""Prepared precision-only successor preserves every Strategy41 trading rule."""
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
 import pytest
 from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
-from src.trading_runtime import strategy_forty_release as parent
-from src.trading_runtime import strategy_forty_one_release as child
+from src.trading_runtime import strategy_forty_one_release as parent
+from src.trading_runtime import strategy_forty_two_release as child
 from src.trading_runtime.journal_contract import canonical_json
-from test_strategy_forty_release import source_fixture as strategy39_fixture
+from test_strategy_forty_one_release import source_fixture as strategy39_fixture
 from test_strategy_thirty_three_configuration import APPROVAL
 
 
 def source_fixture():
-    result=parent.derive_strategy_forty_configuration(strategy39_fixture(),**APPROVAL)
+    result=parent.derive_strategy_forty_one_configuration(strategy39_fixture(),**APPROVAL)
     return CertifiedStrategyOneConfiguration(child.PARENT_REVISION_ID.split(':')[1],
         child.PARENT_PAYLOAD_HASH,result['node_hash'],result['source_candidate_id'],
         result['source_candidate_hash'],'test-only',result['payload'])
@@ -20,11 +20,11 @@ def source_fixture():
 
 def test_precision_successor_preserves_complete_trading_payload_and_rule_contracts():
     source=source_fixture(); before=deepcopy(source.payload)
-    result=child.derive_strategy_forty_one_configuration(source,**APPROVAL)
+    result=child.derive_strategy_forty_two_configuration(source,**APPROVAL)
     assert source.payload==before
     previous,current=parent.release_contract(),child.release_contract()
     current.verify()
-    assert current.number==current.executor_revision==41
+    assert current.number==current.executor_revision==42
     assert current.rule_set_contracts==previous.rule_set_contracts
     assert current.input_contracts==previous.input_contracts
     assert current.evaluation_interval==previous.evaluation_interval
@@ -36,58 +36,58 @@ def test_precision_successor_preserves_complete_trading_payload_and_rule_contrac
     for name in before['strategy'].keys()-identities:
         assert result['payload']['strategy'][name]==before['strategy'][name]
     assert result['payload_hash']==sha256(canonical_json(result['payload']).encode()).hexdigest()
-    assert result['source_candidate_id']=='strategy-forty-one-from:'+child.PARENT_REVISION_ID
-    assert child.verify_prepared_strategy_forty_one_manifest(result['payload']['strategy'])
+    assert result['source_candidate_id']=='strategy-forty-two-from:'+child.PARENT_REVISION_ID
+    assert child.verify_prepared_strategy_forty_two_manifest(result['payload']['strategy'])
 
 
 @pytest.mark.parametrize('field,value',[
     ('payload_hash','a'*64),('attempt_id','00000000-0000-0000-0000-000000000001'),
 ])
 def test_prepared_successor_rejects_foreign_exact_parent(field,value):
-    with pytest.raises(ValueError):child.derive_strategy_forty_one_configuration(replace(source_fixture(),**{field:value}),**APPROVAL)
+    with pytest.raises(ValueError):child.derive_strategy_forty_two_configuration(replace(source_fixture(),**{field:value}),**APPROVAL)
 
 
 @pytest.mark.parametrize('policy',['half_risk_liquidity_policy','episode_activity_policy','liquidity_fade_policy'])
 def test_resealed_policy_mutation_cannot_change_trading_rule(policy):
-    strategy=deepcopy(child.derive_strategy_forty_one_configuration(source_fixture(),**APPROVAL)['payload']['strategy'])
+    strategy=deepcopy(child.derive_strategy_forty_two_configuration(source_fixture(),**APPROVAL)['payload']['strategy'])
     manifest=strategy['numbered_release'];manifest[policy]['unreviewed_change']=True
     manifest['manifest_hash']=sha256(canonical_json({k:v for k,v in manifest.items() if k!='manifest_hash'}).encode()).hexdigest()
-    with pytest.raises(ValueError,match='pinned policy'):child.verify_prepared_strategy_forty_one_manifest(strategy)
+    with pytest.raises(ValueError,match='pinned policy'):child.verify_prepared_strategy_forty_two_manifest(strategy)
 
 
 
 def test_installed_release_requires_complete_parent_and_registered_source_proof():
-    from pipelines.strategy_one.strategy_forty_one_configuration import compile_strategy_forty_one_configuration
+    from pipelines.strategy_one.strategy_forty_two_configuration import compile_strategy_forty_two_configuration
     from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
     from src.trading_runtime.strategy_registry import numbered_strategy,numbered_strategy_parent
-    result=compile_strategy_forty_one_configuration(source_fixture(),**APPROVAL)
-    assert child.verify_strategy_forty_one_manifest(result['payload']['strategy'])
-    assert numbered_strategy(41)==child.release_contract() and numbered_strategy_parent(41)==40
-    assert len(certify_numbered_fixed_v4_projection(41))==64
+    result=compile_strategy_forty_two_configuration(source_fixture(),**APPROVAL)
+    assert child.verify_strategy_forty_two_manifest(result['payload']['strategy'])
+    assert numbered_strategy(42)==child.release_contract() and numbered_strategy_parent(42)==41
+    assert len(certify_numbered_fixed_v4_projection(42))==64
     with pytest.raises(ValueError):numbered_strategy(43)
 
 
 @pytest.mark.parametrize('relative',[
-    'src/trading_runtime/strategy_forty_one_release.py',
-    'pipelines/strategy_one/strategy_forty_one_configuration.py',
+    'src/trading_runtime/strategy_forty_two_release.py',
+    'pipelines/strategy_one/strategy_forty_two_configuration.py',
     'src/trading_runtime/strategy_registry.py',
     'src/trading_runtime/numbered_fixed_strategy.py',
     'src/backend/backtest_strategy_one_configuration.py',
     'pipelines/strategy_one/configuration_publisher.py',
-    'scripts/clickhouse/publish_strategy_forty_one_configuration.py',
+    'scripts/clickhouse/publish_strategy_forty_two_configuration.py',
 ])
 def test_certificate_rejects_unreviewed_registration_and_source(relative,tmp_path):
     from pathlib import Path
-    from src.backend.backtest_strategy_forty_one_certification import certify_strategy_forty_one_source
+    from src.backend.backtest_strategy_forty_two_certification import certify_strategy_forty_two_source
     changed=tmp_path/'changed.py'
     changed.write_text(Path(relative).read_text(encoding='utf-8')+'\nUNREVIEWED_CHANGE=True\n',encoding='utf-8')
     with pytest.raises(ValueError,match='pinned release source changed'):
-        certify_strategy_forty_one_source(source_overrides={relative:changed})
+        certify_strategy_forty_two_source(source_overrides={relative:changed})
 
 
 def test_installed_capabilities_preserve_parent_session_and_order_policy():
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
-    previous,current=numbered_fixed_strategy(40),numbered_fixed_strategy(41)
+    previous,current=numbered_fixed_strategy(41),numbered_fixed_strategy(42)
     for name in ('allows_session_exit','allows_adds','allows_completed_30s_trailing',
                  'allows_target_escalation','caps_entry_at_reference_ask','allows_followthrough_failure_exit'):
         assert getattr(current,name)==getattr(previous,name)

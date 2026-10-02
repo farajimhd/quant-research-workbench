@@ -63,7 +63,7 @@ def test_installed_release_requires_complete_parent_and_registered_source_proof(
     assert child.verify_strategy_forty_manifest(result['payload']['strategy'])
     assert numbered_strategy(40)==child.release_contract() and numbered_strategy_parent(40)==39
     assert len(certify_numbered_fixed_v4_projection(40))==64
-    with pytest.raises(ValueError):numbered_strategy(42)
+    with pytest.raises(ValueError):numbered_strategy(43)
 
 
 @pytest.mark.parametrize('relative',[

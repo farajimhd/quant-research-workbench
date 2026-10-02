@@ -7,9 +7,9 @@ from pathlib import Path
 
 CONFIRMED_AH_SOURCE_AST = {
     'src/trading_runtime/strategy_confirmed_ah_risk_failure.py': 'caa9e0df4a6e24deaf542d686f912bd598d3a360df5f3131c666753e79bfc598',
-    'src/trading_runtime/strategy_confirmed_ah_failure_exit.py': 'fce02f0e0b4958399cf08700694bc8d499ab3a86a7468cf06d4ddb96578ab609',
-    'src/trading_runtime/strategy_confirmed_ah_failure_source.py': 'a109f3ecd87713ae99db0f6efb180659f7a57f6647482bea943c3509c9229b26',
-    'src/trading_runtime/arte_confirmed_ah_failure_v4.py': 'c2c7249b9961f2d2a1e58a9f1c510204ba67cb1fa98cd9ebde3c98e3f40145d0',
+    'src/trading_runtime/strategy_confirmed_ah_failure_exit.py': '25cec45a1ac29c9f2aebf6df39f4530548e7fe0d2d8a5380fd70c01651b1e2c9',
+    'src/trading_runtime/strategy_confirmed_ah_failure_source.py': 'c3d275224d5992341e5d9ff3d18725467a314c01a90894a489ccb885c4f29ea4',
+    'src/trading_runtime/arte_confirmed_ah_failure_v4.py': 'b844cedfbb139407b877d2afc49402b8db8311226bd82fe0d3eb0d785e0a9b9a',
     'src/trading_runtime/strategy_thirty_four_release.py': '16a38bfab06bf59baa162907010724b731e76301ab4dc4c86b1e6f61a907a24b',
     'pipelines/strategy_one/strategy_thirty_four_configuration.py': '8fa2652ce8e4975a4ce97bc7ce6c39d9ba68fb8563ff8eb8471c6971af80e335',
 }
