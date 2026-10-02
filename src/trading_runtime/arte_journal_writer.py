@@ -104,6 +104,7 @@ from src.trading_runtime.strategy_liquidity_fade_transport import V4LiquidityFad
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
+from src.trading_runtime.arte_entry_activity_v4 import ENTRY_ACTIVITY
 
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[FAILURE.name] = FAILURE
@@ -122,6 +123,9 @@ _CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[MOMENTUM.name] = MOMENTUM
 _CONTRACTS[INITIAL_MOMENTUM.name] = INITIAL_MOMENTUM
 _CONTRACTS[FIRST_PRICE.name] = FIRST_PRICE
+# Scalar encoding only: numbered release, commit admission and operator table
+# installation remain separate authorities. This does not enable Strategy 36.
+_CONTRACTS[ENTRY_ACTIVITY.name] = ENTRY_ACTIVITY
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ADD_EVIDENCE.name] = ADD_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT

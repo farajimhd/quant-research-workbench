@@ -147,10 +147,7 @@ def test_missing_or_extra_companion_rejects():
                                     batch_id=BATCH, parent_record_id=PARENT, event_month=row['event_month'])
 
 
-def sealing_graph(monkeypatch):
-    from src.trading_runtime import arte_journal_writer as writer
-    # Scope registration to the unit fixture; no operator schema/role changes.
-    monkeypatch.setitem(writer._CONTRACTS, ENTRY_ACTIVITY.name, ENTRY_ACTIVITY)
+def sealing_graph():
     source = plan()
     witness, entry, intent = graph(source)
     receipt = EntryActivityReadbackAuthority('activity-run', source).resolve(
@@ -162,8 +159,8 @@ def sealing_graph(monkeypatch):
     return (project(witness),), (entry,), (intent,), (event,), receipt
 
 
-def test_complete_graph_content_hash_and_native_utc_wire(monkeypatch):
-    args = sealing_graph(monkeypatch)
+def test_complete_graph_content_hash_and_native_utc_wire():
+    args = sealing_graph()
     sealed = seal_entry_activity_rows(*args)
     assert len(sealed) == 1 and len(sealed[0]['content_hash']) == 64
     assert seal_entry_activity_rows(sealed, *args[1:]) == sealed
@@ -174,8 +171,8 @@ def test_complete_graph_content_hash_and_native_utc_wire(monkeypatch):
         seal_entry_activity_rows((dict(sealed[0], content_hash='f' * 64),), *args[1:])
 
 
-def test_graph_rejects_incomplete_population_and_cross_parent_scope(monkeypatch):
-    args = sealing_graph(monkeypatch)
+def test_graph_rejects_incomplete_population_and_cross_parent_scope():
+    args = sealing_graph()
     with pytest.raises(ValueError, match='source authority population'):
         seal_entry_activity_rows(*args[:4], ())
     with pytest.raises(ValueError, match='exactly one'):
@@ -189,8 +186,16 @@ def test_graph_rejects_incomplete_population_and_cross_parent_scope(monkeypatch)
                                  (dict(args[3][0], event_time='2026-08-18T08:00:41.000000001+00:00'),), args[4])
 
 
-def test_prepared_family_does_not_grant_writer_registration():
+def test_encoding_registration_does_not_grant_numbered_execution():
     from src.trading_runtime.arte_journal_writer import _CONTRACTS
-    assert ENTRY_ACTIVITY.name not in _CONTRACTS
+    from src.trading_runtime.strategy_registry import numbered_strategy
+    assert _CONTRACTS[ENTRY_ACTIVITY.name] is ENTRY_ACTIVITY
+    with pytest.raises(ValueError):
+        numbered_strategy(36)
+
+
+def test_sealer_requires_encoding_registration(monkeypatch):
+    from src.trading_runtime.arte_journal_writer import _CONTRACTS
+    monkeypatch.delitem(_CONTRACTS, ENTRY_ACTIVITY.name)
     with pytest.raises(ValueError, match='not registered'):
         seal_entry_activity_rows((), (), (), (), ())

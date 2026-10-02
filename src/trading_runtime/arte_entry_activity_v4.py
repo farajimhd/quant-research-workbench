@@ -1,4 +1,4 @@
-"""Prepared normalized activity companion; no table or writer registration."""
+"""Normalized activity companion; source-certified commit admission is separate."""
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import re
