@@ -13,6 +13,8 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(REPO))
 
 import argparse
+import importlib.util
+from importlib.metadata import version, PackageNotFoundError
 from dataclasses import asdict
 from datetime import datetime
 import json
@@ -72,10 +74,16 @@ def main(argv=None):
                  for s in chosen for name in args.sessions]
         settings, grid = Settings(), build_grid()
         manifest = grid_manifest(settings)
+        try:
+            compiler_version = version("triton-windows")
+        except PackageNotFoundError:
+            compiler_version = None
         request = {"command": args.command, "units": units, "closed_calendar_dates": closed,
                    "code": code_hash(), "commit": source_revision(REPO), "grid": manifest["approval_digest"],
                    "batch": args.batch, "maximum_tape_gib": args.maximum_tape_gib,
-                   "maximum_fills": args.maximum_fills, "graph_steps": args.graph_steps}
+                   "maximum_fills": args.maximum_fills, "graph_steps": args.graph_steps,
+                   "versions": {"python": sys.version.split()[0], "torch": torch.__version__,
+                                "cuda": torch.version.cuda, "triton_windows": compiler_version}}
         receipt_path = job / "job.json"
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text())
@@ -97,6 +105,8 @@ def main(argv=None):
             return 0
         if not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_memory < 80*1024**3:
             raise RuntimeError("Workstation run requires the 96 GB CUDA GPU; no laptop/CPU fallback")
+        if importlib.util.find_spec("triton") is None:
+            raise RuntimeError("Triton compiler missing. Run setup_gpu.py with workstation ml4t Python before preflight/run")
         ui.emit({"status": "Running", "gpu_total_gib": torch.cuda.get_device_properties(0).total_memory/1024**3})
         totals = {"completed": 0, "skipped": 0, "valid": 0, "invalid": 0, "replay_seconds": 0., "compile_seconds": 0.}
 

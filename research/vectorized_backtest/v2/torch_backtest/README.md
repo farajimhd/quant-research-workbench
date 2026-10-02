@@ -189,6 +189,13 @@ Run `run_workstation.py` directly with the workstation `ml4t` interpreter.
 No arguments starts the approved grid over **all available dates, premarket**.
 The launcher never installs dependencies, starts a producer or writes market tables.
 
+The workstation's PyTorch 2.12/CUDA 13.2 environment initially lacked Triton.
+`setup_gpu.py` explicitly installs `triton-windows==3.7.1.post27` under
+`D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v2/dependencies`.
+The launcher discovers that pinned compiler when the base environment has none;
+it never upgrades shared environments or silently chooses a different compiler.
+The separate setup command is reproducible; normal runs do not install packages.
+
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = '1'
 $launcher = 'research/vectorized_backtest/v2/torch_backtest/run_workstation.py'
@@ -253,6 +260,7 @@ GPU calibration, progress events, equivalent low-level commands and resumable
 per-build/window campaigns. No group/day is skipped on resume without checking
 source fingerprints and saved artifact hashes. Per-window result CSVs remain
 separate; there is no implicit pooled cross-session performance claim.
+When resuming a non-default job, repeat its original date/session/resource flags.
 
 `sync_workstation.py` packages only a committed **pushed** snapshot of v2 and
 shared source readers into a new isolated workstation directory, verifies

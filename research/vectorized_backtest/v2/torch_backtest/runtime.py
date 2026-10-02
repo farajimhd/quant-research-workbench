@@ -18,10 +18,24 @@ def require_runtime(path):
 
 def configure_caches(runtime=DEFAULT):
     runtime = require_runtime(runtime)
+    configure_compiler()
     for key, name in (("TORCHINDUCTOR_CACHE_DIR", "inductor"),
                       ("TRITON_CACHE_DIR", "triton"), ("TORCH_EXTENSIONS_DIR", "extensions")):
         target = require_runtime(runtime / name)
         os.environ[key] = str(target)
+
+
+def configure_compiler():
+    """Use the pinned v2-only Windows compiler when the base environment lacks it."""
+    import importlib.util
+    import sys
+    target = DEFAULT / "dependencies" / "triton-3.7.1.post27"
+    if importlib.util.find_spec("triton") is None and (target / "triton").is_dir():
+        import torch
+        if not torch.__version__.startswith("2.12."):
+            raise RuntimeError("V2 Triton 3.7 overlay requires PyTorch 2.12; no version fallback")
+        sys.path.insert(0, str(target))
+        os.environ["PYTHONPATH"] = str(target) + os.pathsep + os.environ.get("PYTHONPATH", "")
 
 
 def write_json(path, value):
