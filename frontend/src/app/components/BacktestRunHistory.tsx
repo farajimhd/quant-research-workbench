@@ -34,6 +34,10 @@ const dateTime = (value: string) => Number.isFinite(Date.parse(value))
 type Performance = { run_id?: string; status?: "queued" | "verifying" | "deferred" | "available" | "unavailable"; verified_sequence?: number; report?: Pick<PerformanceJournalReport, "summary">; error?: string };
 const numeric = (value: unknown): number | null => value == null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
 const money = (value: number | null) => value == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
+const localTime = (ms: number) => {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(Math.floor(ms / 3600000))}:${pad(Math.floor(ms / 60000) % 60)}${ms % 60000 ? `:${pad(Math.floor(ms / 1000) % 60)}` : ""}`;
+};
 const percent = (value: number | null) => value == null ? "—" : new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(value);
 const identity = (row: RunRow) => row.strategy_revision ? `Strategy ${row.strategy_revision}` : row.configuration_revision ? `Candidate ${row.configuration_revision}` : "Strategy unavailable";
 // Unknown identities remain separate; a revision alone does not establish identical configuration.
@@ -172,7 +176,7 @@ export function BacktestRunHistory({ onReview, onResumed }: {
               <th scope="row"><button className="backtest-group-toggle" type="button" aria-expanded={open} aria-controls={id} onClick={event => { event.stopPropagation(); toggle(key); }}><span aria-hidden="true">{open ? "▾" : "▸"}</span> {identity(first)}</button>
                 <small title={`Configuration ${first.configuration_content_hash || "unknown"}; source ${first.code_fingerprint || "unknown"}`}>Variant {key.slice(0, 8)}</small>
               </th>
-              <td className="backtest-history-datetime">{sessionDates[0] || "—"}{sessionDates.length > 1 ? <small>to {sessionDates.at(-1)}</small> : null}</td>
+              <td className="backtest-history-datetime">{sessionDates[0] || "—"}{sessionDates.length > 1 ? <small>to {sessionDates.at(-1)}</small> : null}{first.start_local_ms != null && first.end_local_ms != null ? <small title="Configured session window in Eastern Time">{localTime(first.start_local_ms)}–{localTime(first.end_local_ms)}</small> : null}</td>
               <td className="numeric">{money(numeric(first.initial_cash))}</td>
               <td className={`numeric ${pnlClass(pnl)}`}>{money(pnl)}</td><td className="numeric">{trades == null ? "—" : trades.toLocaleString()}</td><td className="numeric">{percent(trades && wins != null ? wins / trades : null)}</td><td className="numeric">{money(sum("total_fees"))}</td>
               <td className={reports.length < sessions.size ? "backtest-coverage-incomplete" : ""}><span className="table-category-badge" data-tone={reports.length === sessions.size && sessions.size > 0 ? "positive" : "warning"} data-emphasis="medium">{reports.length} / {sessions.size} sessions</span>{runs.some(row => row.status !== "completed") ? <small>{runs.filter(row => row.status !== "completed").length} incomplete runs</small> : null}</td>

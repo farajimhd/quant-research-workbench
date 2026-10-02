@@ -350,7 +350,7 @@ class BacktestHistoryTests(unittest.TestCase):
         rows = [dict(run_id=f"saved-{i}", created_at=f"2026-09-{10-i:02d}T12:00:00Z",
                      session_date="2026-08-21" if i < 2 else "2026-08-24", status="completed",
                      strategy_id="fixed", strategy_revision=34, configuration_content_hash="a" * 64,
-                     comparison_group_key="a" * 64, initial_cash=10000, tickers=[],
+                     comparison_group_key="a" * 64, initial_cash=10000, tickers=[], start_local_ms=14400000, end_local_ms=34200000,
                      journal_backend="arte_typed_journal_v4", journal_sequence=10,
                      v4_review_available=True, resident=False) for i in range(5)]
         rows[3].update(status="failed")
@@ -395,6 +395,7 @@ class BacktestHistoryTests(unittest.TestCase):
                             first = table.locator(".backtest-strategy-group").first
                             self.assertIn("2 / 2 sessions", first.inner_text().lower())
                             self.assertIn("40%", first.inner_text())
+                            self.assertIn("04:00–09:30", first.inner_text())
                             self.assertEqual(table.locator(".backtest-strategy-group").count(), 3)
                             self.assertEqual(table.locator(".backtest-session-rows:visible").count(), 0)
                             diagnostics = history.locator("footer .backtest-performance-errors")
