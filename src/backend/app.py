@@ -5758,11 +5758,12 @@ async def trading_backtest_debug_run_command(
 
 @app.get("/api/trading/backtest/runs")
 async def trading_backtest_runs(strategy_one_only: bool = False) -> dict[str, Any]:
+    from src.backend.backtest_history_groups import enrich_history
     loop = asyncio.get_running_loop()
     rows = await loop.run_in_executor(
         _BACKTEST_HISTORY_READ_EXECUTOR,
-        lambda: backtest_run_service.list(
-            include_durable=True, strategy_one_only=strategy_one_only),
+        lambda: enrich_history(backtest_run_service.list(
+            include_durable=True, strategy_one_only=strategy_one_only)),
     )
     return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
 

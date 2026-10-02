@@ -71,10 +71,6 @@ def test_history_lists_normalized_record_without_claiming_review(monkeypatch):
     assert "trading_backtest_definition_commit_v1" in queries[0]
     assert "LIMIT 2 BY run_id" in queries[1]
     assert "INSERT" not in " ".join(queries)
-    assert len(result[0].pop("comparison_group_key")) == 64
-    assert result[0].pop("code_fingerprint") == "b" * 64
-    assert result[0].pop("start_local_ms") == 14400000
-    assert result[0].pop("end_local_ms") == 34200000
     assert result == [{
         "schema_version": 1, "run_id": RUN, "status": "completed",
         "mode": "backtest", "execution_mode": "100ms",
@@ -253,11 +249,16 @@ def test_terminal_resident_v4_run_uses_durable_saved_review(monkeypatch, tmp_pat
 @pytest.mark.parametrize("field,value", [("initial_cash", "20000"), ("configuration_hash", "d" * 64),
     ("code_hash", "e" * 64), ("end_local_ms", 36000000), ("ticker_hash", "f" * 64)])
 def test_group_identity_separates_parameters_and_source_updates(monkeypatch, field, value):
+    from src.backend import backtest_history_groups as groups
     context = _context()
     monkeypatch.setattr(history, "_rows", lambda _client, sql:
-        [dict(context)] if "trading_run_v1 AS r" in sql else [_head()])
-    original = history.load_strategy_one_v4_history(object())[0]["comparison_group_key"]
+        [_context()] if "trading_run_v1 AS r" in sql else [_head()])
+    rows = history.load_strategy_one_v4_history(object())
+    monkeypatch.setattr(groups, "_rows", lambda _client, sql: [dict(context)])
+    original = groups.comparison_metadata(object(), rows)[0]["comparison_group_key"]
     context["session_date"] = "2026-08-19"
-    assert history.load_strategy_one_v4_history(object())[0]["comparison_group_key"] == original
+    assert groups.comparison_metadata(object(), rows)[0]["comparison_group_key"] == original
     context[field] = value
-    assert history.load_strategy_one_v4_history(object())[0]["comparison_group_key"] != original
+    if field in {"initial_cash", "configuration_hash"}:
+        rows[0]["initial_cash" if field == "initial_cash" else "configuration_content_hash"] = float(value) if field == "initial_cash" else value
+    assert groups.comparison_metadata(object(), rows)[0]["comparison_group_key"] != original
