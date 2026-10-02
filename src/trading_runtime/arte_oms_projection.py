@@ -515,10 +515,11 @@ def _approved_strategy_one_oms_intent(
         raise ValueError("Strategy 1 OMS admission needs its decision and reservation")
     approved_intent = source_intent.intent
     from .strategy_profit_giveback_exit import profit_giveback_reason
-    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35)}
+    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36)}
     from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason
-    ah_reasons = {confirmed_ah_reason(number) for number in (34, 35)}
-    from .strategy_liquidity_fade_exit import REASON as liquidity_reason
+    ah_reasons = {confirmed_ah_reason(number) for number in (34, 35, 36)}
+    from .strategy_liquidity_fade_exit import liquidity_fade_reason
+    liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36)}
     account = state.group["account_id"]
     if confirmed_ah_row is not None and approved_intent.reason not in ah_reasons:
         raise ValueError('AH recovery witness differs from its exit reason')
@@ -526,9 +527,9 @@ def _approved_strategy_one_oms_intent(
         raise ValueError('AH recovery requires its exact Portfolio admission')
     if approved_intent.reason in profit_reasons and admission_reservation is None:
         raise ValueError('Profit recovery requires its exact Portfolio admission')
-    if liquidity_fade_row is not None and approved_intent.reason != liquidity_reason:
+    if liquidity_fade_row is not None and approved_intent.reason not in liquidity_reasons:
         raise ValueError('Liquidity recovery witness differs from its exit reason')
-    if approved_intent.reason == liquidity_reason and admission_reservation is None:
+    if approved_intent.reason in liquidity_reasons and admission_reservation is None:
         raise ValueError('Liquidity recovery requires its exact Portfolio admission')
     if admission_reservation is not None:
         from src.trading_runtime.portfolio import _intent_correlation
@@ -545,7 +546,7 @@ def _approved_strategy_one_oms_intent(
                 or not decision.get("policy_id")
                 or int(decision.get("policy_revision") or 0) < 1):
             raise ValueError("Strategy 1 OMS admission differs from typed source")
-        if approved_intent.reason == liquidity_reason:
+        if approved_intent.reason in liquidity_reasons:
             from .arte_liquidity_fade_failure_v4 import restore_liquidity_fade_failure
             from .strategy_liquidity_fade_exit import liquidity_fade_exit_intent
             from .strategy_one_stateful import StrategyOneFinancialView
@@ -554,8 +555,8 @@ def _approved_strategy_one_oms_intent(
             if (liquidity_fade_row is None or any(row is not None for row in
                     (followthrough_row, profit_giveback_row, confirmed_ah_row))
                     or type(state.group['strategy_revision']) is not int
-                    or state.group['strategy_revision'] != 35
-                    or liquidity_fade_row['strategy_number'] != 35
+                    or state.group['strategy_revision'] not in (35, 36)
+                    or liquidity_fade_row['strategy_number'] != state.group['strategy_revision']
                     or liquidity_fade_row['run_id'] != protection_history.run_id
                     or liquidity_fade_row['assignment_id'] != reservation['assignment_id']
                     or str(liquidity_fade_row['parent_record_id']) != source_intent.record_id
@@ -567,7 +568,8 @@ def _approved_strategy_one_oms_intent(
             expected = liquidity_fade_exit_intent(restore_liquidity_fade_failure(liquidity_fade_row),
                 financial, session_date=approved_intent.event_time.astimezone(
                     ZoneInfo('America/New_York')).date(),
-                source_entry_intent_id=str(liquidity_fade_row['source_entry_intent_id']))
+                source_entry_intent_id=str(liquidity_fade_row['source_entry_intent_id']),
+                strategy_number=state.group['strategy_revision'])
             if expected != approved_intent or float(reservation['quantity']) != approved_intent.quantity:
                 raise ValueError('Liquidity recovery differs from the exact full-position exit intent')
         elif approved_intent.reason in ah_reasons:
@@ -579,7 +581,7 @@ def _approved_strategy_one_oms_intent(
             if (confirmed_ah_row is None or followthrough_row is not None
                     or profit_giveback_row is not None
                     or type(state.group['strategy_revision']) is not int
-                    or state.group['strategy_revision'] not in (34, 35)
+                    or state.group['strategy_revision'] not in (34, 35, 36)
                     or confirmed_ah_row['strategy_number'] != state.group['strategy_revision']
                     or confirmed_ah_row['run_id'] != protection_history.run_id
                     or confirmed_ah_row['assignment_id'] != reservation['assignment_id']
@@ -625,7 +627,7 @@ def _approved_strategy_one_oms_intent(
             from .strategy_engine import AssignmentStatus, StrategyPermissions
             from zoneinfo import ZoneInfo
             if (profit_giveback_row is None or followthrough_row is not None
-                    or state.group['strategy_revision'] not in (31, 32, 33, 34, 35)
+                    or state.group['strategy_revision'] not in (31, 32, 33, 34, 35, 36)
                     or profit_giveback_row['strategy_number'] != state.group['strategy_revision']
                     or profit_giveback_row['run_id'] != protection_history.run_id
                     or profit_giveback_row['assignment_id'] != reservation['assignment_id']
@@ -739,7 +741,7 @@ def reconstruct_strategy_one_oms_lineage(
     if (
             not isinstance(group, dict)
             or group.get("strategy_id") != STRATEGY_ID
-            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
+            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
             or group.get("run_id") != protection_history.run_id
             or group.get("batch_id") not in protection_history.committed_batch_ids
             or source_intent.batch_id not in protection_history.committed_batch_ids
@@ -752,7 +754,7 @@ def reconstruct_strategy_one_oms_lineage(
             # Its immutable source intent is add_long, not the first entry's
             # enter_long. Both require the same exact typed lineage proof.
             or source_intent.intent.action not in (
-                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35) else
+                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36) else
                 {"enter_long", "add_long", "exit"} if group.get("strategy_revision") in (2, 3)
                 else {"enter_long", "add_long"})
             or not state.orders or len(state.orders) > 65_535
@@ -895,16 +897,17 @@ def load_recovered_strategy_one_oms_lineage(
     liquidity_rows = {}
     from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, load_confirmed_ah_failure
     from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason
-    ah_reasons = {confirmed_ah_reason(number) for number in (34, 35)}
+    ah_reasons = {confirmed_ah_reason(number) for number in (34, 35, 36)}
     from .arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
     from .arte_liquidity_fade_reader_v4 import load_liquidity_fade_failure
-    from .strategy_liquidity_fade_exit import REASON as liquidity_reason
+    from .strategy_liquidity_fade_exit import liquidity_fade_reason
+    liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36)}
     from .arte_followthrough_failure_v4 import REASON, load_followthrough_failure
     from .arte_profit_giveback_reader_v4 import load_committed_profit_giveback
     from .strategy_profit_giveback_exit import profit_giveback_reason
-    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35)}
+    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36)}
     for record_id, source in by_id.items():
-        if source.intent.reason == liquidity_reason:
+        if source.intent.reason in liquidity_reasons:
             raw, _ = load_liquidity_fade_failure(client, prefix, record_id)
             unsigned = {name for name, kind in LIQUIDITY_FADE_FAILURE.columns if kind.startswith('UInt')}
             liquidity_rows[record_id] = {name: int(value) if name in unsigned else value

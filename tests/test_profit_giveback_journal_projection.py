@@ -103,7 +103,7 @@ def test_journal_rejects_unconfirmed_or_changed_authority(change):
 
 
 @pytest.mark.parametrize('change', [None, 'missing', 'ask', 'stop', 'ticker', 'future'])
-@pytest.mark.parametrize('number', [31, 32, 33, 34])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35, 36])
 def test_projection_requires_exact_precheckpoint_original_source(change, number):
     journal, record = prepared(strategy_number=number)
     batch, entry = original_source(strategy_number=number)
@@ -127,7 +127,7 @@ def test_projection_requires_exact_precheckpoint_original_source(change, number)
         assert result.profit['source_manager_snapshot_id'] == str(UUID(int=5))
 
 
-@pytest.mark.parametrize('number', [31, 32, 33, 34])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35, 36])
 def test_missing_sidecar_cannot_be_published_as_an_ordinary_exit(number):
     journal, record = prepared(strategy_number=number)
     journal._profit_giveback_exits.pop(record.record_id)
@@ -144,7 +144,7 @@ def test_changed_record_payload_cannot_replace_immutable_exit_source(field, valu
 
 
 @pytest.mark.parametrize('compound', [False, True])
-@pytest.mark.parametrize('number', [31, 32, 33, 34])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35, 36])
 def test_async_publisher_projects_writes_retains_source_and_fences(monkeypatch, compound, number):
     from src.trading_runtime import arte_journal_writer as writer
     client, _, _, _, _ = context(monkeypatch)

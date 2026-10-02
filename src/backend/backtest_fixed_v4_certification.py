@@ -977,7 +977,7 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
 # routes. Exact canonical AST seals bind the tested implementation; a later
 # behavior change gets a new numbered release. Comments/line endings do not
 # affect these seals. The run separately pins its complete backend fingerprint.
-_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'BacktestMemoryJournal': '0e15e3df9dbbd009430ac68c37fc28f9c6acdb9c3dc946086a003e5d0990c722', 'mark_fenced': '8cd7c50ca0a615ff9ed75ca54cfbffca41b94e8d74920adcefaa7d5fcca93855', 'append_profit_giveback_exit': '5c2cee38221c80df9598a447a25a853a43d9ef8569fa5b616b3fadd216e4fa65', 'profit_giveback_exit_for_record': '961b81e4f28658ccfafcdeae95bac8c0c1aa4951f989a86cd819bab86212ed40',
+_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'BacktestMemoryJournal': '0e202a0100176ba5a8aaf40e02ba072b2840bb62b67e008266aef079cbcc4eed', 'mark_fenced': '8cd7c50ca0a615ff9ed75ca54cfbffca41b94e8d74920adcefaa7d5fcca93855', 'append_profit_giveback_exit': '39562f84fadaedc24802e2e8d805b99b199e7d6b411c8ab7dee93a7c913b6bb5', 'profit_giveback_exit_for_record': '961b81e4f28658ccfafcdeae95bac8c0c1aa4951f989a86cd819bab86212ed40',
                                         'append_followthrough_exit': '79ebdf7bf7044b74a903f729db9300c69eaefde8b2356813cbd020273532104a',
                                         'append_strategy_one_intent': 'c99efb7110ceaa3386b05d29c2be46b9f38b2075eac3b3ef91a51b67c74aec55',
                                         'append_strategy_one_protection_intent': '89f30010ede38620f82b8b9d1805cafe403d7b8d3feb4d3dc217e719ea3f9802'},
@@ -1000,7 +1000,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'backend/backtest_strategy_one_static_gate.py': {'compile_static_entry_gate': 'e6d2f747557dfbe005d492fa4a24ef671f47736961196cd1ca27ec2da438d0e5'},
  'backend/backtest_strategy_one_v7_interval_store.py': {'certify_v7_interval_plan': '3e5a6b0150e9225821f165971f4c2526d41c2d9934c50bdbaa9101c295c219aa'},
  'backend/backtest_strategy_rising_momentum.py': {'__module__': 'c0f4a1084b29088a1df63cdeb5c1b82b3d467fe2a657ee08ab37037bd6a6f245'},
- 'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': '9d62ce15c399d190c00275d1f279c26d8c6fd851e56d0a2304a43d9d15460798'},
+ 'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': '0b2bbb2a1b4361f8e55208cfe3f77022755b05a494312e813e0c84110e1165ca'},
  'backend/backtest_typed_publisher.py': {'_drain': '741b62aa4cbfefffa1dd42c307ff5c215afcdf953ee5541a24071a7b40f19785',
                                          '_prepare_batches': '3c062863262b9e3d68c423a31ab27e7fedd1a031db78b7981239a107ef9781d7',
                                          '_publish_terminal_v4': 'f9eabf5aca42abc249a30d7d164fc8689a56b16c284c2a8bb523d823a3932ce4',
@@ -1020,7 +1020,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                                       'validate_numbered_failure': 'e46d980c8f7ecd3221ddda859ee758e833752e42174d372cb1077a586df926af'},
  'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': '486a36b880d22e8bbcba709cca811063acbe81e990029551f201391b35a602fe'},
  'trading_runtime/arte_journal_commit_v4.py': {'verified_batch_predecessor': 'e7f52f08e28175674cf663dbde1b17abf7bf53513884f7d2289fbdd4dfe63ecf',
-                                            '_load_verified_details_v4': 'b342a72a311a7fb4cdc604f1357d88773440293fd76ba274c1412b7c803b2ba9',
+                                            '_load_verified_details_v4': 'de4e5271b3be4dceefd02e61bc579cdc082f48c8fe34759ddcb58e7385a7aae4',
                                                '_publish_sealed_batch_v4': 'd61d78ce8fc293a05888b4b30c84449e96826f038997c10ad22a94ac886be597',
                                                '_publish_typed_batch_v4': 'f7866a2b0434424ccacedeb45a037e2250f6ee56f46a6b4b60fc79f26da6c4c1',
                                                '_validate_strategy_one_entry_link': '27d6ef1ced34e37fc64b2634946237d62e160fba729f5cb3b1979a4245d8073f',

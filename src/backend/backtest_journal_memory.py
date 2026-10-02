@@ -297,7 +297,7 @@ class BacktestMemoryJournal:
             source_entry_intent_id=source_entry_intent_id, strategy_number=strategy_revision,
         )
         if (strategy_id != 'early-squeeze-strategy'
-                or type(strategy_revision) is not int or strategy_revision not in (34, 35)
+                or type(strategy_revision) is not int or strategy_revision not in (34, 35, 36)
                 or intent != expected):
             raise ValueError('AH confirmation journal requires exact Strategy 34 factory authority')
         source = (intent, witness, financial, source_entry_intent_id, session_date)
@@ -341,13 +341,14 @@ class BacktestMemoryJournal:
             validate_liquidity_observation_source,
         )
         expected = liquidity_fade_exit_intent(witness, financial,
-            session_date=session_date, source_entry_intent_id=source_entry_intent_id)
+            session_date=session_date, source_entry_intent_id=source_entry_intent_id,
+            strategy_number=strategy_revision)
         fields = {'source_build_id', 'source_market_plan_token', 'source_bars_attempt_id',
                   'source_indicators_attempt_id', 'source_liquidity_attempt_id', *CHECKPOINT_REFERENCE_FIELDS}
         if (strategy_id != 'early-squeeze-strategy' or type(strategy_revision) is not int
-                or strategy_revision != 35 or intent != expected
+                or strategy_revision not in (35, 36) or intent != expected
                 or not isinstance(observation_source, Mapping) or set(observation_source) != fields):
-            raise ValueError('Liquidity journal requires exact Strategy 35 factory and complete references')
+            raise ValueError('Liquidity journal requires exact numbered factory and complete references')
         refs = dict(observation_source)
         validate_liquidity_observation_source(refs)
         validate_liquidity_checkpoint_reference(refs)
@@ -389,7 +390,7 @@ class BacktestMemoryJournal:
         from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
         if (type(arm_reference) is not ProfitArmReference
                 or type(arm_reference.candidate) is not ProfitArmCandidate
-                or type(strategy_revision) is not int or strategy_revision not in (31, 32, 33, 34, 35)
+                or type(strategy_revision) is not int or strategy_revision not in (31, 32, 33, 34, 35, 36)
                 or strategy_id != 'early-squeeze-strategy'
                 or type(account_id) is not str or not account_id
                 or type(assignment_id) is not str or not assignment_id

@@ -108,25 +108,25 @@ def test_ah35_original_entry_graph_keeps_independent_preceding_source(monkeypatc
         validate_confirmed_ah_source(None, row, parent, event, verified_prefix=prefix)
 
 
-def oms_case(family):
+def oms_case(family, strategy_number=35):
     from datetime import date
-    group, source, history, reservation, decision, _ = profit_oms(35)
+    group, source, history, reservation, decision, _ = profit_oms(strategy_number)
     if family == 'ah':
         witness, financial, args, _, row = ah_case()
-        intent = confirmed_ah_exit_intent(witness, financial, **args, strategy_number=35)
-        row = project_confirmed_ah_failure(witness, intent, financial, **args, strategy_number=35,
+        intent = confirmed_ah_exit_intent(witness, financial, **args, strategy_number=strategy_number)
+        row = project_confirmed_ah_failure(witness, intent, financial, **args, strategy_number=strategy_number,
             run_id=history.run_id, batch_id=source.batch_id, parent_record_id=source.record_id)
     else:
         from src.trading_runtime.arte_liquidity_fade_failure_v4 import project_liquidity_fade_failure, CHECKPOINT_REFERENCE_FIELDS
         witness, financial, _, row = liquidity_case()
         intent = liquidity_fade_exit_intent(witness, financial, session_date=date(2026,8,10),
-            source_entry_intent_id=row['source_entry_intent_id'])
+            source_entry_intent_id=row['source_entry_intent_id'], strategy_number=strategy_number)
         refs = {key: row[key] for key in ('source_build_id', 'source_market_plan_token',
             'source_bars_attempt_id', 'source_indicators_attempt_id', 'source_liquidity_attempt_id',
             *CHECKPOINT_REFERENCE_FIELDS)}
         row = project_liquidity_fade_failure(witness, intent, financial, session_date=date(2026,8,10),
             source_entry_intent_id=row['source_entry_intent_id'], run_id=history.run_id,
-            batch_id=source.batch_id, parent_record_id=source.record_id, **refs)
+            batch_id=source.batch_id, parent_record_id=source.record_id, strategy_number=strategy_number, **refs)
     source = replace(source, intent=intent)
     order = replace(group.orders[0], ticker=financial.ticker, quantity=financial.position_quantity,
         price=intent.reference_price)
@@ -138,26 +138,29 @@ def oms_case(family):
 
 
 @pytest.mark.parametrize('family', ['ah', 'liquidity'])
-def test_complete35_exit_reconstructs_exact_approved_order(family):
-    group, source, history, reservation, decision, row = oms_case(family)
+@pytest.mark.parametrize('number', [35, 36])
+def test_complete_numbered_exit_reconstructs_exact_approved_order(family, number):
+    group, source, history, reservation, decision, row = oms_case(family, number)
     kwargs = {'confirmed_ah_row' if family == 'ah' else 'liquidity_fade_row': row}
     approved, _ = _approved_strategy_one_oms_intent(group, source, history, reservation, decision, **kwargs)
     assert approved.metadata['assignment_id'] == reservation['assignment_id']
     orders = reconstruct_strategy_one_oms_lineage(group, source, history,
         admission_reservation=reservation, admission_decision=decision, **kwargs)
     assert orders[0].raw == canonical_runtime_order_raw(group.orders[0], approved,
-        run_id=history.run_id, strategy_id='early-squeeze-strategy', strategy_revision=35)
+        run_id=history.run_id, strategy_id='early-squeeze-strategy', strategy_revision=number)
 
 
 @pytest.mark.parametrize('family', ['ah', 'liquidity'])
-@pytest.mark.parametrize('change', ['missing', 'no_admission', 'quantity', 'parent', 'revision', 'assignment'])
-def test_incomplete35_exit_lineage_rejects(family, change):
-    group, source, history, reservation, decision, row = oms_case(family)
+@pytest.mark.parametrize('change', ['missing', 'no_admission', 'quantity', 'parent', 'revision', 'assignment', 'cross_number'])
+@pytest.mark.parametrize('number', [35, 36])
+def test_incomplete_numbered_exit_lineage_rejects(family, change, number):
+    group, source, history, reservation, decision, row = oms_case(family, number)
     if change == 'missing': row = None
     elif change == 'no_admission': reservation = decision = None
     elif change == 'quantity': reservation = dict(reservation, quantity=1)
     elif change == 'parent': row = dict(row, parent_record_id='foreign')
     elif change == 'revision': group = replace(group, group=dict(group.group, strategy_revision=33))
+    elif change == 'cross_number': row = dict(row, strategy_number=36 if number == 35 else 35)
     else: row = dict(row, assignment_id='foreign')
     kwargs = {'confirmed_ah_row' if family == 'ah' else 'liquidity_fade_row': row}
     with pytest.raises(ValueError):
