@@ -343,7 +343,12 @@ async def run_certified_strategy_one_session(
             if runtime.config.strategy_revision == 35:
                 from .backtest_strategy_liquidity_fade_loader import load_compiled_liquidity_fade_lookup
                 liquidity_lookup = await asyncio.to_thread(load_compiled_liquidity_fade_lookup,
-                    reader, plan=evidence_market, session_date=runtime.config.anchor_date)
+                    reader, plan=evidence_market, session_date=runtime.config.anchor_date,
+                    # Every possible entry comes from these static survivors;
+                    # no positions or future P&L select the activity population.
+                    tickers=tuple(sorted({fact.ticker for fact in surviving_facts})),
+                    after_boundary_ms=start_after_boundary_ms,
+                    through_boundary_ms=through_boundary_ms)
                 manager.bind_liquidity_fade_lookup(liquidity_lookup, evidence_market)
             if resume_manager_state is not None:
                 if runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35):

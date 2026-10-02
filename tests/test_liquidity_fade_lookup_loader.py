@@ -70,3 +70,59 @@ def test_empty_native_stream_has_no_imputed_zero_activity():
     reader = Reader(())
     assert load_compiled_liquidity_fade_lookup(reader, **args).window_at('PLUG', witness.boundary_ms) is None
     assert reader.stream.closed
+
+
+def test_candidate_scope_preserves_plan_identity_and_complete_held_window():
+    from dataclasses import replace
+    witness, args, batches = native_batches()
+    plan = args['plan']
+    larger = replace(plan, tickers=plan.tickers + ('UNUSED',),
+        units=plan.units + tuple(replace(unit, ticker='UNUSED') for unit in plan.units))
+    reader = Reader(batches)
+    oldest_start = witness.candles[0].boundary_ms - 5000
+    cache = load_compiled_liquidity_fade_lookup(reader, plan=larger,
+        session_date=args['session_date'], tickers=('PLUG',),
+        after_boundary_ms=oldest_start, through_boundary_ms=witness.boundary_ms)
+    assert cache.market_plan_token == larger.token
+    assert cache.window_at('PLUG', witness.boundary_ms).candles == witness.candles
+    assert 'UNUSED' not in reader.queries[0]
+    assert 'LIMIT 2000001' in reader.queries[0]
+    assert cache.window_at('UNUSED', witness.boundary_ms) is None
+
+
+@pytest.mark.parametrize('scope', [
+    {'tickers': ['PLUG']}, {'tickers': ('FOREIGN',)}, {'tickers': ('PLUG', 'PLUG')},
+    {'after_boundary_ms': True}, {'after_boundary_ms': -100},
+    {'after_boundary_ms': 1}, {'through_boundary_ms': 57_600_100},
+    {'after_boundary_ms': 100, 'through_boundary_ms': 100},
+])
+def test_invalid_scope_rejects_before_network_access(scope):
+    _, args, batches = native_batches()
+    reader = Reader(batches)
+    with pytest.raises(ValueError, match='scope differs'):
+        load_compiled_liquidity_fade_lookup(reader, **args, **scope)
+    assert not reader.queries
+
+
+@pytest.mark.parametrize('scope', [
+    {'tickers': ()}, {'after_boundary_ms': 100, 'through_boundary_ms': 4900},
+])
+def test_no_possible_whole_candle_or_entry_needs_no_query(scope):
+    witness, args, batches = native_batches()
+    reader = Reader(batches)
+    cache = load_compiled_liquidity_fade_lookup(reader, **args, **scope)
+    assert cache.market_plan_token == args['plan'].token
+    assert cache.window_at('PLUG', witness.boundary_ms) is None
+    assert not reader.queries
+
+
+@pytest.mark.parametrize('clock', ['partial_first_bar', 'future_last_bar'])
+def test_scope_leak_rejects_without_filtering_native_rows(clock):
+    witness, args, batches = native_batches()
+    reader = Reader(batches)
+    kwargs = ({'after_boundary_ms': witness.candles[0].boundary_ms-4900}
+              if clock == 'partial_first_bar' else
+              {'through_boundary_ms': witness.completed_five_second_boundary_ms-100})
+    with pytest.raises(ValueError, match='outside its requested scope'):
+        load_compiled_liquidity_fade_lookup(reader, **args, **kwargs)
+    assert reader.stream.closed

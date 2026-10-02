@@ -9,7 +9,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/backend/backtest_journal_memory.py': {'__module__': 'aebc9e470ca185086d847cb9b973318b88d5009844b79ed13c05be4a6e4b67d6'},
  'src/backend/backtest_strategy_one_configuration.py': {'__module__': 'a3157672b364f52abfbfe66d8ebdd0bda3e9f87506ef396349562644f83f37bf'},
  'src/backend/backtest_strategy_one_coordinator.py': {'__module__': '6b4b10391952a7b4082bd35a7a10b5b909c78015e661a7b5d30a865a44cebe83'},
- 'src/backend/backtest_strategy_one_execution.py': {'__module__': '9ba38f166818760fde7e194ef8aeae43e805da1256001245080e3a57c1097f9b'},
+ 'src/backend/backtest_strategy_one_execution.py': {'__module__': 'bb6acf4c2a23f98fc3b8570b96927be8ab8bc33fddcd8bff40520ed9b801b6e1'},
  'src/backend/backtest_strategy_one_management.py': {'__module__': '2afd93a156ce2925ae93c4705687851876b8b4a0c59e052a787caa9fd48081ad'},
  'src/backend/backtest_typed_projection.py': {'__module__': '7593347516c3365103d1f254cf0068178cf492f4d0184f7ff804b10c4c4e7886'},
  'src/backend/backtest_typed_publisher.py': {'__module__': '0e346fc1352cd0c4e0fdaf76a7a4c110df5d4b0eec3ba3ec019496bdc8703a49'},

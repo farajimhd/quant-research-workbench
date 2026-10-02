@@ -991,7 +991,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'backend/backtest_strategy_initial_ten_percent.py': {'__module__': '73b8b04654cd8ebef2a8906908bac4c82fa06616fb4d50d19f73442f7f07f420'},
  'backend/backtest_strategy_one_configuration.py': {'__module__': 'a3157672b364f52abfbfe66d8ebdd0bda3e9f87506ef396349562644f83f37bf'},
  'backend/backtest_strategy_one_coordinator.py': {'run_strategy_one_proposals': '68c46a3d60676b692d250db2e732b27a16285368be6842f8ea2d74d2781e7510'},
- 'backend/backtest_strategy_one_execution.py': {'run_certified_strategy_one_session': '08e522bcd22b89959eb24b3ab2f6ab6a59d54fa5f26f7ea1e9a72df174eb05b4',
+ 'backend/backtest_strategy_one_execution.py': {'run_certified_strategy_one_session': '8f32b353ab11da4f282d3a44ac57f51181b72805eba54a65924633dea3dc3a16',
                                                 'run_strategy_one_fixed_session': '552b1475494632748f7c2f471ab8da8874812adb63ea50351fcfe03df934b852'},
  'backend/backtest_strategy_one_management.py': {'__init__': 'd2302383942594edc2eb9a0b1b0c314ff75d5b5fc63ee835349ad81ffc27c397', 'profit_arming_requests': 'cd318116330f7d0c959a4e30260c4a5f374b5debe4e3c0248f9e69dcac417528', 'accept_profit_arming_references': '3887b6c277a19ddd561fe092695fdd895d5c6fd8616e434cfc644853767eafdd', '_validate_capture': 'eea5ca262a6add3c7d31e0c93ba3cacffcfa68c879b2458461be2e26aad63684',
                                                  'on_management': 'f0d1fc3724c703520e6ea7be123a2c6ad3d75a5f6a2a8c4115574d0045cf029c',
