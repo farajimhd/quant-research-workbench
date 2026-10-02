@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from pathlib import Path
 import ssl
 import sys
@@ -28,12 +29,34 @@ def _restore_stdlib_ssl_for_keeper() -> None:
     extract_from_ssl()
 
 
+def _apply_service_environment(environment=None) -> None:
+    """Use the managed catalog for direct launches without replacing overrides.
+
+    Credential files remain external; this copies paths, never secret values.
+    Workstation bootstrap runs first so its inline principals do not get mixed
+    with the laptop catalog's credential-file defaults.
+    """
+    from scripts.service_manager import _load_catalog
+    from src.backend.managed_backtest_credentials import load_managed_backtest_credentials
+
+    env = os.environ if environment is None else environment
+    load_managed_backtest_credentials(environment=env)
+    services, _ = _load_catalog()
+    for key, value in services["backend"].environment.items():
+        if key.endswith("_CREDENTIAL_FILE"):
+            prefix = key.removesuffix("CREDENTIAL_FILE") + "CLICKHOUSE_"
+            if any(env.get(prefix + suffix) for suffix in ("URL", "USER", "PASSWORD")):
+                continue
+        env.setdefault(key, value)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the Quant Workbench backend API.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args()
+    _apply_service_environment()
 
     # pip-system-certs replaces ssl.SSLContext at interpreter startup on some
     # Windows installations. Kazoo's Keeper TLS socket is incompatible with
