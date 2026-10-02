@@ -60,6 +60,7 @@ from .arte_initial_momentum_entry_v4 import (
     decode_initial_momentum_row,
 )
 from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
+from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activity_rows
 
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
@@ -485,6 +486,7 @@ def load_verified_commit_v4(
     client, *, run_id: str, batch_id: str,
     max_rows_per_family: int = 65_536,
     first_price_source=None,
+    entry_activity_source=None,
     first_price_authorities: tuple = (),
     verified_prior_prefix: V4CommittedPrefix | None = None,
 ) -> tuple[dict, tuple[dict, ...]]:
@@ -530,6 +532,7 @@ def load_verified_commit_v4(
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
         prior_batch_id=str(commit["prior_batch_id"]), first_price_source=first_price_source,
         first_price_authorities=first_price_authorities,
+        entry_activity_source=entry_activity_source,
         verified_prior_prefix=verified_prior_prefix)
     try:
         verify_commit_v4(commit, family_rows, details)
@@ -544,6 +547,7 @@ def _load_verified_details_v4(
     batched_readback: bool = False, prior_batch_id: str | None = None,
     first_price_authorities: tuple = (),
     first_price_source=None,
+    entry_activity_source=None,
     verified_prior_prefix: V4CommittedPrefix | None = None,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
@@ -600,7 +604,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -672,6 +676,16 @@ def _load_verified_details_v4(
                related_rows.get("trading_strategy_intent_v1", ())
                if row["reason"] == "strategy_one_entry"}
     children = related_rows.get(ENTRY_EVIDENCE.name, ())
+    # Every stored row hash was verified above. Reconstruct witnesses from an
+    # independent source even if the commit omits the companion family entirely.
+    activity_rows = tuple(dict(_canonical_typed_content(ENTRY_ACTIVITY.name,
+        {key: value for key, value in row.items() if key != 'content_hash'}, stored_utc=True),
+        content_hash=row['content_hash'])
+        for row in related_rows.get(ENTRY_ACTIVITY.name, ()))
+    seal_certified_entry_activity_rows(activity_rows,
+        children, related_rows.get('trading_strategy_intent_v1', ()),
+        related_rows.get('trading_event_v1', ()), run_id=run_id,
+        source=entry_activity_source)
     if len(parents) != len(children):
         raise RuntimeError("V4 Strategy 1 entry evidence is missing or extra")
     events = {str(UUID(str(row["record_id"]))): row for row in

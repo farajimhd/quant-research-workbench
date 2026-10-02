@@ -147,8 +147,8 @@ def test_missing_or_extra_companion_rejects():
                                     batch_id=BATCH, parent_record_id=PARENT, event_month=row['event_month'])
 
 
-def sealing_graph():
-    source = plan()
+def sealing_graph(source=None):
+    source = plan() if source is None else source
     witness, entry, intent = graph(source)
     receipt = EntryActivityReadbackAuthority('activity-run', source).resolve(
         'activity-run', (entry,), (intent,))
@@ -199,3 +199,23 @@ def test_sealer_requires_encoding_registration(monkeypatch):
     monkeypatch.delitem(_CONTRACTS, ENTRY_ACTIVITY.name)
     with pytest.raises(ValueError, match='not registered'):
         seal_entry_activity_rows((), (), (), (), ())
+
+
+def test_cold_source_resolution_requires_independent_plan_and_complete_companion():
+    from src.trading_runtime.arte_entry_activity_v4 import seal_certified_entry_activity_rows
+    prepared = plan()
+    rows, entries, intents, events, _ = sealing_graph(prepared)
+    source = EntryActivityReadbackAuthority('activity-run', prepared)
+    sealed = seal_certified_entry_activity_rows(rows, entries, intents, events,
+        run_id='activity-run', source=source)
+    assert len(sealed) == 1
+    for supplied in (None, source.plan, EntryActivityReadbackAuthority('other-run', plan())):
+        with pytest.raises(ValueError, match='independent certified run source'):
+            seal_certified_entry_activity_rows(rows, entries, intents, events,
+                run_id='activity-run', source=supplied)
+    with pytest.raises(ValueError, match='exactly one'):
+        seal_certified_entry_activity_rows((), entries, intents, events,
+            run_id='activity-run', source=source)
+    assert seal_certified_entry_activity_rows((), (), (), (), run_id='old-run') == ()
+    with pytest.raises(ValueError, match='no Strategy 36 parent'):
+        seal_certified_entry_activity_rows(rows, (), (), (), run_id='old-run')

@@ -34,6 +34,27 @@ def activity_event_instant(witness):
     return (start + timedelta(milliseconds=witness.boundary_ms)).astimezone(timezone.utc)
 
 
+def seal_certified_entry_activity_rows(rows, entries, intents, events, *, run_id, source=None):
+    """Reconstruct authority from certified inputs before sealing stored evidence.
+
+    Row-contained tokens and producer-supplied witnesses never authorize cold
+    readback. Older numbered entries need no activity source or companions.
+    """
+    required = tuple(row for row in entries if row['strategy_number'] == 36)
+    if not required:
+        if rows:
+            raise ValueError('Entry activity companions have no Strategy 36 parent')
+        return ()
+    from src.backend.backtest_strategy_entry_activity_source import EntryActivityReadbackAuthority
+    if type(source) is not EntryActivityReadbackAuthority or source.run_id != run_id:
+        raise ValueError('Entry activity requires independent certified run source')
+    parents = {row['parent_record_id'] for row in required}
+    selected_intents = tuple(row for row in intents if row['record_id'] in parents)
+    authorities = source.resolve(run_id, required, selected_intents)
+    return seal_entry_activity_rows(rows, required, selected_intents,
+        tuple(row for row in events if row['record_id'] in parents), authorities)
+
+
 def project_entry_activity(witness, *, run_id, batch_id, parent_record_id, event_month):
     """Project independently supplied evidence; row-contained seals grant nothing."""
     validate_entry_activity_witness(witness)
