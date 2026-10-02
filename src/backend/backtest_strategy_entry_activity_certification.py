@@ -21,7 +21,7 @@ ENTRY_ACTIVITY_SOURCE_AST = {
     'src/backend/backtest_strategy_entry_activity_source.py': 'db6e9f16dd62c48f98dc5ec8f7bfa40a17f69974bb618097418ec3f246d91681',
     'src/trading_runtime/strategy_thirty_six_release.py': '9a243bfe59b4071497bac22231ac0fb104262af40ff282e4910e6819a8b29308',
     'pipelines/strategy_one/strategy_thirty_six_configuration.py': '4a03259d1ab4a0ae29a2a14672fdef94249cac0b614478817b9f22d8a91d34b6',
-    'pipelines/strategy_one/configuration_publisher.py': 'dce2f6e9d03186d6ce38a4b61fc4d75b36ed6b25c70f60eefce632415b6daa86',
+    'pipelines/strategy_one/configuration_publisher.py': '6fff67894cd08c65969b9ebf26e58db942db8f6d80fb588b3e93c9544ace8a2f',
     'src/backend/backtest_strategy_one_configuration.py': 'f94b8fc15d933791948cc2e136ab835ca810fe93abcb483668d5639f5dd14b0c',
     'src/trading_runtime/strategy_registry.py': '7292328bd2dbc0b7f84bf31758a88ad6203ecce5845c268305ea7150d434d314',
     'src/trading_runtime/numbered_fixed_strategy.py': 'a2f4d21fd878c2ac53088a45589633c942989e41ff085ef70fd83940797b9231',

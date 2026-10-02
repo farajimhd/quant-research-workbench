@@ -7,7 +7,7 @@ from pathlib import Path
 
 LIQUIDITY_FADE_SOURCE_AST = {
     'scripts/clickhouse/publish_strategy_thirty_five_configuration.py': '4ea3528baf3efb8b60699af4bb9ee81b5c693c01360912dc86d7a2691fba547b',
-    'pipelines/strategy_one/configuration_publisher.py': 'dce2f6e9d03186d6ce38a4b61fc4d75b36ed6b25c70f60eefce632415b6daa86',
+    'pipelines/strategy_one/configuration_publisher.py': '6fff67894cd08c65969b9ebf26e58db942db8f6d80fb588b3e93c9544ace8a2f',
     'src/backend/backtest_strategy_one_configuration.py': 'f94b8fc15d933791948cc2e136ab835ca810fe93abcb483668d5639f5dd14b0c',
     'src/backend/backtest_strategy_one_coordinator.py': '7963a7e094838be998606b5a088b046cfaa8066e3ee0602cd9bb2bd9f890da01',
     'src/backend/backtest_v4_saved_review.py': '6b314337e553c6a1706feff61441375def1ba80517f7880a5b78aab7d1c2138c',

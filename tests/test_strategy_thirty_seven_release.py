@@ -91,6 +91,8 @@ def test_installed_compiler_requires_full_inherited_and_episode_source_proof():
     'src/backend/backtest_strategy_episode_activity_source.py',
     'src/trading_runtime/strategy_thirty_seven_release.py',
     'pipelines/strategy_one/strategy_thirty_seven_configuration.py',
+    'pipelines/strategy_one/configuration_publisher.py',
+    'scripts/clickhouse/publish_strategy_thirty_seven_configuration.py',
 ])
 def test_episode_source_certificate_rejects_modified_authority(relative, tmp_path):
     from pathlib import Path

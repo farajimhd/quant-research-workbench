@@ -4,7 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 import json
 
-REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'__module__': 'dce2f6e9d03186d6ce38a4b61fc4d75b36ed6b25c70f60eefce632415b6daa86'},
+REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'__module__': '6fff67894cd08c65969b9ebf26e58db942db8f6d80fb588b3e93c9544ace8a2f'},
  'pipelines/strategy_one/strategy_thirty_one_configuration.py': {'__module__': 'c17761f3c1bf325c59735b02ded012194a378946a3a50d984044cda6b1582515'},
  'src/backend/backtest_journal_memory.py': {'__module__': 'c118c12f2818fd0389d5503abb51e46fb45a9b05b8f2944dad0fc165d8e871e1'},
  'src/backend/backtest_strategy_one_configuration.py': {'__module__': 'f94b8fc15d933791948cc2e136ab835ca810fe93abcb483668d5639f5dd14b0c'},
