@@ -19,6 +19,12 @@ from src.backend.backtest_market_keeper_pool import MARKET_CERTIFICATE_KEEPER_PO
 from .optimize_strategy import main
 
 if __name__ == "__main__":
+    import torch
+
+    # CPU work here is small schema witnesses and graph repair, not a large
+    # matrix workload. Many intra-op threads make each witness much slower.
+    # CUDA compilation/capture and independent GPU lanes remain unchanged.
+    torch.set_num_threads(1)
     try:
         raise SystemExit(main())
     finally:
