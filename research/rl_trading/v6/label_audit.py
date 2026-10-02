@@ -4,10 +4,12 @@ The UI selects certified train/development dates, never arbitrary filesystem pat
 Only this deployment's explicit workstation runtime mapping is permitted.
 """
 from functools import lru_cache
+from datetime import datetime
 import json
 import os
 from pathlib import Path
 from threading import RLock
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import polars as pl
@@ -15,10 +17,43 @@ import polars as pl
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v6.episode_windows import VERSION
 from research.rl_trading.v6.features import SCALAR_NAMES
-from research.rl_trading.v6.split import TRAIN, DEVELOPMENT
 
 LOCK = RLock()
 DEFAULT_ROOT = r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes"
+RUN = 'rl-v6-rth-matched-v6-b31fc0cdc'
+RUN_TRAIN = ('2026-07-31', '2026-08-10', '2026-08-21')
+RUN_DEVELOPMENT = ('2026-08-24', '2026-08-25')
+
+
+def run_window(day):
+    begin = int(datetime.fromisoformat(day+'T09:30:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()*1e6)
+    return begin, begin + 1024_000_000
+
+
+def run_scope():
+    """Pin the user-selected completed diagnostic, not an arbitrary latest run."""
+    root = runtime() / RUN
+    protocol = json.loads((root / 'protocol.json').read_text())
+    manifest = json.loads((root / 'manifest.json').read_text())
+    if (protocol.get('source') != 'b31fc0cdcdb5ce1f5db1417c69322d2922d26966' or
+            protocol.get('sealed_holdout_used') is not False or
+            protocol.get('train_days') != list(RUN_TRAIN) or
+            protocol.get('development_days') != list(RUN_DEVELOPMENT) or
+            protocol.get('clock_window') != 'NY09:30inclusive09:47:04exclusive allprewarmup retained' or
+            manifest.get('source_commit') != protocol['source'] or
+            manifest.get('prefix_clocks') != 1024 or manifest.get('auxiliary_targets_masked') is not True):
+        raise ValueError('Selected training run scope changed')
+    return dict(run=RUN, source_commit=protocol['source'],
+                protocol_sha256=file_hash(root / 'protocol.json'),
+                window='09:30:00 inclusiveâ€“09:47:04 exclusive ET',
+                objective='Four-head soft classification only; auxiliary value/bracket targets masked')
+
+
+def training_frames(day, frames):
+    begin, end = run_window(day)
+    # Preserve original per-episode weights: the actual trainer filters rows,
+    # not the episode normalization denominator or probability values.
+    return {**frames, **{b: frames[b].filter((pl.col('time_us') >= begin) & (pl.col('time_us') < end)) for b in ('flat', 'held')}}
 
 
 def runtime():
@@ -38,9 +73,9 @@ def relocate(value, root):
 
 
 def sources(day):
-    allowed = {str(d): 'train' for d in TRAIN} | {str(d): 'development' for d in DEVELOPMENT}
+    allowed = {d: 'train' for d in RUN_TRAIN} | {d: 'development' for d in RUN_DEVELOPMENT}
     if day not in allowed:
-        raise ValueError('Choose a certified train/development date; heldout is sealed')
+        raise ValueError('Choose a date used by the selected RTH run; heldout is sealed')
     root = runtime()
     path = root / 'rl-v6-training-ready-c824232b4/audit-cert-repair-df08998e3/complete.json'
     dataset = json.loads(path.read_text())
@@ -59,11 +94,11 @@ def sources(day):
 
 def catalog():
     days = []
-    for day in TRAIN + DEVELOPMENT:
-        role = 'train' if day in TRAIN else 'development'
+    for day in RUN_TRAIN + RUN_DEVELOPMENT:
+        role = 'train' if day in RUN_TRAIN else 'development'
         days.append(dict(day=str(day), role=role))
     return dict(models=[dict(id='v6', name='RL trading V6', stage='Teacher training',
-                             label_source='Hindsight MACD 1s episodes', days=days)],
+                             label_source='Hindsight MACD 1s episodes', run=RUN, days=days)],
                 heldout='2026-08-26 sealed')
 
 
@@ -135,7 +170,7 @@ def statistics(frames):
             classes.append(dict(action=action, rows=frame.filter(condition).height,
                                 weighted_soft_mass=frame.select((mass*w).sum()).item()))
         for lo, hi in [(0, .1), (.1, .5), (.5, .9), (.9, 1.000001)]:
-            distributions.append(dict(branch=branch, range=f'{lo:g}–{min(hi, 1):g}',
+            distributions.append(dict(branch=branch, range=f'{lo:g}â€“{min(hi, 1):g}',
                 rows=frame.filter((p >= lo) & (p < hi)).height))
         repeated = frame.group_by('listing_id', 'time_us').len().filter(pl.col('len') > 1)
         episodes = frame.group_by('episode_uid').agg(pl.len().alias('rows'),
@@ -150,12 +185,14 @@ def statistics(frames):
                .sort(['rows', 'ticker'], descending=[True, False]).to_dicts())
     return dict(classes=classes, distributions=distributions, branches=branches, tickers=tickers,
                 scope='Selected full session; saved original teacher labels',
-                weight_scope='Original episode weights × soft probability; class balancing excluded',
+                weight_scope='Original episode weights Ã— soft probability; class balancing excluded',
                 coverage='WAIT coverage is inside supervised episodes only; outside-episode candles are unlabeled')
 
 
 def preflight(day):
     frames, cert = labels(day)
+    scope = run_scope()
+    frames = training_frames(day, frames)
     entry, _, _ = sources(day)
     return dict(model='v6', day=day, role=entry['role'], status='ready',
                 checks=['Train/development role verified', 'Label SHA-256 and row counts verified',
@@ -163,7 +200,8 @@ def preflight(day):
                         'Soft probabilities and weights valid', 'Overlapping episode labels preserved'],
                 candle_check='Candle and indicator file hashes verified when a chart is loaded',
                 certificate_sha256=file_hash(sources(day)[2] / 'complete.json'),
-                version=cert['version'], analytics=statistics(frames))
+                version=cert['version'], run_scope=scope,
+                analytics={**statistics(frames), 'scope': f'{RUN} Â· {scope["window"]} Â· original saved soft targets'})
 
 
 @lru_cache(maxsize=18)
@@ -203,11 +241,12 @@ def chart(day, listing_id, episode_uid, branch, start_us, seconds):
     if branch not in ('flat', 'held') or not 60 <= seconds <= 3600:
         raise ValueError('Invalid chart branch/window')
     frames, cert = labels(day)
+    run_scope()
+    frames = training_frames(day, frames)
+    begin, finish = run_window(day)
     branches = (branch,)
     frame = pl.concat([frames[b].select('listing_id', 'ticker', 'episode_uid', 'time_us') for b in branches]).filter(pl.col('listing_id') == listing_id)
     episode_options = frame.select('episode_uid').unique().sort('episode_uid')['episode_uid'].to_list()
-    if not episode_uid and not frame.is_empty():
-        episode_uid = frame.sort('time_us', 'episode_uid')['episode_uid'][0]
     if episode_uid:
         frame = frame.filter(pl.col('episode_uid') == episode_uid)
     if frame.is_empty():
@@ -221,8 +260,8 @@ def chart(day, listing_id, episode_uid, branch, start_us, seconds):
     item_clocks, item_scalar = all_clocks[left:right], all_scalar[left:right]
     if not len(item_clocks) or np.any(np.diff(item_clocks) <= 0):
         raise ValueError('Invalid chart candle ordering')
-    start = start_us if start_us is not None else max(int(frame['time_us'].min())-60_000_000, int(item_clocks[0]))
-    end = start + seconds*1_000_000
+    start = max(begin, min(start_us if start_us is not None else int(frame['time_us'].min())-60_000_000, finish-1))
+    end = min(start + seconds*1_000_000, finish)
     selected = (item_clocks >= start) & (item_clocks < end)
     # raw[K,37], clocks[K]: sparse actual activity, never fill missing seconds.
     raw, clocks = item_scalar[selected], item_clocks[selected]
@@ -262,4 +301,4 @@ def chart(day, listing_id, episode_uid, branch, start_us, seconds):
                 source='SHA-verified V6 packed 1s candles (decoded float32 log prices)',
                 episodes=episode_options, selected_episode=episode_uid, label_config=cert['config'], oscillator_series=oscillator, regions=regions, original_long_episodes=original.to_dicts(),
                 reward_units='ENTRY: original discounted score; HOLD/EXIT: fee-adjusted $/share since hypothetical entry',
-                previous_available=start > int(item_clocks[0]), next_available=end <= int(item_clocks[-1]))
+                previous_available=start > begin, next_available=end < finish)

@@ -31,13 +31,25 @@ def test_holdout_rejected_before_reading_runtime(monkeypatch):
     monkeypatch.setattr(audit, 'runtime', lambda: pytest.fail('Holdout touched filesystem'))
     with pytest.raises(ValueError, match='sealed'):
         audit.sources('2026-08-26')
+    with pytest.raises(ValueError, match='selected RTH run'):
+        audit.sources('2026-08-05')
+
+
+def test_run_window_keeps_exact_probabilities_and_original_weights():
+    begin, end = audit.run_window('2026-07-31')
+    frame = pl.DataFrame(dict(time_us=[begin-1, begin, end-1, end],
+                             probability=[.1, .2, .3, .4], sample_weight=[.01]*4))
+    result = audit.training_frames('2026-07-31', dict(flat=frame, held=frame))
+    assert result['flat']['time_us'].to_list() == [begin, end-1]
+    assert result['flat']['probability'].to_list() == [.2, .3]
+    assert result['held']['sample_weight'].to_list() == [.01, .01]
 
 
 def test_routes_reject_invalid_requests_and_expose_no_writers():
     app = FastAPI(); app.include_router(router)
     client = TestClient(app)
     catalog = client.get('/api/research/models').json()
-    assert len(catalog['models'][0]['days']) == 18
+    assert len(catalog['models'][0]['days']) == 5
     assert all(row['day'] != '2026-08-26' for row in catalog['models'][0]['days'])
     assert client.get('/api/research/models/v6/preflight?day=2026-08-26').status_code == 409
     assert client.get('/api/research/models/v6/chart?day=2026-07-31&listing_id=a&seconds=3601').status_code == 422

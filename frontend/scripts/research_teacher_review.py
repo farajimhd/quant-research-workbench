@@ -56,6 +56,21 @@ def main():
                         overflow = page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 2")
                         assert not overflow, f'Horizontal document overflow: {name}'
                         if theme == 'light' and scale == 1. and size == 'normal':
+                            move = page.get_by_role('toolbar', name='Move Model architecture & details. Use arrow keys to reposition; hold Shift for larger steps.', exact=True)
+                            move.focus(); move.press('ArrowRight'); move.press('ArrowDown')
+                            resize = page.get_by_role('button', name='Resize Model architecture & details. Use arrow keys to resize; hold Shift for larger steps.', exact=True)
+                            resize.focus(); resize.press('ArrowRight'); resize.press('ArrowDown')
+                            page.wait_for_timeout(100)
+                            storage_key = 'research.v6.workspace.v1:2026-07-31:layouts'
+                            geometry = page.evaluate('(key) => JSON.parse(localStorage.getItem(key)).architecture', storage_key)
+                            assert geometry['x'] > 0 and geometry['y'] > 0
+                            page.reload()
+                            page.get_by_role('button', name='Preflight labels').click()
+                            page.get_by_role('button', name='Open teacher audit workspace').wait_for(timeout=300000)
+                            page.get_by_role('button', name='Open teacher audit workspace').click()
+                            page.locator('.research-chart-container .chart-shell').wait_for(timeout=600000)
+                            restored = page.locator('[data-window-kind="architecture"]').evaluate('(element) => ({ x: parseFloat(element.style.left), y: parseFloat(element.style.top), w: parseFloat(element.style.width), h: parseFloat(element.style.height) })')
+                            assert all(abs(restored[k] - geometry[k]) < 1 for k in ('x', 'y', 'w', 'h'))
                             page.get_by_role('link', name='Public Sans Roles', exact=True).click()
                             page.locator('.research-chart-container').wait_for(state='detached')
                             page.get_by_role('link', name='Research', exact=True).click()
