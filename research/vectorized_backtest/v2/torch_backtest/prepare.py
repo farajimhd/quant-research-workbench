@@ -8,6 +8,7 @@ execution/activity lanes before transfer; MACD is never computed here.
 from contextlib import closing
 from hashlib import sha256
 import json
+from pathlib import Path
 import numpy as np
 import polars as pl
 import torch
@@ -71,6 +72,14 @@ def _align(frame, tickers, clocks, column, *, carry=False, tolerance=None):
     else:
         result = grid.join(values, on=["ticker", "time_us"], how="left", validate="1:1")
     return result.sort("time_us", "ticker")[column].to_numpy().astype(np.float64).reshape(len(clocks), len(tickers))
+
+
+def causal_marks(bars, tickers, clocks):
+    # price_valid=0 means no eligible last-price update, not a zero-valued
+    # security. Retain the latest completed valid mark solely for valuation.
+    # observed/extrema/structural clocks still require actual current evidence.
+    updates = bars.filter(pl.col("price_valid_1000") == 1)
+    return _align(updates, tickers, clocks, "close_int_1000", carry=True) / 10000
 
 
 def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0, structural_workers=0):
@@ -137,9 +146,7 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0, structur
               for name in ("volume", "notional", "fill_price", "vwap", "bid", "ask", "quote_us")}
     arrays["trades"] = _align(bars, tickers, clocks, "trade_count_1000")
     observed = _align(bars, tickers, clocks, "price_valid_1000") == 1
-    close = _align(bars, tickers, clocks, "close_int_1000", carry=True) / 10000
-    raw_valid = _align(bars, tickers, clocks, "price_valid_1000", carry=True) == 1
-    close[~raw_valid] = np.nan
+    close = causal_marks(bars, tickers, clocks)
     extrema = _align(bars, tickers, clocks, "extremes_valid_1000") == 1
     high = _align(bars, tickers, clocks, "high_int_1000") / 10000
     low = _align(bars, tickers, clocks, "low_int_1000") / 10000
@@ -173,6 +180,7 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0, structur
     tensor = lambda a: torch.from_numpy(np.ascontiguousarray(a))
     provenance = {"version": "squeeze-union-tape-v2", "synthetic": False,
                   "source_key": prepared.source_key, "market_token": market.token,
+                  "preparation_algorithm": sha256(Path(__file__).read_bytes()).hexdigest(),
                   "structural_token": structure.token, "seed_token": seeds.token,
                   "source_build": market.build_id, "session": str(day),
                   "start_second": start // 1_000_000, "end_second": end // 1_000_000,

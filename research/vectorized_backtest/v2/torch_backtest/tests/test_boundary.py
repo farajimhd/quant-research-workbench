@@ -71,6 +71,17 @@ def test_union_contains_all_macd_and_extrema_dependencies():
     assert {"high@1000ms", "low@1000ms", "trade_count@1000ms"} <= names
 
 
+def test_mark_retains_only_prior_valid_close_without_fabricating_observations():
+    from research.vectorized_backtest.v2.torch_backtest.prepare import causal_marks
+    frame = pl.DataFrame(dict(ticker=['A']*4,time_us=[1,2,3,5],
+        price_valid_1000=[0,1,0,1],close_int_1000=[0,474200,0,474000]))
+    marks = causal_marks(frame,('A',),np.arange(1,6,dtype=np.int64))[:,0]
+    assert np.isnan(marks[0])
+    np.testing.assert_array_equal(marks[1:],[47.42,47.42,47.42,47.4])
+    # A no-price-update second and a missing second remain unobserved.
+    assert frame.filter(pl.col('price_valid_1000')==1)['time_us'].to_list()==[2,5]
+
+
 def test_liquidity_query_pins_attempts_and_completed_local_midnight_buckets():
     market = SimpleNamespace(build_id="b", units=[SimpleNamespace(ticker="A", stage="broker_100ms", attempt_id="x")])
     statement = liquidity_sql(market, ("A",), "2026-08-18", 1000000, 2000000, 4000000)

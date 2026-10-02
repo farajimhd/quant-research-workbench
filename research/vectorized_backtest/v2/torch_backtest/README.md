@@ -130,7 +130,10 @@ not inside candidate replay. NumPy comparisons across levels remain vectorized.
 Sorted nearest 15 resistance prices are stored as shared `[T,N,15]` FP64 tensors;
 15 is the maximum strategy M, not a truncated source book. Regular/after-hours
 preparation retains the full 04:00 prefix. Missing bars never forward-fill a
-structural validity clock.
+structural validity clock. Valuation retains the latest completed valid close
+when a subsequent bar has no eligible last-price update; such seconds remain
+unobserved and cannot supply entry, extrema or structural evidence. The tape
+seal includes the preparation implementation as well as input authority.
 
 Per-ticker immutable caches seal prior checkpoint, decoded book, causal splits,
 OHLC/quote clocks, source certificate, numerical-library versions and canonical
