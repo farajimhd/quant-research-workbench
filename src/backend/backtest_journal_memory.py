@@ -98,7 +98,14 @@ class BacktestMemoryJournal:
         columns. It is never serialized as metadata or written to disk.
         """
         from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
-        if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
+        if proposal.strategy_number == 37:
+            from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+            from src.backend.backtest_strategy_episode_activity_source import certified_episode_entry_intent
+            if (type(first_price_source) is not CertifiedPriceReadbackAuthority
+                    or first_price_source.run_id != self.run_id):
+                raise ValueError('Strategy37 journal intent lacks its exact native source')
+            expected = certified_episode_entry_intent(first_price_source, proposal, session_date=session_date)
+        elif proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
             from src.backend.backtest_strategy_certified_price_break import (
                 CertifiedPriceReadbackAuthority, certified_price_entry_intent,
             )

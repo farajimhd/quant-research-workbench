@@ -1419,7 +1419,7 @@ class TradingRuntime:
         """Bind one certified session plan before numbered20 entry admission."""
         from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
-        if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
+        if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37)
                 or self.config.strategy_id != 'early-squeeze-strategy'
                 or type(source) is not CertifiedPriceReadbackAuthority
                 or source.run_id != self.run_id
@@ -1430,10 +1430,24 @@ class TradingRuntime:
             raise ValueError("Strategy20 runtime source lacks its exact unbound session")
         if self.config.strategy_revision == 36 and source.entry_activity_source is None:
             raise ValueError('Strategy 36 runtime binding lacks certified entry activity')
+        if self.config.strategy_revision == 37:
+            from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
+            if type(source.entry_activity_source) is not EpisodeActivityReadbackAuthority:
+                raise ValueError('Strategy 37 runtime binding lacks certified episode prefix')
         self._strategy_one_price_source = source
 
     def _strategy_one_entry_intent(self, proposal: Any):
         """Validate entries against the cached source, without market I/O."""
+        if proposal.strategy_number == 37:
+            from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+            from src.backend.backtest_strategy_episode_activity_source import certified_episode_entry_intent
+            source = self._strategy_one_price_source
+            if (type(source) is not CertifiedPriceReadbackAuthority or source.run_id != self.run_id
+                    or self.config.mode != RunMode.BACKTEST
+                    or self.config.strategy_id != 'early-squeeze-strategy'
+                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision != 37):
+                raise ValueError('Strategy37 runtime entry lacks its exact native source')
+            return certified_episode_entry_intent(source, proposal, session_date=self.config.anchor_date)
         if proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
             from src.backend.backtest_strategy_certified_price_break import (
                 CertifiedPriceReadbackAuthority, certified_price_entry_intent,
