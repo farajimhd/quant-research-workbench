@@ -75,10 +75,12 @@ def project_liquidity_fade_failure(
     source_indicators_attempt_id, source_liquidity_attempt_id, source_market_plan_token,
     source_manager_snapshot_id, source_manager_checkpoint_sequence, source_manager_snapshot_hash,
     source_broker_snapshot_id, source_broker_snapshot_hash,
+    strategy_number=35,
 ):
     """Project the exact prepared factory intent, retaining producer identities."""
     expected = liquidity_fade_exit_intent(witness, financial,
-        session_date=session_date, source_entry_intent_id=source_entry_intent_id)
+        session_date=session_date, source_entry_intent_id=source_entry_intent_id,
+        strategy_number=strategy_number)
     if intent != expected or type(run_id) is not str or not run_id:
         raise ValueError("Liquidity fade differs from its exact factory intent")
     for value in (batch_id, parent_record_id, source_entry_intent_id):
@@ -98,7 +100,7 @@ def project_liquidity_fade_failure(
         record_id=str(uuid5(NAMESPACE_URL, f"{run_id}:{parent_record_id}:liquidity-fade-failure")),
         parent_record_id=parent_record_id, run_id=run_id,
         event_month=intent.event_time.strftime("%Y-%m-01"), batch_id=batch_id,
-        strategy_number=35, source_entry_intent_id=source_entry_intent_id,
+        strategy_number=strategy_number, source_entry_intent_id=source_entry_intent_id,
         assignment_id=financial.assignment_id, **source, **checkpoint,
         **{f.name: getattr(witness, f.name) for f in fields(LiquidityFadeFailure) if f.name != "candles"},
         **{f"trade_count_{i}": c.trade_count for i, c in enumerate(witness.candles)},
@@ -108,8 +110,8 @@ def project_liquidity_fade_failure(
 def restore_liquidity_fade_failure(row):
     """Replay complete scalars after raw stored hashes and UInt adaptation."""
     columns = {name for name, _ in LIQUIDITY_FADE_FAILURE.columns} - {"content_hash"}
-    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] != 35:
-        raise ValueError("Liquidity fade belongs only to its complete Strategy 35 family")
+    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] not in (35, 36):
+        raise ValueError("Liquidity fade belongs only to its complete Strategy 35 or 36 family")
     validate_liquidity_observation_source(row)
     validate_liquidity_checkpoint_reference(row)
     integers = {name for name, kind in LIQUIDITY_FADE_FAILURE.columns if kind.startswith("UInt")}

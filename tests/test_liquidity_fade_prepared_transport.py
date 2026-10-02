@@ -38,8 +38,9 @@ def test_exact_factory_transport_freezes_values_with_scalar_codec_only():
     from src.trading_runtime.arte_journal_writer import _CONTRACTS
     assert _CONTRACTS[LIQUIDITY_FADE_FAILURE.name] is LIQUIDITY_FADE_FAILURE
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    assert numbered_fixed_strategy(35).strategy_number == 35
     with pytest.raises(ValueError):
-        numbered_fixed_strategy(35)
+        numbered_fixed_strategy(36)
 
 
 @pytest.mark.parametrize('target,field,value', [

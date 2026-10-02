@@ -56,7 +56,8 @@ class V4LiquidityFadeFailureBatch:
         financial = StrategyOneFinancialView(row['assignment_id'], event['account_id'], parent['ticker'],
             AssignmentStatus.MANAGING, StrategyPermissions(), float(parent['quantity']), False, False, False, 1)
         expected = liquidity_fade_exit_intent(witness, financial, session_date=day,
-                                            source_entry_intent_id=row['source_entry_intent_id'])
+                                            source_entry_intent_id=row['source_entry_intent_id'],
+                                            strategy_number=row['strategy_number'])
         if expected.event_time != at.astimezone(timezone.utc):
             raise ValueError('Liquidity batch event clock differs from its witness')
         source = {key: row[key] for key in ('source_build_id', 'source_market_plan_token',
@@ -64,7 +65,8 @@ class V4LiquidityFadeFailureBatch:
                   *CHECKPOINT_REFERENCE_FIELDS)}
         projected = project_liquidity_fade_failure(witness, expected, financial, session_date=day,
             source_entry_intent_id=row['source_entry_intent_id'], run_id=row['run_id'],
-            batch_id=row['batch_id'], parent_record_id=row['parent_record_id'], **source)
+            batch_id=row['batch_id'], parent_record_id=row['parent_record_id'],
+            strategy_number=row['strategy_number'], **source)
         if row != projected:
             raise ValueError('Liquidity batch has altered scalar identity or values')
         content = {k: v for k, v in parent.items() if k != 'content_hash'}

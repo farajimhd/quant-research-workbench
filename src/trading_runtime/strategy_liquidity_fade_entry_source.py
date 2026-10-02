@@ -39,7 +39,7 @@ def validate_liquidity_fade_entry_source(client, row, parent, event, *, verified
     source, source_event, child = _source_entry(
         client, row['run_id'], str(row['source_entry_intent_id']),
         prior_batch_id=verified_prefix.last_batch_id, exit_batch_id=str(row['batch_id']), **context)
-    if (type(child['strategy_number']) is not int or child['strategy_number'] != 35
+    if (type(child['strategy_number']) is not int or child['strategy_number'] != row['strategy_number']
             or child['assignment_id'] != row['assignment_id']
             or type(child['boundary_ms']) is not int
             or not child['boundary_ms'] < witness.first_held_boundary_ms
@@ -65,7 +65,7 @@ def validate_liquidity_fade_entry_source(client, row, parent, event, *, verified
             or manager_source.boundary_ms != child['boundary_ms']
             or (manager_source.account_id, manager_source.assignment_id, manager_source.ticker)
             != (event['account_id'], row['assignment_id'], parent['ticker'])
-            or manager_source.strategy_number != 35
+            or manager_source.strategy_number != row['strategy_number']
             or manager_source.reference_ask != witness.reference_ask
             or manager_source.initial_stop != witness.initial_stop):
         raise ValueError('Liquidity manager checkpoint differs from its committed original entry')
@@ -84,7 +84,7 @@ def validate_liquidity_fade_entry_source(client, row, parent, event, *, verified
     financial = StrategyOneFinancialView(row['assignment_id'], event['account_id'], parent['ticker'],
         AssignmentStatus.MANAGING, StrategyPermissions(), float(parent['quantity']), False, False, False, 1)
     expected = liquidity_fade_exit_intent(witness, financial, session_date=day,
-        source_entry_intent_id=str(row['source_entry_intent_id']))
+        source_entry_intent_id=str(row['source_entry_intent_id']), strategy_number=row['strategy_number'])
     if expected.event_time != at.astimezone(timezone.utc):
         raise ValueError('Liquidity exit clock differs from its native decision boundary')
     source_keys = ('source_build_id', 'source_market_plan_token', 'source_bars_attempt_id',
@@ -92,6 +92,7 @@ def validate_liquidity_fade_entry_source(client, row, parent, event, *, verified
     projected = project_liquidity_fade_failure(witness, expected, financial, session_date=day,
         source_entry_intent_id=str(row['source_entry_intent_id']), run_id=row['run_id'],
         batch_id=row['batch_id'], parent_record_id=row['parent_record_id'],
+        strategy_number=row['strategy_number'],
         **{key: row[key] for key in source_keys})
     if {key: value for key, value in row.items() if key != 'content_hash'} != projected:
         raise ValueError('Liquidity exit scalar identity differs from its deterministic projection')

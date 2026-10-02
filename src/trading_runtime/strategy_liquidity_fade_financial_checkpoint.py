@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from .arte_liquidity_fade_failure_v4 import restore_liquidity_fade_failure
-from .strategy_liquidity_fade_exit import REASON, validate_liquidity_fade_financial
+from .strategy_liquidity_fade_exit import liquidity_fade_reason, validate_liquidity_fade_financial
 from .strategy_one_contract import STRATEGY_ID
 
 
@@ -66,7 +66,7 @@ def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event,
             or parent['record_id'] != row['parent_record_id'] or event['record_id'] != parent['record_id']
             or parent['account_id'] != event['account_id'] or financial.account_id != event['account_id']
             or financial.assignment_id != row['assignment_id'] or financial.ticker != parent['ticker']
-            or parent['action'] != 'exit' or parent['reason'] != REASON):
+            or parent['action'] != 'exit' or parent['reason'] != liquidity_fade_reason(row['strategy_number'])):
         raise ValueError('Liquidity financial checkpoint lacks its exact preceding exit graph')
     at = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
     if at.tzinfo is None:
@@ -77,7 +77,9 @@ def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event,
     context = load_typed_run_context(client, prefix.run_id)
     accounts = context.get('account_ids')
     if (context.get('run_id') != prefix.run_id or context.get('mode') != 'backtest'
-            or context.get('strategy_id') != STRATEGY_ID or context.get('strategy_revision') != 35
+            or context.get('strategy_id') != STRATEGY_ID
+            or type(context.get('strategy_revision')) is not int
+            or context['strategy_revision'] != row['strategy_number']
             or context.get('evaluation_interval_ms') != 100 or context.get('session_date') != day.isoformat()
             or type(accounts) is not tuple or not 0 < len(accounts) <= 65_535
             or any(type(account) is not str or not account for account in accounts)
@@ -99,7 +101,7 @@ def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event,
             or {item['account_id'] for item in image.accounts} != set(accounts)):
         raise ValueError('Liquidity broker snapshot differs from its immutable checkpoint reference')
     lineage = load_recovered_strategy_one_oms_lineage(client, ceiling,
-        allowed_accounts=frozenset(accounts), strategy_number=35, first_price_source=first_price_source)
+        allowed_accounts=frozenset(accounts), strategy_number=row['strategy_number'], first_price_source=first_price_source)
     if type(lineage) is not tuple or len(lineage) > 2_000:
         raise ValueError('Liquidity financial OMS inventory exceeds its native bound')
     seen, entries, pending_exit = set(), [], False
@@ -114,7 +116,8 @@ def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event,
         identity = group['account_id'], group['group_id']
         if (identity in seen or group['account_id'] not in accounts
                 or group['run_id'] != prefix.run_id or str(group['batch_id']) not in prefix.batch_ids
-                or group['strategy_id'] != STRATEGY_ID or group['strategy_revision'] != 35
+                or group['strategy_id'] != STRATEGY_ID
+                or type(group['strategy_revision']) is not int or group['strategy_revision'] != row['strategy_number']
                 or not 0 < source.sequence < item.state.sequence <= sequence
                 or source.account_id != group['account_id'] or str(source.batch_id) not in prefix.batch_ids
                 or item.state.intent_record_id != source.record_id

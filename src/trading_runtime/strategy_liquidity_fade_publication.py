@@ -11,7 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from zoneinfo import ZoneInfo
 
 from .arte_liquidity_fade_failure_v4 import restore_liquidity_fade_failure
-from .strategy_liquidity_fade_exit import REASON
+from .strategy_liquidity_fade_exit import liquidity_fade_reason
 from .strategy_liquidity_fade_financial_checkpoint import load_liquidity_fade_financial_checkpoint
 from .strategy_liquidity_fade_checkpoint import load_liquidity_fade_manager_checkpoint
 from .strategy_liquidity_fade_market_source import load_liquidity_fade_market_observations
@@ -33,7 +33,8 @@ def validate_liquidity_fade_publication_rows(
             or max(len(rows), len(intents), len(events)) > 65_536
             or not isinstance(financial_views, Mapping)):
         raise ValueError('Liquidity publication requires bounded immutable family inputs')
-    parents = {str(p['record_id']): p for p in intents if p['reason'] == REASON}
+    reasons = {liquidity_fade_reason(number) for number in (35, 36)}
+    parents = {str(p['record_id']): p for p in intents if p['reason'] in reasons}
     event_map = {str(e['record_id']): e for e in events}
     if (len({str(p['record_id']) for p in intents}) != len(intents)
             or len(event_map) != len(events) or len(rows) != len(parents)
@@ -93,7 +94,8 @@ def prepare_native_liquidity_fade_rows(client, rows, intents, events, *,
     from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
     from .strategy_one_stateful import StrategyOneFinancialView
     from .strategy_engine import AssignmentStatus, StrategyPermissions
-    parents = tuple(parent for parent in intents if parent['reason'] == REASON)
+    reasons = {liquidity_fade_reason(number) for number in (35, 36)}
+    parents = tuple(parent for parent in intents if parent['reason'] in reasons)
     if not rows and not parents:
         return ()
     if (type(first_price_source) is not CertifiedPriceReadbackAuthority
