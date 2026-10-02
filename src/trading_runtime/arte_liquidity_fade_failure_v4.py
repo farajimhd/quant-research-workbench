@@ -25,6 +25,8 @@ LIQUIDITY_FADE_FAILURE = TableContract("trading_liquidity_fade_failure_v4", (
     ("source_manager_snapshot_id", "UUID"),
     ("source_manager_checkpoint_sequence", "UInt64"),
     ("source_manager_snapshot_hash", "FixedString(64)"),
+    ("source_broker_snapshot_id", "UUID"),
+    ("source_broker_snapshot_hash", "FixedString(64)"),
     ("boundary_ms", "UInt32"), ("first_held_boundary_ms", "UInt32"),
     ("reference_ask", "Decimal(38, 18)"), ("initial_stop", "Decimal(38, 18)"),
     ("completed_five_second_boundary_ms", "UInt32"), ("completed_close_int", "UInt64"),
@@ -38,18 +40,21 @@ TABLES = (LIQUIDITY_FADE_FAILURE,)
 
 CHECKPOINT_REFERENCE_FIELDS = (
     "source_manager_snapshot_id", "source_manager_checkpoint_sequence", "source_manager_snapshot_hash",
+    "source_broker_snapshot_id", "source_broker_snapshot_hash",
 )
 
 
 def validate_liquidity_checkpoint_reference(row):
-    """Require an exact manager pointer; native verification is separate."""
-    identity = row.get("source_manager_snapshot_id")
+    """Require exact manager/broker pointers; native verification is separate."""
     sequence = row.get("source_manager_checkpoint_sequence")
-    digest = row.get("source_manager_snapshot_hash")
-    if (type(identity) is not str or str(UUID(identity)) != identity or UUID(identity).int == 0
-            or type(sequence) is not int or not 0 < sequence < 2**64
-            or type(digest) is not str or not re.fullmatch(r"[0-9a-f]{64}", digest)):
-        raise ValueError("Liquidity fade lacks an exact manager checkpoint reference")
+    if type(sequence) is not int or not 0 < sequence < 2**64:
+        raise ValueError("Liquidity fade lacks an exact checkpoint sequence")
+    for family in ("manager", "broker"):
+        identity = row.get(f"source_{family}_snapshot_id")
+        digest = row.get(f"source_{family}_snapshot_hash")
+        if (type(identity) is not str or str(UUID(identity)) != identity or UUID(identity).int == 0
+                or type(digest) is not str or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            raise ValueError("Liquidity fade lacks an exact " + family + " checkpoint reference")
 
 
 def validate_liquidity_observation_source(row):
@@ -69,6 +74,7 @@ def project_liquidity_fade_failure(
     run_id, batch_id, parent_record_id, source_build_id, source_bars_attempt_id,
     source_indicators_attempt_id, source_liquidity_attempt_id, source_market_plan_token,
     source_manager_snapshot_id, source_manager_checkpoint_sequence, source_manager_snapshot_hash,
+    source_broker_snapshot_id, source_broker_snapshot_hash,
 ):
     """Project the exact prepared factory intent, retaining producer identities."""
     expected = liquidity_fade_exit_intent(witness, financial,
@@ -84,7 +90,9 @@ def project_liquidity_fade_failure(
     validate_liquidity_observation_source(source)
     checkpoint = dict(source_manager_snapshot_id=source_manager_snapshot_id,
                       source_manager_checkpoint_sequence=source_manager_checkpoint_sequence,
-                      source_manager_snapshot_hash=source_manager_snapshot_hash)
+                      source_manager_snapshot_hash=source_manager_snapshot_hash,
+                      source_broker_snapshot_id=source_broker_snapshot_id,
+                      source_broker_snapshot_hash=source_broker_snapshot_hash)
     validate_liquidity_checkpoint_reference(checkpoint)
     return dict(
         record_id=str(uuid5(NAMESPACE_URL, f"{run_id}:{parent_record_id}:liquidity-fade-failure")),
