@@ -201,6 +201,12 @@ def main(argv=None, *, progress=None, preloaded=None):
             if progress:
                 progress({"listings": len(tape.tickers), "tape_gib": tape.bytes/1024**3, "batch": args.batch})
             session_dir = require_runtime(run / day)
+            tape_receipt = session_dir / "tape.json"
+            if tape_receipt.exists():
+                if json.loads(tape_receipt.read_text())["fingerprint"] != tape.provenance["fingerprint"]:
+                    raise ValueError("Session tape authority changed after preparation")
+            else:
+                write_json(tape_receipt, tape.provenance)
             runner = None
             for offset in range(0, len(grid), args.batch):
                 current = f"{day}/{offset}"

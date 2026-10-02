@@ -199,7 +199,7 @@ def test_workstation_launcher_groups_sources_and_windows_without_starting_grid(t
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i: SimpleNamespace(total_memory=96*1024**3))
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda: 0)
-    tape = SimpleNamespace(tickers=("A", "B"), bytes=100)
+    tape = SimpleNamespace(tickers=("A", "B"), bytes=100, provenance={"fingerprint":"source"})
     tape.to = lambda *a: tape
     monkeypatch.setattr(launch, "prepare_tape", lambda *a, **k: tape)
     monkeypatch.setattr(launch, "calibrate", lambda *a, **k: {"batch": 32, "state_gib": 20})
@@ -210,6 +210,8 @@ def test_workstation_launcher_groups_sources_and_windows_without_starting_grid(t
     monkeypatch.setattr(launch.run_grid, "main", fake)
     assert launch.main(["preflight", "--runtime", str(tmp_path / "preflight"), "--plain"]) == 0
     assert not calls
+    preflight_job = next((tmp_path / "preflight" / "jobs").iterdir())
+    assert json.loads((preflight_job / "tape-2026-09-18-premarket.json").read_text())["fingerprint"]=="source"
     assert launch.main(["run", "--runtime", str(tmp_path / "run"), "--sessions", "regular", "afterhours", "--plain"]) == 0
     assert len(calls) == 4  # Two source builds × two independently reset windows.
     assert all(c[c.index("--batch")+1] == "32" for c in calls)

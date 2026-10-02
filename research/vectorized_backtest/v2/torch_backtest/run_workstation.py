@@ -143,6 +143,7 @@ def main(argv=None):
                         excluded_tickers=tuple(sorted(args.exclude_tickers)))
                     tape = prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib, structural_workers=args.structural_workers,
                         progress=lambda v: progress(preparation_event(v))).to("cuda", args.maximum_tape_gib)
+                    write_json(job / f"tape-{first['day']}-{first['session']}.json", tape.provenance)
                     progress({"listings": len(tape.tickers), "tape_gib": tape.bytes/1024**3})
                     receipt["gpu"] = calibrate(tape, grid, settings, maximum_fills=args.maximum_fills,
                         graph_steps=args.graph_steps, progress=progress, batches=[batch] if batch else None)
