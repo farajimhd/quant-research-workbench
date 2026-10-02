@@ -84,3 +84,18 @@ def test_actual_memory_prefix_projects_all_strategy37_companions_with_prefix_sou
     assert unit.entry_activity_evidence[0]['activity_source_token'] == source.entry_activity_source.gate.token
     assert all(row['strategy_number'] == 37 for family in (unit.momentum_evidence,
         unit.initial_momentum_evidence,unit.first_price_evidence) for row in family)
+
+
+def test_manager_capture_requires_strategy37_episode_prefix_authority():
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+    from src.trading_runtime.strategy_one_management_snapshot import project_manager_snapshot
+    runtime, source, proposal, day = context()
+    key = (proposal.account_id, proposal.assignment_id, proposal.ticker)
+    state = StrategyOneManagementState(proposal.boundary_ms, ((key, proposal),), (), ())
+    rows = project_manager_snapshot(run_id=runtime.run_id, session_date=day,
+        checkpoint_sequence=1, state=state, first_price_source=source)
+    assert rows is not None
+    parent_only = CertifiedPriceReadbackAuthority(source.run_id, source.plan)
+    with pytest.raises(ValueError, match='episode'):
+        project_manager_snapshot(run_id=runtime.run_id, session_date=day,
+            checkpoint_sequence=1, state=state, first_price_source=parent_only)
