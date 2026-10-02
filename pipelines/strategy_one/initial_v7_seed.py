@@ -19,12 +19,12 @@ COVERAGE = 'arte.structural_level_coverage_v7'
 
 
 def certify_absence(*, session, ticker, certificates, expected_days,
-                    metadata_days, prior_events):
+                    metadata_days, prior_events, prior_quotes=0):
     """Absence is valid only inside a complete, unfiltered canonical authority."""
     session = date.fromisoformat(session)
     if (not re.fullmatch(r'[A-Z0-9.-]{1,30}', ticker)
             or not certificates or not expected_days
-            or metadata_days != 0 or prior_events != 0):
+            or metadata_days != 0 or prior_events != 0 or prior_quotes < 0):
         raise ValueError('Initial V7 seed requires proven zero prior canonical history')
     days = [str(row['source_date']) for row in certificates]
     if (days != sorted(set(days)) or set(days) != set(expected_days)
@@ -33,6 +33,7 @@ def certify_absence(*, session, ticker, certificates, expected_days,
         raise ValueError('Initial V7 seed requires complete unfiltered source-day certificates')
     return dict(version=VERSION, ticker=ticker, session=session.isoformat(),
                 prior_metadata_days=0, prior_event_count=0,
+                prior_quote_count=prior_quotes,
                 canonical_start=days[0], canonical_end=days[-1],
                 source_days=len(days), certificates_hash=digest(certificates))
 
@@ -54,16 +55,19 @@ def source_proof(client, *, session, ticker):
     # Independently scan the exclusive canonical tables; metadata absence alone
     # is insufficient. Bound each scan to one year and one ticker.
     total = 0
+    quotes = 0
     cutoff_us = int(datetime.fromisoformat(
         _cutoff(date.fromisoformat(session))).replace(tzinfo=timezone.utc).timestamp() * 1_000_000)
     for year in range(date.fromisoformat(start).year, date.fromisoformat(session).year + 1):
-        result = rows(client, f'SELECT count() n FROM market_sip_compact.events_{year} '
+        result = rows(client, f'SELECT countIf(bitAnd(event_meta,1)=1) n, '
+            f'countIf(bitAnd(event_meta,1)=0) quotes FROM market_sip_compact.events_{year} '
             f'WHERE ticker={literal(ticker)} AND event_date<=toDate({literal(session)}) '
             f'AND sip_timestamp_us<{cutoff_us}')
         total += int(result[0]['n'])
+        quotes += int(result[0]['quotes'])
     return certify_absence(session=session, ticker=ticker,
         certificates=certificates, expected_days=expected,
-        metadata_days=int(metadata[0]['n']), prior_events=total)
+        metadata_days=int(metadata[0]['n']), prior_events=total, prior_quotes=quotes)
 
 
 def publish_initial_seed(client, market, *, ticker, parent_hash, retain_proof):
