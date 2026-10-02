@@ -53,9 +53,11 @@ def calibrate(tape, grid, settings, *, maximum_fills=16384, graph_steps=16, prog
                             "start_second": int(tape.clocks[0]), "end_second": int(tape.clocks[length-1])}
     witness = SqueezeTape(**values).validate()
     measurements = []
-    for b in plan["choices"]:
+    for index, b in enumerate(plan["choices"]):
         if progress:
-            progress({"stage": "GPU calibration", "message": f"Measuring batch {b}; compile then 3 prefix replays"})
+            progress({"stage": "GPU calibration", "batch": b, "phase_completed": index,
+                      "phase_total": len(plan["choices"]), "phase_unit": "batch sizes",
+                      "message": f"Measuring batch {b}; compile then 3 prefix replays"})
         # Spread semantic choices throughout the grid, rather than identical leading entries.
         selected = [grid[(i * len(grid) // b) % len(grid)] for i in range(b)]
         runner = SqueezeRunner(witness, selected, settings, backend="compiled_graph",
@@ -64,6 +66,8 @@ def calibrate(tape, grid, settings, *, maximum_fills=16384, graph_steps=16, prog
         seconds = sorted(times)[1]
         measurements.append({"batch": b, "replay_seconds": seconds, "setup_seconds": runner.setup_seconds,
                              "candidate_seconds_per_second": b * length / seconds})
+        if progress:
+            progress({"phase_completed": index + 1, "message": f"Batch {b}: {b*length/seconds:,.0f} candidate-seconds/s · {seconds*1000:.1f}ms replay · {runner.setup_seconds:.1f}s setup"})
         del runner
         gc.collect()
         torch.cuda.empty_cache()

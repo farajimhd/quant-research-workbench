@@ -27,6 +27,7 @@ import torch
 from .encoding.config import Session
 from .grid import Settings, build_grid, grid_manifest
 from .prepare import prepare_tape
+from .progress import preparation_event
 from .runner import SqueezeRunner
 from .runtime import DEFAULT, code_hash, configure_caches, file_hash, require_runtime, write_json, source_revision
 
@@ -192,7 +193,7 @@ def main(argv=None, *, progress=None, preloaded=None):
                 max_prepared_gib=args.maximum_tape_gib)
             tape = (preloaded.pop(day) if preloaded and day in preloaded else
                     prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib,
-                        progress=(lambda value: progress({"message": str(value)})) if progress else print)
+                        progress=(lambda value: progress(preparation_event(value))) if progress else print)
                     .to(args.device, args.maximum_tape_gib))
             if progress:
                 progress({"listings": len(tape.tickers), "tape_gib": tape.bytes/1024**3, "batch": args.batch})

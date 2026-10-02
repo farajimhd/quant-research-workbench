@@ -80,9 +80,10 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
     # Enforce the repository runtime authority even for a custom cache argument.
     from .runtime import require_runtime
     require_runtime(session.runtime)
+    progress({"stage": "Certify build manifest", "message": "Reconciling immutable producer manifest with the read-only ledger"})
     receipt = certify_source(session)
     prepared = prepare_session(session, Funnel(), dependencies(),
-        source_receipt=receipt, progress=lambda v: progress(json.dumps(v)))
+        source_receipt=receipt, progress=progress)
     watch = prepared.watchlist.sort("ticker")
     tickers = tuple(watch["ticker"].to_list())
     if not tickers:
@@ -104,6 +105,7 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
         raise ValueError("Signal and execution certificates bind different source builds")
     frames = []
     with closing(readonly_clickhouse_client(market_stream=True, v3_read_principal=True)) as reader:
+        progress({"stage": "Certify execution products", "message": "Checking market attempts, Keeper proofs and structural coverage"})
         verify_market_day_plan(market, reader)
         seeds = certified_seed_plan(market, reader)
         structure = certify_v7_interval_plan(market, seeds, session_date=str(day),
@@ -114,7 +116,8 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
                 hi = min(end, lo + session.fetch_seconds * 1_000_000)
                 chunks = reader.iter_arrow_record_batches(liquidity_sql(market, names, day, origin, lo, hi))
                 frames.extend(pl.from_arrow(batch) for batch in chunks)
-            progress(f"Liquidity prepared {min(offset + len(names), len(tickers))}/{len(tickers)} tickers")
+            progress({"stage": "Prepare liquidity", "completed": min(offset + len(names), len(tickers)),
+                      "total": len(tickers), "message": "Aggregating certified 100ms execution and quote evidence"})
     if not frames:
         raise ValueError("Certified squeeze population has no liquidity evidence")
     liquid = pl.concat(frames).sort("ticker", "time_us")
@@ -125,6 +128,7 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
     bars = prepared.features[1000].join(identities, on="listing_id", validate="m:1")
     # A missing interval has zero executable capacity, distinct from its valid
     # source coverage. Invalid published values still fail validation.
+    progress({"stage": "Align causal tape", "message": "Aligning price, quotes, MACD and structural intervals on the one-second clock"})
     arrays = {name: _align(liquid, tickers, clocks, name, carry=name in ("vwap", "bid", "ask", "quote_us"))
               for name in ("volume", "notional", "fill_price", "vwap", "bid", "ask", "quote_us")}
     arrays["trades"] = _align(bars, tickers, clocks, "trade_count_1000")

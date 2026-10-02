@@ -28,7 +28,7 @@ from research.vectorized_backtest.v2.torch_backtest.encoding.config import Sessi
 from research.vectorized_backtest.v2.torch_backtest.grid import Settings, build_grid, grid_manifest
 from research.vectorized_backtest.v2.torch_backtest.gpu import calibrate, memory_plan
 from research.vectorized_backtest.v2.torch_backtest.prepare import prepare_tape
-from research.vectorized_backtest.v2.torch_backtest.progress import Progress
+from research.vectorized_backtest.v2.torch_backtest.progress import Progress, preparation_event, safe_diagnostic
 from research.vectorized_backtest.v2.torch_backtest.runtime import (
     DEFAULT, ROOT, code_hash, configure_caches, require_runtime, source_revision, write_json)
 from research.vectorized_backtest.v2.torch_backtest import run_grid
@@ -66,6 +66,7 @@ def main(argv=None):
     configure_reader(REPO)
     job = require_runtime(args.resume or runtime / "jobs" / uuid4().hex)
     with Progress(job / "progress.jsonl", plain=args.plain) as ui:
+        ui.emit({"mode": args.command, "stage": "Source catalogue", "message": "Discovering certified dates and source builds"})
         catalog = discover_sources()
         write_json(job / "available-dates.json", catalog)
         chosen, closed = select_dates(catalog["sources"], single=args.date, start=args.start_date,
@@ -135,7 +136,7 @@ def main(argv=None):
                         datetime.fromisoformat(f"{first['day']}T{end}").replace(tzinfo=ZoneInfo("America/New_York")),
                         max_prepared_gib=args.maximum_tape_gib, warmup_seconds=57600)
                     tape = prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib,
-                        progress=lambda v: progress({"message": str(v)})).to("cuda", args.maximum_tape_gib)
+                        progress=lambda v: progress(preparation_event(v))).to("cuda", args.maximum_tape_gib)
                     progress({"listings": len(tape.tickers), "tape_gib": tape.bytes/1024**3})
                     receipt["gpu"] = calibrate(tape, grid, settings, maximum_fills=args.maximum_fills,
                         graph_steps=args.graph_steps, progress=progress, batches=[batch] if batch else None)
@@ -183,3 +184,7 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except KeyboardInterrupt:
         raise SystemExit(130)
+    except Exception as exc:
+        # Progress has retained the useful reason and redacted traceback in error.json.
+        print(safe_diagnostic(exc), file=sys.stderr)
+        raise SystemExit(1)

@@ -233,6 +233,19 @@ It does not run or rank the 4,320-grid experiment. `--date` selects another test
 day. `plan` selects dates/windows and writes the exact request without tape
 preparation or calibration. `dates` prints catalogue membership.
 
+The source identity certificate also requires the dedicated reader to have
+`SELECT ON q_live.feature_tradable_universe_snapshot_v2`. The ARTE planned scope
+does not contain the listing identity rows or replace the pinned snapshot hash.
+An operator must authorize this one-table grant; the launcher never uses writer
+credentials or changes privileges itself.
+
+Preflight displays source-integrity ticker counts, price/squeeze admission,
+feature rows, liquidity preparation and GPU calibration batch sizes separately
+from durable grid results. Stage elapsed time and time since the last update
+remain visible during long database queries. A failed job retains its database
+reason and a redacted traceback in `error.json`, alongside the request receipt;
+the terminal shows the reason instead of a generic exception class.
+
 The workstation path requires the 96 GB CUDA GPU (at least 80 GiB physical
 memory). Default `--batch auto` measures compiled CUDA graph batches
 32/64/128/256/512/1024 on a 128-second timing witness, with synthetic admission

@@ -274,6 +274,8 @@ def prepare_session(
     with closing(sql.ArteReader(threads=2)) as reader:
         arte_source.storage_check(reader)
         assert_liquidity_storage(reader)
+        if progress:
+            progress({"stage": "Certify population identity", "message": "Checking pinned preopen identity snapshot and content hash"})
         members, _ = arte_source.population(reader, source, day)
         identities = pl.DataFrame(members).select(
             "ticker", pl.col("listing_id").cast(pl.String)
@@ -289,11 +291,16 @@ def prepare_session(
             watchlist = pl.read_parquet(cache / "watchlist.parquet")
             candidate_count = seal.get("candidate_count")
         else:
+            if progress:
+                progress({"stage": "certify", "completed": 0, "total": len(names)})
             _validate_units(reader, source, day, names, progress)
             # Cheap necessary-condition scan before expensive lag/episode work.
             # An eventual candidate is not active early: admission clocks below
             # remain the only watchlist authority. Keep the full prefix for its
             # episode context, even outside the price band.
+            if progress:
+                progress({"stage": "Price candidate scan", "completed": 0, "total": len(names),
+                          "message": "Scanning certified 100ms prices before squeeze admission"})
             candidates = []
             for offset in range(0, len(names), 512):
                 group = names[offset : offset + 512]
@@ -305,8 +312,13 @@ def prepare_session(
                     f"AND close_int/10000. BETWEEN {funnel.min_price} AND {funnel.max_price}",
                 )
                 candidates.extend(row["ticker"] for row in candidate_rows)
+                if progress:
+                    progress({"stage": "Price candidate scan", "completed": min(offset+512, len(names)), "total": len(names)})
             candidate_count = len(candidates)
             admission = []
+            if progress:
+                progress({"stage": "Detect squeeze admission", "completed": 0, "total": len(candidates),
+                          "message": "Evaluating causal squeeze episodes within the selected window"})
             for offset in range(0, len(candidates), 512):
                 admission.extend(
                     sql.query(
@@ -321,6 +333,8 @@ def prepare_session(
                         ),
                     )
                 )
+                if progress:
+                    progress({"stage": "Detect squeeze admission", "completed": min(offset+512, len(candidates)), "total": len(candidates)})
             watchlist = pl.DataFrame(
                 admission, schema={"ticker": pl.String, "admitted_offset_us": pl.Int64}
             )
@@ -500,6 +514,9 @@ def prepare_session(
                                 "lane": lane,
                                 "resolution_ms": resolution,
                                 "rows": data.height,
+                                "completed": group_rows,
+                                "total": expected,
+                                "unit": "rows in ticker group",
                             }
                         )
                 if group_rows != expected:

@@ -111,6 +111,39 @@ def test_live_panel_restores_cursor_and_keeps_final_state(tmp_path, monkeypatch)
     assert "Complete" in stream.getvalue() and "\x1b[?25h" in stream.getvalue()
 
 
+def test_preflight_has_stage_units_without_false_grid_completion():
+    stream = StringIO()
+    console = Console(file=stream, width=100, color_system=None)
+    s = Snapshot(mode="preflight", stage="Verify source contents", phase_completed=512,
+                 phase_total=6192, phase_unit="tickers", total=4320)
+    console.print(render(s, 60, width=100, height=24))
+    text = stream.getvalue()
+    assert "512/6,192 tickers" in text and "4,320" not in text and "not executing" in text
+
+
+@pytest.mark.parametrize("width,height", [(110, 24), (70, 16), (60, 10)])
+def test_long_database_error_remains_bounded_with_diagnostic_path(width, height):
+    stream = StringIO()
+    console = Console(file=stream, width=width, height=height, color_system=None)
+    s = Snapshot(status="Failed", error="ACCESS_DENIED: " + "required SELECT permission "*100,
+                 output="D:/TradingML/runtimes/job")
+    console.print(render(s, 60, width=width, height=height))
+    assert len(stream.getvalue().splitlines()) <= height
+    assert "ACCESS_DENIED" in stream.getvalue() and "error.json" in stream.getvalue()
+
+
+def test_failure_retains_reason_and_redacts_traceback(tmp_path):
+    from research.vectorized_backtest.v2.torch_backtest.progress import preparation_event
+    stream = StringIO()
+    with pytest.raises(RuntimeError):
+        with Progress(tmp_path / "progress.jsonl", console=Console(file=stream)) as ui:
+            ui.emit(preparation_event({"stage": "certify", "completed": 512, "total": 6192}))
+            raise RuntimeError("ACCESS_DENIED password=private-token http://user:private-token@host")
+    error = json.loads((tmp_path / "error.json").read_text())
+    assert "ACCESS_DENIED" in error["reason"] and "private-token" not in json.dumps(error)
+    assert ui.snapshot.completed == 0 and ui.snapshot.phase_completed == 512
+
+
 def test_later_window_admission_preserves_daily_episode_history():
     source = {"build_id": "a", "units": {"2026-09-18": {"A": {"bars": {"attempt_id": "b"}}}}}
     text = admission_sql(source, "2026-09-18", ["A"], Funnel(), 72000000000, 57600000000)
