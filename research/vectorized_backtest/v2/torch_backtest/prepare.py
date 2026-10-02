@@ -1,4 +1,4 @@
-"""Squeeze-only population, full causal fields, certified structural intervals.
+"""Squeeze-only population, full causal fields, causal streaming structural levels.
 
 No Strategy 1 candidate or entry gate is used. The local copied loader owns
 price-envelope/squeeze admission. Shared backend readers only certify and SELECT
@@ -6,7 +6,6 @@ producer products. SQL aggregates completed 100ms liquidity into one-second
 execution/activity lanes before transfer; MACD is never computed here.
 """
 from contextlib import closing
-from dataclasses import replace
 from hashlib import sha256
 import json
 import numpy as np
@@ -20,27 +19,8 @@ from .source import arte_sql as sql
 from .tape import SqueezeTape
 
 
-def require_structural_coverage(reader, build, day, tickers, diagnostic_directory):
-    """Explain missing producer products before sparse geometry certification."""
-    from src.trading_runtime.strategy_one_v7_interval_schema import COVERAGE_TABLE
-    from .runtime import write_json, require_runtime
-    statement = (f"SELECT ticker,count() AS n FROM {COVERAGE_TABLE} "
-                 f"WHERE source_build_id={sql.literal(build)} AND session_date=toDate({sql.literal(day)}) "
-                 f"AND ticker IN ({','.join(sql.literal(t) for t in tickers)}) GROUP BY ticker FORMAT JSONEachRow")
-    counts = {r['ticker']: int(r['n']) for r in map(json.loads, filter(None, reader.execute(statement).splitlines()))}
-    missing = [t for t in tickers if counts.get(t, 0) == 0]
-    duplicated = [t for t in tickers if counts.get(t, 0) > 1]
-    if missing or duplicated:
-        report = dict(build=build, day=str(day), product=COVERAGE_TABLE, selected_tickers=len(tickers),
-                      missing_tickers=missing, duplicate_tickers=duplicated)
-        write_json(require_runtime(diagnostic_directory) / 'structural-coverage-error.json', report)
-        raise RuntimeError(f"Certified V7 interval coverage: {len(missing)}/{len(tickers)} tickers missing, "
-                           f"{len(duplicated)} duplicate on {day}. Producer product {COVERAGE_TABLE} "
-                           "must be prepared for this source build before GPU preflight; no tickers skipped.")
-
-
 def dependencies():
-    wanted = {"close@1000ms", "high@1000ms", "low@1000ms", "volume@1000ms",
+    wanted = {"open@1000ms", "close@1000ms", "high@1000ms", "low@1000ms", "volume@1000ms",
               "trade_count@1000ms"}
     wanted |= {f"{field}@{r}ms" for r in (1000, 5000, 10000, 30000)
                for field in ("macd_line", "macd_signal")}
@@ -86,12 +66,12 @@ def _align(frame, tickers, clocks, column, *, carry=False, tolerance=None):
     return result.sort("time_us", "ticker")[column].to_numpy().astype(np.float64).reshape(len(clocks), len(tickers))
 
 
-def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
-    """Prepare once per session; never start trading or build missing products."""
+def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0, structural_workers=0):
+    """Prepare causal research tensors once per session; never write ARTE products."""
     from src.backend.backtest_market_data import (certified_market_plan_from_arte,
         readonly_clickhouse_client, verify_market_day_plan)
     from src.backend.structural_v7_seed import certified_seed_plan
-    from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
+    from .structural import prepare_structure
 
     settings.validate()
     if session.strategy_ms != 1000 or session.broker_ms != 1000:
@@ -112,7 +92,7 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
     # crossings, but gate trading at the requested start in the provenance.
     first = origin + 14_400_000_000 + 1_000_000
     clocks = np.arange(first, end + 1, 1_000_000, dtype=np.int64)
-    estimate = len(clocks) * len(tickers) * (18 * 8 + 3)
+    estimate = len(clocks) * len(tickers) * (33 * 8 + 3)
     if estimate > maximum_gib * 1024**3:
         raise MemoryError("Declared union tape exceeds memory guard before allocation")
     configuration = {"market_day_build_id": receipt.source["build_id"],
@@ -127,9 +107,6 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
         progress({"stage": "Certify execution products", "message": "Checking market attempts, Keeper proofs and structural coverage"})
         verify_market_day_plan(market, reader)
         seeds = certified_seed_plan(market, reader)
-        require_structural_coverage(reader, market.build_id, day, tickers, session.runtime / prepared.source_key)
-        structure = certify_v7_interval_plan(market, seeds, session_date=str(day),
-                                             candidate_tickers=tickers, client=reader)
         for offset in range(0, len(tickers), session.fetch_tickers):
             names = tickers[offset:offset + session.fetch_tickers]
             for lo in range(first - 1_000_000, end, session.fetch_seconds * 1_000_000):
@@ -148,7 +125,7 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
     bars = prepared.features[1000].join(identities, on="listing_id", validate="m:1")
     # A missing interval has zero executable capacity, distinct from its valid
     # source coverage. Invalid published values still fail validation.
-    progress({"stage": "Align causal tape", "message": "Aligning price, quotes, MACD and structural intervals on the one-second clock"})
+    progress({"stage": "Align causal tape", "message": "Aligning completed prices, quotes and MACD before causal V7 streaming"})
     arrays = {name: _align(liquid, tickers, clocks, name, carry=name in ("vwap", "bid", "ask", "quote_us"))
               for name in ("volume", "notional", "fill_price", "vwap", "bid", "ask", "quote_us")}
     arrays["trades"] = _align(bars, tickers, clocks, "trade_count_1000")
@@ -170,25 +147,17 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
             lanes.append(_align(frame, tickers, clocks, f"{field}_{resolution}", carry=True,
                                 tolerance=resolution * 1000))
         macd.append(np.stack(lanes, axis=-1))
-    intervals = dict(structure.intervals)
-    l = max(15, max(len(intervals[n]) for n in tickers))
-    if l > 4096:
-        raise MemoryError("Structural interval envelope exceeds 4096; no truncation")
-    level_from = np.zeros((len(tickers), l), dtype=np.int64)
+    with closing(readonly_clickhouse_client(market_stream=True, v3_read_principal=True)) as reader:
+        structure = prepare_structure(reader, market, seeds, bars, tickers, arrays["ask"],
+            clocks // 1_000_000, session.runtime, prepared.source_key,
+            workers=structural_workers, progress=progress)
+    # Legacy interval lanes remain empty for old fixtures. Production replay
+    # consumes sorted [T,N,15] targets from the exact causal streaming engine.
+    level_from = np.zeros((len(tickers), 15), dtype=np.int64)
     level_to = np.zeros_like(level_from)
-    lower = np.full((len(tickers), l), np.nan)
-    resistance = np.zeros((len(tickers), l), dtype=bool)
-    valid_clock = np.zeros((len(clocks), len(tickers)), dtype=bool)
-    seconds = (clocks - origin - 14_400_000_000) // 1000
-    certified_seconds = dict(structure.valid_seconds)
-    for ni, ticker in enumerate(tickers):
-        valid_clock[:, ni] = np.isin(seconds, certified_seconds[ticker])
-        for li, interval in enumerate(intervals[ticker]):
-            # These are already producer-confirmed availability intervals.
-            level_from[ni, li] = origin // 1_000_000 + 14400 + (interval.valid_from_ms + 999) // 1000
-            level_to[ni, li] = origin // 1_000_000 + 14400 + (interval.valid_to_ms + 999) // 1000
-            lower[ni, li] = interval.lower
-            resistance[ni, li] = interval.role == "resistance"
+    lower = np.full((len(tickers), 15), np.nan)
+    resistance = np.zeros((len(tickers), 15), dtype=bool)
+    valid_clock = structure.valid
     quote_age = clocks[:, None] - arrays.pop("quote_us")
     quote_valid = ((quote_age >= 0) & (quote_age <= settings.maximum_quote_age_seconds * 1_000_000)
                    & (arrays["bid"] > 0) & (arrays["ask"] >= arrays["bid"]))
@@ -201,7 +170,8 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
                   "source_build": market.build_id, "session": str(day),
                   "start_second": start // 1_000_000, "end_second": end // 1_000_000,
                   "funnel": "released-100ms-squeeze-price-envelope-1-to-50",
-                  "structural_interval_ids": [[r.level_id for r in intervals[n]] for n in tickers],
+                  "structural_preparation": structure.metrics,
+                  "structural_authority": "prior-session-seed-plus-causal-completed-1s-stream",
                   "preparation": prepared.metrics}
     provenance["fingerprint"] = sha256(json.dumps(provenance, sort_keys=True).encode()).hexdigest()
     return SqueezeTape(tickers, tensor(clocks // 1_000_000),
@@ -210,4 +180,4 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
         tensor(arrays.pop("bid")), tensor(arrays.pop("ask")), tensor(quote_valid),
         tensor(arrays.pop("volume")), tensor(arrays.pop("notional")), tensor(arrays.pop("trades")),
         tensor(arrays.pop("fill_price")), tensor(macd[0]), tensor(macd[1]), tensor(valid_clock),
-        tensor(level_from), tensor(level_to), tensor(lower), tensor(resistance), provenance).validate()
+        tensor(level_from), tensor(level_to), tensor(lower), tensor(resistance), provenance, tensor(structure.targets)).validate()

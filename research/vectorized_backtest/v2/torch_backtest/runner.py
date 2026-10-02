@@ -286,10 +286,14 @@ class SqueezeRunner:
         terminal = now >= self.end - s.terminal_exit_lead_seconds
         ready = gate & basic[None] & watching & ~terminal
         # Shared market geometry is selected once per tick, not once per B.
-        geometry = ((self.tape.level_from <= now) & (now < self.tape.level_to)
-                    & self.tape.level_resistance & (self.tape.level_lower > ask[:, None]))
-        levels = torch.where(geometry, self.tape.level_lower - s.price_tick, float("inf"))
-        structural = levels.topk(15, dim=-1, largest=False, sorted=True).values
+        if self.tape.structural_targets is not None:
+            # [N,15] already selected causally once per ticker/second, shared by B candidates.
+            structural = self._row("structural_targets") - s.price_tick
+        else:
+            geometry = ((self.tape.level_from <= now) & (now < self.tape.level_to)
+                        & self.tape.level_resistance & (self.tape.level_lower > ask[:, None]))
+            levels = torch.where(geometry, self.tape.level_lower - s.price_tick, float("inf"))
+            structural = levels.topk(15, dim=-1, largest=False, sorted=True).values
         structural = torch.where(self._row("structural_clock")[:, None], structural, float("inf"))
         target = torch.where(p[:, 6, None, None] == 1, structural[None],
                               ask[None, :, None] * (1 + self.rank * s.target_step_fraction))

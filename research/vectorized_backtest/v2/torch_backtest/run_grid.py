@@ -135,6 +135,7 @@ def main(argv=None, *, progress=None, preloaded=None):
     parser.add_argument("--backend", choices=("eager", "compile", "cudagraph", "compiled_graph"), default="compiled_graph")
     parser.add_argument("--graph-steps", type=int, default=16)
     parser.add_argument("--maximum-fills", type=int, default=16384)
+    parser.add_argument("--structural-workers", type=int, default=0, help="0: bounded automatic CPU ticker pool")
     parser.add_argument("--maximum-tape-gib", type=float, default=4.0)
     parser.add_argument("--maximum-state-gib", type=float, default=2.0)
     args = parser.parse_args(argv)
@@ -170,7 +171,7 @@ def main(argv=None, *, progress=None, preloaded=None):
                "market_manifest_hash": file_hash(args.manifest), "dates": args.dates,
                "market_ledger": str(args.ledger.resolve()), "start": args.start, "end": args.end,
                "batch": args.batch, "device": args.device, "backend": args.backend,
-               "graph_steps": args.graph_steps, "maximum_fills": args.maximum_fills,
+               "graph_steps": args.graph_steps, "structural_workers": args.structural_workers, "maximum_fills": args.maximum_fills,
                "maximum_tape_gib": args.maximum_tape_gib, "maximum_state_gib": args.maximum_state_gib}
     receipt_path = run / "campaign.json"
     if receipt_path.exists():
@@ -194,7 +195,7 @@ def main(argv=None, *, progress=None, preloaded=None):
                 datetime.fromisoformat(f"{day}T{args.end}").replace(tzinfo=ny), warmup_seconds=57600,
                 max_prepared_gib=args.maximum_tape_gib, excluded_tickers=tuple(sorted(args.exclude_tickers)))
             tape = (preloaded.pop(day) if preloaded and day in preloaded else
-                    prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib,
+                    prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib, structural_workers=args.structural_workers,
                         progress=(lambda value: progress(preparation_event(value))) if progress else print)
                     .to(args.device, args.maximum_tape_gib))
             if progress:

@@ -121,9 +121,27 @@ time is retained. Compiled CUDA graphs capture 16 ticks by default with an exact
 remainder. Candidate values update in-place with fixed batch shape.
 
 The low-level batch size defaults to 8, bounded at 1,024. Tape/state/ledger memory has explicit
-guards; no hidden CPU fallback or input truncation. Structural intervals retain
-all certified identities (up to an explicit 4096 interval guard per ticker);
-selecting 15 targets is strategy behavior, not a truncated structural source.
+guards; no hidden CPU fallback or input truncation. V7 preparation loads and
+validates the complete prior-session book at 04:00 New York, applies only splits
+available then, and advances the canonical streaming engine on completed current
+session 1s OHLC/volume. Current-session end-of-day checkpoints are forbidden.
+The exact sequential reaction fitter runs once per ticker in a bounded CPU pool,
+not inside candidate replay. NumPy comparisons across levels remain vectorized.
+Sorted nearest 15 resistance prices are stored as shared `[T,N,15]` FP64 tensors;
+15 is the maximum strategy M, not a truncated source book. Regular/after-hours
+preparation retains the full 04:00 prefix. Missing bars never forward-fill a
+structural validity clock.
+
+Per-ticker immutable caches seal prior checkpoint, decoded book, causal splits,
+OHLC/quote clocks, source certificate, numerical-library versions and canonical
+engine code. Reuse still revalidates the prior checkpoint. Atomic completion
+receipts and kernel process locks support restart after interruption. Cold
+structural preparation and verified cache hits appear separately in terminal
+progress and tape provenance. `--structural-workers 0` automatically reserves
+25% CPU/RAM, budgets at least 512 MiB per worker, and caps the pool at 32; explicit
+positive counts are bounded by that resource guard. NumPy/SciPy and threadpoolctl
+are required in the research environment. GPU calibration slices the shared
+structural tensors with its market prefix.
 The output ledger is bounded; exhaustion rejects execution instead of dropping
 fills. Final padded batch lanes are excluded from exported counts and ledgers.
 Every submitted parent has a normalized order row with requested/filled/canceled
@@ -151,10 +169,11 @@ identity are frozen. Do not execute before the human approves the displayed grid
 
 Historical source preflight also requires the shared dedicated Backtest read
 principal and Keeper-attested source certificates, all four completed MACD
-resolutions, full squeeze population identity, prior seeds and causal V7
-interval coverage. Saved Strategy 1 survivor tapes are insufficient. Missing
-producer coverage is a dependency to resolve; the package does not write market
-tables or regenerate indicators/levels in Backtest.
+resolutions, full squeeze population identity and general V7 prior-session
+checkpoint coverage. Strategy 1 candidate/clock/interval tables are not required
+for this independent population. The package derives exact causal streaming
+levels into its private research cache; it never writes ARTE tables or regenerates
+indicators. Missing general seed or certified market coverage fails closed.
 
 Campaign receipts expose active/queued/completed/failed units, preserve completed
 batch hashes and support `--resume PATH`. An interrupted active batch is replayed

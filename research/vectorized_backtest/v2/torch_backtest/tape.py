@@ -29,6 +29,7 @@ class SqueezeTape:
     level_lower: torch.Tensor            # [N,L] causal distinct-identity intervals.
     level_resistance: torch.Tensor       # [N,L] true only for resistance role.
     provenance: dict
+    structural_targets: torch.Tensor | None = None  # [T,N,15] sorted raw resistance lower; +inf unavailable.
 
     @property
     def device(self):
@@ -68,6 +69,16 @@ class SqueezeTape:
             raise ValueError("Structural clocks must be integer")
         if self.level_resistance.dtype != torch.bool:
             raise ValueError("Structural roles must be Boolean")
+        if self.structural_targets is not None:
+            value = self.structural_targets
+            if value.shape != (t, n, 15) or value.dtype != torch.float64:
+                raise ValueError("Streaming structural targets require FP64 [T,N,15]")
+            if not bool(((torch.isfinite(value) & (value > 0)) | torch.isposinf(value)).all()):
+                raise ValueError("Invalid streaming resistance price")
+            if bool((value[..., 1:] < value[..., :-1]).any()):
+                raise ValueError("Streaming resistance targets must be sorted")
+            if bool((~self.structural_clock[..., None] & ~torch.isposinf(value)).any()):
+                raise ValueError("Missing structural clock cannot have a target")
         for name in ("volume", "notional", "trades"):
             value = getattr(self, name)
             if not bool((torch.isfinite(value) & (value >= 0)).all()):

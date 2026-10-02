@@ -42,6 +42,8 @@ def parser():
     p.add_argument("--to", dest="end_date", help="Inclusive YYYY-MM-DD")
     p.add_argument("--sessions", "--session", nargs="+", choices=tuple(WINDOWS), default=["premarket"])
     p.add_argument("--batch", default="auto", help="auto measures 32..1024; or explicit integer")
+    p.add_argument("--structural-workers", type=int, default=0,
+                   help="0: bounded automatic CPU ticker pool; otherwise explicit worker count")
     p.add_argument("--maximum-tape-gib", type=float, default=48.0)
     p.add_argument("--maximum-fills", type=int, default=65536)
     p.add_argument("--graph-steps", type=int, default=16)
@@ -85,7 +87,7 @@ def main(argv=None):
                    "population_rule": "pinned-preopen-is_tradable=1", "excluded_tickers": sorted(args.exclude_tickers),
                    "code": code_hash(), "commit": source_revision(REPO), "grid": manifest["approval_digest"],
                    "batch": args.batch, "maximum_tape_gib": args.maximum_tape_gib,
-                   "maximum_fills": args.maximum_fills, "graph_steps": args.graph_steps,
+                   "structural_workers": args.structural_workers, "maximum_fills": args.maximum_fills, "graph_steps": args.graph_steps,
                    "versions": {"python": sys.version.split()[0], "torch": torch.__version__,
                                 "cuda": torch.version.cuda, "triton_windows": compiler_version}}
         receipt_path = job / "job.json"
@@ -139,7 +141,7 @@ def main(argv=None):
                         datetime.fromisoformat(f"{first['day']}T{end}").replace(tzinfo=ZoneInfo("America/New_York")),
                         max_prepared_gib=args.maximum_tape_gib, warmup_seconds=57600,
                         excluded_tickers=tuple(sorted(args.exclude_tickers)))
-                    tape = prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib,
+                    tape = prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib, structural_workers=args.structural_workers,
                         progress=lambda v: progress(preparation_event(v))).to("cuda", args.maximum_tape_gib)
                     progress({"listings": len(tape.tickers), "tape_gib": tape.bytes/1024**3})
                     receipt["gpu"] = calibrate(tape, grid, settings, maximum_fills=args.maximum_fills,
@@ -161,7 +163,7 @@ def main(argv=None):
                     "--dates", *[u["day"] for u in group], "--start", start, "--end", end,
                     "--batch", str(gpu["batch"]), "--device", "cuda", "--backend", "compiled_graph",
                     "--maximum-tape-gib", str(args.maximum_tape_gib), "--maximum-state-gib", str(gpu["state_gib"]),
-                    "--maximum-fills", str(args.maximum_fills), "--graph-steps", str(args.graph_steps)]
+                    "--structural-workers", str(args.structural_workers), "--maximum-fills", str(args.maximum_fills), "--graph-steps", str(args.graph_steps)]
                 # Print the exact low-level equivalent without credentials; keep full text in artifacts.
                 import subprocess
                 equivalent = subprocess.list2cmdline([sys.executable, "-B", "-m",

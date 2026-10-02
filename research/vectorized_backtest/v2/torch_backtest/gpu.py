@@ -46,6 +46,8 @@ def calibrate(tape, grid, settings, *, maximum_fills=16384, graph_steps=16, prog
     for name in ("clocks", "close", "observed", "high", "low", "vwap", "bid", "ask", "quote_valid",
                  "volume", "notional", "trades", "fill_price", "macd_line", "macd_signal", "structural_clock"):
         values[name] = values[name][:length]
+    if values["structural_targets"] is not None:
+        values["structural_targets"] = values["structural_targets"][:length]
     # Use prefix market geometry. Activate all tickers in timing only so an idle
     # morning prefix still exercises B,N,15 order masks. It is not historical fitness.
     values["admission"] = torch.full_like(tape.admission, int(tape.clocks[0]))
