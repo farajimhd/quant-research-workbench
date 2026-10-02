@@ -48,7 +48,7 @@ class ExactBits(MemoryClient):
 
 def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
     plan = source.plan
-    original = replace(_proposal(), strategy_number=18 if strategy_number in (26, 27, 28, 29, 30, 31, 32, 33) else 19, boundary_ms=boundary,
+    original = replace(_proposal(), strategy_number=18 if strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36) else 19, boundary_ms=boundary,
         momentum=plan.momentum.lookup('AAA', boundary),
         initial_momentum=plan.source.parent.selection_witness('AAA', boundary))
     proposal = bind_certified_price_break_proposal(plan, original, strategy_number=strategy_number)
@@ -63,11 +63,17 @@ def prepared_entry(source, sequence, boundary, prior, *, strategy_number=20):
     evidence = project_strategy_one_entry_evidence(proposal, intent, session_date=date(2026, 8, 18),
         first_price_source=source, **scope)
     price = project_certified_price_entry(plan, proposal, event_month='2026-08-01', **scope)
+    activity_rows = ()
+    if strategy_number == 36:
+        from src.trading_runtime.arte_entry_activity_v4 import project_entry_activity
+        witness = source.entry_activity_source.plan.witness(proposal.ticker, boundary)
+        activity_rows = (project_entry_activity(witness, event_month='2026-08-01', **scope),)
     unit = V4StrategyOneEntryBatch(base, (evidence,),
         momentum_evidence=project_rising_momentum_entry(proposal, event_month='2026-08-01', **scope),
         initial_momentum_evidence=project_initial_momentum_entry(proposal, proposal.initial_momentum,
             event_month='2026-08-01', **scope),
-        first_price_evidence=price.rows, first_price_authorities=(price.authority,))
+        first_price_evidence=price.rows, first_price_authorities=(price.authority,),
+        entry_activity_evidence=activity_rows, first_price_source=source if strategy_number == 36 else None)
     return unit, proposal, intent
 
 

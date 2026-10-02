@@ -1,0 +1,65 @@
+"""Certified activity context survives immutable native transport compaction."""
+from dataclasses import replace
+from datetime import date
+from uuid import UUID
+
+import pytest
+
+from test_arte_entry_activity_v4 import plan, graph, project, BATCH, PARENT
+from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+from src.backend.backtest_strategy_entry_activity_source import EntryActivityReadbackAuthority
+from src.trading_runtime.arte_journal_writer import TypedJournalBatch, V4StrategyOneEntryBatch
+from src.trading_runtime.arte_journal_compound_v4 import coalesce_v4_units, _compound_price_source
+
+
+def activity_unit():
+    prepared = plan()
+    activity = EntryActivityReadbackAuthority('activity-run', prepared)
+    source = CertifiedPriceReadbackAuthority('activity-run', prepared.parent, activity)
+    witness, entry, _ = graph(prepared)
+    entry['record_id'] = str(UUID(int=100))
+    event = dict(record_id=PARENT, run_id=source.run_id, batch_id=BATCH,
+                 sequence=1, category='strategy', entity_type='strategy_intent')
+    base = TypedJournalBatch(source.run_id, date(2026, 8, 1), str(UUID(int=10)),
+        BATCH, str(UUID(int=0)), 1, 1, 'start', 'running', (event,))
+    return V4StrategyOneEntryBatch(base, (entry,),
+        entry_activity_evidence=(project(witness),), first_price_source=source)
+
+
+def test_price_context_requires_exact_activity_run_and_parent_plan():
+    unit = activity_unit()
+    activity = unit.first_price_source.entry_activity_source
+    with pytest.raises(ValueError, match='same certified run and parent plan'):
+        CertifiedPriceReadbackAuthority('different-run', activity.plan.parent, activity)
+    with pytest.raises(ValueError, match='same certified run and parent plan'):
+        CertifiedPriceReadbackAuthority('activity-run', plan().parent, activity)
+    with pytest.raises(ValueError, match='same certified run and parent plan'):
+        CertifiedPriceReadbackAuthority('activity-run', activity.plan.parent, object())
+
+
+def test_strategy36_envelope_cannot_drop_or_forge_certified_source():
+    unit = activity_unit()
+    with pytest.raises(ValueError, match='certified activity source'):
+        replace(unit, first_price_source=None)
+    with pytest.raises(ValueError, match='foreign certified price source'):
+        replace(unit, first_price_source=object())
+    with pytest.raises(TypeError):
+        unit.entry_activity_evidence[0]['candle_0_trade_count'] = 999
+
+
+def test_compound_preserves_activity_counts_source_and_original_batch():
+    unit = activity_unit()
+    next_id = str(UUID(int=38))
+    next_event = dict(record_id=str(UUID(int=39)), run_id=unit.base.run_id,
+                     batch_id=next_id, sequence=2, category='risk', entity_type='continuous_risk_state')
+    following = replace(unit.base, batch_id=next_id, prior_batch_id=BATCH,
+                        first_sequence=2, last_sequence=2, events=(next_event,))
+    merged = coalesce_v4_units((unit, following))
+    row = merged.children['entry_activity_evidence'][0]
+    assert row['batch_id'] == next_id and row['parent_record_id'] == PARENT
+    assert [row[f'candle_{i}_trade_count'] for i in range(4)] == [100] * 4
+    assert unit.entry_activity_evidence[0]['batch_id'] == BATCH
+    assert _compound_price_source(merged, None) is unit.first_price_source
+    assert _compound_price_source(merged, unit.first_price_source) is unit.first_price_source
+    with pytest.raises(ValueError, match='conflicting certified source contexts'):
+        _compound_price_source(merged, activity_unit().first_price_source)

@@ -37,10 +37,11 @@ from .strategy_liquidity_fade_publication import prepare_native_liquidity_fade_r
 from .arte_rising_momentum_entry_v4 import MOMENTUM, seal_rising_momentum_rows
 from .arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM, seal_initial_momentum_rows
 from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
+from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activity_rows
 
 _CHILD_KEYS = (
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
-    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "add_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "reconciliation_actions",
@@ -48,7 +49,7 @@ _CHILD_KEYS = (
 )
 _EVENT_PARENT_KEYS = frozenset({
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
-    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "add_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "oms_tactics",
@@ -99,7 +100,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
                 + tuple(("add_evidence", row) for row in unit.add_evidence)
                 + tuple(("momentum_evidence", row) for row in unit.momentum_evidence)
                 + tuple(("initial_momentum_evidence", row) for row in unit.initial_momentum_evidence)
-                + tuple(("first_price_evidence", row) for row in unit.first_price_evidence))
+                + tuple(("first_price_evidence", row) for row in unit.first_price_evidence)
+                + tuple(("entry_activity_evidence", row) for row in unit.entry_activity_evidence))
     if type(unit) is V4PortfolioAllocationBatch:
         return (("allocations", unit.allocation),)
     if type(unit) is V4ReservationReasonBatch:
@@ -211,7 +213,8 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
                 "rising_momentum_rows": unit.momentum_evidence,
                 "initial_momentum_rows": unit.initial_momentum_evidence,
                 "first_price_rows": unit.first_price_evidence,
-                "first_price_authorities": unit.first_price_authorities}
+                "first_price_authorities": unit.first_price_authorities,
+                "entry_activity_rows": unit.entry_activity_evidence}
     if type(unit) is V4PortfolioAllocationBatch:
         return {"portfolio_allocation_row": unit.allocation}
     if type(unit) is V4ReservationReasonBatch:
@@ -234,6 +237,18 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
     if type(unit) is TypedJournalBatch:
         return {}
     raise TypeError("V4 compound contains an unsupported journal envelope")
+
+
+def _compound_price_source(compound, supplied):
+    """Keep one certified source context across rekeyed entry micro-units."""
+    bound = tuple(unit.first_price_source for unit in compound.units
+        if type(unit) is V4StrategyOneEntryBatch and unit.first_price_source is not None)
+    selected = supplied if supplied is not None else (bound[0] if bound else None)
+    if any(source is not selected for source in bound):
+        raise ValueError('V4 compound contains conflicting certified source contexts')
+    if selected is not None and selected.run_id != compound.base.run_id:
+        raise ValueError('V4 compound certified source belongs to another run')
+    return selected
 
 
 def prepare_compound_v4_families(
@@ -263,6 +278,9 @@ def prepare_compound_v4_families(
 
     if type(compound) is not V4CompoundBatch:
         raise TypeError("V4 mixed preparation requires a compound batch")
+    first_price_source = _compound_price_source(compound, first_price_source)
+    if getattr(client, 'live_v4_lease', None) is not None and compound.children['entry_activity_evidence']:
+        raise ValueError('Live V4 compound cannot publish entry activity witnesses')
     if getattr(client, 'live_v4_lease', None) is not None and compound.children['liquidity_fade_failures']:
         raise ValueError('Live V4 compound cannot publish liquidity fade witnesses')
     if getattr(client, 'live_v4_lease', None) is not None and compound.children['confirmed_ah_failures']:
@@ -284,6 +302,7 @@ def prepare_compound_v4_families(
         "momentum_evidence": MOMENTUM.name,
         "initial_momentum_evidence": INITIAL_MOMENTUM.name,
         "first_price_evidence": FIRST_PRICE.name,
+        "entry_activity_evidence": ENTRY_ACTIVITY.name,
         "add_evidence": ADD_EVIDENCE.name,
         "allocations": V4_ALLOCATION.name,
         "reservation_reasons": RESERVATION_REASON.name,
@@ -307,7 +326,8 @@ def prepare_compound_v4_families(
     for unit in compound.units:
         base = unit if type(unit) is TypedJournalBatch else unit.base
         _, micro_families = _publish_typed_batch_v4(
-            client, base, _prepare_only=True, **_publication_kwargs(unit))
+            client, base, _prepare_only=True, first_price_source=first_price_source,
+            **_publication_kwargs(unit))
         for name, rows in micro_families:
             if name in base_names:
                 continue
@@ -377,6 +397,12 @@ def prepare_compound_v4_families(
             dict(base_families)["trading_strategy_intent_v1"],
             dict(base_families)["trading_event_v1"], authorities):
         raise ValueError("V4 compound first price differs from certified authority")
+    if tuple(extra[ENTRY_ACTIVITY.name]) != seal_certified_entry_activity_rows(
+            tuple(extra[ENTRY_ACTIVITY.name]), tuple(extra[ENTRY_EVIDENCE.name]),
+            dict(base_families)['trading_strategy_intent_v1'],
+            dict(base_families)['trading_event_v1'], run_id=compound.base.run_id,
+            source=getattr(first_price_source, 'entry_activity_source', None)):
+        raise ValueError('V4 compound entry activity differs from certified source')
     if tuple(extra[ADD_EVIDENCE.name]) != _sealed_strategy_one_add_rows(
             compound.base, base_families, tuple(
                 {key: value for key, value in row.items() if key != "content_hash"}
@@ -440,6 +466,7 @@ def publish_compound_v4(
     from .arte_journal_commit_v4 import _publish_sealed_batch_v4
 
     started_ns = perf_counter_ns()
+    first_price_source = _compound_price_source(compound, first_price_source)
     base_families, families = prepare_compound_v4_families(
         client, compound, verified_prior_prefix=verified_prior_prefix,
         first_price_source=first_price_source)

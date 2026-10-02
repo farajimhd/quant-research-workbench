@@ -582,6 +582,8 @@ class V4StrategyOneEntryBatch:
     initial_momentum_evidence: tuple[Mapping[str, Any], ...] = ()
     first_price_evidence: tuple[Mapping[str, Any], ...] = ()
     first_price_authorities: tuple[FirstPriceEntryAuthority, ...] = ()
+    entry_activity_evidence: tuple[Mapping[str, Any], ...] = ()
+    first_price_source: Any | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.base, TypedJournalBatch)
@@ -598,6 +600,16 @@ class V4StrategyOneEntryBatch:
             MappingProxyType(dict(row)) for row in self.initial_momentum_evidence))
         object.__setattr__(self, "first_price_evidence", tuple(
             MappingProxyType(dict(row)) for row in self.first_price_evidence))
+        object.__setattr__(self, "entry_activity_evidence", tuple(
+            MappingProxyType(dict(row)) for row in self.entry_activity_evidence))
+        if self.first_price_source is not None:
+            from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+            if (type(self.first_price_source) is not CertifiedPriceReadbackAuthority
+                    or self.first_price_source.run_id != self.base.run_id):
+                raise ValueError('Strategy entry envelope has a foreign certified price source')
+        if (self.entry_activity_evidence or any(row['strategy_number'] == 36 for row in self.entry_evidence)):
+            if getattr(self.first_price_source, 'entry_activity_source', None) is None:
+                raise ValueError('Strategy 36 entry envelope requires certified activity source')
         if (type(self.first_price_authorities) is not tuple
                 or any(type(value) is not FirstPriceEntryAuthority for value in self.first_price_authorities)):
             raise ValueError("First price acquisition needs exact certified authorities")
@@ -4942,7 +4954,9 @@ class ArteJournalWriter:
                         add_evidence=unit.add_evidence, momentum_evidence=unit.momentum_evidence,
                         initial_momentum_evidence=unit.initial_momentum_evidence,
                         first_price_evidence=unit.first_price_evidence,
-                        first_price_authorities=unit.first_price_authorities)
+                        first_price_authorities=unit.first_price_authorities,
+                        entry_activity_evidence=unit.entry_activity_evidence,
+                        first_price_source=unit.first_price_source)
                 elif isinstance(group[0][0], V4OmsTacticBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_oms_tactic_batch_v4,
