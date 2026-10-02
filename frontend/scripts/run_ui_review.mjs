@@ -7,8 +7,9 @@ if (!python) {
   process.exit(2);
 }
 
-const reviewScript = fileURLToPath(new URL("./ui_review.py", import.meta.url));
-const result = spawnSync(python, [reviewScript, ...process.argv.slice(2)], {
+const researchReview = process.argv.includes("--research-teacher");
+const reviewScript = fileURLToPath(new URL(researchReview ? "./research_teacher_review.py" : "./ui_review.py", import.meta.url));
+const result = spawnSync(python, [reviewScript, ...process.argv.slice(2).filter(arg => arg !== "--research-teacher")], {
   env: process.env,
   stdio: "inherit",
 });
