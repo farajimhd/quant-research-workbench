@@ -1,4 +1,4 @@
-"""Prepare exact-parent Strategy38; execution registration remains closed."""
+"""Exact-parent Strategy38 contract with sealed Backtest-only registration."""
 from copy import deepcopy
 from hashlib import sha256
 import re

@@ -34,7 +34,7 @@ def reference(candidate):
         20, '00000000-0000-0000-0000-000000000002', 'a' * 64)
 
 
-@pytest.mark.parametrize('number', [31, 32, 33, 34, 35, 36, 37])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35, 36, 37, 38])
 def test_manager_freezes_one_reference_and_does_not_rearm_at_later_high(number):
     manager, _, state = manager_fixture(strategy_number=number)
     requests = manager.profit_arming_requests(boundary_ms=state.boundary_ms)
@@ -105,7 +105,7 @@ def test_unarmed_and_confirmed_positions_do_not_pay_for_deep_capture(monkeypatch
 
 
 @pytest.mark.parametrize('fail_confirmation', [False, True])
-@pytest.mark.parametrize('number', [31, 32, 33, 34, 35, 36, 37])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35, 36, 37, 38])
 def test_controller_confirms_after_fence_off_thread_and_closes_reader(monkeypatch, fail_confirmation, number):
     from src.trading_runtime import arte_journal_writer as readers
     from src.trading_runtime import strategy_one_management_snapshot as snapshots

@@ -47,7 +47,7 @@ def test_installed_contract_matches_exact_release_and_next_number_is_closed():
     from src.trading_runtime.strategy_registry import numbered_strategy
     assert numbered_strategy(37) == child.release_contract()
     with pytest.raises(ValueError):
-        numbered_strategy(38)
+        numbered_strategy(39)
 
 
 def test_exact_parent_derivation_preserves_cash_costs_and_other_trading_settings():
