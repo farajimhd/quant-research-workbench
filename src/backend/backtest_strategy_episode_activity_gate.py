@@ -1,5 +1,6 @@
 """Prepared source-bound Strategy37 reduction; no numbered admission."""
 from dataclasses import dataclass
+from bisect import bisect_left
 from hashlib import sha256
 
 import numpy as np
@@ -62,6 +63,24 @@ class EpisodeActivityStaticGate(StrategyOneStaticGate):
             raise ValueError('Episode activity gate differs from certified causal reduction')
         object.__setattr__(self, 'rejection_mask', _frozen(self.rejection_mask))
         object.__setattr__(self, 'eligible_indices', _frozen(self.eligible_indices))
+
+    def admission_witness(self, ticker, boundary_ms):
+        """Return native activity and original anchor for a cached survivor.
+
+        The full prefix has already been sealed during compilation. A sparse
+        manager lookup uses binary search only; it neither queries ClickHouse
+        nor scans earlier candidates or reconstructs a prefix from journal rows.
+        This proof is a necessary entry condition, never portfolio permission.
+        """
+        if type(ticker) is not str or type(boundary_ms) is not int:
+            raise ValueError('Episode activity lookup requires exact typed identity')
+        keys = self.activity.parent.momentum.keys
+        index = bisect_left(keys, (ticker, boundary_ms))
+        if (index >= len(keys) or keys[index] != (ticker, boundary_ms)
+                or self.rejection_mask[index] != 0):
+            raise ValueError('Episode activity lookup is outside admitted causal prefix')
+        return (self.activity.witness(ticker, boundary_ms),
+                self.facts[index].episode_start_ms, self.token)
 
 
 def compile_episode_activity_static_gate(activity):
