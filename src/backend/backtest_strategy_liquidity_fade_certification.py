@@ -29,6 +29,7 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/arte_oms_projection.py': '72b320c9680f8eb03ad32181ea6a8594c847afb01a21a099eaef2e6bd245da07',
     'src/trading_runtime/arte_journal_projection.py': '62b7209c08d972952fa01d7099829471371071a33d3f25806dedce983ecda8ba',
     'src/trading_runtime/arte_intent_projection.py': '4499296baf688ccd93d81ac136a73cc416223a9a6291832736af7e776540e586',
+    'src/trading_runtime/strategy_liquidity_fade_publication.py': 'e6ac967fd4c27facd26e4251fcb2ae9dcc1524e5b711573675fa253a2667756f',
 }
 
 
