@@ -1,4 +1,6 @@
 from dataclasses import replace
+from copy import deepcopy
+from hashlib import sha256
 
 import pytest
 
@@ -7,6 +9,7 @@ from src.trading_runtime import strategy_thirty_seven_release as child
 from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
 from test_strategy_thirty_six_release import source_fixture
 from test_strategy_thirty_three_configuration import APPROVAL
+from src.trading_runtime.journal_contract import canonical_json
 
 
 def published_parent_fixture():
@@ -44,3 +47,28 @@ def test_prepared_contract_cannot_be_used_as_installed_strategy():
     from src.trading_runtime.strategy_registry import numbered_strategy
     with pytest.raises(ValueError):
         numbered_strategy(37)
+
+
+def test_exact_parent_derivation_preserves_cash_costs_and_other_trading_settings():
+    source = published_parent_fixture()
+    before = deepcopy(source.payload)
+    result = child.derive_strategy_thirty_seven_configuration(source, **APPROVAL)
+    assert source.payload == before
+    for name in before.keys() - {'strategy', 'strategy_profile', 'run_plan'}:
+        assert result['payload'][name] == before[name]
+    identity = {'strategy_number', 'revision', 'name', 'profile_id', 'profile_revision', 'numbered_release'}
+    for name in before['strategy'].keys() - identity:
+        assert result['payload']['strategy'][name] == before['strategy'][name]
+    assert result['payload_hash'] == sha256(canonical_json(result['payload']).encode()).hexdigest()
+    assert child.verify_prepared_strategy_thirty_seven_manifest(result['payload']['strategy'])
+
+
+@pytest.mark.parametrize('policy', [*child.INHERITED_POLICIES, 'episode_activity_policy'])
+def test_resealed_policy_mutation_cannot_change_prepared_release(policy):
+    strategy = child.derive_strategy_thirty_seven_configuration(published_parent_fixture(), **APPROVAL)['payload']['strategy']
+    manifest = strategy['numbered_release']
+    manifest[policy] = {'changed': True}
+    manifest['manifest_hash'] = sha256(canonical_json({k: v for k, v in manifest.items()
+                                                    if k != 'manifest_hash'}).encode()).hexdigest()
+    with pytest.raises(ValueError, match='pinned policy'):
+        child.verify_prepared_strategy_thirty_seven_manifest(strategy)
