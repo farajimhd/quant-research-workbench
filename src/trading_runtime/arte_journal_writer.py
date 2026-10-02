@@ -1612,9 +1612,12 @@ def _insert(
         return None
     columns = tuple(column for column, _ in _CONTRACTS[contract_name].columns)
     body = "\n".join(canonical_json(_wire_row(contract_name, row)) for row in rows)
+    # Canonical Float64 hashes require correctly rounded decimal parsing.
+    # The fast server parser can change one bit even for Python round-trip text.
     sql = (
         f"INSERT INTO arte.{_profile_table(name, journal_profile)} ({','.join(columns)}) "
         f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+        f"precise_float_parsing=1,"
         f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}"
     )
     dispatch = getattr(client, "typed_insert_dispatch", None)

@@ -768,6 +768,7 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert client.inserts == ["trading_event_v1", "trading_commit_v1"]
     assert all("async_insert=1,wait_for_async_insert=1" in sql
                for sql in client.insert_sql)
+    assert all("precise_float_parsing=1" in sql for sql in client.insert_sql)
     assert len(client.selects) == 5
     assert publish_typed_batch(client, item) == BATCH
     assert client.inserts == ["trading_event_v1", "trading_commit_v1"]

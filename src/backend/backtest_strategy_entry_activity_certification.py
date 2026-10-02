@@ -35,7 +35,7 @@ ENTRY_ACTIVITY_SOURCE_AST = {
     'src/backend/backtest_typed_projection.py': 'e3915158079fdace8c1138a19baefe41444933ad17b4d771bfe5972ba5c9da5c',
     'src/backend/backtest_typed_publisher.py': '576119861b90a0931e75347ad81f7465fc1fa4d2542744e817b36dbc9a4e7df0',
     'src/trading_runtime/arte_strategy_one_entry_journal.py': '29c9aa7b3b5855b101a363befbaac1a66df50e501866c601f5485c33f689aad5',
-    'src/trading_runtime/arte_journal_writer.py': 'f592c7ef8a0a77634650d8b01b3c3882ee31a33419afb30d6a90df4b3c204b5e',
+    'src/trading_runtime/arte_journal_writer.py': 'b91b820d2fd5144f47a92fc80a0bd7bff78216f028c499cbbba53fbd7000cc96',
     'src/trading_runtime/arte_journal_commit_v4.py': '98f316de4da04fde500044328624aa4f96237cda44ac7a1e76151879e848c25a',
     'src/trading_runtime/arte_journal_compound_v4.py': '4bf6f9f059a1ea2a8797842e7ab7750385df573c7e10920c0bd6c599d3592067',
     'src/backend/replay_run_service.py': '630ac301b866f7471e80082f29d5721672bb60ab8ef9ac2e3e429f9e64170605',
