@@ -8,7 +8,7 @@ model replay. Old V5 clock-second orders cannot satisfy this contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import groupby, islice
+from itertools import groupby
 import math
 
 import numpy as np
@@ -23,6 +23,29 @@ from research.rl_trading.v6.action_contract import ActionAxes, ACTION_NAMES as S
 
 
 ACTION_NAMES = ('hold', 'enter_long', 'exit_long', 'set_stop', 'set_target')
+
+
+def _event_chunks(events, size, learning_start_us=None):
+    """Preserve every event; start a fresh BPTT chunk at the learning fence.
+
+    Warmup events retain their causal state but cannot share an optimizer
+    chunk with the requested learning interval. With no fence, batching is
+    identical to the original chronological trainer.
+    """
+    pending = []
+    crossed = learning_start_us is None
+    for event in events:
+        if not crossed and event.close_us >= learning_start_us:
+            if pending:
+                yield tuple(pending)
+                pending = []
+            crossed = True
+        pending.append(event)
+        if len(pending) == size:
+            yield tuple(pending)
+            pending = []
+    if pending:
+        yield tuple(pending)
 
 
 def _action_class(token: int, listings: int, holdings: int, *, wait_hold=False) -> int:
@@ -211,7 +234,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   device: torch.device, clocks_per_chunk: int = 32,
                   grad_clip: float = 1., progress_callback=None,
                   evaluation: bool = False, learning_rate_for_clock=None,
-                  teacher_loss: str = 'legacy') -> TrainingMetrics:
+                  teacher_loss: str = 'legacy',
+                  learning_start_us: int | None = None) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Decisions use current completed candles and outcomes up to that close.
@@ -219,11 +243,16 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     and action GRU state detach after each optimizer chunk, never mid-order.
     Evaluation accepts development sessions only, builds no autograd graph,
     and never reads or mutates an optimizer.
+    An optional learning start retains all earlier candle events as warmup;
+    callers must supply only labels at or after that completed-clock fence.
     """
     if (session.role not in (('development',) if evaluation else ('train',)) or clocks_per_chunk < 1 or grad_clip <= 0 or
             not decisions or teacher_loss not in ('legacy', 'balanced-v2')):
         raise ValueError('V6 trainer requires a train session and labels')
     listings = len(session.listings)
+    if learning_start_us is not None and any(
+            item.close_us < learning_start_us for item in decisions):
+        raise ValueError('Learning fence cannot discard supplied teacher labels')
     ranked = hasattr(policy, 'observe_market')
     if ranked:
         policy.reset_market(listings)
@@ -232,7 +261,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     action_names = SIX_ACTION_NAMES if wait_hold else ACTION_NAMES
     _validate(decisions, outcomes, listings, wait_hold=wait_hold,ticker_heads=hasattr(policy.decoder,'ticker_outputs'))
     balance, loss_denominator = (teacher_loss_balance(decisions, listings,
-        session.bank.close_us, clocks_per_chunk, wait_hold=wait_hold)
+        session.bank.close_us if learning_start_us is None else
+        session.bank.close_us[session.bank.close_us >= learning_start_us],
+        clocks_per_chunk, wait_hold=wait_hold)
         if teacher_loss == 'balanced-v2' and not evaluation else (None, None))
     state = SparseCandleState.empty(policy.encoder, listings, device=device,
                                     dtype=torch.float32, refreshable=wait_hold)
@@ -255,8 +286,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     policy.train(not evaluation)
     if not evaluation:
         optimizer.zero_grad(set_to_none=True)
-    event_iter = iter(session.candle_events())
-    while chunk := tuple(islice(event_iter, clocks_per_chunk)):
+    for chunk in _event_chunks(session.candle_events(), clocks_per_chunk,
+                               learning_start_us):
         labeled = any(event.close_us in decision_groups for event in chunk)
         pending_losses = []
         pending_objectives = []
