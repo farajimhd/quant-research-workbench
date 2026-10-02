@@ -10,7 +10,7 @@ from types import MappingProxyType
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .arte_confirmed_ah_failure_v4 import restore_confirmed_ah_failure
-from .strategy_confirmed_ah_failure_exit import REASON, confirmed_ah_exit_intent
+from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason, confirmed_ah_exit_intent
 
 
 def validate_confirmed_ah_rows(
@@ -24,7 +24,8 @@ def validate_confirmed_ah_rows(
     from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
     if max(len(rows), len(intents), len(events)) > 65_536:
         raise ValueError('AH confirmation graph exceeds its bounded family limit')
-    parents = {str(p['record_id']): p for p in intents if p['reason'] == REASON}
+    reasons = {confirmed_ah_reason(number) for number in (34, 35)}
+    parents = {str(p['record_id']): p for p in intents if p['reason'] in reasons}
     event_map = {str(e['record_id']): e for e in events}
     if (len({str(p['record_id']) for p in intents}) != len(intents)
             or len(event_map) != len(events) or len(rows) != len(parents)):
@@ -99,7 +100,7 @@ def validate_confirmed_ah_source(
             or event['account_id'] != source_event['account_id']
             or str(source['intent_id']) != str(row['source_entry_intent_id'])
             or source['ticker'] != parent['ticker'] or parent['action'] != 'exit'
-            or parent['reason'] != REASON
+            or parent['reason'] != confirmed_ah_reason(row['strategy_number'])
             or source['action'] != 'enter_long' or source['reason'] != 'strategy_one_entry'
             or source_event['sequence'] >= event['sequence']
             or child['boundary_ms'] >= w.first_held_boundary_ms
@@ -116,7 +117,7 @@ def validate_confirmed_ah_source(
     )
     expected = confirmed_ah_exit_intent(
         witness, financial, session_date=local.date(),
-        source_entry_intent_id=str(row['source_entry_intent_id']),
+        source_entry_intent_id=str(row['source_entry_intent_id']), strategy_number=row['strategy_number'],
     )
     content = {k: v for k, v in parent.items() if k != 'content_hash'}
     expected_content = {

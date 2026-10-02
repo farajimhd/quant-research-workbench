@@ -46,7 +46,7 @@ def prepared(strategy_number=31):
     return group, source, history, reservation, decision, row
 
 
-@pytest.mark.parametrize('number', [31, 32, 33, 34])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35])
 def test_full_profit_exit_reconstructs_exact_order_and_portfolio_assignment(number):
     group, source, history, reservation, decision, row = prepared(strategy_number=number)
     approved, _ = _approved_strategy_one_oms_intent(
@@ -58,7 +58,7 @@ def test_full_profit_exit_reconstructs_exact_order_and_portfolio_assignment(numb
         run_id=history.run_id, strategy_id='early-squeeze-strategy', strategy_revision=number)
 
 
-@pytest.mark.parametrize('number', [31, 32, 33, 34])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35])
 def test_profit_row_cannot_cross_numbered_oms_group(number):
     group, source, history, reservation, decision, row = prepared(strategy_number=number)
     with pytest.raises(ValueError, match='exact committed scalar witness'):

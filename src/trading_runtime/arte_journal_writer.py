@@ -4542,7 +4542,7 @@ class ArteJournalWriter:
         StrategyOneManagementRunner._validate_capture(
             state, max_pending_breaks=256)
         if first_price_source is not None or any(
-                proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34) for _, proposal in state.submitted):
+                proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35) for _, proposal in state.submitted):
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
             if (type(first_price_source) is not CertifiedPriceReadbackAuthority
                     or first_price_source.run_id != self._run_id

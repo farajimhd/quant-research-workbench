@@ -15,6 +15,13 @@ from .strategy_one_stateful import StrategyOneFinancialView
 REASON = 'strategy_thirty_four_confirmed_ah_failure'
 
 
+def confirmed_ah_reason(strategy_number):
+    """Retain the parent's identity and assign its successor an exact reason."""
+    if type(strategy_number) is not int or strategy_number not in (34, 35):
+        raise ValueError('AH confirmation requires Strategy 34 or 35')
+    return {34: REASON, 35: 'strategy_thirty_five_confirmed_ah_failure'}[strategy_number]
+
+
 def validate_confirmed_ah_witness(witness):
     """Re-run both completed-bar conditions without altering original risk."""
     if type(witness) is not ConfirmedAhRiskFailure:
@@ -36,8 +43,9 @@ def validate_confirmed_ah_witness(witness):
         raise ValueError('AH witness does not satisfy both pinned producer observations')
 
 
-def confirmed_ah_exit_intent(witness, financial, *, session_date, source_entry_intent_id):
+def confirmed_ah_exit_intent(witness, financial, *, session_date, source_entry_intent_id, strategy_number=34):
     """Only the existing Portfolio/OMS path may execute this prepared intent."""
+    reason = confirmed_ah_reason(strategy_number)
     validate_confirmed_ah_witness(witness)
     UUID(source_entry_intent_id)
     if (type(financial) is not StrategyOneFinancialView
@@ -47,12 +55,12 @@ def confirmed_ah_exit_intent(witness, financial, *, session_date, source_entry_i
         raise ValueError('AH exit requires exact held financial authority')
     w = witness.five_second
     at = datetime.combine(session_date, time(4), ZoneInfo('America/New_York')) + timedelta(milliseconds=w.boundary_ms)
-    identity = f'strategy-34-confirmed-ah-exit:{session_date}:{financial.account_id}:{financial.assignment_id}:{financial.ticker}:{source_entry_intent_id}:{w.boundary_ms}'
+    identity = f'strategy-{strategy_number}-confirmed-ah-exit:{session_date}:{financial.account_id}:{financial.assignment_id}:{financial.ticker}:{source_entry_intent_id}:{w.boundary_ms}'
     return StrategyIntent(
         intent_id=str(uuid5(NAMESPACE_URL, identity)), ticker=financial.ticker,
         event_time=at.astimezone(timezone.utc), action='exit',
         quantity=float(financial.position_quantity), reference_price=w.bid,
-        urgency='urgent', outside_rth=True, reason=REASON, metadata={},
+        urgency='urgent', outside_rth=True, reason=reason, metadata={},
         execution_policy=ExecutionPolicy(
             policy_id='strategy-adaptive_urgent', name=ExecutionPolicyName.ADAPTIVE_URGENT,
             envelope=ExecutionEnvelope(persist_until_cancelled=True),

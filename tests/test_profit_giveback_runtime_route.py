@@ -44,7 +44,7 @@ def submit(runtime, held, values_):
         values_['source_entry_intent_id'], values_['arm_reference'])
 
 
-@pytest.mark.parametrize('number', [31, 32, 33, 34])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35])
 def test_profit_exit_keeps_typed_witness_and_shared_assignment_admission(number):
     runtime, held, values_ = runtime_fixture(strategy_number=number)
     result = asyncio.run(submit(runtime, held, values_))
@@ -86,7 +86,7 @@ def test_invalid_authority_cannot_reach_portfolio_or_oms(corruption):
     runtime.journal.close()
 
 
-@pytest.mark.parametrize('number', [31, 32, 33, 34])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35])
 def test_ordinary_exit_route_cannot_bypass_profit_witness(number):
     runtime, held, values_ = runtime_fixture(strategy_number=number)
     with pytest.raises(ValueError, match='normalized witness'):
@@ -105,7 +105,7 @@ def test_profit_exit_rejects_portfolio_assignment_loss_before_order():
     runtime.order_manager.submit_intent.assert_not_awaited()
 
 
-@pytest.mark.parametrize('number', [31, 32, 33, 34])
+@pytest.mark.parametrize('number', [31, 32, 33, 34, 35])
 def test_prepared_successor_parent_loss_keeps_numbered_factory_and_shared_route(number):
     from src.trading_runtime.strategy_followthrough_exit import followthrough_exit_intent
     from src.trading_runtime.strategy_zero_regime_risk_failure import zero_regime_risk_failure

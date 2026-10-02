@@ -78,7 +78,7 @@ class V4ConfirmedAhFailureBatch:
         )
         expected = confirmed_ah_exit_intent(
             witness, financial, session_date=local.date(),
-            source_entry_intent_id=str(row['source_entry_intent_id']),
+            source_entry_intent_id=str(row['source_entry_intent_id']), strategy_number=row['strategy_number'],
         )
         if expected.event_time != at.astimezone(timezone.utc):
             raise ValueError('AH batch event clock differs from its witness')
@@ -86,6 +86,7 @@ class V4ConfirmedAhFailureBatch:
             witness, expected, financial, session_date=local.date(),
             source_entry_intent_id=str(row['source_entry_intent_id']),
             run_id=row['run_id'], batch_id=row['batch_id'], parent_record_id=row['parent_record_id'],
+            strategy_number=row['strategy_number'],
         )
         if row != expected_row:
             raise ValueError('AH batch has altered scalar identity or values')
@@ -100,12 +101,12 @@ class V4ConfirmedAhFailureBatch:
 
 def project_confirmed_ah_failure(
     witness, intent, financial, *, session_date, source_entry_intent_id,
-    run_id, batch_id, parent_record_id,
+    run_id, batch_id, parent_record_id, strategy_number=34,
 ):
     """Exact unsealed factory projection; no committed-source claim."""
     expected = confirmed_ah_exit_intent(
         witness, financial, session_date=session_date,
-        source_entry_intent_id=source_entry_intent_id,
+        source_entry_intent_id=source_entry_intent_id, strategy_number=strategy_number,
     )
     if intent != expected or type(run_id) is not str or not run_id:
         raise ValueError('AH witness differs from its exact factory intent')
@@ -115,7 +116,7 @@ def project_confirmed_ah_failure(
         record_id=str(uuid5(NAMESPACE_URL, f'{run_id}:{parent_record_id}:confirmed-ah-failure')),
         parent_record_id=parent_record_id, run_id=run_id,
         event_month=intent.event_time.astimezone(timezone.utc).strftime('%Y-%m-01'),
-        batch_id=batch_id, strategy_number=34,
+        batch_id=batch_id, strategy_number=strategy_number,
         source_entry_intent_id=source_entry_intent_id, assignment_id=financial.assignment_id,
         **{f.name: getattr(witness.five_second, f.name) for f in fields(FollowThroughFailure)},
         completed_ten_second_boundary_ms=witness.completed_ten_second_boundary_ms,
@@ -126,8 +127,8 @@ def project_confirmed_ah_failure(
 
 def restore_confirmed_ah_failure(row):
     """Scalar replay only; stored-row hash/prefix verification must precede it."""
-    if type(row.get('strategy_number')) is not int or row['strategy_number'] != 34:
-        raise ValueError('AH confirmation belongs only to prepared Strategy 34')
+    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (34, 35):
+        raise ValueError('AH confirmation requires Strategy 34 or 35')
     integers = {'boundary_ms', 'first_held_boundary_ms', 'completed_close_int', 'quote_age_us'}
     values = {}
     for f in fields(FollowThroughFailure):
