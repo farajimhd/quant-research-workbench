@@ -19,6 +19,10 @@ def require_runtime(path):
 def configure_caches(runtime=DEFAULT):
     runtime = require_runtime(runtime)
     configure_compiler()
+    import tempfile
+    scratch = require_runtime(runtime / "compiler-tmp")
+    os.environ["TMP"] = os.environ["TEMP"] = str(scratch)
+    tempfile.tempdir = str(scratch)
     for key, name in (("TORCHINDUCTOR_CACHE_DIR", "inductor"),
                       ("TRITON_CACHE_DIR", "triton"), ("TORCH_EXTENSIONS_DIR", "extensions")):
         target = require_runtime(runtime / name)
@@ -36,6 +40,12 @@ def configure_compiler():
             raise RuntimeError("V2 Triton 3.7 overlay requires PyTorch 2.12; no version fallback")
         sys.path.insert(0, str(target))
         os.environ["PYTHONPATH"] = str(target) + os.pathsep + os.environ.get("PYTHONPATH", "")
+        compiler = target / "triton" / "runtime" / "tcc" / "tcc.exe"
+        if not compiler.is_file():
+            raise RuntimeError("Pinned Windows Triton bundled C compiler is missing")
+        # The wheel normally locates TinyCC under sysconfig's site-packages.
+        # A --target install requires this explicit task-local toolchain path.
+        os.environ.setdefault("CC", str(compiler))
 
 
 def write_json(path, value):

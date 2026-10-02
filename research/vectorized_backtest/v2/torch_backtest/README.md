@@ -195,6 +195,9 @@ The workstation's PyTorch 2.12/CUDA 13.2 environment initially lacked Triton.
 The launcher discovers that pinned compiler when the base environment has none;
 it never upgrades shared environments or silently chooses a different compiler.
 The separate setup command is reproducible; normal runs do not install packages.
+The task-local `CC` path points to the wheel's bundled TinyCC because a
+`--target` installation is outside Python's normal site-packages. Compiler scratch
+and caches remain under the runtime root; existing explicit `CC` is respected.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = '1'

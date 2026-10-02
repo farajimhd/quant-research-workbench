@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-10-02 - Squeeze Torch v2 and workstation launcher](docs/codex/chat-summaries/2026/CHAT-20261002-UNKNOWN-squeeze-torch-v2-workstation.md)
+
+TASK-0221. Independent v2 implements the approved 4,320-configuration grid with M independent orders, causal session entries, protected positions and portfolio rotation. The workstation launcher discovers 36 certified catalogue dates (July 30–September 18), selects date/session windows, measures GPU batch sizing and renders durable progress. Missing Windows Triton was repaired with an isolated pinned runtime compiler and bundled TinyCC configuration. Source snapshots are hash-verified; local synthetic tests and workstation CPU/GPU ledger parity passed. No historical experiment was started. User will run one premarket preflight before the full grid; full squeeze-population V7/input coverage and profitability remain unverified. Earlier implementation context is partial.
+
 ### [2026-09-28 - BarGPT August evaluation and serving-capacity diagnosis](docs/codex/chat-summaries/2026/CHAT-20260928-UNKNOWN-bargpt-august-evaluation.md)
 
 TASK-0217 / TASK-0197. Four checkpoints produced 11,696 reconciled predictions on selected August windows, with mixed accuracy and calibration. Extended-hours samples had no eligible origins. BF16 batch parity failed; FP32 passed 16-symbol parity but missed 24/120 paced deadlines (p95 1.341 seconds). GC stacks identified repeated full-cache sorting as the pause trigger; the incremental-ordering fix remains unimplemented. User stopped evaluation; follow-up paused, no evaluation-owned workers remain, production unchanged and acceptance sealed. 100 symbols/second remains unverified. Resume only on a new request.

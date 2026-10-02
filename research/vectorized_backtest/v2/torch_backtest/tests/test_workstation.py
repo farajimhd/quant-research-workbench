@@ -43,6 +43,39 @@ def test_gpu_capacity_headroom_is_bounded_not_a_vram_target():
         memory_plan(1*1024**3, 96*1024**3, 12*1024**3, 1500)
 
 
+def test_isolated_compiler_selects_bundled_cc_without_changing_shared_environment(tmp_path, monkeypatch):
+    import sys
+    import importlib.util
+    from research.vectorized_backtest.v2.torch_backtest import runtime
+    target = tmp_path / "dependencies" / "triton-3.7.1.post27"
+    cc = target / "triton/runtime/tcc/tcc.exe"
+    cc.parent.mkdir(parents=True)
+    cc.write_bytes(b"synthetic-existence-witness")
+    monkeypatch.setattr(runtime, "DEFAULT", tmp_path)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(torch, "__version__", "2.12.0+cu132")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.delenv("CC", raising=False)
+    monkeypatch.setenv("PYTHONPATH", "")
+    runtime.configure_compiler()
+    import os
+    assert os.environ["CC"] == str(cc) and sys.path[0] == str(target)
+    monkeypatch.setenv("CC", "explicit-operator-compiler")
+    runtime.configure_compiler()
+    assert os.environ["CC"] == "explicit-operator-compiler"
+
+
+def test_isolated_compiler_rejects_incompatible_pytorch(tmp_path, monkeypatch):
+    import importlib.util
+    from research.vectorized_backtest.v2.torch_backtest import runtime
+    (tmp_path / "dependencies/triton-3.7.1.post27/triton").mkdir(parents=True)
+    monkeypatch.setattr(runtime, "DEFAULT", tmp_path)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(torch, "__version__", "2.8.0")
+    with pytest.raises(RuntimeError, match="requires PyTorch 2.12"):
+        runtime.configure_compiler()
+
+
 @pytest.mark.parametrize("width,height", [(110, 24), (70, 16), (60, 10)])
 @pytest.mark.parametrize("status", ["Running", "Complete", "Failed", "Interrupted"])
 def test_terminal_layout_is_bounded_and_failures_remain_visible(width, height, status):
