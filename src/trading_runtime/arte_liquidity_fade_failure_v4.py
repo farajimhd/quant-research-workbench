@@ -110,8 +110,8 @@ def project_liquidity_fade_failure(
 def restore_liquidity_fade_failure(row):
     """Replay complete scalars after raw stored hashes and UInt adaptation."""
     columns = {name for name, _ in LIQUIDITY_FADE_FAILURE.columns} - {"content_hash"}
-    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] not in (35, 36, 37, 38):
-        raise ValueError("Liquidity fade belongs only to its complete Strategy 35 or 36 family")
+    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] not in (35, 36, 37, 38, 39):
+        raise ValueError("Liquidity fade requires its complete version-bound Strategy 35 through 39 family")
     validate_liquidity_observation_source(row)
     validate_liquidity_checkpoint_reference(row)
     integers = {name for name, kind in LIQUIDITY_FADE_FAILURE.columns if kind.startswith("UInt")}
@@ -128,8 +128,19 @@ def restore_liquidity_fade_failure(row):
     end = row["completed_five_second_boundary_ms"]
     values["candles"] = tuple(LiquidityFadeCandle(end - offset, row[f"trade_count_{i}"])
                              for i, offset in enumerate((15_000, 10_000, 5_000, 0)))
-    witness = LiquidityFadeFailure(**values)
-    validate_liquidity_fade_witness(witness)
+    # Strategy39's existing normalized number distinguishes its extended
+    # policy. Counts deterministically select the inherited quarter-rate
+    # witness first; the additional witness can appear only outside that
+    # activity condition. Complete scalar replay below checks every remaining
+    # price, clock and freshness condition; a row-contained label cannot pass.
+    witness_type = LiquidityFadeFailure
+    prior = values['candles'][0].trade_count + values['candles'][1].trade_count
+    recent = values['candles'][2].trade_count + values['candles'][3].trade_count
+    if row['strategy_number'] == 39 and 4 * recent > prior:
+        from .strategy_half_risk_liquidity_fade import HalfRiskLiquidityFadeFailure
+        witness_type = HalfRiskLiquidityFadeFailure
+    witness = witness_type(**values)
+    validate_liquidity_fade_witness(witness, strategy_number=row['strategy_number'])
     return witness
 
 

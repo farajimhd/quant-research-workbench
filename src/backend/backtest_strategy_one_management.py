@@ -72,7 +72,9 @@ class LiquidityFadeCheckpointRequest:
         from uuid import UUID
         from src.trading_runtime.strategy_liquidity_fade_exit import validate_liquidity_fade_witness, validate_liquidity_fade_financial
         from src.trading_runtime.arte_liquidity_fade_failure_v4 import validate_liquidity_observation_source
-        validate_liquidity_fade_witness(self.witness)
+        from src.trading_runtime.strategy_half_risk_liquidity_fade import HalfRiskLiquidityFadeFailure
+        validate_liquidity_fade_witness(self.witness,
+            strategy_number=39 if type(self.witness) is HalfRiskLiquidityFadeFailure else 35)
         validate_liquidity_fade_financial(self.financial)
         if (type(self.source_entry_intent_id) is not str
                 or str(UUID(self.source_entry_intent_id)) != self.source_entry_intent_id
@@ -127,6 +129,7 @@ class StrategyOneManagementRunner:
         if (self.contract.strategy_number not in (35, 36, 37, 38) or self._liquidity_lookup is not None
                 or type(lookup) is not CompiledLiquidityFadeLookup or type(market_plan) is not CertifiedMarketDayPlan
                 or lookup.session_date != self.runtime.config.anchor_date
+                or (lookup.strategy_number == 39) != (self.contract.strategy_number == 39)
                 or market_plan.sessions != (lookup.session_date.isoformat(),)
                 or lookup.source_build_id != market_plan.build_id or lookup.market_plan_token != market_plan.token
                 or not {100, 5000}.issubset(market_plan.required_resolutions_ms)):

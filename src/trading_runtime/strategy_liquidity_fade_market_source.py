@@ -40,6 +40,7 @@ def _source_units(plan, source, session_date, ticker):
 
 def validate_liquidity_fade_market_observations(
     witness, source, bars, indicator, quote, *, plan, session_date, ticker,
+    strategy_number=35,
 ):
     """Bind four exact native bars, one indicator and the current 100ms quote.
 
@@ -49,7 +50,7 @@ def validate_liquidity_fade_market_observations(
     This checks producer values, not native financial state or commit ancestry.
     """
     from src.backend.backtest_market_data import SESSION_OPEN_OFFSET_MS, market_day_boundary
-    validate_liquidity_fade_witness(witness)
+    validate_liquidity_fade_witness(witness, strategy_number=strategy_number)
     units = _source_units(plan, source, session_date, ticker)
     if type(bars) is not tuple or len(bars) != 4:
         raise ValueError('Liquidity fade requires exactly four native completed bars')
@@ -94,7 +95,8 @@ def validate_liquidity_fade_market_observations(
     return witness
 
 
-def load_liquidity_fade_market_observations(client, witness, source, *, plan, session_date, ticker):
+def load_liquidity_fade_market_observations(client, witness, source, *, plan, session_date, ticker,
+                                           strategy_number=35):
     """Cold-check one proposed exit with three bounded, read-only ARTE queries.
 
     This belongs at publication/cold recovery, not in a 100ms management loop.
@@ -103,7 +105,7 @@ def load_liquidity_fade_market_observations(client, witness, source, *, plan, se
     """
     from src.backend.backtest_market_data import SESSION_OPEN_OFFSET_MS, _literal, assert_select_only
     import json
-    validate_liquidity_fade_witness(witness)
+    validate_liquidity_fade_witness(witness, strategy_number=strategy_number)
     units = _source_units(plan, source, session_date, ticker)
     def read(stage, table, fields, resolution, first, last, limit):
         low = (first + SESSION_OPEN_OFFSET_MS)//resolution - 1
@@ -133,4 +135,5 @@ def load_liquidity_fade_market_observations(client, witness, source, *, plan, se
     if len(indicators) != 1 or len(quotes) != 1:
         raise ValueError('Liquidity fade native MACD or quote is missing or ambiguous')
     return validate_liquidity_fade_market_observations(
-        witness, source, bars, indicators[0], quotes[0], plan=plan, session_date=session_date, ticker=ticker)
+        witness, source, bars, indicators[0], quotes[0], plan=plan, session_date=session_date,
+        ticker=ticker, strategy_number=strategy_number)

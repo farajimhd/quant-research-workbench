@@ -65,7 +65,8 @@ def validate_liquidity_fade_publication_rows(
         load_liquidity_fade_manager_checkpoint(client, verified_prefix, row, parent, event,
             financial, first_price_source=first_price_source)
         load_liquidity_fade_market_observations(client, witness, row,
-            plan=market_plan, session_date=day, ticker=parent['ticker'])
+            plan=market_plan, session_date=day, ticker=parent['ticker'],
+            strategy_number=row['strategy_number'])
         result.append(MappingProxyType({key: value for key, value in row.items() if key != 'content_hash'}))
     return tuple(result)
 

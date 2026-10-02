@@ -94,3 +94,18 @@ def half_risk_liquidity_fade_failure(value: LiquidityFadeInput) -> HalfRiskLiqui
         completed_at, x.completed_five_second_close_int, float(x.macd_line),
         float(x.macd_signal), float(x.bid), float(x.ask), x.quote_age_us, value.candles,
     )
+
+
+def numbered_liquidity_fade_failure(value: LiquidityFadeInput, *, strategy_number=35):
+    """Replay the pinned number's rule, preserving inherited exit precedence.
+
+    This is a pure prepared-policy selector, not executor registration. Older
+    numbers cannot reach the additional predicate; Strategy39 considers it
+    only when the unchanged parent liquidity predicate did not produce an exit.
+    """
+    if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39):
+        raise ValueError('Liquidity failure requires an exact supported strategy number')
+    inherited = liquidity_fade_failure(value)
+    if inherited is not None or strategy_number != 39:
+        return inherited
+    return half_risk_liquidity_fade_failure(value)

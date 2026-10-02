@@ -28,7 +28,7 @@ ENTRY_ACTIVITY_SOURCE_AST = {
     'src/backend/backtest_strategy_certified_price_break.py': '2b5e8abcf5caab0f6d50d5bcc1ec9fd26f712f1a3cdf25ef373fc46c9c046174',
     'src/backend/backtest_strategy_one_execution.py': '4e71f044f4deb794115be1cc81f3bb3eb59c0f588a56959da5c09ee6193830ad',
     'src/backend/backtest_strategy_one_coordinator.py': '7494305fae29254ca2d483876b22f65be581faabe791a71e9bdba0659a289071',
-    'src/backend/backtest_strategy_one_management.py': 'a0b48d7649060d0cb08f6816966306b64ce819c5660c323a9ee0b4393e1a23eb',
+    'src/backend/backtest_strategy_one_management.py': '18581766f8f3024b16f895ae5b2815bd62c22c5e5d934be90401b18d8fd0b89b',
     'src/trading_runtime/strategy_one_management_snapshot.py': '67bb28045cacae27fe8faf5ffe460e983248cc539447e511bf688dd6bd642361',
     'src/trading_runtime/runtime.py': 'c6dd993c3fa5b32bb0cf0414d0df1f92c487aff7dfeb9d9c1374f24cc89cb2b5',
     'src/backend/backtest_journal_memory.py': '824a8f8803af1d06073f509644d25cb50052379f24a259adc7ac819920d9e006',

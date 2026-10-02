@@ -15,7 +15,7 @@ from .backtest_strategy_liquidity_fade import CompiledLiquidityFadeLookup
 
 def load_compiled_liquidity_fade_lookup(client, *, plan, session_date, max_rows=2_000_000,
                                       tickers=None, after_boundary_ms=0,
-                                      through_boundary_ms=57_600_000):
+                                      through_boundary_ms=57_600_000, strategy_number=35):
     """Stream at most max_rows+1 source rows, then vectorize once.
 
     The extra row is an overflow sentinel, never a silent population cut. Arrow
@@ -37,6 +37,8 @@ def load_compiled_liquidity_fade_lookup(client, *, plan, session_date, max_rows=
             or {u.ticker for u in units} != set(plan.tickers)
             or any(u.build_id != plan.build_id or u.session_date != session_date.isoformat() for u in units)):
         raise ValueError('Liquidity loader has missing, duplicate or foreign native bar units')
+    if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39):
+        raise ValueError('Liquidity loader requires an exact supported strategy number')
     selected = plan.tickers if tickers is None else tickers
     if (type(selected) is not tuple or any(type(t) is not str or not t for t in selected)
             or len(set(selected)) != len(selected) or set(selected) - set(plan.tickers)
@@ -51,7 +53,8 @@ def load_compiled_liquidity_fade_lookup(client, *, plan, session_date, max_rows=
     empty = pl.DataFrame(schema=dict(source_build_id=pl.String, session_date=pl.String,
         ticker=pl.String, source_attempt_id=pl.String, boundary_ms=pl.UInt64, trade_count=pl.UInt64))
     if not units or lower_bucket >= upper_bucket:
-        return CompiledLiquidityFadeLookup(empty, plan=plan, session_date=session_date, max_rows=max_rows)
+        return CompiledLiquidityFadeLookup(empty, plan=plan, session_date=session_date,
+                                           max_rows=max_rows, strategy_number=strategy_number)
     attempts = ','.join(f'({_literal(u.ticker)},toUUID({_literal(u.attempt_id)}))' for u in units)
     query = assert_select_only(
         'SELECT build_id AS source_build_id,session_date,ticker,'
@@ -91,4 +94,5 @@ def load_compiled_liquidity_fade_lookup(client, *, plan, session_date, max_rows=
         frame = pl.concat(frames)
     else:
         frame = empty
-    return CompiledLiquidityFadeLookup(frame, plan=plan, session_date=session_date, max_rows=max_rows)
+    return CompiledLiquidityFadeLookup(frame, plan=plan, session_date=session_date,
+                                       max_rows=max_rows, strategy_number=strategy_number)

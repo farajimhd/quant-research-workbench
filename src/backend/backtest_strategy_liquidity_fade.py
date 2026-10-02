@@ -93,7 +93,8 @@ class CompiledLiquidityFadeLookup:
     The caller must independently certify the supplied plan and producer frame.
     Native publication/cold recovery still verifies exact producer observations.
     """
-    def __init__(self, frame, *, plan, session_date, max_rows=2_000_000):
+    def __init__(self, frame, *, plan, session_date, max_rows=2_000_000,
+                 strategy_number=35):
         from src.backend.backtest_market_data import CertifiedMarketDayPlan, MarketDayUnit
         if (type(max_rows) is not int or not 1 <= max_rows <= 20_000_000
                 or type(frame) is not pl.DataFrame or frame.height > max_rows):
@@ -104,7 +105,17 @@ class CompiledLiquidityFadeLookup:
                 or type(plan.units) is not tuple or len(plan.units) > 65_536
                 or any(type(u) is not MarketDayUnit for u in plan.units)):
             raise ValueError('Liquidity lookup requires one independently certified native session')
-        compiled = compile_liquidity_fade_observations(frame)
+        if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39):
+            raise ValueError('Liquidity lookup requires an exact supported strategy number')
+        activity_column = 'liquidity_fade'
+        if strategy_number == 39:
+            from .backtest_strategy_half_risk_liquidity_fade import (
+                HALF_RISK_ACTIVITY_FADE, compile_half_risk_liquidity_observations,
+            )
+            compiled = compile_half_risk_liquidity_observations(frame)
+            activity_column = HALF_RISK_ACTIVITY_FADE
+        else:
+            compiled = compile_liquidity_fade_observations(frame)
         units = {}
         for unit in plan.units:
             if unit.stage != 'bars':
@@ -127,7 +138,7 @@ class CompiledLiquidityFadeLookup:
             # slots are never read as native observations: complete+fade must
             # both be true before any count is materialized into a witness.
             columns = [group['boundary_ms'].to_numpy(),
-                       group['activity_window_complete'].to_numpy(), group['liquidity_fade'].to_numpy()]
+                       group['activity_window_complete'].to_numpy(), group[activity_column].to_numpy()]
             columns.extend(group[f'trade_count_{i}'].fill_null(0).cast(pl.UInt64).to_numpy()
                            for i in range(4))
             for values in columns:
@@ -138,6 +149,7 @@ class CompiledLiquidityFadeLookup:
         self.session_date = session_date
         self.source_build_id = plan.build_id
         self.market_plan_token = plan.token
+        self.strategy_number = strategy_number
 
     def window_at(self, ticker, boundary_ms):
         """O(log bars) lookup, then at most four exact native integer counts."""
