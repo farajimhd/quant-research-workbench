@@ -152,7 +152,18 @@ def main(argv=None):
            args.max_orders_per_second,args.replay_every)<1 or args.learning_rate<=0 or args.log_every_seconds<=0:
         raise ValueError('Positive training/rollout limits required')
     dataset=require_dataset(args.dataset,runtime_root=runtime)
-    if args.action_contract=='wait-hold':
+    from research.rl_trading.v6.opportunity_dataset import VERSION as LABEL_DATASET_VERSION
+    if args.action_audit is not None or args.ticker_brackets_root is not None:
+        raise ValueError('Old action migration audits and bracket roots cannot enter the current V6 label contract')
+    if args.action_contract != 'wait-hold':
+        raise ValueError('Current swing labels require WAIT/HOLD transport')
+    if not args.ticker_heads:
+        raise ValueError('Current swing labels require ticker heads without legacy size/bracket supervision')
+    if args.episode_supervision_root is None:
+        args.episode_supervision_root=Path(dataset['label_root'])
+    elif args.episode_supervision_root.resolve()!=Path(dataset['label_root']).resolve():
+        raise ValueError('Episode labels must be the newly certified dataset authority')
+    if args.action_contract=='wait-hold' and dataset['version'] != LABEL_DATASET_VERSION:
         if args.action_audit is None or not args.action_audit.resolve().is_relative_to(runtime):
             raise ValueError('WAIT/HOLD requires a runtime all-day migration audit')
         action_audit=json.loads(args.action_audit.read_text())
@@ -214,24 +225,21 @@ def main(argv=None):
     teacher_loader = load_wait_hold_teacher if wait_hold else load_teacher
     episode_certificates={}
     if args.episode_supervision_root:
-        from research.rl_trading.v6.episode_windows import load_episode_teacher, VERSION as EPISODE_VERSION
-        if not args.teacher_only or not wait_hold or args.resume_from or args.initialize_from:
+        from research.rl_trading.v6.opportunity_dataset import load_teacher as load_episode_teacher, DAY_VERSION as EPISODE_VERSION, verify_day
+        if not wait_hold:
             raise ValueError('Independent episode labels require fresh WAIT/HOLD teacher-only contract')
         root=args.episode_supervision_root.resolve()
         if not root.is_relative_to(runtime):raise ValueError('Episode labels escaped runtime')
         for entry in dataset['days']:
             path=root/entry['day']/'complete.json'
             proof=json.loads(path.read_text())
-            if (proof.get('version')!=EPISODE_VERSION or proof.get('status')!='audited_independent_episode_windows' or
+            if (proof.get('version')!=EPISODE_VERSION or proof.get('status')!='certified_swing_opportunities' or
                 proof.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or
                 proof.get('day')!=entry['day'] or proof.get('role')!=entry['role'] or
                 proof.get('sealed_test_accessed') is not False):
                 raise ValueError('All18 episode label certificates must bind to audited banks')
             episode_certificates[entry['day']]=file_hash(path)
-            for name in ('flat','held','allocation'):
-                artifact=root/entry['day']/(name+'.parquet')
-                if file_hash(artifact)!=proof['files'][name]['sha256']:
-                    raise ValueError('Episode label bytes changed before optimizer initialization')
+            verify_day(root/entry['day'],entry['bank_certificate_sha256'])
         def teacher_loader(ignored,session,**kwargs):
             return load_episode_teacher(root/str(session.day),session,**kwargs)
     policy=RankedBracketActorCritic(config=ranking, wait_hold=wait_hold).to(device)
@@ -242,15 +250,11 @@ def main(argv=None):
         if not wait_hold or (not args.teacher_only and args.broker_engine!='tensor-100ms'):
             raise ValueError('Ticker heads require WAIT/HOLD transport and tensor PPO')
         if args.teacher_only:
-            if not args.episode_supervision_root or not args.ticker_brackets_root:
-                raise ValueError('Ticker teacher needs independent episodes and certified brackets')
-            if not args.ticker_brackets_root.resolve().is_relative_to(runtime):raise ValueError('Ticker brackets escaped runtime')
+            if not args.episode_supervision_root:
+                raise ValueError('Ticker teacher needs certified swing opportunities')
             base_loader=teacher_loader
             # Audit every target binding before creating the optimizer.
             for entry in dataset['days']:
-                original=json.loads((Path(entry['original_teacher_root'])/'complete.json').read_text())
-                if file_hash(args.ticker_brackets_root/entry['day']/'complete.json')!=original['bracket_certificate_sha256']:
-                    raise ValueError('Ticker bracket source differs from original audited geometry')
                 audited=open_session(Path(entry['bank_root']),runtime_root=runtime,previous_root=Path(entry['previous_root']))
                 labels,_=base_loader(Path(entry['teacher_root']),audited,runtime_root=runtime,audit_development=True)
                 _,proof=attach_targets(labels,audited,args.ticker_brackets_root)

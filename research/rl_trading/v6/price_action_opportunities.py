@@ -80,7 +80,8 @@ def calculate(bars, config=Config()):
     reference_actions = np.full(n,'WAIT',dtype='<U5')
     trades = []
     for pair in pairs:
-        indexes = np.flatnonzero((times >= pair['start_us']) & (times < pair['end_us']))
+        left, right = np.searchsorted(times, [pair['start_us'], pair['end_us']])
+        indexes = np.arange(left, right)
         long_indexes = indexes[directions[indexes] == 1]
         pair_ids[indexes] = pair['pair_id']
         discounted_exits = {}
@@ -113,7 +114,7 @@ def calculate(bars, config=Config()):
         exit_gain[valid_exits] = prices[valid_exits]-prices[i]
         exit_quality[valid_exits] = np.clip(exit_gain[valid_exits]/pnl,0,1)
         basis[indexes[indexes > i]] = prices[i]
-        held[(np.arange(n) > i) & (np.arange(n) < j)] = True
+        held[i+1:j] = True
         reference_actions[i], reference_actions[j] = 'ENTRY','EXIT'
         pair.update(reference_entry_us=int(times[i]),reference_exit_us=int(times[j]),
             reference_entry_price=float(prices[i]),reference_exit_price=float(prices[j]),
@@ -127,7 +128,8 @@ def calculate(bars, config=Config()):
     carried = np.zeros(n)
     next_start, next_best = None, 0.
     for pair in reversed(pairs):
-        indexes = np.flatnonzero(pair_ids == pair['pair_id'])
+        left, right = np.searchsorted(times, [pair['start_us'], pair['end_us']])
+        indexes = np.arange(left, right)
         if next_start is not None:
             carried[indexes] = next_best*np.exp2(-(next_start-times[indexes])/1e6/config.half_life_seconds)
         pair['carried_next_pair_value'] = float(carried[indexes[0]]) if len(indexes) else 0.

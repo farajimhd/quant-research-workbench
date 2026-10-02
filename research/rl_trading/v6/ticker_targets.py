@@ -13,6 +13,17 @@ VERSION='rl-v6-ticker-target-bindings-v1'
 
 
 def attach_targets(decisions,session,bracket_root,*,fee_per_share=.005):
+    from research.rl_trading.v6.price_action_opportunities import VERSION as ALGORITHM
+    if any(item.label_version != ALGORITHM for item in decisions):
+        raise ValueError('Old V6 candidate/bracket targets are retired; regenerate swing labels')
+    if bracket_root is not None:
+        raise ValueError('Legacy bracket targets cannot be mixed into swing labels')
+    return tuple(decisions), dict(version=ALGORITHM, raw_value_units='dollars_per_share',
+        value_units='price_bps_no_fees', counts={'value':sum(i.opportunity_value_bps is not None for i in decisions),
+        'stop':0,'target':0}, missing_target='masked_not_zero', teacher_sizing=False)
+
+
+def _attach_legacy_targets_for_historical_audit(decisions,session,bracket_root,*,fee_per_share=.005):
     bank=Path(session.root);cert=json.loads((bank/'complete.json').read_text())
     candidates=bank/'candidates.parquet'
     if file_hash(candidates)!=cert['outputs']['candidates']['sha256']:

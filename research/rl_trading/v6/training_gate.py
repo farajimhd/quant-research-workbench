@@ -8,6 +8,11 @@ from research.rl_trading.v6.teacher_data import VERSION as TEACHER_VERSION
 
 
 def require_dataset(certificate, *, runtime_root):
+    from research.rl_trading.v6.opportunity_dataset import require_dataset as current
+    return current(certificate, runtime_root=runtime_root)
+
+
+def _require_legacy_dataset_for_historical_audit(certificate, *, runtime_root):
     runtime = Path(runtime_root).resolve()
     certificate = Path(certificate).resolve()
     if not runtime.is_dir() or not certificate.is_relative_to(runtime):

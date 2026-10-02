@@ -79,6 +79,9 @@ class TeacherDecision:
     soft_tokens: tuple[int, ...] = ()  # Local alternative actions, not portfolio negatives.
     soft_probabilities: tuple[float, ...] = ()
     episode_uid: str | None = None
+    label_version: str | None = None
+    raw_entry_gain: float | None = None
+    raw_exit_gain: float | None = None
     execution_indices: tuple[int,...] = ()
     execution_features: np.ndarray | None = None  # Sparse causal [K,11], never future scores.
     opportunity_value_bps: float | None = None

@@ -42,8 +42,8 @@ def episode_geometry(bars: pl.DataFrame, config=Config()):
     """Validate observed price candles and construct shared MACD S-to-L pairs."""
     config.validate()
     needed = ['time_us', 'open', 'high', 'low', 'close', 'macd_line', 'macd_signal']
-    if not set(needed) <= set(bars.columns) or bars.height < 2:
-        raise ValueError('Need at least two certified price/indicator candles')
+    if not set(needed) <= set(bars.columns) or bars.height < 1:
+        raise ValueError('Need at least one certified price/indicator candle')
     if bars.select(needed).null_count().sum_horizontal().item():
         raise ValueError('Null price/indicator input')
     times = bars['time_us'].to_numpy()

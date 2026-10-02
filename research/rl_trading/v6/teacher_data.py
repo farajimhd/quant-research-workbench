@@ -47,6 +47,11 @@ def _hash(path: Path) -> str:
 def load_teacher(root: Path, session: PackedSession, *,
                  runtime_root: Path, audit_development: bool = False) -> tuple[tuple[TeacherDecision, ...],
                                               tuple[ExecutionOutcome, ...]]:
+    from research.rl_trading.v6.opportunity_dataset import load_teacher as current
+    return current(root, session, runtime_root=runtime_root, audit_development=audit_development)
+
+
+def _load_legacy_teacher_for_historical_audit(root, session, *, runtime_root, audit_development=False):
     """Bind hypothetical teacher actions to one certified train bank."""
     root, runtime = Path(root).resolve(), Path(runtime_root).resolve()
     if (session.role not in (('train','development') if audit_development else ('train',)) or not runtime.is_dir() or
@@ -120,13 +125,6 @@ def load_teacher(root: Path, session: PackedSession, *,
 
 
 def load_wait_hold_teacher(root, session, *, runtime_root, audit_development=False):
-    """Explicit six-class view of validated immutable legacy supervision.
-
-    The source certificate continues certifying its original five-action
-    bytes. The caller must record the new action version and migrated counts
-    in its run manifest; this is not a claim that source bytes were rebuilt.
-    """
-    from research.rl_trading.v6.wait_hold_supervision import split_wait_hold
-    decisions, outcomes = load_teacher(root, session, runtime_root=runtime_root,
-                                       audit_development=audit_development)
-    return split_wait_hold(decisions, outcomes, len(session.listings))
+    """Current conditional swing labels; no legacy five-action migration."""
+    from research.rl_trading.v6.opportunity_dataset import load_teacher as current
+    return current(root, session, runtime_root=runtime_root, audit_development=audit_development)

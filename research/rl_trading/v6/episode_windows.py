@@ -183,6 +183,11 @@ def build_day(session, output, config=WindowConfig()):
 
 
 def load_episode_teacher(root, session, *, runtime_root, audit_development=False):
+    from research.rl_trading.v6.opportunity_dataset import load_teacher as current
+    return current(root, session, runtime_root=runtime_root, audit_development=audit_development)
+
+
+def _load_legacy_episode_teacher_for_historical_audit(root, session, *, runtime_root, audit_development=False):
     """Independent flat/one-share held branch labels; not a joint portfolio.
 
     Future allocation weights are size targets only. Holding cost, current
