@@ -17,6 +17,8 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/strategy_liquidity_fade_transport.py': '453f4fc4fa6414a17b0ff9ada8d10382dc96b704b5b7b8e9bcc673772a9e4e3e',
     'src/backend/backtest_strategy_liquidity_fade_loader.py': '5f05a969cf876ba2d254473a066325ae0d75e9516a74c7183ae3e18fe9bfd072',
     'src/trading_runtime/strategy_liquidity_fade_entry_source.py': '9f246890cb1cd527eec2a8b1f252cbf334f41726b9d7c5a1c45e1667b95c83ea',
+    'src/backend/backtest_strategy_liquidity_fade_decision.py': '7aaf49f043a2c30da30ed3a24303e27e80082c7d5b0af510aac06ee1ed68a1b0',
+    'src/backend/backtest_strategy_one_financial.py': 'f184a0f434aabb3895b1323d2a22056acb30b4ab9bf301cb8356b1eea2591f0d',
 }
 
 
