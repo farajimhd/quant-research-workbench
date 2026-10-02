@@ -592,6 +592,8 @@ async def application_lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        from src.backend.backtest_history_performance import history_performance
+        await history_performance.close()
         MARKET_DISCOVERY_RUNTIME.stop()
         LIVE_STRATEGY_RUNTIME.stop()
         _CANVAS_PROFILE_READ_EXECUTOR.shutdown(wait=True, cancel_futures=True)
@@ -604,6 +606,8 @@ app = FastAPI(title="Quant Research Workbench API", version="1.0.0", lifespan=ap
 from src.backend.chart_labeler_service import router as chart_labeler_router
 from src.backend.research_model_service import router as research_model_router
 app.include_router(research_model_router)
+from src.backend.backtest_history_performance import router as backtest_history_performance_router
+app.include_router(backtest_history_performance_router)
 app.include_router(chart_labeler_router)
 app.include_router(hindsight_router)
 app.include_router(hindsight_action_router)

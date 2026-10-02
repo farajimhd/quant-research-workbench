@@ -56,6 +56,8 @@ def classify_workload(method: str, path: str) -> str:
     normalized_method = method.strip().upper()
     normalized_path = "/" + path.strip().lower().lstrip("/")
     parts = normalized_path.strip("/").split("/")
+    if normalized_method == "GET" and normalized_path == "/api/trading/backtest/history-performance":
+        return "runtime_state"
     if (normalized_method == "POST"
             and normalized_path == "/api/trading/historical-preflight"):
         return "preflight"

@@ -2336,7 +2336,7 @@
 
 /* Recent backtests: comparable strategy cohorts above the session-level evidence. */
 .backtest-history-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; padding-block: 12px; border-block: 1px solid var(--border); }
-.backtest-history-overview dt, .backtest-history-note, .backtest-history-run-heading > span { color: var(--muted-foreground); font-size: 12px; }
+.backtest-history-overview dt, .backtest-history-run-heading > span { color: var(--muted-foreground); font-size: 12px; }
 .backtest-history-overview dd { margin: 4px 0 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .backtest-run-history h3 { font-size: 14px; margin: 16px 0 6px; }
 .backtest-history-run-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
@@ -2359,6 +2359,16 @@
 .backtest-status-active { color: var(--accent); }
 .backtest-status-incomplete, .backtest-coverage-incomplete { color: var(--semantic-mixed); }
 .backtest-group-selected { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
-.backtest-performance-errors { color: var(--destructive); font-size: 12px; padding-block: 8px; }
-.backtest-performance-errors summary { cursor: pointer; }
+.backtest-performance-errors { width: 100%; color: var(--muted-foreground); font-size: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+.backtest-performance-errors summary { cursor: pointer; color: var(--semantic-mixed); }
+.backtest-performance-errors ul { max-height: 120px; overflow-y: auto; margin-bottom: 0; }
 .backtest-performance-errors li { margin-block: 4px; overflow-wrap: anywhere; }
+
+.backtest-strategy-group { background: var(--surface-alt); }
+.backtest-group-toggle { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; color: var(--foreground); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.backtest-group-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.backtest-group-count { color: var(--muted-foreground); font-weight: 400; white-space: nowrap; }
+.backtest-session-rows[hidden] { display: none; }
+.backtest-run-history > .backtest-history-scroll .backtest-session-rows th { padding-left: 28px; background: var(--surface); font-weight: 400; }
+.backtest-run-history > .backtest-history-scroll td { vertical-align: middle; }
+.backtest-run-history > .backtest-history-scroll th:first-child { min-width: 240px; }

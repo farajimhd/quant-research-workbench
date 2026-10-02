@@ -30,7 +30,7 @@ from .config import Funnel, Session
 from .core import AtomicInput, EncodingError
 
 NY = ZoneInfo("America/New_York")
-VERSION = "atomic-watchlist-session-torch-v2-1"
+VERSION = "atomic-watchlist-window-torch-v2-2"
 _SOURCE_AUTHORITY = object()
 
 
@@ -188,7 +188,7 @@ def _validate_funnel(funnel):
         )
 
 
-def admission_sql(source, day, names, funnel, end_offset_us):
+def admission_sql(source, day, names, funnel, end_offset_us, start_offset_us=14400000000):
     """First price-eligible accepted episode start, computed inside ClickHouse.
 
     This matches the released completed-bar impulse (5bps, increasing trades and
@@ -201,7 +201,7 @@ def admission_sql(source, day, names, funnel, end_offset_us):
     return (
         "SELECT ticker,tupleElement(episodes,2) AS admitted_offset_us FROM (SELECT ticker,"
         "arrayFold((acc,x)->if(x.1>=acc.1,tuple(x.1+3000,"
-        f"if(acc.2=0 AND x.2 BETWEEN {funnel.min_price} AND {funnel.max_price},"
+        f"if(acc.2=0 AND (x.1+1)*100000>={start_offset_us} AND x.2 BETWEEN {funnel.min_price} AND {funnel.max_price},"
         "(x.1+1)*100000,acc.2)),acc),"
         "arraySort(x->x.1,groupArray(tuple(toInt64(bucket_index),close_int/10000.))),"
         "tuple(toInt64(-1),toInt64(0))) AS episodes "
@@ -317,6 +317,7 @@ def prepare_session(
                             candidates[offset : offset + 512],
                             funnel,
                             end_us - origin_us,
+                            start_us - origin_us,
                         ),
                     )
                 )

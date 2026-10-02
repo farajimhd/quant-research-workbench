@@ -17,7 +17,10 @@ def _context():
         "started_at": "2026-09-26 01:02:03.123456",
         "configuration_hash": "a" * 64,
         "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
-        "initial_cash": "100000.0000000000",
+        "initial_cash": "100000.0000000000", "code_hash": "b" * 64,
+        "start_local_ms": 14400000, "end_local_ms": 34200000,
+        "simulation_profile": "fixed", "activation_delay_us": 0, "minimum_p_norm": "0.25",
+        "structure_book": "v7", "ticker_population_mode": "full_market", "ticker_hash": "c" * 64,
     }
 
 
@@ -68,6 +71,10 @@ def test_history_lists_normalized_record_without_claiming_review(monkeypatch):
     assert "trading_backtest_definition_commit_v1" in queries[0]
     assert "LIMIT 2 BY run_id" in queries[1]
     assert "INSERT" not in " ".join(queries)
+    assert len(result[0].pop("comparison_group_key")) == 64
+    assert result[0].pop("code_fingerprint") == "b" * 64
+    assert result[0].pop("start_local_ms") == 14400000
+    assert result[0].pop("end_local_ms") == 34200000
     assert result == [{
         "schema_version": 1, "run_id": RUN, "status": "completed",
         "mode": "backtest", "execution_mode": "100ms",
@@ -241,3 +248,16 @@ def test_terminal_resident_v4_run_uses_durable_saved_review(monkeypatch, tmp_pat
         stream_snapshot=lambda: {},
     )
     assert service.list(include_durable=True) == [durable]
+
+
+@pytest.mark.parametrize("field,value", [("initial_cash", "20000"), ("configuration_hash", "d" * 64),
+    ("code_hash", "e" * 64), ("end_local_ms", 36000000), ("ticker_hash", "f" * 64)])
+def test_group_identity_separates_parameters_and_source_updates(monkeypatch, field, value):
+    context = _context()
+    monkeypatch.setattr(history, "_rows", lambda _client, sql:
+        [dict(context)] if "trading_run_v1 AS r" in sql else [_head()])
+    original = history.load_strategy_one_v4_history(object())[0]["comparison_group_key"]
+    context["session_date"] = "2026-08-19"
+    assert history.load_strategy_one_v4_history(object())[0]["comparison_group_key"] == original
+    context[field] = value
+    assert history.load_strategy_one_v4_history(object())[0]["comparison_group_key"] != original

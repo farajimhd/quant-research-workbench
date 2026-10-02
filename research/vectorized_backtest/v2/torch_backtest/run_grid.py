@@ -28,7 +28,7 @@ from .encoding.config import Session
 from .grid import Settings, build_grid, grid_manifest
 from .prepare import prepare_tape
 from .runner import SqueezeRunner
-from .runtime import DEFAULT, code_hash, configure_caches, file_hash, require_runtime, write_json
+from .runtime import DEFAULT, code_hash, configure_caches, file_hash, require_runtime, write_json, source_revision
 
 
 def approval_check(digest, manifest):
@@ -116,7 +116,7 @@ def aggregate_results(run, receipt, grid):
             "session_candidate_results": len(rows)}
 
 
-def main(argv=None):
+def main(argv=None, *, progress=None, preloaded=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true", help="Historical experiment; needs approved digest")
     parser.add_argument("--approval-digest")
@@ -134,6 +134,7 @@ def main(argv=None):
     parser.add_argument("--graph-steps", type=int, default=16)
     parser.add_argument("--maximum-fills", type=int, default=16384)
     parser.add_argument("--maximum-tape-gib", type=float, default=4.0)
+    parser.add_argument("--maximum-state-gib", type=float, default=2.0)
     args = parser.parse_args(argv)
     settings = Settings(**json.loads(args.settings.read_text())) if args.settings else Settings()
     manifest = grid_manifest(settings)
@@ -144,8 +145,8 @@ def main(argv=None):
         approval_check(args.approval_digest, manifest)
         if not args.manifest or not args.ledger or not args.dates:
             parser.error("Execution requires explicit --manifest, --ledger and --dates")
-        if len(set(args.dates)) != len(args.dates) or not 1 <= args.batch <= 256:
-            parser.error("Require unique dates and batch 1..256")
+        if len(set(args.dates)) != len(args.dates) or not 1 <= args.batch <= 1024:
+            parser.error("Require unique dates and batch 1..1024")
     runtime = require_runtime(args.runtime)
     configure_caches(runtime)
     torch.set_num_threads(1)
@@ -160,13 +161,14 @@ def main(argv=None):
     from research.mlops.env import discover_env_files, load_env_files
     repo = Path(__file__).resolve().parents[4]
     load_env_files(discover_env_files(repo), verbose=False)
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    commit = source_revision(repo)
     run = require_runtime(args.resume or runtime / "campaigns" / uuid4().hex)
     request = {"grid": manifest["approval_digest"], "code": code_hash(), "commit": commit,
                "market_manifest_hash": file_hash(args.manifest), "dates": args.dates,
                "market_ledger": str(args.ledger.resolve()), "start": args.start, "end": args.end,
                "batch": args.batch, "device": args.device, "backend": args.backend,
-               "graph_steps": args.graph_steps, "maximum_fills": args.maximum_fills}
+               "graph_steps": args.graph_steps, "maximum_fills": args.maximum_fills,
+               "maximum_tape_gib": args.maximum_tape_gib, "maximum_state_gib": args.maximum_state_gib}
     receipt_path = run / "campaign.json"
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
@@ -181,10 +183,19 @@ def main(argv=None):
     current = None
     try:
         for day in args.dates:
+            if progress:
+                progress({"stage": "Preparing certified tape", "focus": f"{day} · {args.start}–{args.end} New York",
+                          "ticks": 0, "total_ticks": 0, "message": "Checking source certificates and causal products"})
             session = Session(args.manifest, args.ledger, runtime / "source_cache",
                 datetime.fromisoformat(f"{day}T{args.start}").replace(tzinfo=ny),
-                datetime.fromisoformat(f"{day}T{args.end}").replace(tzinfo=ny), warmup_seconds=57600)
-            tape = prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib).to(args.device, args.maximum_tape_gib)
+                datetime.fromisoformat(f"{day}T{args.end}").replace(tzinfo=ny), warmup_seconds=57600,
+                max_prepared_gib=args.maximum_tape_gib)
+            tape = (preloaded.pop(day) if preloaded and day in preloaded else
+                    prepare_tape(session, settings, maximum_gib=args.maximum_tape_gib,
+                        progress=(lambda value: progress({"message": str(value)})) if progress else print)
+                    .to(args.device, args.maximum_tape_gib))
+            if progress:
+                progress({"listings": len(tape.tickers), "tape_gib": tape.bytes/1024**3, "batch": args.batch})
             session_dir = require_runtime(run / day)
             runner = None
             for offset in range(0, len(grid), args.batch):
@@ -196,19 +207,35 @@ def main(argv=None):
                     for name, digest in saved["files"].items():
                         if file_hash(run / name) != digest:
                             raise ValueError("Completed batch artifact corrupt")
+                    if progress:
+                        output = json.loads((run / next(name for name in saved["files"] if name.endswith(".json"))).read_text())
+                        progress({"saved_delta": len(output["candidate_ids"]), "reused_delta": len(output["candidate_ids"]),
+                                  "valid_delta": output["valid_count"], "invalid_delta": output["invalid_count"]})
                     continue
                 selected = grid[offset:offset + args.batch]
                 actual = len(selected)
                 selected += [selected[-1]] * (args.batch - actual)
                 if runner is None:
+                    if progress:
+                        progress({"stage": "Compiling GPU replay", "message": "Fixed batch graph; setup is not replay progress"})
                     runner = SqueezeRunner(tape, selected, settings, backend=args.backend,
-                        graph_steps=args.graph_steps, maximum_fills=args.maximum_fills).compile()
+                        graph_steps=args.graph_steps, maximum_fills=args.maximum_fills,
+                        maximum_state_gib=args.maximum_state_gib).compile()
+                    if progress:
+                        progress({"compile_delta": runner.setup_seconds})
                 else:
                     runner.set_candidates(selected)
-                print(json.dumps({"active": current, "completed": len(receipt["completed"]),
+                if progress:
+                    progress({"stage": "Replaying configurations", "message": f"Candidates {offset+1:,}–{offset+actual:,} of {len(grid):,}",
+                              "ticks": 0, "total_ticks": len(tape.clocks)})
+                else:
+                    print(json.dumps({"active": current, "completed": len(receipt["completed"]),
                     "queued": receipt["total_units"] - len(receipt["completed"]) - 1,
                     "failed": len(receipt["failed"])}), flush=True)
-                result = runner.run()
+                result = runner.run(progress=(lambda value: progress({"ticks": value["completed_seconds"],
+                                     "total_ticks": value["total_seconds"]})) if progress else None)
+                if progress:
+                    progress({"stage": "Saving verified batch", "message": "Writing order/fill ledgers and checksums"})
                 output = {key: value.cpu().tolist()[:actual] if isinstance(value, torch.Tensor) else value
                           for key, value in result.items()}
                 output["objective"] = [x if math.isfinite(x) else None for x in output["objective"]]
@@ -228,6 +255,9 @@ def main(argv=None):
                     {str(path.relative_to(run)): file_hash(path) for path in (summary, fills, orders)}}
                 receipt["failed"].pop(current, None)
                 write_json(receipt_path, receipt)
+                if progress:
+                    progress({"saved_delta": actual, "valid_delta": output["valid_count"],
+                              "invalid_delta": output["invalid_count"], "replay_delta": result["replay_seconds"]})
             del runner, tape
             if args.device == "cuda":
                 torch.cuda.empty_cache()
@@ -239,7 +269,8 @@ def main(argv=None):
         write_json(receipt_path, receipt)
         raise
     write_json(receipt_path, receipt)
-    print(json.dumps({"status": receipt["status"], "run": str(run)}, indent=2))
+    if not progress:
+        print(json.dumps({"status": receipt["status"], "run": str(run)}, indent=2))
     return 0
 
 

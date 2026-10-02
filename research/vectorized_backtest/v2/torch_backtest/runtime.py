@@ -48,3 +48,15 @@ def code_hash():
         h.update(path.relative_to(base).as_posix().encode())
         h.update(path.read_bytes())
     return h.hexdigest()
+
+
+def source_revision(repo):
+    """Support an isolated committed workstation payload without borrowing a checkout."""
+    import subprocess
+    marker = DEFAULT / "deployments" / Path(repo).name / "deployment.json"
+    if marker.exists():
+        value = json.loads(marker.read_text())
+        if value["v2_code_hash"] != code_hash():
+            raise ValueError("Workstation payload differs from its verified deployment")
+        return value["commit"]
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID
+from hashlib import sha256
+from src.trading_runtime.journal_contract import canonical_json
 
 from src.trading_runtime.arte_journal_writer import _literal, _rows
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
@@ -31,7 +33,11 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
                r.session_date AS session_date,r.started_at AS started_at,
                r.configuration_hash AS configuration_hash,
                c.strategy_id AS strategy_id,c.strategy_revision AS strategy_revision,
-               d.initial_cash AS initial_cash
+               d.initial_cash AS initial_cash,r.code_hash AS code_hash,
+               d.start_local_ms AS start_local_ms,d.end_local_ms AS end_local_ms,
+               d.simulation_profile AS simulation_profile,d.activation_delay_us AS activation_delay_us,
+               d.minimum_p_norm AS minimum_p_norm,d.structure_book AS structure_book,
+               d.ticker_population_mode AS ticker_population_mode,df.ticker_hash AS ticker_hash
         FROM arte.trading_run_v1 AS r
         INNER JOIN arte.trading_runtime_config_v1 AS c
           ON r.run_id=c.run_id AND r.run_month=c.run_month
@@ -100,6 +106,19 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
             "strategy_name": f"Strategy {row['strategy_revision']}",
             "strategy_revision": int(row["strategy_revision"]),
             "initial_cash": float(row["initial_cash"]),
+            "comparison_group_key": sha256(canonical_json({
+                # Session dates and market products vary by session; parameters
+                # and executable bytes define this comparison cohort.
+                name: row[name] for name in (
+                    "strategy_id", "strategy_revision", "configuration_hash", "code_hash",
+                    "initial_cash", "start_local_ms", "end_local_ms", "simulation_profile",
+                    "activation_delay_us", "minimum_p_norm", "structure_book",
+                    "ticker_population_mode", "ticker_hash",
+                )
+            }).encode("utf-8")).hexdigest(),
+            "code_fingerprint": str(row["code_hash"]),
+            "start_local_ms": int(row["start_local_ms"]),
+            "end_local_ms": int(row["end_local_ms"]),
             "configuration_revision": int(row["strategy_revision"]),
             "resident": False,
             "journal_backend": "arte_typed_journal_v4",

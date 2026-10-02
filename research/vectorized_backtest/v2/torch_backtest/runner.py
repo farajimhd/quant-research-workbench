@@ -45,8 +45,8 @@ class SqueezeRunner:
         if type(graph_steps) is not int or not 1 <= graph_steps <= 64:
             raise ValueError("Capture steps must be 1..64")
         self.b, self.n = len(candidates), len(tape.tickers)
-        if not 1 <= self.b <= 256:
-            raise ValueError("Batch must be 1..256")
+        if not 1 <= self.b <= 1024:
+            raise ValueError("Batch must be 1..1024")
         self.backend, self.graph_steps = backend, graph_steps
         self.maximum_fills = maximum_fills
         self.shape = (self.b, self.n, MAX_POSITIONS)
@@ -470,10 +470,20 @@ class SqueezeRunner:
         if self.graph is not None and steps is not None:
             raise ValueError("Prefix validation/checkpoint runs use eager or compile backend")
         started = perf_counter()
+        updated = started
         with torch.inference_mode():
             if self.graph is not None:
                 for _ in range(count // self.graph_steps):
                     self.graph.replay()
+                    # Bound queued work for truthful UI cursors. One barrier per
+                    # 256 ticks avoids per-tick reads/synchronization overhead.
+                    if progress and (_ + 1) % max(1, 256 // self.graph_steps) == 0:
+                        torch.cuda.synchronize(self.tape.device)
+                    if progress and perf_counter() - updated >= 1:
+                        torch.cuda.synchronize(self.tape.device)
+                        progress({"completed_seconds": self.completed + (_ + 1) * self.graph_steps,
+                                  "total_seconds": len(self.tape.clocks)})
+                        updated = perf_counter()
                 if count % self.graph_steps:
                     self.remainder_graph.replay()
                 self.completed += count
@@ -481,6 +491,9 @@ class SqueezeRunner:
                 for _ in range(count):
                     self.step()
                     self.completed += 1
+                    if progress and perf_counter() - updated >= 1:
+                        progress({"completed_seconds": self.completed, "total_seconds": len(self.tape.clocks)})
+                        updated = perf_counter()
             if self.tape.device.type == "cuda":
                 torch.cuda.synchronize(self.tape.device)
         if bool(self.overflow.any()):

@@ -120,7 +120,7 @@ reads, dataframe/database work, or Python loops over B/N/positions. Sequential
 time is retained. Compiled CUDA graphs capture 16 ticks by default with an exact
 remainder. Candidate values update in-place with fixed batch shape.
 
-Batch size defaults to 8, bounded at 256. Tape/state/ledger memory has explicit
+The low-level batch size defaults to 8, bounded at 1,024. Tape/state/ledger memory has explicit
 guards; no hidden CPU fallback or input truncation. Structural intervals retain
 all certified identities (up to an explicit 4096 interval guard per ticker);
 selecting 15 targets is strategy behavior, not a truncated structural source.
@@ -182,3 +182,83 @@ rotation sequencing, accounting, fail-closed buffers, candidate reset and exact
 checkpoint restart. GPU qualification compares full fill ledgers/account metrics
 and in-place candidate updates. Synthetic timing is not full-market throughput,
 profitability or certification that current historical products are available.
+
+## Workstation launcher
+
+Run `run_workstation.py` directly with the workstation `ml4t` interpreter.
+No arguments starts the approved grid over **all available dates, premarket**.
+The launcher never installs dependencies, starts a producer or writes market tables.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = '1'
+$launcher = 'research/vectorized_backtest/v2/torch_backtest/run_workstation.py'
+python -B $launcher dates
+python -B $launcher preflight
+python -B $launcher run
+python -B $launcher run --date 2026-09-18 --sessions regular
+python -B $launcher run --from 2026-08-18 --to 2026-09-18 --sessions premarket
+python -B $launcher run --from 2026-08-18 --to 2026-09-18 --sessions afterhours
+python -B $launcher run --date 2026-09-18 --sessions premarket regular afterhours
+python -B $launcher run --resume D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v2/jobs/JOB_ID
+```
+
+Verified read-only on October 2: published scope plus completed V5 manifests
+cover **36 XNYS trading dates, July 30–September 18, 2026**, in two builds.
+The catalogue is rediscovered at launch. Bars present in a month are not proof
+of strategy-input readiness; full selected-day liquidity/MACD/V7/identity/Keeper
+preflight remains mandatory. Missing expected trading dates fail selection;
+weekends/holidays are explicitly listed as excluded calendar dates.
+
+Sessions use America/New_York: premarket 04:00–exchange open, regular exchange
+open–close, afterhours exchange close–20:00. XNYS scheduling honors early closes.
+Each date/window independently resets cash and the one-batch ticker lock. Only
+accepted squeeze episodes starting within that window can admit a ticker.
+Daily episode history, prior indicators and swing geometry remain causal;
+the signal producer's 300-second greedy episode expiry is preserved. This is
+the declared extension for separate regular/afterhours sessions.
+
+`preflight` defaults to **September 18 premarket** (latest discovered date),
+prepares one complete tape, checks GPU resources and measures replay sizing.
+It does not run or rank the 4,320-grid experiment. `--date` selects another test
+day. `plan` selects dates/windows and writes the exact request without tape
+preparation or calibration. `dates` prints catalogue membership.
+
+The workstation path requires the 96 GB CUDA GPU (at least 80 GiB physical
+memory). Default `--batch auto` measures compiled CUDA graph batches
+32/64/128/256/512/1024 on a 128-second timing witness, with synthetic admission
+over selected prefix geometry. Calibration P&L is discarded. Choose the highest
+measured candidate-seconds/second within declared resource headroom, rather than
+allocating VRAM merely to fill it. Preserve at least 10 GiB or 15% of total GPU
+memory; account for state, bounded fill buffers and capture intermediates.
+An explicit `--batch N` measures that choice. No OOM/CPU fallback is hidden.
+FP64 money/account arithmetic remains intact. The session tape is shared across
+all configuration lanes; a selected batch/graph is reused in place. Subsequent
+days still enforce current tape and state headroom. Default tape limit is 48 GiB;
+The workstation ledger default is 65,536 fills per account (overflow fails
+closed); `--maximum-tape-gib` and `--maximum-fills` are explicit resource overrides.
+
+The compact progress panel separates preparation, calibration, compilation,
+replay and artifact saving. Saved configuration counts advance only after
+ledger hashes and campaign receipts persist. Current replay seconds are a
+provisional cursor, checked at bounded graph barriers (no per-tick host reads).
+It shows active date/window, queued/failed/reused counts, invalid terminal
+exposure, batch/tickers, compile/replay durations, replay-only rate/ETA and
+allocated/total GPU memory. Rate excludes verified reused batches. `--plain`,
+redirected output and `NO_COLOR` are supported. Ctrl+C retains saved batches;
+an active batch restarts from its original account. Failed stages stay visible
+and are recorded in job receipts and `progress.jsonl`.
+
+Job outputs contain the date catalogue, exact grid, selected source/windows,
+GPU calibration, progress events, equivalent low-level commands and resumable
+per-build/window campaigns. No group/day is skipped on resume without checking
+source fingerprints and saved artifact hashes. Per-window result CSVs remain
+separate; there is no implicit pooled cross-session performance claim.
+
+`sync_workstation.py` packages only a committed **pushed** snapshot of v2 and
+shared source readers into a new isolated workstation directory, verifies
+every copied file hash and records deployment evidence under the workstation
+runtime root. It copies no secrets or v1 Torch package. The read credential file
+is discovered locally at `D:/TradingML/secrets/backtest_v3_read.env` only when
+explicit reader environment configuration is absent. Workstation help/import,
+date inventory and synthetic GPU checks are validation; historical experiments
+remain for the user to start.
