@@ -1,0 +1,74 @@
+# V6 hindsight supervision diagnosis and stopped teacher/PPO campaign
+
+- Chat started: 2026-09-24; exact start time unavailable (date from available workspace context).
+- Chat ended or last activity: 2026-10-02, conclusion requested; exact request time unavailable.
+- Summary written: 2026-10-02 09:25 PDT (America/Vancouver; 16:25 UTC).
+- Chat/task identifier: 01a0d394-5478-73e3-bbde-7206b07fea85, Review hindsight dataset phases.
+- Repository or scope: D:\TradingCodes\quant-research-workbench; research/rl_trading/v6 and certified hindsight supervision.
+- Related task-history entries: TASK-0220. TASK-0219 is a separate cancelled V2 campaign.
+- Source completeness: Partial. Later conversation, heartbeat handoffs, repository source and runtime reports were accessible; the full early transcript was not reconstructed.
+
+## Narrative
+
+The chat began with review of hindsight dataset phases and evolved into an authorized V6 teacher/PPO campaign and extensive diagnosis of poor ENTRY learning. The user authorized investigation of every component and controlled label, loss, ResNet and development experiments. The eventual goal was a credible teacher followed by PPO, but the campaign did not reach that outcome. Production teacher and PPO were stopped with checkpoints preserved while bounded experiments tested correctness, learning, generalization and actual GPU performance.
+
+The decisive supervision requirement was clarified during the work: overlapping episode allocation selects episodes and defines sizing only. It must not rewrite per-ticker classification labels. Original extended ENTRY and EXIT soft ranges must remain intact. A proposed boundary-ownership, truncation and deduplication approach was withdrawn and never implemented. Rare different episode targets at the same ticker clock are episode-conditioned supervision, not automatically corrupt labels. Future episode IDs must not be supplied as causal inputs. Any representation or loss redesign must be explained before implementation.
+
+The four local decoder logits are ENTRY, WAIT, HOLD and EXIT. Source flat WAIT/ENTRY and held EXIT/HOLD probabilities are explicitly mapped into this order. WAIT opportunity net-bps supervision is separate from the PPO critic; ENTRY carries attached stop/target geometry. Teacher sizing is absent, and sizing belongs to PPO. Confirmed implementation repairs included stale projected histories, ignored ticker CE balance weights and automatic bracket geometry rejection before cash/fees. Current weights now reproject raw causal 120-row histories; unexecutable brackets are rejected without widening. A ResNet tuple adapter was also repaired. None of these fixes was established as the sole recall cause.
+
+Binding and label-preservation audits supplied strong integrity evidence. All 18 net-bps sidecars completed without missing or incomplete units. The binding audit covered 2,347,252 labels, 907,897 values and 42,496 stop/target pairs, preserving bracket lineage and confirming no WAIT value or sizing targets. Extended-label hashes retained 362,770 positive ENTRY rows and 884,391 positive EXIT rows; 43,114 episodes had multiple ENTRY rows and 64,587 multiple EXIT rows. Classification loading retained all rows independently of allocator selection. Outside-episode WAIT coverage and causal target predictability remained unresolved.
+
+Early bounded controls used the first 1,024 physical clocks, predominantly 04:00 premarket, rather than full sessions. Corrected balanced single-day V6 reached 74.314% training ENTRY recall and 78.628% precision, passing its last-three training gate, but development recall remained 32.047% and 41.546%. Three-day V6 and ResNet controls were weaker. Training gradient audits found finite nonzero encoder, lag, attention, action and account gradients. Rank coverage, feature-unit checks and calibration ruled out several simple explanations, without proving a complete root cause. Development ranking was weak, so merely lowering the classification threshold could not resolve the learning problem. Clear labels also failed; ambiguity alone was insufficient.
+
+The diagnosis moved to regular trading hours with a predeclared 09:30 inclusive to 09:47:04 exclusive New York interval. Jul31, Aug10 and Aug21 were the training days; Aug24 and Aug25 were development. The RTH ResNet control completed 12 epochs and 36 sessions. Development ENTRY recall/precision was 34.548/38.443% and 37.330/48.197%, with AUC 0.6662/0.7183. Its unchanged final checkpoint recalled 41.955%, 44.991% and 50.655% on training days. Continuing the same objective and Adam state to 24 epochs increased development recall but reduced precision and ranking: AUC fell to 0.6598/0.6998 and clear-WAIT false entries increased. This was evidence against blind epoch extension or selecting a model solely for recall. Nine sampled shared-encoder branch-gradient chunks showed flat gradients larger than held gradients, with mixed positive and negative cosines; these did not establish held-label domination. Adam states confirmed all 1,152 expected updates.
+
+History audits distinguished real activity rows from fabricated bars. Valid-price sampled histories had all combined indicators; missing indicator flags coincided with invalid-price rows. The actual ARTE producer retains volume/extreme-eligible trades that need not update last price, while technical indicators are computed for eligible price/extreme rows. Thus these persisted rows were legitimate and not a confirmed indicator producer defect. The 120-row contract means actual stored activity rows, including certified previous-session tails; filtering or forward filling was not authorized. A separate confirmed metadata omission was that the first current-day encoded inter-candle gap was zero despite a certified prior timestamp. Its error association was mixed and did not establish a broad recall cause. No boundary-gap representation repair was implemented.
+
+Matched RTH V6 required preserving every pre-09:30 event. A naive candle filter would lose causal history, and 19,799 warmup clocks modulo 32 left a partial chunk that would otherwise produce 33 learning chunks instead of 32. Sampled actual sparse-state histories matched ResNet normalized raw 120-row inputs and presence masks exactly. The optional learning_start_us fence flushes warmup separately, starts fresh learning chunks and rejects supplied pre-fence labels rather than silently dropping them. A real trainer regression observed all 1,047 events in order, disabled autograd during 23 warmup clocks and performed exactly 32 Adam updates for 1,024 labeled clocks. Commit 62d6d193c preserved that tested path; all 213 explicit V6 tests passed. Broader pytest collection failed on two unrelated existing imports, which were not repaired as part of this task.
+
+Actual GPU startup exposed severe retained attention memory: one complete RTH session took 911.21 seconds with a reported torch peak of 120.95 GB. One-chunk profiling measured 357 market-attention calls and large saved activation shapes. Aggregate saved bytes were not treated as live-memory attribution or proof of paging. After explanation, optional training-only nonreentrant attention checkpointing was implemented in b31fc0cdc. Gathered immutable rows, embeddings, summaries and masks are explicit inputs, avoiding mutable-state capture. Selection, heads, labels, BPTT32, objective and cache behavior remain unchanged; default is disabled and evaluation/no-grad bypass it. CPU outputs and parameter/input gradients matched across held-selection changes and state mutation; 216 explicit V6 tests passed.
+
+Paired actual GPU clipped gradients matched for all 40 present parameter tensors at rtol 1e-5/atol 1e-7, with maximum absolute difference 4.66e-10. Full-session runtime fell to 180.56 seconds and peak memory to 53.31 GB. However, strict final-weight parity failed four state tensors, and strict raw-logit parity also failed near zero. These failures were preserved. Full fixed-model comparison on 22,775 development decisions showed zero masked decision changes and maximum masked probability differences about 2.44e-6. An explicit engineering judgment accepted this functional numerical equivalence for the bounded diagnostic only, without claiming bitwise equivalence or waiving production gates.
+
+The matched RTH V6 then completed 12 epochs, 36 sessions and 1,152 actual updates, from scratch seed17 with width128, frozen train-only normalization, balanced class-only four-head soft CE, Adam3e-4, clipping1 and checkpointed attention. Development ENTRY recall/precision was 18.659/42.105% and 20.300/45.289%; AUC was 0.637525/0.654322, worse than the RTH ResNet control. Clear ENTRY recall was only about 24.6/24.4%. All checkpoints and predictions were preserved; the training gate failed.
+
+A fixed-final training audit initially failed closed because evaluation mode accepted development-role sessions only. Roles and certificates were not spoofed. After explanation, commit 6dea49cc9 added evaluate_train=False, requiring evaluation=True for explicit authentic training-set evaluation while preserving default development-only behavior and rejecting heldout/test roles. Tests verified unchanged weights, no gradients, no optimizer state and zero updates across both policies and losses. All 224 explicit V6 tests passed, followed by 17 focused final tests. The pushed exact commit was archived into a workstation snapshot with 4,916 SHA-verified files.
+
+The corrected fixed audit completed all three training days with unchanged weights and zero optimizer updates. ENTRY recall/precision was Jul31 26.043/57.349%, Aug10 27.160/54.370% and Aug21 38.707/53.628%. Training AUC was 0.742776/0.743891/0.791212. This demonstrates weak training classification fit plus a development ranking gap, but does not prove forgetting or its cause. Static review found the same causal forward path, zero attention dropout and LayerNorm rather than BatchNorm; evaluation removes training objective balance but does not change predictions. No mode bug was confirmed.
+
+At conclusion, the assistant acknowledged directly that the core low ENTRY recall issue was not fixed. The user asked how to help; requested examples were 3-5 obvious ENTRY and WAIT cases from training days with ticker/time/reasoning, plus clarification of causal context for overlapping episode supervision. These were suggestions, not prerequisites or permission to rewrite labels. The user then requested this durable summary and task ledger. No further experiment was launched.
+
+## Durable decisions
+
+- Preserve original extended labels, immutable banks and certified prior tails. Allocation does not gate classification. Do not inject future episode IDs.
+- Laptop is source authority; test, commit and push before SHA-verified immutable workstation snapshots. Artifacts stay under D:\TradingML\runtimes, including workstation UNC equivalents; secrets remain separate. Repository Python uses -B and PYTHONDONTWRITEBYTECODE=1.
+- ARTE remains SELECT-only; no raw historical fallback, price writes, fabricated capacity, silent filtering or forward filling.
+- Aug26 remains sealed for exactly one heldout evaluation after development selection. No threshold or gate weakening.
+- Functional checkpoint equivalence was accepted only for bounded diagnostics. Strict numerical failures remain recorded.
+- Production teacher/PPO remain stopped. Chat closure pauses automatic continuation; it does not mark the campaign successful.
+
+## Delivered outcomes
+
+- Confirmed correctness repairs, label/binding audits, bounded premarket/RTH controls, fixed evaluations, calibration and actual GPU evidence are preserved.
+- Pushed fence, checkpointing and explicit training-evaluation changes: 62d6d193c, b31fc0cdc, 6dea49cc9. Immutable source snapshots are under workstation D:\TradingML\codes\quant-research-workbench-rl-<commit>.
+- Key final roots under workstation runtimes: rl-v6-rth-matched-v6-b31fc0cdc; rl-v6-rth-v6-fixed-eval-b31fc0cdc (complete-r2.json and clear-calibration-train.json); rl-v6-rth-resnet-f35bf763c; rl-v6-rth-resnet-budget24-f35bf763c. Failed wrappers and original logs remain intact.
+- No diagnostic RTH worker remained at the last verified check; production was not resumed. No subagents were spawned during the closing work.
+
+## Unfinished or hanging work
+
+All items belong to TASK-0220 and require a new continuation request after closure.
+
+- Low recall/root cause: unresolved. Next inspect saved weighted soft-fit and clear-error patterns, causal target predictability and outside-episode WAIT coverage. Owner: research agent with user domain input. Do not equate online/fixed differences with forgetting.
+- Training/evaluation equivalence: static review found no confirmed bug; a bounded frozen-model mode comparison remains possible if justified, with no optimizer and authentic certificates.
+- Boundary elapsed metadata: omission confirmed, effect unproven. Propose a versioned shared model-ready adapter and normalization contract before any experiment; preserve canonical banks and 120 activity rows.
+- User examples/episode semantics: not supplied. Obtain causal ENTRY/WAIT reasoning from training days if useful; overlapping targets are not authority to alter labels.
+- Production teacher: blocked by learning and development evidence. Intended later schedule was cap20, one-epoch warmup3e-5 to3e-4 then cosine to3e-5, W&B60s and per-epoch Aug24/25 development/checkpoints. This schedule was not launched.
+- PPO/serving: actual 100ms GPU inference performance, exact likelihood and replay-ledger audits remain outstanding. Intended PPO40epochs/4updates remains unlaunched; training memory improvements do not prove inference readiness or profitability.
+
+## Unavailable or incomplete source chats
+
+The complete early transcript of this chat was not loaded; early campaign statements rely on retained handoffs and existing evidence. Related inventory entries Research RL trading requirements (01a025a4-77f2-7021-bbac-8caf6421aef1) and Design RL trading v3 architecture (01a0e859-d349-77e2-ae61-8d0b3957004d) were not reviewed. No outcomes are attributed to them here.
+
+## Handoff to the next chat
+
+Read TASK-0220, this summary and relevant V6 source before any action. Inspect exact processes, logs, certificates, source markers and completion artifacts before launching; never duplicate or restart a completed control. The latest verified source is 6dea49cc9fba10efec32239a9dacd192837d8674; concurrent unrelated commits/dirties must remain untouched. The first priority is explaining poor train fit and the development ranking gap, not another blind training extension. Preserve labels and sealed Aug26. Resume only after the user requests continuation; explain any objective or representation change first.
