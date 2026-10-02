@@ -42,7 +42,7 @@ def _prefix():
 
 
 @pytest.mark.parametrize('changed_market', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 34, 35, 36])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 34, 35, 36, 37])
 def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch, changed_market, strategy_number):
     from test_backtest_strategy_first_price_source import authority, Bars
     from src.backend import backtest_market_data as markets
@@ -58,7 +58,7 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
     )
     from src.backend.backtest_strategy_first_price_source import load_first_price_source
 
-    if strategy_number == 36:
+    if strategy_number in (36, 37):
         from test_backtest_strategy_entry_activity_source import source_authority, ActivityBars
         market, price = source_authority(ten_percent=True)
         parent = price.source.parent
@@ -95,7 +95,7 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
     readers = []
     def reader(**_):
         readers.append(1)
-        if strategy_number == 36 and len(readers) == 3:
+        if strategy_number in (36, 37) and len(readers) == 3:
             activity_client = ActivityBars()
             activity_client.close = lambda: None
             return activity_client
@@ -123,9 +123,13 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
             load_first_price_source(market, parent, client=Bars()))
         assert type(source) is CertifiedPriceReadbackAuthority
         assert source.run_id == RUN and source.plan.token == expected.token
-        if strategy_number == 36:
+        if strategy_number in (36, 37):
             assert source.entry_activity_source.plan.parent is source.plan
             assert source.entry_activity_source.plan.witness('AAA', 31000)
+            if strategy_number == 37:
+                from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
+                assert type(source.entry_activity_source) is EpisodeActivityReadbackAuthority
+                assert source.entry_activity_source.witness('AAA', 31000).activity_source_token == source.entry_activity_source.gate.token
         assert calls[0] == ('definition', context)
         assert calls[1][1]['initial_cash'] == 10_000.0
         assert calls[1][1]['configuration_revision'] is revision
@@ -167,8 +171,8 @@ def test_terminal_review_requires_release_and_native_source(monkeypatch, changed
 
 
 @pytest.mark.parametrize('guard', [
-    'if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):',
-    'if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):',
+    'if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):',
+    'if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):',
 ])
 def test_saved_review_source_certificate_rejects_removed_strategy36_guard(guard, tmp_path):
     from pathlib import Path
@@ -177,7 +181,7 @@ def test_saved_review_source_certificate_rejects_removed_strategy36_guard(guard,
     assert source.count(guard) == 1
     assert len(certify_rising_momentum_entry_source()) == 64
     destination = tmp_path / 'saved_review.py'
-    destination.write_text(source.replace(guard, guard.replace(', 36)', ')')), encoding='utf-8')
+    destination.write_text(source.replace(guard, guard.replace(', 36, 37)', ', 37)')), encoding='utf-8')
     with pytest.raises(ValueError, match='reviewed source authority changed: backend/backtest_v4_saved_review.py'):
         certify_rising_momentum_entry_source(source_overrides={
             'backend/backtest_v4_saved_review.py': destination})
