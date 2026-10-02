@@ -950,6 +950,13 @@ class StrategyOneReplay:
         enter = (
             self.entry_step(ex, self.theta)
             & ~source_before
+            # Genome edits cannot create evidence before causal admission or
+            # replace an existing account position / working entry order.
+            & (fact["candidate_valid"] > 0)
+            & torch.isfinite(fact["episode_start_ms"])
+            & (fact["episode_start_ms"] <= at)
+            & (st["quantity"] == 0)
+            & ~pending
             & valid_fraction
             & executable
         )

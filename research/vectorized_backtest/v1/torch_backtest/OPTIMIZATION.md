@@ -1,5 +1,11 @@
 # Audited GPU strategy search
 
+The current default is the [typed categorical optimizer](CATEGORICAL_SEARCH.md),
+which searches instruction/input/reference IDs and values. The 10-/14-value
+experiments below used numeric-only search and do not demonstrate categorical
+optimization. Select `--search-mode numeric` to reproduce their search contract
+with the current source; immutable original runs retain their original hashes.
+
 The unified replay uses one **1 s** clock by default, or **500 ms** for both
 policy and broker. Version `unified-strategy-one-causal-v2` freezes the working
 order state for each completed interval. End-quote repricing, cancellations,

@@ -22,7 +22,10 @@ liquidity before transfer. Its full Aug 18 premarket replay measured **28.35 s**
 changes P&L substantially, and initial verification/JIT/capture costs are
 additional; see the linked contract and complete comparison before using it.
 
-The [audited genetic search](OPTIMIZATION.md) now evolves a `[B,14]` parameter
+The [categorical genetic search](CATEGORICAL_SEARCH.md) now evolves operation,
+input/reference and output IDs as well as numeric values in a typed `[B,P]`
+genome. Different instruction topologies are compiled and evaluated in bounded
+groups. The previous [numeric search](OPTIMIZATION.md) evolved a `[B,14]` parameter
 population, trains first on one session and then two, and evaluates frozen
 winners on separate later validation data. Amendment timing uses the causal
 v2 contract; old v1 timing/P&L receipts remain historical evidence only.

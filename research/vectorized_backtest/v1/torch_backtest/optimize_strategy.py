@@ -118,6 +118,8 @@ def run_phase(evaluators, space, args, output, phase, checkpoint, seed):
         history = []
     else:
         rng.bit_generator.state = checkpoint["rng"]
+        if hasattr(space, "rejected_edits"):
+            space.rejected_edits = checkpoint.get("rejected_class_edits", 0)
         population = np.array(checkpoint["population"])
         best, best_score = checkpoint["best"], checkpoint["best_score"]
         start, stagnant, history = (
@@ -168,6 +170,7 @@ def run_phase(evaluators, space, args, output, phase, checkpoint, seed):
             "stagnant": stagnant,
             "history": history,
             "rng": rng.bit_generator.state,
+            "rejected_class_edits": getattr(space, "rejected_edits", 0),
         }
         save(output / "checkpoint.json", state)
         save(
@@ -205,6 +208,12 @@ def run_phase(evaluators, space, args, output, phase, checkpoint, seed):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--search-mode",
+        choices=("categorical", "numeric"),
+        default="categorical",
+        help="Search typed operation/input/reference IDs and values; numeric is legacy compatibility",
+    )
     parser.add_argument(
         "--validation-preobserved",
         action="store_true",
@@ -296,6 +305,7 @@ def main(argv=None):
         "tolerance": args.tolerance,
         "weights": args.weights,
         "validation_preobserved": args.validation_preobserved,
+        "search_mode": args.search_mode,
         "source_hashes": code,
     }
     if args.resume:
@@ -320,12 +330,21 @@ def main(argv=None):
         ]
         train, validation = sessions[:2], sessions[2:]
         validate_split(train, validation)
+        evaluator_type = SessionObjective
+        if args.search_mode == "categorical":
+            from .grouped_objective import GroupedSessionObjective, categorical_space
+
+            space = categorical_space(train[0], args.population, args.clock_ms)
+            evaluator_type = GroupedSessionObjective
         save(
             output / "manifest.json",
             {
                 "identity": identity,
                 "sessions": sessions,
                 "parameter_dimensions": [asdict(d) for d in space.dimensions],
+                "search_representation": space.manifest()
+                if hasattr(space, "manifest")
+                else {"version": "numeric-only-v1"},
                 "numeric_policy_graphs": {
                     name: asdict(graph) for name, graph in space.graphs.items()
                 },
@@ -340,7 +359,7 @@ def main(argv=None):
         # even compiled until both winners are sealed on disk.
         save(output / "status.json", {"status": "compiling_training_runners"})
         evaluators = [
-            SessionObjective(s, space, args.population, args.clock_ms) for s in train
+            evaluator_type(s, space, args.population, args.clock_ms) for s in train
         ]
         save(
             output / "setup.json",
@@ -393,7 +412,7 @@ def main(argv=None):
         save(output / "status.json", {"status": "validating_frozen_winners"})
         validation_results = []
         for session in validation:
-            evaluate = SessionObjective(session, space, args.population, args.clock_ms)
+            evaluate = evaluator_type(session, space, args.population, args.clock_ms)
             validation_results.append(evaluate(finalists))
             del evaluate
             gc.collect()

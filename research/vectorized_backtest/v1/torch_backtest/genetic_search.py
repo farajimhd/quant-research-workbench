@@ -1,8 +1,8 @@
-"""Bounded, deterministic genetic search over the numeric atomic policy ABI.
+"""Bounded, deterministic genetic search over a declared strategy space.
 
-Genome [B,P] contains ONLY adjustable values. Fixed literals and categorical
-instruction arrays stay in the compiled graphs. Global search is heuristic:
-this solver never claims a certified global optimum.
+The legacy StrategySpace below supplies numeric genes. CategoricalStrategySpace
+also supplies typed class IDs and its own discrete variation operators. Global
+search is heuristic: this solver never claims a certified global optimum.
 """
 
 from dataclasses import dataclass, replace
@@ -122,7 +122,11 @@ class StrategySpace:
 def initial_population(space, rng, size, seed=None):
     if size < 4:
         raise ValueError("Population requires at least four independent candidates")
-    population = rng.uniform(space.low, space.high, (size, len(space.dimensions)))
+    population = (
+        space.sample(rng, size)
+        if hasattr(space, "sample")
+        else rng.uniform(space.low, space.high, (size, len(space.dimensions)))
+    )
     population[0] = space.default if seed is None else seed
     if seed is not None:
         population[1] = space.default
@@ -144,12 +148,19 @@ def next_population(space, rng, population, scores, *, diversify=False):
     result[:2] = population[order[:2]]
     for row in range(2, len(result)):
         if rng.random() < (0.5 if diversify else 0.2):
-            result[row] = rng.uniform(space.low, space.high)
+            result[row] = (
+                space.sample(rng, 1)[0]
+                if hasattr(space, "sample")
+                else rng.uniform(space.low, space.high)
+            )
             continue
         parents = []
         for _ in range(2):
             tournament = rng.integers(0, len(result), size=3)
             parents.append(population[tournament[np.argmax(scores[tournament])]])
+        if hasattr(space, "offspring"):
+            result[row] = space.offspring(rng, parents, diversify)
+            continue
         child = np.where(rng.random(len(space.dimensions)) < 0.5, *parents)
         mutation = rng.random(len(space.dimensions)) < 0.3
         child = child + mutation * rng.normal(
