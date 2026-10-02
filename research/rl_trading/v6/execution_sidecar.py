@@ -239,6 +239,15 @@ def attach_teacher_costs(labels,session,root):
     """Attach only causal features; netbps changes size, not opportunity labels."""
     from dataclasses import replace
     proof=json.loads((Path(root)/'complete.json').read_text())
+    from research.rl_trading.v6.price_action_opportunities import VERSION as CURRENT_LABELS
+    if proof.get('label_algorithm')!=CURRENT_LABELS or any(item.label_version!=CURRENT_LABELS for item in labels):
+        raise ValueError('Legacy label-derived execution sidecars cannot enter current swing supervision')
+    return _attach_costs_for_historical_audit(labels,session,root)
+
+
+def _attach_costs_for_historical_audit(labels,session,root):
+    from dataclasses import replace
+    proof=json.loads((Path(root)/'complete.json').read_text())
     if (proof['version']!=VERSION or proof['bank_certificate_sha256']!=session.source_certificate_sha256 or
         proof['day']!=str(session.day) or proof['feature_scope']!='completed_trailing_1s_only'):
         raise ValueError('Execution feature/session binding changed')

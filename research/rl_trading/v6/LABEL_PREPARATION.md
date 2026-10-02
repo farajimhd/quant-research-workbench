@@ -50,3 +50,8 @@ allows controller-only recovery when every shard is already complete, the
 numeric algorithm files match byte-for-byte, and both worker function ASTs
 are unchanged. All receipt bytes/counts still verify. Missing receipts or
 changed numerical producers fail closed; no mixed-producer generation occurs.
+
+The legacy candidate/fee-allocation execution-cost compiler and its old
+sidecars are also rejected. They cannot be mixed into the new price-only
+labels. A future causal execution-observation preparation must be versioned
+and bound to the new label certificate; it must not revive old label targets.

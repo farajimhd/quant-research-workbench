@@ -188,7 +188,10 @@ def test_unknown_market_member_masks_allocation_not_opportunity(tmp_path,monkeyp
         np.array([True,False]),np.empty(0,bool),np.empty(0,bool),np.empty(0,bool),size_fraction=.5,
         episode_uid='x',soft_tokens=(0,1),soft_probabilities=(.1,.9))
     session=SimpleNamespace(day='fixture',source_certificate_sha256='bank',listings=('X-id','Y-id'))
-    attached=module.attach_teacher_costs([label],session,tmp_path/'cohort')[0]
+    # Preserve the historical cost audit; current labels reject its old cohort.
+    with pytest.raises(ValueError,match='Legacy label-derived'):
+        module.attach_teacher_costs([label],session,tmp_path/'cohort')
+    attached=module._attach_costs_for_historical_audit([label],session,tmp_path/'cohort')[0]
     assert attached.size_fraction is None and attached.token==label.token
     assert attached.soft_probabilities==label.soft_probabilities and attached.execution_features.shape==(1,11)
 

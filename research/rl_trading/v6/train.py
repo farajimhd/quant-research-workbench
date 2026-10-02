@@ -290,6 +290,8 @@ def main(argv=None):
                 proof_path=execution_root/entry['day']/'complete.json'
                 proof=json.loads(proof_path.read_text())
                 if (proof.get('version')!=FEATURE_CONTRACT or proof.get('status')!='audited_execution_cost_estimates' or
+                    proof.get('label_algorithm')!=dataset['algorithm'] or
+                    proof.get('label_certificate_sha256')!=entry['teacher_sha256'] or
                     proof.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or proof.get('day')!=entry['day'] or
                     proof.get('feature_scope')!='completed_trailing_1s_only' or
                     proof.get('sparse_coverage_version')!='rl-v6-certified-event-sparse-liquidity-v1' or

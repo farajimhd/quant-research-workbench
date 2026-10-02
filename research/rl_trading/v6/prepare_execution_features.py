@@ -32,6 +32,9 @@ def main():
     if args.output.exists() and not args.resume:raise ValueError('Fresh output required or explicit --resume')
     if args.max_candidates is not None and args.max_candidates<1:raise ValueError('Positive diagnostic bound required')
     data=require_dataset(args.dataset,runtime_root=runtime)
+    if args.episode_root.resolve()!=Path(data['label_root']).resolve():
+        raise ValueError('Legacy episode labels cannot be used for current feature preparation')
+    raise ValueError('The candidate/fee-allocation cost compiler is retired for swing labels; use the current price-only label preparation. Execution observations need a separately versioned current-label sidecar.')
     entries=[e for e in data['days'] if e['day'] in args.days]
     if len(entries)!=len(set(args.days)) or len(set(args.days))!=len(args.days):raise ValueError('Only unique audited days')
     args.output.mkdir(parents=True,exist_ok=args.resume)
