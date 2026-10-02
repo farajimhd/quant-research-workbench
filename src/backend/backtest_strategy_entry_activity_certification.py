@@ -1,0 +1,58 @@
+"""Source seal for Strategy36 entry activity, publication and execution routes.
+
+The complete release certificate composes this with the full Strategy35 proof.
+This source seal alone establishes neither market coverage nor profitability.
+"""
+import ast
+from hashlib import sha256
+import json
+from pathlib import Path
+
+
+ENTRY_ACTIVITY_SOURCE_AST = {
+    'scripts/clickhouse/publish_strategy_thirty_six_configuration.py': '9181d082d60d5269e13b69448febc5100b955ff42a9a9acbce0735f28bfd71a9',
+    'src/trading_runtime/strategy_entry_activity_fade.py': '78219596eedb2c3de41ed0597f4e5bde5efea9d68854645f2786ad53fa5c4b75',
+    'src/trading_runtime/strategy_entry_activity_witness.py': 'ce4bfd96579271bd7d7124e700c40824e9c870266ff05d9ea10b50bcb4d72bc8',
+    'src/trading_runtime/arte_entry_activity_v4.py': '3e83818f299284b818ce534ac21866a8317d19824e95af6c5013fd4bb41f4244',
+    'src/backend/backtest_strategy_entry_activity_gate.py': 'a128c7856cbc77854871961ec4d582b5f44b9bdeee517f6dde61360811fd02d4',
+    'src/backend/backtest_strategy_entry_activity_source.py': 'db6e9f16dd62c48f98dc5ec8f7bfa40a17f69974bb618097418ec3f246d91681',
+    'src/trading_runtime/strategy_thirty_six_release.py': '9a243bfe59b4071497bac22231ac0fb104262af40ff282e4910e6819a8b29308',
+    'pipelines/strategy_one/strategy_thirty_six_configuration.py': '4a03259d1ab4a0ae29a2a14672fdef94249cac0b614478817b9f22d8a91d34b6',
+    'pipelines/strategy_one/configuration_publisher.py': 'dce2f6e9d03186d6ce38a4b61fc4d75b36ed6b25c70f60eefce632415b6daa86',
+    'src/backend/backtest_strategy_one_configuration.py': '325be0505bb7b4ee6b8b9bd0d251134cbd3d0b9e42035c27684bf29569bcf31b',
+    'src/trading_runtime/strategy_registry.py': '679630a96826f88d684dbc0b87783dfbfa82f32aa35ab31af3f0535362f99677',
+    'src/trading_runtime/numbered_fixed_strategy.py': 'af28912cdc86a6d01e8591b511c9bf6a74088049bfd4bdda69e3cca0744dabc4',
+    'src/backend/backtest_strategy_certified_price_break.py': '5e0f0b67941ee438748176becd38e04f6deeb89925b8cd3beff28a08f7cbc85d',
+    'src/backend/backtest_strategy_one_execution.py': 'ec3ce757c835302831536b8678c251fe1ce158375a112c114c0320fcfa74968a',
+    'src/backend/backtest_strategy_one_coordinator.py': 'cbb70c053c61230aacdd5df2555804f6c9ae6bece533fe00f240855cab1e8a93',
+    'src/backend/backtest_strategy_one_management.py': 'f9b95068a998419ca84515ac0b5c04f5d75ec4aca77da157ecc8d8d788e7ea00',
+    'src/trading_runtime/strategy_one_management_snapshot.py': 'b61466191c397b7320cffa38d2e1127615e4968dd18a287608605a657f602172',
+    'src/trading_runtime/runtime.py': '6873227c20b948211785c80507878de0e3dea5a03bea3f0361fba57efa856878',
+    'src/backend/backtest_journal_memory.py': 'b93041380117c358d0f7b14f2452450eeb5183909653721feaa6752b9e523abd',
+    'src/backend/backtest_typed_projection.py': '1b76a74195d612057549a860c5212b3fbfab810151d37305d2e4a01b89e7cf6e',
+    'src/backend/backtest_typed_publisher.py': '3215412966de8d38227427e09ff7059aad06b54cfc1f0d94e7c70c82dc7b3cee',
+    'src/trading_runtime/arte_strategy_one_entry_journal.py': 'e8e9d2f4f289dae1c04287c9a449a4779d8c7db6bab3263e077f03805817113a',
+    'src/trading_runtime/arte_journal_writer.py': 'dcb21d67c419582d5c08d38cf8bca0edb63896b4dc262e2b63a730270d6e7b5b',
+    'src/trading_runtime/arte_journal_commit_v4.py': 'e64437ceee0702932aa2c39a6975e99deb13994887818366e2709da0722057e8',
+    'src/trading_runtime/arte_journal_compound_v4.py': '4bf6f9f059a1ea2a8797842e7ab7750385df573c7e10920c0bd6c599d3592067',
+    'src/backend/replay_run_service.py': '0555a1ca78361ee63b6e4caf8a021f998aaa2f2f32ca876a380c37297ae43056',
+}
+
+
+def certify_entry_activity_source(*, source_overrides=None):
+    """Fail closed on changes to any reviewed additional authority."""
+    overrides = source_overrides or {}
+    if set(overrides) - set(ENTRY_ACTIVITY_SOURCE_AST):
+        raise ValueError('Entry activity source override is outside reviewed authority')
+    root = Path(__file__).parents[2]
+    observed = []
+    for relative, expected in ENTRY_ACTIVITY_SOURCE_AST.items():
+        source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            raise ValueError('Entry activity source cannot be parsed: ' + relative) from exc
+        if sha256(ast.unparse(tree).encode()).hexdigest() != expected:
+            raise ValueError('Entry activity source changed: ' + relative)
+        observed.append((relative, sha256(source.encode()).hexdigest()))
+    return sha256(json.dumps(observed, separators=(',', ':')).encode()).hexdigest()

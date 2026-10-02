@@ -74,10 +74,10 @@ def test_foreign_parent_identity_rejects(changes):
         child.derive_strategy_thirty_six_configuration(replace(source_fixture(), **changes), **APPROVAL)
 
 
-def test_prepared_declaration_does_not_register_or_enable_runtime():
+def test_installed_release_matches_prepared_exact_parent_declaration():
     strategy = child.derive_strategy_thirty_six_configuration(source_fixture(), **APPROVAL)['payload']['strategy']
     assert child.verify_prepared_strategy_thirty_six_manifest(strategy)
+    assert numbered_strategy(36) == child.release_contract()
+    assert child.verify_strategy_thirty_six_manifest(strategy)
     with pytest.raises(ValueError):
-        numbered_strategy(36)
-    with pytest.raises(ValueError):
-        child.verify_strategy_thirty_six_manifest(strategy)
+        numbered_strategy(37)

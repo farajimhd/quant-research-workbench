@@ -657,7 +657,7 @@ def _approved_strategy_one_oms_intent(
                 assignment_id=reservation["assignment_id"], ticker=approved_intent.ticker,
                 boundary_ms=boundary_ms, quantity=approved_intent.quantity,
                 bid=approved_intent.reference_price, strategy_number=state.group["strategy_revision"])
-            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35) or expected_exit != approved_intent:
+            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36) or expected_exit != approved_intent:
                 raise ValueError("Session exit recovery differs from sealed scalar source")
         metadata = {
             "assignment_id": reservation["assignment_id"],

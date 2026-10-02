@@ -1,4 +1,4 @@
-"""Prepared36 protection submits through shared admission before confirmation."""
+"""Installed36 protection submits through shared admission before confirmation."""
 import asyncio
 from dataclasses import dataclass, replace
 from datetime import date
@@ -10,18 +10,12 @@ import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.runtime import RunMode, TradingRuntime
-from src.trading_runtime import numbered_fixed_strategy as contracts
 from src.trading_runtime.strategy_one_position import ProtectionState, ProtectionTransition
 from test_strategy_one_protection_intent import financial, previous
 
 
 @pytest.mark.parametrize('approved', [True, False])
-def test_prepared36_structural_stop_waits_for_shared_portfolio_and_oms(monkeypatch, approved):
-    # Only install the prepared capability in this test. Public registration
-    # remains closed until the complete compiler and source proof are installed.
-    installed = contracts.numbered_fixed_strategy
-    monkeypatch.setattr(contracts, 'numbered_fixed_strategy',
-        lambda number: contracts.NumberedFixedStrategyContract(36) if number == 36 else installed(number))
+def test_installed36_structural_stop_waits_for_shared_portfolio_and_oms(approved):
     held = financial()
     old = previous()
     transition = ProtectionTransition(ProtectionState(31000, 9.8, old.target),

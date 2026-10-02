@@ -186,12 +186,13 @@ def test_graph_rejects_incomplete_population_and_cross_parent_scope():
                                  (dict(args[3][0], event_time='2026-08-18T08:00:41.000000001+00:00'),), args[4])
 
 
-def test_encoding_registration_does_not_grant_numbered_execution():
+def test_encoding_and_installed_release_leave_unknown_number_closed():
     from src.trading_runtime.arte_journal_writer import _CONTRACTS
     from src.trading_runtime.strategy_registry import numbered_strategy
     assert _CONTRACTS[ENTRY_ACTIVITY.name] is ENTRY_ACTIVITY
+    assert numbered_strategy(36).number == 36
     with pytest.raises(ValueError):
-        numbered_strategy(36)
+        numbered_strategy(37)
 
 
 def test_sealer_requires_encoding_registration(monkeypatch):

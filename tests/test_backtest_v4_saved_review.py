@@ -42,7 +42,7 @@ def _prefix():
 
 
 @pytest.mark.parametrize('changed_market', [False, True])
-@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 34])
+@pytest.mark.parametrize('strategy_number', [20, 26, 27, 28, 34, 35, 36])
 def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch, changed_market, strategy_number):
     from test_backtest_strategy_first_price_source import authority, Bars
     from src.backend import backtest_market_data as markets
@@ -58,7 +58,11 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
     )
     from src.backend.backtest_strategy_first_price_source import load_first_price_source
 
-    if strategy_number in (26, 27, 28, 34):
+    if strategy_number == 36:
+        from test_backtest_strategy_entry_activity_source import source_authority, ActivityBars
+        market, price = source_authority(ten_percent=True)
+        parent = price.source.parent
+    elif strategy_number in (26, 27, 28, 34, 35):
         from test_backtest_strategy_ten_percent_price_source import authority as relaxed_authority
         market, parent = relaxed_authority()
     else:
@@ -88,7 +92,15 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
         if source_authority is proof else pytest.fail('wrong saved source proof'))
     monkeypatch.setattr(markets, 'certified_market_plan_from_arte', lambda **_: market)
     monkeypatch.setattr(markets, 'configuration_tickers', lambda payload, tickers: tickers)
-    monkeypatch.setattr(markets, 'readonly_clickhouse_client', lambda **_: source_client)
+    readers = []
+    def reader(**_):
+        readers.append(1)
+        if strategy_number == 36 and len(readers) == 3:
+            activity_client = ActivityBars()
+            activity_client.close = lambda: None
+            return activity_client
+        return source_client
+    monkeypatch.setattr(markets, 'readonly_clickhouse_client', reader)
     monkeypatch.setattr(liquidity, 'certify_price_level_plan',
         lambda *_a, **_k: SimpleNamespace(token=pins['price_level_plan_token']))
     monkeypatch.setattr(fixed_plans, 'certify_strategy_one_fixed_plans',
@@ -111,6 +123,9 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
             load_first_price_source(market, parent, client=Bars()))
         assert type(source) is CertifiedPriceReadbackAuthority
         assert source.run_id == RUN and source.plan.token == expected.token
+        if strategy_number == 36:
+            assert source.entry_activity_source.plan.parent is source.plan
+            assert source.entry_activity_source.plan.witness('AAA', 31000)
         assert calls[0] == ('definition', context)
         assert calls[1][1]['initial_cash'] == 10_000.0
         assert calls[1][1]['configuration_revision'] is revision
@@ -118,12 +133,13 @@ def test_twenty_saved_native_source_rebuilds_from_fenced_definition(monkeypatch,
 
 
 @pytest.mark.parametrize('changed_release', [False, True])
-def test_strategy34_terminal_review_requires_release_and_native_source(monkeypatch, changed_release):
+@pytest.mark.parametrize('number', [34, 35, 36])
+def test_terminal_review_requires_release_and_native_source(monkeypatch, changed_release, number):
     """The terminal entry point cannot skip either inherited attestation gate."""
     from src.backend import backtest_market_data as markets
     from src.backend import backtest_strategy_one_configuration as configurations
 
-    context = {**_context(), 'strategy_revision': 34, 'configuration_hash': 'a' * 64}
+    context = {**_context(), 'strategy_revision': number, 'configuration_hash': 'a' * 64}
     release = SimpleNamespace(payload_hash=('b' if changed_release else 'a') * 64)
     market = SimpleNamespace(close=lambda: None)
     source = object()
@@ -131,7 +147,7 @@ def test_strategy34_terminal_review_requires_release_and_native_source(monkeypat
     monkeypatch.setattr(review, 'load_typed_run_context', lambda *_: context)
     monkeypatch.setattr(markets, 'readonly_clickhouse_client', lambda **_: market)
     def certified(client, number):
-        assert client is market and number == 34
+        assert client is market and number == context['strategy_revision']
         calls.append('release')
         return release
     monkeypatch.setattr(configurations, 'certify_numbered_configuration', certified)
@@ -151,17 +167,17 @@ def test_strategy34_terminal_review_requires_release_and_native_source(monkeypat
 
 
 @pytest.mark.parametrize('guard', [
-    'if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35):',
-    'if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35):',
+    'if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):',
+    'if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):',
 ])
-def test_saved_review_source_certificate_rejects_removed_strategy35_guard(guard, tmp_path):
+def test_saved_review_source_certificate_rejects_removed_strategy36_guard(guard, tmp_path):
     from pathlib import Path
     from src.backend.backtest_fixed_v4_certification import certify_rising_momentum_entry_source
     source = Path(review.__file__).read_text(encoding='utf-8')
     assert source.count(guard) == 1
     assert len(certify_rising_momentum_entry_source()) == 64
     destination = tmp_path / 'saved_review.py'
-    destination.write_text(source.replace(guard, guard.replace(', 35)', ')')), encoding='utf-8')
+    destination.write_text(source.replace(guard, guard.replace(', 36)', ')')), encoding='utf-8')
     with pytest.raises(ValueError, match='reviewed source authority changed: backend/backtest_v4_saved_review.py'):
         certify_rising_momentum_entry_source(source_overrides={
             'backend/backtest_v4_saved_review.py': destination})
