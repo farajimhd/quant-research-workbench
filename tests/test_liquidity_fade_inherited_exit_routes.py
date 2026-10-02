@@ -29,10 +29,11 @@ def test_inherited_ah_factory_preserves_policy_and_uses_separate_identity():
 
 
 @pytest.mark.parametrize('generic', [False, True])
-def test_ah35_runtime_retains_witness_and_requires_normalized_dispatch(generic):
-    runtime, _, _ = runtime_fixture(strategy_number=35)
+@pytest.mark.parametrize('number', [35, 36])
+def test_numbered_ah_runtime_retains_witness_and_requires_normalized_dispatch(generic, number):
+    runtime, _, _ = runtime_fixture(strategy_number=number)
     witness, financial, args, _, _ = ah_case()
-    intent = confirmed_ah_exit_intent(witness, financial, **args, strategy_number=35)
+    intent = confirmed_ah_exit_intent(witness, financial, **args, strategy_number=number)
     runtime.config.anchor_date = args['session_date']
     runtime.config.account_ids = (financial.account_id,)
     decision, _ = runtime.portfolio.approve.return_value
@@ -50,13 +51,14 @@ def test_ah35_runtime_retains_witness_and_requires_normalized_dispatch(generic):
                 account_id=financial.account_id, assignment_id=financial.assignment_id)
             runtime.order_manager.submit_intent.assert_awaited_once()
             record = runtime.journal.unfenced_records()[0]
-            assert record.payload['strategy_revision'] == 35
+            assert record.payload['strategy_revision'] == number
             assert runtime.journal.confirmed_ah_exit_for_record(record.record_id)[1] == witness
     finally:
         runtime.journal.close()
 
 
-def test_ah35_projection_requires_original_entry_and_preserves_numbered_scalar():
+@pytest.mark.parametrize('number', [35, 36])
+def test_numbered_ah_projection_requires_original_entry_and_preserves_numbered_scalar(number):
     from datetime import date, timedelta
     from uuid import uuid4
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -64,11 +66,11 @@ def test_ah35_projection_requires_original_entry_and_preserves_numbered_scalar()
     from src.trading_runtime.arte_intent_projection import strategy_intent_batch
     from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
     witness, financial, args, _, row = ah_case()
-    intent = confirmed_ah_exit_intent(witness, financial, **args, strategy_number=35)
+    intent = confirmed_ah_exit_intent(witness, financial, **args, strategy_number=number)
     journal = BacktestMemoryJournal(run_id=row['run_id'], initial_sequence=1)
     try:
         journal.append_confirmed_ah_exit(intent=intent, witness=witness, financial=financial,
-            **args, strategy_id='early-squeeze-strategy', strategy_revision=35)
+            **args, strategy_id='early-squeeze-strategy', strategy_revision=number)
         entry = replace(intent, intent_id=args['source_entry_intent_id'], action='enter_long',
             reason='strategy_one_entry', reference_price=2.08, invalidation_price=1.81,
             event_time=intent.event_time-timedelta(seconds=53))
@@ -78,12 +80,12 @@ def test_ah35_projection_requires_original_entry_and_preserves_numbered_scalar()
             run_status='running', recorded_at=entry.event_time)
         values = dict(attempt_id=entry_batch.attempt_id, run_month=date(2026,8,1),
             prior_sequence=1, prior_batch_id=entry_batch.batch_id, through_sequence=2,
-            expected_config={'strategy_id':'early-squeeze-strategy','strategy_revision':35})
+            expected_config={'strategy_id':'early-squeeze-strategy','strategy_revision':number})
         with pytest.raises(RuntimeError, match='original typed entry source'):
             project_pending_backtest_v4_prefix(journal, **values)
         unit, = project_pending_backtest_v4_prefix(journal, **values,
             published_sources={entry.intent_id:(entry_batch,entry)})
-        assert type(unit) is V4ConfirmedAhFailureBatch and unit.confirmation['strategy_number'] == 35
+        assert type(unit) is V4ConfirmedAhFailureBatch and unit.confirmation['strategy_number'] == number
         assert restore_confirmed_ah_failure(unit.confirmation) == witness
     finally:
         journal.close()

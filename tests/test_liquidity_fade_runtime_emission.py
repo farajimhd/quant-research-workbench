@@ -93,12 +93,16 @@ def test_projection_keeps_all_refs_and_requires_earlier_original_entry():
         journal.close()
 
 
-def runtime_case():
+def runtime_case(strategy_number=35):
     data = values()
+    data['strategy_revision'] = strategy_number
+    data['intent'] = liquidity_fade_exit_intent(data['witness'], data['financial'],
+        session_date=data['session_date'], source_entry_intent_id=data['source_entry_intent_id'],
+        strategy_number=strategy_number)
     runtime, _, _ = runtime_fixture()
     runtime.journal.close()
     runtime.journal = BacktestMemoryJournal(run_id=runtime.run_id, initial_sequence=64)
-    runtime.config.strategy_revision, runtime.config.anchor_date = 35, data['session_date']
+    runtime.config.strategy_revision, runtime.config.anchor_date = strategy_number, data['session_date']
     runtime.config.account_ids = (data['financial'].account_id,)
     decision, _ = runtime.portfolio.approve.return_value
     runtime.portfolio.approve.return_value = decision, replace(data['intent'], metadata={'assignment_id':data['financial'].assignment_id})
@@ -110,8 +114,9 @@ def submit(runtime, data):
         data['source_entry_intent_id'], data['observation_source'])
 
 
-def test_runtime_preserves_shared_assignment_portfolio_and_oms_authority():
-    runtime, data = runtime_case()
+@pytest.mark.parametrize('number', [35, 36])
+def test_runtime_preserves_shared_assignment_portfolio_and_oms_authority(number):
+    runtime, data = runtime_case(number)
     try:
         result = asyncio.run(submit(runtime, data))
         assert result[0]['decision']['status'] == 'approved'
@@ -126,8 +131,9 @@ def test_runtime_preserves_shared_assignment_portfolio_and_oms_authority():
 
 
 @pytest.mark.parametrize('change', ['mode', 'revision', 'strategy', 'pending', 'missing_ref', 'future_checkpoint'])
-def test_invalid_runtime_source_never_reaches_portfolio_or_oms(change):
-    runtime, data = runtime_case()
+@pytest.mark.parametrize('number', [35, 36])
+def test_invalid_runtime_source_never_reaches_portfolio_or_oms(change, number):
+    runtime, data = runtime_case(number)
     if change == 'mode': runtime.config.mode = RunMode.REPLAY
     elif change == 'revision': runtime.config.strategy_revision = 34
     elif change == 'strategy': runtime.config.strategy_id = 'foreign'
@@ -143,8 +149,9 @@ def test_invalid_runtime_source_never_reaches_portfolio_or_oms(change):
         runtime.journal.close()
 
 
-def test_generic_liquidity_reason_cannot_bypass_normalized_witness():
-    runtime, data = runtime_case()
+@pytest.mark.parametrize('number', [35, 36])
+def test_generic_liquidity_reason_cannot_bypass_normalized_witness(number):
+    runtime, data = runtime_case(number)
     try:
         with pytest.raises(ValueError, match='normalized witness'):
             asyncio.run(runtime._execute_intents(StrategyEvaluation(intents=(data['intent'],)),

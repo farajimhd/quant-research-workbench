@@ -600,7 +600,7 @@ def _approved_strategy_one_oms_intent(
                 raise ValueError('AH recovery differs from the exact full-position exit intent')
         elif approved_intent.reason == "strategy_nine_followthrough_failure":
             from .arte_followthrough_failure_v4 import restore_failure
-            if (followthrough_row is None or state.group["strategy_revision"] not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
+            if (followthrough_row is None or state.group["strategy_revision"] not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36)
                     or followthrough_row["strategy_number"] != state.group["strategy_revision"]
                     or followthrough_row["assignment_id"] != reservation["assignment_id"]
                     or str(followthrough_row["parent_record_id"]) != source_intent.record_id
@@ -617,7 +617,7 @@ def _approved_strategy_one_oms_intent(
             expected = followthrough_exit_intent(restore_failure(followthrough_row), financial,
                 session_date=approved_intent.event_time.astimezone(ZoneInfo("America/New_York")).date(),
                 source_entry_intent_id=str(followthrough_row["source_entry_intent_id"]),
-                strategy_number=state.group["strategy_revision"] if state.group["strategy_revision"] in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35) else 9)
+                strategy_number=state.group["strategy_revision"] if state.group["strategy_revision"] in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36) else 9)
             if expected != approved_intent:
                 raise ValueError("Failure recovery differs from the exact scalar exit intent")
         elif approved_intent.reason in profit_reasons:
