@@ -39,7 +39,7 @@ ENTRY_ACTIVITY_SOURCE_AST = {
     'src/trading_runtime/arte_journal_rowbinary.py': '7d42c442aa6b43208c6ce6c82ca5a19e7c6e08976a930c9f38d477667b4b7e49',
     'src/trading_runtime/arte_typed_insert_dispatch.py': '3b5a254f6e4a21527ad1d5379e27ee0168a176178b549658cf415be1ae4553b5',
     'research/mlops/clickhouse.py': '2cf6ccee354c65b24f8ea73198a9ec1c0f033f249b3f57430a8073dcf64470c8',
-    'src/trading_runtime/arte_journal_commit_v4.py': 'fb1a530fee5999b964175c598d9c6b2d15326841134dbb5042efba736430ced3',
+    'src/trading_runtime/arte_journal_commit_v4.py': 'abb2a67b4fba28029b596897f83972dd4d04997c883f83ad9710db415d5e7d25',
     'src/trading_runtime/arte_journal_compound_v4.py': '4bf6f9f059a1ea2a8797842e7ab7750385df573c7e10920c0bd6c599d3592067',
     'src/backend/replay_run_service.py': '74b73beac9e55608ca668d70ddc21e6dcf7a9a7798868077cd4ee8d60d9427b5',
 }

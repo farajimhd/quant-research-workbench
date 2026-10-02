@@ -1100,7 +1100,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': '9f3b80d5dc2762b07149b21769d1babce2c7156b49478c5fabcd640a00611eb5'},
  'trading_runtime/arte_journal_commit_v4.py': {'verified_batch_predecessor': 'e7f52f08e28175674cf663dbde1b17abf7bf53513884f7d2289fbdd4dfe63ecf',
                                             '_load_verified_details_v4': '474cf760f738fabb9c39a9fd450f99998e2b846fb642b98648f8c25b49a0b4af',
-                                               '_publish_sealed_batch_v4': 'd61d78ce8fc293a05888b4b30c84449e96826f038997c10ad22a94ac886be597',
+                                               '_publish_sealed_batch_v4': '6b1f579439ced4cd5f847a5c00b78f08f575363ccd437ce3d4a43e88d9130059',
                                                '_publish_typed_batch_v4': '2c6ded7ecaa93dd3e553e62e0224685e4a21e504fc19eb47377993a24b171c42',
                                                '_validate_strategy_one_entry_link': '365f432db9147b91d4872b5aea4e79622672f3899d968d00c600755dbc4528b4',
                                                'load_verified_commit_v4': '71fc21b37fb069157447a10aab38e978ae0c2da383037113437213f7859b080a',

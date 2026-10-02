@@ -46,6 +46,30 @@ def test_real_float_family_insert_uses_binary_and_preserves_exact_hash():
         LIQUIDITY_FADE_FAILURE.name, content, stored_utc=True)).encode()).hexdigest() == saved['content_hash']
 
 
+def test_compound_detail_route_preserves_exact_float_bits():
+    import struct
+    from src.trading_runtime.arte_journal_commit_v4 import _insert_detail_families_v4
+    requests = []
+
+    class CapturingClient(MemoryClient):
+        def execute(self, sql, *args, **kwargs):
+            requests.append(sql)
+            return super().execute(sql, *args, **kwargs)
+
+    row = dict(native_unit().failure)
+    row['macd_line'] = 5.810210334455945e-05
+    sealed = typed_row(LIQUIDITY_FADE_FAILURE.name, row)
+    target = CapturingClient()
+    _insert_detail_families_v4(target, batch(),
+        ((LIQUIDITY_FADE_FAILURE.name, (sealed,)),), journal_profile='backtest_v4')
+    assert isinstance(requests[0], bytes)
+    assert requests[0].split(b'\n', 1)[0].endswith(b'FORMAT RowBinary')
+    saved = target.tables[LIQUIDITY_FADE_FAILURE.name][0]
+    assert struct.pack('<d', saved['macd_line']) == struct.pack('<d', row['macd_line'])
+    assert typed_row(LIQUIDITY_FADE_FAILURE.name,
+        {key: value for key, value in saved.items() if key != 'content_hash'})['content_hash'] == sealed['content_hash']
+
+
 def client():
     def forbidden(*args, **kwargs):
         raise AssertionError('Preparation/gate rejection must not execute SQL')

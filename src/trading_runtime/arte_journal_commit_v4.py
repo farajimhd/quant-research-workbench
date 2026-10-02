@@ -1925,7 +1925,7 @@ def _existing_detail_identities_v4(client, batch, families):
     return {name: sorted(identities) for name, identities in by_name.items()}
 
 
-def _insert_detail_families_v4(client, batch, pending):
+def _insert_detail_families_v4(client, batch, pending, *, journal_profile):
     """Insert independent detail families in bounded lanes, before any commit.
 
     Every lane has its own HTTP connection. The shared Keeper dispatch registers
@@ -1933,6 +1933,8 @@ def _insert_detail_families_v4(client, batch, pending):
     The caller still performs complete typed readback before publishing a
     family set or cursor. Fake and older clients retain the serial path.
     """
+    if journal_profile not in {"backtest_v4", "live_v4"}:
+        raise ValueError("V4 detail publication requires its explicit owner profile")
     from src.trading_runtime.arte_journal_writer import _insert
 
     factory = getattr(client, "v4_insert_lane_factory", None)
@@ -1941,6 +1943,7 @@ def _insert_detail_families_v4(client, batch, pending):
     if factory is None or len(pending) < 2:
         for name, rows in pending:
             _insert(client, name, tuple(rows), f"{batch.batch_id}:{name}:v4",
+                    journal_profile=journal_profile,
                     dispatch_batch_id=batch.batch_id,
                     dispatch_sequence=batch.last_sequence)
         return
@@ -1969,6 +1972,7 @@ def _insert_detail_families_v4(client, batch, pending):
         def publish_lane(lane, work):
             for name, rows in work:
                 _insert(lane, name, tuple(rows), f"{batch.batch_id}:{name}:v4",
+                        journal_profile=journal_profile,
                         dispatch_batch_id=batch.batch_id,
                         dispatch_sequence=batch.last_sequence)
 
@@ -2099,7 +2103,7 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
             raise RuntimeError("V4 typed detail conflicts with a prior attempt")
         if not identities:
             pending.append((name, rows))
-    _insert_detail_families_v4(client, batch, pending)
+    _insert_detail_families_v4(client, batch, pending, journal_profile=profile)
     mark_stage("detail_insert")
     actual_details = _load_verified_details_v4(
         client, run_id=batch.run_id, batch_id=batch.batch_id,

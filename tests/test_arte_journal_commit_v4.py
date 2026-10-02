@@ -67,6 +67,7 @@ def test_v4_detail_inserts_use_distinct_bounded_http_lanes(monkeypatch, lane_cou
         return lane
 
     def insert(lane, name, rows, token, **kwargs):
+        assert kwargs['journal_profile'] == 'backtest_v4'
         with lock:
             identities.add((id(lane), get_ident(), name, token))
         barrier.wait()
@@ -78,7 +79,7 @@ def test_v4_detail_inserts_use_distinct_bounded_http_lanes(monkeypatch, lane_cou
     batch_row = SimpleNamespace(batch_id="batch-1", last_sequence=8)
     pending = tuple((f"table_{index}", ({"record_id": str(index)},))
                     for index in range(lane_count))
-    _insert_detail_families_v4(client, batch_row, pending)
+    _insert_detail_families_v4(client, batch_row, pending, journal_profile='backtest_v4')
     assert len(lanes) == len(closed) == len(identities) == lane_count
     assert {item[0] for item in identities} == {id(lane) for lane in lanes}
     assert {item[2] for item in identities} == {name for name, _ in pending}
@@ -106,7 +107,7 @@ def test_v4_detail_inserts_borrow_persistent_lanes_across_batches(monkeypatch):
             SimpleNamespace(batch_id=f"batch-{sequence}",
                             last_sequence=sequence),
             (("table_a", ({"record_id": "a"},)),
-             ("table_b", ({"record_id": "b"},))))
+             ("table_b", ({"record_id": "b"},))), journal_profile='backtest_v4')
     assert len(inserted) == 4
     assert inserted.count((lanes[0], "table_a")) == 2
     assert inserted.count((lanes[1], "table_b")) == 2
@@ -137,7 +138,7 @@ def test_v4_detail_lane_failure_drains_and_closes_all_lanes(monkeypatch):
         _insert_detail_families_v4(
             client, SimpleNamespace(batch_id="batch-1", last_sequence=8),
             (("table_a", ({"record_id": "a"},)),
-             ("table_b", ({"record_id": "b"},))))
+             ("table_b", ({"record_id": "b"},))), journal_profile='backtest_v4')
     assert sorted(inserted) == ["table_a", "table_b"]
     assert len(closed) == 2
 
@@ -157,7 +158,7 @@ def test_v4_detail_lane_rejects_shared_connection_before_insert(monkeypatch):
         _insert_detail_families_v4(
             client, SimpleNamespace(batch_id="batch-1", last_sequence=8),
             (("table_a", ({"record_id": "a"},)),
-             ("table_b", ({"record_id": "b"},))))
+             ("table_b", ({"record_id": "b"},))), journal_profile='backtest_v4')
     assert inserted == []
 
 
