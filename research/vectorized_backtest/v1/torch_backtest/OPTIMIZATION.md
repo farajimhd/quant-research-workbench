@@ -51,6 +51,41 @@ configuration. Aug 20 can therefore be reported as previously observed
 evaluation data, excluded from optimization, but not as a fresh untouched
 holdout. A new certified later session is needed for stronger acceptance.
 
+### Expanded experiment results
+
+The fresh 14-parameter experiment completed eight generations in each phase.
+All accounts started with $10,000 and ended flat. Saved default financial
+summaries reproduced the preceding experiment exactly on all three sessions.
+
+| Session | Default net P&L | One-session winner | Two-session winner |
+|---|---:|---:|---:|
+| Aug 18 / training | $3,160.51 | $3,235.99 | $0.00 |
+| Aug 19 / training | -$2,368.05 | -$2,368.05 | $16.07 |
+| Aug 20 / previously observed evaluation | $859.82 | $234.10 | -$8.00 |
+
+Aug 20 maximum drawdowns were $1,602.66 / $1,549.46 / $66.38 respectively;
+entry counts were 25 / 25 / 2 and fill counts 194 / 186 / 7. The two-session
+winner entered zero episodes on Aug 18 and one on Aug 19. It achieved positive
+training fitness (0.000160) largely by avoiding exposure. Neither winner beat
+the default evaluation fitness. The one-session winner plateaued after
+generation four; the two-session winner improved in the final generation, so
+its convergence is not established. No tuning used evaluation results.
+
+Eight-lane prepared replay took 31.21 s / 39.82 s / 31.18 s on Aug 18/19/20,
+each covering 19,800 one-second intervals. Training setup took 43.39 s and
+48.65 s; evaluation setup took 36.32 s (captured stdout). These are cache-warm
+setup measurements, not a guarantee for cold compilation. Finalist evaluation
+retained five duplicate padding lanes alongside the three reported policies.
+
+The package passed 159 tests. Real-source three-candidate CPU/GPU ledger and
+reset qualification passed at both clocks in
+`causal_qualification/0aba81886c9a41ed83adf00f02a3ed74`. Completion checks verified
+14 dimensions, all 16 generation receipts, pinned source hashes, recomputed
+fitness, unchanged default financial summaries and zero final open quantities.
+The new run is [76dc0b6e974b46b4815e0234096a8f25](</D:/TradingML/runtimes/vectorized_backtest/strategy_search/76dc0b6e974b46b4815e0234096a8f25/report.json>).
+This is a completed bounded experiment, not a profitable-strategy acceptance
+or a certified global optimum. Monitoring can stop.
+
 ## Previous ten-parameter search representation
 
 The optimizer genome is **`[B,10]`**, where B is the population size. Three entry
