@@ -17,6 +17,19 @@ def candidate(**kwargs):
     return Candidate("signal", positions=5, **kwargs)
 
 
+def test_direct_cumulative_fills_preserve_shifted_allocation_exactly():
+    generator = torch.Generator().manual_seed(482)
+    wanted = torch.randint(0,1000000,(4,833,15),generator=generator)
+    capacity = torch.randint(0,15000000,(4,833),generator=generator)
+    wanted[0,0]=0; capacity[0,1]=0
+    cumulative = wanted.cumsum(-1)
+    total = cumulative[..., -1:]
+    budget = torch.minimum(capacity[...,None],total).clamp_min(0)
+    allocated = torch.floor(cumulative.to(torch.float64)*budget/total.clamp_min(1))
+    previous = torch.cat((torch.zeros_like(allocated[...,:1]),allocated[...,:-1]),-1)
+    assert torch.equal(proportional_fill(wanted,capacity),(allocated-previous).to(torch.int64))
+
+
 def test_grid_exact_unique_and_approval_binds_settings():
     grid = build_grid()
     assert len(grid) == len({c.identity for c in grid}) == 4320

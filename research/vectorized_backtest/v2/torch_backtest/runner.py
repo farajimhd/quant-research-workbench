@@ -27,7 +27,10 @@ def proportional_fill(wanted, capacity):
     total = cumulative[..., -1:]
     budget = torch.minimum(capacity[..., None], total).clamp_min(0)
     allocated = torch.floor(cumulative.to(torch.float64) * budget / total.clamp_min(1))
-    prior = torch.cat((torch.zeros_like(allocated[..., :1]), allocated[..., :-1]), -1)
+    # Previous cumulative demand is exactly cumulative-wanted. Avoid a shifted
+    # cat/slice: PyTorch 2.12 Inductor fails code generation for masked modular indexing
+    # on large listing axes. Preserve the same FP64 multiply/divide/floor order.
+    prior = torch.floor((cumulative - wanted).to(torch.float64) * budget / total.clamp_min(1))
     return (allocated - prior).to(torch.int64)
 
 
