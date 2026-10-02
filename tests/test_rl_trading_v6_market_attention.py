@@ -1,4 +1,5 @@
 import numpy as np
+import copy
 import pytest
 import torch
 from research.rl_trading.v6.market_attention import MarketAttentionConfig, VolumeRanker
@@ -6,6 +7,54 @@ from research.rl_trading.v6.market_attention import RankedMarketAttention
 from research.rl_trading.v6.ranked_policy import RankedBracketActorCritic
 from research.rl_trading.v6.candle_stream import SparseCandleState
 from research.rl_trading.v6.features import SCALAR_NAMES
+
+
+@pytest.mark.parametrize('selected_history', [False, True])
+def test_checkpoint_preserves_outputs_and_all_gradients_after_state_updates(selected_history):
+    """Multiple held selections share inputs; later seen updates cannot affect backward."""
+    torch.manual_seed(71)
+    baseline = RankedMarketAttention(8, MarketAttentionConfig(heads=2))
+    checked = copy.deepcopy(baseline)
+    checked.checkpoint_training = True
+    history = torch.randn(4, 120, 8)
+    embeddings = torch.randn(4, 8)
+    results = []
+    for module in (baseline, checked):
+        raw = history.clone().requires_grad_()
+        encoded = embeddings.clone().requires_grad_()
+        seen = torch.tensor([3, 19, 120, 0])
+        outputs = []
+        for identities in ([0, 1], [0, 1, 2], [0, 1]):
+            selected = torch.tensor(identities)
+            gathered = raw[selected] if selected_history else None
+            outputs.append(module(raw, seen, encoded, selected, selected_history=gathered))
+        seen.fill_(120)
+        weights = torch.arange(8, dtype=raw.dtype)
+        sum((output * weights).square().mean() for output in outputs).backward()
+        results.append((outputs, raw.grad, encoded.grad,
+                        {name: parameter.grad for name, parameter in module.named_parameters()}))
+    for actual, expected in zip(results[1][0], results[0][0]):
+        torch.testing.assert_close(actual, expected)
+    for index in (1, 2):
+        torch.testing.assert_close(results[1][index], results[0][index])
+    for name, expected in results[0][3].items():
+        assert expected is not None, name
+        torch.testing.assert_close(results[1][3][name], expected)
+
+
+def test_checkpoint_bypasses_eval_and_no_grad(monkeypatch):
+    import torch.utils.checkpoint
+    def unexpected(*args, **kwargs):
+        raise AssertionError('Inference must not checkpoint')
+    monkeypatch.setattr(torch.utils.checkpoint, 'checkpoint', unexpected)
+    attention = RankedMarketAttention(8, MarketAttentionConfig(heads=2))
+    attention.checkpoint_training = True
+    args = (torch.randn(2, 120, 8), torch.tensor([2, 120]),
+            torch.randn(2, 8), torch.arange(2))
+    with torch.no_grad():
+        attention(*args)
+    attention.eval()
+    attention(*args)
 
 
 def rows(volumes):

@@ -93,6 +93,7 @@ class RankedMarketAttention(nn.Module):
         self.latents = nn.Parameter(torch.randn(config.market_tokens, width)*.01)
         self.norm = nn.LayerNorm(width)
         self.summary = nn.Linear(width, width)
+        self.checkpoint_training = False
 
     def forward(self, history, seen, embeddings, selected, *, selected_history=None):
         rows = history[selected] if selected_history is None else selected_history
@@ -101,12 +102,23 @@ class RankedMarketAttention(nn.Module):
         valid = torch.arange(120, device=rows.device)[None] >= (120-counts[:, None])
         if not len(selected) or (counts <= 0).any():
             raise ValueError('Selected attention listing lacks candle context')
+        # Gather immutable inputs before checkpoint recomputation. The sparse
+        # state's seen/history tensors can change at the next candle clock.
+        selected_embeddings = embeddings[selected]
+        summary = embeddings[seen > 0].mean(0)
+        if self.checkpoint_training and self.training and torch.is_grad_enabled():
+            from torch.utils.checkpoint import checkpoint
+            return checkpoint(self._attend, rows, selected_embeddings, summary,
+                              valid, use_reentrant=False)
+        return self._attend(rows, selected_embeddings, summary, valid)
+
+    def _attend(self, rows, selected_embeddings, summary, valid):
+        """[R,120,D], [R,D], [D], [R,120] -> enriched [R,D]."""
         keys = rows + self.position[None]
         temporal, _ = self.temporal(keys[:, -1:], keys, keys,
             key_padding_mask=~valid, need_weights=False)
-        listed = self.norm(embeddings[selected] + temporal[:, 0])
+        listed = self.norm(selected_embeddings + temporal[:, 0])
         # Lightweight entire observed market summary includes unselected listings.
-        summary = embeddings[seen > 0].mean(0)
         queries = self.latents + self.summary(summary)[None]
         market, _ = self.market(queries[None], listed[None], listed[None], need_weights=False)
         cross, _ = self.broadcast(listed[None], market, market, need_weights=False)
