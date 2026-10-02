@@ -14,17 +14,40 @@ rows are now explicitly sorted BEFORE coarse rounding, preserving first/last
 chronological witnesses. Equity, purchase-group quantities, finite balances,
 terminal marks and deterministic resets are checked at objective boundaries.
 
-Full Aug 18 premarket, two independent repeats per clock:
+Full Aug 18 premarket, final static-shape recheck. The same ledgers also passed
+two earlier independent repeats:
 
-| Clock | Steps | Median replay | Net P&L | Episodes | Fills | Open at end |
+| Clock | Steps | Final replay | Net P&L | Episodes | Fills | Open at end |
 |---|---:|---:|---:|---:|---:|---:|
-| 1 s | 19,800 | 38.89 s | $3,160.51 | 26 | 182 | 0 |
-| 500 ms | 39,600 | 77.77 s | $560.87 | 25 | 210 | 0 |
+| 1 s | 19,800 | 28.35 s | $3,160.51 | 26 | 182 | 0 |
+| 500 ms | 39,600 | 56.71 s | $560.87 | 25 | 210 | 0 |
 
-Setup is additional (cached-source compile/capture: 25.92/17.20 s at 1 s,
-23.80/15.64 s at 500 ms). The earlier results below are historical v1 evidence,
-not the current implementation. Runtime receipts: `da515dd3c6654f07912e341e05e9e808`
-and `c3891a03a7764802b67e1cf7f5cac277` under the Strategy 1 audit runtime root.
+Whole-book masked admission updates replace chains of indexed assignments.
+The two complete ledgers are identical to the earlier corrected-v2 runs, while
+prepared replay falls from 38.89/77.77 s to 28.27/56.78 s. The 1 s tick profile
+falls from about 1,409 kernels to **859**; admission alone falls from 730 to
+**180**. Broker matching remains the largest measured device stage.
+
+Setup is additional (final cached-source compile/capture: 48.93/21.61 s at 1 s,
+19.94/13.80 s at 500 ms). Cache warmness and new batch shapes affect compilation.
+Eager CPU/captured GPU qualification covers three independent candidates over
+a real 10-minute prefix at both clocks, including complete ledgers and resets.
+The package suite passes 158 tests. This qualifies the stated approximation,
+not live-broker equivalence or a guarantee against undiscovered bugs.
+
+Runtime receipts: `02e5f5d13c1d4625bfeddfe24b6c17c5` and
+`b8db4a7eea0b463b863c438da966f705` under the Strategy 1 audit runtime root;
+qualification: `causal_qualification/8a6635f236d240aa930b145344b7576c`.
+Earlier corrected-v2 receipts `da515dd3c6654f07912e341e05e9e808` and
+`c3891a03a7764802b67e1cf7f5cac277` establish ledger preservation. The older v1
+results below are historical evidence, not current behavior.
+
+Final static-shape admission rechecks (`94b39d326cfe4b74b4139ca05b4abb74` and
+`78d2a3e16afd4177a3c6dd9ec9395cb2`) reproduce both complete ledgers. Timings in
+the current table are these final single-run rechecks; the preceding two-run
+medians were 28.27/56.78 s. Explicit static admission shapes avoid unnecessary
+symbolic listing/shape generalization; shape/topology changes require setup.
+The final CPU/GPU qualification is `causal_qualification/e00140d71cb14a199a5e97e401219fb3`.
 
 See [optimization and qualification](OPTIMIZATION.md) for the `[B,10]` genome,
 objective, one-/two-session genetic search, validation split and restart rules.
@@ -111,7 +134,7 @@ The original `audit_strategy_one` default remains the faithful 100 ms strategy
 comparison with 100 ms/1 s brokers. It keeps the original policy and compile
 stages; the additional fusion is enabled only for the unified approximation.
 
-## Measured full-session results
+## Historical v1 full-session results (superseded)
 
 RTX 5090 Laptop GPU, one candidate account, ten static-funnel survivors of the
 saved 6,100-ticker universe. Full 5.5-hour replay; synchronized GPU timing.

@@ -56,6 +56,13 @@ zero unless selected explicitly. Net P&L includes commissions and terminal
 marked exposure. No implicit terminal liquidation is invented. Drawdown is
 sampled on the main clock; exposure counts positions held at interval start.
 
+This objective permits inactivity. Its activity terms penalize counts/exposure;
+they do not require a minimum number of trades. A nearly inactive candidate can
+beat an active but risky candidate. If useful trading activity is required,
+declare a minimum-entry constraint or inactivity cost before a new training
+campaign, and reserve new untouched validation sessions for that campaign.
+Changing this requirement after seeing validation creates a different experiment.
+
 1. Optimize Aug 18 with default policy as the initial guessed solution.
 2. Seed a fresh search with that winner and optimize Aug 18 + Aug 19.
 3. Freeze both winners, then compare them and the default on Aug 20 validation.
@@ -101,3 +108,34 @@ and the final `report.json`. Failures preserve checkpoints and explicit errors.
 GPU memory is bounded with transfer headroom checks; there is no silent CPU
 fallback or ticker truncation. The monitor may fix a defect and launch a new
 bounded training run, but must never tune against validation outcomes.
+
+## Measured audit and current campaign
+
+The corrected default replay covers 19,800 one-second intervals on Aug 18,
+04:00–09:30 ET, in 28.35 s; the 39,600-interval 500 ms version takes 56.71 s.
+Complete ledgers match the preceding causal-v2 implementation after the masked
+admission optimization. Three-candidate CPU/GPU ledger and reset comparisons
+pass at both clocks. The package suite passes 158 tests, including a CUDA
+compiler-reset regression. These timings exclude certification and setup.
+
+An initial eight-candidate/eight-generation search completed both training
+phases but failed before validation scoring: listing-specialized compiler
+guards accumulated across session shapes and hit Dynamo's cache limit. The
+fix resets Python compiler guards at sequential session setup boundaries;
+existing captured CUDA graphs remain usable. Search requires captured one-step
+graphs, so there is no eager fallback after this reset. The failed receipt is
+preserved; a fresh campaign uses the corrected source identity.
+
+The failed campaign's training-only observations are diagnostic, not final
+validation results: its one-session winner earned $3,506.93 versus the default
+$3,160.51 on Aug 18. Its two-session winner reduced activity to zero entries on
+Aug 18 and one on Aug 19. This demonstrates the inactivity incentive discussed
+above; it does not establish out-of-sample profitability. Batched replay took
+about 30.7 s on Aug 18 and 39.7 s on Aug 19 for eight independent candidates.
+Cold setup for those session shapes took 81.85 s and 591.99 s respectively.
+
+The corrected campaign is monitored under runtime run
+`strategy_search/bffc924a099e46a898102665f9eaea3c`. Its checkpoints, status and
+eventual `report.json` are the authority for completion; validation was pending
+when this progress note was written. No validation score is used to change the
+objective, budget, mutation schedule or winner selection.
