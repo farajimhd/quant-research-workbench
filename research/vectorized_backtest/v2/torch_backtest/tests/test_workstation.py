@@ -144,6 +144,27 @@ def test_failure_retains_reason_and_redacts_traceback(tmp_path):
     assert ui.snapshot.completed == 0 and ui.snapshot.phase_completed == 512
 
 
+def test_certified_duplicate_ticker_is_named_without_dropping_rows(tmp_path, monkeypatch):
+    from datetime import date
+    from research.vectorized_backtest.v2.torch_backtest.source import arte_source
+    from research.vectorized_backtest.v2.torch_backtest.source.common import digest
+    day = date(2026, 9, 18)
+    members = [dict(ticker='LGHL', symbol_id='a', listing_id='one', security_id='s', source_run_id='r', inserted_at='t'),
+               dict(ticker='LGHL', symbol_id='b', listing_id='two', security_id='s', source_run_id='r', inserted_at='t')]
+    certificate = dict(status='certified', revision='preopen-tradable-snapshot-v3',
+        captured_at_utc='2026-09-18T07:00:00+00:00', available_at_utc='2026-09-18T07:01:00+00:00',
+        cutoff_utc='2026-09-18T08:00:00+00:00', snapshot_id='p', row_count=2, tradable_count=2, source_hash=3)
+    source = dict(definition={'plan': {'population': [dict(session_date=str(day), certificate=certificate,
+                   snapshot_hash=digest(members))]}}, units={str(day): {'LGHL': {}}})
+    monkeypatch.setattr(arte_source, 'query', lambda c, statement:
+                        [dict(n=2, tradable=2, source_hash=3)] if 'count()' in statement else members)
+    with pytest.raises(ValueError, match='LGHL maps to 2 listing rows'):
+        arte_source.population(None, source, day, diagnostic_directory=tmp_path)
+    report = json.loads((tmp_path / 'population-identity-error.json').read_text())
+    assert report['excluded_rows'] == 0 and len(report['rejected_identity_rows']) == 2
+    assert report['planned_tickers'] == 1 and report['snapshot_rows'] == 2
+
+
 def test_later_window_admission_preserves_daily_episode_history():
     source = {"build_id": "a", "units": {"2026-09-18": {"A": {"bars": {"attempt_id": "b"}}}}}
     text = admission_sql(source, "2026-09-18", ["A"], Funnel(), 72000000000, 57600000000)

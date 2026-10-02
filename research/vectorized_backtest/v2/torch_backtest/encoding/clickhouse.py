@@ -276,7 +276,7 @@ def prepare_session(
         assert_liquidity_storage(reader)
         if progress:
             progress({"stage": "Certify population identity", "message": "Checking pinned preopen identity snapshot and content hash"})
-        members, _ = arte_source.population(reader, source, day)
+        members, _ = arte_source.population(reader, source, day, diagnostic_directory=cache)
         identities = pl.DataFrame(members).select(
             "ticker", pl.col("listing_id").cast(pl.String)
         )

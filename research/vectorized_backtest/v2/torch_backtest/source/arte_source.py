@@ -5,6 +5,7 @@ from io import StringIO
 import json
 from pathlib import Path
 import sqlite3
+from collections import Counter
 from uuid import UUID
 
 import polars as pl
@@ -75,7 +76,7 @@ def storage_check(c):
     return dict(tables=tables, parts=parts)
 
 
-def population(c, source, day):
+def population(c, source, day, *, diagnostic_directory=None):
     saved = [p for p in source['definition']['plan']['population'] if p['session_date'] == str(day)]
     if len(saved) != 1:
         raise ValueError('Missing unique build population certificate')
@@ -105,8 +106,27 @@ def population(c, source, day):
         raise ValueError('Population no longer matches source build')
     selected = set(source['units'][str(day)])
     rows = [r for r in members if r['ticker'] in selected]
-    if len(rows) != len(selected) or len({r['listing_id'] for r in rows}) != len(rows) or any(not r['listing_id'] for r in rows):
-        raise ValueError('Ambiguous or missing ticker/listing identity in build population')
+    counts = Counter(r['ticker'] for r in rows)
+    listings = Counter(r['listing_id'] for r in rows)
+    missing = sorted(selected - set(counts))
+    ambiguous = sorted(name for name, count in counts.items() if count != 1)
+    invalid = [r for r in rows if not r['listing_id'] or listings[r['listing_id']] != 1]
+    if missing or ambiguous or invalid:
+        report = dict(session=str(day), planned_tickers=len(selected), snapshot_rows=len(rows),
+                      missing_tickers=missing, ambiguous_tickers=ambiguous,
+                      rejected_identity_rows=[r for r in rows if r['ticker'] in ambiguous or r in invalid],
+                      excluded_rows=0)
+        if diagnostic_directory is not None:
+            from ..runtime import require_runtime, write_json
+            write_json(require_runtime(diagnostic_directory) / 'population-identity-error.json', report)
+        reasons = [f"{name} maps to {counts[name]} listing rows" for name in ambiguous[:10]]
+        if missing:
+            reasons.append('missing tickers: ' + ', '.join(missing[:10]))
+        if invalid:
+            reasons.append(f'{len(invalid)} empty or shared listing identities')
+        raise ValueError('Population identity rejected: ' + '; '.join(reasons) +
+                         f'. {len(selected):,} planned tickers, {len(rows):,} snapshot rows. '
+                         'Repair the certified population or explicitly approve a research exclusion; no rows excluded.')
     return rows, saved
 
 
