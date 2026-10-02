@@ -930,13 +930,13 @@ class TradingRuntime:
                     intent.action == "add_long" for intent in evaluation.intents):
                 raise ValueError(f"Strategy {self.config.strategy_revision} forbids add acquisitions")
         from .strategy_liquidity_fade_exit import liquidity_fade_reason, liquidity_fade_exit_intent
-        liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36, 37, 38)}
+        liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36, 37, 38, 39)}
         if liquidity_fade_source is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
             from .strategy_one_stateful import StrategyOneFinancialView
             if (type(liquidity_fade_source) is not tuple or len(liquidity_fade_source) != 4
                     or self.config.mode != RunMode.BACKTEST or self.config.strategy_id != STRATEGY_ID
-                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision not in (35, 36, 37, 38)
+                    or type(self.config.strategy_revision) is not int or self.config.strategy_revision not in (35, 36, 37, 38, 39)
                     or not isinstance(self.journal, BacktestMemoryJournal)
                     or event is not None or followthrough_source is not None or profit_giveback_source is not None
                     or confirmed_ah_source is not None or numbered_exit_assignment_id is not None

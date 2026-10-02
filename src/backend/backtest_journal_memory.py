@@ -353,7 +353,7 @@ class BacktestMemoryJournal:
         fields = {'source_build_id', 'source_market_plan_token', 'source_bars_attempt_id',
                   'source_indicators_attempt_id', 'source_liquidity_attempt_id', *CHECKPOINT_REFERENCE_FIELDS}
         if (strategy_id != 'early-squeeze-strategy' or type(strategy_revision) is not int
-                or strategy_revision not in (35, 36, 37, 38) or intent != expected
+                or strategy_revision not in (35, 36, 37, 38, 39) or intent != expected
                 or not isinstance(observation_source, Mapping) or set(observation_source) != fields):
             raise ValueError('Liquidity journal requires exact numbered factory and complete references')
         refs = dict(observation_source)

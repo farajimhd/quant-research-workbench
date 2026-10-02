@@ -28,17 +28,17 @@ ENTRY_ACTIVITY_SOURCE_AST = {
     'src/backend/backtest_strategy_certified_price_break.py': '2b5e8abcf5caab0f6d50d5bcc1ec9fd26f712f1a3cdf25ef373fc46c9c046174',
     'src/backend/backtest_strategy_one_execution.py': '4e71f044f4deb794115be1cc81f3bb3eb59c0f588a56959da5c09ee6193830ad',
     'src/backend/backtest_strategy_one_coordinator.py': '7494305fae29254ca2d483876b22f65be581faabe791a71e9bdba0659a289071',
-    'src/backend/backtest_strategy_one_management.py': '18581766f8f3024b16f895ae5b2815bd62c22c5e5d934be90401b18d8fd0b89b',
+    'src/backend/backtest_strategy_one_management.py': '4b905f4482008707ac4806ac0f1e46944d2a8d305e275121a95bcc75c5120ead',
     'src/trading_runtime/strategy_one_management_snapshot.py': '67bb28045cacae27fe8faf5ffe460e983248cc539447e511bf688dd6bd642361',
-    'src/trading_runtime/runtime.py': 'c6dd993c3fa5b32bb0cf0414d0df1f92c487aff7dfeb9d9c1374f24cc89cb2b5',
-    'src/backend/backtest_journal_memory.py': '824a8f8803af1d06073f509644d25cb50052379f24a259adc7ac819920d9e006',
+    'src/trading_runtime/runtime.py': '5c9dad926a5f74b5e472fe3138f96f6f86f574c5802236cf7accdee914143674',
+    'src/backend/backtest_journal_memory.py': '5d7d0482c5ebbbeaa709c237d976477cbb46c0e2c6fb3246a7b8301785e536c5',
     'src/backend/backtest_typed_projection.py': 'bd282ce151c36235eb3a881ecb14c26a6b463d35ebd934d9420b9fa015bf8af9',
     'src/backend/backtest_typed_publisher.py': 'c668f99f94a5c52da8fced7cb10c8c33bd1f32e76f784b7853e956db891f3613',
     'src/trading_runtime/arte_strategy_one_entry_journal.py': '0d74c5c83b0c1130a9162dcf7c44376d62fa24eb2d152411c82fb2bcc30fdb8c',
     'src/trading_runtime/arte_journal_writer.py': 'ec1faf4bde235da17a4873bbf6db4853be8751c2bce45d39f4637c3565bb7b7b',
     'src/trading_runtime/arte_journal_commit_v4.py': 'd5efc33b654317b3f50ac36b01b34c518fcd5db4f03bd8a3990dce344d580337',
     'src/trading_runtime/arte_journal_compound_v4.py': '4bf6f9f059a1ea2a8797842e7ab7750385df573c7e10920c0bd6c599d3592067',
-    'src/backend/replay_run_service.py': '58ef03a63bb3bfc57d998cd55f68b7c0357201e74b11b5b04d670fa543813e25',
+    'src/backend/replay_run_service.py': '4d553b5f0d11b575d81836748090bfc9e163b73f918f6d86beb1b635d4451d19',
 }
 
 

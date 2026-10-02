@@ -519,7 +519,7 @@ def _approved_strategy_one_oms_intent(
     from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason
     ah_reasons = {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38)}
     from .strategy_liquidity_fade_exit import liquidity_fade_reason
-    liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36, 37, 38)}
+    liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36, 37, 38, 39)}
     account = state.group["account_id"]
     if confirmed_ah_row is not None and approved_intent.reason not in ah_reasons:
         raise ValueError('AH recovery witness differs from its exit reason')
@@ -555,7 +555,7 @@ def _approved_strategy_one_oms_intent(
             if (liquidity_fade_row is None or any(row is not None for row in
                     (followthrough_row, profit_giveback_row, confirmed_ah_row))
                     or type(state.group['strategy_revision']) is not int
-                    or state.group['strategy_revision'] not in (35, 36, 37, 38)
+                    or state.group['strategy_revision'] not in (35, 36, 37, 38, 39)
                     or liquidity_fade_row['strategy_number'] != state.group['strategy_revision']
                     or liquidity_fade_row['run_id'] != protection_history.run_id
                     or liquidity_fade_row['assignment_id'] != reservation['assignment_id']
@@ -741,7 +741,7 @@ def reconstruct_strategy_one_oms_lineage(
     if (
             not isinstance(group, dict)
             or group.get("strategy_id") != STRATEGY_ID
-            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38)
+            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39)
             or group.get("run_id") != protection_history.run_id
             or group.get("batch_id") not in protection_history.committed_batch_ids
             or source_intent.batch_id not in protection_history.committed_batch_ids
@@ -754,7 +754,7 @@ def reconstruct_strategy_one_oms_lineage(
             # Its immutable source intent is add_long, not the first entry's
             # enter_long. Both require the same exact typed lineage proof.
             or source_intent.intent.action not in (
-                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38) else
+                {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39) else
                 {"enter_long", "add_long", "exit"} if group.get("strategy_revision") in (2, 3)
                 else {"enter_long", "add_long"})
             or not state.orders or len(state.orders) > 65_535
@@ -901,7 +901,7 @@ def load_recovered_strategy_one_oms_lineage(
     from .arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
     from .arte_liquidity_fade_reader_v4 import load_liquidity_fade_failure
     from .strategy_liquidity_fade_exit import liquidity_fade_reason
-    liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36, 37, 38)}
+    liquidity_reasons = {liquidity_fade_reason(number) for number in (35, 36, 37, 38, 39)}
     from .arte_followthrough_failure_v4 import REASON, load_followthrough_failure
     from .arte_profit_giveback_reader_v4 import load_committed_profit_giveback
     from .strategy_profit_giveback_exit import profit_giveback_reason

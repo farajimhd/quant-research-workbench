@@ -2644,7 +2644,7 @@ class ReplayRunController:
         """Fence the completed decision before ordinary Portfolio/OMS submission."""
         manager, publisher = self._strategy_one_manager, self._journal_publisher
         boundary = dict(self._source_cursor).get('boundary_ms')
-        if (self.definition.mode != RunMode.BACKTEST or manager.contract.strategy_number not in (35, 36, 37, 38)
+        if (self.definition.mode != RunMode.BACKTEST or manager.contract.strategy_number not in (35, 36, 37, 38, 39)
                 or publisher is None or publisher.writer.journal_profile != 'backtest_v4'
                 or self._fixed_keeper_session is None or not requests
                 or requests != manager.liquidity_fade_requests(boundary_ms=boundary)):
@@ -3752,7 +3752,7 @@ class ReplayRunController:
             self.processed_events += len(work.broker_rows)
             await self._after_event(at)
             manager = self._strategy_one_manager
-            if manager.contract.strategy_number in (35, 36, 37, 38):
+            if manager.contract.strategy_number in (35, 36, 37, 38, 39):
                 liquidity_requests = manager.liquidity_fade_requests(boundary_ms=work.boundary_ms)
                 if liquidity_requests:
                     await self._confirm_liquidity_fade_checkpoint(liquidity_requests, event_time=at)
