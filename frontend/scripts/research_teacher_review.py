@@ -56,8 +56,21 @@ def main():
                         overflow = page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 2")
                         assert not overflow, f'Horizontal document overflow: {name}'
                         if theme == 'light' and scale == 1. and size == 'normal':
+                            page.get_by_role('link', name='Public Sans Roles', exact=True).click()
+                            page.locator('.research-chart-container').wait_for(state='detached')
+                            page.get_by_role('link', name='Research', exact=True).click()
+                            page.locator('.research-chart-container .chart-shell').wait_for(timeout=10000)
+                            assert page.get_by_label('Label branch', exact=True).input_value() == 'flat'
+                            assert page.get_by_role('button', name='Preflight labels').count() == 0
                             page.get_by_label('Label branch', exact=True).select_option('held')
                             page.locator('.research-chart-container .chart-shell').wait_for(timeout=600000)
+                            page.get_by_role('button', name='Fullscreen Candles & hindsight labels', exact=True).click()
+                            page.wait_for_timeout(300)
+                            page.screenshot(path=str(output / 'held-exit-chart.png'))
+                            page.get_by_role('button', name='Exit fullscreen Candles & hindsight labels', exact=True).click()
+                            page.get_by_text('How teacher labels are calculated', exact=True).click()
+                            assert 'score >= 0.01' in page.locator('.research-label-detail').first.inner_text()
+                            page.get_by_text('How teacher labels are calculated', exact=True).click()
                             page.get_by_label('Episode', exact=True).select_option(index=1)
                             page.locator('.research-chart-container .chart-shell').wait_for(timeout=600000)
                             page.get_by_role('button', name='Close Model architecture & details', exact=True).click()

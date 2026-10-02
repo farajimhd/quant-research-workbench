@@ -2,6 +2,7 @@
 import polars as pl
 import pytest
 import json
+import numpy as np
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -63,8 +64,29 @@ def test_changed_label_bytes_fail_closed(tmp_path, monkeypatch):
     (labels / 'complete.json').write_text(json.dumps(proof))
     monkeypatch.setattr(audit, 'sources', lambda day: (dict(role='train', bank_certificate_sha256=bank_hash), bank, labels))
     audit._verified_labels.cache_clear()
+
     assert audit.labels('2026-07-31')[0]['flat'].height == 1
     frame.with_columns(pl.lit(0.).alias('enter_probability')).write_parquet(labels / 'flat.parquet')
     with pytest.raises(ValueError, match='hash mismatch'):
         audit.labels('2026-07-31')
     audit._verified_labels.cache_clear()
+
+
+def test_chart_verifies_only_consumed_files_and_rejects_changed_scalar(tmp_path, monkeypatch):
+    root = tmp_path / 'bank'; root.mkdir()
+    np.save(root / 'close_us.npy', np.array([1_000_000], dtype=np.int64))
+    np.save(root / 'scalar.npy', np.zeros((1, len(audit.SCALAR_NAMES)), dtype=np.float32))
+    hashes = {name: audit.file_hash(root / name) for name in ['close_us.npy', 'scalar.npy']}
+    hashes['levels.npy'] = 'unused-level-proof'
+    manifest = dict(files_sha256=hashes, scalar_names=list(audit.SCALAR_NAMES), candle_count=1, offsets={'a': [0, 1]})
+    (root / 'complete.json').write_text(json.dumps(manifest))
+    (tmp_path / 'complete.json').write_text(json.dumps(dict(bank_file_hashes=hashes)))
+    monkeypatch.setattr(audit, 'sources', lambda day: ({}, tmp_path, tmp_path))
+    audit._verified_bank.cache_clear()
+    # No levels file exists: it cannot be touched by candle/indicator inspection.
+    assert audit._verified_bank('2026-07-31', ('first',))[1].tolist() == [1_000_000]
+    audit._verified_bank.cache_clear()  # Release Windows mmap before changing bytes.
+    np.save(root / 'scalar.npy', np.ones((1, len(audit.SCALAR_NAMES)), dtype=np.float32))
+    with pytest.raises(ValueError, match='Chart input hash mismatch'):
+        audit._verified_bank('2026-07-31', ('changed',))
+    audit._verified_bank.cache_clear()

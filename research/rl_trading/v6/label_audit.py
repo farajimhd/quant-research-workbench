@@ -103,13 +103,15 @@ def _verified_labels(day, stamps):
     if (cert['episodes_sha256'] != bank_cert['outputs']['episodes']['sha256'] or
             file_hash(episode_path) != cert['episodes_sha256']):
         raise ValueError('Episode identity source hash mismatch')
-    identities = pl.read_parquet(episode_path, columns=['listing_id', 'ticker']).unique()
+    episodes = pl.read_parquet(episode_path)
+    identities = episodes.select('listing_id', 'ticker').unique()
     if identities['listing_id'].n_unique() != identities.height:
         raise ValueError('Ambiguous ticker identity')
     for branch in frames:
         frames[branch] = frames[branch].join(identities, on='listing_id', how='left', validate='m:1')
         if frames[branch]['ticker'].null_count():
             raise ValueError('Label identity is missing from certified episodes')
+    frames['episodes'] = episodes
     return frames, cert
 
 
@@ -143,7 +145,7 @@ def statistics(frames):
             overlapping_clocks=repeated.height, extra_overlap_rows=int(repeated['len'].sum() or 0)-repeated.height,
             median_episode_rows=episodes['rows'].median(), median_span_seconds=episodes['span_seconds'].median(),
             mean_probability=frame[column].mean(), original_weight_mass=frame['sample_weight'].sum()))
-    tickers = (pl.concat([f.select('listing_id', 'ticker', 'episode_uid') for f in frames.values()])
+    tickers = (pl.concat([frames[b].select('listing_id', 'ticker', 'episode_uid') for b in ('flat', 'held')])
                .group_by('listing_id', 'ticker').agg(pl.len().alias('rows'), pl.col('episode_uid').n_unique().alias('episodes'))
                .sort(['rows', 'ticker'], descending=[True, False]).to_dicts())
     return dict(classes=classes, distributions=distributions, branches=branches, tickers=tickers,
@@ -159,53 +161,105 @@ def preflight(day):
                 checks=['Train/development role verified', 'Label SHA-256 and row counts verified',
                         'Bank certificate binding verified', 'Episode identities verified',
                         'Soft probabilities and weights valid', 'Overlapping episode labels preserved'],
-                candle_check='Full candle-bank bytes verified when a chart is loaded',
+                candle_check='Candle and indicator file hashes verified when a chart is loaded',
                 certificate_sha256=file_hash(sources(day)[2] / 'complete.json'),
                 version=cert['version'], analytics=statistics(frames))
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=18)
 def _verified_bank(day, stamps):
-    from research.rl_trading.v6.bank import open_bank
     _, bank, _ = sources(day)
     outer = json.loads((bank / 'complete.json').read_text())
-    result = open_bank(bank / 'bank', verify_hashes=True)
-    if result.manifest['files_sha256'] != outer['bank_file_hashes']:
+    root = bank / 'bank'
+    manifest = json.loads((root / 'complete.json').read_text())
+    if manifest['files_sha256'] != outer['bank_file_hashes'] or manifest['scalar_names'] != list(SCALAR_NAMES):
         raise ValueError('Candle bank certificate binding failed')
-    return result
+    # This chart consumes clocks[N] and scalar[N,37], never level tensors.
+    # Verify every byte of both consumed files against the certified bank.
+    arrays = []
+    for name, shape in [('close_us', (manifest['candle_count'],)),
+                        ('scalar', (manifest['candle_count'], len(SCALAR_NAMES)))]:
+        path = root / (name + '.npy')
+        if file_hash(path) != manifest['files_sha256'][path.name]:
+            raise ValueError('Chart input hash mismatch: ' + name)
+        array = np.load(path, mmap_mode='r', allow_pickle=False)
+        if array.shape != shape or array.dtype != (np.int64 if name == 'close_us' else np.float32):
+            raise ValueError('Chart input shape/dtype mismatch')
+        arrays.append(array)
+    return manifest, *arrays
+
+
+@lru_cache(maxsize=18)
+def _candidates(day, stamps):
+    _, bank, _ = sources(day)
+    proof = json.loads((bank / 'complete.json').read_text())
+    path = bank / 'candidates.parquet'
+    if file_hash(path) != proof['outputs']['candidates']['sha256']:
+        raise ValueError('Reward candidate source hash mismatch')
+    return pl.read_parquet(path)
 
 
 def chart(day, listing_id, episode_uid, branch, start_us, seconds):
     if branch not in ('flat', 'held') or not 60 <= seconds <= 3600:
         raise ValueError('Invalid chart branch/window')
-    frames, _ = labels(day)
-    frame = frames[branch].filter(pl.col('listing_id') == listing_id)
+    frames, cert = labels(day)
+    branches = (branch,)
+    frame = pl.concat([frames[b].select('listing_id', 'ticker', 'episode_uid', 'time_us') for b in branches]).filter(pl.col('listing_id') == listing_id)
     episode_options = frame.select('episode_uid').unique().sort('episode_uid')['episode_uid'].to_list()
+    if not episode_uid and not frame.is_empty():
+        episode_uid = frame.sort('time_us', 'episode_uid')['episode_uid'][0]
     if episode_uid:
         frame = frame.filter(pl.col('episode_uid') == episode_uid)
     if frame.is_empty():
         raise ValueError('No saved labels match the selected listing/episode')
     _, root, _ = sources(day)
-    paths = [root / 'bank' / p for p in ['complete.json', 'close_us.npy', 'scalar.npy', 'levels.npy']]
+    paths = [root / 'complete.json'] + [root / 'bank' / p for p in ['complete.json', 'close_us.npy', 'scalar.npy']]
     with LOCK:
-        bank = _verified_bank(day, fingerprint(paths))
-    item = bank.listing(listing_id)
-    start = start_us if start_us is not None else max(int(frame['time_us'].min())-60_000_000, int(item.close_us[0]))
+        manifest, all_clocks, all_scalar = _verified_bank(day, fingerprint(paths))
+        candidates = _candidates(day, fingerprint([root / 'complete.json', root / 'candidates.parquet']))
+    left, right = manifest['offsets'][listing_id]
+    item_clocks, item_scalar = all_clocks[left:right], all_scalar[left:right]
+    if not len(item_clocks) or np.any(np.diff(item_clocks) <= 0):
+        raise ValueError('Invalid chart candle ordering')
+    start = start_us if start_us is not None else max(int(frame['time_us'].min())-60_000_000, int(item_clocks[0]))
     end = start + seconds*1_000_000
-    selected = (item.close_us >= start) & (item.close_us < end)
+    selected = (item_clocks >= start) & (item_clocks < end)
     # raw[K,37], clocks[K]: sparse actual activity, never fill missing seconds.
-    raw, clocks = item.scalar[selected], item.close_us[selected]
+    raw, clocks = item_scalar[selected], item_clocks[selected]
     valid = (raw[:, SCALAR_NAMES.index('bar_price_valid')] == 1) & (raw[:, SCALAR_NAMES.index('bar_extremes_valid')] == 1)
     candles = []
     for row, clock in zip(raw[valid], clocks[valid]):
         candle = {name: float(np.exp(float(row[SCALAR_NAMES.index('log_'+name)]))) for name in ['open', 'high', 'low', 'close']}
         # Chart bars start one second before the completed close/label clock.
         candles.append(dict(time=int(clock)//1_000_000-1, endTime=int(clock)//1_000_000, isClosed=True, **candle))
-    targets = frame.filter((pl.col('time_us') >= start) & (pl.col('time_us') < end))
-    column = 'enter_probability' if branch == 'flat' else 'exit_probability'
-    target_rows = targets.select('episode_uid', 'time_us', pl.col(column).alias('probability'), 'sample_weight').sort('time_us', 'episode_uid').to_dicts()
+    target_rows = []
+    rewards = candidates.select('episode_uid', 'time_us', 'score')
+    for b in branches:
+        column = 'enter_probability' if b == 'flat' else 'exit_probability'
+        targets = frames[b].filter((pl.col('listing_id') == listing_id) & (pl.col('time_us') >= start) & (pl.col('time_us') < end))
+        if episode_uid:
+            targets = targets.filter(pl.col('episode_uid') == episode_uid)
+        if b == 'flat':
+            targets = targets.join(rewards, on=['episode_uid', 'time_us'], how='left', validate='m:1')
+        else:
+            targets = targets.with_columns((pl.col('close')-pl.col('hypothetical_entry_price')-2*cert['config']['fee_per_share']).alias('exit_net_per_share'), pl.lit(None, dtype=pl.Float64).alias('score'))
+        reward = pl.when(pl.col(column) > 0).then(pl.col('score')).otherwise(None) if b == 'flat' else pl.col('exit_net_per_share')
+        target_rows.extend(targets.select('episode_uid', 'time_us', pl.col(column).alias('probability'), 'sample_weight', reward.alias('reward'), pl.lit(b).alias('branch')).to_dicts())
+    target_rows.sort(key=lambda r: (r['time_us'], r['episode_uid'], r['branch']))
+    oscillator = []
+    for column, label, color in [('macd_line', 'MACD', 'var(--primary)'), ('macd_signal', 'Signal', 'var(--warning)'), ('macd_histogram', 'Histogram', 'var(--muted-foreground)')]:
+        data = []
+        for row, clock in zip(raw[valid], clocks[valid]):
+            if row[SCALAR_NAMES.index('indicator_available')] != 1:
+                continue
+            line, signal = [float(row[SCALAR_NAMES.index('macd_'+name+'_rel')]) * float(np.exp(float(row[SCALAR_NAMES.index('log_close')]))) for name in ('line', 'signal')]
+            data.append(dict(time=int(clock)//1_000_000-1, value=line if column == 'macd_line' else signal if column == 'macd_signal' else line-signal))
+        oscillator.append(dict(column=column, label=label, paneKey='macd', style='histogram' if column == 'macd_histogram' else 'line', color=color, lineWidth=1, data=data))
+    original = frames['episodes'].filter((pl.col('listing_id') == listing_id) & (pl.col('direction') == 1) & (pl.col('end_us') >= start) & (pl.col('start_us') < end))
+    regions = [dict(start=r['start_us']//1_000_000-1, end=r['end_us']//1_000_000-1, color='rgba(34,197,94,0.10)', label='') for r in original.iter_rows(named=True)]
     return dict(ticker=frame['ticker'][0], candles=candles, labels=target_rows, branch=branch,
                 start_us=start, end_us=end, seconds=seconds, omitted_invalid_price_rows=int((~valid).sum()),
                 source='SHA-verified V6 packed 1s candles (decoded float32 log prices)',
-                episodes=episode_options,
-                previous_available=start > int(item.close_us[0]), next_available=end <= int(item.close_us[-1]))
+                episodes=episode_options, selected_episode=episode_uid, label_config=cert['config'], oscillator_series=oscillator, regions=regions, original_long_episodes=original.to_dicts(),
+                reward_units='ENTRY: original discounted score; HOLD/EXIT: fee-adjusted $/share since hypothetical entry',
+                previous_available=start > int(item_clocks[0]), next_available=end <= int(item_clocks[-1]))

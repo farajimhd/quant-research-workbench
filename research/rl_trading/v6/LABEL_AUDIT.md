@@ -18,15 +18,24 @@ for arbitrary newest files. Missing or changed sources fail closed.
 
 Preflight verifies selected-session label hashes/counts, role, episode identity
 and bank-certificate binding. It is an inspection readiness check, not a full
-training/serving certification. Full candle-bank hashes are checked on the
-first chart load per session; fingerprint-keyed bounded caches reuse immutable
-evidence. Charts decode the original float32 log OHLC channels and display
+training/serving certification. Whole clock and scalar files are SHA-256 checked on first chart load per session;
+fingerprint-keyed caches retain up to 18 sessions. Unused level tensors are not
+read or certified by this chart. This reduced measured cold chart loading from
+80.6 seconds to 22.6 seconds on the workstation mount; warm loading was 0.14 seconds. Charts decode the original float32 log OHLC channels and display
 actual valid-price 1s candles. Invalid-price activity rows are counted explicitly,
 and their targets remain in the detail table without snapping to nearby candles.
 Decision timestamps refer to candle close; plotted candles start one second
 earlier. Charts use 15-minute pages and preserve overlapping episode rows.
-Every plotted target has a marker, with text at hard-class transitions to keep
-dense windows readable. Labels cannot be edited in this workflow.
+Original long MACD episodes appear as green regions; saved MACD channels appear
+in the shared oscillator pane. One half-size marker is displayed per labeled
+candle for the selected episode and training branch. No combination or priority
+is applied across independent contexts. All source rows of that context remain
+in details. EXIT uses a red down arrow above its candle with reward above; other markers
+and reward numbers appear below. WAIT has no reward text. ENTRY numbers are the
+original discounted candidate score; HOLD/EXIT numbers are fee-adjusted profit
+per share used to derive exit quality, not a discounted entry score or PPO reward.
+Route navigation retains the audited workspace, filters, container layouts and
+a bounded 32-window response cache for the app session; reload requires preflight. Labels cannot be edited in this workflow.
 
 Statistics distinguish raw hard-class rows (`p >= 0.5`) from original episode
 weight times soft probability. They exclude training class-balance multipliers.

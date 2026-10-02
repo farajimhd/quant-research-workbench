@@ -26,8 +26,8 @@
 .research-analytics h2 { margin-top: 1rem; }
 .research-ticker-button { color: var(--primary); background: transparent; border: 0; padding: .25rem; cursor: pointer; font: inherit; }
 .research-page tr[aria-selected="true"] { background: var(--surface-alt); }
-.research-chart-container { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 10px; gap: .5rem; }
-.research-chart-container > .chart-shell { flex: 1; min-height: 160px; }
+.research-chart-container { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 10px; gap: .5rem; overflow: auto; }
+.research-chart-container > .chart-shell { flex: 1; min-height: 400px; }
 .research-chart-container > p { margin: 0; font-size: .75rem; }
 .research-chart-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; font-size: .75rem; }
 .research-label-detail { flex: 0 0 auto; max-height: 30%; overflow: auto; font-size: .75rem; }

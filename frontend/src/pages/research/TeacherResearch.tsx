@@ -1,5 +1,5 @@
 import { ArrowLeft, BarChart3, ChartCandlestick, Microscope, Network, RefreshCcw, ShieldCheck } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
 import { api, query } from "../../api/client";
 import { ChartPanel, type ChartPayload } from "../../app/components/ChartPanel";
@@ -15,7 +15,15 @@ type Audit = { day: string; role: string; checks: string[]; candle_check: string
   branches: { branch: string; episodes: number; median_episode_rows: number; median_span_seconds: number; overlapping_clocks: number; extra_overlap_rows: number; mean_probability: number }[];
   tickers: Ticker[]; scope: string; coverage: string;
 } };
-type Chart = { ticker: string; candles: ChartPayload["candles"]; labels: { episode_uid: string; time_us: number; probability: number; sample_weight: number }[]; start_us: number; end_us: number; episodes: string[]; previous_available: boolean; next_available: boolean; omitted_invalid_price_rows: number; source: string };
+type Chart = { selected_episode: string; label_config: { min_score: number; min_peak_headroom: number; fee_per_share: number }; oscillator_series: ChartPayload["oscillator_series"]; regions: ChartPayload["regions"]; reward_units: string; ticker: string; candles: ChartPayload["candles"]; labels: { episode_uid: string; time_us: number; probability: number; sample_weight: number; branch: string; reward: number | null }[]; start_us: number; end_us: number; episodes: string[]; previous_available: boolean; next_available: boolean; omitted_invalid_price_rows: number; source: string };
+// Keep the Research workspace across route navigation; reload requires preflight.
+const researchState = new Map<string, unknown>();
+const chartCache = new Map<string, Chart>();
+function useResearchState<T,>(key: string, initial: T): [T, Dispatch<SetStateAction<T>>] {
+  const [value, setValue] = useState<T>(() => researchState.has(key) ? researchState.get(key) as T : initial);
+  useEffect(() => { researchState.set(key, value); }, [key, value]);
+  return [value, setValue];
+}
 type Id = "architecture" | "analytics" | "chart";
 const titles: Record<Id, string> = { architecture: "Model architecture & details", analytics: "Teacher data & label analytics", chart: "Candles & hindsight labels" };
 const icons = { architecture: <Network size={14} />, analytics: <BarChart3 size={14} />, chart: <ChartCandlestick size={14} /> };
@@ -24,9 +32,9 @@ const clock = (us: number) => new Date(us / 1000).toLocaleTimeString("en-GB", { 
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
 export function ResearchWorkspacePage() {
-  const [catalog, setCatalog] = useState<Catalog | null>(null), [day, setDay] = useState("2026-07-31");
-  const [audit, setAudit] = useState<Audit | null>(null), [error, setError] = useState("");
-  const [busy, setBusy] = useState(false), [workspace, setWorkspace] = useState(false), [attempt, setAttempt] = useState(0);
+  const [catalog, setCatalog] = useState<Catalog | null>(null), [day, setDay] = useResearchState("day", "2026-07-31");
+  const [audit, setAudit] = useResearchState<Audit | null>("audit", null), [error, setError] = useState("");
+  const [busy, setBusy] = useState(false), [workspace, setWorkspace] = useResearchState("workspace", false), [attempt, setAttempt] = useState(0);
   const pending = useRef<AbortController | null>(null);
   useEffect(() => {
     const abort = new AbortController();
@@ -56,8 +64,8 @@ export function ResearchWorkspacePage() {
 
 function TeacherCanvas({ audit, onBack }: { audit: Audit; onBack: () => void }) {
   const surface = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0), [height, setHeight] = useState(760), [layouts, setLayouts] = useState<Partial<Record<Id, WorkspaceWindowLayout>>>({});
-  const [closed, setClosed] = useState<Id[]>([]), [listing, setListing] = useState(audit.analytics.tickers[0]?.listing_id ?? "");
+  const [width, setWidth] = useState(0), [height, setHeight] = useState(760), [layouts, setLayouts] = useResearchState<Partial<Record<Id, WorkspaceWindowLayout>>>(`${audit.day}:layouts`, {});
+  const [closed, setClosed] = useResearchState<Id[]>(`${audit.day}:closed`, []), [listing, setListing] = useResearchState(`${audit.day}:listing`, audit.analytics.tickers[0]?.listing_id ?? "");
   useEffect(() => {
     if (!surface.current) return;
     const element = surface.current;
@@ -83,7 +91,7 @@ function TeacherCanvas({ audit, onBack }: { audit: Audit; onBack: () => void }) 
   return <div className="research-page"><header className="research-toolbar"><button className="button secondary compact" onClick={onBack}><ArrowLeft size={14} />Models & preflight</button><strong>V6 · Teacher audit</strong><span>{audit.day} · {audit.role} · New York time</span><button className="button secondary compact" onClick={() => { setLayouts({}); setClosed([]); }}><RefreshCcw size={14} />Reset containers</button></header>
     {closed.length > 0 && <div className="research-controls">{closed.map(id => <button className="button secondary compact" key={id} onClick={() => setClosed(current => current.filter(item => item !== id))}>Restore {titles[id]}</button>)}</div>}
     <div className="research-canvas" ref={surface} style={{ height: extent }}>{(Object.keys(titles) as Id[]).filter(id => !closed.includes(id)).map(id => <div key={id} style={{ display: "contents", visibility: fullscreen && !layouts[id]?.fullscreen ? "hidden" : "visible" }}><WorkspaceWindow id={id} title={titles[id]} compact icon={icons[id]} layout={layouts[id] ?? defaults[id]} canvasTargets={[]} canPopOut={false} meta={{ status: "ready", sourceLabel: id === "architecture" ? "Reserved for model documentation" : "Certified V6 teacher sources" }} onClose={() => setClosed(current => [...current, id])} onFocus={() => {}} onLayoutChange={(_, patch) => setLayouts(current => ({ ...current, [id]: { ...(current[id] ?? defaults[id]), ...patch } }))} onMoveToCanvas={() => {}} onPopOut={() => {}}>
-      {id === "architecture" ? <div className="research-container"><h2>RL trading V6</h2><p>Teacher training · Hindsight MACD 1s supervision</p><p className="research-muted">Architecture and model details will be filled in the next review.</p><dl><div><dt>Local classes</dt><dd>ENTRY · WAIT · HOLD · EXIT</dd></div><div><dt>Inspection</dt><dd>Saved targets, not predictions</dd></div></dl></div> : id === "analytics" ? <LabelAnalytics audit={audit} listing={listing} onListing={setListing} /> : <LabelChart day={audit.day} listing={listing} tickers={audit.analytics.tickers} onListing={setListing} />}
+      {id === "architecture" ? <div className="research-container"><h2>RL trading V6</h2><p>Teacher training · Hindsight MACD 1s supervision</p><p className="research-muted">Architecture and model details will be filled in the next review.</p><dl><div><dt>Local classes</dt><dd>ENTRY · WAIT · HOLD · EXIT</dd></div><div><dt>Inspection</dt><dd>Saved targets, not predictions</dd></div></dl></div> : id === "analytics" ? <LabelAnalytics audit={audit} listing={listing} onListing={setListing} /> : <LabelChart key={listing} day={audit.day} listing={listing} tickers={audit.analytics.tickers} onListing={setListing} />}
     </WorkspaceWindow></div>)}</div></div>;
 }
 
@@ -97,38 +105,40 @@ function LabelAnalytics({ audit, listing, onListing }: { audit: Audit; listing: 
 }
 
 function LabelChart({ day, listing, tickers, onListing }: { day: string; listing: string; tickers: Ticker[]; onListing: (id: string) => void }) {
-  const [branch, setBranch] = useState("flat"), [episode, setEpisode] = useState("");
-  const [start, setStart] = useState<number | null>(null), [chart, setChart] = useState<Chart | null>(null);
+  const [branch, setBranch] = useResearchState(`${day}:branch`, "flat"), [episode, setEpisode] = useResearchState(`${day}:${listing}:episode`, "");
+  const [start, setStart] = useResearchState<number | null>(`${day}:${listing}:start`, null), [chart, setChart] = useState<Chart | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [attempt, setAttempt] = useState(0);
-  useEffect(() => { setStart(null); setEpisode(""); setChart(null); }, [listing, branch]);
   useEffect(() => {
     if (!listing) return; const abort = new AbortController(); setBusy(true); setError(""); setChart(null);
-    api<Chart>(`/api/research/models/v6/chart${query({ day, listing_id: listing, branch, episode_uid: episode || undefined, start_us: start ?? undefined, seconds: 900 })}`, { signal: abort.signal, timeoutMs: 600000 }).then(result => { if (!abort.signal.aborted) setChart(result); }).catch(reason => { if (!abort.signal.aborted) setError(message(reason)); }).finally(() => { if (!abort.signal.aborted) setBusy(false); });
+    const url = `/api/research/models/v6/chart${query({ day, listing_id: listing, branch, episode_uid: episode || undefined, start_us: start ?? undefined, seconds: 900 })}`;
+    const cached = chartCache.get(url);
+    if (cached && !attempt) { setChart(cached); setBusy(false); return () => abort.abort(); }
+    api<Chart>(url, { signal: abort.signal, timeoutMs: 600000 }).then(result => { if (!abort.signal.aborted) { if (chartCache.size >= 32) chartCache.delete(chartCache.keys().next().value!); chartCache.set(url, result); setChart(result); } }).catch(reason => { if (!abort.signal.aborted) setError(message(reason)); }).finally(() => { if (!abort.signal.aborted) setBusy(false); });
     return () => abort.abort();
   }, [day, listing, branch, episode, start, attempt]);
   const payload = useMemo<ChartPayload>(() => {
     const candleTimes = new Set(chart?.candles.map(c => c.time));
-    const previous = new Map<string, boolean>();
     const markers: ChartPayload["markers"] = [];
     for (const [i, label] of (chart?.labels ?? []).entries()) {
       const time = label.time_us / 1000000 - 1;
       // Never snap a target on an invalid-price activity row to a nearby bar.
       if (!candleTimes.has(time)) continue;
       const positive = label.probability >= .5;
-      const transition = previous.get(label.episode_uid) !== positive;
-      previous.set(label.episode_uid, positive);
-      const action = branch === "flat" ? (positive ? "ENTRY" : "WAIT") : (positive ? "EXIT" : "HOLD");
+      const exit = label.branch === "held" && positive;
       markers.push({ id: `target-${i}`, time: time as UTCTimestamp,
-        position: branch === "flat" ? "belowBar" : "aboveBar",
-        shape: positive ? (branch === "flat" ? "arrowUp" : "arrowDown") : "circle",
-        color: positive ? (branch === "flat" ? "var(--success)" : "var(--danger)") : "var(--muted-foreground)",
-        text: transition ? `${action} ${(label.probability * 100).toFixed(0)}%` : "" });
+        position: exit ? "aboveBar" : "belowBar", size: .5,
+        shape: positive ? (exit ? "arrowDown" : "arrowUp") : "circle",
+        color: positive ? (exit ? "var(--danger)" : "var(--success)") : "var(--muted-foreground)",
+        text: label.reward == null ? "" : label.reward.toFixed(3) });
     }
-    return { candles: chart?.candles ?? [], volume: [], overlay_series: [], oscillator_series: [], regions: [], markers };
+    const success = getComputedStyle(document.documentElement).getPropertyValue("--success").trim();
+    const bandColor = /^#[0-9a-f]{6}$/i.test(success) ? `${success}1a` : success;
+    return { candles: chart?.candles ?? [], volume: [], overlay_series: [], oscillator_series: chart?.oscillator_series ?? [], regions: (chart?.regions ?? []).map(r => ({ ...r, color: bandColor })), markers };
   }, [chart, branch]);
-  return <div className="research-chart-container"><div className="research-controls"><label>Ticker<select aria-label="Chart ticker" value={listing} onChange={e => onListing(e.target.value)}>{tickers.map(t => <option value={t.listing_id} key={t.listing_id}>{t.ticker}</option>)}</select></label><label>Branch<select aria-label="Label branch" value={branch} onChange={e => setBranch(e.target.value)}><option value="flat">ENTRY / WAIT</option><option value="held">EXIT / HOLD</option></select></label><label>Episode<select aria-label="Episode" value={episode} disabled={!chart} onChange={e => { setEpisode(e.target.value); setStart(null); }}><option value="">All overlapping episodes</option>{chart?.episodes.map(id => <option key={id} value={id}>{id.split(":").at(-1)}</option>)}</select></label></div>
-    <div className="research-chart-nav"><button className="button secondary compact" disabled={busy || !chart?.previous_available} onClick={() => setStart(chart!.start_us - 900000000)}>Previous 15 min</button><span>{chart ? `${clock(chart.start_us)}–${clock(chart.end_us)} ET · 1s` : "1s completed candles"}</span><button className="button secondary compact" disabled={busy || !chart?.next_available} onClick={() => setStart(chart!.end_us)}>Next 15 min</button></div><p className="research-muted">Hindsight targets · Percentages are P(ENTRY) or P(EXIT), including WAIT / HOLD markers. Decision close is one second after candle start.</p>
-    {busy ? <LoadingState fill label="Verifying candle-bank hashes and loading saved labels" /> : error ? <div className="canvas-inline-error" role="alert">{error}<button onClick={() => setAttempt(v => v + 1)}>Retry chart</button></div> : chart?.candles.length ? <ChartPanel ticker={chart.ticker} timeframe="1s" timeframes={["1s"]} payload={payload} featureOptions={[]} indicatorOptions={[]} visibleColumns={[]} visibleSupervisionGroups={[]} onTickerChange={() => {}} onTimeframeChange={() => {}} onVisibleColumnsChange={() => {}} onVisibleSupervisionGroupsChange={() => {}} tickerEditable={false} toolbarVariant="compact" showIndicatorControls={false} showSupervisionControls={false} fillHeight baseHeight={300} persistedOnly initialFitMode="last_market_day" settingsStorageKey="research.v6.teacher-chart" appearanceDefaults={{ legendGutterVisible: false, rightLegendGutterVisible: false }} /> : <div className="research-empty">No valid-price candles in this window. Use the adjacent windows.</div>}
-    {chart && <details className="research-label-detail"><summary>{n(chart.labels.length)} saved targets · {chart.omitted_invalid_price_rows} invalid-price rows omitted from chart</summary><p>{chart.source}</p><table><thead><tr><th>Close ET</th><th>Episode</th><th>Positive P</th><th>Weight</th></tr></thead><tbody>{chart.labels.map((l, i) => <tr key={i}><td>{clock(l.time_us)}</td><td title={l.episode_uid}>{l.episode_uid.split(":").at(-1)}</td><td>{(l.probability * 100).toFixed(2)}%</td><td>{l.sample_weight.toPrecision(4)}</td></tr>)}</tbody></table></details>}
+  return <div className="research-chart-container"><div className="research-controls"><label>Ticker<select aria-label="Chart ticker" value={listing} onChange={e => { setStart(null); setEpisode(""); onListing(e.target.value); }}>{tickers.map(t => <option value={t.listing_id} key={t.listing_id}>{t.ticker}</option>)}</select></label><label>Branch<select aria-label="Label branch" value={branch} onChange={e => { setStart(null); setEpisode(""); setBranch(e.target.value); }}><option value="flat">ENTRY / WAIT</option><option value="held">EXIT / HOLD</option></select></label><label>Episode<select aria-label="Episode" value={episode || chart?.selected_episode || ""} disabled={!chart} onChange={e => { setEpisode(e.target.value); setStart(null); }}>{chart?.episodes.map(id => <option key={id} value={id}>{id.split(":").at(-1)}</option>)}</select></label></div>
+    <div className="research-chart-nav"><button className="button secondary compact" disabled={busy || !chart?.previous_available} onClick={() => setStart(chart!.start_us - 900000000)}>Previous 15 min</button><span>{chart ? `${clock(chart.start_us)}–${clock(chart.end_us)} ET · 1s` : "1s completed candles"}</span><button className="button secondary compact" disabled={busy || !chart?.next_available} onClick={() => setStart(chart!.end_us)}>Next 15 min</button></div><p className="research-muted">Original long episodes · Marker numbers: ENTRY discounted score; HOLD/EXIT net $/share</p>
+    {busy ? <LoadingState fill label="Loading certified candles, MACD and labels" /> : error ? <div className="canvas-inline-error" role="alert">{error}<button onClick={() => setAttempt(v => v + 1)}>Retry chart</button></div> : chart?.candles.length ? <ChartPanel reference={chart.labels.length ? { time: chart.labels[0].time_us / 1000000 - 1, startTime: chart.labels[0].time_us / 1000000 - 1, endTime: chart.labels.at(-1)!.time_us / 1000000 - 1 } : undefined} ticker={chart.ticker} timeframe="1s" timeframes={["1s"]} payload={payload} featureOptions={[]} indicatorOptions={[]} visibleColumns={["macd_line", "macd_signal", "macd_histogram"]} visibleSupervisionGroups={[]} onTickerChange={() => {}} onTimeframeChange={() => {}} onVisibleColumnsChange={() => {}} onVisibleSupervisionGroupsChange={() => {}} tickerEditable={false} toolbarVariant="compact" showIndicatorControls={false} showSupervisionControls={false} fillHeight baseHeight={300} persistedOnly initialFitMode="last_market_day" settingsStorageKey="research.v6.teacher-chart.macd-v2" appearanceDefaults={{ legendGutterVisible: false, rightLegendGutterVisible: false }} /> : <div className="research-empty">No valid-price candles in this window. Use the adjacent windows.</div>}
+    {chart && <details className="research-label-detail"><summary>How teacher labels are calculated</summary><p>Original candidate score = ((hindsight exit close - decision close) x 0.5^(hold seconds / 30) - 2 x $0.005) / (decision close + $0.005). This is the saved 30-second half-life score.</p><p>ENTRY probability = qualifying discounted candidate score / best qualifying score in this episode; WAIT probability = 1 - ENTRY. Qualification requires score &gt;= {chart.label_config.min_score} and at least {chart.label_config.min_peak_headroom * 100}% peak headroom. Missing qualifying score gives ENTRY = 0.</p><p>EXIT profit = close - hypothetical entry price - 2 x ${chart.label_config.fee_per_share}/share. EXIT probability = clip(profit / best episode profit, 0, 1) after 3 seconds when best profit is positive; otherwise 0. The final observed held candle is forced to EXIT = 1. HOLD probability = 1 - EXIT.</p><p>Training uses these soft probabilities, with original weight = 1 / branch rows in the episode. Marker arrows use p &gt;= 0.5 for display. Overlapping episodes remain separate training contexts; choose one episode and branch to verify each saved row.</p></details>}
+    {chart && <details className="research-label-detail"><summary>{n(chart.labels.length)} saved targets · {chart.omitted_invalid_price_rows} invalid-price rows omitted from chart</summary><p>{chart.source}</p><p>{chart.reward_units}. Saved soft targets below; arrows use p &gt;= 0.5 only for display.</p><table><thead><tr><th>Close ET</th><th>Episode</th><th>Branch</th><th>Positive P</th><th>Reward</th><th>Weight</th></tr></thead><tbody>{chart.labels.map((l, i) => <tr key={i}><td>{clock(l.time_us)}</td><td title={l.episode_uid}>{l.episode_uid.split(":").at(-1)}</td><td>{l.branch}</td><td>{(l.probability * 100).toFixed(2)}%</td><td>{l.reward == null ? "" : l.reward.toFixed(3)}</td><td>{l.sample_weight.toPrecision(4)}</td></tr>)}</tbody></table></details>}
   </div>;
 }
