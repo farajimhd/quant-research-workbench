@@ -121,6 +121,15 @@ def test_preflight_has_stage_units_without_false_grid_completion():
     assert "512/6,192 tickers" in text and "4,320" not in text and "not executing" in text
 
 
+def test_structural_product_preflight_reports_complete_missing_scope(tmp_path):
+    from research.vectorized_backtest.v2.torch_backtest.prepare import require_structural_coverage
+    reader = SimpleNamespace(execute=lambda statement: '{"ticker":"A","n":1}\n')
+    with pytest.raises(RuntimeError, match='1/2 tickers missing'):
+        require_structural_coverage(reader, 'build', '2026-09-18', ('A', 'B'), tmp_path)
+    assert json.loads((tmp_path / 'structural-coverage-error.json').read_text())['missing_tickers'] == ['B']
+    require_structural_coverage(reader, 'build', '2026-09-18', ('A',), tmp_path)
+
+
 @pytest.mark.parametrize("width,height", [(110, 24), (70, 16), (60, 10)])
 def test_long_database_error_remains_bounded_with_diagnostic_path(width, height):
     stream = StringIO()

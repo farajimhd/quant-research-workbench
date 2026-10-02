@@ -20,6 +20,25 @@ from .source import arte_sql as sql
 from .tape import SqueezeTape
 
 
+def require_structural_coverage(reader, build, day, tickers, diagnostic_directory):
+    """Explain missing producer products before sparse geometry certification."""
+    from src.trading_runtime.strategy_one_v7_interval_schema import COVERAGE_TABLE
+    from .runtime import write_json, require_runtime
+    statement = (f"SELECT ticker,count() AS n FROM {COVERAGE_TABLE} "
+                 f"WHERE source_build_id={sql.literal(build)} AND session_date=toDate({sql.literal(day)}) "
+                 f"AND ticker IN ({','.join(sql.literal(t) for t in tickers)}) GROUP BY ticker FORMAT JSONEachRow")
+    counts = {r['ticker']: int(r['n']) for r in map(json.loads, filter(None, reader.execute(statement).splitlines()))}
+    missing = [t for t in tickers if counts.get(t, 0) == 0]
+    duplicated = [t for t in tickers if counts.get(t, 0) > 1]
+    if missing or duplicated:
+        report = dict(build=build, day=str(day), product=COVERAGE_TABLE, selected_tickers=len(tickers),
+                      missing_tickers=missing, duplicate_tickers=duplicated)
+        write_json(require_runtime(diagnostic_directory) / 'structural-coverage-error.json', report)
+        raise RuntimeError(f"Certified V7 interval coverage: {len(missing)}/{len(tickers)} tickers missing, "
+                           f"{len(duplicated)} duplicate on {day}. Producer product {COVERAGE_TABLE} "
+                           "must be prepared for this source build before GPU preflight; no tickers skipped.")
+
+
 def dependencies():
     wanted = {"close@1000ms", "high@1000ms", "low@1000ms", "volume@1000ms",
               "trade_count@1000ms"}
@@ -108,6 +127,7 @@ def prepare_tape(session, settings, *, progress=print, maximum_gib=4.0):
         progress({"stage": "Certify execution products", "message": "Checking market attempts, Keeper proofs and structural coverage"})
         verify_market_day_plan(market, reader)
         seeds = certified_seed_plan(market, reader)
+        require_structural_coverage(reader, market.build_id, day, tickers, session.runtime / prepared.source_key)
         structure = certify_v7_interval_plan(market, seeds, session_date=str(day),
                                              candidate_tickers=tickers, client=reader)
         for offset in range(0, len(tickers), session.fetch_tickers):
