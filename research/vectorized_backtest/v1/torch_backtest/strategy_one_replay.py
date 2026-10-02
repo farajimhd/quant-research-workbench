@@ -208,6 +208,12 @@ class StrategyOneReplay:
             [self.add_graph.values] * len(self.theta), device
         )
         self.b, self.n = len(self.theta), len(tape.tickers)
+        # Small [B] telemetry registers; never retain a [T,B,N] rollout.
+        self.equity_peak = torch.full(
+            (self.b,), float(initial_cash), device=device, dtype=torch.float64
+        )
+        self.max_drawdown = torch.zeros_like(self.equity_peak)
+        self.position_seconds = torch.zeros_like(self.equity_peak)
         self.action_theta = {
             name: graph.parameters(
                 (action_values or {}).get(name, [graph.values] * self.b), device
@@ -355,6 +361,9 @@ class StrategyOneReplay:
         for value in self.state.values():
             value.zero_()
         self.cash.fill_(self.initial_cash)
+        self.equity_peak.fill_(self.initial_cash)
+        self.max_drawdown.zero_()
+        self.position_seconds.zero_()
         self.realized.zero_()
         self.fees.zero_()
         self.index.zero_()
@@ -421,6 +430,12 @@ class StrategyOneReplay:
         values = torch.where(valid[..., None], values, 0)
         self.ledger.scatter_(1, index[..., None].expand(-1, -1, 6), values)
         self.fill_count += valid.sum(-1, keepdim=True)
+        if self.unified:
+            equity = self.cash + (self.state["quantity"] * self.state["mark"]).sum(-1)
+            self.equity_peak.copy_(torch.maximum(self.equity_peak, equity))
+            self.max_drawdown.copy_(
+                torch.maximum(self.max_drawdown, self.equity_peak - equity)
+            )
 
     def _pending(self):
         return torch.stack(
@@ -533,34 +548,40 @@ class StrategyOneReplay:
     def _submit(self, listing, group, quantity, price, stop, target, boundary):
         book = self.books[listing]
         admitted = quantity > 0
-        root = group * 5
-        for offset in range(5):
-            slot = root + offset
-            book.remaining[:, slot] = torch.where(
-                admitted, quantity if offset < 3 else 0, book.remaining[:, slot]
-            )
-            book.filled[:, slot] = torch.where(admitted, 0, book.filled[:, slot])
-            book.paid[:, slot] = torch.where(admitted, 0, book.paid[:, slot])
-            value = price if offset == 0 else target if offset in (1, 3) else stop
-            book.price[:, slot] = torch.where(admitted, value, book.price[:, slot])
-            book.submitted_ms[:, slot] = torch.where(
-                admitted, boundary.reshape(()), book.submitted_ms[:, slot]
-            )
-            book.active[:, slot] = torch.where(
-                admitted, offset == 0, book.active[:, slot]
-            )
-            book.triggered[:, slot] &= ~admitted
-        book.reference[:, group] = torch.where(
-            admitted, price, book.reference[:, group]
+        # Whole-book [B,15] masked writes avoid a chain of aliased slice
+        # assignments. That chain caused quadratic Inductor fusion work for
+        # B>1. Roles are still parent/target/stop/repair-target/repair-stop.
+        slots = torch.arange(15, device=book.price.device)
+        role = slots.remainder(5)[None]
+        mask = admitted[:, None] & (slots.div(5, rounding_mode="floor")[None] == group)
+        values = {
+            "remaining": torch.where(role < 3, quantity[:, None], 0),
+            "filled": torch.zeros_like(book.filled),
+            "paid": torch.zeros_like(book.paid),
+            "price": torch.where(
+                role == 0,
+                price[:, None],
+                torch.where((role == 1) | (role == 3), target[:, None], stop[:, None]),
+            ),
+            "submitted_ms": boundary.reshape(()).expand_as(book.submitted_ms),
+            "active": (role == 0).expand_as(book.active),
+            "triggered": torch.zeros_like(book.triggered),
+        }
+        for name, value in values.items():
+            buffer = getattr(book, name)
+            buffer.copy_(torch.where(mask, value, buffer))
+        group_mask = admitted[:, None] & (
+            torch.arange(3, device=book.price.device)[None] == group
         )
-        book.reserved_risk_per_share[:, group] = torch.where(
-            admitted, price - stop, book.reserved_risk_per_share[:, group]
-        )
-        book.group_acquired[:, group] = torch.where(
-            admitted, 0, book.group_acquired[:, group]
-        )
-        book.group_open[:, group] = torch.where(admitted, 0, book.group_open[:, group])
-        book.group_cancelled[:, group] &= ~admitted
+        for name, value in (
+            ("reference", price[:, None]),
+            ("reserved_risk_per_share", (price - stop)[:, None]),
+            ("group_acquired", torch.zeros_like(book.group_acquired)),
+            ("group_open", torch.zeros_like(book.group_open)),
+            ("group_cancelled", torch.zeros_like(book.group_cancelled)),
+        ):
+            buffer = getattr(book, name)
+            buffer.copy_(torch.where(group_mask, value, buffer))
         self.funding["reserved"].add_(torch.where(admitted, quantity * price, 0))
         self.funding["reserved_risk"].add_(
             torch.where(admitted, quantity * (price - stop), 0)
@@ -1012,6 +1033,11 @@ class StrategyOneReplay:
         source_before = st["source_owned"] > 0
         pending_before = self._pending()
         active_before = (st["quantity"] > 0) | pending_before
+        if self.unified:
+            # Exposure occupies the interval only if held at its START.
+            self.position_seconds.add_(
+                (st["quantity"] > 0).sum(-1) * (self.clock_ms / 1000)
+            )
         fresh = (
             (hundred["quote_valid"] > 0)
             & (hundred["bid_int"] > 0)
@@ -1029,9 +1055,9 @@ class StrategyOneReplay:
         )
         st["mark"].copy_(torch.where(mark > 0, mark, st["mark"]))
 
-        # Native adaptive-urgent repricing precedes this interval's broker match.
-        # Strategy 1 has no later quote-age check in this repricer; it retains
-        # the last permitted execution snapshot when no new NBBO exists.
+        # Quote witnesses are available at the completed boundary. Unified
+        # repricing follows matching; the legacy audit retains app sequencing.
+        # The repricer keeps the last permitted NBBO when none is fresh.
         global_event = ((hundred["present"] > 0) & active_before).any(-1) | fact[
             "candidate_valid"
         ].any(-1)
@@ -1131,8 +1157,12 @@ class StrategyOneReplay:
             ask,
             global_event,
         ) = self._observe_inputs()
-        for listing, book in enumerate(self.books):
-            self.reprice_step(book, st["last_ask"][:, listing], global_event)
+        # Unified intervals consume the order snapshot from their START.
+        # End-quote amendments become effective only for the next interval.
+        # Keep the legacy app-ordering experiment separately reproducible.
+        if not self.unified:
+            for listing, book in enumerate(self.books):
+                self.reprice_step(book, st["last_ask"][:, listing], global_event)
 
         broker_row, price_rows, broker_tick = self._broker_inputs(boundary)
         events = []
@@ -1143,6 +1173,9 @@ class StrategyOneReplay:
                 )
             )
         self._record(torch.stack(events, 1), boundary)
+        if self.unified:
+            for listing, book in enumerate(self.books):
+                self.reprice_step(book, st["last_ask"][:, listing], global_event)
 
         pending, management, breaks, old_accepted, lower, upper = self._manage(
             hundred,
@@ -1281,6 +1314,36 @@ class StrategyOneReplay:
         if self.cash.is_cuda:
             torch.cuda.synchronize()
         elapsed = perf_counter() - started
+        # Integrity checks are objective-boundary checks, never host decisions
+        # inside a GPU tick. Fail the candidate batch rather than rewarding bad data.
+        held = self.state["quantity"]
+        acquired = torch.stack([book.group_open.sum(-1) for book in self.books], -1)
+        if not bool(
+            torch.all(torch.isfinite(self.cash) & (self.cash >= -1e-7))
+        ) or not bool(torch.all(torch.isfinite(held) & (held >= -1e-7))):
+            raise RuntimeError("Nonfinite or negative cash/position in replay")
+        if not torch.allclose(acquired, held, rtol=0, atol=1e-7):
+            raise RuntimeError(
+                "Broker purchase-group exposure differs from account positions"
+            )
+        if not bool(
+            torch.all(
+                (held == 0)
+                | (torch.isfinite(self.state["mark"]) & (self.state["mark"] > 0))
+            )
+        ):
+            raise RuntimeError("Open position has no valid terminal mark")
+        expected_equity = (
+            self.initial_cash
+            + self.realized
+            - self.fees
+            + ((self.state["mark"] - self.state["average"]) * held).sum(-1)
+        )
+        actual_equity = self.cash + (self.state["mark"] * held).sum(-1)
+        if not torch.allclose(actual_equity, expected_equity, rtol=0, atol=1e-6):
+            raise RuntimeError(
+                "Cash, positions, realized P&L and fees do not reconcile"
+            )
         unrealized = (
             (self.state["mark"] - self.state["average"]) * self.state["quantity"]
         ).sum(-1)
@@ -1304,4 +1367,7 @@ class StrategyOneReplay:
             "open_averages": self.state["average"].cpu().tolist(),
             "open_marks": self.state["mark"].cpu().tolist(),
             "tickers": self.tape.tickers,
+            "entered_episodes": self.state["completed_entries"].sum(-1).cpu().tolist(),
+            "max_drawdown": self.max_drawdown.cpu().tolist(),
+            "position_seconds": self.position_seconds.cpu().tolist(),
         }

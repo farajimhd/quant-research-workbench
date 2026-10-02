@@ -17,10 +17,15 @@ benchmarks below belong to the simpler `ReplayRunner` contract.
 
 The new [unified-clock replay](UNIFIED_CLOCK.md) defaults to one **1 s policy
 and broker clock**, rejects sub-clock strategy features, and aggregates source
-liquidity before transfer. Its full Aug 18 premarket replay measured **39.15 s**;
-500 ms measured **78.31 s**. These are prepared-replay timings. The 1 s policy
+liquidity before transfer. Its full Aug 18 premarket replay measured **38.89 s**;
+500 ms measured **77.77 s**. These are prepared-replay timings. The 1 s policy
 changes P&L substantially, and initial verification/JIT/capture costs are
 additional; see the linked contract and complete comparison before using it.
+
+The [audited genetic search](OPTIMIZATION.md) evolves a `[B,10]` parameter
+population, trains first on one session and then two, and evaluates frozen
+winners on separate later validation data. Amendment timing uses the causal
+v2 contract; old v1 timing/P&L receipts remain historical evidence only.
 
 ## The pipeline
 

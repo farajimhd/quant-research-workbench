@@ -152,3 +152,115 @@ def test_profiler_correlates_driver_and_runtime_launches_without_double_counting
     assert summary["kernel_count"] == 2
     assert summary["stages"]["broker"] == {"kernel_count": 2, "device_us": 7}
     assert summary["stages"]["unattributed"]["kernel_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "device", ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+)
+@pytest.mark.parametrize("clock", [500, 1000])
+def test_end_quote_amendment_cannot_fill_the_interval_it_observed(clock, device):
+    """A pending $10 limit sees $11 only at end; it can fill NEXT interval."""
+    source = tape(clock)
+    for name, value in {
+        "present": 1,
+        "quote_valid": 1,
+        "quote_age_us": 0,
+        "bid_int": 109900,
+        "ask_int": 110000,
+        "bid_size": 40,
+        "ask_size": 40,
+        "price_valid": 1,
+        "close_int": 110000,
+    }.items():
+        source.market[clock][..., MARKET_FIELDS.index(name)] = value
+    replay = StrategyOneReplay(source.to(device))
+    boundary = torch.tensor(0, device=device)
+    number = lambda value: torch.tensor([value], device=device, dtype=torch.float64)
+    replay._submit(0, 0, number(10), number(10), number(9), number(12), boundary)
+    with torch.inference_mode():
+        replay.tick()
+        assert replay.state["quantity"].item() == 0
+        assert replay.books[0].price[0, 0].item() == 11
+        replay.tick()
+        assert replay.state["quantity"].item() == 10
+        assert replay.fill_count.item() == 1
+        assert replay.ledger[0, 1, 0].item() == 2 * clock
+        assert replay.cash.item() == pytest.approx(9889)
+
+
+def test_first_last_prices_follow_source_order_even_when_input_is_shuffled():
+    """Rounding timestamps must not destroy chronological first/last order."""
+    rows = pl.DataFrame(
+        {
+            "boundary_ms": [300, 100, 200],
+            "listing": [0, 0, 0],
+            "present": [1, 1, 1],
+            "price_valid": [1, 1, 1],
+            "extremes_valid": [1, 1, 1],
+            "open_int": [300, 100, 200],
+            "close_int": [310, 110, 210],
+            "high_int": [320, 120, 220],
+            "low_int": [290, 90, 190],
+            "quote_valid": [1, 1, 1],
+            "quote_timestamp_us": [290000, 90000, 190000],
+            "bid_int": [300, 100, 200],
+            "ask_int": [301, 101, 201],
+            "bid_size": [30, 10, 20],
+            "ask_size": [31, 11, 21],
+            "execution_volume": [1, 1, 1],
+            "execution_price_levels": [
+                [{"1": price, "2": 1}] for price in (300, 100, 200)
+            ],
+        }
+    )
+    row = aggregate_liquidity(rows, 1000, 0).row(0, named=True)
+    assert (row["open_int"], row["close_int"], row["ask_int"]) == (100, 310, 301)
+
+
+@pytest.mark.parametrize("clock", [500, 1000])
+@pytest.mark.parametrize(
+    "device", ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+)
+def test_candidate_accounts_have_independent_liquidity_cash_and_reset(clock, device):
+    """Candidate B is a counterfactual account, never a shared portfolio lane."""
+    source = tape(clock)
+    for name, value in {
+        "present": 1,
+        "quote_valid": 1,
+        "quote_age_us": 0,
+        "bid_int": 99900,
+        "ask_int": 100000,
+        "bid_size": 160,
+        "ask_size": 160,
+        "price_valid": 1,
+        "close_int": 100000,
+    }.items():
+        source.market[clock][..., MARKET_FIELDS.index(name)] = value
+    from research.vectorized_backtest.v1.torch_backtest.strategy_one_program import (
+        released_entry_graph,
+    )
+
+    replay = StrategyOneReplay(
+        source.to(device), candidates=[released_entry_graph().values] * 4
+    )
+    values = lambda row: torch.tensor(row, dtype=torch.float64, device=device)
+    replay._submit(
+        0,
+        0,
+        values([10, 20, 30, 40]),
+        values([10] * 4),
+        values([9] * 4),
+        values([12] * 4),
+        torch.tensor(0, device=device),
+    )
+    with torch.inference_mode():
+        replay.tick()
+    assert replay.state["quantity"].flatten().tolist() == [10, 20, 30, 40]
+    assert replay.cash.tolist() == pytest.approx([9899, 9799, 9699, 9599])
+    assert replay.fill_count.flatten().tolist() == [1] * 4
+    replay.reset()
+    assert replay.cash.tolist() == [10000] * 4
+    assert replay.state["quantity"].count_nonzero().item() == 0
+    assert replay.position_seconds.count_nonzero().item() == 0
+    assert replay.max_drawdown.count_nonzero().item() == 0
+    assert replay.ledger.count_nonzero().item() == 0

@@ -5,6 +5,30 @@ default is **1,000 ms**; **500 ms** is also supported. This is an explicitly
 versioned research approximation of Strategy 1. It does not replace the app's
 immutable release or the faithful 100 ms audit.
 
+## Current causal version
+
+`unified-strategy-one-causal-v2` matches the interval against orders already in
+force at its start, before end-quote repricing. The former latest-working-order
+approximation could apply an amendment at the same boundary as its fill. Source
+rows are now explicitly sorted BEFORE coarse rounding, preserving first/last
+chronological witnesses. Equity, purchase-group quantities, finite balances,
+terminal marks and deterministic resets are checked at objective boundaries.
+
+Full Aug 18 premarket, two independent repeats per clock:
+
+| Clock | Steps | Median replay | Net P&L | Episodes | Fills | Open at end |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 s | 19,800 | 38.89 s | $3,160.51 | 26 | 182 | 0 |
+| 500 ms | 39,600 | 77.77 s | $560.87 | 25 | 210 | 0 |
+
+Setup is additional (cached-source compile/capture: 25.92/17.20 s at 1 s,
+23.80/15.64 s at 500 ms). The earlier results below are historical v1 evidence,
+not the current implementation. Runtime receipts: `da515dd3c6654f07912e341e05e9e808`
+and `c3891a03a7764802b67e1cf7f5cac277` under the Strategy 1 audit runtime root.
+
+See [optimization and qualification](OPTIMIZATION.md) for the `[B,10]` genome,
+objective, one-/two-session genetic search, validation split and restart rules.
+
 ## Clock and data contract
 
 | Component | Contract |

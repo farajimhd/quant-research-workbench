@@ -160,11 +160,11 @@ def aggregate_liquidity(frame, resolution, origin_us):
     extremes, summed execution capacity, merged price levels and NBBO age.
     Sparse absence is zero activity under the certified source contract.
     """
-    source = frame.with_columns(
+    source = frame.sort("listing", "boundary_ms").with_columns(
         (((pl.col("boundary_ms") - 1) // resolution + 1) * resolution).alias(
             "boundary_ms"
         )
-    ).sort("listing", "boundary_ms")
+    )
     keys = ["boundary_ms", "listing"]
     price = pl.col("price_valid") == 1
     extreme = pl.col("extremes_valid") == 1
@@ -522,7 +522,7 @@ def prepare(directory, *, maximum_bytes=8 * 1024**3, clock_ms=100):
         **manifest,
         "listing_count": n,
         "clock_ms": clock_ms,
-        "policy_contract": "unified-strategy-one-approximation-v1"
+        "policy_contract": "unified-strategy-one-causal-v2"
         if clock_ms != 100
         else "faithful-strategy-one-v1",
         "candidate_sampling": "latest certified candidate in each completed interval",
