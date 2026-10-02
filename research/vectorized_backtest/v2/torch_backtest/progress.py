@@ -78,7 +78,7 @@ class Progress:
         self.snapshot = Snapshot(output=str(self.path.parent))
         self.started = monotonic()
         self.live = None
-        self.interactive = self.console.is_terminal and not plain
+        self.interactive = self.console.is_interactive and not plain
         self.last_plain = 0
 
     def __enter__(self):

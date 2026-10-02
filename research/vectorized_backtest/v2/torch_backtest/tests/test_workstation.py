@@ -68,6 +68,16 @@ def test_redirected_output_and_interruption_leave_plain_durable_events(tmp_path)
     assert json.loads((tmp_path / "events.jsonl").read_text().splitlines()[-1])["status"] == "Interrupted"
 
 
+def test_live_panel_restores_cursor_and_keeps_final_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERM", "xterm")
+    stream = StringIO()
+    console = Console(file=stream, force_terminal=True, legacy_windows=False, width=70, height=16, color_system=None)
+    with Progress(tmp_path / "live.jsonl", console=console) as panel:
+        panel.emit({"status": "Running", "stage": "Replay", "completed": 10, "total": 20})
+        panel.emit({"status": "Complete", "stage": "All saved", "completed": 20})
+    assert "Complete" in stream.getvalue() and "\x1b[?25h" in stream.getvalue()
+
+
 def test_later_window_admission_preserves_daily_episode_history():
     source = {"build_id": "a", "units": {"2026-09-18": {"A": {"bars": {"attempt_id": "b"}}}}}
     text = admission_sql(source, "2026-09-18", ["A"], Funnel(), 72000000000, 57600000000)
