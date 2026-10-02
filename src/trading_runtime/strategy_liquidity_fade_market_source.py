@@ -109,10 +109,14 @@ def load_liquidity_fade_market_observations(client, witness, source, *, plan, se
         low = (first + SESSION_OPEN_OFFSET_MS)//resolution - 1
         high = (last + SESSION_OPEN_OFFSET_MS)//resolution - 1
         resolution_clause = '' if stage == 'broker_100ms' else f' AND resolution_ms={resolution}'
-        # Keep the UUID column's name/type intact. A same-name toString alias
-        # is substituted into WHERE by ClickHouse and breaks UUID equality.
+        # Broker liquidity has a fixed 100ms contract and no resolution column.
+        # Bars/indicators must select their actual column: a same-name constant
+        # alias is substituted into WHERE by ClickHouse and erases the filter.
+        resolution_projection = (f'toUInt32({resolution}) AS resolution_ms'
+                                 if stage == 'broker_100ms' else 'resolution_ms')
+        # Keep the UUID column's name/type intact for the same alias reason.
         query = (f'SELECT build_id,session_date,ticker,attempt_id,'
-                 f'toUInt32({resolution}) AS resolution_ms,bucket_index,{fields} FROM arte.{table} '
+                 f'{resolution_projection},bucket_index,{fields} FROM arte.{table} '
                  f'WHERE build_id={_literal(plan.build_id)} '
                  f'AND session_date=toDate({_literal(session_date.isoformat())}) '
                  f'AND ticker={_literal(ticker)} AND attempt_id=toUUID({_literal(units[stage].attempt_id)})'

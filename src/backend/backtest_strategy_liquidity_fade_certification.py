@@ -35,7 +35,7 @@ LIQUIDITY_FADE_SOURCE_AST = {
     'src/trading_runtime/strategy_liquidity_fade_exit.py': '2ae17b94d208e79b07343b159a70f231f940faaf9b9aaf23be8500b3e243aa14',
     'src/trading_runtime/arte_liquidity_fade_failure_v4.py': 'ee0d4c9be912fc4b2d01887530f3d4f84e311c06351ef30f09645f43a88309da',
     'src/trading_runtime/strategy_liquidity_fade_source.py': 'bf9c1c287bb9d1d043baacb3bedb0f2f82d74c1bd7b35fb8549fa1189cc17882',
-    'src/trading_runtime/strategy_liquidity_fade_market_source.py': '45949942e0dfe40d32562e83ef19ef61ecea567a050934b6da5a4f1c3ee50420',
+    'src/trading_runtime/strategy_liquidity_fade_market_source.py': 'b04f6bf49bf27a4583a327cabca044808e42703efee0225c375271fdbf6f67fc',
     'src/trading_runtime/strategy_thirty_five_release.py': 'f0e45aba520f8792f65b375929d39063107a209b9b458c559be043d2fe64cfcd',
     'pipelines/strategy_one/strategy_thirty_five_configuration.py': '21bfe1c3c954a7535bf49c3b6a1a0b94cab0f1693c8f8bd0e3e8511856184abe',
     'src/trading_runtime/strategy_liquidity_fade_transport.py': '17eb6f4e75f417d9ad5c52df1aa630195da499ed28565d04a97b6227a2707316',

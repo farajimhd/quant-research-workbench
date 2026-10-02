@@ -91,6 +91,12 @@ def test_cold_reader_is_three_bounded_pinned_selects_and_rejects_ambiguity():
     reader = Reader((bars, (indicator,), (quote,)))
     assert load_liquidity_fade_market_observations(reader, w, source, **args) == w
     assert len(reader.queries) == 3
+    for query in reader.queries[:2]:
+        assert 'attempt_id,resolution_ms,bucket_index' in query
+        assert 'AND resolution_ms=5000' in query
+        assert 'AS resolution_ms' not in query
+    assert 'toUInt32(100) AS resolution_ms' in reader.queries[2]
+    assert 'AND resolution_ms=' not in reader.queries[2]
     for query, attempt, limit in zip(reader.queries, (BAR, TECH, QUOTE), (5, 2, 2)):
         assert query.startswith('SELECT ') and attempt in query and f'LIMIT {limit}' in query
         assert 'toString(attempt_id) AS attempt_id' not in query
