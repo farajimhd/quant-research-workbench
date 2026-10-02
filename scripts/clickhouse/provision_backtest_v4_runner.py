@@ -54,6 +54,7 @@ from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE
 from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK
 from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
+from src.trading_runtime.arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
 from src.trading_runtime.arte_reservation_reason_v4 import RESERVATION_REASON
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
@@ -151,6 +152,7 @@ def desired_plan() -> PrincipalPlan:
                                           RESERVATION_REASON,
                                           ACKNOWLEDGEMENT, CANCEL,
                                           REPRICE, FAILURE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, PROFIT_GIVEBACK, CONFIRMED_AH_FAILURE,
+                                          LIQUIDITY_FADE_FAILURE,
                                           *OMS_TACTIC_TABLES,
                                           *RISK_ACTION_TABLES,
                                           *PROTECTION_CHANGE_TABLES,
@@ -208,6 +210,9 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
     storage_preflight(admin, tables=(V4_ORDER_COMMAND_LINEAGE,))
     storage_preflight(admin, tables=(ENTRY_EVIDENCE, ADD_EVIDENCE))
     storage_preflight(admin, tables=(FAILURE,))
+    # Verify the new normalized exit family before creating credentials or
+    # changing grants. The runner's final preflight also checks physical parts.
+    storage_preflight(admin, tables=(LIQUIDITY_FADE_FAILURE,))
     storage_preflight(admin, tables=OMS_TACTIC_TABLES)
     storage_preflight(admin, tables=BACKTEST_DEFINITION_TABLES)
     storage_preflight(admin, tables=PROTECTION_SNAPSHOT_TABLES)

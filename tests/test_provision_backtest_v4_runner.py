@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from scripts.clickhouse import provision_backtest_v4_runner as provision
 from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_schema import (
@@ -34,6 +38,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                 provision.FAILURE.name,
                 provision.PROFIT_GIVEBACK.name,
                 provision.CONFIRMED_AH_FAILURE.name,
+                provision.LIQUIDITY_FADE_FAILURE.name,
                 provision.MOMENTUM.name,
                 provision.INITIAL_MOMENTUM.name,
                 provision.FIRST_PRICE.name,
@@ -68,6 +73,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                                      provision.FAILURE,
                                      provision.PROFIT_GIVEBACK,
                                      provision.CONFIRMED_AH_FAILURE,
+                                     provision.LIQUIDITY_FADE_FAILURE,
                                      provision.MOMENTUM,
                                      provision.INITIAL_MOMENTUM,
                                      provision.FIRST_PRICE,
@@ -89,14 +95,16 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
 
 def test_runtime_preflight_uses_the_same_write_grants_as_provisioning(monkeypatch):
     observed = []
+    checked_tables = []
     monkeypatch.setattr(writer_module, "storage_preflight",
-                        lambda _client, *, tables: None)
+                        lambda _client, *, tables: checked_tables.extend(tables))
     monkeypatch.setattr(writer_module, "_rows", lambda _client, sql: [
         {"name": provision.ENTRY_CONTEXT_TABLE.split(".", 1)[1]}])
     monkeypatch.setattr(writer_module, "journal_permission_preflight",
                         lambda _client, *, journal_tables, read_only_tables:
                         observed.append((journal_tables, read_only_tables)))
     writer_module._v4_preflight(object())
+    assert provision.LIQUIDITY_FADE_FAILURE in checked_tables
     assert observed[0][0] == provision.desired_plan().insert_arte
     assert provision.ENTRY_CONTEXT_TABLE.split(".", 1)[1] in observed[0][1]
     assert provision.ENTRY_CONTEXT_TABLE.split(".", 1)[1] not in observed[0][0]
@@ -178,3 +186,56 @@ def test_v4_retires_only_superseded_broker_grants():
         "REVOKE SELECT ON arte.trading_strategy_one_broker_match_ticker_v1 "
         f"FROM {provision.PRINCIPAL}",
     ]
+
+
+@pytest.mark.parametrize("invalid_storage", ["missing_table", "wrong_policy", "wrong_part_disk"])
+def test_liquidity_exit_storage_failure_precedes_credentials_and_grants(
+    monkeypatch, invalid_storage,
+):
+    """Use the real metadata/part verifier at the provisioning boundary."""
+    from src.trading_runtime.arte_journal_schema import (
+        BATCH_LOOKUP_INDEX, storage_preflight,
+    )
+
+    table = provision.LIQUIDITY_FADE_FAILURE
+    calls = []
+
+    class Admin:
+        def execute(self, sql):
+            calls.append(sql)
+            if sql == "SELECT currentUser()":
+                return "administrator"
+            if sql.startswith("SELECT count() FROM system.users"):
+                return "0"
+            if sql.startswith("SELECT disks FROM system.storage_policies"):
+                return json.dumps({"disks": ["live_market_ssd"]})
+            if "FROM system.tables" in sql:
+                if invalid_storage == "missing_table":
+                    return ""
+                return json.dumps({
+                    "name": table.name, "engine": "MergeTree",
+                    "storage_policy": "default" if invalid_storage == "wrong_policy" else "live_market_ssd",
+                    "partition_key": table.partition, "sorting_key": table.order,
+                })
+            if "FROM system.columns" in sql:
+                return "\n".join(json.dumps({"table": table.name, "name": name, "type": kind})
+                                 for name, kind in table.columns)
+            if "FROM system.data_skipping_indices" in sql:
+                return json.dumps({"table": table.name, "name": BATCH_LOOKUP_INDEX,
+                                   "type": "bloom_filter", "expr": "batch_id", "granularity": 1})
+            if "FROM system.parts" in sql and "disk_name!=" in sql:
+                return json.dumps({"table": table.name, "disk_name": "default"})
+            raise AssertionError(sql)
+
+    def verify_liquidity(client, *, tables):
+        if tables == (table,):
+            storage_preflight(client, tables=tables)
+
+    monkeypatch.setattr(provision, "storage_preflight", verify_liquidity)
+    with pytest.raises(ValueError, match="missing|layout differs|outside live_market_ssd"):
+        provision.apply_with_clients(
+            admin=Admin(),
+            credential=lambda **_: pytest.fail("credentials requested before storage proof"),
+            client_factory=lambda *_: pytest.fail("writer opened before storage proof"),
+        )
+    assert all(sql.startswith("SELECT ") for sql in calls)

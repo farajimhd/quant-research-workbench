@@ -190,6 +190,7 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
         ENTRY_EVIDENCE, ADD_EVIDENCE,
         V4_ALLOCATION, RESERVATION_REASON,
         ACKNOWLEDGEMENT, CANCEL, REPRICE, plan.FAILURE, plan.MOMENTUM, plan.INITIAL_MOMENTUM, plan.FIRST_PRICE, plan.PROFIT_GIVEBACK, plan.CONFIRMED_AH_FAILURE,
+        plan.LIQUIDITY_FADE_FAILURE,
         *RISK_ACTION_TABLES,
         *PROTECTION_CHANGE_TABLES,
         *PROTECTION_RECONCILIATION_TABLES)
@@ -215,6 +216,7 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
                            plan.FIRST_PRICE.name,
                            plan.PROFIT_GIVEBACK.name,
                            plan.CONFIRMED_AH_FAILURE.name,
+                           plan.LIQUIDITY_FADE_FAILURE.name,
                            *(table.name for table in RISK_ACTION_TABLES),
                        *(table.name for table in PROTECTION_CHANGE_TABLES),
                        *(table.name for table in PROTECTION_RECONCILIATION_TABLES))
