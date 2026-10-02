@@ -32,3 +32,12 @@ Classification keeps quality/complement soft targets; hard actions use 90%.
 Teacher training requires ticker heads and WAIT/HOLD transport. Preparation
 does not train a teacher/PPO model. Old normalization and checkpoint dataset
 bindings remain invalid until explicitly rebuilt.
+
+Final publication additionally requires `publication-audit.json`: a separate
+full source census, clock/scalar byte verification, receipt audit, exact
+recomputation of representative liquid/sparse listings on every day, and
+bounded real training-adapter checks. Existing rank settings (top 1000,
+one-second refresh) are retained. The held observation is hypothetical;
+reference quantities may be fractional for prices exceeding the $10,000
+bookkeeping balance. Quantities never scale raw per-share value targets or
+claim a fill.

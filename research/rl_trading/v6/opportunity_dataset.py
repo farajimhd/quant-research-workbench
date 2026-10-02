@@ -133,6 +133,13 @@ def require_dataset(path, *, runtime_root):
         data.get('hash') != digest({k:v for k,v in data.items() if k != 'hash'}) or
         [e['day'] for e in data['days']] != list(map(str, TRAIN+DEVELOPMENT))):
         raise ValueError('Current V6 requires the complete new opportunity dataset; legacy labels rejected')
+    audit_path=Path(data.get('publication_audit','')).resolve()
+    if not audit_path.is_relative_to(runtime) or not audit_path.is_file() or file_hash(audit_path)!=data.get('publication_audit_sha256'):
+        raise ValueError('Independent full-population publication audit is required')
+    audit=json.loads(audit_path.read_text())
+    if (audit.get('status')!='passed' or audit.get('algorithm')!=ALGORITHM or audit.get('ranking')!=data['ranking'] or
+        audit.get('day_certificates')!={e['day']:e['teacher_sha256'] for e in [data['context']]+data['days']}):
+        raise ValueError('Publication audit bindings differ from current dataset')
     for entry in data['days']:
         for key in ('bank_root','previous_root','teacher_root'):
             if not Path(entry[key]).resolve().is_relative_to(runtime): raise ValueError('Dataset input escaped runtime')
@@ -145,7 +152,7 @@ def require_dataset(path, *, runtime_root):
     return data
 
 
-def load_teacher(root, session, *, runtime_root, audit_development=False):
+def load_teacher(root, session, *, runtime_root, audit_development=False, audit_listing_ids=None):
     """Conditional flat and unit-held branches; raw gain never quality-as-value.
 
     All valid flat candles included. Held branch uses strictly later long
@@ -159,13 +166,20 @@ def load_teacher(root, session, *, runtime_root, audit_development=False):
     if proof['day'] != str(session.day) or proof['role'] != session.role: raise ValueError('Session identity differs')
     n = len(session.listings); identities = {s:i for i,s in enumerate(session.listings)}
     if tuple(proof['identities']) != session.listings: raise ValueError('Label population differs from bank')
+    if audit_listing_ids is not None and (not audit_development or not set(audit_listing_ids)<=set(session.listings)):
+        raise ValueError('Bounded listing audit requires explicit audit mode and certified identities')
     labels = []; cash0 = 10_000.; threshold = proof['config']['quality_threshold']
     enter_masks={}
     empty_index=np.empty(0,np.int64); empty_features=np.zeros((0,11),np.float32); empty_allowed=np.empty(0,bool)
     flat_account=np.array([cash0,cash0,0,0,0,0,0],np.float32); no_entries=np.zeros(n,bool)
     for shared in (empty_index,empty_features,empty_allowed,flat_account,no_entries): shared.setflags(write=False)
     for shard in proof['shards']:
-        folder = root/shard['path']; frame = pl.read_parquet(folder/'labels.parquet')
+        folder = root/shard['path']
+        if audit_listing_ids is not None:
+            receipt=json.loads((folder/'complete.json').read_text())
+            if not set(audit_listing_ids)&set(receipt['identities']): continue
+            frame=pl.scan_parquet(folder/'labels.parquet').filter(pl.col('listing_id').is_in(audit_listing_ids)).collect()
+        else: frame=pl.read_parquet(folder/'labels.parquet')
         pairs = pl.read_parquet(folder/'pairs.parquet')
         entries = {(r['listing_id'],r['pair_id']):r for r in pairs.iter_rows(named=True)} if pairs.height else {}
         weights = frame.group_by('listing_id','pair_id').len()
@@ -184,12 +198,12 @@ def load_teacher(root, session, *, runtime_root, audit_development=False):
                 label_version=ALGORITHM,raw_entry_gain=gain,raw_exit_gain=None))
             if row['exit_gain'] is None: continue
             pair = entries[(row['listing_id'],row['pair_id'])]; price = row['entry_basis']; mark = row['close']
-            if price >= cash0: raise ValueError('Reference unit position exceeds teacher bankroll')
             age = (row['time_us']-pair['reference_entry_us'])/1e6; q = float(row['exit_quality'])
-            held = np.array([i],np.int64); features = np.array([[1,price,age,(mark-price)/price,0,0,0,0,0,0,0]],np.float32)
-            cash = cash0-price; equity = cash+mark
+            units=min(1.,cash0/price)
+            held = np.array([i],np.int64); features = np.array([[units,price,age,(mark-price)/price,0,0,0,0,0,0,0]],np.float32)
+            cash = max(0.,cash0-units*price); equity = cash+units*mark
             labels.append(TeacherDecision(row['time_us'],0,1+n if row['exit_gain']>0 and q>=threshold else 1+n+3,
-                np.array([cash,equity,0,mark/equity,age,0,0],np.float32),held,features,
+                np.array([cash,equity,0,units*mark/equity,age,0,0],np.float32),held,features,
                 no_entries,np.ones(1,bool),np.zeros(1,bool),np.zeros(1,bool),
                 sample_weight=1/counts[(row['listing_id'],row['pair_id'])],soft_tokens=(1+n,1+n+3),soft_probabilities=(q,1-q),
                 episode_uid=uid,opportunity_value_bps=row['exit_gain']/price*10000,
@@ -288,11 +302,11 @@ def main(argv=None):
     if args.canary:
         progress(status='canary_complete',active=0,queued=0,completed=len(records)); return
     data=dict(version=VERSION,algorithm=ALGORITHM,status='audited_ready_for_training',sealed_test_accessed=False,
-        days=[r for r in records if r['role']!='context_only'],context=records[0],ranking=dict(top_r=1000,sort_secs=15,market_tokens=8,heads=4),
+        days=[r for r in records if r['role']!='context_only'],context=records[0],ranking=dict(top_r=1000,sort_secs=1,market_tokens=8,heads=4),
         label_root=str(output),config=config,raw_value_units='dollars_per_share',source_manifest_sha256=file_hash(args.source_manifest))
     data['hash']=digest(data); write_json(output/'dataset.json',data)
-    require_dataset(output/'dataset.json',runtime_root=runtime)
-    write_json(runtime/'rl-v6-active-labels.json',dict(version=VERSION,algorithm=ALGORITHM,dataset=str(output/'dataset.json'),sha256=file_hash(output/'dataset.json')))
+    from research.rl_trading.v6.audit_opportunity_dataset import audit_and_publish
+    audit_and_publish(output/'dataset.json',runtime_root=runtime)
     progress(status='complete',active=0,queued=0,completed=len(records),totals={k:sum(r[k] for r in records) for k in ('activity_rows','valid_rows','invalid_price_rows')})
 
 

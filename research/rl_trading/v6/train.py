@@ -328,6 +328,8 @@ def main(argv=None):
         'teacher_metrics_scope':'local_ticker_alternatives_not_portfolio_selection' if episode_certificates else 'portfolio_action_tokens',
         'action_audit_sha256':file_hash(args.action_audit) if args.action_audit else None,
         'ranking':asdict(ranking),'source_commit':_commit(),
+        'label_algorithm':dataset['algorithm'],'label_raw_value_units':dataset['raw_value_units'],
+        'label_publication_audit_sha256':dataset['publication_audit_sha256'],
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
         'teacher_role':'candle_only_actor_initialization',

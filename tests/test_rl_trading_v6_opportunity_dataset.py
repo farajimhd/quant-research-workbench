@@ -15,8 +15,8 @@ from research.rl_trading.v6.episode_windows import load_episode_teacher
 from research.rl_trading.v6.ticker_targets import attach_targets
 
 
-def fixture_shard(tmp_path, monkeypatch):
-    prices=np.array([10.,9.,9.2,9.5,10.,10.1])
+def fixture_shard(tmp_path, monkeypatch, scale=1.):
+    prices=np.array([10.,9.,9.2,9.5,10.,10.1])*scale
     raw=np.zeros((len(prices),len(SCALAR_NAMES)),np.float32)
     for name in ('open','high','low','close'): raw[:,SCALAR_NAMES.index('log_'+name)]=np.log(prices)
     raw[:,35:37]=1; raw[:,20]=1
@@ -80,6 +80,25 @@ def test_old_dataset_gate_and_corrupted_shard_rejected(tmp_path,monkeypatch):
     _,day,_=fixture_shard(tmp_path,monkeypatch)
     with (day/'shards/00000/labels.parquet').open('ab') as stream: stream.write(b'changed')
     with pytest.raises(ValueError,match='bytes/count'): data.verify_day(day)
+
+
+def test_high_price_teacher_bookkeeping_does_not_change_raw_targets(tmp_path,monkeypatch):
+    _,day,_=fixture_shard(tmp_path,monkeypatch,scale=2000)
+    session=SimpleNamespace(role='train',day='2026-07-31',source_certificate_sha256='bankhash',listings=('identity',))
+    labels,_=load_teacher(day,session,runtime_root=tmp_path)
+    held=[item for item in labels if item.held_index.size]
+    assert held and all(0<item.held_features[0,0]<1 and item.account[0]>=0 for item in held)
+    assert all(item.raw_exit_gain>100 for item in held)
+
+
+def test_bounded_audit_uses_authentic_population(tmp_path,monkeypatch):
+    _,day,_=fixture_shard(tmp_path,monkeypatch)
+    session=SimpleNamespace(role='train',day='2026-07-31',source_certificate_sha256='bankhash',listings=('identity',))
+    with pytest.raises(ValueError,match='explicit audit mode'):
+        data.load_teacher(day,session,runtime_root=tmp_path,audit_listing_ids=['identity'])
+    actual,_=data.load_teacher(day,session,runtime_root=tmp_path,audit_development=True,audit_listing_ids=['identity'])
+    expected,_=load_teacher(day,session,runtime_root=tmp_path)
+    assert [(d.close_us,d.token,d.raw_entry_gain,d.raw_exit_gain) for d in actual]==[(d.close_us,d.token,d.raw_entry_gain,d.raw_exit_gain) for d in expected]
 
 
 @pytest.mark.parametrize('long',[True,False])
