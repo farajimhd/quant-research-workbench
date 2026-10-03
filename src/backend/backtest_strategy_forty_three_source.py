@@ -82,7 +82,8 @@ def _fact_rows(reader, selected):
     columns = [f"reinterpretAsUInt64({name}) AS {name}_bits" if "Float64" in kind
                else f"toString({name}) AS {name}" if kind in {"Date", "UUID"} else name
                for name, kind in FACT_COLUMNS]
-    rows = _rows(reader, f"SELECT {','.join(columns)} FROM {FACT_TABLE} WHERE {selected} ORDER BY boundary_ms")
+    rows = _rows(reader, f"SELECT {','.join(columns)} FROM {FACT_TABLE} WHERE {selected} "
+        "ORDER BY boundary_ms SETTINGS prefer_column_name_to_alias=1")
     for row in rows:
         for name, kind in FACT_COLUMNS:
             if "Float64" in kind:

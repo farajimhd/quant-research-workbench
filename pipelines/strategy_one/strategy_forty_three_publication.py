@@ -120,7 +120,7 @@ def read_facts(client, source):
         else:
             names.append(name)
     rows = read_rows(client, f"SELECT {','.join(names)} FROM {FACT_TABLE} "
-        f"WHERE {_where(source)} ORDER BY boundary_ms")
+        f"WHERE {_where(source)} ORDER BY boundary_ms SETTINGS prefer_column_name_to_alias=1")
     for row in rows:
         for name in FLOAT_FIELDS:
             bits = row.pop(name + "_bits")
