@@ -30,14 +30,16 @@ def exclusion(row):
 
 
 def filter_population(population, metadata):
-    lookup={r['listing_id']:r for r in metadata}
-    if len(lookup)!=len(metadata):
-        raise ValueError('Ambiguous canonical universe scope metadata')
+    groups={}
+    for row in metadata:
+        distinct=groups.setdefault(row['listing_id'],{})
+        distinct[json.dumps(row,sort_keys=True)]=row
     selected=[]; rejected=[]; evidence=[]
     for listing in population:
-        identity=listing['listing_id']; row=lookup.get(identity)
-        reason=exclusion(row)
-        if row: evidence.append(row)
+        identity=listing['listing_id']; rows=list(groups.get(identity,{}).values())
+        row=rows[0] if len(rows)==1 else None
+        reason='ambiguous_canonical_scope_metadata' if len(rows)>1 else exclusion(row)
+        evidence.extend(rows)
         if reason: rejected.append(dict(listing_id=identity,ticker=listing['ticker'],reason=reason))
         else: selected.append(listing)
     if not selected:
