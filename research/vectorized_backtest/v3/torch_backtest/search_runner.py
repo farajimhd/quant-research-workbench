@@ -51,6 +51,12 @@ class SearchRunner(SqueezeRunner):
         self.numeric = torch.empty(
             (self.b, len(POLICY_FIELDS)), dtype=torch.float64, device=tape.device
         )
+        # Column-contiguous device policy buffers avoid a strided candidate
+        # lookup inside wide ticker/position broadcasts. Updated once per
+        # population, preserving captured pointers and the public [B,P] tensor.
+        self.numeric_columns = torch.empty(
+            (len(POLICY_FIELDS), self.b), dtype=torch.float64, device=tape.device
+        )
         self.clauses = torch.empty(
             (self.b, 4, 6), dtype=torch.float64, device=tape.device
         )
@@ -91,6 +97,7 @@ class SearchRunner(SqueezeRunner):
                 device=self.tape.device,
             )
         )
+        self.numeric_columns.copy_(self.numeric.T)
         self.clauses.copy_(
             torch.as_tensor(
                 rows[:, self.space.rules_start : self.space.connectors_start].reshape(
@@ -162,10 +169,15 @@ class SearchRunner(SqueezeRunner):
 
     def _value(self, name, rank):
         if self.numeric is not None and name in NAMES:
-            return self.numeric[:, NAMES.index(name)].reshape(
+            return self.numeric_columns[NAMES.index(name)].reshape(
                 (self.b,) + (1,) * (rank - 1)
             )
         return getattr(self.settings, name)
+
+    def _remainder_value(self, name):
+        # Native mutation performs this broadcast safely. Keep policies compact
+        # and contiguous rather than allocating eight full order-shaped copies.
+        return self.numeric_columns[NAMES.index(name), :, None]
 
     def reset(self):
         super().reset()

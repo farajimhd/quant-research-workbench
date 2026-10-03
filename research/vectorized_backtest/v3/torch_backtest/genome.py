@@ -15,7 +15,7 @@ from .grid import Candidate, Settings
 from .rules import ATOMS, CLAUSES, HISTORY, Compare, Temporal, validate_clause
 from .timing import TIMING_CONTRACT, timing_fingerprint
 
-VERSION = "semantic-squeeze-search-v3-3"
+VERSION = "semantic-squeeze-search-v3-4"
 ENTRY = ("signal", "hold", "retest", "macd")
 ALLOCATION = ("equal", "decreasing", "increasing")
 POLICY_FIELDS = (
@@ -31,6 +31,12 @@ POLICY_FIELDS = (
     ("trail_up_fraction", 0.005, 0.20, False),
     ("trail_stop_fraction", 0.001, 0.10, False),
     ("entry_deadline_seconds", 1, 30, True),
+    ("remainder_policy_id", 0, 3, True),
+    ("retry_interval_seconds", 1, 30, True),
+    ("maximum_retries", 0, 30, True),
+    ("maximum_total_order_age_seconds", 1, 300, True),
+    ("maximum_chase_bps", 0, 500, False),
+    ("require_signal_valid", 0, 1, True),
     ("maximum_signal_age_seconds", 1, 57_600, True),
     ("maximum_entry_drift_fraction", 0.0001, 0.05, False),
     ("retest_tolerance_fraction", 0.0001, 0.05, False),
@@ -115,11 +121,12 @@ class StrategySpace:
                     lower=lo,
                     upper=hi,
                     integer=integer,
-                    role="bounded_policy_value",
+                    role="policy_class_id" if n in ('remainder_policy_id', 'require_signal_valid') else "bounded_policy_value",
                 )
                 for n, lo, hi, integer in POLICY_FIELDS
             ],
             candidate_classes=dict(
+                remainder={0: 'cancel_partial', 1: 'retain', 2: 'reprice', 3: 'resubmit'},
                 entry=dict(enumerate(ENTRY)),
                 allocation=dict(enumerate(ALLOCATION)),
                 positions=list(range(1, 16)),

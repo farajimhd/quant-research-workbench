@@ -86,6 +86,12 @@ class Settings:
     trail_up_fraction: float = 0.03
     trail_stop_fraction: float = 0.01
     entry_deadline_seconds: int = 5
+    remainder_policy_id: int = 1  # 0 cancel partial, 1 retain, 2 reprice, 3 resubmit
+    retry_interval_seconds: int = 1
+    maximum_retries: int = 5
+    maximum_total_order_age_seconds: int = 30
+    maximum_chase_bps: float = 100.0
+    require_signal_valid: int = 0
     maximum_signal_age_seconds: int = 57600
     maximum_quote_age_seconds: float = 1.0
     maximum_entry_drift_fraction: float = 0.01
@@ -131,6 +137,11 @@ class Settings:
             "minimum_trade_count",
             "adaptive_window",
             "entry_deadline_seconds",
+            "remainder_policy_id",
+            "retry_interval_seconds",
+            "maximum_retries",
+            "maximum_total_order_age_seconds",
+            "require_signal_valid",
             "maximum_signal_age_seconds",
             "retest_timeout_seconds",
             "swing_left_seconds",
@@ -149,6 +160,13 @@ class Settings:
             raise ValueError("Counts and durations must be integers")
         if self.clock_seconds != 1 or not 2 <= self.adaptive_window <= 64:
             raise ValueError("One-second clock and bounded adaptive history required")
+        if (self.remainder_policy_id not in (0, 1, 2, 3)
+                or self.require_signal_valid not in (0, 1)
+                or not 1 <= self.retry_interval_seconds <= 30
+                or not 0 <= self.maximum_retries <= 30
+                or not 1 <= self.maximum_total_order_age_seconds <= 300
+                or not 0 <= self.maximum_chase_bps <= 500):
+            raise ValueError('Invalid bounded remainder policy')
         if self.long_hold_seconds < self.minimum_position_hold_seconds:
             raise ValueError("Long-hold threshold cannot precede minimum hold")
         if self.minimum_position_hold_seconds != 3:

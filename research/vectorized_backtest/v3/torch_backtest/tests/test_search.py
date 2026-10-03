@@ -366,7 +366,7 @@ def test_all_history_and_deadline_lanes_match_original_scalar_settings():
         assert torch.allclose(
             runner.ledger[lane], reference.ledger[0], rtol=0, atol=1e-7
         )
-    assert runner.numeric.shape[1] == 34 and space.size == 71
+    assert runner.numeric.shape[1] == 40 and space.size == 77
 
 
 def test_search_state_checkpoint_preserves_atomic_history_and_swing_book():

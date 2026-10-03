@@ -55,6 +55,14 @@ class SessionObjective:
             "long_hold_dollar_seconds",
             "sold_share_seconds",
             "sold_shares",
+            "entry_retry_count",
+            "requested_entry_shares",
+            "filled_entry_shares",
+            "pending_entry_shares",
+            "expired_entry_shares",
+            "policy_cancelled_entry_shares",
+            "exit_cancelled_entry_shares",
+            "terminal_cancelled_entry_shares",
         )
         result = {name: [None] * len(rows) for name in metrics}
         compiled, replayed, rule_seconds = 0.0, 0.0, 0.0

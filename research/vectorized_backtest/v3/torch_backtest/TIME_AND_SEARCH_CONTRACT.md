@@ -92,7 +92,7 @@ it never initializes a session from its own end-of-day checkpoint.
 
 ## Searchable representation
 
-The tensor is `[B,71]`: 10 class/count coordinates, 34 numeric policy coordinates,
+The tensor is `[B,77]`: 10 class/count coordinates, 40 bounded policy coordinates (including remainder class IDs),
 four six-coordinate atomic clauses and three AND/OR connectors. Float64 storage
 never permits fractional categorical IDs. Unknown classes fail before repair.
 
@@ -270,3 +270,75 @@ contract, not a substitute for those behavioral tests.
 The full suite passed 100 tests, including compiled CUDA ledger parity. With a first fill at boundary 9, candidate adaptive windows of 2 and 5 seconds activate at boundaries 11 and 14 respectively, even though both share a 32-slot buffer. Changing the future interval [8, 9) does not change the decision at boundary 8; changing the completed interval [7, 8) can. An order submitted at boundary 8 first fills with a boundary-9 receipt. No historical optimization was run as part of this correction.
 
 The optimizer scores completed training outcomes after replay. This use of training outcomes is distinct from permitting future observations inside a replay decision. Parameters remain fixed throughout each replay; evaluation is diagnostic only after the winners are frozen.
+
+
+## Partial-fill remainder policy (semantic-squeeze-search-v3-4)
+
+The searchable tensor is now [B,77]. Its six new bounded fields are:
+
+| Field | Search domain | Default |
+| --- | --- | --- |
+| remainder_policy_id | 0 cancel partial, 1 retain, 2 reprice, 3 resubmit | 1 |
+| retry_interval_seconds | 1–30 seconds | 1 |
+| maximum_retries | 0–30 | 5 |
+| maximum_total_order_age_seconds | 1–300 seconds | 30 |
+| maximum_chase_bps | 0–500 bps from original submission ask | 100 |
+| require_signal_valid | 0 ignore, 1 cancel invalid continuation | 0 |
+
+Retain preserves the original entry deadline. Cancel removes the remainder after
+its first partial fill. Reprice revises a partially filled parent's limit at the
+retry interval and renews its bounded deadline. Resubmit keeps the limit, waits
+until expiry and its retry cooldown, and renews the deadline. Unfilled parents do
+not gain retry privileges. All policies have a hard total-age bound; a completed
+parent, protective exit or terminal liquidation cannot be revived. A policy's
+maximum age may deliberately be shorter than the original entry deadline.
+
+A retry is a logical continuation, preserving requested quantity, cumulative
+fills, average cost, commission history and original price reference. It does
+not manufacture another parent or reset minimum commission. Reprice limits are
+bounded by the original reference and available account cash after outstanding
+buy/fee/protection reserves; simultaneous price increases share that headroom.
+Retries share the same ticker/interval broker liquidity budget. Counters expose
+entry_retry_count, policy_cancelled_entry_shares and expired_entry_shares;
+requested = filled + pending + all cancellation reasons still reconciles.
+
+At decision boundary t, the broker FIRST processes previously active orders over
+[t−1s,t). The policy then amends/cancels/retries using completed evidence only.
+A revised order submitted at t cannot fill until a subsequent interval. This is
+also true when its previous incarnation received a partial fill at t.
+Signal validity means the ongoing completed-data envelope (active squeeze age,
+above VWAP, quote/spread/activity checks and atomic rule program). It does not
+repeat the one-shot entry crossing or the already-consumed watchlist flag.
+A failed continuation check cancels prospectively, never erases earlier fills.
+New state is included in reset/checkpoint buffers and the source/code/genome
+version prevents old campaigns from being resumed as the new representation.
+
+## Broker alignment remains pending; optimization stopped
+
+The app normal profile has passive participation0.25 and marketable1.0; stress
+uses0.10/0.25 respectively (replay_run_service._simulation_config). The GPU still
+uses a single0.10 share of aggregate interval trade volume. These percentages
+have different denominators and are not interchangeable. A full alignment needs
+causal executable-event/quote-size inputs, passive vs marketable classification,
+shared consumption accounting, activation, fees and slippage contracts, followed
+by paired fill/account tests and real-session profiling. Merely setting all GPU
+fills to100% of aggregated volume would overstate execution availability.
+No cap was silently changed while adding remainder policies. The workstation
+qualification was stopped at the user's request; no optimization is active.
+Do not restart until the broker model is explicitly aligned/requalified.
+
+The v3-4 wide-market remainder witness additionally reproduced padded-layout
+broadcast codegen failure for the policy class at [64,833,15]. The same scoped
+`comprehensive_padding=False` graph option now applies to all ledger variants,
+including the diagnostic atomic comparator. Numerical/causal rules are unchanged;
+reference-versus-native ledger/account parity remains a required regression.
+
+Validation for v3-4: the complete laptop suite passed143 tests, including compiled
+GPU [64,833,15] ledger/account parity and all remainder policy IDs. A subsequent
+objective-receipt check also passed and verifies retry counters plus requested =
+filled + pending + cancellation reasons in the actual optimization objective path.
+Source qualification/real-session timing has not been repeated for this version.
+The final implementation uses compact column-contiguous policy values and an
+explicit native mutation boundary; the experimental per-order policy expansion
+was removed. Failed fusion experiments remain as runtime diagnostics, not active
+fallbacks or financial changes. The run remains stopped pending broker alignment.

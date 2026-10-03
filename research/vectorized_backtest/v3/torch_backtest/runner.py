@@ -17,6 +17,7 @@ import torch
 
 from .grid import MAX_POSITIONS, Settings
 from .ledger_write import ledger_append
+from .remainder_update import remainder_update
 
 
 def proportional_fill(wanted, capacity):
@@ -72,7 +73,7 @@ class SqueezeRunner:
         self.ledger_mode = ledger_mode
         self.shape = (self.b, self.n, MAX_POSITIONS)
         # Include four distinct exit-order commission histories and bounded logs.
-        estimate = self.b * self.n * 15 * 260 + self.b * maximum_fills * 9 * 8
+        estimate = self.b * self.n * 15 * 364 + self.b * maximum_fills * 9 * 8
         if ledger_mode != "atomic":
             estimate += self.b * self.n * 15 * 9 * 8
         if (
@@ -87,6 +88,16 @@ class SqueezeRunner:
             free, _ = torch.cuda.mem_get_info(tape.device)
             if estimate > free * 0.65:
                 raise MemoryError("Candidate state exceeds free GPU headroom")
+        self.fixed_remainder_values = {
+            "remainder_policy_id": torch.full((1, 1), settings.remainder_policy_id, dtype=torch.float64, device=tape.device),
+            "maximum_total_order_age_seconds": torch.full((1, 1), settings.maximum_total_order_age_seconds, dtype=torch.float64, device=tape.device),
+            "require_signal_valid": torch.full((1, 1), settings.require_signal_valid, dtype=torch.float64, device=tape.device),
+            "maximum_retries": torch.full((1, 1), settings.maximum_retries, dtype=torch.float64, device=tape.device),
+            "retry_interval_seconds": torch.full((1, 1), settings.retry_interval_seconds, dtype=torch.float64, device=tape.device),
+            "maximum_entry_drift_fraction": torch.full((1, 1), settings.maximum_entry_drift_fraction, dtype=torch.float64, device=tape.device),
+            "maximum_chase_bps": torch.full((1, 1), settings.maximum_chase_bps, dtype=torch.float64, device=tape.device),
+            "entry_deadline_seconds": torch.full((1, 1), settings.entry_deadline_seconds, dtype=torch.float64, device=tape.device),
+        }
         self._state_names = []
 
         def state(name, shape, dtype=torch.float64, value=0):
@@ -102,6 +113,9 @@ class SqueezeRunner:
             "buy_filled",
             "buy_submitted",
             "buy_deadline",
+            "buy_created",
+            "buy_last_retry",
+            "buy_retries",
             "first_fill",
             "last_high",
             "exit_kind",
@@ -110,6 +124,7 @@ class SqueezeRunner:
         for name in (
             "average",
             "buy_limit",
+            "buy_reference",
             "buy_paid",
             "stop",
             "initial_stop",
@@ -145,6 +160,7 @@ class SqueezeRunner:
             "rotations",
             "fill_count",
             "expired_entry_shares",
+            "policy_cancelled_entry_shares",
             "exit_cancelled_entry_shares",
             "terminal_cancelled_entry_shares",
             "rotation_wait",
@@ -487,10 +503,16 @@ class SqueezeRunner:
         self.buy_filled.copy_(cumulative)
         self.buy_paid.add_(buy_fee)
         self.remaining.sub_(bought)
-        self.expired_entry_shares.add_(
-            torch.where(now >= self.buy_deadline, self.remaining, 0).sum((1, 2))
-        )
-        self.remaining.copy_(torch.where(now >= self.buy_deadline, 0, self.remaining))
+        # Expiry is finalized after completed evidence is evaluated below.
+        # A retry cannot execute retroactively in this broker interval.
+        if not hasattr(self, 'numeric') and self.settings.remainder_policy_id <= 1:
+            # Preserve the standalone fixed-policy broker's expiry witness.
+            # SearchRunner finalizes expiry exactly once in the policy stage;
+            # broadcasting a class ID into this second broker mutation also
+            # triggers Torch2.12's wide-axis fused codegen failure.
+            expire_fixed = now >= self.buy_deadline
+            self.expired_entry_shares.add_(torch.where(expire_fixed, self.remaining, 0).sum((1, 2)))
+            self.remaining.copy_(torch.where(expire_fixed, 0, self.remaining))
         fill_stop = self.average * (1 - self._value("initial_stop_fraction", 3))
         initialize_percentage = first & (self.parameters[:, 8, None, None] == 0)
         self.stop.copy_(torch.where(initialize_percentage, fill_stop, self.stop))
@@ -522,6 +544,45 @@ class SqueezeRunner:
         # a stop, which has its own cumulative per-order fee history.
         kind = torch.where(target_hit & (self.exit_kind == 0), 1, self.exit_kind)
         self.exit_kind.copy_(torch.where(stop_hit, 2, kind))
+
+    def _remainder_value(self, name):
+        return self.fixed_remainder_values[name]
+
+    def _manage_remainders(self, now, ask, signal_valid):
+        """Amend after completed interval fills; never reuse observed liquidity.
+
+        Original parent quantities/fees remain intact. Native mutation isolates
+        the wide order transition from unsafe compiler fusion, not from CUDA
+        capture. All added state participates in account reset/checkpoints.
+        """
+        remainder_update(
+                self.remaining.flatten(1),
+                self.buy_filled.flatten(1),
+                self.buy_created.flatten(1),
+                self.buy_retries.flatten(1),
+                self.buy_last_retry.flatten(1),
+                self.exit_kind.flatten(1),
+                self.buy_reference.flatten(1),
+                self.buy_limit.flatten(1),
+                self.buy_paid.flatten(1),
+                self.buy_submitted.flatten(1),
+                self.buy_deadline.flatten(1),
+                self.policy_cancelled_entry_shares,
+                self.expired_entry_shares,
+            [
+                self._remainder_value("remainder_policy_id"),
+                self._remainder_value("maximum_total_order_age_seconds"),
+                self._remainder_value("require_signal_valid"),
+                self._remainder_value("maximum_retries"),
+                self._remainder_value("retry_interval_seconds"),
+                self._remainder_value("maximum_entry_drift_fraction"),
+                self._remainder_value("maximum_chase_bps"),
+                self._remainder_value("entry_deadline_seconds"),
+            ],
+            now, ask, signal_valid, self.cash,
+            self._exit_fee_reserve().sum((1, 2)),
+            self.settings.fee_per_share, self.settings.minimum_order_fee,
+        )
 
     def tick(self):
         """Finish [t-1s,t), then decide at t using ONLY completed evidence.
@@ -636,6 +697,8 @@ class SqueezeRunner:
         )
         ready = gate & basic & watching & ~terminal
         ready &= self._entry_filter(now, close)
+        self._manage_remainders(now, ask, basic & active_signal & above[None]
+                                & self._entry_filter(now, close) & ~terminal)
         # Shared market geometry is selected once per tick, not once per B.
         if self.tape.structural_targets is not None:
             # [N,15] already selected causally once per ticker/second, shared by B candidates.
@@ -776,6 +839,10 @@ class SqueezeRunner:
         self.remaining.copy_(torch.where(order_mask, desired, self.remaining))
         self.buy_limit.copy_(torch.where(order_mask, limit[..., None], self.buy_limit))
         self.buy_submitted.copy_(torch.where(order_mask, now, self.buy_submitted))
+        self.buy_created.copy_(torch.where(order_mask, now, self.buy_created))
+        self.buy_last_retry.copy_(torch.where(order_mask, now, self.buy_last_retry))
+        self.buy_retries.copy_(torch.where(order_mask, 0, self.buy_retries))
+        self.buy_reference.copy_(torch.where(order_mask, ask[None, :, None], self.buy_reference))
         self.buy_deadline.copy_(
             torch.where(
                 order_mask,
@@ -960,14 +1027,13 @@ class SqueezeRunner:
         self.step = (
             # Torch2.12's automatic layout padding can underallocate a later
             # native scatter view at wide/prime ticker counts (833 witness).
+            # It also fails broadcast codegen for searchable remainder IDs.
             # Keep this graph's intermediates contiguous; arithmetic and
-            # account tensor shapes are unchanged. Other modes retain defaults.
+            # account tensor shapes are unchanged for every ledger mode.
             torch.compile(
                 self.tick,
                 fullgraph=True,
-                options={"comprehensive_padding": False}
-                if self.ledger_mode == "inplace"
-                else None,
+                options={"comprehensive_padding": False},
             )
             if self.backend in ("compile", "compiled_graph")
             else self.tick
@@ -1077,6 +1143,7 @@ class SqueezeRunner:
                 "long_hold_dollar_seconds",
                 "sold_share_seconds",
                 "expired_entry_shares",
+                "policy_cancelled_entry_shares",
                 "exit_cancelled_entry_shares",
                 "terminal_cancelled_entry_shares",
             )
@@ -1093,6 +1160,7 @@ class SqueezeRunner:
         ).sum((1, 2))
         cancelled = (
             self.expired_entry_shares
+            + self.policy_cancelled_entry_shares
             + self.exit_cancelled_entry_shares
             + self.terminal_cancelled_entry_shares
         )
@@ -1112,6 +1180,7 @@ class SqueezeRunner:
         # entered counts submitted acquisition batches; activity constraints
         # must instead use child position orders that actually received fills.
         result["positions_opened"] = result["filled_entry_orders"]
+        result['entry_retry_count'] = self.buy_retries.sum((1, 2))
         # A batch is one ticker acquisition. Fifteen child orders or many
         # partial-fill events still count as ONE activity unit.
         result["filled_batches"] = (self.buy_filled.sum(-1) > 0).sum(-1)

@@ -14,14 +14,14 @@ and the optimizer manifest; untagged or open-labelled tapes are rejected.
 
 ## Representation and contracts
 
-`StrategySpace` defines a versioned **[B, 71]** float64 tensor. B is the number
+`StrategySpace` defines a versioned **[B, 77]** float64 tensor. B is the number
 of independent candidate accounts. Float storage is convenient for mutation
 and device buffers; all categorical/count coordinates require integer values.
 
 | Segment | Coordinates | Meaning |
 | --- | ---: | --- |
 | Portfolio policy | 10 | Entry ID, MACD mask/ANY-or-ALL, hold duration, number of positions, allocation ID, target ID, trailing ID, stop ID, replacement ID |
-| Numeric policy | 34 | Liquidity/spread gates, stop/target/trail distances, history lengths, deadlines, rotation parameters, score weights/scales |
+| Bounded policy values and remainder class IDs | 40 | Liquidity/spread gates, stop/target/trail distances, history lengths, deadlines, rotation parameters, score weights/scales |
 | Atomic entry clauses | 24 | Four instructions of six coordinates each |
 | Boolean connectors | 3 | AND/OR between enabled instructions, evaluated left to right |
 
@@ -135,7 +135,7 @@ Use [WORKSTATION_OPTIMIZATION.md](WORKSTATION_OPTIMIZATION.md) for the operation
 contract, visible SSH launcher and dashboard. All code is local to v3: no v1/v2
 package, deployment or runtime is required.
 
-The optimizer has **one phase**, from a repaired random `[B,71]` tensor. Every
+The optimizer has **one phase**, from a repaired random `[B,77]` tensor. Every
 candidate is scored across the complete training set before selection. Each
 session resets to $10,000; fills, fees, reservations and cash evolve causally
 inside that session. The last six available dates are reserved for later frozen
