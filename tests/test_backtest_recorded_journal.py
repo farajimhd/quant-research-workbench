@@ -61,9 +61,15 @@ def test_recorded_reader_rejects_corruption_and_incomplete_fences(damage):
 
 
 def test_recorded_performance_uses_final_fees_and_the_same_financial_projection(monkeypatch):
+    from datetime import UTC, datetime
+    from functools import partial
+    from src.trading_runtime import domain
     from src.backend import backtest_v4_saved_review as full
     from src.backend import backtest_v4_performance_evidence as evidence
     from tests.test_backtest_v4_saved_review import RUN, Client, _prefix
+    # Both projections construct received_at; freeze the presentation clock
+    # so full-record equality tests financial parity rather than elapsed time.
+    monkeypatch.setattr(domain, 'Execution', partial(domain.Execution, received_at=datetime(2026, 8, 18, tzinfo=UTC)))
     monkeypatch.setattr(recorded, 'load_recorded_attestation', lambda *_: {'prefix': _prefix()})
     base = dict(account_id='SIM-01-A', conid=10, ticker='ABC', currency='USD', exchange='SIM',
                 broker_order_id='', client_order_id='', strategy_id='early-squeeze-strategy',

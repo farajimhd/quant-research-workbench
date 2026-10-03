@@ -88,7 +88,10 @@ class HistoryPerformance:
             heads = await asyncio.to_thread(self.heads, ready)
             for key in requested:
                 entry = self.entries.get(key)
-                if entry and entry["status"] == "available" and heads.get(key[0]) != key[1]:
+                # The worker may finish another result while the head query
+                # is in flight. Only validate the exact queried cohort;
+                # newer results get their own head check on the next poll.
+                if key[0] in ready and entry and entry["status"] == "available" and heads.get(key[0]) != key[1]:
                     entry.update(status="unavailable", error="Saved performance head changed; refresh runs.")
                     entry.pop("report", None)
         if not self.closed and (self.worker is None or self.worker.done()):

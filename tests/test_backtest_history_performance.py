@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from threading import Event
+from time import monotonic
 
 import pytest
 from src.backend.backtest_history_performance import HistoryPerformance
@@ -62,6 +63,43 @@ def test_queue_bound_and_explicit_failure_retry():
             retry = (await service.snapshot([(RUN, 10)], retry_failed=True))["rows"][0]
             assert retry["status"] == "queued"
         finally:
+            await service.close()
+    asyncio.run(scenario())
+
+
+def test_result_finishing_during_head_check_is_not_falsely_invalidated():
+    async def scenario():
+        second = '00000000-0000-0000-0000-000000000002'
+        checking, finish_check, finish_read = Event(), Event(), Event()
+        queried = []
+        def heads(ids):
+            queried.append(list(ids))
+            if len(queried) == 1:
+                checking.set()
+                assert finish_check.wait(3)
+            return {run: 10 for run in ids}
+        def read(run):
+            assert finish_read.wait(3)
+            return {'run_id': run, 'verified_sequence': 10, 'report': {'summary': {'net_pnl': '8'}}}
+        service = HistoryPerformance(reader=read, heads=heads, budget=Budget())
+        service.entries[(RUN, 10)] = {'run_id': RUN, 'status': 'available', 'updated': monotonic(),
+            'report': {'summary': {'net_pnl': '12'}}}
+        try:
+            await service.snapshot([(second, 10)])
+            pending = asyncio.create_task(service.snapshot([(RUN, 10), (second, 10)]))
+            assert await asyncio.to_thread(checking.wait, 2)
+            finish_read.set()
+            await service.worker
+            finish_check.set()
+            result = await pending
+            assert [row['status'] for row in result['rows']] == ['available', 'available']
+            assert queried == [[RUN]]
+            result = await service.snapshot([(RUN, 10), (second, 10)])
+            assert queried[-1] == [RUN, second]
+            assert all(row['status'] == 'available' for row in result['rows'])
+        finally:
+            finish_read.set()
+            finish_check.set()
             await service.close()
     asyncio.run(scenario())
 
