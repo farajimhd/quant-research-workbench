@@ -22,7 +22,7 @@ Progress separates preparation/calibration/compile/replay/saving, advances durab
 
 ## Initial qualification and handoff
 
-Baseline v2 bcdb639f5 and launcher fixes were committed/pushed before isolated workstation deployment. Local synthetic qualification passed 58 tests, including a 1,024-lane CPU/GPU ledger comparison, launcher calendars, source grouping, compact/plain progress, interruption and restart. Workstation help/date discovery reconciled 36 dates. Synthetic 120s/16-ticker/eight-configuration compiled replay median was 0.021807s, with 37.17s initial setup; this did not establish full-market throughput. A 128s sizing witness measured 64/256/1024 lanes at 0.025240/0.029411/0.061318s; actual full-population sizing remained necessary. Runtime reports, deployments, caches and campaign outputs are under D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v2. Later sections record the subsequent historical qualification and user-authorized runs.
+Initial v2 passed58 synthetic tests; workstation discovery reconciled36 dates. Runtime witnesses did not establish full-market throughput. Later sections record historical qualification.
 
 ## Follow-up: visible preflight and tradable-only eligibility
 
@@ -110,3 +110,5 @@ User corrected the request to Strategy 45 derived from immutable 44 and required
 User approved two SSD tables and narrow producer/reader grants. Both provisioned; schema and part-placement checks use the authorized reader without expanding producer privileges. Workstation publication e7b6cf8b certified 833 units in 203.42s. Source f83c10211 pushed/deployed with 2193 verified files. Immutable release 3335dd1f certified; app lists 45. Tests: 97 focused/regression, 61 historical-dispatch/configuration/execution, 4 final release checks pass. No financial replay; thresholds remain unvalidated. App settings: exclusive anchor Sep4 selects Sep3, one session, $10000, 04:00-09:30, all tickers. Runtime strategy45/IMPLEMENTATION.md and app-preflight.json hold evidence.
 
 App preflight passed all four required checks.
+
+Launch subsequently failed: Strategy45 passed its validator then fell through to Strategy1 because the next branch used if instead of elif. Repair b472a3a42 adds the missing elif and exact source-repair qualification, preserving immutable45 and rejecting unrelated source changes. Twenty-two tests pass; published configuration/saved certified inputs construct the actual45 controller. Workstation deployment and idle app restart verified. Preflight-only validation had missed construction. Financial replay remains unrun.
