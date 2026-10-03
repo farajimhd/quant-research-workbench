@@ -335,7 +335,14 @@ def _assemble_v4_writer_lane(
     prior_batch_id: str = "00000000-0000-0000-0000-000000000000",
     source_cursor: str = "start",
 ) -> FixedJournalAssembly:
-    journal = BacktestMemoryJournal(
+    journal_type, publisher_type = BacktestMemoryJournal, BacktestTypedJournalPublisher
+    if (expected_config.get("strategy_id"), expected_config.get("strategy_revision")) == ("squeeze-grid-strategy", 43):
+        from .backtest_strategy_forty_three_journal import StrategyFortyThreeJournal
+        from .backtest_strategy_forty_three_publisher import StrategyFortyThreePublisher
+        if initial_sequence or batch_size > 512:
+            raise ValueError("Strategy 43 requires a new bounded 512-event writer lane")
+        journal_type, publisher_type = StrategyFortyThreeJournal, StrategyFortyThreePublisher
+    journal = journal_type(
         run_id=token.run_id, initial_sequence=initial_sequence)
     try:
         writer_kwargs = ({"v4_preflight_seal": v4_preflight_seal}
@@ -344,7 +351,7 @@ def _assemble_v4_writer_lane(
             writer_client, run_id=token.run_id, capacity=queue_capacity,
             max_events_per_commit=batch_size, coalesce_batches=False,
             journal_profile="backtest_v4", **writer_kwargs)
-        publisher = BacktestTypedJournalPublisher(
+        publisher = publisher_type(
             journal, writer, attempt_id=attempt_id, run_month=token.run_month,
             batch_size=batch_size, expected_config=expected_config,
             fixed_market_parent_plan=fixed_market_parent_plan,

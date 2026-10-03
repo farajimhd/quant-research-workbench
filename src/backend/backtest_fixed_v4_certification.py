@@ -60,7 +60,7 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
     source = path.read_text(encoding="utf-8")
     adapter_source = Path(__file__).with_name(
         "backtest_historical_strategy_projection.py").read_text(encoding="utf-8")
-    if sha256(ast.unparse(ast.parse(adapter_source)).encode()).hexdigest() != "8c95aee2b33de55bbbf959e6f40755a576df760f838aa59c59e921b71c21c16d":
+    if sha256(ast.unparse(ast.parse(adapter_source)).encode()).hexdigest() != "14acfaa28335c05860d9383fd30df15502c3e19cd44ba784f83ad2bfd3ff12c1":
         raise ValueError("Historical numbered dispatch projection source changed")
     from .backtest_historical_strategy_projection import historical_strategy_tree
     tree = historical_strategy_tree(ast.parse(source), "trading_runtime/numbered_fixed_strategy.py")
@@ -75,6 +75,9 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
 
 def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
+    if type(strategy_number) is int and strategy_number == 43:
+        from .backtest_strategy_forty_three_certification import certify_projection
+        return certify_projection()
     if type(strategy_number) is int and strategy_number == 42:
         from .backtest_strategy_forty_two_certification import certify_strategy_forty_two_source
         from src.trading_runtime.strategy_forty_two_release import release_contract

@@ -60,6 +60,7 @@ def release_contract() -> NumberedStrategyRelease:
             "arte.strategy_forty_three_second_fact_v1@completed_1s",
             "arte.strategy_forty_three_population_v1@certified_preopen",
             "arte.strategy_one_v7_level_interval_v1@prior_seed_streaming_1s",
+            "arte.bars_v1@completed_1s_trade_count",
             "arte.liquidity_100ms_v1@100ms",
             "arte.liquidity_execution_price_100ms_v1@100ms",
         ),
@@ -85,3 +86,59 @@ def selection_provenance() -> dict:
     return {"candidate_id": SOURCE_CANDIDATE_ID, "code_commit": SOURCE_CODE_COMMIT,
             "session": SOURCE_SESSION, "session_kind": "premarket",
             "decision_interval_ms": 1000, "broker_interval_ms": 100}
+
+
+def configuration(*, approved_code_commit, approved_code_fingerprint, approval_reference):
+    """Build this release from its own policy, without a numbered parent."""
+    from dataclasses import asdict
+    import re
+    from .portfolio import PortfolioPolicy
+    from .journal_contract import canonical_json
+    if (not re.fullmatch(r"[0-9a-f]{40}", approved_code_commit or "")
+            or not re.fullmatch(r"[0-9a-f]{64}", approved_code_fingerprint or "")
+            or not isinstance(approval_reference, str) or not 1 <= len(approval_reference) <= 256):
+        raise ValueError("Strategy 43 requires explicit reviewed source provenance")
+    release = release_contract()
+    manifest = dict(contract=release.canonical_payload(), approved_digest=release.approved_digest,
+        policy_digest=POLICY_DIGEST, approved_code_commit=approved_code_commit,
+        approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference,
+        publication_mode="backtest_only", selection=selection_provenance())
+    manifest["manifest_hash"] = sha256(canonical_json(manifest).encode()).hexdigest()
+    policy = PortfolioPolicy(policy_id="strategy-43-cash", revision=43,
+        entry_fee_buffer_bps=0., maximum_position_fraction=1., maximum_ticker_fraction=1.,
+        maximum_planned_risk_fraction=1., maximum_open_risk_fraction=1.,
+        maximum_open_positions=10_000, allow_outside_rth=True, allow_overnight=False,
+        allowed_currencies=("USD",), restricted_symbols=("LGHL",))
+    payload = dict(market_day_build_id="1521ba7702a9ee0783916f706f4885a24a3f32a91630b04ff738a90e65bc9dd5",
+        strategy=dict(strategy_id=STRATEGY_ID, strategy_number=43, revision=43,
+            name="Squeeze Grid Strategy 43", profile_id="squeeze-grid-43", profile_revision=43,
+            execution_interval="100ms", decision_interval_ms=1000, parameters={}, numbered_release=manifest),
+        strategy_profile=dict(profile_id="squeeze-grid-43", revision=43, definition_revision=43,
+            name="Squeeze Grid Strategy 43", description=release.behavior_specification,
+            lifecycle=dict(trading_behavior=dict(eligible_sessions=["premarket"]))),
+        run_plan=dict(run_plan_id="squeeze-grid-43-backtest", name="Strategy 43 Backtest",
+            profile_id="squeeze-grid-43", initial_cash=10_000.,
+            safety_supervisor=dict(enabled_by_environment=dict(backtest=False))),
+        accounts=dict(bindings=[dict(account_key="strategy-43", enabled=True, modes=["backtest"],
+            account_class="simulated", portfolio_policy_id=policy.policy_id,
+            base_currency="USD", strategy_allocation=1.)]),
+        portfolio=dict(policies=[asdict(policy)], mandates=[], groups=[]),
+        assignments=[], features=[])
+    import json
+    return json.loads(canonical_json(payload))
+
+
+def verify_manifest(strategy):
+    """Reject live mode, source drift, foreign policy or mutable parameters."""
+    from .journal_contract import canonical_json
+    if not isinstance(strategy, dict):
+        raise ValueError("Strategy 43 configuration is absent")
+    manifest = strategy.get("numbered_release")
+    if not isinstance(manifest, dict):
+        raise ValueError("Strategy 43 immutable manifest is absent")
+    expected = configuration(approved_code_commit=manifest.get("approved_code_commit"),
+        approved_code_fingerprint=manifest.get("approved_code_fingerprint"),
+        approval_reference=manifest.get("approval_reference"))["strategy"]
+    if canonical_json(strategy) != canonical_json(expected):
+        raise ValueError("Strategy 43 differs from its independent reviewed policy")
+    return dict(manifest)

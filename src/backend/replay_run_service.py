@@ -479,7 +479,10 @@ class ReplayRunDefinition:
             if plan_interval != str(resolved_interval.milliseconds):
                 raise ValueError("Backtest market-data plan does not match execution_interval")
             strategy = dict(self.configuration_revision.get("payload", {}).get("strategy") or {})
-            if is_numbered_fixed_configuration({"strategy": strategy}):
+            if strategy.get("strategy_id") == "squeeze-grid-strategy" and strategy.get("revision") == 43:
+                from src.backend.backtest_strategy_forty_three_configuration import validate_definition_sources
+                validate_definition_sources(self)
+            elif is_numbered_fixed_configuration({"strategy": strategy}):
                 _require_numbered_session_window(strategy, self.start_time, self.end_time)
                 empty_candidate_token = str(self.market_data_plan.get(
                     "strategy_one_empty_candidate_token") or "")
@@ -3471,7 +3474,7 @@ class ReplayRunController:
                         expected_market_start=self.definition.session_start,
                         projection_certifier=projection_certifier,
                         writer_factory=ArteJournalWriter,
-                        batch_size=4096)
+                        batch_size=512 if strategy_number == 43 else 4096)
                     bootstrap_timings["strategy_one_journal_assembly"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()
@@ -9591,7 +9594,12 @@ class ReplayRunService:
         self._lock = asyncio.Lock()
 
     async def create(self, definition: ReplayRunDefinition) -> ReplayRunController:
-        controller = ReplayRunController(definition, runtime_root=self.runtime_root)
+        strategy = definition.configuration_revision.get("payload", {}).get("strategy", {})
+        if (strategy.get("strategy_id"), strategy.get("revision")) == ("squeeze-grid-strategy", 43):
+            from src.backend.backtest_strategy_forty_three_controller import StrategyFortyThreeController
+            controller = StrategyFortyThreeController(definition, runtime_root=self.runtime_root)
+        else:
+            controller = ReplayRunController(definition, runtime_root=self.runtime_root)
         if definition.mode == RunMode.BACKTEST:
             # Reject before admission; start() independently protects direct callers.
             blocker = _backtest_launch_blocker(definition)
@@ -11911,6 +11919,13 @@ def backtest_preflight(
         )
     approved = configuration_revision or backtest_configuration_snapshot()
     configuration = dict(approved.get("payload") or {})
+    if (configuration.get("strategy", {}).get("strategy_id"),
+            configuration.get("strategy", {}).get("revision")) == ("squeeze-grid-strategy", 43):
+        from src.backend.backtest_strategy_forty_three_preflight import preflight
+        return preflight(anchor_date=anchor_date, session_count=session_count,
+            initial_cash=initial_cash, start_time=start_time, end_time=end_time,
+            tickers=tickers, configuration_revision=approved,
+            saved_review_authority=_saved_review_authority)
     if _saved_review_authority is not None:
         from src.backend.backtest_saved_source_authority import validate_saved_review_source
         validate_saved_review_source(_saved_review_authority, approved)

@@ -135,20 +135,31 @@ fixture; this is not an actual ClickHouse or historical financial Backtest.
 
 Real workstation input inspection independently reproduced 6,066 tradable
 listings and 833 first-signal candidates from 5,949 episode starts. All 6,066
-native identities and 833 prior-session structural seeds certify. Only 398 of
-the 833 have published causal V7 intervals; 435 derivatives are missing. A
+native identities and 833 prior-session structural seeds certify. The missing-only
+campaign published 435 derivatives and certified all 833 causal V7 interval units. A
 read-only AAPG full-session native derivation took 0.112 seconds for 24 valid
 seconds and 57 intervals; this single sparse ticker is not a throughput claim.
 `scripts/clickhouse/publish_strategy_forty_three_v7.py` prepares only missing
 units, defaults to check-only, preserves covered seals, uses bounded workers
-and retains restart receipts outside source. Its full real campaign remains
-to be executed. Producer feature extraction uses Polars over one certified
+and retains restart receipts outside source. The real campaign completed successfully.
+Producer feature extraction uses Polars over one certified
 listing/session and does not fill missing prices.
 
-Remaining: publish missing causal derivatives and general-population features;
-implement immutable Strategy 43 configuration certification/publication and app
-catalog/preflight/controller routing; qualify the complete real app route and
-cold journal review. The source reader currently requires independently
+All 833 dense historical units are now published and fully certified. The immutable
+source token is `27cea50921e8be48e5451014cac524dfd291a340172bee5f9fdfbf63cd4fbcd6`.
+Arrow inserts preserve exact Float64 bits; ordered 100ms sums remove parallel
+aggregation ambiguity. Failed unsealed rows remain retained and excluded.
+
+Independent configuration certification/publication, app preflight/controller
+dispatch, and a bounded active-ticker session runner are implemented. The route
+is limited to the approved September 3 full premarket comparison with $10,000.
+It supports play, pause and stop; public resume and event navigation are unqualified.
+119 focused/regression tests passed; four admission/controller checks passed after
+explicitly reading the 1s trade count that the native sparse reader omits.
+
+Remaining: verify deployment and real inputs, publish the configuration, qualify
+the complete real app route and cold journal review, then compare the actual financial
+results. The source reader requires independently
 certified identity and causal V7 plans, not arbitrary strings as authority.
 Do not append 43 to the old executor allowlists or inherit its trading rules.
 Strategy 43 is not yet selectable, and no app historical run was performed.
