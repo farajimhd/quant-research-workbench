@@ -332,3 +332,47 @@ This qualification measures cached-input pipeline overlap. It does not claim a
 cold ClickHouse/V7 preparation speedup or constant100% GPU utilization. Cold
 preparation may still be slower than replay; the first generation's real wait
 receipts expose that remaining limit. Later generations reuse prepared inputs.
+
+## Concurrent-pipeline qualification and restart (October 3)
+
+Source d7f9122af1f9fce661b8ed916fc8878cfba82feb was pushed and deployed as
+D:/TradingML/codes/quant-research-workbench-squeeze-v3-d7f9122af (925 verified files).
+The old47978f567 search was stopped before any generation completed. Its seven
+sealed input snapshots remain unchanged; the new campaign imports them through
+explicit checksum/contract validation and new consumer receipts.
+
+The same-code pipeline qualification passed full financial and fill-ledger parity
+on July30 and July31: 19,800 one-second slots per session, 832 padded ticker slots,
+64 identical candidates. Final pipeline/checkpoint/main/resume tests:14 passed.
+The qualification job exited0 and its completed scheduled owner was removed.
+
+| Measurement, two full sessions | Sequential | Overlapped |
+| --- | ---: | ---: |
+| End-to-end excluding compilation | 248.655s | 241.742s |
+| Compilation, reported separately | 60.950s | 0.286s |
+| GPU replay, session1 | 113.490s | 114.114s |
+| GPU replay, session2 | 113.564s | 114.198s |
+| Input waiting | 14.186s | 11.163s |
+| Binding | 1.697s | 0.611s |
+
+Cached-input end-to-end time improved2.8%, with one confirmed asynchronous
+prefetch and only0.044ms transfer wait at consumption. The replay kernel itself
+was not faster in this pair; the approximately0.6% difference is not a certified
+kernel improvement. Compilation had different cache warmth, so the large raw
+309.605s-to242.028s change is not used as the scheduling speedup claim. Cold
+ClickHouse/V7 preparation has not been benchmarked by this cached-input receipt.
+
+Qualification:
+D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v3/optimization_jobs/20261003-d7f9122af-pipeline-profile/qualification.json
+Code hash1b03c139b1bf78b5f90f4653febd0a2add9636e34f03d41e152f13cdefec30d9.
+
+Fresh full optimization launched at
+D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v3/optimization_jobs/20261003-d7f9122af-search
+with the same64x50 budget, random initialization, fixed all30-session generation
+objective and frozen six-session evaluation. Window GPU STRATEGY SEARCH - v3.
+Preparation workers2, buffered lookahead2, one async GPU staging tape. The first
+generation starts replay when its current tape is certified instead of waiting
+for all30. Actual cold preparation/replay overlap and residual waiting are
+recorded in experiment/preparation_progress.json and generation receipts.
+Launch does not imply a completed generation or profitability result. The hourly
+monitor reads the updated runtime handoff and preserves the immutable run identity.
