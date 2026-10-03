@@ -9,6 +9,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 from time import monotonic, sleep
 
 from rich.console import Console, Group
@@ -169,6 +170,7 @@ class SearchPanel:
         self.interactive = self.console.is_interactive and not plain
         self.live = None
         self.read_only = read_only
+        self.lock = RLock()
 
     def view(self):
         return render_search(
@@ -191,6 +193,12 @@ class SearchPanel:
         return self
 
     def emit(self, event):
+        # Source-fetch progress can arrive from bounded background workers.
+        # One owner serializes state, snapshot replacement and event append.
+        with self.lock:
+            self._emit(event)
+
+    def _emit(self, event):
         if self.read_only:
             raise RuntimeError("Monitor cannot write worker state")
         self.state.update(event, updated_epoch=datetime.now(timezone.utc).timestamp())

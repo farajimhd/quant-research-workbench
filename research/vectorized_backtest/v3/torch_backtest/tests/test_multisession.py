@@ -345,3 +345,28 @@ def test_remote_launcher_streams_script_and_keeps_windows_command_bounded(monkey
         and "Interactive" in options["input"]
     )
     assert options["encoding"] == "utf-8"
+
+
+def test_atomic_json_retries_windows_reader_sharing_without_partial_publication(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from research.vectorized_backtest.v3.torch_backtest.runtime import write_json
+
+    original = Path.replace
+    calls = []
+
+    def sharing_once(self, target):
+        calls.append(self)
+        if len(calls) == 1:
+            error = PermissionError("reader denies delete-sharing")
+            error.winerror = 32
+            raise error
+        return original(self, target)
+
+    monkeypatch.setattr(Path, "replace", sharing_once)
+    write_json(tmp_path / "status.json", dict(status="training"))
+    assert len(calls) == 2
+    assert (tmp_path / "status.json").read_text().strip().endswith("}")
+    assert not list(tmp_path.glob("*.tmp"))
