@@ -25,7 +25,7 @@ type Window = { ticker: string; candles: ChartPayload["candles"]; oscillator_ser
   regions: ChartPayload["regions"]; labels: Row[]; start_us: number; end_us: number; previous_available: boolean; next_available: boolean };
 const cache = new Map<string, Window>();
 const number = (value: number | null | undefined) => value == null ? "—" : value.toFixed(4);
-const count = (value: number) => value.toLocaleString("en-US");
+const count = (value: number | null | undefined) => value == null ? "—" : value.toLocaleString("en-US");
 const titles = { architecture: "Price-action algorithm", analytics: "Session & episode values", chart: "Price-action candles & labels" };
 
 export function PriceActionResearch({ saved }: { saved?: { day: string; listing_id: string; dataset_sha256: string; supports_combined: boolean } }) {
@@ -67,7 +67,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
       shape: r.action === "ENTRY" ? "arrowUp" : r.action === "EXIT" ? "arrowDown" : "circle",
       color: r.action === "ENTRY" ? "var(--success)" : r.action === "EXIT" ? "var(--danger)" : r.action === "HOLD" ? "var(--info)" : "var(--muted-foreground)",
       text: r.action === "WAIT" || (r.action === "HOLD" && !holdNumbers) ? "" : `${r.label_value?.toFixed(3) ?? ""}${r.action === "ENTRY" && r.entry_horizon_seconds != null ? ` · ${r.entry_horizon_seconds}s` : r.action === "HOLD" && r.hold_horizon_seconds != null ? ` · ${r.hold_horizon_seconds}s` : ""}`,
-      secondaryText: r.action === "ENTRY" ? r.entry_gain.toFixed(4) : (r.action === "EXIT" || (saved && r.action === "HOLD" && holdNumbers)) && r.exit_gain != null ? r.exit_gain.toFixed(4) : undefined })) }), [chart, holdNumbers, saved]);
+      secondaryText: r.action === "ENTRY" ? r.entry_gain.toFixed(4) : (r.action === "EXIT" || (r.action === "HOLD" && holdNumbers)) && r.exit_gain != null ? r.exit_gain.toFixed(4) : undefined })) }), [chart, holdNumbers, saved]);
   if (!experiment) return <div className="research-page">{error ? <div className="canvas-inline-error" role="alert">{error}<button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Retry experiment</button></div> : <LoadingState label="Loading saved price-action experiment" />}</div>;
   return <ResearchCanvas storageKey={saved ? prefix : "price-action:NVDA:2026-07-31"} titles={titles}
     icons={{ architecture: <Network size={14} />, analytics: <Microscope size={14} />, chart: <ChartCandlestick size={14} /> }}
@@ -81,7 +81,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
         <div><dt>Valid-price candles</dt><dd>{count(experiment.observed_price_candles)}</dd></div>
         <div><dt>Invalid-price activity rows</dt><dd>{count(experiment.omitted_invalid_price_rows)} · unlabelled</dd></div>
         <div><dt>Absent second slots</dt><dd>{count(experiment.absent_second_slots)}</dd></div>
-        {!saved && <div><dt>Approximate volume</dt><dd>{count(Math.round(experiment.approximate_volume))}</dd></div>}
+        {!saved && experiment.approximate_volume != null && <div><dt>Approximate volume</dt><dd>{count(Math.round(experiment.approximate_volume))}</dd></div>}
         <div><dt>Selected reference pairs</dt><dd>{count(experiment.trades)}</dd></div>
         <div><dt>Sum of undiscounted price changes</dt><dd>{number(experiment.total_price_pnl)}</dd></div>
         <div><dt>Short → long pairs</dt><dd>{count(experiment.pairs.length)}</dd></div></dl>

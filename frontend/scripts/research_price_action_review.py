@@ -43,6 +43,10 @@ def main():
                         def proxy(route):
                             parsed = urlsplit(route.request.url)
                             response = route.fetch(url=args.api_url+parsed.path+('?' + parsed.query if parsed.query else ''),timeout=300000)
+                            for retry in range(6):
+                                if response.status!=429: break
+                                page.wait_for_timeout(500)
+                                response = route.fetch(url=args.api_url+parsed.path+('?' + parsed.query if parsed.query else ''),timeout=300000)
                             if args.pending_label_publication and parsed.path.endswith('/v6/saved-labels') and response.status==409:
                                 route.fulfill(response=response); return
                             assert response.ok, response.text()
@@ -90,7 +94,9 @@ def main():
                         assert not page.evaluate('document.documentElement.scrollWidth > window.innerWidth+2')
                         if theme=='light' and scale==1 and size=='normal':
                             requests = []
-                            page.on('request',lambda r: requests.append(r.url) if '/api/research/models' in r.url else None)
+                            # Other Research paths may fetch their own preflight;
+                            # this assertion concerns the preserved experiment.
+                            page.on('request',lambda r: requests.append(r.url) if '/api/research/models/v6/price-action' in r.url else None)
                             node = scope.locator('.research-price-action-chart canvas').first.element_handle()
                             for destination in ['teacher-path','sidebar']:
                                 count = len(requests)
@@ -112,6 +118,8 @@ def main():
                             page.get_by_label('Price-action candle',exact=True).select_option(index=10)
                             assert page.locator('.research-candle-values').is_visible()
                             page.get_by_label('Show HOLD values',exact=True).check()
+                            page.wait_for_timeout(300)
+                            page.screenshot(path=str(output/'hold-horizons.png'),full_page=True)
                             page.get_by_label('Opportunity quality threshold',exact=True).select_option('0.95')
                             page.locator('.research-price-action-chart .chart-shell').wait_for()
                             page.get_by_label('Opportunity label view',exact=True).select_option('reference')
@@ -145,6 +153,10 @@ def main():
                             assert page.locator('.research-path-content:visible [data-window-kind="architecture"]').evaluate('(el)=>el.getAttribute("style")')==geometry
                         records.append(dict(theme=theme,scale=scale,viewport=size,chart_windows=len(responses)))
                         context.close()
+        except Exception:
+            page.screenshot(path=str(output/'failure.png'),full_page=True)
+            (output/'failure.txt').write_text(page.locator('body').inner_text(),encoding='utf-8')
+            raise
         finally:
             browser.close()
     report = dict(scenarios=records,page_errors=errors,navigation=navigations,source='real NVDA price-action artifacts',api_url=args.api_url)
