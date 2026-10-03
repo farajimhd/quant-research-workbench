@@ -6,6 +6,11 @@ IDs are searchable. The optimizer starts from a random executable tensor,
 optimizes one training session, then both training sessions, and freezes both
 winners before constructing the evaluation tapes.
 
+The authoritative [time and search contract](TIME_AND_SEARCH_CONTRACT.md)
+defines candle indexing, execution boundaries, assumptions and every numeric
+search range. Its version and SHA-256 seal are included in tape provenance
+and the optimizer manifest; untagged or open-labelled tapes are rejected.
+
 ## Representation and contracts
 
 `StrategySpace` defines a versioned **[B, 71]** float64 tensor. B is the number
@@ -219,9 +224,9 @@ This delivery qualifies the implementation on dummy data. It does not claim
 new historical v3 P&L, convergence or a full-session runtime. V2 source is
 preserved byte-for-byte; the prior v1 optimization remains a separate campaign.
 
-### Delivery measurements (dummy data only)
+### Initial delivery measurements (before the adaptive activation fix)
 
-On the RTX 5090 Laptop GPU with PyTorch 2.12, the delivered suite passed
+On the RTX 5090 Laptop GPU with PyTorch 2.12, the initial delivered suite passed
 **96 tests**. The end-to-end optimizer smoke run used eight random candidates,
 two generations per phase, two dummy training tapes and one dummy evaluation
 tape. Each tape had **75 one-second slots and two tickers**.

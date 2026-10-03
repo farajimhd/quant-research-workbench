@@ -286,6 +286,11 @@ class SqueezeRunner:
         pass
 
     def _row(self, name):
+        """Read evidence ending at the current UTC decision boundary.
+
+        This is NOT the OHLC of the candle opening at that boundary. Broker
+        and strategy share completed evidence but execute in tick's fixed order.
+        """
         # Scalar device index selects [1,N,...] → [N,...]; no host .item().
         return (
             getattr(self.tape, name).index_select(0, self.index.reshape(1)).squeeze(0)
@@ -460,6 +465,13 @@ class SqueezeRunner:
         self.exit_kind.copy_(torch.where(stop_hit, 2, kind))
 
     def tick(self):
+        """Finish [t-1s,t), then decide at t using ONLY completed evidence.
+
+        _row is end-labelled: current close/high/low are candle t-1 in
+        open-labelled notation. The candle [t,t+1s) is still inaccessible.
+        Broker processing precedes submissions and stop amendments, so none
+        of those new decisions can act retroactively on the interval just read.
+        """
         s, p = self.settings, self.parameters
         now = self.tape.clocks.index_select(0, self.index.reshape(1)).squeeze(0)
         close, low, high = self._row("close"), self._row("low"), self._row("high")
@@ -797,7 +809,11 @@ class SqueezeRunner:
             average_move[..., None] * self._value("adaptive_multiplier", 3),
             self.average * self._value("minimum_trail_fraction", 3),
         )
-        enough = (now - self.first_fill >= s.adaptive_window) & torch.isfinite(adaptive)
+        # SearchRunner pads history to 32 slots, but activation belongs to each
+        # candidate's selected elapsed window, not that allocation capacity.
+        enough = (
+            now - self.first_fill >= self._value("adaptive_window", 3)
+        ) & torch.isfinite(adaptive)
         steps = torch.floor(
             (
                 (self.peak_price / self.average.clamp_min(s.price_tick) - 1)

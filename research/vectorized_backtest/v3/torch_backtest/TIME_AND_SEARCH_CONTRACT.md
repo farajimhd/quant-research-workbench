@@ -1,0 +1,259 @@
+# Decision-time and optimization contract
+
+This is the maintained contract for `semantic-squeeze-search-v3-2`, not a reinterpretation of
+array indices. The machine authority is `timing.py`, plus `StrategySpace.manifest()`.
+Tape provenance contains the exact time contract and its SHA-256 seal. The same
+contract/seal is in the search identity. Validation rejects missing, different
+or corrupt time declarations. This records the convention; a hash alone does
+not prove that an external provider correctly labelled its data. The certified
+loader and boundary tests supply that evidence for this implementation.
+
+Time-contract version: `completed-boundary-v3-1`.
+SHA-256: `f583138ac469674abbb68680b7e5cd89645d376faaa8511ac28dbd3be151153e`.
+
+## Clock convention: end-labelled rows
+
+All clocks are integer UTC seconds. Δ is fixed at 1 second. At decision t:
+
+| Item | Allowed interval/availability |
+| --- | --- |
+| Current tape row, read by `_row` | Completed `[t−Δ,t)` interval |
+| The same candle under opening-time indexing | Candle `t−1`, not candle `t` |
+| OHLC, volume, trade count, VWAP and atomic features | Only completed evidence with interval end ≤ t |
+| 5s/10s/30s indicators | Most recent completed timeframe ending ≤ t; never the unfinished timeframe |
+| V7 book | Prior-session seed plus completed current-session bars through t |
+| Candle beginning at t | `[t,t+Δ)` is inaccessible to the decision; even its open is not an input in this implementation |
+| Order submitted at t | First eligible execution interval `[t,t+Δ)`, processed at t+Δ |
+| Ledger timestamp | End of the simulated fill interval, not an exact intrabar fill time |
+
+For example, at **09:00:01** the visible 1s candle began at **09:00:00**.
+Its close/high/low/volume are known. A new order can compete only in
+**09:00:01–09:00:02**; the receipt is stamped **09:00:02**. Calling the prepared
+row “candle 09:00:01” without saying *end-labelled* is incorrect.
+
+Opening-time indexed OHLC must be converted to completion/availability timestamps
+before constructing a tape. An extra shift of the already end-labelled tape
+would delay all decisions one additional second; it is not the current contract.
+A future extension that uses the current open must introduce a separate,
+explicitly available opening-price input, not expose the current candle's
+remaining fields alongside it.
+
+The research assumption is zero publication/inference latency at completion.
+This proves an event-time cutoff, not that a real data feed publishes every
+indicator instantaneously. A delayed producer needs explicit availability
+stamps and a revised contract; do not label late information as available at t.
+
+## Fixed order of processing at t
+
+1. Broker consumes `[t−Δ,t)` price/liquidity evidence for previously pending
+   orders and previously activated positions. Strategy cannot access a fill
+   from the next interval.
+2. Completed evidence is exposed to rules, entry modes, ranking and causal V7
+   geometry. New submissions and protection amendments are made at t.
+3. Histories/state advance. Decisions become eligible only in later intervals.
+
+An existing protective stop/target hit is detected using the completed
+interval's extrema and queues an exit for the next interval. Stop wins when
+both extrema cross. Newly filled child protection cannot trigger in its own
+fill interval. Trailing amendments cannot retrospectively stop a position
+using the high/low that produced the amendment. These are coarse simulation
+conventions, not exact broker stop-order or intrabar sequencing claims.
+
+The broker may use the full completed execution interval's VWAP, volume and
+last quote to approximate fills of previously submitted orders. That evidence
+must never be reused to price an order submitted at the interval's end into
+that same interval. Buy eligibility explicitly requires `now > buy_submitted`.
+
+SQL timestamps bars/indicators with `origin + (bucket_index+1)*resolution`.
+100ms execution rows are aggregated into a 1s row labelled with its end.
+As-of alignment is backward; equal timestamps refer to completed boundaries.
+Squeeze admission is rounded upward to the first compatible 1s decision clock.
+V7 consumes the completed bar before projecting geometry as of that boundary;
+it never initializes a session from its own end-of-day checkpoint.
+
+## Sessions, warmup and missing evidence
+
+- Historical tapes retain the same day's prefix beginning at 04:00 New York,
+  with the first completed clock at 04:00:01. Trading is gated at the requested
+  start; the final clock is the requested end. No post-end interval is replayed.
+- Signal entry is eligible exactly at admission. An admission before the selected
+  trading start does not create a deferred signal entry at that start. Other
+  entry modes still require their own causal conditions.
+- Trading dates use the New York market date, including timezone/DST conversion.
+  Inputs must be certified, nonempty, uniquely keyed and ordered. No raw-flatfile
+  fallback, market writes or fabricated missing features are allowed.
+- Missing current bars give zero execution capacity and invalid trading evidence.
+  A prior valid close may be carried for valuation only. Quote freshness is
+  capped at one second. Enabled atomic clauses with missing evidence fail closed,
+  even when combined by OR. Lag/reduction history cannot use future slots.
+- A prior-session V7 seed and current completed structural clock are required.
+  Missing levels reject structural geometry; full nearest-level evidence is not
+  replaced with a future book or an invented target.
+
+## Searchable representation
+
+The tensor is `[B,71]`: 10 class/count coordinates, 34 numeric policy coordinates,
+four six-coordinate atomic clauses and three AND/OR connectors. Float64 storage
+never permits fractional categorical IDs. Unknown classes fail before repair.
+
+Entry classes: signal, hold, retest, MACD. Hold duration: 1..60 seconds when active.
+MACD masks select any nonempty subset of the certified 1s/5s/10s/30s lanes, with
+ANY or ALL. A singleton has one canonical mode. Positions per ticker: 1..15.
+Allocation: equal, inverse-log or log; target: percentage or structural; stop:
+percentage or confirmed swing; trailing: step or adaptive; rotation: off/on.
+This is a bounded policy grammar, not arbitrary executable Python or arbitrary
+arithmetic expression trees.
+
+Each atomic clause selects enabled flag, comparison ID (`>`, `>=`, `<`, `<=`),
+input ID, temporal operation (current, lag, min, max, mean), lookback and threshold.
+All lookbacks are integers in 1..12. Lag k excludes the current completed bar;
+reductions k include it. Absolute clock/identity registers cannot be threshold
+inputs: elapsed duration is a different type from UTC time, and price difference
+is different from absolute price. Thresholds are bounded literals of the input's
+semantic kind, not references to an arbitrary account register.
+
+| Atomic input | Threshold range | Kind |
+| --- | ---: | --- |
+| `close` | 0.01..1000 | absolute_price |
+| `distance_above_vwap` | -0.5..0.5 | signed_return |
+| `spread_fraction` | 0..0.1 | nonnegative_fraction |
+| `interval_notional` | 0..1e+07 | money |
+| `interval_trades` | 0..100000 | count |
+| `episode_age_seconds` | 0..57600 | elapsed_duration |
+| `macd_1s_gap` | -10..10 | price_difference |
+| `interval_volume` | 0..1e+07 | shares |
+| `resistance_1_distance_return` | 0..10 | signed_return |
+| `resistance_2_distance_return` | 0..10 | signed_return |
+| `resistance_3_distance_return` | 0..10 | signed_return |
+| `resistance_4_distance_return` | 0..10 | signed_return |
+| `resistance_5_distance_return` | 0..10 | signed_return |
+
+### Numeric gene bounds (inclusive)
+
+Fractions are dimensionless: 0.01 means 1%, or 100 bps. Durations and history
+lengths are in seconds on the 1s clock. Money is USD; score weights/scales are
+not cash allocations or objective weights.
+
+| Field | Lower | Upper | Integer |
+| --- | ---: | ---: | --- |
+| `maximum_spread_fraction` | 0.0001 | 0.05 | no |
+| `minimum_dollar_volume` | 0 | 1e+06 | no |
+| `minimum_trade_count` | 0 | 1000 | yes |
+| `initial_stop_fraction` | 0.002 | 0.2 | no |
+| `target_step_fraction` | 0.005 | 0.2 | no |
+| `adaptive_window` | 2 | 32 | yes |
+| `adaptive_multiplier` | 0.5 | 10 | no |
+| `minimum_trail_fraction` | 0.001 | 0.1 | no |
+| `trail_up_fraction` | 0.005 | 0.2 | no |
+| `trail_stop_fraction` | 0.001 | 0.1 | no |
+| `entry_deadline_seconds` | 1 | 30 | yes |
+| `maximum_signal_age_seconds` | 1 | 57600 | yes |
+| `maximum_entry_drift_fraction` | 0.0001 | 0.05 | no |
+| `retest_tolerance_fraction` | 0.0001 | 0.05 | no |
+| `retest_timeout_seconds` | 1 | 120 | yes |
+| `swing_left_seconds` | 1 | 5 | yes |
+| `swing_right_seconds` | 1 | 5 | yes |
+| `replacement_margin` | 0 | 1 | no |
+| `replacement_confirm_seconds` | 1 | 30 | yes |
+| `replacement_cooldown_seconds` | 0 | 300 | yes |
+| `terminal_exit_lead_seconds` | 1 | 60 | yes |
+| `retest_lookback_seconds` | 1 | 12 | yes |
+| `momentum_lookback_seconds` | 1 | 12 | yes |
+| `attention_lookback_seconds` | 1 | 12 | yes |
+| `momentum_scale` | 0.001 | 0.2 | no |
+| `strength_scale` | 0.001 | 0.2 | no |
+| `attention_cap` | 1 | 10 | no |
+| `momentum_weight` | 0 | 1 | no |
+| `strength_weight` | 0 | 1 | no |
+| `attention_weight` | 0 | 1 | no |
+| `liquidity_weight` | 0 | 1 | no |
+| `reward_risk_weight` | 0 | 1 | no |
+| `stagnation_weight` | 0 | 1 | no |
+| `stagnation_seconds` | 1 | 300 | yes |
+
+Legal numeric proposals may be clipped to their bounds; integer values are
+rounded. Trail stop-step fraction must not exceed trail up-step fraction.
+Inactive hold/MACD genes are zeroed; activating an empty duration/mask supplies
+one. All repair counts are recorded. Score weights need not sum to one.
+
+History allocation caps are fixed: atomic/retest/momentum/attention 12,
+adaptive 32, swing 11. These caps allocate storage only. Candidate masks choose
+their actual windows, and adaptive activation occurs at first-fill age ≥ that
+candidate's window, not age ≥32. Missing movement evidence also blocks activation.
+
+## Runtime financial constraints (not gene clipping)
+
+- Each ticker permits one acquisition batch in a session. It can contain up to
+  15 child positions; later partial fills are allowed, later acquisition batches
+  are not. All candidate accounts and their liquidity budgets are independent.
+- Initial stops must be finite, positive and below bid. Every required target
+  must be finite and above ask times `(1+maximum_entry_drift_fraction)`. Insufficient
+  structural levels or impossible target geometry reject that entry. There is
+  no static guarantee that a structurally valid genome finds a feasible market
+  opportunity; geometry remains a causal runtime gate.
+- Cash, parent reservations and fees must fit the account; quantities are whole
+  shares. Buys and sells in one account share the interval's 10% volume capacity.
+  Orders respect their limits/deadlines. Stops ratchet upward only. Financial
+  invariant failures or ledger overflow fail the evaluation; nothing is truncated.
+- New entries stop `terminal_exit_lead_seconds` before the final boundary, and
+  remaining entry orders are cancelled. Terminal exits still need real simulated
+  liquidity. Residual open positions produce null fitness with a rejection reason;
+  the engine does not invent a final liquidation price.
+
+## Fixed optimization boundary and objective
+
+Fees (0.005 USD/share, minimum 1 USD/order), participation (10%), price tick
+(0.01 USD), initial cash (10,000 USD), 1s common clock, source validity, certified
+indicators and the released 100ms squeeze/price-envelope funnel remain fixed.
+Only downstream policy is searched; price-envelope or indicator-calculation
+parameters are not genes. Prepared population/source coverage cannot be narrowed
+using a proposed candidate if doing so would remove another candidate's evidence.
+
+Exactly two ordered training dates and at least one later disjoint evaluation
+date are required for historical search. Each window must remain within its
+New York date. Every session resets to an independent $10,000 account: no cash
+or positions carry between dates. Phase one uses only the first training date;
+phase two uses both and seeds one lane with the first winner. Evaluation tapes
+are constructed only after both winners are frozen. Preobserved evaluation
+is labelled; it is not a fresh holdout and never drives tuning or selection.
+
+Default objective: mean net return −0.5×mean normalized maximum drawdown
+−0.25×population standard deviation of session returns. Optional fixed costs
+penalize filled position count (divided by100) and sampled position-hours.
+All cost weights must be finite/nonnegative and remain fixed for the experiment.
+
+`--minimum-training-entries K` imposes at least K actually filled position orders
+on **each** training session. K defaults to0, so inactivity is currently legal;
+unfilled submissions cannot satisfy K. There is no mandatory trade count,
+maximum drawdown cap, minimum holding period or minimum risk/reward ratio beyond
+these explicit settings. Changing those research constraints creates a new
+experiment; they must not be introduced after observing evaluation performance.
+
+CLI bounds: population4..64, generations1..100 per phase; defaults8×8.
+The GA is heuristic, with elitism, tournament selection, categorical crossover,
+15% coordinate mutation, bounded repairs and random immigrants. After three
+stagnant generations immigration increases; the fixed budget does not extend.
+It does not certify a global optimum. Every generation saves metrics/rejections;
+checkpoints preserve population/RNG/winner/repair state. All-invalid training
+fails explicitly. Resume requires identical code, grammar, split, budget,
+objective and certified source fingerprints. Artifacts live only under the
+configured runtime root. Source changes, including this fix, cannot resume an
+older experiment identity.
+
+## Executable witnesses
+
+`test_boundary_t_reads_completed_candle_not_candle_opening_at_t` demonstrates
+both sides of the feature cutoff, no same-interval entry fill and ledger time.
+`test_tape_requires_declared_end_labelled_clock_contract` rejects undeclared,
+open-labelled and corrupted timing contracts.
+`test_adaptive_activation_uses_each_candidate_window_before_capacity` tests
+windows2/5 at their exact equality boundaries, then compares compiled GPU and
+CPU ledgers. Existing future-market/V7 prefix, reset and checkpoint tests remain
+part of the full suite. The schema/version seal is evidence for this documented
+contract, not a substitute for those behavioral tests.
+
+## Validation record for this correction
+
+The full suite passed 100 tests, including compiled CUDA ledger parity. With a first fill at boundary 9, candidate adaptive windows of 2 and 5 seconds activate at boundaries 11 and 14 respectively, even though both share a 32-slot buffer. Changing the future interval [8, 9) does not change the decision at boundary 8; changing the completed interval [7, 8) can. An order submitted at boundary 8 first fills with a boundary-9 receipt. No historical optimization was run as part of this correction.
+
+The optimizer scores completed training outcomes after replay. This use of training outcomes is distinct from permitting future observations inside a replay decision. Parameters remain fixed throughout each replay; evaluation is diagnostic only after the winners are frozen.

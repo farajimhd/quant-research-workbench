@@ -441,3 +441,113 @@ def test_submitted_but_unfilled_orders_do_not_satisfy_activity():
     )
     values, reasons = score([result], minimum_training_entries=1)
     assert values == [None] and reasons == ["minimum_training_activity"]
+
+
+@pytest.mark.parametrize("backend", ["eager", "compiled_graph"])
+def test_adaptive_activation_uses_each_candidate_window_before_capacity(
+    backend, tmp_path
+):
+    if backend == "compiled_graph" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    space = StrategySpace()
+    rows = np.tile(space.default, (2, 1))
+    rows[:, 4] = 1
+    rows[:, 7] = 1
+    for name, values in (
+        ("adaptive_window", [2, 5]),
+        ("adaptive_multiplier", [0.5, 0.5]),
+        ("target_step_fraction", [0.2, 0.2]),
+    ):
+        rows[:, space.policy_start + NAMES.index(name)] = values
+    tape = synthetic_tape([10.0] * 9 + [10.4] * 55)
+    reference = SearchRunner(tape, space, rows)
+    reference.run(steps=9)
+    initial = reference.stop[:, 0, 0].clone()
+    assert reference.settings.adaptive_window == 32
+    assert reference.first_fill[:, 0, 0].tolist() == [9, 9]
+    reference.run(reset=False, steps=2)  # t=11: first-fill age exactly 2.
+    assert reference.stop[0, 0, 0] > initial[0]
+    assert reference.stop[1, 0, 0] == initial[1]
+    reference.run(reset=False, steps=3)  # t=14: age exactly 5.
+    assert reference.stop[1, 0, 0] > initial[1]
+    if backend == "compiled_graph":
+        from research.vectorized_backtest.v3.torch_backtest.runtime import (
+            configure_caches,
+        )
+
+        configure_caches(tmp_path)
+        expected = SearchRunner(tape, space, rows)
+        financial = expected.run()
+        actual = SearchRunner(tape.to("cuda"), space, rows, backend=backend).compile()
+        result = actual.run()
+        assert torch.allclose(actual.ledger.cpu(), expected.ledger, rtol=0, atol=1e-7)
+        assert torch.allclose(
+            result["net_pnl"].cpu(), financial["net_pnl"], rtol=0, atol=1e-7
+        )
+
+
+def test_boundary_t_reads_completed_candle_not_candle_opening_at_t():
+    space = StrategySpace()
+    row = space.default.copy()
+    row[space.rules_start : space.rules_start + 6] = [
+        1,
+        Compare.GREATER_EQUAL,
+        0,
+        Temporal.CURRENT,
+        1,
+        9,
+    ]
+    base = synthetic_tape([10.0] * 40)
+    a = SearchRunner(base, space, [row])
+    a.run(steps=8)
+    assert a.buy_submitted[0, 0, 0] == 8 and a.fill_count.item() == 0
+    # Array row 8 ends at t=9: its interval [8,9) is not available at t=8.
+    future = synthetic_tape([10.0] * 40)
+    for name in (
+        "close",
+        "high",
+        "low",
+        "volume",
+        "notional",
+        "trades",
+        "macd_line",
+        "macd_signal",
+    ):
+        getattr(future, name)[8:] *= 2
+    b = SearchRunner(future, space, [row])
+    b.run(steps=8)
+    assert torch.equal(a.requested_quantity, b.requested_quantity)
+    assert torch.equal(a.buy_limit, b.buy_limit)
+    assert torch.equal(a.ledger, b.ledger)
+    # Row 7 ends at t=8, so changing it can legitimately change the t=8 rule.
+    completed = synthetic_tape([10.0] * 7 + [8.0] + [10.0] * 32)
+    c = SearchRunner(completed, space, [row])
+    c.run(steps=8)
+    assert c.entered.item() == 0
+    # Only the following interval may execute the new t=8 submission.
+    a.run(reset=False, steps=1)
+    assert a.fill_count.item() > 0
+    assert torch.all(
+        a.ledger[0, : int(a.fill_count[0]), 0] == 9
+    )  # UTC interval-END receipt.
+
+
+def test_tape_requires_declared_end_labelled_clock_contract():
+    tape = synthetic_tape(seconds=40)
+    tape.provenance = dict(tape.provenance)
+    tape.provenance.pop("timing_contract")
+    with pytest.raises(ValueError, match="completed-boundary"):
+        tape.validate()
+    from research.vectorized_backtest.v3.torch_backtest.timing import TIMING_CONTRACT
+
+    tape.provenance["timing_contract"] = {
+        **TIMING_CONTRACT,
+        "clock_label": "interval_start",
+    }
+    with pytest.raises(ValueError, match="open-labelled"):
+        tape.validate()
+
+    tape.provenance["timing_contract"] = dict(TIMING_CONTRACT)
+    tape.provenance["timing_fingerprint"] = "tampered"
+    with pytest.raises(ValueError, match="integrity seal"):
+        tape.validate()

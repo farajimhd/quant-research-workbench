@@ -13,8 +13,9 @@ import numpy as np
 
 from .grid import Candidate, Settings
 from .rules import ATOMS, CLAUSES, HISTORY, Compare, Temporal, validate_clause
+from .timing import TIMING_CONTRACT, timing_fingerprint
 
-VERSION = "semantic-squeeze-search-v3-1"
+VERSION = "semantic-squeeze-search-v3-2"
 ENTRY = ("signal", "hold", "retest", "macd")
 ALLOCATION = ("equal", "decreasing", "increasing")
 POLICY_FIELDS = (
@@ -105,6 +106,8 @@ class StrategySpace:
         searched = set(NAMES)
         return dict(
             version=VERSION,
+            timing_contract=dict(TIMING_CONTRACT),
+            timing_fingerprint=timing_fingerprint(),
             shape=["B", self.size],
             policy_fields=[
                 dict(
