@@ -15,7 +15,7 @@ from research.vectorized_backtest.v2.torch_backtest.encoding.clickhouse import (
     prepare_session,certify_source,_validate_units,_scope)
 from research.vectorized_backtest.v2.torch_backtest.source import arte_source,arte_sql
 from research.vectorized_backtest.v2.torch_backtest.runtime import write_json,file_hash
-from .analysis import dense_bars
+
 
 NY=ZoneInfo("America/New_York")
 
@@ -54,6 +54,14 @@ def floats(signals,start):
     return joined
 
 
+def pinned_signals(watchlist,members):
+    identities=members.select("ticker",pl.col("listing_id").cast(pl.String),"symbol_id")
+    signals=watchlist.join(identities,on=["ticker","listing_id"],how="left",validate="1:1")
+    if signals["symbol_id"].null_count():
+        raise ValueError("Squeeze watchlist differs from certified listing identity")
+    return signals.select("ticker","symbol_id","listing_id",pl.col("admitted_at_us").alias("signal_us"))
+
+
 def load_session(source,kind,runtime,progress):
     start,end=bounds(source["day"],kind)
     session=Session(Path(source["manifest"]),Path(source["ledger"]),runtime/"source-cache",
@@ -73,7 +81,11 @@ def load_session(source,kind,runtime,progress):
         ((pl.col("price_valid_30000")==1)&(pl.col("extremes_valid_30000")==1)).alias("valid"))
     start_us,end_us=int(start.timestamp()*1_000_000),int(end.timestamp()*1_000_000)
     bars=bars.filter((pl.col("time_us")>start_us)&(pl.col("time_us")<=end_us))
-    signals=prepared.watchlist.select("ticker","symbol_id","listing_id",pl.col("admitted_at_us").alias("signal_us"))
+    proof=certify_source(session)
+    with closing(arte_sql.ArteReader()) as reader:
+        members,population=arte_source.population(reader,proof.source,start.date(),
+                                                  excluded_tickers=session.excluded_tickers)
+    signals=pinned_signals(prepared.watchlist,pl.DataFrame(members))
     context=floats(signals,start) if signals.height else pl.DataFrame()
     return bars,signals,context,start_us,end_us,dict(source_key=prepared.source_key,
         source_build=source["build_id"],manifest_sha256=file_hash(session.manifest),

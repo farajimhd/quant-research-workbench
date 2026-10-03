@@ -123,3 +123,12 @@ def test_real_launcher_writes_complete_outputs_using_typed_source_fixtures(monke
     result=json.loads((job/"thresholds.json").read_text())
     assert result["validation_session"]=="2026-09-18"
     assert result["training_sessions"]==["2026-09-16","2026-09-17"]
+
+
+def test_watchlist_recovers_only_exact_certified_listing_identity():
+    from research.squeeze_filter.v1.data import pinned_signals
+    watch=pl.DataFrame(dict(ticker=["X"],listing_id=["L"],admitted_at_us=[1]))
+    identities=pl.DataFrame(dict(ticker=["X"],listing_id=["L"],symbol_id=["S"]))
+    assert pinned_signals(watch,identities)["symbol_id"].item()=="S"
+    with pytest.raises(ValueError,match="certified listing"):
+        pinned_signals(watch,identities.with_columns(pl.lit("OTHER").alias("listing_id")))
