@@ -7,9 +7,9 @@ each year.
 
 ## 2026
 
-### [2026-10-03 - Squeeze Torch v2 and Strategy 44 validation](docs/codex/chat-summaries/2026/CHAT-20261002-UNKNOWN-squeeze-torch-v2-workstation.md)
+### [2026-10-03 - Squeeze Torch v2 and Strategies 44-45](docs/codex/chat-summaries/2026/CHAT-20261002-UNKNOWN-squeeze-torch-v2-workstation.md)
 
-TASK-0221. Original September 3 grid completed 4,320 configurations; all 1,046 eligible cases lost. Revised GPU v2-3/Strategy 44 add protected independent acquisitions and earlier closeout. Native comparison: 30 positions, -$458.93; Torch: 30, -$371.83; both flat, execution differences accepted. Full local suite/GPU parity show no material slowdown. Independent causal ARTE 30s filter study completed Sep1-3: 2,419 signals, only 70 classifiable cohorts, 230 rules. Top training liquidity rule caught 4/15 moves but 0/4 validation moves; no threshold adopted. Historical float is unavailable before Sep23; later snapshots were not substituted. Latest-period RVOL blocked by ambiguous listing identities; explicit earlier dates retained strict checks. Revised full grid, source/history coverage, wider dates and profitability remain open.
+TASK-0221. Original September 3 grid completed 4,320 configurations; all 1,046 eligible cases lost. Revised GPU v2-3/Strategy 44 add protected independent acquisitions and earlier closeout. Native comparison: 30 positions, -$458.93; Torch: 30, -$371.83; both flat, execution differences accepted. Full local suite/GPU parity show no material slowdown. Independent causal ARTE 30s filter study completed Sep1-3: 2,419 signals, only 70 classifiable cohorts, 230 rules. Top liquidity rule caught 4/15 training moves but 0/4 validation moves. Experimental Strategy 45 applies it with persistent per-leg exits; two SSD products and narrow grants approved/provisioned, 833 units certified. Historical float is unavailable before Sep23; later snapshots were not substituted. Latest-period RVOL blocked by ambiguous listing identities; explicit earlier dates retained strict checks. Revised full grid, source/history coverage, wider dates and profitability remain open.
 
 ### [2026-09-28 - BarGPT August evaluation and serving-capacity diagnosis](docs/codex/chat-summaries/2026/CHAT-20260928-UNKNOWN-bargpt-august-evaluation.md)
 

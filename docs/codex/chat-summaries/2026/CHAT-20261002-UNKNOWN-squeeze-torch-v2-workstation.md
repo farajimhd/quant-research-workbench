@@ -20,36 +20,9 @@ Automatic sizing measures 32-1024 candidate lanes on a 128s witness, discards it
 
 Progress separates preparation/calibration/compile/replay/saving, advances durable counts after hashes/receipts, and uses bounded graph barriers for provisional cursors. It supports compact/plain/NO_COLOR, Ctrl+C restart, rates/ETA excluding reuse and explicit failure/terminal-invalid counts. Committed/pushed snapshots deploy to fresh hash-verified directories without secrets/v1. Concurrent task commit 34700e776 captured initially staged launcher files; unrelated changes were preserved.
 
-## Evidence and operational handoff
+## Initial qualification and handoff
 
-- Baseline v2 commit: bcdb639f5. Workstation launcher/corrections were pushed in
-  34700e776, c5c9b8f9a and 5a75e359b, with further compiler-path/history fixes
-  reflected in the final source/deployment receipt.
-- Local synthetic qualification reached 58 passing tests, including two
-  targeted compiler-overlay tests. It includes a 1,024-lane compiled GPU
-  comparison against independent CPU accounts and full normalized accounting.
-- Normal and compact terminal layouts, failure/interruption states, live cursor
-  restoration, redirected output, calendars, source grouping and launcher
-  restart/export boundaries were exercised. The actual isolated workstation
-  help/date command passed and reconciled all 36 dates.
-- On the workstation, a synthetic 120-second/16-ticker/eight-configuration
-  replay had a compiled-graph median of 0.021807 seconds and full CPU ledger/
-  accounting parity. Initial setup was 37.17 seconds. This is not full-market
-  throughput or profitability acceptance.
-- A bounded workstation sizing witness tested 64/256/1024 lanes on 128 seconds
-  and 16 synthetic tickers, with a small 256-fill ledger. Medians were
-  0.025240/0.029411/0.061318 seconds; 1,024 had the highest measured throughput.
-  Actual full-population calibration must use its real shapes and ledger limit.
-- Reports are under D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v2/
-  validation; deployment, jobs, progress, source caches and campaign outputs
-  remain under this runtime family. No historical experiment was started.
-
-The user owns the next execution: run the deployed workstation preflight,
-resolve any full squeeze-population certification gap through its producer,
-then start the requested date/session grid. Missing V7 coverage cannot be
-replaced by saved Strategy 1 survivor tapes or reduced candidate populations.
-Profitability, complete historical-input availability, full-market throughput,
-numbered strategy publication and live broker integration remain unverified.
+Baseline v2 bcdb639f5 and launcher fixes were committed/pushed before isolated workstation deployment. Local synthetic qualification passed 58 tests, including a 1,024-lane CPU/GPU ledger comparison, launcher calendars, source grouping, compact/plain progress, interruption and restart. Workstation help/date discovery reconciled 36 dates. Synthetic 120s/16-ticker/eight-configuration compiled replay median was 0.021807s, with 37.17s initial setup; this did not establish full-market throughput. A 128s sizing witness measured 64/256/1024 lanes at 0.025240/0.029411/0.061318s; actual full-population sizing remained necessary. Runtime reports, deployments, caches and campaign outputs are under D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v2. Later sections record the subsequent historical qualification and user-authorized runs.
 
 ## Follow-up: visible preflight and tradable-only eligibility
 
@@ -129,3 +102,11 @@ The user requested threshold discovery from existing ARTE 30s candles after earl
 Source 9b1822eec committed/pushed before a verified isolated workstation deployment. Nine tests pass, including future-suffix invariance, frozen validation ranking, pinned identity/float cutoff, RVOL and real launcher fixtures. Sep16-18 historical attempts stopped on ambiguous Sep4/8 certified listing identities; no additional exclusions/check relaxation. Sep1-3 plus all six-prior history dates passed identity audit, retaining the five-session RVOL minimum.
 
 Completed job 2dd537c75e114235a35c049bcecc0e2d has 2,419 signals, 70 observable cohorts, 2,592 decisions and 230 rules; independent verification checked 15 output hashes. Outcomes: 19 up/28 down/13 two-sided/10 quiet; 2,107 unknown history and 242 absent prices are not negatives. Top train rule trades60s>=59 AND volume300s>=16145.0754 selected14/caught4 of15; frozen Sep3 selected2/caught0 of4. No validated threshold. Float authority begins Sep23 in both resolution/publication, later than bars; zero historical coverage, no future fallback. A historical as-of product and sparse/early-range coverage remain dependencies. RUN_FINDINGS.md/REPORT.md under the runtime job retain exact settings, data/receipts and limits. The revised trading grid remains unrun.
+
+## Experimental Strategy 45
+
+User corrected the request to Strategy 45 derived from immutable 44 and required exits when liquidity falls below entry thresholds. The independent lane requires completed 60s trades>=59 AND 300s volume>=16145.075411885977, using ARTE 30s producer windows. Ten candles since 04:00 are required; first-signal-only entry remains. Either strict breach cancels buys then latches persistent exits per independent leg, including after liquidity recovery; actual native 100ms liquidity controls fills. Decisions remain 1s.
+
+User approved two SSD tables and narrow producer/reader grants. Both provisioned; schema and part-placement checks use the authorized reader without expanding producer privileges. Workstation publication e7b6cf8b certified 833 units in 203.42s. Source f83c10211 pushed/deployed with 2193 verified files. Immutable release 3335dd1f certified; app lists 45. Tests: 97 focused/regression, 61 historical-dispatch/configuration/execution, 4 final release checks pass. No financial replay; thresholds remain unvalidated. App settings: exclusive anchor Sep4 selects Sep3, one session, $10000, 04:00-09:30, all tickers. Runtime strategy45/IMPLEMENTATION.md and app-preflight.json hold evidence.
+
+App preflight passed all four required checks.
