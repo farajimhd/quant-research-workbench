@@ -1723,6 +1723,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
     }
     from .strategy_forty_three_lineage import command_ids
     strategy_one_commands.update(command_ids(command_rows))
+    from .strategy_forty_five_lineage import command_ids as forty_five_command_ids
+    strategy_one_commands.update(forty_five_command_ids(command_rows))
     from .strategy_forty_four_lineage import command_ids as forty_four_command_ids
     strategy_one_commands.update(forty_four_command_ids(command_rows))
     lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)

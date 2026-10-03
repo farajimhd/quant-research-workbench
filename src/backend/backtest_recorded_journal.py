@@ -252,6 +252,10 @@ def project_recorded_performance(client, run_id: str, *,
     episodes = derive_trade_episodes(executions)
     report = build_performance_report(episodes, executions, ())
     lifecycles = derive_position_lifecycles(executions, ())
+    if executions and all((e.strategy_id, e.strategy_revision) == ("squeeze-grid-strategy", 45) for e in executions):
+        from .backtest_strategy_forty_five_performance import derive_saved_leg_positions
+        episodes, lifecycles = derive_saved_leg_positions(client, prefix, executions)
+        report = build_performance_report(episodes, executions, ())
     if executions and all((e.strategy_id, e.strategy_revision) == ("squeeze-grid-strategy", 44) for e in executions):
         from .backtest_strategy_forty_four_performance import derive_saved_leg_positions
         episodes, lifecycles = derive_saved_leg_positions(client, prefix, executions)

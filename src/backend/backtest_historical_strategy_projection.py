@@ -74,6 +74,11 @@ def _verify_lineage():
 
 
 def historical_strategy_tree(tree: ast.Module, relative: str) -> ast.Module:
+    extension45 = Path(__file__).with_name("backtest_strategy_forty_five_historical_projection.py")
+    if sha256(ast.unparse(ast.parse(extension45.read_text(encoding="utf-8"))).encode()).hexdigest() != "c6c9b53ccbfe54d39a6f4e44c11732b7e3f7b1e727d70fb7aa22edb04be9df25":
+        raise ValueError("Strategy 45 historical dispatch differs from reviewed source")
+    from .backtest_strategy_forty_five_historical_projection import strip_strategy45_extensions
+    tree = strip_strategy45_extensions(tree)
     extension = Path(__file__).with_name("backtest_strategy_forty_four_historical_projection.py")
     if sha256(ast.unparse(ast.parse(extension.read_text(encoding="utf-8"))).encode()).hexdigest() != "e9f3b891f7295cc59f62ce52029814e405af9a1f6469e1c968a8cb2cd94da4eb":
         raise ValueError("Strategy 44 historical dispatch differs from reviewed source")

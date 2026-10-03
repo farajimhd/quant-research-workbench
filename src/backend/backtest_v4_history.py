@@ -45,7 +45,8 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
         WHERE r.mode='backtest' AND r.evaluation_interval_ms=100
           AND ((c.strategy_id={strategy_id} AND c.strategy_revision IN ({revisions}))
                OR (c.strategy_id='squeeze-grid-strategy' AND c.strategy_revision=43)
-               OR (c.strategy_id='squeeze-grid-strategy' AND c.strategy_revision=44))
+               OR (c.strategy_id='squeeze-grid-strategy' AND c.strategy_revision=44)
+               OR (c.strategy_id='squeeze-grid-strategy' AND c.strategy_revision=45))
         ORDER BY r.started_at DESC,r.run_id DESC
         LIMIT {limit_plus_one} FORMAT JSONEachRow
     """.format(strategy_id=_literal(STRATEGY_ID), revisions=",".join(map(str, revisions)),

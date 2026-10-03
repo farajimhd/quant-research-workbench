@@ -75,6 +75,9 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
 
 def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
+    if type(strategy_number) is int and strategy_number == 45:
+        from .backtest_strategy_forty_five_certification import certify_projection
+        return certify_projection()
     if type(strategy_number) is int and strategy_number == 44:
         from .backtest_strategy_forty_four_certification import certify_projection
         return certify_projection()

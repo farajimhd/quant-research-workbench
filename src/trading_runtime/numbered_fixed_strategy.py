@@ -140,6 +140,8 @@ def resolve_numbered_fixed_strategy(strategy_id: str, revision: int) -> Numbered
 
 
 def is_numbered_fixed_strategy(strategy_id: str, revision: int) -> bool:
+    if strategy_id == "squeeze-grid-strategy" and type(revision) is int and revision == 45:
+        return True
     if strategy_id == "squeeze-grid-strategy" and type(revision) is int and revision == 44:
         return True
     if strategy_id == "squeeze-grid-strategy" and type(revision) is int and revision == 43:

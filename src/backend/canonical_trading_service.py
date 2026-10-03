@@ -212,6 +212,10 @@ def trading_state_payload(
         snapshot.positions,
     )
     leg_episodes = None
+    if snapshot.executions and all((e.strategy_id,e.strategy_revision) == ("squeeze-grid-strategy",45) for e in snapshot.executions):
+        from .backtest_strategy_forty_five_performance import derive_runtime_leg_positions
+        leg_episodes, position_lifecycles = derive_runtime_leg_positions(snapshot)
+        payload["portfolio"]["position_count"] = sum(row["status"] == "open" for row in position_lifecycles)
     if snapshot.executions and all((e.strategy_id,e.strategy_revision) == ("squeeze-grid-strategy",44) for e in snapshot.executions):
         from .backtest_strategy_forty_four_performance import derive_runtime_leg_positions
         leg_episodes, position_lifecycles = derive_runtime_leg_positions(snapshot)

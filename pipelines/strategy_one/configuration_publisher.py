@@ -104,6 +104,9 @@ def publish_configuration(client: Any, keeper: Any,
     number = dict(dict(envelope.get("payload") or {}).get("strategy") or {}).get("strategy_number")
     if number == 1:
         payload, nodes = _verified_envelope(envelope)
+    elif type(number) is int and number == 45:
+        from src.backend.backtest_strategy_forty_five_configuration import verify_envelope
+        payload, nodes = verify_envelope(dict(envelope))
     elif type(number) is int and number == 44:
         from src.backend.backtest_strategy_forty_four_configuration import verify_envelope
         payload, nodes = verify_envelope(dict(envelope))

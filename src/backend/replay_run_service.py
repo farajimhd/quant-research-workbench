@@ -479,6 +479,9 @@ class ReplayRunDefinition:
             if plan_interval != str(resolved_interval.milliseconds):
                 raise ValueError("Backtest market-data plan does not match execution_interval")
             strategy = dict(self.configuration_revision.get("payload", {}).get("strategy") or {})
+            if strategy.get("strategy_id") == "squeeze-grid-strategy" and strategy.get("revision") == 45:
+                from src.backend.backtest_strategy_forty_five_configuration import validate_definition_sources
+                validate_definition_sources(self)
             if strategy.get("strategy_id") == "squeeze-grid-strategy" and strategy.get("revision") == 44:
                 from src.backend.backtest_strategy_forty_four_configuration import validate_definition_sources
                 validate_definition_sources(self)
@@ -3477,7 +3480,7 @@ class ReplayRunController:
                         expected_market_start=self.definition.session_start,
                         projection_certifier=projection_certifier,
                         writer_factory=ArteJournalWriter,
-                        batch_size=512 if strategy_number in (43, 44) else 4096)
+                        batch_size=512 if strategy_number in (43, 44, 45) else 4096)
                     bootstrap_timings["strategy_one_journal_assembly"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()
@@ -9598,7 +9601,10 @@ class ReplayRunService:
 
     async def create(self, definition: ReplayRunDefinition) -> ReplayRunController:
         strategy = definition.configuration_revision.get("payload", {}).get("strategy", {})
-        if (strategy.get("strategy_id"), strategy.get("revision")) == ("squeeze-grid-strategy", 44):
+        if (strategy.get("strategy_id"), strategy.get("revision")) == ("squeeze-grid-strategy", 45):
+            from src.backend.backtest_strategy_forty_five_controller import StrategyFortyFiveController
+            controller = StrategyFortyFiveController(definition, runtime_root=self.runtime_root)
+        elif (strategy.get("strategy_id"), strategy.get("revision")) == ("squeeze-grid-strategy", 44):
             from src.backend.backtest_strategy_forty_four_controller import StrategyFortyFourController
             controller = StrategyFortyFourController(definition, runtime_root=self.runtime_root)
         elif (strategy.get("strategy_id"), strategy.get("revision")) == ("squeeze-grid-strategy", 43):
@@ -11925,6 +11931,13 @@ def backtest_preflight(
         )
     approved = configuration_revision or backtest_configuration_snapshot()
     configuration = dict(approved.get("payload") or {})
+    if (configuration.get("strategy", {}).get("strategy_id"),
+            configuration.get("strategy", {}).get("revision")) == ("squeeze-grid-strategy", 45):
+        from src.backend.backtest_strategy_forty_five_preflight import preflight
+        return preflight(anchor_date=anchor_date, session_count=session_count,
+            initial_cash=initial_cash, start_time=start_time, end_time=end_time,
+            tickers=tickers, configuration_revision=approved,
+            saved_review_authority=_saved_review_authority)
     if (configuration.get("strategy", {}).get("strategy_id"),
             configuration.get("strategy", {}).get("revision")) == ("squeeze-grid-strategy", 44):
         from src.backend.backtest_strategy_forty_four_preflight import preflight
