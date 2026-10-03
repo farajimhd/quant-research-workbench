@@ -69,6 +69,15 @@ def test_consumer_selects_exact_seal_and_exposes_immutable_completed_features(mo
         plan.feature("TEST", 6500)
 
 
+def test_late_signal_remains_in_certified_population_even_when_entry_cutoff_will_reject_it(monkeypatch):
+    from src.trading_runtime.strategy_forty_three_source_codec import scalar_hash
+    state, arguments = fixture(monkeypatch)
+    state["population"]["admission_ms"] = 30_000
+    state["coverage"]["population_hash"] = scalar_hash((state["population"],))
+    plan = certify_history(**arguments)
+    assert plan.feature("TEST", 30_000)["fact_id"] == state["facts"][-1]["fact_id"]
+
+
 @pytest.mark.parametrize("mutation", ["children", "parent", "identity", "population", "missing"])
 def test_consumer_rejects_changed_or_incomplete_authority(monkeypatch, mutation):
     state, arguments = fixture(monkeypatch)

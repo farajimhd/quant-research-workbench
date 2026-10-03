@@ -28,7 +28,7 @@ _TERMINAL_RESERVATIONS = {"released", "filled", "cancelled", "rejected", "policy
 
 
 class StrategyFortyThreeNativePort:
-    def __init__(self, *, runtime, publisher, source_token, source_fact_id):
+    def __init__(self, *, runtime, publisher, source_token, source_fact_id, session_end_ms=19_800_000):
         if (type(runtime) is not TradingRuntime or runtime.config.mode != RunMode.BACKTEST
                 or (runtime.config.strategy_id, runtime.config.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER)
                 or type(runtime.journal) is not StrategyFortyThreeJournal
@@ -36,10 +36,13 @@ class StrategyFortyThreeNativePort:
                 or publisher.journal is not runtime.journal
                 or publisher.writer.run_id != runtime.run_id or runtime.order_manager is None
                 or type(runtime.intent_planner) is not StrategyFortyThreeOrderPlanner
-                or not source_token or not callable(source_fact_id)):
+                or not source_token or not callable(source_fact_id)
+                or type(session_end_ms) is not int or session_end_ms % 1000
+                or not 10_000 < session_end_ms <= 57_600_000):
             raise ValueError("Strategy 43 native port requires its exact Backtest authorities")
         self.runtime, self.publisher = runtime, publisher
         self.source_token, self.source_fact_id = source_token, source_fact_id
+        self.session_end_ms = session_end_ms
         self._published_batches = {}
         self._leg_liquidations = {}
         self._cutoff_time = None
@@ -174,7 +177,8 @@ class StrategyFortyThreeNativePort:
         return tuple(result)
 
     async def publish_batch(self, state):
-        if state.batch.facts.source_token != self.source_token:
+        if (state.batch.facts.source_token != self.source_token
+                or state.batch.facts.session_end_ms != self.session_end_ms):
             raise ValueError("Strategy 43 batch changed its certified source plan")
         fact_id = self.source_fact_id(state.batch.facts)
         if str(UUID(fact_id)) != fact_id:
@@ -244,9 +248,7 @@ class StrategyFortyThreeNativePort:
 
     async def cancel_session_acquisitions(self, *, at):
         from src.backend.backtest_market_data import market_day_boundary
-        boundaries = {batch.facts.session_end_ms - 10_000 for batch in self._published_batches.values()}
-        if (len(boundaries) > 1 or boundaries and at != market_day_boundary(
-                self.runtime.config.anchor_date, next(iter(boundaries)))
+        if (at != market_day_boundary(self.runtime.config.anchor_date, self.session_end_ms - 10_000)
                 or self._cutoff_time is not None):
             raise ValueError("Strategy 43 cutoff must execute once at its pinned terminal boundary")
         self._cutoff_time = at

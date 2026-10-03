@@ -113,8 +113,10 @@ plan with no mutations. Explicit application creates only the three versioned
 SSD tables, a dedicated producer with six SELECT/INSERT privileges and three
 SELECT grants for the existing Backtest reader. Credentials stay in workstation
 secrets. The user approved this scope after asking what the tables contain.
-Before application, all three tables were confirmed absent using the real
-`backtest_v3_reader`; no historical rows have been published yet.
+Application succeeded on the isolated workstation deployment of pushed commit
+`5dcfd357050c84bedccd29ddf7a02b12a9f82727`. All three SSD layouts and the
+exact six producer privileges were verified; the real Backtest reader can
+SELECT all three tables. They currently contain zero rows.
 
 A producer-only entry-point V7 witness prototype streams the previous certified
 checkpoint through the entry boundary using the native FixedV7Stream. It is not
@@ -123,13 +125,27 @@ still pins the existing normalized full-session causal V7 interval contract.
 
 ## Validation and remaining work
 
-155 focused/regression tests passed. The native integration test uses actual
+155 focused/regression tests passed before provisioning. Subsequent focused
+checks passed for bounded producer extraction, late-signal population retention,
+pinned empty-session cutoff and the Keeper-protected V7 campaign. The native integration test uses actual
 Portfolio, OMS, planner and simulated broker: fifteen parents produce 45 orders,
 fill on a later 100 ms bucket, liquidate independently, and finish with zero
 holdings/working orders and a fenced sequence. Its writer transport is a test
 fixture; this is not an actual ClickHouse or historical financial Backtest.
 
-Remaining: provision and publish historical general-population source evidence;
+Real workstation input inspection independently reproduced 6,066 tradable
+listings and 833 first-signal candidates from 5,949 episode starts. All 6,066
+native identities and 833 prior-session structural seeds certify. Only 398 of
+the 833 have published causal V7 intervals; 435 derivatives are missing. A
+read-only AAPG full-session native derivation took 0.112 seconds for 24 valid
+seconds and 57 intervals; this single sparse ticker is not a throughput claim.
+`scripts/clickhouse/publish_strategy_forty_three_v7.py` prepares only missing
+units, defaults to check-only, preserves covered seals, uses bounded workers
+and retains restart receipts outside source. Its full real campaign remains
+to be executed. Producer feature extraction uses Polars over one certified
+listing/session and does not fill missing prices.
+
+Remaining: publish missing causal derivatives and general-population features;
 implement immutable Strategy 43 configuration certification/publication and app
 catalog/preflight/controller routing; qualify the complete real app route and
 cold journal review. The source reader currently requires independently

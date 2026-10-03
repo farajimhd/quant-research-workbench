@@ -136,7 +136,7 @@ def certify_history(*, market, identity, structure, candidate_tickers,
                 or population[0]["source_snapshot_hash"] != snapshot_hash
                 or population[0]["source_market_token"] != market.token
                 or population[0]["source_signal_query_hash"] != signal_query_hash
-                or not 0 < population[0]["admission_ms"] < session_end_ms - 10_000
+                or not 0 < population[0]["admission_ms"] <= session_end_ms
                 or population[0]["admission_ms"] % 1000):
             raise RuntimeError(f"Strategy 43 {ticker} tradable population proof differs")
         rows = _fact_rows(reader, selected)
