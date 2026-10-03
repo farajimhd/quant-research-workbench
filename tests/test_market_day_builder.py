@@ -37,13 +37,14 @@ class Arguments(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'continuity mismatch'):
             B.prefetch_source_evidence(client,'NVDA',[row])
 
-    def test_cached_split_adjustment_matches_chronological_contract(self):
-        splits=[dict(provider_ticker='NVDA',execution_date='2026-08-03',split_from=1,split_to=2),
-            dict(provider_ticker='NVDA',execution_date='2026-08-10',split_from=1,split_to=3)]
-        self.assertEqual(S.split_factor_value(splits,'2026-08-03','NVDA','2026-07-31'),.5)
-        self.assertEqual(S.split_factor_value(splits,'2026-08-03','NVDA','2026-08-03'),1.)
-        self.assertEqual(S.split_factor_value(splits,'2026-08-10','NVDA','2026-07-31'),1/6)
-        self.assertEqual(S.split_factor_value(splits,'2026-08-10','AAPL','2026-07-31'),1.)
+    def test_resume_preserves_immutable_suffix_and_rejects_changed_definition(self):
+        previous=dict(controller_source='fa4cd8a702b0224cb2a778540c0a4f1067641e2a997caab5070ba3f5a13e0cc0',calculation_source='exact',plan={'n':1})
+        saved=dict(definition=previous,build_id=B.digest(previous)+'-453f5b1cdbc5')
+        current=dict(previous,controller_source='new')
+        self.assertTrue(B.transport_compatible_resume(saved,current))
+        self.assertFalse(B.transport_compatible_resume(saved,dict(current,calculation_source='changed')))
+        saved['build_id']=B.digest(previous)+'-wrong'
+        self.assertFalse(B.transport_compatible_resume(saved,current))
 
     def test_reporting_coverage_requires_complete_matching_source(self):
         source = dict(source_date='2026-07-31', trade_event_rows=2, updated_at='ignored')

@@ -36,6 +36,8 @@ from src.trading_runtime.arte_market_day_session_seal import SESSION_SEAL
 RUNTIME = Path("D:/TradingML/runtimes")
 DEFAULT_ENV = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env")
 RESUME_COMPATIBLE_CONTROLLER_HASHES = frozenset({
+    # Same calculation SQL and receipts; replace repeated reads by ticker batches.
+    "fa4cd8a702b0224cb2a778540c0a4f1067641e2a997caab5070ba3f5a13e0cc0",
     # The July 30-August 17 controller completed all units before a newly
     # installed, producer-owned session-seal table failed final preflight.
     "27febe11c53cfe0bd36ac3040a0370a71ed16ae884941cca3c05f6a42436c9f1",
@@ -798,7 +800,9 @@ def prior_indicator_state(ledger, client, db, build, day, ticker, predecessor, c
     cache=getattr(client,'prefetched_final_states',{})
     technical=cache.get((old_build,predecessor,ticker,'technical',candidate['attempt_id']))
     closes=cache.get((old_build,predecessor,ticker,'bars',bars_unit['attempt_id']))
-    multiplier=sql.split_factor_value(splits,day,ticker,predecessor)
+    multiplier=math.prod(float(row['split_from'])/float(row['split_to'])
+        for row in splits if row['provider_ticker']==ticker
+        and str(predecessor)<str(row['execution_date'])<=str(day))
     if technical is None:
         technical=client.query(f"SELECT resolution_ms,{','.join(f'ema_{p}*({factor}) AS ema_{p}' for p in sql.EMAS)},macd_signal*({factor}) AS macd_signal FROM {sql.table(db,'technical')} WHERE {sql.selection(old_build,old_day,ticker,candidate['attempt_id'])} ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_technical_values')
     else:
@@ -1016,7 +1020,10 @@ def transport_compatible_resume(saved, definition):
     previous=saved.get('definition') if isinstance(saved,dict) else None
     if not isinstance(previous,dict) or previous.get('controller_source') not in RESUME_COMPATIBLE_CONTROLLER_HASHES:
         return False
-    if saved.get('build_id') != digest(previous):
+    identity=digest(previous)
+    build_id=saved.get('build_id','')
+    suffix=build_id[len(identity)+1:] if build_id.startswith(identity+'-') else ''
+    if build_id!=identity and not (len(suffix)==12 and all(c in '0123456789abcdef' for c in suffix)):
         return False
     return digest({key:value for key,value in previous.items() if key!='controller_source'}) == digest(
         {key:value for key,value in definition.items() if key!='controller_source'})
