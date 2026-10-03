@@ -6,7 +6,9 @@ or prices. Missing metadata is excluded with an explicit reason.
 """
 from services.reference_gateway.tradability import is_otc_venue
 from research.rl_trading.v1.common import digest
-from research.rl_trading.v1.arte_source import query
+import json
+from research.mlops.clickhouse import (ClickHouseHttpClient,default_clickhouse_url,
+    default_clickhouse_user,default_clickhouse_password)
 
 VERSION = 'rl-v6-us-exchange-listed-stocks-v1'
 
@@ -48,14 +50,25 @@ def filter_population(population, metadata):
 
 
 def scope_population(client,population):
-    metadata=query(client,"""SELECT l.listing_id AS listing_id,
+    # Dedicated fixed SELECT for static canonical scope. Preserve the shared
+    # ARTE reader's narrower market-data SQL boundary without weakening it.
+    statement="""SELECT l.listing_id AS listing_id,
         l.exchange_code AS exchange_code,l.currency_code AS currency,
         sec.product_type AS product_type,ex.iso_country_code AS country,
         ex.acronym AS acronym,ex.mic AS mic,ex.operating_mic AS operating_mic,
         ex.name AS exchange_name
         FROM q_live.id_listing_v1 AS l FINAL
         INNER JOIN q_live.id_security_v1 AS sec FINAL ON sec.security_id=l.security_id
-        LEFT JOIN q_live.ref_exchange_v1 AS ex FINAL ON ex.exchange_code=l.exchange_code""")
+        LEFT JOIN q_live.ref_exchange_v1 AS ex FINAL ON ex.exchange_code=l.exchange_code
+        FORMAT JSONEachRow"""
+    reader=ClickHouseHttpClient(default_clickhouse_url(),default_clickhouse_user(),
+        default_clickhouse_password(),timeout_seconds=90,
+        default_query_params=dict(readonly=1,max_threads=1,max_execution_time=60,
+            max_memory_usage=536870912,max_result_rows=100000,result_overflow_mode='throw'))
+    try:
+        metadata=[json.loads(line) for line in reader.execute(statement).splitlines() if line]
+    finally:
+        reader.close()
     return filter_population(population,metadata)
 
 
