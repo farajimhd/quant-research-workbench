@@ -282,7 +282,11 @@ def prepare_session(
         if progress:
             progress({"stage": "Certify population identity", "message": "Checking pinned preopen identity snapshot and content hash"})
         members, population = arte_source.population(reader, source, day, diagnostic_directory=cache,
-                                                     excluded_tickers=config.excluded_tickers)
+                                                     excluded_tickers=config.excluded_tickers,
+                                                     regular_us_exchanges_only=config.regular_us_exchanges_only)
+        names = sorted({row['ticker'] for row in members})
+        if not names:
+            raise EncodingError('No eligible stock exchange listings in pinned population')
         if progress:
             progress({"stage": "Tradable population selected", "completed": len(members), "total": len(names),
                       "message": f"{len(members):,} certified tradable tickers; explicit exclusions: {', '.join(config.excluded_tickers) or 'none'}"})

@@ -197,3 +197,22 @@ the session list to bypass certification. A read-only catalogue-wide V7 coverage
 metadata audit is stored as `source_dependency_audit.json` under the job root;
 planned-population misses are potential dependencies, while the admitted-watchlist
 preflight confirms actual required inputs. Other source gates must still pass.
+
+## Exchange-only optimization scope
+
+All v3 Session requests now default to `regular_us_exchanges_only=True`.
+The complete pinned preopen snapshot hash and availability are checked first.
+Then declared exclusions and a fixed allowlist of US stock exchange listing venues
+select USD `stk` identities. OTC (`otclnkecn`), ATS routes (`arcaedge`, `ibeos`,
+`t24x`), foreign/unknown venues, currencies and malformed identities are excluded.
+The allowlist and every rejected identity are recorded in population eligibility
+provenance. Missing identities and ambiguous eligible listings still fail closed.
+This uses the pinned listing venue, not current reference metadata or a claim about
+issuer domicile/primary listing. ADRs and stock-typed products are not separately
+classified by the snapshot. The optimizer cannot mutate universe eligibility.
+
+Filtering occurs before the ClickHouse price/squeeze scans, so excluded tickers
+never enter the watchlist, execution certification or downstream data projection.
+The Session flag participates in cache identity; source/code hashes force a new
+campaign and qualification. The old BKYI failure remains valid evidence for the
+previous broader universe, rather than a defect to repair in canonical data.

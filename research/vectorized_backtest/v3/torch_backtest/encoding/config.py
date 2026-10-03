@@ -21,6 +21,7 @@ class Session:
     max_prepared_gib: float = 2.0
     warmup_seconds: int = 3600
     excluded_tickers: tuple[str, ...] = DEFAULT_EXCLUDED_TICKERS
+    regular_us_exchanges_only: bool = True
 
 
 @dataclass(frozen=True)

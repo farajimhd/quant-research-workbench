@@ -16,6 +16,25 @@ from .arte_sql import ArteReader, query
 
 TABLES = {'bars': 'bars_v1', 'technical': 'indicators_v1'}
 
+# Pinned IBKR listing-venue aliases for US stock exchanges. ATS/OTC routes
+# (including arcaedge, ibeos, otclnkecn and t24x) are intentionally absent.
+# This is listing eligibility, not an issuer-domicile or primary-exchange claim.
+REGULAR_US_STOCK_VENUES = frozenset({
+    'amex', 'arca', 'bats', 'bex', 'byx', 'cboe', 'chx', 'drctedge',
+    'edgea', 'edgx', 'iex', 'ise', 'island', 'ltse', 'memx', 'nasdaq',
+    'nyse', 'nysefloor', 'nysenat', 'pearl', 'phlx', 'psx',
+})
+
+
+def regular_us_listing(row):
+    """Fail closed on unknown/malformed identity, non-USD or non-stock input."""
+    listing = row['listing_id'].split(':')
+    symbol = row['symbol_id'].split(':')
+    return (len(listing) == 5 and listing[:2] == ['listing', 'security']
+            and listing[3] in REGULAR_US_STOCK_VENUES and listing[4] == 'usd'
+            and len(symbol) == 8 and symbol[0] == 'symbol'
+            and symbol[1:6] == listing and symbol[7] == 'stk')
+
 
 def load_build(manifest, ledger, days, tickers=None):
     report = json.loads(Path(manifest).read_text(encoding='utf-8'))
@@ -76,7 +95,8 @@ def storage_check(c):
     return dict(tables=tables, parts=parts)
 
 
-def population(c, source, day, *, diagnostic_directory=None, excluded_tickers=()):
+def population(c, source, day, *, diagnostic_directory=None, excluded_tickers=(),
+               regular_us_exchanges_only=False):
     saved = [p for p in source['definition']['plan']['population'] if p['session_date'] == str(day)]
     if len(saved) != 1:
         raise ValueError('Missing unique build population certificate')
@@ -107,6 +127,13 @@ def population(c, source, day, *, diagnostic_directory=None, excluded_tickers=()
     planned = set(source['units'][str(day)])
     selected = planned - set(excluded_tickers)
     rows = [r for r in members if r['ticker'] in selected]
+    # Verify the entire immutable snapshot above BEFORE applying research scope.
+    # Venue membership is fixed for the session; optimizer genes cannot change it.
+    venue_excluded = [r for r in rows if regular_us_exchanges_only and not regular_us_listing(r)]
+    if regular_us_exchanges_only:
+        rows = [r for r in rows if regular_us_listing(r)]
+        rejected_only = {r['ticker'] for r in venue_excluded} - {r['ticker'] for r in rows}
+        selected -= rejected_only
     eligibility = dict(authority='q_live.feature_tradable_universe_snapshot_v2',
         snapshot_id=cert['snapshot_id'], revision=cert['revision'], session=str(day),
         rule='pinned preopen is_tradable=1; explicit research exclusions applied after full snapshot verification',
@@ -116,6 +143,12 @@ def population(c, source, day, *, diagnostic_directory=None, excluded_tickers=()
         excluded_identity_rows=[r for r in members if r['ticker'] in planned & set(excluded_tickers)],
         exclusion_reasons={ticker: ('operator-declared LGHL broker identity/tradability issue' if ticker == 'LGHL'
                                    else 'explicit operator research exclusion') for ticker in sorted(excluded_tickers)})
+    eligibility.update(regular_us_exchanges_only=regular_us_exchanges_only,
+        venue_policy='pinned-us-stock-exchange-listing-v1',
+        allowed_venues=sorted(REGULAR_US_STOCK_VENUES),
+        venue_excluded_rows=venue_excluded, venue_excluded_count=len(venue_excluded),
+        eligible_tickers=len(selected),
+        rule='pinned preopen is_tradable=1; declared exclusions; USD stock exchange listing when enabled')
     if diagnostic_directory is not None:
         from ..runtime import require_runtime, write_json
         write_json(require_runtime(diagnostic_directory) / 'population-eligibility.json', eligibility)

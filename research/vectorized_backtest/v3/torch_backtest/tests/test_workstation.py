@@ -242,3 +242,42 @@ def test_1024_lane_compiled_graph_preserves_independent_accounts(dense):
     for key in ("cash", "fees", "realized", "fill_count", "requested_entry_shares", "filled_entry_shares"):
         assert torch.allclose(actual[key].cpu(), reference[key].expand(1024), atol=1e-7, rtol=0)
     assert torch.allclose(runner.ledger.cpu(), runner.ledger[:1].expand(1024, -1, -1).cpu(), atol=1e-7, rtol=0)
+
+def test_regular_us_listing_scope_is_explicit_and_fail_closed():
+    from research.vectorized_backtest.v3.torch_backtest.source.arte_source import regular_us_listing
+    from research.vectorized_backtest.v3.torch_backtest.encoding.config import Session
+    def identity(venue, currency='usd', product='stk'):
+        listing=f'listing:security:abc:{venue}:{currency}'
+        return dict(listing_id=listing, symbol_id=f'symbol:{listing}:ABC:{product}')
+    for venue in ('nasdaq', 'nyse', 'amex', 'arca', 'iex', 'memx'):
+        assert regular_us_listing(identity(venue))
+    for venue in ('otclnkecn', 'arcaedge', 'ibeos', 't24x', 'unknown', 'lse'):
+        assert not regular_us_listing(identity(venue))
+    assert not regular_us_listing(identity('nyse', 'cad'))
+    assert not regular_us_listing(identity('nyse', product='opt'))
+    assert not regular_us_listing(dict(listing_id='malformed', symbol_id='malformed'))
+    assert Session.__dataclass_fields__['regular_us_exchanges_only'].default is True
+
+
+def test_venue_filter_preserves_full_snapshot_verification(tmp_path, monkeypatch):
+    from datetime import date
+    from research.vectorized_backtest.v3.torch_backtest.source import arte_source
+    from research.vectorized_backtest.v3.torch_backtest.source.common import digest
+    day=date(2026,7,30)
+    def member(ticker, venue):
+        listing=f'listing:security:{ticker}:{venue}:usd'
+        return dict(ticker=ticker, listing_id=listing, symbol_id=f'symbol:{listing}:{ticker}:stk',
+                    security_id=ticker, source_run_id='r', inserted_at='t')
+    members=[member('A','nyse'), member('BKYI','otclnkecn')]
+    certificate=dict(status='certified', revision='preopen-tradable-snapshot-v3',
+        captured_at_utc='2026-07-30T07:00:00+00:00', available_at_utc='2026-07-30T07:01:00+00:00',
+        cutoff_utc='2026-07-30T08:00:00+00:00',snapshot_id='p',row_count=2,tradable_count=2,source_hash=3)
+    source=dict(definition={'plan':{'population':[dict(session_date=str(day),certificate=certificate,snapshot_hash=digest(members))]}},units={str(day):{'A':{},'BKYI':{}}})
+    monkeypatch.setattr(arte_source,'query',lambda c,s:[dict(n=2,tradable=2,source_hash=3)] if 'count()' in s else members)
+    selected,saved=arte_source.population(None,source,day,regular_us_exchanges_only=True,diagnostic_directory=tmp_path)
+    assert [r['ticker'] for r in selected]==['A']
+    assert saved['eligibility']['venue_excluded_count']==1
+    assert saved['eligibility']['venue_excluded_rows'][0]['ticker']=='BKYI'
+    source['definition']['plan']['population'][0]['snapshot_hash']='tampered'
+    with pytest.raises(ValueError,match='Population no longer matches'):
+        arte_source.population(None,source,day,regular_us_exchanges_only=True)
