@@ -76,7 +76,7 @@ async def run(apply):
         torch = dict(net_pnl=-371.26932136827236, fees=163.87, max_drawdown=434.15468174429043,
                      acquired_shares=16387, fills=390, ticker_batches=2, decision_ms=1000, broker_ms=1000)
         comparison = dict(session="2026-09-03 premarket", initial_cash=10_000,
-            torch=torch, native_summary=report.get("summary"), native_receipt=controller.comparison_receipt,
+            torch=torch, native_summary=report.get("report", {}).get("summary"), native_receipt=controller.comparison_receipt,
             broker_difference="Native 100ms vs Torch 1s; exact fill/P&L parity is not assumed")
         (root / "comparison.json").write_text(json.dumps(comparison, indent=2, default=str), encoding="utf-8")
         print(f"Native comparison completed and cold-read | results {root}", flush=True)

@@ -60,7 +60,7 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
     source = path.read_text(encoding="utf-8")
     adapter_source = Path(__file__).with_name(
         "backtest_historical_strategy_projection.py").read_text(encoding="utf-8")
-    if sha256(ast.unparse(ast.parse(adapter_source)).encode()).hexdigest() != "14acfaa28335c05860d9383fd30df15502c3e19cd44ba784f83ad2bfd3ff12c1":
+    if sha256(ast.unparse(ast.parse(adapter_source)).encode()).hexdigest() != "9427a783ca090a08e6eccf24455feffa76ec3f967ee4deb27939cee8cf1932da":
         raise ValueError("Historical numbered dispatch projection source changed")
     from .backtest_historical_strategy_projection import historical_strategy_tree
     tree = historical_strategy_tree(ast.parse(source), "trading_runtime/numbered_fixed_strategy.py")

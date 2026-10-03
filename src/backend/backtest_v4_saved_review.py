@@ -215,6 +215,9 @@ def _terminal_attestation(client, normalized: str,
             prefix = load_verified_v4_prefix(client, normalized)
         if prefix is None or prefix.status not in {"completed", "stopped", "failed"}:
             raise ValueError("Saved review requires a cold-verified terminal V4 run")
+        if (context["strategy_id"], int(context["strategy_revision"])) == ("squeeze-grid-strategy", 43):
+            from .backtest_strategy_forty_three_review import audit_terminal_source
+            audit_terminal_source(client, prefix, context)
         accounts = {
             account_id: load_terminal_backtest_snapshot(
                 client, prefix, account_id=account_id)

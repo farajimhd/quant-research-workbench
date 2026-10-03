@@ -58,6 +58,7 @@ def preflight(*, anchor_date, session_count, initial_cash, start_time, end_time,
                 "strategy_forty_three_structure_token": plan.structure.token,
                 "strategy_forty_three_price_token": prices.token,
                 "price_level_plan_token": prices.token,
+                "price_level_unit_count": len(prices.units),
                 "parent_market_plan_token": plan.market.token,
                 "execution_market_plan_token": execution.token,
                 "squeeze_ticker_count": len(plan.tickers)}

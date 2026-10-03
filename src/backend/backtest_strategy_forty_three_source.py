@@ -9,6 +9,11 @@ import json
 import struct
 from types import MappingProxyType
 from uuid import UUID
+from dataclasses import asdict
+from hashlib import sha256
+from .backtest_market_plan_cache import FingerprintPlanCache, selected_product_inventory_fingerprint
+
+_HISTORY_CACHE = FingerprintPlanCache()
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
 from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
@@ -92,6 +97,38 @@ def _fact_rows(reader, selected):
 
 
 def certify_history(*, market, identity, structure, candidate_tickers,
+                    snapshot_hash, signal_query_hash, session_end_ms, reader):
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    if not isinstance(reader, ClickHouseHttpClient):
+        return _certify_history_uncached(market=market, identity=identity, structure=structure,
+            candidate_tickers=candidate_tickers, snapshot_hash=snapshot_hash,
+            signal_query_hash=signal_query_hash, session_end_ms=session_end_ms, reader=reader)
+    # The parent plans were independently certified by the caller. Bind all
+    # effective parent identities and scopes, not just a caller's token string.
+    key = sha256(json.dumps(dict(market=market.payload(), units=[asdict(unit) for unit in market.units],
+        identity=[identity.token, identity.content_hash, identity.tickers, identity.conids],
+        structure=[structure.token, [asdict(row) for row in structure.coverage]],
+        tickers=candidate_tickers, snapshot=snapshot_hash, signal=signal_query_hash,
+        end=session_end_ms, product=PRODUCT_DIGEST), sort_keys=True, default=str,
+        separators=(",", ":")).encode()).hexdigest()
+    def inventory():
+        return selected_product_inventory_fingerprint(reader,
+            tuple(name.split(".", 1)[1] for name in (FACT_TABLE, POPULATION_TABLE, COVERAGE_TABLE)),
+            source_build_id=market.build_id, session_date=market.sessions[0], tickers=candidate_tickers)
+    before = inventory()
+    cached = _HISTORY_CACHE.get(key, before)
+    if cached is not None and inventory() == before:
+        return cached
+    certificate = _certify_history_uncached(market=market, identity=identity, structure=structure,
+        candidate_tickers=candidate_tickers, snapshot_hash=snapshot_hash,
+        signal_query_hash=signal_query_hash, session_end_ms=session_end_ms, reader=reader)
+    if inventory() != before:
+        raise RuntimeError("Strategy 43 history parts changed during certification")
+    _HISTORY_CACHE.put(key, before, certificate)
+    return certificate
+
+
+def _certify_history_uncached(*, market, identity, structure, candidate_tickers,
                     snapshot_hash, signal_query_hash, session_end_ms, reader):
     if (type(market) is not CertifiedMarketDayPlan or type(identity) is not CertifiedIdentityPlan
             or type(structure) is not CertifiedV7IntervalPlan

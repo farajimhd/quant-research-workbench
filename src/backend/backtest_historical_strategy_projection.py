@@ -75,13 +75,27 @@ def _verify_lineage():
 
 def historical_strategy_tree(tree: ast.Module, relative: str) -> ast.Module:
     relative = relative.replace("\\", "/").removeprefix("src/")
-    if relative not in {"pipelines/strategy_one/configuration_publisher.py",
+    if relative not in {"backend/backtest_v4_saved_review.py", "pipelines/strategy_one/configuration_publisher.py",
                         "backend/replay_run_service.py", "backend/backtest_strategy_one_configuration.py",
                         "trading_runtime/numbered_fixed_strategy.py",
                         "trading_runtime/arte_journal_commit_v4.py",
                         "trading_runtime/arte_oms_projection.py"}:
         return tree
     result = deepcopy(tree)
+    if relative == "backend/backtest_v4_saved_review.py":
+        expected = ast.parse('''
+if (context["strategy_id"], int(context["strategy_revision"])) == ("squeeze-grid-strategy", 43):
+    from .backtest_strategy_forty_three_review import audit_terminal_source
+    audit_terminal_source(client, prefix, context)
+''').body[0]
+        methods = [node for node in result.body if isinstance(node, ast.FunctionDef) and node.name == "_terminal_attestation"]
+        matches = [(owner, i) for owner in ast.walk(methods[0]) if hasattr(owner, "body")
+                   and isinstance(owner.body, list) for i, node in enumerate(owner.body) if _same(node, expected)]
+        if len(methods) != 1 or len(matches) != 1:
+            raise ValueError("Strategy 43 cold source dispatch changed")
+        owner, index = matches[0]
+        owner.body.pop(index)
+        return result
     if relative == "pipelines/strategy_one/configuration_publisher.py":
         expected = ast.parse('''
 if type(number) is int and number == 43:

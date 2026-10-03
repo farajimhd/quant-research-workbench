@@ -157,7 +157,15 @@ It supports play, pause and stop; public resume and event navigation are unquali
 119 focused/regression tests passed; four admission/controller checks passed after
 explicitly reading the 1s trade count that the native sparse reader omits.
 
-Remaining: verify deployment and real inputs, publish the configuration, qualify
+A 2,134-file committed workstation deployment was SHA-verified. Real app input
+qualification reproduced all 6,066 tradables and 833 signals, with exactly GELS
+and MIMI eligible at their first completed signal seconds. Native price token:
+`0af54a0a1454ce40975f545aa34db608231e289173a7f65d3dd14c389e7f6ae8`.
+The in-process history cache requires unchanged schema, SSD placement and exact
+immutable-part checksums; changes force full child re-audit. Cold readback additionally
+checks batch completeness, causal geometry, decreasing quantities and producer references.
+
+Remaining: publish the configuration, qualify
 the complete real app route and cold journal review, then compare the actual financial
 results. The source reader requires independently
 certified identity and causal V7 plans, not arbitrary strings as authority.

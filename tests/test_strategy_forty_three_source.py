@@ -93,3 +93,27 @@ def test_consumer_rejects_changed_or_incomplete_authority(monkeypatch, mutation)
         state["facts"].pop()
     with pytest.raises(RuntimeError):
         certify_history(**arguments)
+
+
+def test_real_client_cache_requires_same_physical_parts_and_reaudits_changes(monkeypatch):
+    import src.backend.backtest_strategy_forty_three_source as consumer
+    import research.mlops.clickhouse as transport
+    state, arguments = fixture(monkeypatch)
+    monkeypatch.setattr(transport, "ClickHouseHttpClient", type(arguments["reader"]))
+    from src.backend.backtest_market_plan_cache import FingerprintPlanCache
+    monkeypatch.setattr(consumer, "_HISTORY_CACHE", FingerprintPlanCache())
+    physical = ["unchanged"]
+    monkeypatch.setattr(consumer, "selected_product_inventory_fingerprint", lambda *_a, **_k: physical[0])
+    original = consumer._certify_history_uncached
+    calls = []
+    def audit(**kwargs):
+        calls.append(True)
+        return original(**kwargs)
+    monkeypatch.setattr(consumer, "_certify_history_uncached", audit)
+    first = certify_history(**arguments)
+    assert certify_history(**arguments) is first and len(calls) == 1
+    physical[0] = "new part"
+    state["facts"][0]["close"] = 10.000000000000002
+    with pytest.raises(RuntimeError, match="children"):
+        certify_history(**arguments)
+    assert len(calls) == 2
