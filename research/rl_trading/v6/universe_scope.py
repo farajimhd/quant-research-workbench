@@ -36,7 +36,8 @@ def filter_population(population, metadata):
         distinct[json.dumps(row,sort_keys=True)]=row
     selected=[]; rejected=[]; evidence=[]
     for listing in population:
-        identity=listing['listing_id']; rows=list(groups.get(identity,{}).values())
+        identity=listing['listing_id']; group=groups.get(identity,{})
+        rows=[group[key] for key in sorted(group)]
         row=rows[0] if len(rows)==1 else None
         reason='ambiguous_canonical_scope_metadata' if len(rows)>1 else exclusion(row)
         evidence.extend(rows)
