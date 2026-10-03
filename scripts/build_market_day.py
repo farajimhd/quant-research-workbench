@@ -580,8 +580,14 @@ def checked_source_evidence(row, result):
 
 
 def prefetch_source_evidence(client, ticker, rows):
-    """One bounded ticker scan; preserve each day's exact source hash and bounds."""
+    """Bound exact-ordinal aggregation to four sessions, with unchanged hashes."""
     client.prefetched_source = {}
+    ordered=sorted(rows,key=lambda row:row['source_date'])
+    for offset in range(0,len(ordered),4):
+        _prefetch_source_batch(client,ticker,ordered[offset:offset+4])
+
+
+def _prefetch_source_batch(client,ticker,rows):
     if not rows:
         return
     first = date.fromisoformat(min(row['source_date'] for row in rows))
@@ -593,11 +599,9 @@ def prefetch_source_evidence(client, ticker, rows):
     actual = client.query(f"""SELECT toString({day_expr}) AS day,
       count() AS n,uniqExact(ordinal) AS unique_ordinals,min(ordinal) AS first_ordinal,
       max(ordinal) AS last_ordinal,min(sip_timestamp_us) AS first_us,max(sip_timestamp_us) AS last_us,
-      countIf(sip_timestamp_us>=toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString({day_expr}),' 04:00:00'),6,'America/New_York')))
-        AND sip_timestamp_us<toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString({day_expr}),' 20:00:00'),6,'America/New_York')))) AS session_events,
+      countIf(toHour(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'America/New_York')) BETWEEN 4 AND 19) AS session_events,
       countIf(bitAnd(event_meta,1)=1 AND bitAnd(event_meta,{sql.DELAYED})!=0
-        AND sip_timestamp_us>=toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString({day_expr}),' 04:00:00'),6,'America/New_York')))
-        AND sip_timestamp_us<toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString({day_expr}),' 20:00:00'),6,'America/New_York')))) AS reporting_delayed_trades,
+        AND toHour(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'America/New_York')) BETWEEN 4 AND 19) AS reporting_delayed_trades,
       sum(cityHash64(tuple(*))) AS hash
       FROM merge('market_sip_compact','^events_({years})$')
       WHERE ticker={sql.literal(ticker)} AND event_date BETWEEN toDate({sql.literal(first)}) AND toDate({sql.literal(tomorrow)})
