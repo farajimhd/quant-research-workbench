@@ -79,8 +79,12 @@ def main(argv=None):
     args=builder.parse_args(['--start-date',definition['start'],'--end-date',definition['end'],
         '--max-memory-gb','8','--query-timeout','1800','--env-file','D:/TradingML/secrets/.env'])
     c=builder.Client(args,persistent=False)
-    ledger=sqlite3.connect('file:'+str(root/'build-ledger-v2.sqlite3')+'?mode=ro',uri=True)
+    # The builder stores its ledger next to the runtime directory, not
+    # necessarily at the global runtime root. Old builds keep their own ledger.
+    ledger=sqlite3.connect('file:'+str(a.manifest.resolve().parent.parent/'build-ledger-v2.sqlite3')+'?mode=ro',uri=True)
     ledger.row_factory=sqlite3.Row
+    previous_ledger=sqlite3.connect('file:'+str(root/'build-ledger-v2.sqlite3')+'?mode=ro',uri=True)
+    previous_ledger.row_factory=sqlite3.Row
     results=[]; days=definition['plan']['requested']
     try:
         builder.storage_preflight(c,'arte',True)
@@ -115,7 +119,7 @@ def main(argv=None):
                 seed,error=recurrence(values,seed)
                 sample=dict(day=day,ticker=ticker,macd_candles=len(values),maximum_macd_error=error)
                 if a.previous_build_id:
-                    originals=[dict(r) for r in ledger.execute(
+                    originals=[dict(r) for r in previous_ledger.execute(
                         'SELECT * FROM units WHERE session_date=? AND ticker=? AND stage=\'bars\' AND build_id IN ('+
                         ','.join('?' for _ in a.previous_build_id)+')',[day,ticker,*a.previous_build_id])]
                     if len(originals)!=1:raise ValueError(f'{day} {ticker}: original bar authority is ambiguous')
@@ -145,7 +149,7 @@ def main(argv=None):
             scope='all certified ticker-day stage counts; independent 1s MACD all sessions for declared tickers; independent first 15 min OHLC on declared sample dates',
             sealed_test_labels_accessed=False))
     finally:
-        c.close();ledger.close()
+        c.close();ledger.close();previous_ledger.close()
     return 0
 
 

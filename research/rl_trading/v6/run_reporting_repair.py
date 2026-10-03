@@ -146,7 +146,7 @@ def main(argv=None):
             stage = 'feature_banks'
             manifest = str(output/'bars/latest.json')
             run(stage,['-m','research.rl_trading.v6.build_campaign','--early-manifest',manifest,
-                '--late-manifest',manifest,'--ledger',str(ROOT/'build-ledger-v2.sqlite3'),
+                '--late-manifest',manifest,'--ledger',str(output/'build-ledger-v2.sqlite3'),
                 '--output-root',str(output/'banks'),'--workers','16'])
             stage = 'labels'
             run(stage,['research/rl_trading/v6/run_prepare_labels.py',
