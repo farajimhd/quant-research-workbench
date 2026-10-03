@@ -61,6 +61,7 @@ def published():
 def catalog():
     active, dataset = published()
     return dict(version=data.VERSION, algorithm=algorithm.VERSION, dataset_sha256=active['sha256'],
+        supports_combined=True,
         timing=CONTRACT, days=[dict(day=e['day'], role=e['role'], valid_rows=e['valid_rows'],
         invalid_price_rows=e['invalid_price_rows']) for e in [dataset['context']]+dataset['days']],
         sealed_test_accessed=False)
@@ -164,6 +165,7 @@ def product(day, listing_id):
         raise ValueError('Source activity census changed')
     metadata['consumed_activity_rows'] = plan['census'][listing_id]
     metadata['omitted_invalid_price_rows'] = plan['census'][listing_id]-labels.height
+    metadata['reporting'] = next(r for r in plan['reporting_coverage']['current'] if r['source_date'] == day)
     return metadata, frames
 
 
@@ -171,9 +173,9 @@ def metadata(day, listing_id):
     return product(day,listing_id)[0]
 
 
-def chart(day, listing_id, start_us=None, seconds=900, view='flat'):
+def chart(day, listing_id, start_us=None, seconds=900, view='combined'):
     proof, frames = product(day,listing_id)
-    if view not in ('flat','held','reference'): raise ValueError('Select a conditional teacher branch or reference')
+    if view not in ('combined','flat','held','reference'): raise ValueError('Select teacher opportunities, a conditional branch, or reference')
     result = algorithm.chart_frames(proof,frames,start_us,seconds,proof['config']['quality_threshold'],view)
     if view=='held':
         # Training has held supervision only where a saved exit gain is defined.

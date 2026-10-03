@@ -1,6 +1,6 @@
 # Current V6 label authority
 
-Current training requires `rl-v6-swing-opportunity-dataset-v2`, using the
+Current training requires `rl-v6-swing-opportunity-dataset-v3`, using the
 chart-verified `price-action-long-opportunities-v2` algorithm. Old portfolio
 teachers, rolling-15 episode windows, fee-adjusted candidate targets, bracket
 sidecars and checkpoints from their datasets are rejected by current loaders.
@@ -31,7 +31,8 @@ published dataset/audit certificates from the workstation runtime. Select
 any of the 19 saved sessions and a ticker/listing. The three existing Canvas
 containers show algorithm/timing, session/pair statistics, and saved candles
 with 1s MACD shading. Arrow rows show quality and raw dollars per share.
-ENTRY/WAIT and EXIT/HOLD are separate conditional teacher branches at the
+The default chart shows both ENTRY and EXIT opportunities, with EXIT taking
+priority on a candle qualifying for both. ENTRY/WAIT and EXIT/HOLD remain separate conditional teacher branches at the
 fixed saved 90% threshold; held candles without an exit target have no marker.
 The reference view is a chronological comparison, not an extra teacher target.
 
@@ -44,14 +45,38 @@ to `\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes` and can be explicitly
 configured with `RL_V6_LABEL_AUDIT_RUNTIME`. Historical audit and the single
 NVDA experiment retain their separate paths. No new teacher or PPO run is launched.
 
+## Reporting-certified source requirement
+
+V3 label datasets require rebuilt feature banks bound to verified ingestion
+reporting coverage. The bar builder requires completed, source-matching
+`q_live.historical_trade_reporting_coverage_v1` records and idle canonical
+mutations; it records those receipts in its immutable build definition.
+V6 preparation rejects legacy builds without those receipts. Old V2 label
+datasets and their checkpoints cannot be used by the V3 training loaders.
+Unknown-clock trades remain a separately counted classification under the
+existing reporting policy; completion does not mean every clock is known.
+Bar corrections require indicator recomputation in session order because
+EMA/MACD seeds carry between sessions. Label timing remains strictly causal:
+features at target close t exclude that target candle.
+
 Generate every saved forward-bank listing on the workstation:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python -B research/rl_trading/v6/run_prepare_labels.py --source-manifest D:/TradingML/runtimes/rl-v6-forward-40cd11fac/day-roots.json --output D:/TradingML/runtimes/rl-v6-swing-labels-v2 --workers 8 --listings-per-shard 32
+python -B research/rl_trading/v6/run_prepare_labels.py --source-manifest D:/TradingML/runtimes/rl-v6-reporting-repair-20261002/banks/day-roots.json --output D:/TradingML/runtimes/rl-v6-reporting-repair-20261002/labels --workers 8 --listings-per-shard 32
 ```
 
 The same command and exact producer source resume verified completed shards.
+
+The complete workstation repair is launched with
+`python -B research/rl_trading/v6/run_reporting_repair.py --source-commit FULL_PUSHED_SHA`.
+It awaits an existing July migration, verifies all 56 certified July–September
+source sessions, runs an NVDA/AAPL bar canary and independent audit, rebuilds
+the existing July 30–September 18 market-day range immutably, audits the full
+population's stage counts and representative OHLC/MACD, then regenerates the
+19 V6 banks and labels. It never trains. `progress.json` and per-stage logs
+live beneath `D:/TradingML/runtimes/rl-v6-reporting-repair-20261002`; failures
+stop downstream stages, and rerunning resumes the pinned build/shards.
 Archive snapshots must also pass `--source-commit` with their full pushed SHA.
 `progress.json` reports
 day, active, queued, completed and failed units. All 19 saved days (context,

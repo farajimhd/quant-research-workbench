@@ -5,7 +5,7 @@ import { LoadingState } from "../../app/components/LoadingState";
 import { PriceActionResearch } from "./PriceActionResearch";
 import { useResearchState } from "./researchState";
 
-type Catalog = { dataset_sha256: string; days: { day: string; role: string; valid_rows: number; invalid_price_rows: number }[] };
+type Catalog = { dataset_sha256: string; supports_combined?: boolean; days: { day: string; role: string; valid_rows: number; invalid_price_rows: number }[] };
 type Listings = { dataset_sha256: string; listings: { listing_id: string; ticker: string; venue: string }[] };
 
 export function SavedLabelResearch() {
@@ -41,6 +41,6 @@ export function SavedLabelResearch() {
       <span>{session?.valid_rows.toLocaleString()} labelled candles · {session?.invalid_price_rows.toLocaleString()} invalid rows excluded</span>
     </div>
     {error ? <div className="canvas-inline-error" role="alert">{error}<button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Retry saved labels</button></div> : selected && listings && catalog ?
-      <PriceActionResearch key={`${day}:${identity}`} saved={{ day, listing_id: identity, dataset_sha256: listings.dataset_sha256 }} /> : <LoadingState label="Checking published labels and listing identities" />}
+      <PriceActionResearch key={`${catalog.dataset_sha256}:${day}:${identity}`} saved={{ day, listing_id: identity, dataset_sha256: listings.dataset_sha256, supports_combined: catalog.supports_combined === true }} /> : <LoadingState label="Checking published labels and listing identities" />}
   </div>;
 }

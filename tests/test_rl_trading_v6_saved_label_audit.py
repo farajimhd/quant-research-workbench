@@ -35,4 +35,10 @@ def test_saved_branch_matches_training_threshold_and_no_fabricated_held_rows(mon
     flat=audit.chart('2026-07-31','identity',view='flat')
     assert all(r['action']==('ENTRY' if r['entry_gain']>0 and r['entry_quality']>=.9 else 'WAIT') for r in flat['labels'])
     assert flat['timing']['feature_cutoff'].endswith('exclude target candle')
-    with pytest.raises(ValueError): audit.chart('2026-07-31','identity',view='combined')
+    combined=audit.chart('2026-07-31','identity')
+    assert combined['view']=='combined'
+    assert {'ENTRY','EXIT'} <= {r['action'] for r in combined['labels']}
+    for row in combined['labels']:
+        if row['exit_gain'] is not None and row['exit_gain']>0 and row['exit_quality']>=.9:
+            assert row['action']=='EXIT' and row['label_value']==row['exit_quality']
+    with pytest.raises(ValueError): audit.chart('2026-07-31','identity',view='unknown')

@@ -520,6 +520,31 @@ def source_plan(client, args):
         excluded_calendar_dates=[str(first+timedelta(days=i)) for i in range((args.end-first).days+1) if first+timedelta(days=i) not in sessions])
 
 
+def reporting_coverage(client, start, end):
+    """Bind builds to verified ingestion reporting evidence, never absent bits."""
+    sources = client.query(f"SELECT * FROM market_sip_compact.events_source_day_stats FINAL WHERE source_date BETWEEN {sql.literal(start)} AND {sql.literal(end)} ORDER BY source_date", 'reporting_source_certificates')
+    rows = client.query(f"SELECT source_date,revision,source_digest,status,details FROM q_live.historical_trade_reporting_coverage_v1 FINAL WHERE source_date BETWEEN {sql.literal(start)} AND {sql.literal(end)} AND revision={sql.literal(sql.REPORTING_REVISION)} ORDER BY source_date", 'reporting_coverage')
+    by_day = {row['source_date']: row for row in rows}
+    if len(by_day) != len(rows):
+        raise ValueError('Ambiguous trade reporting coverage')
+    proof = []
+    for source in sources:
+        day = source['source_date']; row = by_day.get(day)
+        if not row or row['status'] != 'complete':
+            raise ValueError(f'{day}: verified trade reporting coverage is required before building bars')
+        counts = json.loads(row['details'])['counts']
+        if (row['source_digest'] != digest({k:v for k,v in source.items() if k != 'updated_at'})
+                or counts['n'] != int(source['trade_event_rows']) or counts['bad'] != 0):
+            raise ValueError(f'{day}: trade reporting coverage differs from canonical source certificate')
+        proof.append({k:row[k] for k in ('source_date','revision','source_digest','status')} | {'counts':counts})
+    if not proof:
+        raise ValueError('No verified trade reporting coverage')
+    active = client.query("SELECT mutation_id FROM system.mutations WHERE database='market_sip_compact' AND startsWith(table,'events_') AND is_done=0 LIMIT 1", 'reporting_active_mutations')
+    if active:
+        raise ValueError('Canonical event mutation is active; wait before building bars')
+    return proof
+
+
 def source_evidence(client, row):
     day = date.fromisoformat(row['source_date'])
     years = '|'.join(map(str,sorted({day.year,(day+timedelta(days=1)).year})))
@@ -942,6 +967,7 @@ def run(args, *, typed_certificate_publisher=None):
         try:
             storage_preflight(client,args.database)
             plan = source_plan(client,args)
+            reporting = reporting_coverage(client,args.start,args.end)
             definition = dict(version=sql.VERSION, emas=sql.EMAS, frames=sql.FRAMES, warmup_days=sql.WARMUP_DAYS,
                 indicator_set='core', calculation_source=digest(Path(sql.__file__).read_text()),
                 rules_hash=digest(plan['rules']),seed_policy='preceding-session-certified-state-or-first-bar',
@@ -959,7 +985,9 @@ def run(args, *, typed_certificate_publisher=None):
                         reset='session',source_cursor=['sip_timestamp_us','ordinal'],availability='completed 100ms bucket')),
                 price_scale=10000,session_timezone='America/New_York',session_hours=['04:00','20:00'],
                 trade_eligibility=dict(session_start='04:00',excluded_reporting_flag=sql.DELAYED,
-                    reporting_revision=sql.REPORTING_REVISION),storage_policy=sql.POLICY,
+                    reporting_revision=sql.REPORTING_REVISION,
+                    coverage_authority='q_live.historical_trade_reporting_coverage_v1',
+                    verified_coverage=reporting),storage_policy=sql.POLICY,
                 controller_location=digest([str(runtime),os.environ.get('COMPUTERNAME','')]))
             build = digest(definition)
             if args.rebuild:

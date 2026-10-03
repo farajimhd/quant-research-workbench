@@ -18,7 +18,8 @@ type Experiment = { ticker: string; day: string; session: string; version: strin
   config: { timeframe_seconds: number; half_life_seconds: number; stop_offset: number; quality_threshold: number };
   actions: { action: string; len: number }[]; teacher_actions?: { branch: string; action: string; len: number }[]; observed_price_candles: number; consumed_activity_rows: number;
   omitted_invalid_price_rows: number; absent_second_slots: number; approximate_volume: number;
-  trades: number; total_price_pnl: number; both_opportunities: number; pairs: Pair[]; price_source: string };
+  trades: number; total_price_pnl: number; both_opportunities: number; pairs: Pair[]; price_source: string;
+  reporting?: { revision: string; counts: { n: number; delayed: number; unknown: number } } };
 type Window = { ticker: string; candles: ChartPayload["candles"]; oscillator_series: ChartPayload["oscillator_series"];
   regions: ChartPayload["regions"]; labels: Row[]; start_us: number; end_us: number; previous_available: boolean; next_available: boolean };
 const cache = new Map<string, Window>();
@@ -26,7 +27,7 @@ const number = (value: number | null | undefined) => value == null ? "—" : val
 const count = (value: number) => value.toLocaleString("en-US");
 const titles = { architecture: "Price-action algorithm", analytics: "Session & episode values", chart: "Price-action candles & labels" };
 
-export function PriceActionResearch({ saved }: { saved?: { day: string; listing_id: string; dataset_sha256: string } }) {
+export function PriceActionResearch({ saved }: { saved?: { day: string; listing_id: string; dataset_sha256: string; supports_combined: boolean } }) {
   const prefix = saved ? `saved-labels:${saved.dataset_sha256}:${saved.day}:${saved.listing_id}` : "price-action";
   const endpoint = saved ? "/api/research/models/v6/saved-labels" : "/api/research/models/v6/price-action";
   const [experiment, setExperiment] = useState<Experiment | null>(null);
@@ -36,7 +37,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
   const [pairId, setPairId] = useResearchState(`${prefix}:pair`, 1);
   const [selectedClock, setSelectedClock] = useResearchState<number | null>(`${prefix}:clock`, null);
   const [threshold, setThreshold] = useResearchState(`${prefix}:v2:threshold`, .9);
-  const [view, setView] = useResearchState(`${prefix}:v2:view`, saved ? "flat" : "combined");
+  const [view, setView] = useResearchState(`${prefix}:v3:view`, saved && !saved.supports_combined ? "flat" : "combined");
   const [holdNumbers, setHoldNumbers] = useResearchState(`${prefix}:hold-values`, false);
   useEffect(() => {
     const abort = new AbortController(); setError("");
@@ -48,7 +49,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
   useEffect(() => {
     if (!ready) return;
     const abort = new AbortController(); setBusy(true); setError("");
-    const url = `${endpoint}/chart${query({ day: saved?.day, listing_id: saved?.listing_id, start_us: start ?? undefined, seconds: 900, quality_threshold: saved ? undefined : threshold, view })}`;
+    const url = `${endpoint}/chart${query({ day: saved?.day, listing_id: saved?.listing_id, dataset_sha256: saved?.dataset_sha256, start_us: start ?? undefined, seconds: 900, quality_threshold: saved ? undefined : threshold, view })}`;
     const cached = cache.get(url);
     if (cached && !attempt) { setChart(cached); setBusy(false); return () => abort.abort(); }
     api<Window>(url, { signal: abort.signal, timeoutMs: 300000 }).then(result => {
@@ -104,10 +105,12 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
         <div><dt>Next opportunity carry · separate</dt><dd>{number(row.carried_next_pair_value)}</dd></div></dl></div>}
       <p className="research-muted">Arrow numbers: normalized quality above, raw gain ($/share) below. Gray dots = WAIT; blue dots = HOLD. Unlabelled held candles have no marker.</p>
       {experiment.both_opportunities > 0 && <p className="research-muted">{experiment.both_opportunities} candles qualify for both alternatives. Combined view shows EXIT; use ENTRY / WAIT to inspect their entry opportunities.</p>}
-      <details><summary>Source & parameters</summary><p>{experiment.price_source}</p><p>{experiment.version} · tf={experiment.config.timeframe_seconds}s · {experiment.semantics}</p></details></div>,
+      <details><summary>Source & parameters</summary><p>{experiment.price_source}</p><p>{experiment.version} · tf={experiment.config.timeframe_seconds}s · {experiment.semantics}</p>
+        {experiment.reporting && <><p>Reporting flags verified before bars were built. Delayed trades are excluded from OHLC and volume.</p><p>Whole source session: {count(experiment.reporting.counts.n)} trades · {count(experiment.reporting.counts.delayed)} delayed · {count(experiment.reporting.counts.unknown)} with unknown clocks. {experiment.reporting.revision}</p></>}
+      </details></div>,
       chart: <div className="research-chart-container research-price-action-chart"><div className="research-controls">
         {!saved && <label>Opportunity quality<select aria-label="Opportunity quality threshold" value={threshold} onChange={e => setThreshold(Number(e.target.value))}>{[.8,.9,.95,1].map(t => <option key={t} value={t}>≥ {(t*100).toFixed(0)}%</option>)}</select></label>}
-        <label>Label view<select aria-label="Opportunity label view" value={view} onChange={e => setView(e.target.value)}>{!saved && <option value="combined">Opportunity bands</option>}<option value="flat">ENTRY / WAIT</option><option value="held">EXIT / HOLD</option><option value="reference">Selected reference pair</option></select></label></div><div className="research-chart-nav">
+        <label>Label view<select aria-label="Opportunity label view" value={view} onChange={e => setView(e.target.value)}>{(!saved || saved.supports_combined) && <option value="combined">ENTRY / EXIT opportunities</option>}<option value="flat">ENTRY / WAIT</option><option value="held">EXIT / HOLD</option><option value="reference">Selected reference pair</option></select></label></div><div className="research-chart-nav">
         <button className="button secondary compact" disabled={busy || !chart?.previous_available} onClick={() => { setStart(chart!.start_us-900e6); setSelectedClock(null); }}>Previous 15 min</button>
         <span>{chart ? `${clock(chart.start_us-1e6)}–${clock(chart.end_us-1e6)} ET · 1s` : "Loading window"}</span>
         <button className="button secondary compact" disabled={busy || !chart?.next_available} onClick={() => { setStart(chart!.end_us); setSelectedClock(null); }}>Next 15 min</button></div>

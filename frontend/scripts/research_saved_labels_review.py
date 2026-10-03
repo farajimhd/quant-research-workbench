@@ -50,6 +50,8 @@ def main():
                         assert 'NVDA' in scope.inner_text()
                         assert scope.get_by_label('Saved label session',exact=True).locator('option').count()==19
                         assert scope.get_by_label('Opportunity quality threshold',exact=True).count()==0
+                        assert scope.get_by_label('Opportunity label view',exact=True).input_value()=='combined'
+                        assert any(row['action']=='EXIT' for row in responses[-1]['labels'])
                         assert 'close t, never open' in scope.inner_text()
                         name=f'{theme}-{scale}-{size}'
                         page.screenshot(path=str(output/(name+'-workspace.png')))

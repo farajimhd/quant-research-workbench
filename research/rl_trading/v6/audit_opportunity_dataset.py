@@ -11,7 +11,7 @@ from polars.testing import assert_frame_equal
 
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v6.opportunity_dataset import (VERSION, ALGORITHM, FILES,
-    verify_day, decoded_bars, load_teacher, write_json, require_dataset)
+    verify_day, decoded_bars, load_teacher, write_json, require_dataset, reporting_plan)
 from research.rl_trading.v6.price_action_opportunities import calculate, Config
 from research.rl_trading.v6.bank import open_bank
 from research.rl_trading.v6.session_data import open_session
@@ -34,6 +34,7 @@ def audit_and_publish(dataset_path, *, runtime_root, ranking_sort_secs=1):
         if not root.resolve().is_relative_to(runtime) or not labels_root.resolve().is_relative_to(runtime): raise ValueError('Source escaped runtime')
         if (file_hash(root/'complete.json')!=entry['bank_certificate_sha256'] or
             file_hash(labels_root/'complete.json')!=entry['teacher_sha256']): raise ValueError('Pinned source changed')
+        reporting_plan(root, entry['day'])
         proof=verify_day(labels_root,entry['bank_certificate_sha256'])
         bank=open_bank(root/'bank',verify_hashes=False)
         for name in ('close_us.npy','scalar.npy'):

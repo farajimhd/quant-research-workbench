@@ -40,7 +40,7 @@ from research.rl_trading.v6.config import worker_plan
 from research.rl_trading.v6.features import (CandleFeatures, LEVEL_NAMES,
                                              SCALAR_NAMES, VERSION, encode)
 from research.rl_trading.v6.opportunity import compile_ticker
-from research.rl_trading.v6.source import read_candles, read_previous_volume
+from research.rl_trading.v6.source import read_candles, read_previous_volume, require_reporting_coverage
 from research.rl_trading.v6.reference import read_reference
 from research.rl_trading.v6.split import role
 
@@ -231,6 +231,9 @@ def main(argv=None) -> int:
     prior = (arte_source.load_build(args.previous_manifest or args.manifest,
                                    args.ledger, [args.previous_date])
              if args.previous_date is not None else None)
+    require_reporting_coverage(current, args.date)
+    if prior is not None:
+        require_reporting_coverage(prior, args.previous_date)
     reader = arte_source.reader(threads=1)
     try:
         arte_source.storage_check(reader)
@@ -257,6 +260,9 @@ def main(argv=None) -> int:
             'population_snapshot_hash': population_proof['snapshot_hash'],
             'source_units_hash': digest(current['units']),
             'previous_units_hash': digest(prior['units']) if prior else None,
+            'reporting_coverage': {
+                'current': current['definition']['trade_eligibility']['verified_coverage'],
+                'previous': prior['definition']['trade_eligibility']['verified_coverage'] if prior else None},
             'census': lengths}
     plan['hash'] = digest(plan)
     output.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,24 @@ from pipelines.market_sip.events import market_day_sql as S
 
 
 class Arguments(unittest.TestCase):
+    def test_reporting_coverage_requires_complete_matching_source(self):
+        source = dict(source_date='2026-07-31', trade_event_rows=2, updated_at='ignored')
+        row = dict(source_date='2026-07-31', revision=S.REPORTING_REVISION,
+            status='complete', source_digest=B.digest({'source_date':'2026-07-31','trade_event_rows':2}),
+            details='{"counts":{"n":2,"bad":0,"delayed":1,"unknown":0}}')
+        class Client:
+            def query(self, query, label):
+                return {'reporting_source_certificates':[source], 'reporting_coverage':[row],
+                    'reporting_active_mutations':[]}[label]
+        result = B.reporting_coverage(Client(), date(2026,7,31), date(2026,7,31))
+        self.assertEqual(result[0]['counts']['delayed'],1)
+        row['status']='staged'
+        with self.assertRaisesRegex(ValueError,'coverage is required'):
+            B.reporting_coverage(Client(), date(2026,7,31), date(2026,7,31))
+        row['status']='complete'; row['source_digest']='wrong'
+        with self.assertRaisesRegex(ValueError,'differs from canonical'):
+            B.reporting_coverage(Client(), date(2026,7,31), date(2026,7,31))
+
     def test_quote_only_predecessor_bootstraps_or_carries_earlier_price_state(self):
         class Client:
             def __init__(self,mode): self.mode=mode

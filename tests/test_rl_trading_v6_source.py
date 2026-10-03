@@ -2,9 +2,23 @@
 from datetime import date
 
 import polars as pl
+import pytest
 
 from research.rl_trading.v1 import arte_sql
 from research.rl_trading.v6 import source as v6_source
+
+
+def test_v6_rejects_uncertified_legacy_reporting_inputs():
+    from pipelines.market_sip.events.trade_reporting_flags import REVISION
+    day = date(2026,7,31)
+    eligibility = dict(reporting_revision=REVISION, coverage_authority='q_live.historical_trade_reporting_coverage_v1')
+    source = {'definition': {'trade_eligibility': eligibility}}
+    with pytest.raises(ValueError,match='rebuild legacy inputs'):
+        v6_source.require_reporting_coverage(source,day)
+    eligibility['verified_coverage']=[dict(source_date=str(day),status='complete',revision=REVISION,counts={'bad':0})]
+    v6_source.require_reporting_coverage(source,day)
+    eligibility['verified_coverage'][0]['status']='staged'
+    with pytest.raises(ValueError): v6_source.require_reporting_coverage(source,day)
 
 
 def test_candle_queries_select_required_columns_only(monkeypatch):

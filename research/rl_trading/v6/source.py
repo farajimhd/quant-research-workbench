@@ -7,6 +7,18 @@ import polars as pl
 
 from research.rl_trading.v1 import arte_sql
 from research.rl_trading.v1.arte_source import frame
+from pipelines.market_sip.events.trade_reporting_flags import REVISION
+
+
+def require_reporting_coverage(source, day):
+    """V6 cannot consume legacy bars whose reporting evidence was uncertified."""
+    eligibility = source['definition']['trade_eligibility']
+    rows = [r for r in eligibility.get('verified_coverage', []) if r['source_date'] == str(day)]
+    if (eligibility.get('coverage_authority') != 'q_live.historical_trade_reporting_coverage_v1'
+            or eligibility.get('reporting_revision') != REVISION or len(rows) != 1
+            or rows[0]['status'] != 'complete' or rows[0]['revision'] != REVISION
+            or rows[0]['counts']['bad'] != 0):
+        raise ValueError(f'{day}: V6 requires bars built with verified trade reporting coverage; rebuild legacy inputs')
 
 
 BAR_COLUMNS = (

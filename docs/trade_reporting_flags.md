@@ -63,6 +63,15 @@ consumers must check this coverage and the flag contract when they are cut
 over. Existing bar artifacts should be rebuilt after a completed source day
 is accepted; a flag mutation does not rewrite already persisted bars.
 
+The market-day builder now requires completed reporting coverage matching
+each canonical source certificate before writing bars. Coverage receipts
+are bound to its immutable definition; an active canonical mutation blocks
+the build. V6 requires these receipts for current and prior feature sessions,
+and the V3 label publication rejects banks made before this guard. Unknown
+clocks remain explicitly counted under the existing v1 policy. Rebuild bars
+from eligible events, then recompute indicators in session order; changes
+to a preceding session may alter later MACD even when later bars are unchanged.
+
 The certified August 2026 trade gzips are retained on the workstation G
 archive, while ClickHouse `file()` is restricted to the D flatfile mount.
 `--hydrate-missing-trades` copies only missing trade gzips from the G archive

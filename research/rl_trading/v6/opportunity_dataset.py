@@ -22,11 +22,27 @@ from research.rl_trading.v6.features import SCALAR_NAMES
 from research.rl_trading.v6.bank import open_bank
 from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.split import TRAIN, DEVELOPMENT, CONTEXT_ONLY, role
+from pipelines.market_sip.events.trade_reporting_flags import REVISION as REPORTING_REVISION
 
-VERSION = 'rl-v6-swing-opportunity-dataset-v2'
-DAY_VERSION = 'rl-v6-swing-opportunity-shards-v2'
+VERSION = 'rl-v6-swing-opportunity-dataset-v3'
+DAY_VERSION = 'rl-v6-swing-opportunity-shards-v3'
 STATUS = 'certified_swing_opportunities'
 FILES = ('labels', 'episodes', 'pairs', 'trades')
+
+
+def reporting_plan(root, day):
+    plan = json.loads((Path(root)/'plan.json').read_text())
+    if plan.get('hash') != digest({k:v for k,v in plan.items() if k != 'hash'}):
+        raise ValueError('Feature plan hash changed')
+    coverage = plan.get('reporting_coverage', {})
+    for key, target in [('current',day),('previous',plan.get('previous_day'))]:
+        if target is None:
+            continue
+        rows = [r for r in (coverage.get(key) or []) if r['source_date'] == target]
+        if (len(rows) != 1 or rows[0]['revision'] != REPORTING_REVISION
+                or rows[0]['status'] != 'complete' or rows[0]['counts']['bad'] != 0):
+            raise ValueError(f'{day}: label generation requires reporting-certified rebuilt feature banks')
+    return plan
 
 
 def write_json(path, value):
@@ -154,6 +170,7 @@ def require_dataset(path, *, runtime_root):
         if (file_hash(Path(entry['bank_root'])/'complete.json') != entry['bank_certificate_sha256'] or
             file_hash(Path(entry['teacher_root'])/'complete.json') != entry['teacher_sha256']):
             raise ValueError('Dataset source or labels changed')
+        reporting_plan(entry['bank_root'], entry['day'])
         proof = verify_day(entry['teacher_root'], entry['bank_certificate_sha256'])
         if proof['day'] != entry['day'] or proof['role'] != entry['role']:
             raise ValueError('Dataset role/day differs from labels')
@@ -293,6 +310,7 @@ def main(argv=None):
         root=Path(roots[day]).resolve()
         if not root.is_relative_to(runtime): raise ValueError('Bank escaped runtime')
         progress(status='verifying_bank',day=day,active=0,queued=0,completed=0)
+        reporting_plan(root, day)
         session=open_session(root,runtime_root=runtime,previous_root=Path(roots[previous]) if previous else None)
         bank_hash=file_hash(root/'complete.json'); config_hash=digest(config)
         binding=dict(day=day,bank_certificate_sha256=bank_hash,bank_manifest_sha256=file_hash(root/'bank'/'complete.json'),config_hash=config_hash,
