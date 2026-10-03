@@ -69,6 +69,11 @@ def main(argv=None):
     parser.add_argument("--to", dest="end_date")
     parser.add_argument("--validation-sessions", type=int, default=6)
     parser.add_argument("--profile-date", default="2026-09-03")
+    parser.add_argument(
+        "--profile-all-modes",
+        action="store_true",
+        help="Also remeasure diagnostic unique-only and rule-precompute paths",
+    )
     parser.add_argument("--population", type=int, default=64)
     parser.add_argument("--generations", type=int, default=50)
     parser.add_argument("--seed", type=int, default=20261003)

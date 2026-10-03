@@ -120,6 +120,43 @@ def test_unique_ledger_writes_match_atomic_masked_partial_fills_and_checkpoint(
         assert torch.equal(restored.ledger, unique.ledger)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_wide_prime_market_native_ledger_matches_reference_without_padding(tmp_path):
+    """Small-width GPU witnesses missed two Torch2.12 layout/codegen bugs."""
+    from research.vectorized_backtest.v3.torch_backtest.runtime import configure_caches
+
+    configure_caches(tmp_path)
+    torch.compiler.reset()
+    tape = streaming_tape(seconds=64, listings=833).to("cuda")
+    space = StrategySpace()
+    rows = space.sample(np.random.default_rng(20261003), 64)
+    rows[0] = space.default  # Diagnostic reference only, never GA initialization.
+    options = dict(
+        backend="compiled_graph",
+        maximum_fills=4096,
+        maximum_state_gib=8,
+        graph_steps=32,
+    )
+    reference = SearchRunner(
+        tape, space, rows, ledger_mode="atomic", **options
+    ).compile()
+    optimized = SearchRunner(
+        tape, space, rows, ledger_mode="inplace", **options
+    ).compile()
+    first, second = reference.run(), optimized.run()
+    assert torch.allclose(reference.ledger, optimized.ledger, atol=1e-7, rtol=0)
+    for name in (
+        "cash",
+        "fees",
+        "drawdown",
+        "fill_count",
+        "open_positions",
+        "sold_share_seconds",
+        "long_hold_dollar_seconds",
+    ):
+        assert torch.allclose(first[name], second[name], atol=1e-7, rtol=0), name
+
+
 def test_activity_counts_batches_not_child_orders_and_every_session():
     a = dict(
         net_pnl=[100, 200],

@@ -67,12 +67,13 @@ def profile(item, args, output, panel):
         graph_steps=args.graph_steps,
     )
     timings, reference, reference_ledger = [], None, None
-    for precompute, ledger_mode in (
-        (False, "atomic"),
-        (False, "unique"),
-        (True, "unique"),
-        (False, "inplace"),
-    ):
+    # Routine qualification needs the unchanged reference and corrected path.
+    # Keep slower experimental alternatives available for explicit diagnosis;
+    # do not repeatedly spend minutes requalifying already-rejected modes.
+    modes = [(False, "atomic"), (False, "inplace")]
+    if args.profile_all_modes:
+        modes[1:1] = [(False, "unique"), (True, "unique")]
+    for precompute, ledger_mode in modes:
         panel.emit(
             dict(
                 status="profiling",

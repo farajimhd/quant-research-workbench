@@ -16,6 +16,9 @@ preserved. `semantic-squeeze-search-v3-3` supersedes the earlier two-phase searc
 - Premarket is exchange-calendar 04:00 to opening time, New York timezone/DST.
   The last six available dates form chronological evaluation; the remaining
   dates train. A previously observed evaluation set must be labelled as such.
+- The copied source contract retains its declared LGHL research exclusion for
+  broker identity/tradability ambiguity. Verify the complete pinned snapshot
+  before applying it; exact excluded identities and reasons remain in provenance.
 - Initial cash resets to $10,000 on each session. Cash is shared among that
   candidate's positions and evolves causally during the session. Cash/positions
   never carry across dates or between candidates.
@@ -72,15 +75,22 @@ locations. The unique-destination writer assigns those inactive slots private
 scratch locations; active prefix ranks overwrite distinct ledger rows. Overflow
 still fails before publishing results. No fill row is dropped or compressed away.
 
-The `inplace` writer also declares this exclusive buffer mutation through a
-v3-owned Torch custom operation. This prevents compiler functionalization from
+The `inplace` writer declares the complete append (rank, rows and scatter) as
+an exclusive buffer mutation through a v3-owned Torch custom operation. This prevents compiler functionalization from
 copying the entire ledger before both scatter updates and back afterward.
-The implementation calls the same native Torch scatter, with no additional
+The full append boundary also avoids a reproduced Torch2.12 code-generation
+failure when fusing flattened indices at833 tickers. A second reproduced compiler
+bug underallocated a native scatter view after automatic layout padding. This
+graph explicitly disables that padding; tensor shapes, financial math and
+fullgraph/CUDA execution remain unchanged. Disabling padding without the full
+append boundary did not fix the first bug. The implementation calls the same native Torch operations, with no additional
 dependency, account-math change, host transfer or per-ticker Python loop.
 
 `profile` prepares a real TRAINING session and compares the same candidates:
-inline rules/atomic logging, inline rules/unique logging, precomputed
-rules/unique logging, and inline rules/explicit in-place logging. It compares complete ledgers and financial/activity/holding
+inline rules/atomic logging against inline rules/explicit in-place logging.
+`--profile-all-modes` also measures inline rules/unique logging and precomputed
+rules/unique logging. Earlier full-session measurements rejected the latter:
+74.50s replay plus49.28s gate preparation gave123.78s/objective. It compares complete ledgers and financial/activity/holding
 metrics, then measures three full-session replays per mode. Compilation, source
 preparation and rule preparation are reported separately. The selected mode
 minimizes warm objective time, not replay time alone. A bounded GPU trace identifies

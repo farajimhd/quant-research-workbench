@@ -16,7 +16,7 @@ from time import perf_counter
 import torch
 
 from .grid import MAX_POSITIONS, Settings
-from .ledger_write import ledger_scatter
+from .ledger_write import ledger_append
 
 
 def proportional_fill(wanted, capacity):
@@ -340,6 +340,22 @@ class SqueezeRunner:
 
     def _log(self, qty, price, fee, now, side, reason):
         """Compact device ledger [B,E,9]; fail closed on capacity exhaustion."""
+        if self.ledger_mode == "inplace":
+            ledger_append(
+                self.ledger_storage,
+                self.fill_count,
+                self.overflow,
+                qty,
+                price,
+                fee,
+                now,
+                reason,
+                self.index,
+                self.slot_axis,
+                side,
+                self.maximum_fills,
+            )
+            return
         shape = (self.b, self.n * 15)
         active = qty.reshape(shape) > 0
         positions = self.fill_count[:, None] + active.cumsum(-1) - 1
@@ -364,12 +380,9 @@ class SqueezeRunner:
             destinations = torch.where(
                 active & in_bounds, positions, self.maximum_fills + self.slot_axis
             )
-            if self.ledger_mode == "inplace":
-                ledger_scatter(self.ledger_storage, destinations, rows)
-            else:
-                self.ledger_storage.scatter_(
-                    1, destinations[..., None].expand(-1, -1, 9), rows
-                )
+            self.ledger_storage.scatter_(
+                1, destinations[..., None].expand(-1, -1, 9), rows
+            )
         else:
             positions = positions.clamp(0, self.maximum_fills - 1)
             self.ledger.scatter_add_(1, positions[..., None].expand(-1, -1, 9), rows)
@@ -945,7 +958,17 @@ class SqueezeRunner:
         """Compile once; fixed parameter/state pointers permit in-place reuse."""
         started = perf_counter()
         self.step = (
-            torch.compile(self.tick, fullgraph=True)
+            # Torch2.12's automatic layout padding can underallocate a later
+            # native scatter view at wide/prime ticker counts (833 witness).
+            # Keep this graph's intermediates contiguous; arithmetic and
+            # account tensor shapes are unchanged. Other modes retain defaults.
+            torch.compile(
+                self.tick,
+                fullgraph=True,
+                options={"comprehensive_padding": False}
+                if self.ledger_mode == "inplace"
+                else None,
+            )
             if self.backend in ("compile", "compiled_graph")
             else self.tick
         )
