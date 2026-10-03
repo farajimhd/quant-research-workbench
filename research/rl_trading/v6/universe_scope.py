@@ -24,8 +24,8 @@ def exclusion(row):
         return 'non_usd_currency'
     if str(row.get('product_type') or '').upper() not in ('STK','STOCK','STOCKS'):
         return 'unsupported_product_type'
-    if not row.get('mic') and not row.get('operating_mic'):
-        return 'missing_exchange_mic'
+    if str(row.get('exchange_code') or '').upper() == 'IBEOS' or 'OVERNIGHT' in str(row.get('exchange_name') or '').upper():
+        return 'nonstandard_overnight_venue'
     return None
 
 
