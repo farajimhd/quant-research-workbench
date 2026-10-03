@@ -1,10 +1,13 @@
-"""Native vectorized remainder mutation, shared by CPU and captured CUDA.
+"""Isolated vectorized remainder mutation, shared by CPU and captured CUDA.
 
 Torch2.12 cannot safely fuse the wide [B,N,15] financial updates with this
 second order-state transition. Declare the owned mutation explicitly, as for
 ledger writes. No Python loop over accounts, tickers or orders is executed.
-CUDA graph capture records the native device kernels. No host reads or fallback.
+CUDA uses a separately compiled mutation kernel inside this opaque boundary;
+CPU retains native expressions as its oracle. No host reads or fallback.
 """
+from functools import wraps
+
 import torch
 
 def _advance(remaining: torch.Tensor, buy_filled: torch.Tensor,
@@ -63,6 +66,20 @@ def _advance(remaining: torch.Tensor, buy_filled: torch.Tensor,
     remaining.copy_(torch.where(expired, 0, remaining))
 
 
+# Compile only this isolated mutation boundary. Keeping it opaque to the outer
+# financial graph avoids the wide-axis fusion defect while reducing launches
+# inside captured CUDA graphs. CPU remains the independent native oracle.
+_advance_cuda = torch.compile(
+    _advance, fullgraph=True, options={"comprehensive_padding": False}
+)
+
+
+@wraps(_advance)
+def _dispatch(*args, **kwargs):
+    implementation = _advance_cuda if args[0].is_cuda else _advance
+    return implementation(*args, **kwargs)
+
+
 try:
     remainder_update = torch.ops.torch_backtest_v3.remainder_update.default
 except AttributeError:
@@ -70,5 +87,5 @@ except AttributeError:
         "torch_backtest_v3::remainder_update",
         mutates_args=("remaining", "buy_retries", "buy_last_retry", "buy_limit",
                       "buy_submitted", "buy_deadline", "policy_cancelled", "expired_shares"),
-    )(_advance)
+    )(_dispatch)
     remainder_update.register_fake(lambda *args: None)

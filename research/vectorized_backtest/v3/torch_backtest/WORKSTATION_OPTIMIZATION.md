@@ -222,3 +222,16 @@ previous broader universe, rather than a defect to repair in canonical data.
 New campaigns use 25% of completed eligible interval volume shared by all
 buy/sell orders and retries per account/ticker. This approximates the app.
 The cap is fixed outside the genome. Requalify new source before optimization.
+
+The f977cade8 real-session qualification covered September 3, 19,800 slots,
+811 admitted tickers and 64 strategies: atomic median 146.470s, native ledger
+median 113.705s, full ledger parity. Preparation took 246.060s; compile took
+68.836s/58.307s respectively. These measurements include remainder policies and
+25% shared participation; the older 45.706s benchmark had a different contract.
+
+Remainder updates now compile inside their isolated mutation boundary rather
+than fusing into the outer financial graph. CPU remains the native oracle.
+An isolated laptop [64,833,15] test measured 0.486ms native versus 0.169ms compiled
+with exact mutation parity; this is not a full-session timing claim. Nine
+remainder-policy tests and the wide-market ledger/account test passed. Fresh
+workstation qualification is required for the new implementation hash.
