@@ -69,15 +69,22 @@ def _advance(remaining: torch.Tensor, buy_filled: torch.Tensor,
 # Compile only this isolated mutation boundary. Keeping it opaque to the outer
 # financial graph avoids the wide-axis fusion defect while reducing launches
 # inside captured CUDA graphs. CPU remains the independent native oracle.
-_advance_cuda = torch.compile(
-    _advance, fullgraph=True, options={"comprehensive_padding": False}
-)
+_advance_cuda = None
 
 
 @wraps(_advance)
 def _dispatch(*args, **kwargs):
-    implementation = _advance_cuda if args[0].is_cuda else _advance
-    return implementation(*args, **kwargs)
+    global _advance_cuda
+    if not args[0].is_cuda:
+        return _advance(*args, **kwargs)
+    # Workstation launchers install the pinned Triton search path at runtime.
+    # Creating a compiler at module import can cache "Triton unavailable"
+    # before that setup, even though the eventual CUDA process is configured.
+    if _advance_cuda is None:
+        _advance_cuda = torch.compile(
+            _advance, fullgraph=True, options={"comprehensive_padding": False}
+        )
+    return _advance_cuda(*args, **kwargs)
 
 
 try:

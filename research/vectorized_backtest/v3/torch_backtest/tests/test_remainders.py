@@ -68,6 +68,26 @@ def test_approved_default_cap_and_retry_interval_capacity():
     assert r.remaining.sum() == 0
 
 
+def test_import_does_not_initialize_compiler_before_runtime_setup():
+    """Pinned workstation Triton is configured after source modules import."""
+    import os
+    import subprocess
+    import sys
+
+    source = """
+from unittest.mock import patch
+with patch('torch.compile', side_effect=AssertionError('premature compiler')):
+    import research.vectorized_backtest.v3.torch_backtest.remainder_update
+"""
+    subprocess.run(
+        [sys.executable, '-B', '-c', source],
+        check=True,
+        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_retry_count_total_age_and_signal_boundaries():
     r=runner(maximum_retries=1)
     manage(r,2); manage(r,3)

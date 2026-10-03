@@ -235,3 +235,10 @@ An isolated laptop [64,833,15] test measured 0.486ms native versus 0.169ms compi
 with exact mutation parity; this is not a full-session timing claim. Nine
 remainder-policy tests and the wide-market ledger/account test passed. Fresh
 workstation qualification is required for the new implementation hash.
+
+The first compiled-remainder deployment (1f6d5e204) failed during graph setup:
+module-level torch.compile creation cached Triton availability before the
+workstation runtime configured its pinned dependency path. Its failed job and
+receipts are preserved. Compiler initialization is now lazy at the first CUDA
+mutation, after runtime setup. Nine remainder-policy tests and an independent
+fresh-process import-order regression passed after this correction.
