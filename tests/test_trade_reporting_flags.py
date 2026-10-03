@@ -25,6 +25,20 @@ CASES = [
 
 
 class FlagsTests(unittest.TestCase):
+    def test_reporting_progress_controller_lifecycle(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        output = StringIO()
+        with redirect_stdout(output):
+            with migration.ReportingProgress(22, 'text') as progress:
+                progress.update('2026-07-01 | reconcile source')
+                self.assertIn('active 1 | queued 21', progress.render())
+                progress.completed = 1
+                progress.skipped = 2
+                progress.stage_only = True
+        self.assertIn('staged', output.getvalue())
+        self.assertIn('active 0 | queued 19', output.getvalue())
+
     def test_classification(self):
         for conditions,p,s,expected in CASES:
             with self.subTest(conditions=conditions,p=p,s=s):

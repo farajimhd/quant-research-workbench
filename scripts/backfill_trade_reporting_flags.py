@@ -37,6 +37,10 @@ FIELDS = ["sip_timestamp_us", "price_primary_int", "price_secondary_int", "size_
 
 
 class ReportingProgress(Progress):
+    def __init__(self, total, mode="auto"):
+        self.total = total
+        super().__init__(total, 0, workers=1, mode=mode)
+
     def render(self):
         active=int(self.current not in ('finished','staged','failed','interrupted'))
         queued=max(0,self.total-self.completed-self.skipped-self.failed-active)
@@ -51,7 +55,8 @@ class ReportingProgress(Progress):
 
     def update(self, current):
         if current != self.current:
-            super().update(current)
+            self.current = current
+            self._text_snapshot()
 
     def __exit__(self, error_type, *rest):
         if error_type is None:
