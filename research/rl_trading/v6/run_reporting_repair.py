@@ -174,17 +174,17 @@ def main(argv=None):
             manifest = str(output/'bars/latest.json')
             run(stage,['-m','research.rl_trading.v6.build_campaign','--early-manifest',manifest,
                 '--late-manifest',manifest,'--ledger',str(output/'build-ledger-v2.sqlite3'),
-                '--output-root',str(output/'banks'),'--workers','16'])
+                '--output-root',str(output/'banks-us-listed-v1'),'--workers','16'])
             stage = 'labels'
             run(stage,['research/rl_trading/v6/run_prepare_labels.py',
-                '--source-manifest',str(output/'banks/day-roots.json'),
-                '--output',str(output/'labels'),'--workers','8','--listings-per-shard','32',
+                '--source-manifest',str(output/'banks-us-listed-v1/day-roots.json'),
+                '--output',str(output/'labels-us-listed-v1'),'--workers','8','--listings-per-shard','32',
                 '--source-commit',a.source_commit])
             stage = 'publication_audit'; progress(stage)
             active = json.loads((ROOT/'rl-v6-active-labels.json').read_text())
-            if Path(active['dataset']).resolve() != (output/'labels/dataset.json').resolve():
+            if Path(active['dataset']).resolve() != (output/'labels-us-listed-v1/dataset.json').resolve():
                 raise ValueError('Active labels do not point to repaired publication')
-            audit = json.loads((output/'labels/publication-audit.json').read_text())
+            audit = json.loads((output/'labels-us-listed-v1/publication-audit.json').read_text())
             if audit['status'] != 'passed':
                 raise ValueError('Label publication audit failed')
             done.append(stage)

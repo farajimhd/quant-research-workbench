@@ -1,6 +1,6 @@
 # Current V6 label authority
 
-Current training requires `rl-v6-swing-opportunity-dataset-v7`, using the
+Current training requires `rl-v6-swing-opportunity-dataset-v8`, using the
 `price-action-long-opportunities-v6` algorithm with horizon audit attributes. Old portfolio
 teachers, rolling-15 episode windows, fee-adjusted candidate targets, bracket
 sidecars and checkpoints from their datasets are rejected by current loaders.
@@ -139,3 +139,5 @@ Current positive liquidation gain is compared with maximum positive future gain 
 Minimum position duration defaults to 5 seconds, measured between actual candle closes (not row count). ENTRY searches only L targets at least 5 seconds later; absent profitable eligible targets become WAIT. Reference EXIT cannot precede reference ENTRY plus 5 seconds. Entries within 5 seconds of the selected EXIT cluster start are also removed, avoiding adjacent entry/exit arrows. Hypothetical held rows before eligibility stay HOLD. Config/version bindings reject previous duration-free artifacts.
 
 Combined chart HOLD markers require in_reference_hold: the retained reference position must actually be active. Outside it, use WAIT unless an ENTRY/selected EXIT opportunity applies. Explicit held view still shows conditional teacher HOLD targets, including hypothetical held states after reference exit. This presentation change does not alter teacher gains, soft probabilities or losses.
+
+Universe policy rl-v6-us-exchange-listed-stocks-v1 independently verifies canonical stock product, USD, US exchange country, nonempty MIC and shared OTC exclusion across exchange aliases. Historical membership remains pinned to certified pre-open snapshots; current active status or prices are never used for scope. Static canonical metadata evidence is retained in the bank plan, hash-bound, with every rejected identity and reason. Unknown metadata fails closed. Label generation/load rejects banks without a valid scope receipt. Old banks remain immutable audit artifacts. Rebuild outputs use banks-us-listed-v1 and labels-us-listed-v1; sealed-test labels remain excluded.

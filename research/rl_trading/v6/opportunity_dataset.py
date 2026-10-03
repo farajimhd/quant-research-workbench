@@ -24,14 +24,16 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.split import TRAIN, DEVELOPMENT, CONTEXT_ONLY, role
 from pipelines.market_sip.events.trade_reporting_flags import REVISION as REPORTING_REVISION
 
-VERSION = 'rl-v6-swing-opportunity-dataset-v7'
-DAY_VERSION = 'rl-v6-swing-opportunity-shards-v7'
+VERSION = 'rl-v6-swing-opportunity-dataset-v8'
+DAY_VERSION = 'rl-v6-swing-opportunity-shards-v8'
 STATUS = 'certified_swing_opportunities'
 FILES = ('labels', 'episodes', 'pairs', 'trades')
 
 
 def reporting_plan(root, day):
     plan = json.loads((Path(root)/'plan.json').read_text())
+    from research.rl_trading.v6.universe_scope import require_scope
+    require_scope(plan)
     if plan.get('hash') != digest({k:v for k,v in plan.items() if k != 'hash'}):
         raise ValueError('Feature plan hash changed')
     coverage = plan.get('reporting_coverage', {})

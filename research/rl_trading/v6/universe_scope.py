@@ -1,0 +1,71 @@
+"""V6 US exchange-listed stock scope, independently checked at bank creation.
+
+Historical membership still comes from the certified pre-open snapshot.
+Canonical instrument/exchange metadata supplies scope, never current activity
+or prices. Missing metadata is excluded with an explicit reason.
+"""
+from services.reference_gateway.tradability import is_otc_venue
+from research.rl_trading.v1.common import digest
+from research.rl_trading.v1.arte_source import query
+
+VERSION = 'rl-v6-us-exchange-listed-stocks-v1'
+
+
+def exclusion(row):
+    if not row:
+        return 'missing_canonical_scope_metadata'
+    if is_otc_venue(*(row.get(k) for k in ('exchange_code','acronym','mic','operating_mic','exchange_name'))):
+        return 'unsupported_otc_venue'
+    if str(row.get('country') or '').upper() != 'US':
+        return 'non_us_or_unknown_exchange'
+    if str(row.get('currency') or '').upper() != 'USD':
+        return 'non_usd_currency'
+    if str(row.get('product_type') or '').upper() not in ('STK','STOCK','STOCKS'):
+        return 'unsupported_product_type'
+    if not row.get('mic') and not row.get('operating_mic'):
+        return 'missing_exchange_mic'
+    return None
+
+
+def filter_population(population, metadata):
+    lookup={r['listing_id']:r for r in metadata}
+    if len(lookup)!=len(metadata):
+        raise ValueError('Ambiguous canonical universe scope metadata')
+    selected=[]; rejected=[]; evidence=[]
+    for listing in population:
+        identity=listing['listing_id']; row=lookup.get(identity)
+        reason=exclusion(row)
+        if row: evidence.append(row)
+        if reason: rejected.append(dict(listing_id=identity,ticker=listing['ticker'],reason=reason))
+        else: selected.append(listing)
+    if not selected:
+        raise ValueError('US exchange-listed stock universe is empty')
+    proof=dict(version=VERSION,input_count=len(population),selected_count=len(selected),
+        selected_ids=[r['listing_id'] for r in selected],excluded=rejected,
+        evidence=evidence,metadata_authority='q_live canonical listing/security/exchange; static scope only; no current activity filter')
+    proof['hash']=digest(proof)
+    return selected,proof
+
+
+def scope_population(client,population):
+    metadata=query(client,"""SELECT l.listing_id AS listing_id,
+        l.exchange_code AS exchange_code,l.currency_code AS currency,
+        sec.product_type AS product_type,ex.iso_country_code AS country,
+        ex.acronym AS acronym,ex.mic AS mic,ex.operating_mic AS operating_mic,
+        ex.name AS exchange_name
+        FROM q_live.id_listing_v1 AS l FINAL
+        INNER JOIN q_live.id_security_v1 AS sec FINAL ON sec.security_id=l.security_id
+        LEFT JOIN q_live.ref_exchange_v1 AS ex FINAL ON ex.exchange_code=l.exchange_code""")
+    return filter_population(population,metadata)
+
+
+def require_scope(plan):
+    proof=plan.get('universe_scope',{})
+    if proof.get('version')!=VERSION or proof.get('hash')!=digest({k:v for k,v in proof.items() if k!='hash'}):
+        raise ValueError('US exchange-listed stock scope receipt required')
+    if set(proof['selected_ids'])!=set(plan['census']):
+        raise ValueError('Bank membership differs from certified US stock scope')
+    evidence={r['listing_id']:r for r in proof['evidence']}
+    if any(exclusion(evidence.get(i)) for i in proof['selected_ids']):
+        raise ValueError('Out-of-scope listing in training bank')
+    return proof

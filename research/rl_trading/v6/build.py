@@ -43,6 +43,7 @@ from research.rl_trading.v6.opportunity import compile_ticker
 from research.rl_trading.v6.source import read_candles, read_previous_volume, require_reporting_coverage
 from research.rl_trading.v6.reference import read_reference
 from research.rl_trading.v6.split import role
+from research.rl_trading.v6.universe_scope import scope_population
 
 
 _READER = None
@@ -240,6 +241,7 @@ def main(argv=None) -> int:
         reference_features.storage_check(reader)
         population, population_proof = arte_source.population(
             reader, current, args.date)
+        population, scope_proof = scope_population(reader, population)
         counts = one_second_counts(reader, current, args.date,
                                    [row['ticker'] for row in population])
     finally:
@@ -258,6 +260,7 @@ def main(argv=None) -> int:
             'source_definition_hash': current['definition_hash'],
             'prior_definition_hash': prior['definition_hash'] if prior else None,
             'population_snapshot_hash': population_proof['snapshot_hash'],
+            'universe_scope': scope_proof,
             'source_units_hash': digest(current['units']),
             'previous_units_hash': digest(prior['units']) if prior else None,
             'reporting_coverage': {
