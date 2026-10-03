@@ -3,9 +3,31 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from research.rl_trading.v6 import label_audit
+from research.rl_trading.v6 import saved_label_audit
 from research.rl_trading.v6 import price_action_opportunities as price_action_labels
 
 router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'])
+
+
+@router.get('/v6/saved-labels')
+def saved_catalog():
+    return read(saved_label_audit.catalog)
+
+
+@router.get('/v6/saved-labels/listings')
+def saved_listings(day: str):
+    return read(saved_label_audit.listings, day)
+
+
+@router.get('/v6/saved-labels/metadata')
+def saved_metadata(day: str, listing_id: str):
+    return read(saved_label_audit.metadata, day, listing_id)
+
+
+@router.get('/v6/saved-labels/chart')
+def saved_chart(day: str, listing_id: str, start_us: int | None = None,
+                seconds: int = Query(900,ge=60,le=3600), view: Literal['flat','held','reference']='flat'):
+    return read(saved_label_audit.chart,day,listing_id,start_us,seconds,view)
 
 
 def read(call, *args):

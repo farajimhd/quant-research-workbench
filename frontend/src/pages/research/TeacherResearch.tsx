@@ -7,6 +7,7 @@ import { LoadingState } from "../../app/components/LoadingState";
 import { ResearchCanvas } from "./ResearchCanvas";
 import "./TeacherResearch.css";
 import { PriceActionResearch } from "./PriceActionResearch";
+import { SavedLabelResearch } from "./SavedLabelResearch";
 import { researchBandColor } from "./researchChart";
 import { useResearchState } from "./researchState";
 
@@ -28,13 +29,17 @@ const clock = (us: number) => new Date(us / 1000).toLocaleTimeString("en-GB", { 
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
 export function ResearchWorkspacePage() {
-  const [path, setPath] = useResearchState("path", "teacher");
+  const [path, setPath] = useResearchState("path", "saved-labels");
+  const [teacherVisited, setTeacherVisited] = useState(path === "teacher");
   const [experimentVisited, setExperimentVisited] = useState(path === "price-action");
+  const [savedVisited, setSavedVisited] = useState(path === "saved-labels");
   return <div className="research-path-shell"><nav className="research-path-nav" aria-label="Research paths">
-    <button className={`button ${path === "teacher" ? "primary" : "secondary"} compact`} aria-pressed={path === "teacher"} onClick={() => setPath("teacher")}>V6 teacher labels</button>
+    <button className={`button ${path === "saved-labels" ? "primary" : "secondary"} compact`} aria-pressed={path === "saved-labels"} onClick={() => { setSavedVisited(true); setPath("saved-labels"); }}>Current V6 labels</button>
+    <button className={`button ${path === "teacher" ? "primary" : "secondary"} compact`} aria-pressed={path === "teacher"} onClick={() => { setTeacherVisited(true); setPath("teacher"); }}>Historical V6 teacher labels</button>
     <button className={`button ${path === "price-action" ? "primary" : "secondary"} compact`} aria-pressed={path === "price-action"} onClick={() => { setExperimentVisited(true); setPath("price-action"); }}>Price-action experiment</button>
-  </nav><div className="research-path-content" hidden={path !== "teacher"}><TeacherResearchPage /></div>
-    <div className="research-path-content" hidden={path !== "price-action"}>{experimentVisited && <PriceActionResearch />}</div></div>;
+  </nav><div className="research-path-content" hidden={path !== "teacher"}>{teacherVisited && <TeacherResearchPage />}</div>
+    <div className="research-path-content" hidden={path !== "price-action"}>{experimentVisited && <PriceActionResearch />}</div>
+    <div className="research-path-content" hidden={path !== "saved-labels"}>{savedVisited && <SavedLabelResearch />}</div></div>;
 }
 
 function TeacherResearchPage() {

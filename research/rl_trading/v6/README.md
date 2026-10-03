@@ -1,5 +1,15 @@
 # RL trading V6: sparse candles and bracketed portfolio decisions
 
+**Current teacher authority:** [LABEL_PREPARATION.md](LABEL_PREPARATION.md)
+supersedes the legacy candidate/portfolio supervision described below. Current
+training reads the published swing-opportunity shards. Targets are stamped at
+candle **close**, never open; features for target t use only source candles
+with **close_us < t**, excluding candle t. This also applies to indicators,
+rank state and held-position marks. Hindsight values use later prices offline
+and are never live observations. The contract is versioned in `label_timing.py`
+and bound into teacher/checkpoint manifests. Research > Current V6 labels
+audits these saved shards; historical teacher labels remain a separate view.
+
 This is a major data and action-contract revision. It replaces the old
 Phase 1/2/3 names with three responsibilities:
 

@@ -215,9 +215,14 @@ def metadata(threshold=.9):
 
 
 def chart(start_us=None,seconds=900,threshold=.9,view='combined'):
+    proof,frames = product()
+    return chart_frames(proof, frames, start_us, seconds, threshold, view)
+
+
+def chart_frames(proof, frames, start_us=None, seconds=900, threshold=.9, view='combined'):
+    """Render saved labels without recalculating their numerical targets."""
     if not 60 <= seconds <= 3600:
         raise ValueError('Invalid chart window')
-    proof,frames = product()
     begin,finish = proof['begin_us'],proof['finish_us']
     start = max(begin,min(start_us if start_us is not None else begin,finish-1))
     end = min(start+seconds*1_000_000,finish)
@@ -231,5 +236,5 @@ def chart(start_us=None,seconds=900,threshold=.9,view='combined'):
             data=[dict(time=int(t)//1_000_000-1,value=float(v)) for t,v in zip(rows['time_us'],values)]))
     regions = [dict(start=r['start_us']//1_000_000-1,end=r['end_us']//1_000_000-1,color='var(--success)' if r['direction']==1 else 'var(--danger)',label='')
         for r in frames['episodes'].filter((pl.col('start_us') < end) & (pl.col('end_us') > start)).iter_rows(named=True)]
-    return dict(ticker=TICKER,version=VERSION,candles=candles,labels=rows.to_dicts(),oscillator_series=oscillator,regions=regions,
+    return dict(ticker=proof['ticker'],version=VERSION,candles=candles,labels=rows.to_dicts(),oscillator_series=oscillator,regions=regions,
         start_us=start,end_us=end,previous_available=start>begin,next_available=end<finish,view=view,quality_threshold=threshold)

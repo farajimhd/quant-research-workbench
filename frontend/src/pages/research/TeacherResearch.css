@@ -3,6 +3,9 @@
 .research-path-nav { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 0; }
 .research-path-content { flex: 1; min-height: 0; }
 .research-path-content[hidden] { display: none; }
+.research-saved-selection { flex: 0 0 auto; padding: 12px 16px; font-size: .75rem; color: var(--foreground); }
+.research-saved-selection input { min-width: 0; background: var(--surface-alt); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; padding: .5rem; font: inherit; }
+.research-saved-selection > span { color: var(--muted-foreground); }
 .research-field { display: grid; gap: .4rem; font-size: .75rem; }
 .research-field select { width: 100%; background: var(--surface-alt); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; padding: .5rem; font: inherit; }
 .research-chart-container > .research-checkbox { display: inline-flex; align-items: center; justify-content: flex-start; align-self: flex-start; gap: .5rem; width: auto; font-size: .75rem; }

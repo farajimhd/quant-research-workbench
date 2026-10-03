@@ -59,6 +59,10 @@ def test_teacher_raw_values_and_threshold_no_old_candidate(tmp_path,monkeypatch)
     for item in labels:
         if item.held_index.size:
             assert item.opportunity_value_bps == pytest.approx(item.raw_exit_gain/item.held_features[0,1]*10000,rel=1e-6)
+            rows=pl.read_parquet(day/'shards/00000/labels.parquet')
+            prior=rows.filter(pl.col('time_us')<item.close_us).sort('time_us')['close'][-1]
+            entry=item.held_features[0,1]
+            assert item.held_features[0,3]==pytest.approx((prior-entry)/entry,abs=1e-6)
         else:
             row=pl.read_parquet(day/'shards/00000/labels.parquet').filter(pl.col('time_us')==item.close_us).row(0,named=True)
             assert item.opportunity_value_bps==pytest.approx(row['entry_gain']/row['close']*10000)

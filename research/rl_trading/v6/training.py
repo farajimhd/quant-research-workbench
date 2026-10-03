@@ -242,7 +242,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   evaluate_train: bool = False) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
-    Decisions use current completed candles and outcomes up to that close.
+    Current opportunity targets are stamped at candle close. Their features
+    exclude that candle: the encoder/ranker advances only after supervision.
+    Historical label versions retain their original audit alignment.
     Outcomes after a decision are applied only on a later clock. The encoder
     and action GRU state detach after each optimizer chunk, never mid-order.
     Evaluation accepts development sessions by default; evaluate_train also
@@ -258,6 +260,10 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
             not decisions or teacher_loss not in ('legacy', 'balanced-v2')):
         raise ValueError('V6 trainer requires a train session and labels')
     listings = len(session.listings)
+    from research.rl_trading.v6.price_action_opportunities import VERSION as OPPORTUNITY_VERSION
+    prior_only = any(item.label_version == OPPORTUNITY_VERSION for item in decisions)
+    if prior_only and not all(item.label_version == OPPORTUNITY_VERSION for item in decisions):
+        raise ValueError('Cannot mix teacher feature timing contracts')
     if learning_start_us is not None and any(
             item.close_us < learning_start_us for item in decisions):
         raise ValueError('Learning fence cannot discard supplied teacher labels')
@@ -333,10 +339,11 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                 scalar = torch.from_numpy(scalar_cpu).to(device)
                 levels = torch.from_numpy(np.asarray(
                     session.bank.levels[rows]).copy()).to(device)
-                state.advance(policy.encoder, index, scalar, levels)
-                if ranked:
-                    policy.observe_market(state, event.close_us,
-                        event.listing_index, scalar_cpu)
+                if not prior_only:
+                    state.advance(policy.encoder, index, scalar, levels)
+                    if ranked:
+                        policy.observe_market(state, event.close_us,
+                            event.listing_index, scalar_cpu)
                 for item in decision_groups.pop(event.close_us, ()):
                     if hasattr(policy,'execution_projection'):
                         if item.execution_features is None:raise ValueError('Causal cost observation missing')
@@ -426,6 +433,12 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     observed_decisions += 1
                     if 1 <= item.token <= listings and not item.soft_tokens:
                         pending_entries[(item.close_us, item.order_index)] = item.token-1
+                if prior_only:
+                    # All targets at t see the same strictly earlier market state.
+                    state.advance(policy.encoder, index, scalar, levels)
+                    if ranked:
+                        policy.observe_market(state, event.close_us,
+                            event.listing_index, scalar_cpu)
         if pending_losses:
             mean = (torch.stack(pending_objectives).sum() / loss_denominator
                     if balance is not None else torch.stack(pending_objectives).sum()/sum(pending_weights))

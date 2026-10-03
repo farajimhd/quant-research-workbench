@@ -163,6 +163,9 @@ def require_dataset(path, *, runtime_root):
 def load_teacher(root, session, *, runtime_root, audit_development=False, audit_listing_ids=None):
     """Conditional flat and unit-held branches; raw gain never quality-as-value.
 
+    Targets are aligned to candle CLOSE, never open. Market features must use
+    only close_us < target close_us (see label_timing.CONTRACT). Hindsight
+    values use future prices and must never enter observation tensors.
     All valid flat candles included. Held branch uses strictly later long
     candles from each reference entry, including negative raw exits. No fees.
     """
@@ -188,6 +191,8 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
             if not set(audit_listing_ids)&set(receipt['identities']): continue
             frame=pl.scan_parquet(folder/'labels.parquet').filter(pl.col('listing_id').is_in(audit_listing_ids)).collect()
         else: frame=pl.read_parquet(folder/'labels.parquet')
+        frame = frame.sort(['listing_id','time_us']).with_columns(
+            pl.col('close').shift(1).over('listing_id').alias('prior_close'))
         pairs = pl.read_parquet(folder/'pairs.parquet')
         entries = {(r['listing_id'],r['pair_id']):r for r in pairs.iter_rows(named=True)} if pairs.height else {}
         weights = frame.group_by('listing_id','pair_id').len()
@@ -205,7 +210,10 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
                 soft_probabilities=(1-q,q),episode_uid=uid,opportunity_value_bps=gain/row['close']*10000,
                 label_version=ALGORITHM,raw_entry_gain=gain,raw_exit_gain=None))
             if row['exit_gain'] is None: continue
-            pair = entries[(row['listing_id'],row['pair_id'])]; price = row['entry_basis']; mark = row['close']
+            pair = entries[(row['listing_id'],row['pair_id'])]; price = row['entry_basis']
+            # Hypothetical held account also excludes the target candle price.
+            mark = row['prior_close']
+            if mark is None: raise ValueError('Held target lacks strictly prior price context')
             age = (row['time_us']-pair['reference_entry_us'])/1e6; q = float(row['exit_quality'])
             units=min(1.,cash0/price)
             held = np.array([i],np.int64); features = np.array([[units,price,age,(mark-price)/price,0,0,0,0,0,0,0]],np.float32)

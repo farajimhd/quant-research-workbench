@@ -14,6 +14,34 @@ from research.rl_trading.v6.training import (ExecutionOutcome,
                                              teacher_loss_balance)
 
 
+@pytest.mark.parametrize('evaluation',[False,True])
+def test_current_opportunity_target_excludes_its_candle_and_uses_it_next(evaluation):
+    from research.rl_trading.v6.price_action_opportunities import VERSION
+    def observed(perturb):
+        torch.manual_seed(7)
+        clocks=np.array([1_000_000,2_000_000,3_000_000],dtype=np.int64)
+        scalar=np.zeros((3,37),np.float32); scalar[:,0]=[.1,perturb,.3]
+        bank=SessionBank(Path('unused'),{'offsets':{'A':[0,3]}},clocks,scalar,np.zeros((3,2,5,11),np.float32))
+        session=PackedSession(date(2026,7,31),'development' if evaluation else 'train',Path('unused'),'cert',bank,None,('A',))
+        policy=BracketPolicy(width=16)
+        snapshots=[]; original=policy.decide
+        def decide(embeddings,*args,**kwargs):
+            snapshots.append(embeddings.detach().clone())
+            return original(embeddings,*args,**kwargs)
+        policy.decide=decide
+        decisions=tuple(TeacherDecision(int(t),0,0,np.array([10000,10000,0,0,0,0,0],np.float32),
+            np.empty(0,np.int64),np.empty((0,9),np.float32),np.ones(1,bool),
+            np.empty(0,bool),np.empty(0,bool),np.empty(0,bool),label_version=VERSION) for t in clocks)
+        optimizer=None if evaluation else torch.optim.Adam(policy.parameters(),lr=.001)
+        result=train_session(policy,optimizer,session,decisions,(),device=torch.device('cpu'),evaluation=evaluation)
+        assert result.decisions==3
+        return snapshots
+    baseline=observed(.2); changed=observed(20.)
+    torch.testing.assert_close(baseline[0],changed[0],rtol=0,atol=0)
+    torch.testing.assert_close(baseline[1],changed[1],rtol=0,atol=0)
+    assert not torch.equal(baseline[2],changed[2])
+
+
 def test_session_balance_uses_fixed_denominator_and_mean_one_weights():
     from types import SimpleNamespace
     labels = [SimpleNamespace(token=0, held_index=()) for _ in range(9)]

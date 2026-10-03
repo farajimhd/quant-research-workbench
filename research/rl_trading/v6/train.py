@@ -31,6 +31,7 @@ from research.rl_trading.v6.teacher_data import load_teacher, load_wait_hold_tea
 from research.rl_trading.v6.action_contract import ACTION_VERSION
 from research.rl_trading.v6.teacher_selection import teacher_validation_score, selection_key, SELECTION_VERSION
 from research.rl_trading.v6.training import train_session
+from research.rl_trading.v6.label_timing import CONTRACT as TEACHER_LABEL_TIMING
 from research.rl_trading.v6.learning_rate import cosine_warmup
 from research.rl_trading.v6.environment_source import ArteExecutionSource
 from research.rl_trading.v6.environment import BracketEnvironment
@@ -331,6 +332,7 @@ def main(argv=None):
         'action_audit_sha256':file_hash(args.action_audit) if args.action_audit else None,
         'ranking':asdict(ranking),'source_commit':_commit(),
         'label_algorithm':dataset['algorithm'],'label_raw_value_units':dataset['raw_value_units'],
+        'teacher_label_timing':TEACHER_LABEL_TIMING,
         'label_publication_audit_sha256':dataset['publication_audit_sha256'],
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
@@ -361,6 +363,7 @@ def main(argv=None):
                 parent.get('feature_contract','legacy')!=feature_contract or
                 parent.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256') or
                 parent.get('action_version')!=manifest['action_version'] or
+                parent.get('teacher_label_timing')!=manifest['teacher_label_timing'] or
                 parent['dataset_sha256']!=manifest['dataset_sha256'] or
                 parent['luld_certificates']!=manifest['luld_certificates'] or
                 parent.get('teacher_selection_version')!=SELECTION_VERSION or
@@ -379,6 +382,8 @@ def main(argv=None):
         parent_payload=torch.load(args.resume_from,map_location=device,weights_only=False)
         if parent_payload['manifest_hash']!=parent_manifest['hash']:
             raise ValueError('Parent checkpoint manifest mismatch')
+        if parent_manifest.get('teacher_label_timing') != manifest['teacher_label_timing']:
+            raise ValueError('Parent teacher feature timing differs; fresh compatible training required')
         if (parent_manifest.get('execution_evidence_version')!=manifest['execution_evidence_version'] or
                 parent_manifest.get('feature_contract','legacy')!=feature_contract or
                 parent_manifest.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256')):

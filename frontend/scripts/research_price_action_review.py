@@ -83,7 +83,7 @@ def main():
                             for destination in ['teacher-path','sidebar']:
                                 count = len(requests)
                                 if destination=='teacher-path':
-                                    page.get_by_role('button',name='V6 teacher labels',exact=True).click()
+                                    page.get_by_role('button',name='Historical V6 teacher labels',exact=True).click()
                                 else:
                                     page.get_by_role('link',name='Labeler',exact=True).click()
                                 page.locator('.research-price-action-chart').wait_for(state='hidden')

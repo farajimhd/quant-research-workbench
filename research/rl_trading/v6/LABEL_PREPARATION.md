@@ -6,6 +6,44 @@ teachers, rolling-15 episode windows, fee-adjusted candidate targets, bracket
 sidecars and checkpoints from their datasets are rejected by current loaders.
 Historical files remain audit evidence, not current supervision.
 
+## Target and feature timing (mandatory)
+
+`label_timing.CONTRACT` is the versioned training alignment authority. A label
+belongs to its candle **close_us**, never its open (open = close_us - 1 second).
+For a target at close time **t**, all market features, OHLC, indicators, levels,
+ranking and held-position mark prices must come from candles with
+**close_us < t**. Exclude the target candle entirely. The trainer evaluates
+all targets at t before advancing that candle's encoder/ranking state; the
+held teacher account uses the previous observed valid price, without padding.
+The clock and elapsed holding age are known coordinates, not current-price inputs.
+
+These are hindsight targets: future prices determine their values offline.
+Timestamp alignment does not assert that hindsight labels are available live
+at t. Do not place qualities, gains, future pair geometry or selected future
+exit prices in observation tensors. Raw labels are unchanged by this feature
+alignment. New training manifests bind the timing version, preventing resume
+or initialization from checkpoints with the old inclusive feature contract.
+
+## App audit
+
+Research → **Current V6 labels** reads `rl-v6-active-labels.json` and its
+published dataset/audit certificates from the workstation runtime. Select
+any of the 19 saved sessions and a ticker/listing. The three existing Canvas
+containers show algorithm/timing, session/pair statistics, and saved candles
+with 1s MACD shading. Arrow rows show quality and raw dollars per share.
+ENTRY/WAIT and EXIT/HOLD are separate conditional teacher branches at the
+fixed saved 90% threshold; held candles without an exit target have no marker.
+The reference view is a chronological comparison, not an extra teacher target.
+
+`/api/research/models/v6/saved-labels` exposes the catalog; `/listings`,
+`/metadata` and `/chart` select published identities only. Shard receipts,
+file hashes and counts verify before selected parquet rows are displayed.
+Content-addressed copies live under `D:/TradingML/runtimes/rl-v6-app-label-cache`;
+there is no old-label fallback or recomputation. The deployment mapping defaults
+to `\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes` and can be explicitly
+configured with `RL_V6_LABEL_AUDIT_RUNTIME`. Historical audit and the single
+NVDA experiment retain their separate paths. No new teacher or PPO run is launched.
+
 Generate every saved forward-bank listing on the workstation:
 
 ```powershell
