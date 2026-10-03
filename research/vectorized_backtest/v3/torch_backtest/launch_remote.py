@@ -65,6 +65,10 @@ def main(argv=None):
             "$env:PYTHONUNBUFFERED = '1'",
             "$env:PYTHONIOENCODING = 'utf-8'",
             "$Host.UI.RawUI.WindowTitle = 'GPU STRATEGY SEARCH - v3'",
+            'Add-Type -Name TaskConsole -Namespace V3 -MemberDefinition \'[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr hWnd);\'',
+            "$consoleHandle = [V3.TaskConsole]::GetConsoleWindow()",
+            "@{ pid=$PID; session_id=(Get-Process -Id $PID).SessionId; console_handle=$consoleHandle.ToInt64(); console_visible=[V3.TaskConsole]::IsWindowVisible($consoleHandle); title=$Host.UI.RawUI.WindowTitle } | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath "
+            + ps_literal(job + "/window.json"),
             "Set-Location -LiteralPath " + ps_literal(checkout),
             "& "
             + ps_literal(args.python)

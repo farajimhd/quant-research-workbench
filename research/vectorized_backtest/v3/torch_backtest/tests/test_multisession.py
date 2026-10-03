@@ -80,12 +80,16 @@ def test_broker_enforces_discretionary_hold_and_terminal_exception():
 
 
 @pytest.mark.parametrize("backend", ["eager", "compiled_graph"])
+@pytest.mark.parametrize("ledger_mode", ["unique", "inplace"])
 def test_unique_ledger_writes_match_atomic_masked_partial_fills_and_checkpoint(
-    backend, tmp_path
+    backend, ledger_mode, tmp_path
 ):
     if backend == "compiled_graph":
         if not torch.cuda.is_available():
             pytest.skip("CUDA unavailable")
+        # Independent witness shapes must not exhaust Dynamo's process-wide
+        # specialization cache. Reset only between setups, never during replay.
+        torch.compiler.reset()
         from research.vectorized_backtest.v3.torch_backtest.runtime import (
             configure_caches,
         )
@@ -101,7 +105,7 @@ def test_unique_ledger_writes_match_atomic_masked_partial_fills_and_checkpoint(
         tape, candidates, backend=backend, ledger_mode="atomic"
     ).compile()
     unique = SqueezeRunner(
-        tape, candidates, backend=backend, ledger_mode="unique"
+        tape, candidates, backend=backend, ledger_mode=ledger_mode
     ).compile()
     a, b = atomic.run(), unique.run()
     assert torch.allclose(atomic.ledger, unique.ledger, rtol=0, atol=1e-7)

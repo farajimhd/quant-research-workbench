@@ -72,9 +72,15 @@ locations. The unique-destination writer assigns those inactive slots private
 scratch locations; active prefix ranks overwrite distinct ledger rows. Overflow
 still fails before publishing results. No fill row is dropped or compressed away.
 
+The `inplace` writer also declares this exclusive buffer mutation through a
+v3-owned Torch custom operation. This prevents compiler functionalization from
+copying the entire ledger before both scatter updates and back afterward.
+The implementation calls the same native Torch scatter, with no additional
+dependency, account-math change, host transfer or per-ticker Python loop.
+
 `profile` prepares a real TRAINING session and compares the same candidates:
-inline rules/atomic logging, inline rules/unique logging, and precomputed
-rules/unique logging. It compares complete ledgers and financial/activity/holding
+inline rules/atomic logging, inline rules/unique logging, precomputed
+rules/unique logging, and inline rules/explicit in-place logging. It compares complete ledgers and financial/activity/holding
 metrics, then measures three full-session replays per mode. Compilation, source
 preparation and rule preparation are reported separately. The selected mode
 minimizes warm objective time, not replay time alone. A bounded GPU trace identifies

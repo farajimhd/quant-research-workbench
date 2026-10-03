@@ -365,7 +365,9 @@ def main(argv=None):
     parser.add_argument("--maximum-state-gib", type=float, default=8)
     parser.add_argument("--maximum-fills", type=int, default=65536)
     parser.add_argument("--graph-steps", type=int, default=32)
-    parser.add_argument("--ledger-mode", choices=("unique", "atomic"), default="unique")
+    parser.add_argument(
+        "--ledger-mode", choices=("unique", "atomic", "inplace"), default="inplace"
+    )
     parser.add_argument("--structural-workers", type=int, default=0)
     parser.add_argument("--plain", action="store_true")
     parser.add_argument(

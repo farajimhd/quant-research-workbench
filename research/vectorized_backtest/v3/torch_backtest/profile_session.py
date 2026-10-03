@@ -71,6 +71,7 @@ def profile(item, args, output, panel):
         (False, "atomic"),
         (False, "unique"),
         (True, "unique"),
+        (False, "inplace"),
     ):
         panel.emit(
             dict(
@@ -150,8 +151,8 @@ def profile(item, args, output, panel):
         )
         timings.append(measurement)
         write_json(output / "profile_measurements.json", timings)
-        # Bounded trace of 16 complete ticks, not a multi-gigabyte session trace.
-        if precompute:
+        # Trace one captured block, bounded by graph_steps (32 by default).
+        if ledger_mode == "inplace":
             runner.reset()
             with torch.profiler.profile(
                 activities=[

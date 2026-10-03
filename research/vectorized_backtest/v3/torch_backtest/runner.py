@@ -16,6 +16,7 @@ from time import perf_counter
 import torch
 
 from .grid import MAX_POSITIONS, Settings
+from .ledger_write import ledger_scatter
 
 
 def proportional_fill(wanted, capacity):
@@ -49,7 +50,7 @@ class SqueezeRunner:
         maximum_state_gib=2.0,
         maximum_fills=16384,
         graph_steps=16,
-        ledger_mode="unique",
+        ledger_mode="inplace",
     ):
         self.tape = tape.validate()
         self.settings = settings.validate()
@@ -66,13 +67,13 @@ class SqueezeRunner:
             raise ValueError("Batch must be 1..1024")
         self.backend, self.graph_steps = backend, graph_steps
         self.maximum_fills = maximum_fills
-        if ledger_mode not in ("unique", "atomic"):
+        if ledger_mode not in ("unique", "atomic", "inplace"):
             raise ValueError("Unknown ledger write mode")
         self.ledger_mode = ledger_mode
         self.shape = (self.b, self.n, MAX_POSITIONS)
         # Include four distinct exit-order commission histories and bounded logs.
         estimate = self.b * self.n * 15 * 260 + self.b * maximum_fills * 9 * 8
-        if ledger_mode == "unique":
+        if ledger_mode != "atomic":
             estimate += self.b * self.n * 15 * 9 * 8
         if (
             not math.isfinite(maximum_state_gib)
@@ -156,7 +157,7 @@ class SqueezeRunner:
             state(name, (self.b,), torch.int64)
         state("overflow", (self.b,), torch.bool)
         state("financial_error", (self.b,), torch.bool)
-        if ledger_mode == "unique":
+        if ledger_mode != "atomic":
             # Inactive slots get distinct scratch locations, avoiding thousands
             # of zero atomics contending on one real ledger row. Active prefix
             # ranks are unique, so direct overwrite preserves exact fill rows.
@@ -359,13 +360,16 @@ class SqueezeRunner:
             -1,
         ).to(torch.float64)
         rows = torch.where((active & in_bounds)[..., None], rows, 0)
-        if self.ledger_mode == "unique":
+        if self.ledger_mode != "atomic":
             destinations = torch.where(
                 active & in_bounds, positions, self.maximum_fills + self.slot_axis
             )
-            self.ledger_storage.scatter_(
-                1, destinations[..., None].expand(-1, -1, 9), rows
-            )
+            if self.ledger_mode == "inplace":
+                ledger_scatter(self.ledger_storage, destinations, rows)
+            else:
+                self.ledger_storage.scatter_(
+                    1, destinations[..., None].expand(-1, -1, 9), rows
+                )
         else:
             positions = positions.clamp(0, self.maximum_fills - 1)
             self.ledger.scatter_add_(1, positions[..., None].expand(-1, -1, 9), rows)
