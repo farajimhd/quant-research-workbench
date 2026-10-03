@@ -37,6 +37,8 @@ CONTRACTS = {FACT_TABLE: FACT_COLUMNS, POPULATION_TABLE: POPULATION_COLUMNS,
 SORT_KEYS = {table: "source_build_id,session_date,ticker,derivation_attempt_id"
              + (",boundary_ms" if table == FACT_TABLE else "") for table in CONTRACTS}
 PRODUCT_DIGEST = sha256(json.dumps({"product": "strategy-43-completed-history-v1",
+    "transport": "arrow-ieee-float64-v2",
+    "notional_sum": "ordered-100ms-bucket-array-sum",
     "swing": "2-left-2-right-tied-minimum-available-next-second",
     "movement": "10-consecutive-observed-close-changes-current-second-included",
     "attention": "10-completed-execution-notionals-current-second-excluded",

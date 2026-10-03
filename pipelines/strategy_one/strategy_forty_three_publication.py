@@ -134,6 +134,27 @@ def read_population(client, source):
     return result
 
 
+def insert_facts(client, rows):
+    """Exact binary floats; decimal JSON parsing cannot alter a sealed bit."""
+    import pyarrow as pa
+    if not rows or len(rows) > 4096:
+        raise ValueError("Strategy 43 binary insertion requires a bounded nonempty unit")
+    types = {"String": pa.string(), "LowCardinality(String)": pa.string(),
+        "UUID": pa.string(), "Date": pa.date32(), "UInt32": pa.uint32(),
+        "UInt8": pa.uint8(), "Float64": pa.float64(), "Nullable(Float64)": pa.float64()}
+    from datetime import date
+    arrays = []
+    for name, kind in FACT_COLUMNS:
+        values = [date.fromisoformat(row[name]) if kind == "Date" else row[name] for row in rows]
+        arrays.append(pa.array(values, type=types[kind]))
+    table = pa.Table.from_arrays(arrays, names=[name for name, _ in FACT_COLUMNS])
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as stream:
+        stream.write_table(table)
+    header = f"INSERT INTO {FACT_TABLE} ({','.join(table.column_names)}) FORMAT ArrowStream\n".encode()
+    client.execute(header + sink.getvalue().to_pybytes())
+
+
 def publish_unit(client, keeper, source: PublicationSource, seconds: pl.DataFrame, *, catalog_reader=None) -> str:
     """Publish after exact readback, preserving all previously certified units."""
     source.validate()
@@ -166,7 +187,7 @@ def publish_unit(client, keeper, source: PublicationSource, seconds: pl.DataFram
             for start in range(0, len(facts), 4096):
                 if not keeper.connected:
                     raise RuntimeError("Strategy 43 producer Keeper ownership is lost")
-                _insert_rows(client, FACT_TABLE, tuple(name for name, _ in FACT_COLUMNS), facts[start:start + 4096])
+                insert_facts(client, facts[start:start + 4096])
         elif existing_count != len(facts):
             # A known exact prefix is restartable; any duplicate or changed
             # prefix fails closed. Missing suffix alone is not silently skipped.
@@ -176,7 +197,7 @@ def publish_unit(client, keeper, source: PublicationSource, seconds: pl.DataFram
             for start in range(len(existing), len(facts), 4096):
                 if not keeper.connected:
                     raise RuntimeError("Strategy 43 producer Keeper ownership is lost")
-                _insert_rows(client, FACT_TABLE, tuple(name for name, _ in FACT_COLUMNS), facts[start:start + 4096])
+                insert_facts(client, facts[start:start + 4096])
         actual = read_facts(client, source)
         if actual != facts or scalar_hash(actual) != expected["fact_hash"]:
             raise RuntimeError("Strategy 43 producer exact fact readback differs")

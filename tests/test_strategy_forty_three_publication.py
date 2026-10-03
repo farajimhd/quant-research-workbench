@@ -13,6 +13,23 @@ from src.trading_runtime.strategy_forty_three_fact_schema import (
 from tests.test_strategy_forty_three_facts import grid
 
 
+def test_arrow_insertion_preserves_sensitive_float_bits_without_decimal_transport():
+    import pyarrow as pa
+    import struct
+    from pipelines.strategy_one.strategy_forty_three_publication import insert_facts
+    facts, _, _ = prepare_rows(source(), grid([10.] * 15))
+    facts[0]["previous_ten_second_mean_notional"] = 6.565
+    captured = []
+    client = SimpleNamespace(execute=lambda payload: captured.append(payload))
+    insert_facts(client, facts)
+    header, binary = captured[0].split(b"\n", 1)
+    assert header.endswith(b"FORMAT ArrowStream")
+    table = pa.ipc.open_stream(binary).read_all()
+    actual = table["previous_ten_second_mean_notional"][0].as_py()
+    assert struct.pack("<d", actual) == struct.pack("<d", 6.565)
+    assert table["previous_ten_second_mean_notional"][1].as_py() is None
+
+
 def source():
     return PublicationSource("a" * 64, "2026-09-03", "TEST",
         "11111111-1111-4111-8111-111111111111",
@@ -85,6 +102,8 @@ def publication_fixture(monkeypatch, *, partial=0, sealed=False):
     monkeypatch.setattr(producer, "read_facts", lambda *_: list(state["facts"]))
     monkeypatch.setattr(producer, "read_population", lambda *_: list(state["population"]))
     monkeypatch.setattr(producer, "_insert_rows", insert)
+    monkeypatch.setattr(producer, "insert_facts", lambda client, rows:
+        insert(client, producer.FACT_TABLE, (), rows))
     return producer, Client(), Keeper(), state, coverage
 
 

@@ -49,7 +49,8 @@ def completed_seconds(*, source, market, identity, structure, reader):
         + f"AND bucket_index>={first} AND bucket_index<{last} ORDER BY bucket_index")
     liquidity = _frame(reader,
         "SELECT (intDiv(toInt64(bucket_index),10)+1)*1000-14400000 AS boundary_ms,"
-        "sum(execution_notional) AS dollar_volume FROM arte.liquidity_100ms_v1 WHERE "
+        "arraySum(arrayMap(x->x.2,arraySort(x->x.1,groupArray((bucket_index,execution_notional))))) "
+        "AS dollar_volume FROM arte.liquidity_100ms_v1 WHERE "
         + common + f" AND attempt_id=toUUID({_literal(source.liquidity_attempt_id)}) "
         + f"AND bucket_index>={first * 10} AND bucket_index<{last * 10} "
         + "GROUP BY boundary_ms ORDER BY boundary_ms")
