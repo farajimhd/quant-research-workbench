@@ -2393,16 +2393,23 @@ def capture(args: argparse.Namespace) -> int:
                                 v7_reuse=dict(bars=768, seeds=768, loaded=768)))
                         route.fulfill(response=response, json=value)
                     page.route(re.compile('/api/trading/backtest/runs/' + re.escape(args.historical_run_id) + r'(\?.*)?$'), cached_preparation)
-                if args.full_market_backtest:
+                if args.full_market_backtest or args.strategy45_preflight_wait:
                     full_market_requests = []
                     full_market_preflights = []
                     plan = dict(name='V7 full session / first Early Squeeze', profile_id='fixture', run_plan_id='fixture-plan', strategy_id='fixture', strategy_revision=1)
+                    pending_preflights = []
+                    if args.strategy45_preflight_wait:
+                        plan.update(strategy_id='squeeze-grid-strategy', strategy_revision=45)
+                        page.clock.install()
                     page.route('**/api/trading/backtest/configuration-options*', fulfill_json(json.dumps(dict(candidate_id='fixture-222', run_plan_id='fixture-plan', available_run_plans=[plan], error='', candidates=[dict(candidate_id='fixture-222', candidate_revision=222, label='Full session', content_hash='fixture')]))))
                     page.route('**/api/trading/backtest/structure-books', fulfill_json(json.dumps(dict(items=[dict(id='fixture-SUGP', ticker='SUGP', version='causal-level-book-v7-mle-1', start='2025-01-01', end='2026-09-12')]))))
                     page.route('**/api/trading/backtest/indicator-warmup', fulfill_json(json.dumps(dict(status='ready', items=[], ready_count=1, ticker_count=1))))
                     def capture_market_preflight(route):
                         request = route.request.post_data_json
                         full_market_preflights.append(request)
+                        if args.strategy45_preflight_wait:
+                            pending_preflights.append(route)
+                            return
                         route.fulfill(content_type='application/json', body=json.dumps(dict(configuration_revision_id='fixture-222', configuration_revision=222, run_plan_id='fixture-plan', initial_cash=request['initial_cash'], strategy_run_ready=True, checks=[], window=dict(sessions=['2026-08-18']))))
                     page.route('**/api/trading/historical-preflight', capture_market_preflight)
                     def capture_market_launch(route):
@@ -3418,6 +3425,19 @@ def capture(args: argparse.Namespace) -> int:
                         journal.get_by_placeholder('Search positions, symbols, setups, exits…').wait_for(state='visible')
                         journal.get_by_role('tab',name=re.compile('^Overview')).click()
                         result['warmup_header_height']=before
+                    if args.strategy45_preflight_wait and scenario['page']=='backtest-trading':
+                        page.get_by_text(re.compile('Checking historical inputs')).wait_for()
+                        page.clock.fast_forward(181_000)
+                        page.get_by_text(re.compile(r'3:\d{2} elapsed')).wait_for(timeout=args.timeout_ms)
+                        if page.get_by_text('Request timed out', exact=False).count():
+                            raise RuntimeError('Strategy 45 preparation expired at the old 180-second deadline')
+                        page.screenshot(path=str(output_dir / (filename + '-waiting.png')), full_page=True)
+                        if not pending_preflights:
+                            raise RuntimeError('No Strategy 45 preflight was captured')
+                        for pending in pending_preflights:
+                            pending.fulfill(content_type='application/json', body=json.dumps(dict(configuration_revision_id='fixture-222', configuration_revision=45, run_plan_id='fixture-plan', initial_cash=pending.request.post_data_json['initial_cash'], strategy_run_ready=True, checks=[], window=dict(sessions=['2026-08-18']))))
+                        page.wait_for_function("[...document.querySelectorAll('button')].some(b=>b.textContent==='Run Full-market Backtest'&&!b.disabled)")
+                        result['strategy45_preflight_survived_seconds'] = 181
                     if args.full_market_backtest and scenario['page']=='backtest-trading':
                         if page.locator('input[type=date]').input_value()!='2026-08-18':raise RuntimeError('Strategy 1 must open on the certified session')
                         if page.get_by_label('Tickers', exact=True).count():raise RuntimeError('Full market must not require a ticker list')
@@ -3538,6 +3558,9 @@ def capture(args: argparse.Namespace) -> int:
                         "issues": issues,
                     })
                 except Exception as exc:
+                    if args.strategy45_preflight_wait:
+                        print('Strategy 45 wait review failure: '+str(exc), flush=True)
+                        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__failed.png')), full_page=True)
                     if args.labeler:
                         result["labeler_state"] = page.locator('.labeler-page').all_text_contents()
                         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__failed.png')), full_page=True)
@@ -3625,6 +3648,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--journal-layout", action="store_true", help="review compact open positions, chart layout and lifecycle selection with deterministic data")
     result.add_argument('--strategy-activity-evidence', action='store_true', help='verify evidence caching, refreshed projections, row switching and deselection using a component fixture')
     result.add_argument('--full-market-backtest', action='store_true', help='verify full-market setup and intercept the single launch request without starting a backtest')
+    result.add_argument('--strategy45-preflight-wait', action='store_true', help='hold Strategy 45 preflight beyond 180 seconds using the browser clock, then verify readiness without starting a backtest')
     result.add_argument('--structure-gaps-fixture', action='store_true', help='validate gap controls, causal cutoff and outcome visibility with deterministic fixtures')
     result.add_argument('--structure-gaps', action='store_true', help='calculate and inspect the real v4 gap preview on a historical chart')
     result.add_argument('--structure-time-placement', action='store_true', help='verify exact confirmation placement across missing and coarse candles')
