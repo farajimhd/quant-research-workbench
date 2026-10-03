@@ -242,3 +242,27 @@ workstation runtime configured its pinned dependency path. Its failed job and
 receipts are preserved. Compiler initialization is now lazy at the first CUDA
 mutation, after runtime setup. Nine remainder-policy tests and an independent
 fresh-process import-order regression passed after this correction.
+
+## Launched approximate-broker campaign (October 3)
+
+Source commit 47978f567e482fc700d5bb4264a9fdc2a0a73cdd was deployed and verified
+(899 files). Same-code September 3 qualification passed full financial/fill-ledger
+parity for 64 candidates, 811 tickers and 19,800 one-second slots. Three optimized
+replays were 108.555s, 113.449s and 108.552s (median108.555s); atomic median140.134s.
+This is 4.5% faster than the prior same-contract native median113.705s and 22.5%
+faster than the current atomic comparator. It remains slower than the older
+simpler 45.706s benchmark; the older result is not a current-contract speed claim.
+Preparation229.340s and warm-cache compile1.689s are separate from prepared replay.
+The trace still identifies the large outer fused financial kernel as the dominant
+cost; this change specifically reduces remainder kernel launches.
+
+Full search launched at
+D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v3/optimization_jobs/20261003-47978f567-search
+using that qualification receipt. The visible workstation console is
+GPU STRATEGY SEARCH - v3. Budget64 candidates x50 generations, seed20261003,
+random initial tensor, 30 training dates July30-Sep10, six frozen evaluation dates
+Sep11/14/15/16/17/18. Cash resets each session; broker participation remains fixed25%.
+Launch is not a profitability result. Source preparation, compilation, generation
+completion and frozen evaluation are distinct dashboard stages. The task-owned
+runtime handoff and hourly monitor track failures, checkpoints and meaningful
+milestones without changing the bounded experiment or tuning from evaluation.
