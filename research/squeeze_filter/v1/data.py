@@ -28,7 +28,7 @@ def bounds(day,kind):
 
 def floats(signals,start):
     from src.backend.backtest_market_data import readonly_clickhouse_client
-    result=[];cutoff=start.astimezone(ZoneInfo("UTC")).isoformat()
+    result=[];cutoff=start.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M:%S")
     with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
         for offset in range(0,signals.height,256):
             group=signals.slice(offset,256)
@@ -90,7 +90,7 @@ def load_session(source,kind,runtime,progress):
     return bars,signals,context,start_us,end_us,dict(source_key=prepared.source_key,
         source_build=source["build_id"],manifest_sha256=file_hash(session.manifest),
         metrics=prepared.metrics,float_authority="q_live.market_security_float_resolved_v1",
-        float_cutoff=start.astimezone(ZoneInfo("UTC")).isoformat())
+        float_cutoff=start.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M:%S"))
 
 
 def rvol_baseline(target_source,kind,signals,catalog,settings,runtime,progress):

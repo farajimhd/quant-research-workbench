@@ -81,7 +81,7 @@ def test_float_reader_uses_pinned_symbol_id_and_strict_pre_session_availability(
     class Reader:
         def execute(self,sql):
             assert "symbol_id IN ('ID')" in sql
-            assert "inserted_at<toDateTime64('2026-09-16T08:00:00+00:00'" in sql
+            assert "inserted_at<toDateTime64('2026-09-16 08:00:00'" in sql
             assert "resolution_date<=toDate('2026-09-16')" in sql
             return '{"symbol_id":"ID","float_shares":1000000,"resolution_kind":"resolved","resolution_date":"2026-09-15","available_at":"2026-09-15 12:00:00","source_fingerprint":"1"}'
         def close(self):pass
