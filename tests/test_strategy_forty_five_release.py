@@ -9,6 +9,11 @@ from src.trading_runtime.strategy_forty_five_runtime import ensure_installed
 from src.trading_runtime import strategy_registry as registry
 
 
+def test_strategy45_real_typed_projection_has_complete_emitter_proofs():
+    from src.backend.backtest_strategy_forty_five_certification import certify_projection
+    assert len(certify_projection()) == 64
+
+
 def test_independent_release_installs_native_executor_without_changing_old_inventory(monkeypatch):
     from src.trading_runtime.strategy_one_configuration_tree import encode_nodes
     assert encode_nodes(release_contract().canonical_payload())
