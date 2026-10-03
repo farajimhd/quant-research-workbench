@@ -1,8 +1,8 @@
 # Independent squeeze grid and workstation Torch backtest v2
 
 - Chat started: Exact start time unavailable; implementation continued October 2, 2026.
-- Last activity: October 2, 2026.
-- Summary written: October 2, 2026; exact timestamp omitted.
+- Last activity: October 3, 2026.
+- Summary written: October 3, 2026; exact timestamp omitted.
 - Chat/task identifier: 01a0fd2b-8a72-7813-8847-433343435543.
 - Repository or scope: quant-research-workbench; research/vectorized_backtest/v2/torch_backtest.
 - Related task-history entries: TASK-0221; source dependencies TASK-0215 and TASK-0206.
@@ -10,87 +10,15 @@
 
 ## Narrative
 
-The user proposed a squeeze-watchlist strategy with alternative entry rules,
-independent profit targets, ratcheting protection and portfolio replacement.
-Clarification established one submission batch of M independent position orders
-per ticker/session, rather than a single parent acquisition split into parts.
-M is 5, 10 or 15. Each position has exactly one target and one stop; no later
-entry batch is allowed after submission, even after cancellation or an exit.
+The user requires one batch of M independent position orders per ticker/session, each with one target/stop, and a permanent ticker lock after submission. The grid has 4,320 configurations: 30 entries, M 5/10/15, three allocations, two targets, two initial stops, two trails, replacement off/on. Entries include squeeze, VWAP 2s/5s holds, retest, and nonduplicate ANY/ALL MACD subsets at 1s/5s/10s/30s. README/grid.py pin exact formulas.
 
-The agreed grid contains 4,320 configurations: 30 entries, three M values (5/10/15), three allocations, two target modes, two initial-stop modes, two trail modes and replacement off/on. Entry choices include immediate signal, VWAP holds of 2s/5s, retest and MACD 1s/5s/10s/30s subsets. Duplicate singleton ANY/ALL choices are removed. Exact formulas and execution/score assumptions are pinned in the version README and grid.py.
+An independent v2 copied necessary source/compiler adapters without original Torch imports. It preserves sequential time, GPU candidate/ticker/position vectorization, per-account cash/liquidity, partial fills, fees, next-interval activation and bounded ledgers. Missing certified data, overflow/accounting failure and residual terminal exposure fail closed. Restart verifies artifact/source hashes; historical execution requires an approved grid/settings digest.
 
-The user required a new v2 folder with no imports from the original Torch
-package, preserving its vectorized, GPU-resident spirit. Needed compiler,
-encoding and read-only source foundations were copied locally. The new runner
-retains deterministic time sequencing, independent candidate accounts, shared
-cash and per-ticker liquidity within an account, partial fills, per-order fees,
-next-interval order eligibility and bounded ledgers. Missing certified inputs,
-ledger overflow or broken accounting fail closed. Residual terminal exposure
-invalidates fitness rather than inventing a liquidation. Completed batch
-artifacts and source fingerprints are verified on restart. Historical runs are
-approval-gated and do not reconstruct producer-owned indicators or geometry.
+The design-terminal-ui workstation launcher accepts single dates, inclusive ranges or all discovered dates, and premarket/regular/after-hours. Each window resets capital/locks while retaining causal daily episode, expiry, indicators and swing context. XNYS scheduling honors early closes. The default is all available dates/premarket; preflight prepares one latest-session tape plus calibration. Canonical ARTE/SIP sources replace flatfiles. Inspection found RTX PRO 6000 Blackwell, 95.59 GiB, and 36 catalogue dates July 30-September 18 across two V5 builds; catalogue evidence is not full source qualification.
 
-After approving the grid, the user chose to launch experiments personally on
-the workstation GPU. The follow-up added an operator launcher, measured GPU
-batch sizing and a compact progress panel using the design-terminal-ui skill.
-The launcher selects a single date, inclusive range or all available dates and
-premarket, regular or after-hours windows. Each date/window resets capital and
-the ticker lock. Squeeze admission must occur within the selected window while
-retaining the causal daily episode context, including the released 300-second
-greedy expiry, prior indicators and swing history. This extension was explained
-before implementation. XNYS scheduling supplies exchange open/close and honors
-early closes; no raw SIP files are read.
+Automatic sizing measures 32-1024 candidate lanes on a 128s witness, discards its P&L and selects throughput within memory guards. It reserves 10 GiB/15%, retains FP64, shares tape/reuses CUDA graphs, and has no CPU/OOM fallback. Defaults allow 48 GiB tape/65,536 fills; real full-population calibration chose 64. Torch 2.12/CUDA 13.2 required a pinned v2-only Windows Triton 3.7.1 runtime overlay and explicit bundled TinyCC path. Scratch/caches remain under runtimes; ordinary launchers never install dependencies.
 
-Read-only workstation inspection verified an RTX PRO 6000 Blackwell Server
-Edition with 95.59 GiB physical memory. Published market-day scope and matching
-completed V5 producer manifests/SQLite certificates reconcile 36 trading dates,
-July 30 through September 18, 2026. They span two source builds, one for
-July 30–August 17 and one for August 18–September 18. Monthly physical ARTE
-part inventories also show bars, indicators and liquidity in July–September.
-This is catalogue evidence, not full selected-population MACD/V7/identity/Keeper
-qualification. Full tape preflight remains mandatory before financial replay.
-
-Default execution is all discovered trading dates, premarket 04:00–exchange
-open in America/New_York. The separate preflight defaults to the latest date,
-September 18 premarket at this inspection, and prepares one full tape plus
-GPU calibration without running/ranking the complete grid. Expected missing
-trading dates reject selection; closed calendar dates are exposed. Regular
-and after-hours runs remain separate counterfactual accounts and result groups.
-
-Automatic GPU sizing measures 32/64/128/256/512/1024 configuration lanes on a
-128-second timing witness using selected prefix geometry with synthetic
-admission. Its P&L is discarded. It chooses candidate-seconds/second subject
-to current resource guards, reserving at least 10 GiB or 15% of total GPU
-memory. It preserves FP64 accounting, shares the immutable tape, reuses fixed
-compiled CUDA graphs and candidate buffers, and has no hidden CPU/OOM fallback.
-Workstation defaults allow a 48 GiB tape and 65,536 fills per account; overflow
-still rejects execution. These are resource settings, not grid dimensions.
-
-The workstation ml4t environment had PyTorch 2.12/CUDA 13.2 but no Triton.
-Compilation failed visibly. The fix installs the pinned Windows Triton 3.7.1
-wheel into a v2-only runtime dependency directory rather than altering the
-shared environment. A second probe established that an isolated --target
-installation requires an explicit CC path to its bundled TinyCC; the runtime
-now sets it unless the operator already supplies CC. Compiler scratch/cache
-directories also stay under runtimes. Setup is explicit and reproducible;
-ordinary launch commands never install dependencies. No eager fallback was
-used to claim the compiled path passed.
-
-The progress panel separates catalogue/preparation, calibration, compilation,
-replay and saving. Saved counts advance only after durable receipt/hash writes.
-Replay cursors use bounded graph synchronization, without per-tick host tensor
-reads. It shows date/window, completed/queued/reused/failed counts, validity,
-batch/tickers, replay-only rate/ETA, timings and GPU memory. Reused work is
-excluded from throughput. It supports compact dimensions, NO_COLOR, plain or
-redirected output, final failure/interruption retention and Ctrl+C restart.
-
-Source snapshots are committed/pushed before deployment, then copied into new
-isolated workstation code directories with every payload file hash verified.
-Shared source certificate readers are included; secrets and v1 Torch are not.
-Deployment evidence stays under workstation runtimes. A concurrent unrelated
-task committed the first staged launcher files in commit 34700e776; subsequent
-task-only fixes were committed separately. No unrelated working changes were
-edited or reverted to repair this shared-index race.
+Progress separates preparation/calibration/compile/replay/saving, advances durable counts after hashes/receipts, and uses bounded graph barriers for provisional cursors. It supports compact/plain/NO_COLOR, Ctrl+C restart, rates/ETA excluding reuse and explicit failure/terminal-invalid counts. Committed/pushed snapshots deploy to fresh hash-verified directories without secrets/v1. Concurrent task commit 34700e776 captured initially staged launcher files; unrelated changes were preserved.
 
 ## Evidence and operational handoff
 
@@ -172,8 +100,23 @@ There are 1,046 fully exited eligible configurations, all with actual entry fill
 
 ## Strategy 43 app comparison requested
 
-The user chose the first eligible September 3 winner as independent Strategy43: 1s decisions/100ms native fills, signal entry, fifteen inverse-log brackets, structural targets, swing stop, adaptive trail, no replacement. Native Portfolio/OMS execution, isolated stop amendments/liquidation, normalized V4 journal/command lineage, cold entry reconstruction, restart-safe producer contracts and SELECT-only certificates pass focused checks. Three SSD tables and exact narrow grants are provisioned. Actual certification confirms 6,066 tradables and 833 squeeze candidates with prior-session seeds. The missing-only campaign published 435 V7 units and certified all 833. All 833 dense histories then published; decimal transport drift was corrected with exact IEEE Float64 Arrow inserts and ordered 100ms notional sums, without hash tolerance or deleting failed unsealed rows. Full child certification passed in 1,669 seconds, token 27cea50921e8be48e5451014cac524dfd291a340172bee5f9fdfbf63cd4fbcd6.
+The user chose the first eligible September 3 winner as independent Strategy 43: 1s decisions/100ms native fills, signal entry, fifteen inverse-log brackets, structural targets, swing stop, adaptive trail, no replacement. Native Portfolio/OMS execution, isolated stop amendments/liquidation, normalized V4 journal/command lineage, cold entry reconstruction, restart-safe producer contracts and SELECT-only certificates pass focused checks. Three SSD tables and exact narrow grants are provisioned. Actual certification confirms 6,066 tradables and 833 squeeze candidates with prior-session seeds. The missing-only campaign published 435 V7 units and certified all 833. All 833 dense histories then published; decimal transport drift was corrected with exact IEEE Float64 Arrow inserts and ordered 100ms notional sums, without hash tolerance or deleting failed unsealed rows. Full child certification passed in 1,669 seconds, token 27cea50921e8be48e5451014cac524dfd291a340172bee5f9fdfbf63cd4fbcd6.
 
-Independent configuration and app controller are implemented; exact AST projections preserve historical strategies. The immutable release certified. The first run failed because callbacks appended a journal suffix during prefix persistence. Repair 8732e361e drains bounded suffixes with unchanged equality checks; an exact executor fingerprint pair preserves the release. All 89 Strategy43 tests pass; 2,136 deployed files were hash-verified.
+Independent configuration and app controller are implemented; exact AST projections preserve historical strategies. The immutable release certified. The first run failed because callbacks appended a journal suffix during prefix persistence. Repair 8732e361e drains bounded suffixes with unchanged equality checks; an exact executor fingerprint pair preserves the release. All 89 Strategy 43 tests pass; 2,136 deployed files were hash-verified.
 
 Run f0d31e83-5c39-4377-abf8-9ee275d2caa8 completed 198,000 broker intervals and independent cold readback at sequence 2264. Native lost $446.13, paid $170.37 fees, acquired 17,037 shares and produced 77 fills, ending flat. Torch lost $371.27, paid $163.87, acquired 16,387 shares and produced 390 fills. Both trade GELS/MIMI. Native uses 100ms quote/price-level matching; Torch approximates 1s VWAP plus/minus spread. Drawdown definitions differ. Failed runs remain separate. Report: D:/TradingML/runtimes/strategy43/comparison/3649dda277b64b2aabeac122029ce28b/COMPARISON.md. Verified idle legacy laptop backend was replaced by managed startup. Wider dates, public resume and profitability remain unqualified.
+
+
+## Strategy 44 and GPU v2 revision 3
+
+The deep audit reconciled original grid accounting and insufficient terminal liquidity. The user accepted execution differences, agreed earlier closeout, and specified v2; v3 optimization remains outside scope. Five revised behaviors apply to v2/new immutable Strategy 44: one fixed M-parent batch with full reserves; persistent original-price remainders; nearest-target-first completion; immediate partial protection; prospective setup-stop/cutoff cancellation with permanent ticker lock. Acquisitions stop 300s before end; actual-liquidity liquidation begins 60s before end. Residuals remain explicit failure.
+
+Native partial fills use the shared full-target protection profile without Strategy 1 trading rules. Adaptive amendments align active repair and inactive attached stops, preventing stale protection after parent completion. Liquidation is leg-specific with a one-cent sell floor. Existing Strategy 43 certified input tables/fact IDs/grants are reused; Strategy 44 has independent release, controller, normalized journal and cold audit. Exact AST projections preserve older contracts without broad fingerprint exceptions.
+
+Strategy 43 displayed two ticker-level lifecycles despite independent parents. Strategy 44 resident snapshots capture native OMS order ownership; cold reports recover committed command contexts and exact source revisions, including liquidation. Every acquisition has a stable separate lifecycle, quantity, fees/P&L; broker inventory stays instrument-aggregated. Missing/cross-leg ownership fails closed. A focused regression fixes the initially omitted include_source_batch needed for exit correlation.
+
+Source 3c6badd33cceb7db28c7b1bad89dee3af123cc77 was committed/pushed before deployment, verifying 2,163 shared files and 39 v2 files. Immutable Strategy 44 release a69b7c8f-0631-4afd-88ea-5bbe377f22fb certified with token 649d27abf6d95e458a985fd3b2417c041486fdb977454ca4da70c2c89c70e353. Local full suite passed 265 tests and nine additional cold-lineage/release checks. Compiled GPU 64 x 833 x 15 matched every CPU metric/state/ledger. Identical-tape production-buffer median replay 0.3141s after versus 0.3163s before established no material slowdown.
+
+Native Strategy 44 September 3 premarket run 186c5b1b-aa24-4833-a83c-aa8c6c4c6967 completed 198,000 boundaries/cold sequence 2817 in 563.92s including certification. Fifteen GELS plus fifteen MIMI positions fully filled 30 parents/18,356 shares, generated 92 fills, paid 183.56 fees and lost 458.93, with zero holdings/orders. Revised selected Torch v2-3 opened 30 positions/18,371 shares,186 fills,183.71 fees and -371.8337 net, also flat; replay 8.17s after preparation/compilation. All 833 causal structural cache entries verified. Net difference is -87.0963 with accepted execution differences. Neither needed session liquidation: full-grid closeout coverage remains unproven.
+
+Managed laptop backend/frontend restarted after verifying no active resident runs. App options list Strategy 44, and the actual journal-only saved-performance endpoint returns 30 distinct lifecycles. Comparison D:/TradingML/runtimes/strategy44/COMPARISON.md is mirrored on workstation. The revised 4,320 grid remains unrun; review version squeeze-grid-v2-3/settings before its campaign. Wider dates, resume/live qualification and profitability remain open. TASK-0221 owns this handoff.

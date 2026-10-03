@@ -295,8 +295,9 @@ per-share charge for buying and exiting. Paid minima, cancelled parent shares,
 and completed exits release their cover; future sale proceeds are never assumed
 to fund fees. This prevents low-value partial exits from making cash negative.
 Commission multiplication explicitly uses FP64, including cumulative shares.
-The grid version is `squeeze-grid-v2-2`; earlier financial results cannot be
-resumed or merged under the corrected code identity. The session tape is shared across
+The fee-accounting repair introduced `squeeze-grid-v2-2`. The current grid is
+`squeeze-grid-v2-3`; earlier financial results cannot be resumed or merged
+under its revised acquisition and closeout identity. The session tape is shared across
 all configuration lanes; a selected batch/graph is reused in place. Subsequent
 days still enforce current tape and state headroom. Default tape limit is 48 GiB;
 The workstation ledger default is 65,536 fills per account (overflow fails

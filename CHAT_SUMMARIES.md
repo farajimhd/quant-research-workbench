@@ -7,9 +7,9 @@ each year.
 
 ## 2026
 
-### [2026-10-02 - Squeeze Torch v2 and workstation launcher](docs/codex/chat-summaries/2026/CHAT-20261002-UNKNOWN-squeeze-torch-v2-workstation.md)
+### [2026-10-03 - Squeeze Torch v2 and Strategy 44 validation](docs/codex/chat-summaries/2026/CHAT-20261002-UNKNOWN-squeeze-torch-v2-workstation.md)
 
-TASK-0221. Corrected September 3 Torch grid completed 4,320 configurations; all 1,046 eligible configurations lost. Independent Strategy43 is published with 1s decisions/native 100ms fills. All 833 causal sources certify. After a bounded journal-suffix fence repair, native run f0d31e83-5c39-4377-abf8-9ee275d2caa8 completed and passed cold review: -$446.13 P&L, $170.37 fees, 17,037 shares, 77 fills and zero exposure. Torch: -$371.27, $163.87 fees, 16,387 shares, 390 fills. Both trade GELS/MIMI. Execution models differ; this is not exact parity or profitability evidence. All 89 Strategy43 checks pass. Laptop backend runs under the unified manager. Wider dates remain unqualified.
+TASK-0221. Original September 3 grid completed 4,320 configurations; all 1,046 eligible cases lost. Revised GPU v2-3 and immutable Strategy 44 add persistent target-priority acquisitions, immediate partial protection, setup invalidation and earlier closeout. Every parent is now an independent reported position. Strategy 44 run 186c5b1b completed and passed cold readback: 30 positions, -$458.93 net, $183.56 fees, 92 fills, flat. Updated selected Torch: 30 positions, -$371.83 net, $183.71 fees, 186 fills, flat. App response confirms 30 distinct rows. Full local suite passed 265 tests; compiled GPU state/ledger parity and identical-tape timing show no material slowdown. Execution differences accepted; Strategy 43 and v3 remain outside changes. Revised full grid, broader closeout coverage, wider dates and profitability remain unqualified.
 
 ### [2026-09-28 - BarGPT August evaluation and serving-capacity diagnosis](docs/codex/chat-summaries/2026/CHAT-20260928-UNKNOWN-bargpt-august-evaluation.md)
 
