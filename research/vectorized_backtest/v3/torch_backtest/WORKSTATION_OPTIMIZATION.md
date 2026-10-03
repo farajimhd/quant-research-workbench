@@ -162,3 +162,38 @@ stopping, objective weights or constraint adjustment. Validation results diagnos
 generalization, not profitability or live readiness certification.
 
 For all timestamp details see [TIME_AND_SEARCH_CONTRACT.md](TIME_AND_SEARCH_CONTRACT.md).
+
+## Qualified replay and blocked campaign (2026-10-03 UTC)
+
+Engine commit `a90b3921a60d77ab1516e57f0f4a03c58a6b51ae` passed 134 tests.
+Real September 3 premarket qualification used 19,800 one-second slots, 833
+admitted tickers and 64 candidates. Three complete replays per mode gave:
+
+| Component | Original atomic ledger | Explicit in-place ledger |
+| --- | ---: | ---: |
+| Median prepared replay | 79.80 s | 45.71 s |
+| Compilation/setup | 5.22 s (cached) | 49.60 s |
+| Rule precomputation | 0 s | 0 s |
+
+Complete fill-ledger and financial/activity/holding parity passed. The prepared
+replay reduction is 42.7%. Source preparation was separately 240.17 s; it is not
+included in replay timing and prepared inputs are reused in the search. The
+historical v2 report was 69.62 s at the same market/population dimensions, but
+policy differences make that historical comparison less controlled. This is the
+fastest measured qualified variant, not a claim of a theoretical optimum.
+
+The full random search was launched through SSH in a verified visible workstation
+console with the progress panel. Its first training-day preflight stopped on
+missing certified prior V7 coverage for `2026-07-30:BKYI`. No objective backtests
+or genetic generations completed. The process exited and its task registration
+was removed; the checkpoint, console receipts and failure evidence are preserved.
+
+Job root:
+`D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v3/optimization_jobs/20261003-a90b3921a-search`.
+
+Do not resume until the source owner supplies and certifies the causal prior seed.
+Never substitute future levels, fabricate an empty seed, exclude BKYI or shorten
+the session list to bypass certification. A read-only catalogue-wide V7 coverage
+metadata audit is stored as `source_dependency_audit.json` under the job root;
+planned-population misses are potential dependencies, while the admitted-watchlist
+preflight confirms actual required inputs. Other source gates must still pass.
