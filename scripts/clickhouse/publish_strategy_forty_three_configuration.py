@@ -24,7 +24,8 @@ def approved_archive(path):
     if not receipt.get("commit") or len(receipt["commit"]) != 40 or not receipt.get("files"):
         raise ValueError("Deployment receipt lacks its committed source and file hashes")
     expected = receipt["files"]
-    directories = ("src", "pipelines", "scripts", "services", "research/mlops", "research/reaction_levels")
+    directories = ("src", "pipelines", "scripts", "services", "research/mlops",
+                   "research/reaction_levels", "research/text_intelligence")
     actual = {p.relative_to(ROOT).as_posix(): sha256(p.read_bytes()).hexdigest()
               for directory in directories for p in (ROOT / directory).rglob("*") if p.is_file()}
     if actual != expected:
