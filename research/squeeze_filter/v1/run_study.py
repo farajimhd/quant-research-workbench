@@ -87,6 +87,15 @@ def write_report(job,result,cases,observations,coverage):
         f"Recommendation status: {result['recommendation_status']}.",
         "","| Rank | Prior feature rule | Train selected | Train precision | Train recall | Validation selected | Validation precision | Validation recall |",
         "|---:|---|---:|---:|---:|---:|---:|---:|"]
+    outcome_counts=cases.group_by("session","outcome").len().sort("session","outcome").to_dicts()
+    known=cases.filter(~pl.col("outcome").is_in(["unknown_history","no_post_signal_prices"])).height
+    summary=[f"Observable cohorts: {known}/{cases.height}; unknown history and missing prices are excluded, never quiet negatives."]
+    candidate=result["recommended_rule"]
+    if candidate:
+        validation=candidate["validation"]
+        summary.append(f"Frozen training candidate validation: {validation['true_positives']}/{validation['upward_events']} upward events caught, {validation['selected']} selections. No adoption or profitability claim.")
+    summary.extend(["", "Outcome coverage:", "```json",json.dumps(outcome_counts,indent=2),"```",""])
+    lines[6:6]=summary
     for row in result["rules"][:20]:
         rule=" AND ".join(f"{f} {op} {v:.6g}" for f,op,v in row["rule"]) or "Unfiltered baseline"
         a,b=row["training"],row["validation"]

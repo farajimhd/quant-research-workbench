@@ -10,7 +10,7 @@ Run on the workstation from a committed, pushed and verified deployment:
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 python -B research/squeeze_filter/v1/run_study.py --plan
-python -B research/squeeze_filter/v1/run_study.py --dates 2026-09-16 2026-09-17 2026-09-18 --session premarket
+python -B research/squeeze_filter/v1/run_study.py --dates 2026-09-01 2026-09-02 2026-09-03 --session premarket --prior-sessions 6
 ```
 
 Default: latest three available certified dates, premarket. Use `--dates` for
@@ -67,3 +67,26 @@ The study reports every known/unknown outcome and per-feature coverage. It does
 not simulate fills or establish profitability, and it can discover that no
 simple threshold helps. Larger untouched validation sessions are required before
 promoting any threshold to a numbered strategy or full trading grid.
+
+## Verified first study and source limitations
+
+The September 1-3 premarket study completed on source `9b1822eec`, using six
+prior sessions and a five-session RVOL minimum. The original September 16-18
+attempt stopped on ambiguous certified listing identities in September 4/8
+history. No ambiguous ticker was removed and no identity check was relaxed.
+The default latest-three/13-session selection remains strict and will reject
+that source condition until its certified identity snapshots are repaired.
+Use the explicit verified command above to reproduce the initial study.
+
+Of 2,419 first signals, only 70 had sufficient observable prior range history:
+19 upward, 28 downward, 13 two-sided, 10 quiet. Another 2,107 had unknown history
+and 242 no post-signal price candles. These are coverage failures, not quiet
+negatives. The top training candidate (60s trades >=59 AND 300s volume >=16145.0754)
+selected 14 training cohorts, catching 4/15 upward events; on September 3 it
+selected two and caught 0/4. No threshold is validated for adoption.
+
+The resolved float authority's earliest resolution date/publication is
+September 23, after all currently available historical bars. Access is granted,
+but the study cannot causally use those later snapshots in September 1-3.
+Float/turnover remain missing; a separately versioned historical as-of float
+product is needed to evaluate them. The study does not manufacture that product.
