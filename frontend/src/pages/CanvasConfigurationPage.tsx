@@ -3,6 +3,7 @@ import { BacktestV4ChartsQuotesContent } from "../app/components/BacktestV4Canva
 import type { V4Page } from "../app/components/BacktestV4SavedReview";
 import { VisibleBacktestPanel } from "../app/components/VisibleBacktestPanel";
 import { openBacktestSetup, recoverBacktest } from "../app/backtestRecovery";
+import { openSavedBacktestReview } from "../app/backtestReviewLoading";
 import { Activity, Check, Clock3, Globe2, Link2, MapPin, Maximize2, Minimize2, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
@@ -1466,9 +1467,7 @@ export function SavedBacktestChartFocus({ runId, ticker }: { runId: string; tick
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-terminal-page?after_sequence=0&limit=100&metadata_only=true`, {
-      signal: controller.signal, timeoutMs: 60_000,
-    }).then(value => {
+    void openSavedBacktestReview(runId, controller.signal).then(value => {
       if (controller.signal.aborted) return;
       if (value.schema_version !== "strategy-one-v4-terminal-review-page-v1"
           || value.run.run_id !== runId || !value.market_cursor_verified

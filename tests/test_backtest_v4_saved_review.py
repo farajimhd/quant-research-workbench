@@ -171,8 +171,8 @@ def test_terminal_review_requires_release_and_native_source(monkeypatch, changed
 
 
 @pytest.mark.parametrize('guard', [
-    'if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):',
-    'if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):',
+    'if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42):',
+    'if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42):',
 ])
 def test_saved_review_source_certificate_rejects_removed_strategy36_guard(guard, tmp_path):
     from pathlib import Path
@@ -181,7 +181,7 @@ def test_saved_review_source_certificate_rejects_removed_strategy36_guard(guard,
     assert source.count(guard) == 1
     assert len(certify_rising_momentum_entry_source()) == 64
     destination = tmp_path / 'saved_review.py'
-    destination.write_text(source.replace(guard, guard.replace(', 36, 37, 38)', ', 37, 38)')), encoding='utf-8')
+    destination.write_text(source.replace(guard, guard.replace(', 36,', ',')), encoding='utf-8')
     with pytest.raises(ValueError, match='reviewed source authority changed: backend/backtest_v4_saved_review.py'):
         certify_rising_momentum_entry_source(source_overrides={
             'backend/backtest_v4_saved_review.py': destination})

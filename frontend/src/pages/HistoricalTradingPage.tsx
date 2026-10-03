@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type ApiError } from "../api/client";
 import "./HistoricalWorkspace.css";
 import { recoverBacktest } from "../app/backtestRecovery";
+import { openSavedBacktestReview } from "../app/backtestReviewLoading";
 import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
@@ -175,9 +176,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     const timer = window.setTimeout(() => { void (async () => {
       const openV4Review = async () => {
         // The inventory is only a routing hint; this page is the authority.
-        const page = await api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(selectedRunId)}/v4-terminal-page?after_sequence=0&limit=100&metadata_only=true`, {
-          signal: controller.signal, timeoutMs: 60_000,
-        });
+        const page = await openSavedBacktestReview(selectedRunId, controller.signal);
         if (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== selectedRunId) {
           throw new Error("Saved numbered strategy review identity differs from the selected run.");
         }
@@ -349,9 +348,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     if (!run || !["completed", "stopped", "failed"].includes(run.status)) return;
     if (run.journal_backend === "arte_typed_journal_v4") {
       const controller = new AbortController();
-      api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/v4-terminal-page?after_sequence=0&limit=100&metadata_only=true`, {
-        signal: controller.signal, timeoutMs: 60_000,
-      }).then((page) => {
+      openSavedBacktestReview(run.run_id, controller.signal).then((page) => {
         if (controller.signal.aborted) return;
         if (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== run.run_id) {
           throw new Error("Saved numbered strategy review identity differs from the completed run.");

@@ -593,6 +593,8 @@ async def application_lifespan(_app: FastAPI):
         yield
     finally:
         from src.backend.backtest_history_performance import history_performance
+        from src.backend.backtest_review_loading import review_loading
+        await review_loading.close()
         await history_performance.close()
         MARKET_DISCOVERY_RUNTIME.stop()
         LIVE_STRATEGY_RUNTIME.stop()
@@ -608,6 +610,8 @@ from src.backend.research_model_service import router as research_model_router
 app.include_router(research_model_router)
 from src.backend.backtest_history_performance import router as backtest_history_performance_router
 app.include_router(backtest_history_performance_router)
+from src.backend.backtest_review_loading import router as backtest_review_loading_router, saved_review_read_scope
+app.include_router(backtest_review_loading_router)
 app.include_router(chart_labeler_router)
 app.include_router(hindsight_router)
 app.include_router(hindsight_action_router)
@@ -5917,7 +5921,7 @@ async def trading_backtest_v4_terminal_page(
         from src.trading_runtime.arte_journal_writer import (
             backtest_v4_operator_client_from_env,
         )
-        with closing(backtest_v4_operator_client_from_env()) as client:
+        with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, normalized):
             return load_v4_terminal_review_page(
                 client, normalized, after_sequence=after_sequence, limit=limit,
                 metadata_only=metadata_only)
@@ -5951,7 +5955,7 @@ async def trading_backtest_v4_chart(
             backtest_v4_operator_client_from_env,
         )
         with closing(backtest_v4_operator_client_from_env()) as journal_client, \
-                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client, saved_review_read_scope(journal_client, normalized):
             return cold_v4_chart_page(
                 journal_client, market_client, run_id=normalized,
                 ticker=ticker, timeframe=timeframe,
@@ -5991,7 +5995,7 @@ async def trading_backtest_v4_chart_overlays(
             backtest_v4_operator_client_from_env,
         )
         with closing(backtest_v4_operator_client_from_env()) as journal_client, \
-                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client, saved_review_read_scope(journal_client, normalized):
             return cold_v4_chart_overlays(
                 journal_client, market_client, run_id=normalized,
                 ticker=request.ticker, timeframe=request.timeframe,
@@ -6024,7 +6028,7 @@ async def trading_backtest_v4_chart_context(
             backtest_v4_operator_client_from_env,
         )
         with closing(backtest_v4_operator_client_from_env()) as journal_client, \
-                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client, saved_review_read_scope(journal_client, normalized):
             return cold_v4_chart_context_pair(
                 journal_client, market_client, run_id=normalized, ticker=ticker)
 
@@ -6053,7 +6057,7 @@ async def trading_backtest_v4_trade_history(
         from src.trading_runtime.arte_journal_writer import (
             backtest_v4_operator_client_from_env,
         )
-        with closing(backtest_v4_operator_client_from_env()) as client:
+        with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, normalized):
             return load_v4_trade_history_page(
                 client, normalized, after_fill_sequence=after_fill_sequence,
                 after_commission_sequence=after_commission_sequence,
@@ -6082,7 +6086,7 @@ async def trading_backtest_v4_performance(
         from src.trading_runtime.arte_journal_writer import (
             backtest_v4_operator_client_from_env, load_typed_run_context,
         )
-        with closing(backtest_v4_operator_client_from_env()) as client:
+        with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, normalized):
             page = load_cached_v4_performance_report(client, normalized)
             if not include_entry_context:
                 return page
@@ -6109,7 +6113,7 @@ async def trading_backtest_v4_chart_trades(run_id: str, ticker: str) -> dict[str
         from src.backend.backtest_v4_saved_review import load_v4_chart_trades
         from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
 
-        with closing(backtest_v4_operator_client_from_env()) as client:
+        with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, normalized):
             return load_v4_chart_trades(client, normalized, ticker)
 
     try:
@@ -6137,7 +6141,7 @@ async def trading_backtest_v4_order_history(
         from src.trading_runtime.arte_journal_writer import (
             backtest_v4_operator_client_from_env,
         )
-        with closing(backtest_v4_operator_client_from_env()) as client:
+        with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, normalized):
             return load_v4_order_history_page(
                 client, normalized, after_command_sequence=after_command_sequence,
                 after_transition_sequence=after_transition_sequence,

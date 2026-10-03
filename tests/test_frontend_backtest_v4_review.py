@@ -16,6 +16,65 @@ def _performance_page():
 
 @unittest.skipUnless(os.environ.get("BACKTEST_REVIEW_UI"), "opt-in managed browser check")
 class BacktestV4ReviewUITests(unittest.TestCase):
+    def test_cold_review_remains_open_past_old_request_deadline(self):
+        """Exercise real timers and fetches; no longer timeout is configured."""
+        from time import monotonic
+        from playwright.sync_api import sync_playwright
+        evidence = Path(os.environ["BACKTEST_REVIEW_EVIDENCE"])
+        evidence.mkdir(parents=True, exist_ok=True)
+        run_id = "00000000-0000-0000-0000-000000000001"
+        polls, errors, old_reads = [], [], []
+        started = [None]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 900, "height": 800})
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                def handle(route):
+                    path = route.request.url.split("?", 1)[0]
+                    if path.endswith("/backtest/runs"):
+                        payload = {"rows": [{"run_id": run_id, "status": "completed",
+                            "journal_backend": "arte_typed_journal_v4", "v4_review_available": True}]}
+                    elif path.endswith("/v4-review-ready"):
+                        now = monotonic()
+                        if started[0] is None:
+                            started[0] = now
+                        polls.append(now)
+                        if now - started[0] < 62:
+                            payload = {"status": "verifying"}
+                        else:
+                            payload = {"status": "ready", "page": {
+                                "schema_version": "strategy-one-v4-terminal-review-page-v1",
+                                "run": {"run_id": run_id, "session_date": "2026-08-18", "strategy_revision": 1},
+                                "status": "completed", "verified_sequence": 10,
+                                "market_cursor_verified": True, "market_cursor": {"session_date": "2026-08-18", "boundary_ms": 19800000},
+                                "limitations": [], "financial_accounts": {}, "events": [],
+                                "next_sequence": 0, "complete": True}}
+                    elif path.endswith("/v4-terminal-page"):
+                        old_reads.append(path)
+                        route.fulfill(status=500, json={"detail": "Initial Review must use readiness polling"})
+                        return
+                    elif path.endswith("/v4-performance"):
+                        payload = _performance_page()
+                    elif path.endswith("/configuration-options"):
+                        payload = {"candidates": [], "available_run_plans": [], "error": ""}
+                    else:
+                        payload = {"items": [], "rows": [], "checks": []}
+                    route.fulfill(json=payload)
+                page.route("**/api/trading/**", handle)
+                page.goto(f"http://127.0.0.1:5173/?backtest_run={run_id}#backtest-trading")
+                page.get_by_text("Opening backtest", exact=True).wait_for()
+                page.wait_for_timeout(61_000)
+                self.assertTrue(page.get_by_text("Opening backtest", exact=True).is_visible())
+                self.assertEqual(page.get_by_text("Could not open backtest", exact=True).count(), 0)
+                page.locator(".backtest-v4-canvas-review").wait_for(timeout=10_000)
+                self.assertGreater(len(polls), 50)
+                self.assertEqual(old_reads, [])
+                self.assertEqual(errors, [])
+                page.screenshot(path=str(evidence / "cold-review-after-62-seconds.png"))
+            finally:
+                browser.close()
+
     def test_saved_ticker_uses_compact_certified_canvas_without_run_header(self):
         from playwright.sync_api import sync_playwright
 
@@ -34,7 +93,7 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                     url = route.request.url
                     if "/canvas-chart/" in url or url.split("?", 1)[0].endswith("/canvas"):
                         legacy_requests.append(url)
-                    if "/v4-terminal-page" in url:
+                    if "/v4-terminal-page" in url or "/v4-review-ready" in url:
                         payload = {"schema_version": "strategy-one-v4-terminal-review-page-v1",
                             "run": {"run_id": run_id, "session_date": "2026-08-18",
                                     "strategy_id": "early-squeeze-strategy", "strategy_revision": 1},
@@ -63,6 +122,8 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                             "indicator_provenance": {"unavailable_columns": []}}
                     else:
                         payload = {}
+                    if "/v4-review-ready" in url:
+                        payload = {"status": "ready", "page": payload}
                     route.fulfill(json=payload)
 
                 page.route("**/api/trading/**", handle)
@@ -125,7 +186,7 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                             "session_date": "2026-08-18", "tickers": [],
                             "journal_backend": "arte_typed_journal_v4",
                             "v4_review_available": True}]}
-                    elif "/v4-terminal-page" in url:
+                    elif "/v4-terminal-page" in url or "/v4-review-ready" in url:
                         after = int(parse_qs(urlsplit(url).query).get("after_sequence", ["0"])[0])
                         requests.append(after)
                         payload = terminal_page(after)
@@ -147,6 +208,8 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                         payload = {"items": []}
                     else:
                         payload = {}
+                    if "/v4-review-ready" in url:
+                        payload = {"status": "ready", "page": payload}
                     route.fulfill(json=payload)
 
                 page.route("**/api/trading/**", handle)
@@ -212,7 +275,7 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                             url = route.request.url
                             if url.split("?", 1)[0].endswith("/api/trading/backtest/runs"):
                                 payload = history
-                            elif "/v4-terminal-page" in url:
+                            elif "/v4-terminal-page" in url or "/v4-review-ready" in url:
                                 payload = review
                             elif "/v4-performance" in url:
                                 payload = _performance_page()
@@ -234,6 +297,8 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                                 payload = {"items": []}
                             else:
                                 payload = {}
+                            if "/v4-review-ready" in url:
+                                payload = {"status": "ready", "page": payload}
                             route.fulfill(json=payload)
 
                         page.route("**/api/trading/**", handle)
@@ -304,7 +369,7 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                                     "level_book_coverage": {"eligible_ticker_count": 6100,
                                                             "excluded_ticker_count": 0,
                                                             "excluded": []}}
-                            elif "/v4-terminal-page" in url:
+                            elif "/v4-terminal-page" in url or "/v4-review-ready" in url:
                                 payload = {"schema_version": "strategy-one-v4-terminal-review-page-v1",
                                     "run": {"run_id": run_id, "session_date": "2026-08-19",
                                             "strategy_id": "early-squeeze-strategy",
@@ -329,6 +394,8 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                                            "complete": True}
                             else:
                                 payload = {}
+                            if "/v4-review-ready" in url:
+                                payload = {"status": "ready", "page": payload}
                             route.fulfill(json=payload)
 
                         page.route("**/api/trading/**", handle)

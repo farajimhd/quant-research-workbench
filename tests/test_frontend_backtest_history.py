@@ -145,8 +145,8 @@ class BacktestHistoryTests(unittest.TestCase):
                     elif path.endswith("/configuration-options"):
                         route.fulfill(json={"candidates": [], "available_run_plans": [],
                                             "error": ""})
-                    elif path.endswith("/v4-terminal-page"):
-                        route.fulfill(json={
+                    elif path.endswith(("/v4-terminal-page", "/v4-review-ready")):
+                        payload = {
                             "schema_version": "strategy-one-v4-terminal-review-page-v1",
                             "run": {"run_id": "strategy-one-run", "strategy_revision": 1},
                             "status": "completed", "verified_sequence": 2216,
@@ -155,7 +155,9 @@ class BacktestHistoryTests(unittest.TestCase):
                             "market_cursor_verified": True, "limitations": [],
                             "financial_accounts": {}, "events": [],
                             "next_sequence": 0, "complete": True,
-                        })
+                        }
+                        route.fulfill(json={"status": "ready", "page": payload}
+                                      if path.endswith("/v4-review-ready") else payload)
                     elif path.endswith("/v4-trade-history"):
                         route.fulfill(json={
                             "schema_version": "strategy-one-v4-trade-history-page-v1",

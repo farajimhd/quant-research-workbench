@@ -13,9 +13,10 @@ from src.backend.workload_budget import WorkloadBudgetRejected, workload_budget_
 
 
 def read_summary(run_id: str) -> dict:
+    from src.backend.backtest_review_loading import saved_review_read_scope
     from src.backend.backtest_v4_saved_review import load_cached_v4_performance_report
     from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
-    with closing(backtest_v4_operator_client_from_env()) as client:
+    with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, run_id):
         page = load_cached_v4_performance_report(client, run_id)
     return {"run_id": page["run_id"], "verified_sequence": page["verified_sequence"],
             "report": {"summary": dict(page["report"]["summary"])}}
