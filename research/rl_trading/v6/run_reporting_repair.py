@@ -51,6 +51,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path, default=ROOT/'rl-v6-reporting-repair-20261002')
     p.add_argument('--source-commit', required=True)
+    p.add_argument('--await-feature-bank-pid',type=int,
+        help='Wait for the already-owned workstation bank worker before resuming; never duplicate it')
     a = p.parse_args(argv)
     output = a.output.resolve()
     if not ROOT.is_dir() or not output.is_relative_to(ROOT.resolve()):
@@ -103,6 +105,31 @@ def main(argv=None):
     stage = 'event_flags'
     try:
         with flags.exclusive(output):
+            if a.await_feature_bank_pid is not None:
+                if os.name!='nt' or a.await_feature_bank_pid<=0:
+                    raise ValueError('Positive Windows feature worker PID required')
+                import ctypes
+                from ctypes import wintypes
+                kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+                kernel.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]
+                kernel.OpenProcess.restype=wintypes.HANDLE
+                kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
+                kernel.GetExitCodeProcess.argtypes=[wintypes.HANDLE,ctypes.POINTER(wintypes.DWORD)]
+                kernel.CloseHandle.argtypes=[wintypes.HANDLE]
+                handle=kernel.OpenProcess(0x100000|0x1000,False,a.await_feature_bank_pid)
+                if not handle: raise OSError('Existing feature worker must still be running at handoff')
+                try:
+                    stage='feature_banks'
+                    while True:
+                        progress(stage,'awaiting_existing_feature_worker',pid=a.await_feature_bank_pid)
+                        outcome=kernel.WaitForSingleObject(handle,15000)
+                        if outcome==0: break
+                        if outcome!=258: raise OSError('Cannot wait for existing feature worker')
+                    code=wintypes.DWORD()
+                    if not kernel.GetExitCodeProcess(handle,ctypes.byref(code)) or code.value:
+                        raise RuntimeError(f'Existing feature worker exited {code.value}; inspect feature_banks.log')
+                finally: kernel.CloseHandle(handle)
+                stage='event_flags'
             arguments = flags.parse_args(['--start-date','2026-07-01','--end-date','2026-07-31'])
             arguments.env_file = Path('D:/TradingML/secrets/.env')
             client = bars.Client(arguments,persistent=False)

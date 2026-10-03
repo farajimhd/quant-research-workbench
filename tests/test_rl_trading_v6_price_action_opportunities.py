@@ -64,6 +64,28 @@ def test_elapsed_gap_discount_and_chronological_exit_only_in_long():
     assert labels.filter(pl.col('action')=='EXIT')['direction'].to_list()==[1]
 
 
+def test_horizons_match_value_witnesses_and_use_elapsed_close_time():
+    labels,_,_,_=op.calculate(bars([9.,10.,11.],[-1.,1.,1.],[1,31,61]))
+    first=labels.row(0,named=True)
+    assert first['entry_target_us']==31_000_000
+    assert first['entry_horizon_seconds']==30
+    assert first['entry_gain']==pytest.approx((10-9)*2**(-30/30))
+    holding=labels.row(1,named=True)
+    assert holding['hold_target_us']==61_000_000
+    assert holding['hold_horizon_seconds']==30
+    assert holding['hold_target_gain']==2
+    assert holding['exit_gain']==1  # Current target stays unchanged.
+    assert labels['hold_target_us'][-1] is None
+    assert labels['entry_target_us'][-1] is None
+
+
+def test_hold_horizon_earliest_tied_future_high_and_no_cross_pair_target():
+    labels,_,_,_=op.calculate(bars([9.,10.,11.,11.,8.,20.],[-1.,1.,1.,1.,-1.,1.]))
+    assert labels['hold_target_us'][1]==3_000_000
+    assert labels['hold_target_us'][3] is None
+    assert labels['entry_target_us'][0]<=4_000_000
+
+
 def test_unprofitable_and_orphan_short_have_no_reference_or_arrows():
     labels,_,pairs,trades=op.calculate(bars([10.,9.,8.,7.,6.],[-1.,1.,1.,-1.,-1.]))
     assert trades.is_empty()

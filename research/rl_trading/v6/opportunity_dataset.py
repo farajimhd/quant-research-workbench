@@ -24,8 +24,8 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.split import TRAIN, DEVELOPMENT, CONTEXT_ONLY, role
 from pipelines.market_sip.events.trade_reporting_flags import REVISION as REPORTING_REVISION
 
-VERSION = 'rl-v6-swing-opportunity-dataset-v3'
-DAY_VERSION = 'rl-v6-swing-opportunity-shards-v3'
+VERSION = 'rl-v6-swing-opportunity-dataset-v4'
+DAY_VERSION = 'rl-v6-swing-opportunity-shards-v4'
 STATUS = 'certified_swing_opportunities'
 FILES = ('labels', 'episodes', 'pairs', 'trades')
 
@@ -225,7 +225,8 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
                 enter,empty_allowed,empty_allowed,empty_allowed,
                 sample_weight=1/counts[(row['listing_id'],row['pair_id'])], soft_tokens=(0,1+i),
                 soft_probabilities=(1-q,q),episode_uid=uid,opportunity_value_bps=gain/row['close']*10000,
-                label_version=ALGORITHM,raw_entry_gain=gain,raw_exit_gain=None))
+                label_version=ALGORITHM,raw_entry_gain=gain,raw_exit_gain=None,
+                target_close_us=row['entry_target_us'],target_horizon_seconds=row['entry_horizon_seconds']))
             if row['exit_gain'] is None: continue
             pair = entries[(row['listing_id'],row['pair_id'])]; price = row['entry_basis']
             # Hypothetical held account also excludes the target candle price.
@@ -240,7 +241,9 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
                 no_entries,np.ones(1,bool),np.zeros(1,bool),np.zeros(1,bool),
                 sample_weight=1/counts[(row['listing_id'],row['pair_id'])],soft_tokens=(1+n,1+n+3),soft_probabilities=(q,1-q),
                 episode_uid=uid,opportunity_value_bps=row['exit_gain']/price*10000,
-                label_version=ALGORITHM,raw_entry_gain=None,raw_exit_gain=row['exit_gain']))
+                label_version=ALGORITHM,raw_entry_gain=None,raw_exit_gain=row['exit_gain'],
+                target_close_us=row['time_us'] if row['exit_gain']>0 and q>=threshold else row['hold_target_us'],
+                target_horizon_seconds=0. if row['exit_gain']>0 and q>=threshold else row['hold_horizon_seconds']))
     labels.sort(key=lambda d:(d.close_us,d.episode_uid,len(d.held_index)))
     result=[]; previous=None; order=0
     for item in labels:

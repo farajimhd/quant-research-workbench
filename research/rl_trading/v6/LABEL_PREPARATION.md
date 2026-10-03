@@ -1,7 +1,7 @@
 # Current V6 label authority
 
-Current training requires `rl-v6-swing-opportunity-dataset-v3`, using the
-chart-verified `price-action-long-opportunities-v2` algorithm. Old portfolio
+Current training requires `rl-v6-swing-opportunity-dataset-v4`, using the
+`price-action-long-opportunities-v3` algorithm with horizon audit attributes. Old portfolio
 teachers, rolling-15 episode windows, fee-adjusted candidate targets, bracket
 sidecars and checkpoints from their datasets are rejected by current loaders.
 Historical files remain audit evidence, not current supervision.
@@ -25,6 +25,20 @@ alignment. New training manifests bind the timing version, preventing resume
 or initialization from checkpoints with the old inclusive feature contract.
 
 ## App audit
+
+ENTRY stores `entry_target_us` and `entry_horizon_seconds`: the strictly future
+long-episode close attaining its existing maximum positive discounted gain.
+HOLD stores `hold_target_us`, `hold_horizon_seconds`, and `hold_target_gain`:
+the highest strictly future long-episode close, with gain measured from the
+reference entry. Existing raw EXIT/HOLD gain remains the current close minus
+reference entry; the future HOLD target is separate, not a reinterpretation.
+Both searches stay within the same short-to-long pair. Equal maxima choose
+the earliest close. Horizons are elapsed close-to-close seconds, including
+gaps, and absent future targets are null. EXIT's selected decision horizon is
+zero. The teacher adapter retains these audit attributes without adding a
+prediction head, changing its losses, or exposing hindsight in input features.
+The repaired NVDA RTH preview is experimental; full-session certified labels
+remain exclusively behind the active registry after publication audit.
 
 Research → **Current V6 labels** reads `rl-v6-active-labels.json` and its
 published dataset/audit certificates from the workstation runtime. Select

@@ -82,6 +82,9 @@ class TeacherDecision:
     label_version: str | None = None
     raw_entry_gain: float | None = None
     raw_exit_gain: float | None = None
+    # Retrospective audit targets only; never observation features or losses.
+    target_close_us: int | None = None
+    target_horizon_seconds: float | None = None
     execution_indices: tuple[int,...] = ()
     execution_features: np.ndarray | None = None  # Sparse causal [K,11], never future scores.
     opportunity_value_bps: float | None = None

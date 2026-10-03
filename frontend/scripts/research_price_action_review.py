@@ -12,6 +12,8 @@ def main():
     parser.add_argument('--base-url', default='http://127.0.0.1:5173')
     parser.add_argument('--api-url', default='http://127.0.0.1:8000')
     parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--pending-label-publication',action='store_true',
+                        help='Preview review while the old active label schema is intentionally rejected')
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     if not output.is_relative_to(Path('D:/TradingML/runtimes').resolve()):
@@ -37,16 +39,25 @@ def main():
                           };""")
                         page = context.new_page()
                         page.on('pageerror', lambda error: errors.append(str(error)))
-                        responses = []
+                        responses = []; metadata = []
                         def proxy(route):
                             parsed = urlsplit(route.request.url)
                             response = route.fetch(url=args.api_url+parsed.path+('?' + parsed.query if parsed.query else ''),timeout=300000)
+                            if args.pending_label_publication and parsed.path.endswith('/v6/saved-labels') and response.status==409:
+                                route.fulfill(response=response); return
                             assert response.ok, response.text()
                             data = response.json()
+                            if parsed.path.endswith('/price-action'): metadata.append(data)
                             if '/price-action/chart' in parsed.path:
                                 assert len(data['candles']) == len(data['labels'])
                                 assert {'var(--success)','var(--danger)'} <= {r['color'] for r in data['regions']}
                                 assert all(0<=r['label_value']<=1 for r in data['labels'])
+                                for row in data['labels']:
+                                    for branch in ('entry','hold'):
+                                        target=row[branch+'_target_us']; horizon=row[branch+'_horizon_seconds']
+                                        assert (target is None)==(horizon is None)
+                                        if target is not None:
+                                            assert target>row['time_us'] and horizon==(target-row['time_us'])/1e6
                                 if data['view']=='flat':
                                     assert set(r['action'] for r in data['labels'])<= {'ENTRY','WAIT'}
                                 responses.append(data)
@@ -58,8 +69,9 @@ def main():
                         scope.locator('.research-price-action-chart .chart-shell').wait_for(timeout=300000)
                         page.wait_for_timeout(300)
                         assert scope.locator('.workspace-window').count() == 3
-                        assert '22,748' in scope.inner_text()
-                        assert '652' in scope.inner_text()
+                        assert f"{metadata[0]['observed_price_candles']:,}" in scope.inner_text()
+                        assert 'ENTRY target close / horizon' in scope.inner_text()
+                        assert 'HOLD target close / horizon' in scope.inner_text()
                         name = f'{theme}-{scale}-{size}'
                         page.screenshot(path=str(output/(name+'-workspace.png')))
                         page.get_by_role('button',name='Fullscreen Price-action candles & labels',exact=True).click()
@@ -69,7 +81,7 @@ def main():
                         painted = page.evaluate('window.researchTextRows')
                         for action, raw_field in [('ENTRY','entry_gain'),('EXIT','exit_gain')]:
                             candidates = [r for r in responses[0]['labels'] if r['action']==action]
-                            assert any(any(a['text']==f"{r['label_value']:.3f}" and
+                            assert any(any(a['text'].startswith(f"{r['label_value']:.3f}") and
                                            b['text']==f"{r[raw_field]:.4f}" and
                                            abs(a['x']-b['x'])<1 and b['y']>a['y']
                                            for a in painted for b in painted if b['text']==f"{r[raw_field]:.4f}")

@@ -17,8 +17,8 @@ from research.mlops.manifest import write_run_manifest
 from research.rl_trading.v6 import label_audit as audit
 from research.rl_trading.v6 import price_action_labels as legacy
 
-VERSION = 'price-action-long-opportunities-v2'
-OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v2/NVDA/2026-07-31-r2')
+VERSION = 'price-action-long-opportunities-v3'
+OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v3/NVDA/2026-07-31-reporting-repaired')
 DAY, TICKER = legacy.DAY, legacy.TICKER
 
 
@@ -77,6 +77,9 @@ def calculate(bars, config=Config()):
     exit_gain, exit_quality = np.full(n,np.nan), np.full(n,np.nan)
     basis = np.full(n,np.nan)
     held = np.zeros(n,dtype=bool)
+    entry_targets = [None]*n
+    hold_targets = [None]*n
+    hold_target_gains = [None]*n
     reference_actions = np.full(n,'WAIT',dtype='<U5')
     trades = []
     for pair in pairs:
@@ -93,7 +96,8 @@ def calculate(bars, config=Config()):
             value = float(scores.max())
             if value > 0:
                 entry_gain[i] = value
-                discounted_exits[i] = int(future[np.flatnonzero(scores == value)[-1]])
+                discounted_exits[i] = int(future[np.flatnonzero(scores == value)[0]])
+                entry_targets[i] = int(times[discounted_exits[i]])
         best = float(entry_gain[indexes].max())
         pair['best_entry_gain'] = best
         pair['best_entry_gain_at_pair_start'] = float((entry_gain[indexes]*np.exp2(-(times[indexes]-pair['start_us'])/1e6/config.half_life_seconds)).max())
@@ -114,6 +118,14 @@ def calculate(bars, config=Config()):
         exit_gain[valid_exits] = prices[valid_exits]-prices[i]
         exit_quality[valid_exits] = np.clip(exit_gain[valid_exits]/pnl,0,1)
         basis[indexes[indexes > i]] = prices[i]
+        # Separate future HOLD target; exit_gain remains the current gain.
+        # Strictly subsequent L closes only, earliest equal maximum wins.
+        for current in valid_exits:
+            later = long_indexes[long_indexes > current]
+            if len(later):
+                target = int(later[np.argmax(prices[later])])
+                hold_targets[current] = int(times[target])
+                hold_target_gains[current] = float(prices[target]-prices[i])
         held[i+1:j] = True
         reference_actions[i], reference_actions[j] = 'ENTRY','EXIT'
         pair.update(reference_entry_us=int(times[i]),reference_exit_us=int(times[j]),
@@ -138,6 +150,11 @@ def calculate(bars, config=Config()):
     def nullable(values):
         return [None if np.isnan(v) else float(v) for v in values]
     labels = frame.with_columns(pl.Series('pair_id',pair_ids),pl.Series('entry_gain',entry_gain),
+        pl.Series('entry_target_us',entry_targets,dtype=pl.Int64),
+        pl.Series('entry_horizon_seconds',[None if t is None else (t-int(times[i]))/1e6 for i,t in enumerate(entry_targets)],dtype=pl.Float64),
+        pl.Series('hold_target_us',hold_targets,dtype=pl.Int64),
+        pl.Series('hold_horizon_seconds',[None if t is None else (t-int(times[i]))/1e6 for i,t in enumerate(hold_targets)],dtype=pl.Float64),
+        pl.Series('hold_target_gain',hold_target_gains,dtype=pl.Float64),
         pl.Series('entry_quality',entry_quality),pl.Series('exit_gain',nullable(exit_gain),dtype=pl.Float64),
         pl.Series('exit_quality',nullable(exit_quality),dtype=pl.Float64),
         pl.Series('entry_basis',nullable(basis),dtype=pl.Float64),pl.Series('in_reference_hold',held),
@@ -181,6 +198,49 @@ def build(output=OUTPUT, config=Config()):
         'trades':trades.height,'total_price_pnl':float(trades['price_pnl'].sum()),
         'both_opportunities':int(labels['both_opportunities'].sum()),'seconds':time.perf_counter()-started,
         'semantics':'Pair-local quality in [0,1]; >=threshold opportunity bands; <=one reference trade per S->L pair; zero fees/no fills; stop/target references; carried next opportunity separate'}
+    (output/'complete.json').write_text(json.dumps(proof,indent=2),encoding='utf-8')
+    return proof
+
+
+def build_bank_preview(bank_root, output=OUTPUT, config=Config()):
+    """Bounded NVDA RTH audit preview from reporting-certified repaired bank.
+
+    Separate experimental product; never publishes the teacher registry.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from research.rl_trading.v6.bank import open_bank
+    from research.rl_trading.v6.opportunity_dataset import decoded_bars, reporting_plan
+    root, output = Path(bank_root), Path(output)
+    if not output.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):
+        raise ValueError('External runtime output required')
+    if (output/'complete.json').exists():
+        raise ValueError('Choose a fresh immutable preview output')
+    reporting_plan(root, DAY)
+    identities=pl.read_parquet(root/'episodes.parquet').filter(pl.col('ticker')==TICKER)['listing_id'].unique().to_list()
+    if len(identities)!=1: raise ValueError('Preview ticker identity ambiguous')
+    bank=open_bank(root/'bank')
+    bars, rejected=decoded_bars(bank.listing(identities[0]))
+    begin=int(datetime.fromisoformat(DAY+'T09:30:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()*1e6)+1_000_000
+    finish=begin+int(6.5*3600e6)
+    bars=bars.filter((pl.col('time_us')>=begin)&(pl.col('time_us')<finish))
+    products=dict(zip(['labels','episodes','pairs','trades'],calculate(bars,config)))
+    output.mkdir(parents=True,exist_ok=True); files={}
+    for name, frame in products.items():
+        path=output/(name+'.parquet');frame.write_parquet(path)
+        files[name]=dict(rows=frame.height,sha256=audit.file_hash(path))
+    labels,trades=products['labels'],products['trades']
+    proof=dict(day=DAY,ticker=TICKER,listing_id=identities[0],session='Repaired NVDA RTH preview',
+        begin_us=begin,finish_us=finish,version=VERSION,status='experimental_not_training_labels',
+        config=asdict(config),files=files,price_source=str(root/'bank'),
+        source_bank_certificate_sha256=audit.file_hash(root/'complete.json'),
+        observed_price_candles=bars.height,absent_second_slots=23400-bars.height,
+        consumed_activity_rows=None,omitted_invalid_price_rows=None,approximate_volume=None,
+        actions=labels.group_by('action').len().sort('action').to_dicts(),
+        trades=trades.height,total_price_pnl=float(trades['price_pnl'].sum()),
+        both_opportunities=int(labels['both_opportunities'].sum()),
+        semantics='Reporting-certified corrected source; ENTRY discounted-gain horizon; HOLD future maximum-price horizon; audit attributes only',
+        sealed_test_accessed=False)
     (output/'complete.json').write_text(json.dumps(proof,indent=2),encoding='utf-8')
     return proof
 

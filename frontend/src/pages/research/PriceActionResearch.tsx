@@ -13,6 +13,7 @@ type Pair = { pair_id: number; short_episode: number | null; long_episode: numbe
   best_start_price: number; best_end_price: number; best_stop: number; best_target: number; reference_range: number; reference_entry_us: number | null; reference_exit_us: number | null; reference_entry_price: number | null; reference_exit_price: number | null; best_entry_gain: number; best_exit_gain: number; carried_next_pair_value: number };
 type Row = { time_us: number; episode_id: number; pair_id: number; direction: number; close: number; action: string;
   entry_gain: number; entry_quality: number; exit_gain: number | null; exit_quality: number | null;
+  entry_target_us?: number | null; entry_horizon_seconds?: number | null; hold_target_us?: number | null; hold_horizon_seconds?: number | null; hold_target_gain?: number | null;
   entry_basis: number | null; label_value: number | null; reference_action: string; carried_next_pair_value: number; both_opportunities: boolean };
 type Experiment = { ticker: string; day: string; session: string; version: string; semantics: string;
   config: { timeframe_seconds: number; half_life_seconds: number; stop_offset: number; quality_threshold: number };
@@ -65,7 +66,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
       position: r.action === "EXIT" ? "aboveBar" : "belowBar", size: .5,
       shape: r.action === "ENTRY" ? "arrowUp" : r.action === "EXIT" ? "arrowDown" : "circle",
       color: r.action === "ENTRY" ? "var(--success)" : r.action === "EXIT" ? "var(--danger)" : r.action === "HOLD" ? "var(--info)" : "var(--muted-foreground)",
-      text: r.action === "WAIT" || (r.action === "HOLD" && !holdNumbers) ? "" : r.label_value?.toFixed(3) ?? "",
+      text: r.action === "WAIT" || (r.action === "HOLD" && !holdNumbers) ? "" : `${r.label_value?.toFixed(3) ?? ""}${r.action === "ENTRY" && r.entry_horizon_seconds != null ? ` · ${r.entry_horizon_seconds}s` : r.action === "HOLD" && r.hold_horizon_seconds != null ? ` · ${r.hold_horizon_seconds}s` : ""}`,
       secondaryText: r.action === "ENTRY" ? r.entry_gain.toFixed(4) : (r.action === "EXIT" || (saved && r.action === "HOLD" && holdNumbers)) && r.exit_gain != null ? r.exit_gain.toFixed(4) : undefined })) }), [chart, holdNumbers, saved]);
   if (!experiment) return <div className="research-page">{error ? <div className="canvas-inline-error" role="alert">{error}<button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Retry experiment</button></div> : <LoadingState label="Loading saved price-action experiment" />}</div>;
   return <ResearchCanvas storageKey={saved ? prefix : "price-action:NVDA:2026-07-31"} titles={titles}
@@ -102,6 +103,9 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
         <div><dt>ENTRY quality · if flat</dt><dd>{number(row.entry_quality)}</dd></div><div><dt>Discounted local entry gain</dt><dd>{number(row.entry_gain)}</dd></div>
         <div><dt>EXIT quality · reference entry</dt><dd>{number(row.exit_quality)}</dd></div><div><dt>Local exit price gain</dt><dd>{number(row.exit_gain)}</dd></div>
         <div><dt>Reference entry price</dt><dd>{number(row.entry_basis)}</dd></div><div><dt>Reference sequence label</dt><dd>{row.reference_action}</dd></div>
+        <div><dt>ENTRY target close / horizon</dt><dd>{row.entry_target_us == null ? "—" : `${clock(row.entry_target_us)} / ${row.entry_horizon_seconds}s`}</dd></div>
+        <div><dt>HOLD target close / horizon</dt><dd>{row.hold_target_us == null ? "—" : `${clock(row.hold_target_us)} / ${row.hold_horizon_seconds}s`}</dd></div>
+        <div><dt>HOLD future target gain · $/share</dt><dd>{number(row.hold_target_gain ?? null)}</dd></div>
         <div><dt>Next opportunity carry · separate</dt><dd>{number(row.carried_next_pair_value)}</dd></div></dl></div>}
       <p className="research-muted">Arrow numbers: normalized quality above, raw gain ($/share) below. Gray dots = WAIT; blue dots = HOLD. Unlabelled held candles have no marker.</p>
       {experiment.both_opportunities > 0 && <p className="research-muted">{experiment.both_opportunities} candles qualify for both alternatives. Combined view shows EXIT; use ENTRY / WAIT to inspect their entry opportunities.</p>}
@@ -125,6 +129,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
           persistedOnly initialFitMode="last_market_day" settingsStorageKey={saved ? "research.saved-labels.chart.v1" : "research.price-action.chart.v2"}
           appearanceDefaults={{ legendGutterVisible: false, rightLegendGutterVisible: false }} /> : <div className="research-empty">No valid-price candles in this window.</div>}
       <details className="research-label-detail"><summary>Read the labels on this chart</summary>
+        <p>ENTRY horizon reaches the strictly future L close maximizing discounted entry gain. HOLD horizon reaches the highest strictly future L close; its target gain is measured from the reference entry, separately from the existing current exit gain. Equal maxima choose the earliest close. Horizons use elapsed seconds between closes, including gaps; absent targets stay blank. These are hindsight audit attributes, excluded from model inputs.</p>
         <p>Each arrow has two rows: normalized quality first, then the saved unnormalized gain in dollars per share (four decimal places). ENTRY uses discounted future gain; EXIT uses undiscounted gain from the reference entry. {saved ? "Optional HOLD numbers show the quality complement and the same raw exit-gain target used by the held value head, including negative gains." : "Optional HOLD numbers show quality complements."} WAIT has no text; its raw entry gain remains available in the candle inspector.</p>
         <p>ENTRY gain = maximum of (later L close − current close) × 0.5^(elapsed seconds / {experiment.config.half_life_seconds}). ENTRY quality = this positive gain / best positive gain in the S→L pair. Quality ≥ {(threshold*100).toFixed(0)}% shows an up arrow.</p>
         <p>The reference entry is the pair’s best discounted entry. EXIT gain = current L close − reference entry close; EXIT quality = clip(gain / best subsequent L gain, 0, 1). Quality ≥ {(threshold*100).toFixed(0)}% shows a red down arrow. Both exit clocks must follow the reference entry. The held branch shows only candles with a saved exit target; the remaining candles have no held supervision.</p>
