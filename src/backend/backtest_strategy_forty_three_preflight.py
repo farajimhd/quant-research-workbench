@@ -37,7 +37,9 @@ def preflight(*, anchor_date, session_count, initial_cash, start_time, end_time,
     def code():
         manifest = configuration_revision["payload"]["strategy"]["numbered_release"]
         current = backend_source_fingerprint()
-        if current != LOADED_BACKEND_FINGERPRINT or current != manifest["approved_code_fingerprint"]:
+        from pipelines.strategy_one.strategy_forty_three_executor_repairs import compatible_executor
+        if current != LOADED_BACKEND_FINGERPRINT or not compatible_executor(
+                approved=manifest["approved_code_fingerprint"], current=current):
             raise RuntimeError("Strategy 43 approved source differs from the loaded backend; deploy and restart the approved source")
         return certify_projection()
     check("runtime_versions", code)

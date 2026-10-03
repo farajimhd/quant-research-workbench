@@ -48,11 +48,14 @@ class StrategyFortyThreeNativePort:
         self._cutoff_time = None
 
     async def _fence(self):
-        self.publisher.enqueue_pending()
-        receipt = await self.publisher.await_fence()
-        if receipt.last_sequence != self.runtime.journal.latest_sequence(self.runtime.run_id):
-            raise RuntimeError("Strategy 43 source publication is not fully fenced")
-        return receipt
+        # A running publisher owns a fixed prefix. Native broker callbacks may
+        # append a suffix while that prefix is persisted; fence the suffix too.
+        for _ in range(32):
+            self.publisher.enqueue_pending()
+            receipt = await self.publisher.await_fence()
+            if receipt.last_sequence == self.runtime.journal.latest_sequence(self.runtime.run_id):
+                return receipt
+        raise RuntimeError("Strategy 43 source publication is not fully fenced")
 
     async def free_cash_after_reservations(self, account_id):
         runtime = self.runtime

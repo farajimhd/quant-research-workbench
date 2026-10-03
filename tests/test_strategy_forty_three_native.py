@@ -20,6 +20,35 @@ from tests.test_backtest_typed_publisher import FakeWriter
 from tests.test_strategy_forty_three_rules import facts
 
 
+def test_fence_drains_callback_suffix_and_bounds_nonquiescent_writer():
+    from types import SimpleNamespace
+    async def run(changes):
+        journal = SimpleNamespace(sequence=1)
+        journal.latest_sequence = lambda _: journal.sequence
+        class Publisher:
+            calls = 0
+            def enqueue_pending(self):
+                self.target = journal.sequence
+            async def await_fence(self):
+                self.calls += 1
+                if self.calls <= changes:
+                    journal.sequence += 1
+                return SimpleNamespace(last_sequence=self.target)
+        publisher = Publisher()
+        port = SimpleNamespace(publisher=publisher, runtime=SimpleNamespace(
+            journal=journal, run_id="run"))
+        if changes >= 32:
+            with pytest.raises(RuntimeError, match="not fully fenced"):
+                await StrategyFortyThreeNativePort._fence(port)
+            assert publisher.calls == 32
+        else:
+            receipt = await StrategyFortyThreeNativePort._fence(port)
+            assert receipt.last_sequence == journal.sequence
+            assert publisher.calls == changes + 1
+    asyncio.run(run(1))
+    asyncio.run(run(32))
+
+
 def test_fenced_batch_uses_actual_native_portfolio_and_oms_for_fifteen_parents():
     async def run():
         day = date(2026, 9, 3)

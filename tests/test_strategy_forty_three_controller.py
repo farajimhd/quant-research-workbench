@@ -52,6 +52,16 @@ def test_source_certificate_is_independent_and_exhaustive():
     assert len(certify_projection()) == 64
 
 
+def test_executor_repair_is_exact_and_rejects_other_source():
+    from pipelines.strategy_one.strategy_forty_three_executor_repairs import (
+        compatible_executor, APPROVED_REPAIRS)
+    approved, repaired = next(iter(APPROVED_REPAIRS))
+    assert compatible_executor(approved=approved, current=repaired)
+    assert compatible_executor(approved=approved, current=approved)
+    assert not compatible_executor(approved=approved, current="0"*64)
+    assert not compatible_executor(approved="0"*64, current=repaired)
+
+
 def test_definition_rejects_missing_history_pin():
     from dataclasses import replace
     existing = definition()
