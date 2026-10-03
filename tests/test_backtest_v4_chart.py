@@ -18,6 +18,59 @@ HASH = "b" * 64
 REVISION_ID = "strategy-one-1:11111111-1111-4111-8111-111111111111"
 
 
+@pytest.mark.parametrize('number', [43, 44])
+@pytest.mark.parametrize('changed_pin', [False, True])
+def test_squeeze_saved_chart_reproduces_release_population_and_exact_pin(monkeypatch, number, changed_pin):
+    plan = _fixtures(monkeypatch)
+    full = replace(plan, tickers=('LGHL', 'SUGP'), units=tuple(
+        replace(plan.units[0], ticker=ticker, stage=stage)
+        for ticker in ('LGHL', 'SUGP') for stage in ('bars', 'technical', 'broker_100ms')))
+    projected = subject.project_market_day_plan(full, ('SUGP',))
+    context = dict(run_id=RUN_ID, mode='backtest', strategy_id='squeeze-grid-strategy',
+        strategy_revision=number, evaluation_interval_ms=100, configuration_hash=HASH,
+        session_date='2026-08-18', market_plan_token='0'*64 if changed_pin else projected.token)
+    monkeypatch.setattr(subject, 'load_recorded_page', lambda *_: dict(run=context,
+        status='completed', market_cursor_verified=True, market_cursor={}))
+    monkeypatch.setattr(subject, 'load_backtest_definition', lambda *_a, **_k: dict(
+        definition={'configuration_revision_id': f'strategy-one-{number}:11111111-1111-4111-8111-111111111111'},
+        tickers=()))
+    monkeypatch.setattr(subject, 'certify_numbered_configuration', lambda *_:
+        CertifiedStrategyOneConfiguration('11111111-1111-4111-8111-111111111111', HASH,
+            'c'*64, 'candidate', 'd'*64, 'e'*64,
+            {'market_day_build_id': 'build', 'strategy': {'strategy_number': number}}))
+    calls = []
+    def load(**kwargs):
+        calls.append(kwargs)
+        return full
+    if changed_pin:
+        with pytest.raises(RuntimeError, match='certified market plan'):
+            subject.certified_saved_run_plan(object(), object(), run_id=RUN_ID, plan_loader=load)
+    else:
+        *_, result = subject.certified_saved_run_plan(object(), object(), run_id=RUN_ID, plan_loader=load)
+        assert result == projected
+    assert calls[0]['tickers'] == ()
+    assert calls[0]['configuration'] == {'market_day_build_id': 'build', 'strategy': {'execution_interval': '100ms'}}
+
+
+@pytest.mark.parametrize('number', [43, 44])
+def test_squeeze_v7_uses_saved_structure_root_and_run_market_scope(monkeypatch, number):
+    from src.backend import backtest_recorded_v7
+    plan = _fixtures(monkeypatch)
+    monkeypatch.setattr(subject, 'load_backtest_definition', lambda *_a, **_k:
+        {'definition': {'causal_v7_plan_token': '7'*64}})
+    calls = []
+    def intervals(client, **kwargs):
+        calls.append(kwargs)
+        return ()
+    monkeypatch.setattr(backtest_recorded_v7, 'recorded_v7_ticker_intervals', intervals)
+    subject._causal_v7_chart_segments(object(), object(), run_id=RUN_ID,
+        run_context={'strategy_id': 'squeeze-grid-strategy', 'strategy_revision': number},
+        session=date(2026, 8, 18), ticker='SUGP', plan=plan,
+        bars=[{'bar_start': subject.market_day_boundary(date(2026, 8, 18), 0).isoformat(),
+               'bar_end': subject.market_day_boundary(date(2026, 8, 18), 1000).isoformat()}])
+    assert calls == [dict(market=plan, session='2026-08-18', ticker='SUGP', structure_pin='7'*64)]
+
+
 def _fixtures(monkeypatch, *, token: str = TOKEN,
               status: str = "completed"):
     context = {
