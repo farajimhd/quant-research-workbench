@@ -70,7 +70,8 @@ def test_early_near_equal_peak_wins_and_later_cluster_is_suppressed():
     labels,_,pairs,_=calculate(bars([9.,9.1,9.63,9.60,9.4,9.65,9.64],[-1.,1.,1.,1.,1.,1.,1.],[1,2,3,4,5,18,19]))
     assert pairs['reference_exit_us'][0]==3_000_000
     assert labels['in_exit_cluster'].to_list()==[False,False,True,True,False,False,False]
-    assert labels['action'][5]=='HOLD'
+    assert labels['action'][5]=='WAIT'
+    assert op.classify(labels,.9,'held')['action'][5]=='HOLD'
     assert labels['exit_quality'][5]==0
     assert labels['exit_gain'][5]==pytest.approx(.65)
 

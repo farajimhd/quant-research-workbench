@@ -17,8 +17,8 @@ from research.mlops.manifest import write_run_manifest
 from research.rl_trading.v6 import label_audit as audit
 from research.rl_trading.v6 import price_action_labels as legacy
 
-VERSION = 'price-action-long-opportunities-v5'
-OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v5/NVDA/2026-07-31-reporting-repaired')
+VERSION = 'price-action-long-opportunities-v6'
+OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v6/NVDA/2026-07-31-reporting-repaired')
 DAY, TICKER = legacy.DAY, legacy.TICKER
 
 
@@ -47,7 +47,9 @@ def classify(frame, threshold=.9, view='combined'):
         raise ValueError('Invalid opportunity view')
     entry = (pl.col('entry_gain') > 0) & (pl.col('entry_quality') >= threshold)
     exit_ = pl.col('in_exit_cluster') & (pl.col('exit_gain') > 0) & (pl.col('exit_quality') >= threshold)
-    context = pl.col('exit_gain').is_not_null()
+    # Conditional held supervision remains inspectable, but the combined
+    # chart must not imply a surviving position after the reference exit.
+    context = pl.col('exit_gain').is_not_null() if view == 'held' else pl.col('in_reference_hold')
     if view == 'flat':
         action = pl.when(entry).then(pl.lit('ENTRY')).otherwise(pl.lit('WAIT'))
     elif view == 'held':

@@ -24,8 +24,8 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.split import TRAIN, DEVELOPMENT, CONTEXT_ONLY, role
 from pipelines.market_sip.events.trade_reporting_flags import REVISION as REPORTING_REVISION
 
-VERSION = 'rl-v6-swing-opportunity-dataset-v6'
-DAY_VERSION = 'rl-v6-swing-opportunity-shards-v6'
+VERSION = 'rl-v6-swing-opportunity-dataset-v7'
+DAY_VERSION = 'rl-v6-swing-opportunity-shards-v7'
 STATUS = 'certified_swing_opportunities'
 FILES = ('labels', 'episodes', 'pairs', 'trades')
 
