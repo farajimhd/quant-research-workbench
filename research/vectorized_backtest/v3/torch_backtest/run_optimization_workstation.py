@@ -69,6 +69,8 @@ def main(argv=None):
     parser.add_argument("--to", dest="end_date")
     parser.add_argument("--validation-sessions", type=int, default=6)
     parser.add_argument("--profile-date", default="2026-09-03")
+    parser.add_argument("--profile-pipeline", action="store_true",
+                        help="Qualify full cached-input pipeline on two training sessions")
     parser.add_argument(
         "--profile-all-modes",
         action="store_true",
@@ -77,6 +79,9 @@ def main(argv=None):
     parser.add_argument("--population", type=int, default=64)
     parser.add_argument("--generations", type=int, default=50)
     parser.add_argument("--seed", type=int, default=20261003)
+    parser.add_argument("--preparation-workers", type=int, default=2)
+    parser.add_argument("--preparation-lookahead", type=int, default=2)
+    parser.add_argument("--reuse-prepared", help="Previous experiment with compatible sealed inputs")
     parser.add_argument("--runtime", type=Path, default=DEFAULT)
     parser.add_argument("--resume", type=Path)
     parser.add_argument(
@@ -190,7 +195,11 @@ def main(argv=None):
                 raise ValueError(
                     "Profile must use an available TRAINING date, never evaluation"
                 )
-            result = profile(session_spec(source), args, job, panel)
+            if args.profile_pipeline:
+                from research.vectorized_backtest.v3.torch_backtest.profile_pipeline import profile as pipeline_profile
+                result = pipeline_profile(spec['training'], args, job, panel)
+            else:
+                result = profile(session_spec(source), args, job, panel)
             write_json(job / "qualification.json", result)
             panel.emit(
                 dict(
@@ -238,6 +247,8 @@ def main(argv=None):
         "maximum_fills",
         "graph_steps",
         "structural_workers",
+        "preparation_workers",
+        "preparation_lookahead",
         "minimum_training_entries",
         "maximum_training_batches",
         "long_hold_seconds",
@@ -250,6 +261,8 @@ def main(argv=None):
     command += ["--ledger-mode", qualification["ledger_mode"]]
     if args.plain:
         command.append("--plain")
+    if args.reuse_prepared:
+        command += ["--reuse-prepared", args.reuse_prepared]
     # One stable directory owns launcher plan and optimization status/checkpoint.
     experiment = job / "experiment"
     if (experiment / "identity.json").exists():

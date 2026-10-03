@@ -342,3 +342,15 @@ The final implementation uses compact column-contiguous policy values and an
 explicit native mutation boundary; the experimental per-order policy expansion
 was removed. Failed fusion experiments remain as runtime diagnostics, not active
 fallbacks or financial changes. The stopped run is preserved; restart requires fresh qualification of this approximation.
+
+## Scheduling is independent of decision time
+
+Concurrent preparation/prefetch changes wall-clock scheduling only. Each tape
+is fully certified before replay and retains the completed-boundary timestamps
+above. Background workers cannot amend financial/order state or candidate genes.
+Calendar consumption and in-session causal ordering remain deterministic. The
+same generation tensor is evaluated on every training day, each with reset cash;
+all-session fingerprint sealing precedes aggregate fitness and evolution.
+Validation inputs and financial evaluation are still constructed only after the
+training winner is frozen. A ready future day's tape conveys no future values
+into an earlier day's decisions.

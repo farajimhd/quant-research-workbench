@@ -47,6 +47,26 @@ def render_search(s, elapsed, *, width=110, height=28):
             f"Candidate-session replays {s.get('candidate_session_replays', 0):,}  |  objective evaluations {s.get('objective_evaluations', 0):,}  |  unique tensors {s.get('unique_candidates', 0):,}"
         ),
     ]
+    gpu_line = Text(
+        f"GPU {s.get('gpu_gib', 0):.1f} GiB | resident {s.get('resident_sessions', 0)} | "
+        f"prefetched {s.get('prefetched_sessions', 0)} | copy wait {s.get('transfer_wait_seconds', 0):.2f}s"
+    )
+    if width >= 95:
+        gpu_line.append(f" | updated {age:.0f}s ago")
+    pipeline = s.get("pipeline")
+    if pipeline:
+        rows.append(Text(
+            f"PREP ready {pipeline['ready']}/{pipeline['total']} | active {pipeline['active']} "
+            f"queued {pipeline['queued']} failed {pipeline['failed']} | data wait {pipeline['data_wait_seconds']:.1f}s"
+        ))
+        rows.append(gpu_line)
+        rows.append(Text(
+            f"Preparing: {s.get('preparation_focus', 'waiting for producer')}  |  "
+            f"{s.get('preparation_progress', {}).get('stage', 'queued')}  |  "
+            f"host {pipeline['host_gib']:.1f} + reserved {pipeline['reserved_gib']:.1f} GiB"
+        ))
+        if pipeline.get("waiting_session") is not None:
+            rows.append(Text(f"GPU WAITING for certified session {pipeline['waiting_session'] + 1}", style="yellow"))
     if progress.get("total_seconds"):
         rows.append(
             Text(
@@ -111,7 +131,7 @@ def render_search(s, elapsed, *, width=110, height=28):
     rows.extend(
         [
             Text(
-                f"Last generation: replay {last.get('replay_seconds', 0):.1f}s  ·  rules {last.get('rule_prepare_seconds', 0):.1f}s  ·  compile {last.get('compile_seconds', 0):.1f}s  ·  bind {last.get('bind_seconds', 0):.1f}s"
+                f"Last generation: wall {last.get('end_to_end_seconds', 0):.1f}s  ·  replay {last.get('replay_seconds', 0):.1f}s  ·  data wait {last.get('data_wait_seconds', 0):.1f}s  ·  compile {last.get('compile_seconds', 0):.1f}s"
             ),
             Text(
                 f"Rejected candidates {s.get('invalid_candidates', 0)}  |  stagnant generations {s.get('stagnant_generations', 0)}  |  ETA {s.get('eta', 'measuring')}"
@@ -125,9 +145,7 @@ def render_search(s, elapsed, *, width=110, height=28):
             Text(
                 f"Long hold: >{config.get('long_hold_seconds', 300)}s  ·  penalty {config.get('long_hold_weight', 0.01)} per capital-hour  ·  account resets each session"
             ),
-            Text(
-                f"GPU allocated {s.get('gpu_gib', 0):.1f} GiB  ·  resident sessions {s.get('resident_sessions', 0)}  ·  freshness {age:.0f}s"
-            ),
+            *([] if pipeline else [gpu_line]),
             Text("Checkpoint: " + s.get("checkpoint", "not yet saved")),
             Text("Run: " + s.get("output", "pending")),
         ]

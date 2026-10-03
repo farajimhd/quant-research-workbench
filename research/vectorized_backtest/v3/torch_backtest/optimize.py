@@ -34,6 +34,7 @@ from .progress import safe_diagnostic
 from .runtime import DEFAULT, code_hash, configure_caches, require_runtime, write_json
 from .search_objective import score
 from .session_pool import SessionPool
+from .session_pipeline import PreparedSessions
 
 
 def evolve(space, rng, population, scores, diversify=False):
@@ -101,7 +102,9 @@ def constraint_ranks(results, scores, minimum):
 
 
 def phase(
-    evaluators, space, args, output, number=1, seed=None, checkpoint=None, panel=None
+    evaluators, space, args, output, number=1, seed=None, checkpoint=None, panel=None,
+    before_selection=None,
+    pipeline_state=None,
 ):
     """ONE phase on the complete training set; compatibility name is internal."""
     if seed is not None or number != 1:
@@ -159,6 +162,7 @@ def phase(
     save(start)
     for generation in range(start, args.generations):
         started = perf_counter()
+        wait_start = pipeline_state()["data_wait_seconds"] if pipeline_state else 0.0
         seen.update(space.identity(row) for row in rows)
         status = dict(
             status="training",
@@ -177,6 +181,8 @@ def phase(
         emit(status)
         results = []
         for index, evaluator in enumerate(evaluators):
+            if hasattr(evaluator, "prepare"):
+                evaluator.prepare()
             session_file = (
                 output / f"generation_{generation:03d}" / f"session_{index:03d}.json"
             )
@@ -191,6 +197,10 @@ def phase(
                         candidate_session_replays=(generation * len(evaluators) + index)
                         * len(rows),
                         progress=event,
+                        **{k: event[k] for k in (
+                            "resident_sessions", "gpu_resident_gib", "prefetched_sessions",
+                            "transfer_wait_seconds", "transfer_prefetch_blocked", "capacity_growths"
+                        ) if k in event},
                     )
                 )
 
@@ -228,6 +238,10 @@ def phase(
                     progress={},
                 )
             )
+        # Certification/sealing is a prerequisite for aggregate selection, not
+        # a prerequisite for replaying an already certified earlier session.
+        if before_selection:
+            before_selection()
         scores, reasons = score(
             results,
             **args.weights,
@@ -259,6 +273,7 @@ def phase(
             best_metrics=best_metrics,
             stagnant_generations=stagnant,
             end_to_end_seconds=perf_counter() - started,
+            pipeline=pipeline_state() if pipeline_state else None,
         )
         write_json(output / f"generation_{generation:03d}.json", receipt)
         last = dict(
@@ -268,6 +283,7 @@ def phase(
             replay_seconds=sum(r["replay_seconds"] for r in results),
             bind_seconds=sum(r.get("bind_seconds", 0) for r in results),
             end_to_end_seconds=receipt["end_to_end_seconds"],
+            data_wait_seconds=(pipeline_state()["data_wait_seconds"] - wait_start) if pipeline_state else 0.0,
             rule_prepare_seconds=sum(r.get("rule_prepare_seconds", 0) for r in results),
         )
         rows = evolve(space, rng, rows, ranks.tolist(), stagnant >= 3)
@@ -347,6 +363,10 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, help="New explicit experiment directory")
     parser.add_argument("--population", type=int, default=32)
     parser.add_argument("--generations", type=int, default=50)
+    parser.add_argument("--preparation-workers", type=int, default=2)
+    parser.add_argument("--preparation-lookahead", type=int, default=2)
+    parser.add_argument("--reuse-prepared", type=Path,
+                        help="Explicit import of compatible sealed inputs from a previous experiment")
     parser.add_argument("--seed", type=int, default=20261002)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument(
@@ -454,6 +474,9 @@ def main(argv=None):
             graph_steps=args.graph_steps,
             ledger_mode=args.ledger_mode,
             structural_workers=args.structural_workers,
+            preparation_workers=args.preparation_workers,
+            preparation_lookahead=args.preparation_lookahead,
+            reuse_prepared=str(args.reuse_prepared) if args.reuse_prepared else None,
         ),
         validation_preobserved=args.validation_preobserved,
     )
@@ -487,13 +510,35 @@ def main(argv=None):
         write_json(output / "identity.json", identity)
     print("Optimization output: " + str(output), flush=True)
 
-    source_timings = {"training": [], "validation": []}
     training_count = 2 if args.synthetic else len(spec["training"])
     validation_count = 1 if args.synthetic else len(spec["validation"])
+    source_timings = {"training": [None] * training_count,
+                      "validation": [None] * validation_count}
+    if (not 1 <= args.preparation_workers <= 4 or not 0 <= args.preparation_lookahead <= 4
+            or args.preparation_workers + args.preparation_lookahead > 6):
+        raise ValueError("Bound preparation to 1..4 workers and <=6 upcoming sessions")
+    if not args.synthetic:
+        from .availability import configure_reader
+        from .structural import worker_budget
+        configure_reader(Path(__file__).resolve().parents[4])
+        # --structural-workers remains a GLOBAL budget, not a per-session fanout.
+        structural_budget = worker_budget(args.structural_workers)
+        if structural_budget < args.preparation_workers:
+            raise ValueError("Structural worker budget must cover concurrent preparation workers")
+        structural_width = structural_budget // args.preparation_workers
+    else:
+        structural_width = 1
+    # Every concurrent structural call now observes the same spawn environment;
+    # its existing save/restore scope cannot remove another worker's settings.
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ[name] = "1"
     config = dict(
         population=args.population,
         generations=args.generations,
         seed=args.seed,
+        preparation_workers=args.preparation_workers,
+        preparation_lookahead=args.preparation_lookahead,
+        structural_workers_per_session=structural_width,
         training_sessions=training_count,
         validation_sessions=validation_count,
         minimum_training_entries=args.minimum_training_entries,
@@ -523,12 +568,10 @@ def main(argv=None):
             def preparation(event):
                 panel.emit(
                     dict(
-                        status="preparing",
-                        stage="Prepare certified evidence",
-                        focus=f"{role} {index + 1}: "
+                        preparation_focus=f"{role} {index + 1}: "
                         + ("dummy" if args.synthetic else spec[role][index]["start"]),
-                        progress=event if isinstance(event, dict) else {},
-                        message=event.get("message", "")
+                        preparation_progress=event if isinstance(event, dict) else {},
+                        preparation_message=event.get("message", "")
                         if isinstance(event, dict)
                         else safe_diagnostic(event),
                     )
@@ -537,9 +580,6 @@ def main(argv=None):
             if args.synthetic:
                 value = synthetic_tape(seconds=75, listings=2)
             else:
-                from .availability import configure_reader
-
-                configure_reader(Path(__file__).resolve().parents[4])
                 item = spec[role][index]
                 session = Session(
                     Path(item["manifest"]),
@@ -550,7 +590,7 @@ def main(argv=None):
                     max_prepared_gib=args.maximum_tape_gib,
                 )
                 from .encoding.clickhouse import certify_source
-                from .prepared_cache import load_prepared, save_prepared
+                from .prepared_cache import import_prepared, load_prepared, save_prepared
                 from .runtime import file_hash
 
                 # A snapshot reuses exactly certified market evidence, never a
@@ -564,12 +604,18 @@ def main(argv=None):
                 )
                 snapshot = output / "inputs" / f"{role}_{index:03d}"
                 value = load_prepared(snapshot, snapshot_identity)
+                if value is None and args.reuse_prepared:
+                    origin = args.reuse_prepared / "inputs" / f"{role}_{index:03d}"
+                    if origin.exists():
+                        value = import_prepared(origin, snapshot, snapshot_identity, space.manifest())
+                        preparation(dict(stage="Import verified prepared dataset",
+                                         message="Original bytes/provenance retained; new consumer receipt"))
                 if value is None:
                     value = prepare_tape(
                         session,
                         space.settings,
                         maximum_gib=args.maximum_tape_gib,
-                        structural_workers=args.structural_workers,
+                        structural_workers=structural_width,
                         progress=preparation,
                     )
                     save_prepared(snapshot, value, snapshot_identity)
@@ -577,90 +623,78 @@ def main(argv=None):
                     raise ValueError(
                         "Cached market evidence belongs to another producer build"
                     )
-            source_timings[role].append(perf_counter() - started)
+            source_timings[role][index] = perf_counter() - started
             return value
 
-        tapes = []
-        for i in range(training_count):
-            value = tape("training", i)
-            if (
-                sum(t.bytes for t in tapes) + value.bytes
-                > args.maximum_host_gib * 1024**3
-            ):
-                raise MemoryError(
-                    "Training source tapes exceed declared host memory budget"
-                )
-            tapes.append(value)
-            write_json(
-                output / "preparation_progress.json",
-                dict(
-                    completed=i + 1,
-                    total=training_count,
-                    host_gib=sum(t.bytes for t in tapes) / 1024**3,
-                    seconds=source_timings["training"],
-                ),
-            )
-        sources = [t.provenance for t in tapes]
-        fingerprints = [s["fingerprint"] for s in sources]
-        source_file = output / "training_sources.json"
-        if (
-            source_file.exists()
-            and json.loads(source_file.read_text(encoding="utf-8"))["fingerprints"]
-            != fingerprints
-        ):
-            raise RuntimeError(
-                "Resume source provenance differs from sealed training tapes"
-            )
-        if not source_file.exists():
-            write_json(
-                source_file,
-                dict(
-                    fingerprints=fingerprints,
-                    provenance=sources,
-                    preparation_seconds=source_timings["training"],
-                ),
-            )
-        pool = SessionPool(
-            tapes,
-            space,
-            args.population,
-            device=args.device,
-            backend=args.backend,
+        def pipeline_event(event):
+            panel.emit(event)
+            write_json(output / "preparation_progress.json", event["pipeline"])
+
+        with PreparedSessions(
+            training_count, lambda i: tape("training", i),
+            workers=args.preparation_workers, lookahead=args.preparation_lookahead,
             maximum_host_gib=args.maximum_host_gib,
-            resident_gib=args.resident_gib,
-            **options,
-        )
-        panel.emit(
-            dict(status="training", stage="GPU memory configured", **pool.residency)
-        )
-        checkpoint = (
-            json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
-            if (output / "checkpoint.json").exists()
-            else None
-        )
-        if (output / "winner.json").exists():
-            frozen = json.loads((output / "winner.json").read_text(encoding="utf-8"))
-            winner = frozen["genome"]
-            if frozen["genome_sha256"] != space.identity(winner) or frozen[
-                "decoded"
-            ] != json.loads(json.dumps(asdict(space.decode([winner])[0]))):
-                raise RuntimeError("Frozen winner hash/decode differs from its tensor")
-        else:
-            winner = phase(
-                pool.objectives(),
-                space,
-                args,
-                output,
-                checkpoint=checkpoint,
-                panel=panel,
+            maximum_tape_gib=args.maximum_tape_gib, emit=pipeline_event,
+        ) as pipeline:
+            pool = SessionPool(
+                [], space, args.population, supplier=pipeline,
+                cycle_prefetch=True,
+                device=args.device, backend=args.backend,
+                maximum_host_gib=args.maximum_host_gib,
+                resident_gib=args.resident_gib, **options,
             )
-        finalists = space.validate([space.default, winner])
-        # Only now construct evaluation inputs; no validation result enters GA.
-        panel.emit(
-            dict(status="reporting", stage="Compare frozen finalists on training")
-        )
-        train_results = [e(finalists) for e in pool.objectives()]
-        del pool, tapes, value
+
+            def seal_sources():
+                if any(t is None for t in pool.tapes):
+                    raise RuntimeError("Cannot select before EVERY training tape is certified")
+                sources = [t.provenance for t in pool.tapes]
+                fingerprints = [s["fingerprint"] for s in sources]
+                source_file = output / "training_sources.json"
+                if source_file.exists():
+                    sealed = json.loads(source_file.read_text(encoding="utf-8"))
+                    if sealed["fingerprints"] != fingerprints:
+                        raise RuntimeError("Resume differs from sealed training tapes")
+                else:
+                    write_json(source_file, dict(
+                        fingerprints=fingerprints, provenance=sources,
+                        preparation_seconds=source_timings["training"],
+                    ))
+
+            checkpoint = (
+                json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
+                if (output / "checkpoint.json").exists() else None
+            )
+            try:
+                if (output / "winner.json").exists():
+                    frozen = json.loads((output / "winner.json").read_text(encoding="utf-8"))
+                    winner = frozen["genome"]
+                    if frozen["genome_sha256"] != space.identity(winner) or frozen[
+                        "decoded"
+                    ] != json.loads(json.dumps(asdict(space.decode([winner])[0]))):
+                        raise RuntimeError("Frozen winner hash/decode differs from its tensor")
+                else:
+                    winner = phase(
+                        pool.objectives(), space, args, output,
+                        checkpoint=checkpoint, panel=panel,
+                        before_selection=seal_sources,
+                        pipeline_state=pipeline.state,
+                    )
+                finalists = space.validate([space.default, winner])
+                panel.emit(dict(status="reporting", stage="Compare frozen finalists on training"))
+                train_results = [e(finalists) for e in pool.objectives()]
+                seal_sources()
+                write_json(output / "pipeline_summary.json", {
+                    **pipeline.state(), **pool.residency,
+                    "preparation_seconds": pipeline.seconds,
+                })
+            except BaseException as error:
+                panel.emit(dict(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
+                                stage="Drain preparation workers",
+                                message=safe_diagnostic(error)))
+                raise
+            finally:
+                pool.close()
+            del pool
         gc.collect()
         if args.device == "cuda":
             torch.cuda.empty_cache()
@@ -686,6 +720,7 @@ def main(argv=None):
                 )
             )
             validation_results.append(pool.evaluate(i, finalists))
+        pool.close()
         del pool, evaluation_tapes
         gc.collect()
         if args.device == "cuda":

@@ -35,6 +35,7 @@ class SessionObjective:
         self.runners = OrderedDict()
         self.progress = progress
         self.runner_options = runner_options
+        self.before_replay = None
 
     def __call__(self, values):
         rows = self.space.validate(values)
@@ -101,6 +102,10 @@ class SessionObjective:
             runner.set_genomes(rows[padded])
             if runner.precompute_rules:
                 rule_seconds += runner.rule_compiler.prepare(self.progress)
+            # Transfers may start only AFTER warmup/graph capture. Concurrent
+            # CUDA allocation while another graph captures is not permitted.
+            if self.before_replay:
+                self.before_replay()
             observed = runner.run(progress=self.progress)
             replayed += observed["replay_seconds"]
             for name in metrics:

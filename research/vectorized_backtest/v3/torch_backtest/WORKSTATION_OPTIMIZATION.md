@@ -266,3 +266,69 @@ Launch is not a profitability result. Source preparation, compilation, generatio
 completion and frozen evaluation are distinct dashboard stages. The task-owned
 runtime handoff and hourly monitor track failures, checkpoints and meaningful
 milestones without changing the bounded experiment or tuning from evaluation.
+
+## Concurrent preparation and replay
+
+The first generation no longer waits for all thirty tapes. Two preparation
+threads certify/fetch/load upcoming sessions while the GPU replays earlier ones.
+The default window holds two active producers plus two buffered upcoming units;
+it advances when a tape is consumed, so a completed day does not idle a worker.
+`--preparation-workers` is bounded1..4, `--preparation-lookahead`0..4, and their
+sum is at most6. The structural-worker setting is a GLOBAL budget, divided
+between simultaneous preparations (default32 total, sixteen per producer).
+
+Each producer publishes an immutable complete CPU tape only after certification
+and validation. Partial candles/tapes are never supplied to replay. Consumption
+remains chronological; cash resets each day. One generation retains identical
+candidate tensors throughout every session. Only after all training results and
+source fingerprints are sealed can fitness, selection and mutation run.
+
+A single pinned staging tape copies to GPU on a separate CUDA stream. Start
+copying only after graph warmup/capture, or at replay progress boundaries. A
+completion event protects buffer ownership before the next session binds it.
+Resident input caching remains bounded48GiB; host retention/reservations remain
+bounded320GiB. In-flight producers reserve twice the declared tape maximum for
+arrays and final output. The staging copy is included in that host envelope.
+Insufficient transfer headroom is reported; a certified host tape can still bind
+synchronously. No financial state is prefetched or carried between accounts.
+The final training session can prefetch the first day of the next generation.
+
+The online ticker axis grows in64-slot buckets only at session boundaries.
+Padded slots are permanently inactive. Growth discards/rebuilds the captured
+runner; every account resets. Two layout caches are allowed. For causal streamed
+V7 targets, unused interval-book arrays are one inactive slot in the execution
+view, so different source-book widths do not create one large graph per day.
+Full certified books remain in the immutable host datasets. Source ticker names
+are rebound with each session, preserving correct ledger-index interpretation.
+
+The operator panel distinguishes preparation ready/active/queued/failed counts,
+replay progress and waiting for a certified session. It reports generation wall
+time, replay time, input waiting and transfer waiting separately. Background
+preparation updates never overwrite the foreground replay clock or show a
+partial-session observation as aggregate fitness.
+
+## Reusing stopped-run inputs
+
+`--reuse-prepared PREVIOUS_EXPERIMENT` explicitly imports compatible sealed
+snapshots. Recheck the current producer certificate, exact manifest/build/session,
+creator code identity, complete strategy/input/timing grammar, preparation
+algorithm hash, blob checksum, schema and provenance. The new consumer gets a
+new receipt, with the original creator identity/hash recorded. Immutable bytes
+are hard-linked within the runtime volume; original receipts are never edited.
+This is dataset reuse, not resuming a changed implementation under an old run
+identity. Missing snapshots are prepared normally and failures are not skipped.
+
+## Pipeline qualification
+
+`profile --profile-pipeline --reuse-prepared PREVIOUS_EXPERIMENT` compares the
+old sequential startup/binding schedule with concurrent preparation and async
+prefetch over two FULL training sessions. Both paths recertify and hash-load the
+same sealed datasets, use identical64-lane tensors and the same padded layout,
+and compare every metric plus complete fill ledgers. Compilation, input waiting,
+transfer/binding, replay and end-to-end time are recorded separately; the receipt
+must match the code hash before a full search starts.
+
+This qualification measures cached-input pipeline overlap. It does not claim a
+cold ClickHouse/V7 preparation speedup or constant100% GPU utilization. Cold
+preparation may still be slower than replay; the first generation's real wait
+receipts expose that remaining limit. Later generations reuse prepared inputs.
