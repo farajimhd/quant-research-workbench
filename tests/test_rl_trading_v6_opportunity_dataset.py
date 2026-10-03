@@ -23,7 +23,7 @@ def fixture_shard(tmp_path, monkeypatch, scale=1.):
     raw[:,14]=[-1,-1,1,1,1,1]
     # One rejected activity row is retained in source accounting.
     raw[-1,35:37]=0
-    values=SimpleNamespace(close_us=np.arange(1,7,dtype=np.int64)*1_000_000,scalar=raw)
+    values=SimpleNamespace(close_us=np.arange(1,7,dtype=np.int64)*10_000_000,scalar=raw)
     source=tmp_path/'bank'; source.mkdir(); (source/'complete.json').write_text('{}')
     monkeypatch.setattr(data,'open_bank',lambda *a,**k:SimpleNamespace(listing=lambda identity:values))
     binding=dict(bank_manifest_sha256=data.file_hash(source/'complete.json'))

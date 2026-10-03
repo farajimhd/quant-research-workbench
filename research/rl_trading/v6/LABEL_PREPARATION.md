@@ -1,7 +1,7 @@
 # Current V6 label authority
 
-Current training requires `rl-v6-swing-opportunity-dataset-v5`, using the
-`price-action-long-opportunities-v4` algorithm with horizon audit attributes. Old portfolio
+Current training requires `rl-v6-swing-opportunity-dataset-v6`, using the
+`price-action-long-opportunities-v5` algorithm with horizon audit attributes. Old portfolio
 teachers, rolling-15 episode windows, fee-adjusted candidate targets, bracket
 sidecars and checkpoints from their datasets are rejected by current loaders.
 Historical files remain audit evidence, not current supervision.
@@ -135,3 +135,5 @@ and bound to the new label certificate; it must not revive old label targets.
 
 ## Time-aware single EXIT cluster
 Current positive liquidation gain is compared with maximum positive future gain from the same reference entry, discounted to the current close with the configured half-life. Earliest candle whose current gain dominates continuation is the reference EXIT. Only its first contiguous run of dominant candles has in_exit_cluster=true. Later candidate clusters are suppressed to HOLD in hypothetical held supervision; the reference trade already ended. Raw exit_gain remains undiscounted. liquidation_quality retains the current/maximum(current,continuation) comparison; exit_quality is gated to zero outside the selected cluster. HOLD targets witness discounted continuation; hold_target_gain stays raw, hold_discounted_gain is discounted. No profitable reference means no forced exit target or trade. This changes teacher targets, but not feature timing or loss definitions.
+
+Minimum position duration defaults to 5 seconds, measured between actual candle closes (not row count). ENTRY searches only L targets at least 5 seconds later; absent profitable eligible targets become WAIT. Reference EXIT cannot precede reference ENTRY plus 5 seconds. Entries within 5 seconds of the selected EXIT cluster start are also removed, avoiding adjacent entry/exit arrows. Hypothetical held rows before eligibility stay HOLD. Config/version bindings reject previous duration-free artifacts.

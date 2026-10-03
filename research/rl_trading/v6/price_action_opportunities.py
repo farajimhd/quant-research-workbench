@@ -17,17 +17,20 @@ from research.mlops.manifest import write_run_manifest
 from research.rl_trading.v6 import label_audit as audit
 from research.rl_trading.v6 import price_action_labels as legacy
 
-VERSION = 'price-action-long-opportunities-v4'
-OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v4/NVDA/2026-07-31-reporting-repaired')
+VERSION = 'price-action-long-opportunities-v5'
+OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v5/NVDA/2026-07-31-reporting-repaired')
 DAY, TICKER = legacy.DAY, legacy.TICKER
 
 
 @dataclass(frozen=True)
 class Config(legacy.Config):
     quality_threshold: float = .9
+    minimum_position_seconds: float = 5.
 
     def validate(self):
         super().validate()
+        if not np.isfinite(self.minimum_position_seconds) or self.minimum_position_seconds <= 0:
+            raise ValueError('Minimum position duration must be positive')
         if not np.isfinite(self.quality_threshold) or not 0 < self.quality_threshold <= 1:
             raise ValueError('Opportunity threshold must be in (0, 1]')
 
@@ -93,7 +96,7 @@ def calculate(bars, config=Config()):
         pair_ids[indexes] = pair['pair_id']
         discounted_exits = {}
         for i in indexes:
-            future = long_indexes[long_indexes > i]
+            future = long_indexes[(long_indexes > i) & (times[long_indexes]-times[i] >= config.minimum_position_seconds*1e6)]
             if not len(future):
                 continue
             scores = (prices[future]-prices[i])*np.exp2(-(times[future]-times[i])/1e6/config.half_life_seconds)
@@ -132,9 +135,14 @@ def calculate(bars, config=Config()):
                     hold_target_gains[current] = float(prices[target]-prices[i])
             now = max(0.,float(exit_gain[current]))
             exit_quality[current] = now/max(now,hold_discounted[current]) if now > 0 else 0.
-        optimal = (exit_gain[valid_exits] > 0) & (exit_quality[valid_exits] == 1.)
+        optimal = (exit_gain[valid_exits] > 0) & (exit_quality[valid_exits] == 1.) & (times[valid_exits]-times[i] >= config.minimum_position_seconds*1e6)
         first = int(np.flatnonzero(optimal)[0])
         j = int(valid_exits[first])
+        late_entries = indexes[times[indexes] > times[j]-config.minimum_position_seconds*1e6]
+        entry_gain[late_entries] = 0.
+        entry_quality[late_entries] = 0.
+        for late in late_entries:
+            entry_targets[late] = None
         end = first
         while end < len(valid_exits) and optimal[end]:
             exit_cluster[valid_exits[end]] = True

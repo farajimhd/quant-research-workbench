@@ -19,9 +19,10 @@ def main():
     parser.add_argument('--bank-root',type=Path,help='Reporting-certified repaired July 31 bank for audit preview')
     parser.add_argument('--half-life-seconds',type=float,default=30.)
     parser.add_argument('--quality-threshold',type=float,default=.9)
+    parser.add_argument('--minimum-position-seconds',type=float,default=5.)
     parser.add_argument('--stop-offset',type=float,default=.01)
     args = parser.parse_args()
-    config = Config(half_life_seconds=args.half_life_seconds,quality_threshold=args.quality_threshold,stop_offset=args.stop_offset)
+    config = Config(half_life_seconds=args.half_life_seconds,quality_threshold=args.quality_threshold,stop_offset=args.stop_offset,minimum_position_seconds=args.minimum_position_seconds)
     config.validate()
     if args.output_dir.resolve()==OUTPUT.resolve() and (OUTPUT/'complete.json').exists():
         proof,_=product()
