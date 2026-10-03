@@ -272,7 +272,7 @@ def test_structural_chart_uses_completed_boundaries_and_compact_segments(monkeyp
                         type("Intervals", (), {"intervals": (("SUGP", intervals),)})())
     segments, reason = subject._causal_v7_chart_segments(
         object(), object(), run_id=RUN_ID,
-        run_context={"run_id": RUN_ID}, session=date(2026, 8, 18),
+        run_context={"run_id": RUN_ID, "strategy_id": STRATEGY_ID, "strategy_revision": STRATEGY_NUMBER}, session=date(2026, 8, 18),
         ticker="SUGP", plan=plan, bars=bars)
     assert reason == ""
     assert [(row["level_id"], row["start"], row["end"]) for row in segments] == [

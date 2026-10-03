@@ -128,10 +128,12 @@ class BacktestV4ReviewUITests(unittest.TestCase):
         evidence.mkdir(parents=True, exist_ok=True)
         run_id = "a27304bd-8d1b-4dbc-a0e3-75156c0214d2"
         legacy_requests = []
+        candle_columns, overlay_requests = [], []
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
                 page = browser.new_page(viewport={"width": 1440, "height": 900})
+                page.add_init_script("localStorage.setItem('backtest-v4-saved-chart.indicators-v1', '[\"saved.closed_macd\"]')")
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
 
@@ -161,8 +163,17 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                             "execution_mode": "strategy", "tickers": ["WFF"], "error": ""}
                     elif "/v4-chart-context" in url:
                         payload = {}
+                    elif "/v4-chart-overlays" in url:
+                        overlay_requests.append(route.request.post_data_json)
+                        route.fulfill(status=409, json={"detail": "Structure certificate unavailable"})
+                        return
                     elif "/v4-chart" in url:
-                        payload = {"bars": [], "indicators": [], "has_more": False,
+                        from urllib.parse import parse_qs, urlsplit
+                        candle_columns.append(parse_qs(urlsplit(url).query).get('indicator_columns', [''])[0])
+                        start = "2026-08-18T08:00:00Z"
+                        payload = {"bars": [{"bar_start": start, "bar_end": "2026-08-18T08:00:10Z",
+                            "open": 1, "high": 1.1, "low": 0.9, "close": 1, "volume": 100}],
+                            "indicators": [{"bar_start": start, "execution_vwap": 1.02}], "has_more": False,
                             "next_before": "", "session_date": "2026-08-18",
                             "ticker": "WFF", "timeframe": "10s", "verified_boundary_ms": 19800000,
                             "indicator_provenance": {"unavailable_columns": []}}
@@ -175,6 +186,11 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                 page.route("**/api/trading/**", handle)
                 page.goto(f"http://127.0.0.1:5173/?backtest_run={run_id}&backtest_ticker=WFF#canvas-focus")
                 page.get_by_text("Charts & Quotes").wait_for()
+                page.get_by_role('note').filter(has_text='Structure certificate unavailable').wait_for()
+                self.assertTrue(any('execution_vwap' in columns for columns in candle_columns))
+                self.assertTrue(overlay_requests)
+                self.assertTrue(all(row['include_structure'] and not row['indicator_columns'] for row in overlay_requests))
+                self.assertEqual(page.get_by_text('Chart data request failed', exact=False).count(), 0)
                 self.assertEqual(page.get_by_role("progressbar", name="Backtest progress").count(), 0)
                 self.assertEqual(page.get_by_role("button", name="Return to journal").count(), 0)
                 self.assertEqual(page.get_by_role("button", name="Load earlier bars").count(), 0)
@@ -182,6 +198,8 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                 self.assertEqual(page.get_by_role("button", name="Resize upper and lower chart rows").count(), 0)
                 page.get_by_role("button", name="Restore chart panels").click()
                 page.locator('.charts-quotes-body[data-main-chart-maximized="false"]').wait_for()
+                self.assertIn('saved.execution_vwap', page.evaluate("JSON.parse(localStorage.getItem('backtest-v4-saved-chart.indicators-v2'))"))
+                self.assertIn('saved.structural_v7', page.evaluate("JSON.parse(localStorage.getItem('backtest-v4-saved-chart.indicators-v2'))"))
                 page.screenshot(path=str(evidence / "v4-certified-canvas-focus.png"))
                 self.assertTrue(page.locator('button[aria-label="Resize upper and lower chart rows"]').is_visible())
                 self.assertEqual(legacy_requests, [])

@@ -215,6 +215,13 @@ def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
     """
     if not bars or len(bars) > 1000:
         return [], "No completed bars in this chart page"
+    if (run_context['strategy_id'], int(run_context['strategy_revision'])) == ('squeeze-grid-strategy', 43):
+        from src.backend.backtest_recorded_v7 import recorded_v7_ticker_intervals
+        definition = load_backtest_definition(journal_client, run_id, run_context=run_context)
+        rows = recorded_v7_ticker_intervals(market_client, market=plan,
+            session=session.isoformat(), ticker=ticker,
+            structure_pin=definition['definition']['causal_v7_plan_token'])
+        return _clip_v7_chart_rows(rows, session, bars)
     cache_key = (run_id, plan.token, session.isoformat(), ticker)
     with _v7_chart_cache_lock:
         rows = _v7_chart_cache.get(cache_key)
@@ -275,6 +282,10 @@ def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
             _v7_chart_cache.move_to_end(cache_key)
             if len(_v7_chart_cache) > _V7_CHART_CACHE_MAX:
                 _v7_chart_cache.popitem(last=False)
+    return _clip_v7_chart_rows(rows, session, bars)
+
+
+def _clip_v7_chart_rows(rows, session, bars):
     first_ms = int((datetime.fromisoformat(bars[0]["bar_end"])
                     - market_day_boundary(session, 0)).total_seconds() * 1000)
     last_ms = int((datetime.fromisoformat(bars[-1]["bar_end"])
@@ -411,6 +422,7 @@ def cold_v4_chart_overlays(
     resolution = _RESOLUTIONS[timeframe]
     if symbol not in plan.tickers:
         raise RuntimeError("Saved overlay is outside the certified market plan")
+    run_plan = plan
     plan = _chart_resolution_plan(market_client, session, context, plan, symbol, resolution, plan_loader)
     last_end_ms = (bucket_indices[-1] + 1) * resolution - SESSION_OPEN_OFFSET_MS
     first_start_ms = bucket_indices[0] * resolution - SESSION_OPEN_OFFSET_MS
@@ -458,7 +470,7 @@ def cold_v4_chart_overlays(
         indicators = [by_start[key] for key in sorted(by_start)]
     structure, reason = (_causal_v7_chart_segments(
         journal_client, market_client, run_id=normalized, run_context=context,
-        session=session, ticker=symbol, plan=plan, bars=bars)
+        session=session, ticker=symbol, plan=run_plan, bars=bars)
         if include_structure else ([], "Not requested"))
     return {"schema_version": "strategy-one-v4-chart-overlays-v1",
             "run_id": normalized, "ticker": symbol, "timeframe": timeframe,

@@ -32,7 +32,8 @@ type OverlayPage = { schema_version: string; run_id: string; ticker: string; tim
   indicators: Indicator[]; structural_levels: NonNullable<ChartPage["structural_levels"]>;
   structural_provenance: { reason: string }; bucket_indices: number[] };
 const overlayCache = new Map<string, Promise<OverlayPage>>();
-const INDICATOR_SELECTION_KEY = "backtest-v4-saved-chart.indicators-v1";
+const INDICATOR_SELECTION_KEY = "backtest-v4-saved-chart.indicators-v2";
+const LEGACY_INDICATOR_SELECTION_KEY = "backtest-v4-saved-chart.indicators-v1";
 const V7_STYLE_KEY = "backtest-v4-saved-chart.v7-style-v1";
 type V7Role = "resistance" | "support" | "transition";
 type V7Style = { source: "both" | "historical" | "streaming";
@@ -61,12 +62,17 @@ function savedV7Style(): V7Style {
 }
 
 function savedIndicatorSelection(initialShowMacd: boolean): string[] {
+  if (!initialShowMacd) return [];
+  const defaults = ["saved.closed_macd", "saved.execution_vwap", "saved.structural_v7"];
   try {
     const stored = JSON.parse(window.localStorage.getItem(INDICATOR_SELECTION_KEY) ?? "null");
-    if (Array.isArray(stored)) return [...new Set(stored.filter((value): value is string =>
-      typeof value === "string" && INDICATOR_DISPLAY.some(item => item.id === value)))];
+    const valid = (values: unknown[]) => values.filter((value): value is string =>
+      typeof value === "string" && INDICATOR_DISPLAY.some(item => item.id === value));
+    if (Array.isArray(stored)) return [...new Set(valid(stored))];
+    const legacy = JSON.parse(window.localStorage.getItem(LEGACY_INDICATOR_SELECTION_KEY) ?? "null");
+    if (Array.isArray(legacy)) return [...new Set([...valid(legacy), "saved.execution_vwap", "saved.structural_v7"])];
   } catch { /* Browser preference storage may be disabled; keep safe defaults. */ }
-  return initialShowMacd ? ["saved.closed_macd"] : [];
+  return defaults;
 }
 
 function loadPage(path: string): Promise<ChartPage> {
@@ -106,6 +112,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   const showMacd = selectedIndicators.includes("saved.closed_macd");
   const [structureLoading, setStructureLoading] = useState(false);
   const [structureReason, setStructureReason] = useState("");
+  const [overlayError, setOverlayError] = useState("");
   const [page, setPage] = useState<ChartPage | null>(null);
   const [latestPage, setLatestPage] = useState<ChartPage | null>(null);
   const [bars, setBars] = useState<Bar[]>([]);
@@ -117,9 +124,10 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   const [before, setBefore] = useState<number | null>(null);
 
   useEffect(() => {
+    if (!allowedFrames.some(value => SAVED_CHART_FRAMES.includes(value as typeof SAVED_CHART_FRAMES[number]))) return;
     try { window.localStorage.setItem(INDICATOR_SELECTION_KEY, JSON.stringify(selectedIndicators)); }
     catch { /* Keep chart usable when preference storage is unavailable. */ }
-  }, [selectedIndicators]);
+  }, [selectedIndicators, allowedFrames]);
   useEffect(() => {
     try { window.localStorage.setItem(V7_STYLE_KEY, JSON.stringify(v7Style)); }
     catch { /* Presentation remains in memory when preference storage is unavailable. */ }
@@ -220,7 +228,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       row_limit: "1000" });
     if (before !== null) params.set("before_boundary_ms", String(before));
     // Stable candle projection: indicator selection must never change this URL.
-    if (frame !== "1d" && frame !== "1mo") params.set("indicator_columns", MACD.join(","));
+    if (frame !== "1d" && frame !== "1mo") params.set("indicator_columns", [...MACD, "execution_vwap"].join(","));
     setLoading(true);
     setError("");
     void loadPage(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart?${params}`).then(value => {
@@ -241,9 +249,11 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
   }, [enabled, canUsePrefetch, runId, ticker, symbol, frame, before]);
 
   useEffect(() => {
+    setStructureLoading(false);
+    setOverlayError("");
     if (!enabled || !barPages.length || frame === "1d" || frame === "1mo") return;
     const columns = [...new Set(INDICATOR_DISPLAY.filter(item => selectedIndicators.includes(item.id))
-      .flatMap(item => item.sourceColumns))].filter(column => !MACD.includes(column as typeof MACD[number])).sort();
+      .flatMap(item => item.sourceColumns))].filter(column => column !== "execution_vwap" && !MACD.includes(column as typeof MACD[number])).sort();
     const includeStructure = selectedIndicators.includes("saved.structural_v7");
     if (!columns.length && !includeStructure) return;
     let cancelled = false;
@@ -255,15 +265,26 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
     const chunks = barPages.flatMap(chunk => Array.from({ length: Math.ceil(chunk.length / 1000) },
       (_, index) => chunk.slice(index * 1000, (index + 1) * 1000)));
     setStructureLoading(includeStructure);
-    void Promise.all(chunks.map(chunk => {
+    setStructureReason("");
+    setOverlayError("");
+    let remainingStructures = includeStructure ? chunks.length : 0;
+    const structures: OverlayPage[] = [];
+    const requests = chunks.flatMap(chunk => {
       const buckets = chunk.map(bar => Math.round((Date.parse(bar.bar_start) - origin + 14_400_000) / resolution));
-      const key = JSON.stringify([runId, symbol, frame, buckets, columns, includeStructure]);
+      return [
+        ...(columns.length ? [{ buckets, columns, structure: false }] : []),
+        ...(includeStructure ? [{ buckets, columns: [] as string[], structure: true }] : []),
+      ];
+    });
+    for (const request of requests) {
+      const { buckets, columns: requestedColumns, structure } = request;
+      const key = JSON.stringify([runId, symbol, frame, buckets, requestedColumns, structure]);
       let pending = overlayCache.get(key);
       if (!pending) {
         pending = api<OverlayPage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-chart-overlays`, {
           method: "POST", timeoutMs: 60_000,
           body: JSON.stringify({ ticker: symbol, timeframe: frame, bucket_indices: buckets,
-            indicator_columns: columns, include_structure: includeStructure }),
+            indicator_columns: requestedColumns, include_structure: structure }),
         }).then(value => {
           if (value.schema_version !== "strategy-one-v4-chart-overlays-v1"
               || value.run_id !== runId || value.ticker !== symbol || value.timeframe !== frame
@@ -275,22 +296,28 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
         if (overlayCache.size >= 32) overlayCache.delete(overlayCache.keys().next().value!);
         overlayCache.set(key, pending);
       }
-      return pending;
-    })).then(values => {
-      if (cancelled) return;
-      setIndicators(current => {
-        const byStart = new Map(current.map(row => [row.bar_start, row]));
-        for (const value of values) for (const row of value.indicators) {
-          byStart.set(row.bar_start, { ...byStart.get(row.bar_start), ...row });
+      void pending.then(value => {
+        if (cancelled) return;
+        if (structure) {
+          structures.push(value);
+          setLevels(structures.flatMap(item => item.structural_levels));
+          if (value.structural_provenance.reason) setStructureReason(value.structural_provenance.reason);
+        } else {
+          setIndicators(current => {
+            const byStart = new Map(current.map(row => [row.bar_start, row]));
+            for (const row of value.indicators) byStart.set(row.bar_start, { ...byStart.get(row.bar_start), ...row });
+            return [...byStart.values()].sort((left, right) => left.bar_start.localeCompare(right.bar_start));
+          });
         }
-        return [...byStart.values()].sort((left, right) => left.bar_start.localeCompare(right.bar_start));
+      }).catch(reason => {
+        if (cancelled) return;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        if (structure) setStructureReason(message);
+        else setOverlayError(message);
+      }).finally(() => {
+        if (!cancelled && structure && --remainingStructures === 0) setStructureLoading(false);
       });
-      if (includeStructure) {
-        setLevels(values.flatMap(value => value.structural_levels));
-        setStructureReason(values.map(value => value.structural_provenance.reason).find(Boolean) ?? "");
-      }
-    }).catch(reason => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
-      .finally(() => { if (!cancelled) setStructureLoading(false); });
+    }
     return () => { cancelled = true; };
   }, [enabled, barPages, frame, page, runId, symbol, selectedIndicators]);
 
@@ -392,7 +419,7 @@ export function BacktestV4SavedChart({ runId, ticker, onClose, embedded = false,
       onTickerChange={value => changeScope({ symbol: value })} onTimeframeChange={value => changeScope({ frame: value as (typeof FRAMES)[number] })}
       emptyMessage="No price-bearing bars in this verified run window." errorMessage={error || undefined} loading={loading && !page}
       showIndicatorControls={frame !== "1d" && frame !== "1mo"} strategyPresentationEnabled={Boolean(toolbarAction) || tradeAnnotations.length > 0}
-      dataStatus={tradeError || undefined}
+      dataStatus={overlayError || tradeError || undefined}
       tickerEditable={false} enableFullscreen={false} baseHeight={320} fillHeight={embedded} toolbarVariant={embedded ? "compact" : "full"}
       toolbarActions={toolbarAction} canLoadEarlier={Boolean(older)} loadingEarlier={loading && before !== null}
       onLoadEarlier={() => { if (older) setBefore(older); }} />
