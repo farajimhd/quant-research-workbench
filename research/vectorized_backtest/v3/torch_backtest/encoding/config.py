@@ -41,7 +41,7 @@ class Funnel:
 @dataclass(frozen=True)
 class Broker:
     initial_cash: float = 100_000.0
-    participation: float = 0.10
+    participation: float = 0.25
     fee_bps: float = 1.0
     initial_stop_return: float = 0.02
     initial_target_return: float = 0.04

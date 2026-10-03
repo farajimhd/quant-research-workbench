@@ -71,7 +71,8 @@ class Settings:
 
     clock_seconds: int = 1
     initial_cash: float = 10000.0
-    participation: float = 0.10
+    # Approximate execution: all orders share 25% of eligible interval volume.
+    participation: float = 0.25
     fee_per_share: float = 0.005
     minimum_order_fee: float = 1.0
     maximum_spread_fraction: float = 0.01
@@ -267,6 +268,7 @@ def grid_manifest(settings=Settings()):
         "candidate_count": 4320,
         "candidates": [asdict(c) for c in build_grid()],
         "execution_contract": "completed-1s-next-interval-quote-bound-v2",
+        "broker_approximation": "shared-eligible-interval-volume-cap-no-marketable-sweep",
         "capital": "cash-after-pending-buys-and-protective-fee-reserves-one-batch-ranked-tickers",
         "structural": "entry-frozen-distinct-resistance-lower-minus-tick",
         "rotation": "one-weakest-position-exit-then-revalidate-new-batch",

@@ -192,7 +192,7 @@ candidate's window, not age ≥32. Missing movement evidence also blocks activat
   no static guarantee that a structurally valid genome finds a feasible market
   opportunity; geometry remains a causal runtime gate.
 - Cash, parent reservations and fees must fit the account; quantities are whole
-  shares. Buys and sells in one account share the interval's 10% volume capacity.
+  shares. Buys and sells in one account share the interval's 25% volume capacity.
   Orders respect their limits/deadlines. Stops ratchet upward only. Financial
   invariant failures or ledger overflow fail the evaluation; nothing is truncated.
 - New entries stop `terminal_exit_lead_seconds` before the final boundary, and
@@ -202,7 +202,7 @@ candidate's window, not age ≥32. Missing movement evidence also blocks activat
 
 ## Fixed optimization boundary and objective
 
-Fees (0.005 USD/share, minimum 1 USD/order), participation (10%), price tick
+Fees (0.005 USD/share, minimum 1 USD/order), participation (25%), price tick
 (0.01 USD), initial cash (10,000 USD), 1s common clock, source validity, certified
 indicators and the released 100ms squeeze/price-envelope funnel remain fixed.
 Only downstream policy is searched; price-envelope or indicator-calculation
@@ -313,19 +313,19 @@ A failed continuation check cancels prospectively, never erases earlier fills.
 New state is included in reset/checkpoint buffers and the source/code/genome
 version prevents old campaigns from being resumed as the new representation.
 
-## Broker alignment remains pending; optimization stopped
+## Approved approximate broker contract
 
-The app normal profile has passive participation0.25 and marketable1.0; stress
-uses0.10/0.25 respectively (replay_run_service._simulation_config). The GPU still
-uses a single0.10 share of aggregate interval trade volume. These percentages
-have different denominators and are not interchangeable. A full alignment needs
-causal executable-event/quote-size inputs, passive vs marketable classification,
-shared consumption accounting, activation, fees and slippage contracts, followed
-by paired fill/account tests and real-session profiling. Merely setting all GPU
-fills to100% of aggregated volume would overstate execution availability.
-No cap was silently changed while adding remainder policies. The workstation
-qualification was stopped at the user's request; no optimization is active.
-Do not restart until the broker model is explicitly aligned/requalified.
+The GPU broker uses a fixed 25% of each ticker's eligible completed-interval
+trade volume. Buys, sells and partial-fill continuations share that capacity
+within each counterfactual account. Retries never replenish an interval budget.
+Decisions use completed observations and activate in a later interval.
+Prices remain quote-bound interval VWAP/spread approximations.
+
+The user approved approximation rather than exact app replication. This is not
+its separate passive/marketable event model and grants no 100% marketable sweep
+of aggregate volume. Participation is fixed outside the searchable genome.
+Source hashes/settings bind the contract. Old 10% campaigns cannot qualify this
+run; fresh real-session qualification is required before optimization.
 
 The v3-4 wide-market remainder witness additionally reproduced padded-layout
 broadcast codegen failure for the policy class at [64,833,15]. The same scoped
@@ -341,4 +341,4 @@ Source qualification/real-session timing has not been repeated for this version.
 The final implementation uses compact column-contiguous policy values and an
 explicit native mutation boundary; the experimental per-order policy expansion
 was removed. Failed fusion experiments remain as runtime diagnostics, not active
-fallbacks or financial changes. The run remains stopped pending broker alignment.
+fallbacks or financial changes. The stopped run is preserved; restart requires fresh qualification of this approximation.

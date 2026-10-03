@@ -11,7 +11,8 @@ from research.vectorized_backtest.v3.torch_backtest.search_runner import SearchR
 
 def runner(mode=3, **kwargs):
     r=SqueezeRunner(synthetic_tape(seconds=40),[Candidate('signal',positions=1)],
-       replace(Settings(),remainder_policy_id=mode,entry_deadline_seconds=1,**kwargs))
+       replace(Settings(),participation=kwargs.pop('participation',0.10),
+               remainder_policy_id=mode,entry_deadline_seconds=1,**kwargs))
     r.requested_quantity[0,0,0]=10
     r.remaining[0,0,0]=8
     r.buy_filled[0,0,0]=2
@@ -51,6 +52,20 @@ def test_resubmission_keeps_quantity_fees_and_cannot_fill_same_interval():
     broker(r,3)
     assert r.buy_filled[0,0,0]==6
     assert r.requested_quantity[0,0,0]==10 and r.buy_paid[0,0,0]==1
+
+
+def test_approved_default_cap_and_retry_interval_capacity():
+    """Twenty eligible shares permit five fills, including a continued parent."""
+    from research.vectorized_backtest.v3.torch_backtest.encoding.config import Broker
+    assert Settings().participation == Broker().participation == 0.25
+    r = runner(participation=Settings().participation)
+    broker(r, 2)
+    assert r.buy_filled[0, 0, 0] == 7  # Two prior shares plus five now.
+    assert r.remaining[0, 0, 0] == 3
+    manage(r, 2)
+    broker(r, 3)
+    assert r.buy_filled[0, 0, 0] == 10
+    assert r.remaining.sum() == 0
 
 
 def test_retry_count_total_age_and_signal_boundaries():

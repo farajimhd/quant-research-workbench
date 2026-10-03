@@ -216,3 +216,9 @@ never enter the watchlist, execution certification or downstream data projection
 The Session flag participates in cache identity; source/code hashes force a new
 campaign and qualification. The old BKYI failure remains valid evidence for the
 previous broader universe, rather than a defect to repair in canonical data.
+
+## Approved broker approximation
+
+New campaigns use 25% of completed eligible interval volume shared by all
+buy/sell orders and retries per account/ticker. This approximates the app.
+The cap is fixed outside the genome. Requalify new source before optimization.
