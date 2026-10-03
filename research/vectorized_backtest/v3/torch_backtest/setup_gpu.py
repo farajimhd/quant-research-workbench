@@ -1,4 +1,4 @@
-"""Explicitly install the pinned compiler into v2 runtime, not a shared environment."""
+"""Explicitly install the pinned compiler into v3 runtime, not a shared environment."""
 import os
 import sys
 from pathlib import Path
@@ -29,7 +29,7 @@ def main():
     import triton
     if triton.__version__ != "3.7.1":
         raise RuntimeError("Pinned compiler version differs from installation")
-    print(f"V2 compiler ready: Triton {triton.__version__} at {target}")
+    print(f"V3 compiler ready: Triton {triton.__version__} at {target}")
     return 0
 
 

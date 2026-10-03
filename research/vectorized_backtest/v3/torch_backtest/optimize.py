@@ -1,4 +1,4 @@
-"""Bounded random genetic search: one session, two sessions, frozen evaluation.
+"""One bounded random genetic search over all training sessions, then frozen evaluation.
 
 Default invocation writes a plan. --synthetic executes only dummy tapes.
 Historical execution needs --execute and an explicit session specification.
@@ -14,7 +14,7 @@ sys.dont_write_bytecode = True
 import argparse
 import gc
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -28,10 +28,12 @@ from .encoding.config import Session
 from .fixtures import synthetic_tape
 from .genome import VERSION, StrategySpace
 from .grid import Settings
+from .optimization_ui import SearchPanel
 from .prepare import prepare_tape
 from .progress import safe_diagnostic
 from .runtime import DEFAULT, code_hash, configure_caches, require_runtime, write_json
-from .search_objective import SessionObjective, score
+from .search_objective import score
+from .session_pool import SessionPool
 
 
 def evolve(space, rng, population, scores, diversify=False):
@@ -51,141 +53,258 @@ def evolve(space, rng, population, scores, diversify=False):
     return space.validate(rows)
 
 
-def phase(evaluators, space, args, output, number, seed=None, checkpoint=None):
-    rng = np.random.default_rng(args.seed + number)
-    best, best_score, stagnant, start = None, None, 0, 0
-    last = None
+def summarize(results, lane, initial_cash=10000):
+    """Completed metrics only: distinct batches, child orders and fill events."""
+    sold = sum(r.get("sold_shares", [0] * len(r["net_pnl"]))[lane] for r in results)
+    age = sum(
+        r.get("sold_share_seconds", [0] * len(r["net_pnl"]))[lane] for r in results
+    )
+    return dict(
+        total_pnl=sum(r["net_pnl"][lane] for r in results),
+        worst_pnl=min(r["net_pnl"][lane] for r in results),
+        worst_drawdown=max(r["drawdown"][lane] for r in results),
+        batches=sum(
+            r.get("filled_batches", r["positions_opened"])[lane] for r in results
+        ),
+        positions=sum(r["positions_opened"][lane] for r in results),
+        fills=sum(r.get("fill_count", [0] * len(r["net_pnl"]))[lane] for r in results),
+        open=sum(
+            r.get("open_positions", [0] * len(r["net_pnl"]))[lane] for r in results
+        ),
+        mean_hold_seconds=age / max(1, sold),
+        long_hold_capital_hours=sum(
+            r.get("long_hold_dollar_seconds", [0] * len(r["net_pnl"]))[lane]
+            for r in results
+        )
+        / (initial_cash * 3600),
+    )
+
+
+def constraint_ranks(results, scores, minimum):
+    """Feasibility dominates fitness; infeasible lanes search toward feasibility.
+
+    This is NOT their financial objective. A missing session cannot be bought
+    off by profit on another. Once feasible, selection uses actual objective.
+    """
+    batches = np.array(
+        [r.get("filled_batches", r["positions_opened"]) for r in results], dtype=float
+    )
+    flat = np.array([r["terminal_valid"] for r in results], dtype=bool)
+    deficit = np.maximum(minimum - batches, 0).mean(0) / max(1, minimum)
+    violation = deficit + (~flat).mean(0)
+    feasible = np.array([v is not None for v in scores])
+    fitness = np.array([v if v is not None else 0 for v in scores])
+    order = np.lexsort((fitness, -violation, feasible))
+    ranks = np.empty(len(scores), dtype=float)
+    ranks[order] = np.arange(len(scores))
+    return ranks, violation
+
+
+def phase(
+    evaluators, space, args, output, number=1, seed=None, checkpoint=None, panel=None
+):
+    """ONE phase on the complete training set; compatibility name is internal."""
+    if seed is not None or number != 1:
+        raise ValueError(
+            "Single-phase search must start randomly, without injected winners"
+        )
+    rng = np.random.default_rng(args.seed)
+    best, best_score, best_metrics, stagnant, start = None, None, None, 0, 0
+    last, seen = None, set()
     if checkpoint:
         rng.bit_generator.state = checkpoint["rng"]
         rows = space.validate(checkpoint["population"])
         best, best_score = checkpoint["best"], checkpoint["best_score"]
+        best_metrics = checkpoint.get("best_metrics")
         stagnant, start = checkpoint["stagnant"], checkpoint["next_generation"]
         last = checkpoint["last_completed"]
+        seen = set(checkpoint.get("seen", []))
         space.repair_counts = dict(checkpoint["repair_counts"])
     else:
         rows = space.sample(rng, args.population)
-        if seed is not None:
-            rows[0] = seed
         write_json(
-            output / f"phase_{number}_initial.json",
+            output / "population_initial.json",
             dict(
                 population=rows.tolist(),
                 decoded=[asdict(v) for v in space.decode(rows)],
-                initialization="random" if seed is None else "previous_winner",
+                initialization="random",
                 repair_counts=dict(space.repair_counts),
             ),
         )
+
+    def emit(event):
+        if panel:
+            panel.emit(event)
+        else:
+            write_json(output / "status.json", event)
+
+    # Persist the exact random population/RNG before any long session replay.
+    def save(next_generation):
+        write_json(
+            output / "checkpoint.json",
+            dict(
+                next_generation=next_generation,
+                population=rows.tolist(),
+                best=best,
+                best_score=best_score,
+                best_metrics=best_metrics,
+                stagnant=stagnant,
+                rng=rng.bit_generator.state,
+                last_completed=last,
+                seen=sorted(seen),
+                repair_counts=dict(space.repair_counts),
+            ),
+        )
+
+    save(start)
     for generation in range(start, args.generations):
         started = perf_counter()
+        seen.update(space.identity(row) for row in rows)
         status = dict(
             status="training",
-            phase=number,
+            stage="Replay training population",
             active_generation=generation + 1,
             completed_generations=generation,
             generation_cap=args.generations,
             last_completed=last,
+            best_score=best_score,
+            best_metrics=best_metrics,
+            unique_candidates=len(seen),
+            objective_evaluations=generation * len(rows),
+            candidate_session_replays=generation * len(rows) * len(evaluators),
+            checkpoint=str(output / "checkpoint.json"),
         )
-        write_json(output / "status.json", status)
+        emit(status)
         results = []
         for index, evaluator in enumerate(evaluators):
+            session_file = (
+                output / f"generation_{generation:03d}" / f"session_{index:03d}.json"
+            )
+            fingerprints = [space.identity(row) for row in rows]
 
             def progress(event):
-                # Publish last COMPLETE metrics even during the next group.
-                write_json(
-                    output / "status.json",
-                    dict(status, active_session=index, progress=event),
+                emit(
+                    dict(
+                        status,
+                        active_session=index,
+                        focus=f"Generation {generation + 1} · training session {index + 1}/{len(evaluators)}",
+                        candidate_session_replays=(generation * len(evaluators) + index)
+                        * len(rows),
+                        progress=event,
+                    )
                 )
 
             evaluator.progress = progress
-            results.append(evaluator(rows))
+            if session_file.exists():
+                receipt = json.loads(session_file.read_text(encoding="utf-8"))
+                if receipt["population_fingerprints"] != fingerprints:
+                    raise RuntimeError(
+                        "Partial generation differs from restart population"
+                    )
+                result = receipt["result"]
+                if (
+                    hasattr(evaluator, "pool")
+                    and result.get("source_fingerprint")
+                    != evaluator.pool.tapes[index].provenance["fingerprint"]
+                ):
+                    raise RuntimeError("Partial generation source fingerprint mismatch")
+            else:
+                result = evaluator(rows)
+                write_json(
+                    session_file,
+                    dict(population_fingerprints=fingerprints, result=result),
+                )
+            results.append(result)
+            # Fixed lane's completed-session metrics are UI observations,
+            # never a partial cross-session fitness or a selection decision.
+            emit(
+                dict(
+                    status,
+                    active_session=index,
+                    focus=f"Completed session {index + 1}/{len(evaluators)}: {result.get('session', index)}",
+                    candidate_session_replays=(generation * len(evaluators) + index + 1)
+                    * len(rows),
+                    last_session_metrics=summarize([result], 0),
+                    progress={},
+                )
+            )
         scores, reasons = score(
             results,
             **args.weights,
             minimum_training_entries=args.minimum_training_entries,
         )
-        numeric = np.array([-float("inf") if s is None else s for s in scores])
+        ranks, violations = constraint_ranks(
+            results, scores, args.minimum_training_entries
+        )
+        numeric = np.array([-float("inf") if v is None else v for v in scores])
         winner = int(numeric.argmax())
         improved = scores[winner] is not None and (
             best_score is None or scores[winner] > best_score + 1e-12
         )
         if improved:
             best, best_score, stagnant = rows[winner].tolist(), scores[winner], 0
+            best_metrics = summarize(results, winner)
         else:
             stagnant += 1
         receipt = dict(
-            phase=number,
             generation=generation + 1,
             population=rows.tolist(),
             repair_counts=dict(space.repair_counts),
             scores=scores,
             rejection_reasons=reasons,
+            constraint_violations=violations.tolist(),
+            selection_ranks=ranks.tolist(),
             session_results=results,
             best_score=best_score,
+            best_metrics=best_metrics,
             stagnant_generations=stagnant,
             end_to_end_seconds=perf_counter() - started,
         )
-        write_json(output / f"phase_{number}_generation_{generation:03d}.json", receipt)
+        write_json(output / f"generation_{generation:03d}.json", receipt)
         last = dict(
             generation=generation + 1,
             best_score=best_score,
-            generation_best_candidate=winner if scores[winner] is not None else None,
-            sessions=[
-                {
-                    key: value[winner]
-                    for key, value in r.items()
-                    if isinstance(value, list)
-                }
-                for r in results
-            ],
-            inactive_candidates=sum(
-                all(r["positions_opened"][i] == 0 for r in results)
-                for i in range(len(rows))
-            ),
-            invalid_candidates=sum(reason is not None for reason in reasons),
             compile_seconds=sum(r["compile_seconds"] for r in results),
             replay_seconds=sum(r["replay_seconds"] for r in results),
+            bind_seconds=sum(r.get("bind_seconds", 0) for r in results),
             end_to_end_seconds=receipt["end_to_end_seconds"],
+            rule_prepare_seconds=sum(r.get("rule_prepare_seconds", 0) for r in results),
         )
-        rows = evolve(space, rng, rows, scores, stagnant >= 3)
-        state = dict(
-            phase=number,
-            next_generation=generation + 1,
-            population=rows.tolist(),
-            best=best,
-            best_score=best_score,
-            stagnant=stagnant,
-            rng=rng.bit_generator.state,
-            last_completed=last,
-            repair_counts=dict(space.repair_counts),
-        )
-        write_json(output / "checkpoint.json", state)
-        write_json(
-            output / "status.json",
-            dict(status, completed_generations=generation + 1, last_completed=last),
-        )
-        print(
-            json.dumps(
-                dict(
-                    phase=number,
-                    completed=generation + 1,
-                    best_score=best_score,
-                    inactive=last["inactive_candidates"],
-                )
-            ),
-            flush=True,
+        rows = evolve(space, rng, rows, ranks.tolist(), stagnant >= 3)
+        save(generation + 1)
+        emit(
+            dict(
+                status,
+                completed_generations=generation + 1,
+                best_score=best_score,
+                best_metrics=best_metrics,
+                last_completed=last,
+                objective_evaluations=(generation + 1) * len(rows),
+                candidate_session_replays=(generation + 1)
+                * len(rows)
+                * len(evaluators),
+                feasible_candidates=sum(v is not None for v in scores),
+                invalid_candidates=sum(v is not None for v in reasons),
+                closest_violation=float(violations.min()),
+                closest_metrics=summarize(results, int(ranks.argmax())),
+                stagnant_generations=stagnant,
+                immigrant_percent=50 if stagnant >= 3 else 20,
+                eta=f"{(args.generations - generation - 1) * last['replay_seconds'] / 3600:.1f}h replay estimate",
+            )
         )
     if best is None:
         raise RuntimeError(
-            "No valid training candidate; preserve receipts and revise a new experiment explicitly"
+            "Budget exhausted without an all-session feasible policy; no inactivity or residual exposure accepted"
         )
     write_json(
-        output / f"winner_{number}.json",
+        output / "winner.json",
         dict(
             genome=best,
             genome_sha256=space.identity(best),
             fitness=best_score,
+            metrics=best_metrics,
             decoded=asdict(space.decode([best])[0]),
-            selected_using="training_only",
+            selected_using="all_training_sessions_only",
         ),
     )
     return best
@@ -193,8 +312,8 @@ def phase(evaluators, space, args, output, number, seed=None, checkpoint=None):
 
 def split(spec):
     training, validation = spec.get("training", []), spec.get("validation", [])
-    if len(training) != 2 or not validation:
-        raise ValueError("Exactly two training dates and later validation required")
+    if not training or not validation:
+        raise ValueError("Nonempty training dates and later validation required")
     starts = [datetime.fromisoformat(s["start"]) for s in training + validation]
     ends = [datetime.fromisoformat(s["end"]) for s in training + validation]
     if any(
@@ -207,8 +326,8 @@ def split(spec):
         raise ValueError("A session must remain within its New York market date")
     if (
         len(set(dates)) != len(dates)
-        or dates[1] <= dates[0]
-        or min(dates[2:]) <= dates[1]
+        or dates[: len(training)] != sorted(dates[: len(training)])
+        or min(dates[len(training) :]) <= max(dates[: len(training)])
     ):
         raise ValueError("Training must precede unique disjoint validation dates")
     return training, validation
@@ -221,12 +340,13 @@ def main(argv=None):
     parser.add_argument(
         "--sessions",
         type=Path,
-        help="JSON training[2]/validation with manifest,ledger,start,end",
+        help="JSON training[N]/validation with manifest,ledger,start,end",
     )
     parser.add_argument("--runtime", type=Path, default=DEFAULT)
     parser.add_argument("--resume", type=Path)
-    parser.add_argument("--population", type=int, default=8)
-    parser.add_argument("--generations", type=int, default=8)
+    parser.add_argument("--output", type=Path, help="New explicit experiment directory")
+    parser.add_argument("--population", type=int, default=32)
+    parser.add_argument("--generations", type=int, default=50)
     parser.add_argument("--seed", type=int, default=20261002)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument(
@@ -234,7 +354,25 @@ def main(argv=None):
         choices=("eager", "compile", "cudagraph", "compiled_graph"),
         default="compiled_graph",
     )
-    parser.add_argument("--minimum-training-entries", type=int, default=0)
+    parser.add_argument("--minimum-training-entries", type=int, default=1)
+    parser.add_argument("--maximum-training-batches", type=int, default=20)
+    parser.add_argument("--excess-activity-weight", type=float, default=0.05)
+    parser.add_argument("--long-hold-weight", type=float, default=0.01)
+    parser.add_argument("--long-hold-seconds", type=int, default=300)
+    parser.add_argument("--resident-gib", type=float, default=48)
+    parser.add_argument("--maximum-host-gib", type=float, default=320)
+    parser.add_argument("--maximum-tape-gib", type=float, default=12)
+    parser.add_argument("--maximum-state-gib", type=float, default=8)
+    parser.add_argument("--maximum-fills", type=int, default=65536)
+    parser.add_argument("--graph-steps", type=int, default=32)
+    parser.add_argument("--ledger-mode", choices=("unique", "atomic"), default="unique")
+    parser.add_argument("--structural-workers", type=int, default=0)
+    parser.add_argument("--plain", action="store_true")
+    parser.add_argument(
+        "--precompute-rules",
+        action="store_true",
+        help="Compile immutable atomic gates before account replay",
+    )
     parser.add_argument("--validation-preobserved", action="store_true")
     parser.add_argument("--drawdown-weight", type=float, default=0.5)
     parser.add_argument("--dispersion-weight", type=float, default=0.25)
@@ -242,12 +380,28 @@ def main(argv=None):
     parser.add_argument("--exposure-weight", type=float, default=0.0)
     args = parser.parse_args(argv)
     if (
-        not 4 <= args.population <= 64
+        not 1 <= args.graph_steps <= 64
+        or not 1 <= args.maximum_fills <= 1_000_000
+        or args.maximum_training_batches < max(1, args.minimum_training_entries)
+        or any(
+            not np.isfinite(v) or v <= 0
+            for v in (
+                args.maximum_tape_gib,
+                args.maximum_host_gib,
+                args.maximum_state_gib,
+            )
+        )
+        or not np.isfinite(args.resident_gib)
+        or args.resident_gib < 0
+    ):
+        parser.error("Invalid graph/ledger/memory/activity bounds")
+    if (
+        not 4 <= args.population <= 1024
         or not 1 <= args.generations <= 100
         or args.minimum_training_entries < 0
     ):
         parser.error(
-            "Population4..64/generations1..100/nonnegative activity constraint required"
+            "Population4..1024/generations1..100/nonnegative activity constraint required"
         )
     args.weights = dict(
         initial_cash=Settings().initial_cash,
@@ -255,17 +409,26 @@ def main(argv=None):
         dispersion_weight=args.dispersion_weight,
         position_weight=args.position_weight,
         exposure_weight=args.exposure_weight,
+        maximum_training_batches=args.maximum_training_batches,
+        excess_activity_weight=args.excess_activity_weight,
+        long_hold_weight=args.long_hold_weight,
     )
     if not all(np.isfinite(v) and v >= 0 for v in args.weights.values()):
         parser.error("Invalid objective weights")
     torch.set_num_threads(1)
     root = require_runtime(args.runtime)
-    space = StrategySpace()
-    spec = json.loads(args.sessions.read_text()) if args.sessions else None
+    space = StrategySpace(replace(Settings(), long_hold_seconds=args.long_hold_seconds))
+    spec = (
+        json.loads(args.sessions.read_text(encoding="utf-8")) if args.sessions else None
+    )
     if args.execute and not args.synthetic:
         if spec is None:
             parser.error("Historical execution requires explicit --sessions")
         split(spec)
+        if args.minimum_training_entries < 1:
+            parser.error(
+                "Historical training requires at least one filled batch per session"
+            )
     identity = dict(
         version=VERSION,
         code_hash=code_hash(),
@@ -279,6 +442,17 @@ def main(argv=None):
         objective=args.weights,
         device=args.device,
         backend=args.backend,
+        precompute_rules=args.precompute_rules,
+        resources=dict(
+            resident_gib=args.resident_gib,
+            maximum_host_gib=args.maximum_host_gib,
+            maximum_tape_gib=args.maximum_tape_gib,
+            maximum_state_gib=args.maximum_state_gib,
+            maximum_fills=args.maximum_fills,
+            graph_steps=args.graph_steps,
+            ledger_mode=args.ledger_mode,
+            structural_workers=args.structural_workers,
+        ),
         validation_preobserved=args.validation_preobserved,
     )
     # JSON canonicalizes integer class-map keys, so resume compares the same
@@ -293,7 +467,15 @@ def main(argv=None):
         raise RuntimeError("Requested CUDA unavailable; no fallback")
     if args.backend in ("compile", "compiled_graph"):
         configure_caches(root)
-    output = require_runtime(args.resume or root / "experiments" / uuid4().hex)
+    if args.output and args.resume:
+        parser.error("Use --output OR --resume")
+    output = require_runtime(
+        args.resume or args.output or root / "experiments" / uuid4().hex
+    )
+    if not args.resume and (output / "identity.json").exists():
+        raise RuntimeError(
+            "New experiment directory already owns an identity; use exact resume"
+        )
     if args.resume:
         if json.loads((output / "identity.json").read_text()) != identity:
             raise RuntimeError("Resume requires identical code/grammar/split/budget")
@@ -304,66 +486,128 @@ def main(argv=None):
     print("Optimization output: " + str(output), flush=True)
 
     source_timings = {"training": [], "validation": []}
-
-    def tape(role, index):
-        started = perf_counter()
-
-        def preparation(event):
-            write_json(
-                output / "status.json",
-                dict(
-                    status="preparing_source",
-                    role=role,
-                    session_index=index,
-                    progress=event
-                    if isinstance(event, dict)
-                    else safe_diagnostic(event),
-                ),
+    training_count = 2 if args.synthetic else len(spec["training"])
+    validation_count = 1 if args.synthetic else len(spec["validation"])
+    config = dict(
+        population=args.population,
+        generations=args.generations,
+        seed=args.seed,
+        training_sessions=training_count,
+        validation_sessions=validation_count,
+        minimum_training_entries=args.minimum_training_entries,
+        maximum_training_batches=args.maximum_training_batches,
+        long_hold_seconds=args.long_hold_seconds,
+        long_hold_weight=args.long_hold_weight,
+    )
+    options = dict(
+        maximum_state_gib=args.maximum_state_gib,
+        maximum_fills=args.maximum_fills,
+        graph_steps=args.graph_steps,
+        precompute_rules=args.precompute_rules,
+        ledger_mode=args.ledger_mode,
+    )
+    with SearchPanel(output, plain=args.plain) as panel:
+        panel.emit(
+            dict(
+                config=config,
+                status="preparing",
+                stage="Prepare certified training tapes",
             )
-
-        preparation(
-            "Prepare certified resident tape"
-            if not args.synthetic
-            else "Prepare dummy resident tape"
         )
-        if args.synthetic:
-            value = synthetic_tape(seconds=75, listings=2).to(args.device)
+
+        def tape(role, index):
+            started = perf_counter()
+
+            def preparation(event):
+                panel.emit(
+                    dict(
+                        status="preparing",
+                        stage="Prepare certified evidence",
+                        focus=f"{role} {index + 1}: "
+                        + ("dummy" if args.synthetic else spec[role][index]["start"]),
+                        progress=event if isinstance(event, dict) else {},
+                        message=event.get("message", "")
+                        if isinstance(event, dict)
+                        else safe_diagnostic(event),
+                    )
+                )
+
+            if args.synthetic:
+                value = synthetic_tape(seconds=75, listings=2)
+            else:
+                from .availability import configure_reader
+
+                configure_reader(Path(__file__).resolve().parents[4])
+                item = spec[role][index]
+                session = Session(
+                    Path(item["manifest"]),
+                    Path(item["ledger"]),
+                    root / "source_cache",
+                    datetime.fromisoformat(item["start"]),
+                    datetime.fromisoformat(item["end"]),
+                    max_prepared_gib=args.maximum_tape_gib,
+                )
+                from .encoding.clickhouse import certify_source
+                from .prepared_cache import load_prepared, save_prepared
+                from .runtime import file_hash
+
+                # A snapshot reuses exactly certified market evidence, never a
+                # fallback query. Recheck the producer certificate on resume.
+                certificate = certify_source(session)
+                snapshot_identity = dict(
+                    code_hash=code_hash(),
+                    session=item,
+                    manifest_sha256=file_hash(session.manifest),
+                    build_id=certificate.source["build_id"],
+                )
+                snapshot = output / "inputs" / f"{role}_{index:03d}"
+                value = load_prepared(snapshot, snapshot_identity)
+                if value is None:
+                    value = prepare_tape(
+                        session,
+                        space.settings,
+                        maximum_gib=args.maximum_tape_gib,
+                        structural_workers=args.structural_workers,
+                        progress=preparation,
+                    )
+                    save_prepared(snapshot, value, snapshot_identity)
+                elif value.provenance["source_build"] != certificate.source["build_id"]:
+                    raise ValueError(
+                        "Cached market evidence belongs to another producer build"
+                    )
             source_timings[role].append(perf_counter() - started)
             return value
-        from research.mlops.env import discover_env_files, load_env_files
 
-        repo = Path(__file__).resolve().parents[4]
-        load_env_files(discover_env_files(repo), verbose=False)
-        item = spec[role][index]
-        session = Session(
-            Path(item["manifest"]),
-            Path(item["ledger"]),
-            root / "source_cache",
-            datetime.fromisoformat(item["start"]),
-            datetime.fromisoformat(item["end"]),
-        )
-        value = prepare_tape(session, space.settings, progress=preparation).to(
-            args.device
-        )
-        source_timings[role].append(perf_counter() - started)
-        return value
-
-    try:
-        training = [
-            SessionObjective(
-                tape("training", i), space, args.population, backend=args.backend
+        tapes = []
+        for i in range(training_count):
+            value = tape("training", i)
+            if (
+                sum(t.bytes for t in tapes) + value.bytes
+                > args.maximum_host_gib * 1024**3
+            ):
+                raise MemoryError(
+                    "Training source tapes exceed declared host memory budget"
+                )
+            tapes.append(value)
+            write_json(
+                output / "preparation_progress.json",
+                dict(
+                    completed=i + 1,
+                    total=training_count,
+                    host_gib=sum(t.bytes for t in tapes) / 1024**3,
+                    seconds=source_timings["training"],
+                ),
             )
-            for i in range(2)
-        ]
-        sources = [e.tape.provenance for e in training]
-        fingerprints = [s.get("fingerprint", s) for s in sources]
+        sources = [t.provenance for t in tapes]
+        fingerprints = [s["fingerprint"] for s in sources]
         source_file = output / "training_sources.json"
         if (
             source_file.exists()
-            and json.loads(source_file.read_text())["fingerprints"] != fingerprints
+            and json.loads(source_file.read_text(encoding="utf-8"))["fingerprints"]
+            != fingerprints
         ):
             raise RuntimeError(
-                "Resume source provenance differs from the sealed training tapes"
+                "Resume source provenance differs from sealed training tapes"
             )
         if not source_file.exists():
             write_json(
@@ -374,59 +618,80 @@ def main(argv=None):
                     preparation_seconds=source_timings["training"],
                 ),
             )
+        pool = SessionPool(
+            tapes,
+            space,
+            args.population,
+            device=args.device,
+            backend=args.backend,
+            maximum_host_gib=args.maximum_host_gib,
+            resident_gib=args.resident_gib,
+            **options,
+        )
+        panel.emit(
+            dict(status="training", stage="GPU memory configured", **pool.residency)
+        )
         checkpoint = (
-            json.loads((output / "checkpoint.json").read_text())
-            if args.resume and (output / "checkpoint.json").exists()
+            json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
+            if (output / "checkpoint.json").exists()
             else None
         )
-        winners = []
-        for number in (1, 2):
-            file = output / f"winner_{number}.json"
-            if file.exists():
-                frozen = json.loads(file.read_text())
-                winner = frozen["genome"]
-                if frozen["genome_sha256"] != space.identity(winner):
-                    raise RuntimeError("Frozen winner genome hash mismatch")
-                decoded = json.loads(json.dumps(asdict(space.decode([winner])[0])))
-                if frozen["decoded"] != decoded:
-                    raise RuntimeError("Frozen winner decode disagrees with its genome")
-            else:
-                winner = phase(
-                    training[:number],
-                    space,
-                    args,
-                    output,
-                    number,
-                    seed=winners[0] if winners else None,
-                    checkpoint=checkpoint
-                    if checkpoint and checkpoint["phase"] == number
-                    else None,
-                )
-            winners.append(winner)
-        finalists = space.validate([space.default, *winners])
-        # Both genomes are frozen on disk before validation construction/replay.
-        train_results = [e(finalists) for e in training]
-        del training
+        if (output / "winner.json").exists():
+            frozen = json.loads((output / "winner.json").read_text(encoding="utf-8"))
+            winner = frozen["genome"]
+            if frozen["genome_sha256"] != space.identity(winner) or frozen[
+                "decoded"
+            ] != json.loads(json.dumps(asdict(space.decode([winner])[0]))):
+                raise RuntimeError("Frozen winner hash/decode differs from its tensor")
+        else:
+            winner = phase(
+                pool.objectives(),
+                space,
+                args,
+                output,
+                checkpoint=checkpoint,
+                panel=panel,
+            )
+        finalists = space.validate([space.default, winner])
+        # Only now construct evaluation inputs; no validation result enters GA.
+        panel.emit(
+            dict(status="reporting", stage="Compare frozen finalists on training")
+        )
+        train_results = [e(finalists) for e in pool.objectives()]
+        del pool, tapes, value
         gc.collect()
         if args.device == "cuda":
             torch.cuda.empty_cache()
-        write_json(output / "status.json", dict(status="evaluating_frozen_winners"))
-        count = 1 if args.synthetic else len(spec["validation"])
         validation_results, validation_sources = [], []
-        for i in range(count):
-            evaluator = SessionObjective(
-                tape("validation", i), space, args.population, backend=args.backend
+        evaluation_tapes = [tape("validation", i) for i in range(validation_count)]
+        validation_sources = [t.provenance for t in evaluation_tapes]
+        pool = SessionPool(
+            evaluation_tapes,
+            space,
+            args.population,
+            device=args.device,
+            backend=args.backend,
+            maximum_host_gib=args.maximum_host_gib,
+            resident_gib=args.resident_gib,
+            **options,
+        )
+        for i in range(validation_count):
+            panel.emit(
+                dict(
+                    status="evaluating",
+                    stage="Evaluate frozen finalists",
+                    focus=f"Validation {i + 1}/{validation_count}",
+                )
             )
-            validation_sources.append(evaluator.tape.provenance)
-            validation_results.append(evaluator(finalists))
-            del evaluator
-            gc.collect()
-            if args.device == "cuda":
-                torch.cuda.empty_cache()
+            validation_results.append(pool.evaluate(i, finalists))
+        del pool, evaluation_tapes
+        gc.collect()
+        if args.device == "cuda":
+            torch.cuda.empty_cache()
         report = dict(
             status="completed",
             synthetic=args.synthetic,
-            candidate_order=["default", "one_session", "two_session"],
+            candidate_order=["default", "optimized"],
             finalists=finalists.tolist(),
             training_results=train_results,
             validation_results=validation_results,
@@ -437,41 +702,15 @@ def main(argv=None):
             validation_preobserved=args.validation_preobserved,
         )
         write_json(output / "report.json", report)
-        write_json(
-            output / "status.json",
+        panel.emit(
             dict(
                 status="completed",
+                stage="Frozen comparison saved",
                 candidate_order=report["candidate_order"],
-                training_results=train_results,
-                validation_results=validation_results,
-            ),
+                message="Training and independent evaluation retained in report.json; worker finished",
+            )
         )
-        return 0
-    except KeyboardInterrupt:
-        last = (
-            json.loads((output / "checkpoint.json").read_text())
-            if (output / "checkpoint.json").exists()
-            else {}
-        )
-        write_json(
-            output / "status.json",
-            dict(
-                status="interrupted",
-                last_completed=last.get("last_completed"),
-                recovery="Resume identical arguments from the last completed generation",
-            ),
-        )
-        raise
-    except Exception as error:
-        write_json(
-            output / "status.json",
-            dict(
-                status="failed",
-                error_type=type(error).__name__,
-                message=safe_diagnostic(error),
-            ),
-        )
-        raise
+    return 0
 
 
 if __name__ == "__main__":

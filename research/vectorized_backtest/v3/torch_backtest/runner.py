@@ -7,11 +7,12 @@ in tick(). There are no tensor-to-host reads, database calls or frame operations
 in tick(). Compiled/captured execution reuses fixed pointers across batches.
 """
 
-from dataclasses import asdict
-from hashlib import sha256
 import json
 import math
+from dataclasses import asdict
+from hashlib import sha256
 from time import perf_counter
+
 import torch
 
 from .grid import MAX_POSITIONS, Settings
@@ -48,6 +49,7 @@ class SqueezeRunner:
         maximum_state_gib=2.0,
         maximum_fills=16384,
         graph_steps=16,
+        ledger_mode="unique",
     ):
         self.tape = tape.validate()
         self.settings = settings.validate()
@@ -64,9 +66,14 @@ class SqueezeRunner:
             raise ValueError("Batch must be 1..1024")
         self.backend, self.graph_steps = backend, graph_steps
         self.maximum_fills = maximum_fills
+        if ledger_mode not in ("unique", "atomic"):
+            raise ValueError("Unknown ledger write mode")
+        self.ledger_mode = ledger_mode
         self.shape = (self.b, self.n, MAX_POSITIONS)
         # Include four distinct exit-order commission histories and bounded logs.
         estimate = self.b * self.n * 15 * 260 + self.b * maximum_fills * 9 * 8
+        if ledger_mode == "unique":
+            estimate += self.b * self.n * 15 * 9 * 8
         if (
             not math.isfinite(maximum_state_gib)
             or maximum_state_gib <= 0
@@ -126,6 +133,8 @@ class SqueezeRunner:
             "equity_peak",
             "drawdown",
             "exposure_seconds",
+            "long_hold_dollar_seconds",
+            "sold_share_seconds",
         ):
             state(name, (self.b,))
         for name in (
@@ -147,7 +156,14 @@ class SqueezeRunner:
             state(name, (self.b,), torch.int64)
         state("overflow", (self.b,), torch.bool)
         state("financial_error", (self.b,), torch.bool)
-        state("ledger", (self.b, maximum_fills, 9))
+        if ledger_mode == "unique":
+            # Inactive slots get distinct scratch locations, avoiding thousands
+            # of zero atomics contending on one real ledger row. Active prefix
+            # ranks are unique, so direct overwrite preserves exact fill rows.
+            state("ledger_storage", (self.b, maximum_fills + self.n * 15, 9))
+            self.ledger = self.ledger_storage[:, :maximum_fills]
+        else:
+            state("ledger", (self.b, maximum_fills, 9))
         state("index", (), torch.int64)
         state(
             "price_ring", (settings.retest_lookback_seconds, self.n), value=float("nan")
@@ -179,6 +195,14 @@ class SqueezeRunner:
         self.batch_axis = torch.arange(self.b, device=tape.device)
         self.start = int(tape.provenance.get("start_second", int(tape.clocks[0])))
         self.end = int(tape.clocks[-1])
+        # Device boundary buffers permit reuse of one captured graph across
+        # dates without specializing Python epoch constants into generated code.
+        self.start_boundary = torch.tensor(
+            self.start, dtype=torch.int64, device=tape.device
+        )
+        self.end_boundary = torch.tensor(
+            self.end, dtype=torch.int64, device=tape.device
+        )
         self.parameters = torch.zeros(
             (self.b, 10), device=tape.device, dtype=torch.int64
         )
@@ -222,6 +246,8 @@ class SqueezeRunner:
                     "settings": asdict(self.settings),
                     "source": self.tape.provenance,
                     "candidates": [asdict(c) for c in self.candidates],
+                    "ledger_mode": self.ledger_mode,
+                    "maximum_fills": self.maximum_fills,
                 },
                 sort_keys=True,
             ).encode()
@@ -333,8 +359,16 @@ class SqueezeRunner:
             -1,
         ).to(torch.float64)
         rows = torch.where((active & in_bounds)[..., None], rows, 0)
-        positions = positions.clamp(0, self.maximum_fills - 1)
-        self.ledger.scatter_add_(1, positions[..., None].expand(-1, -1, 9), rows)
+        if self.ledger_mode == "unique":
+            destinations = torch.where(
+                active & in_bounds, positions, self.maximum_fills + self.slot_axis
+            )
+            self.ledger_storage.scatter_(
+                1, destinations[..., None].expand(-1, -1, 9), rows
+            )
+        else:
+            positions = positions.clamp(0, self.maximum_fills - 1)
+            self.ledger.scatter_add_(1, positions[..., None].expand(-1, -1, 9), rows)
         self.fill_count.add_(active.sum(-1))
 
     def _broker(
@@ -362,6 +396,10 @@ class SqueezeRunner:
             & (sell_price > 0)
         )
         eligible_sell &= (self.exit_kind != 1) | (sell_price >= self.target)
+        discretionary = (self.exit_kind == 1) | (self.exit_kind == 3)
+        eligible_sell &= ~discretionary | (
+            now - self.first_fill >= s.minimum_position_hold_seconds
+        )
         wanted = torch.where(eligible_sell, self.quantity, 0)
         sold = proportional_fill(wanted, capacity)
         role = (self.exit_kind - 1).clamp_min(0)[..., None]
@@ -382,6 +420,9 @@ class SqueezeRunner:
         self.cash.add_((sell_price * sold - fee).sum((1, 2)))
         self.fees.add_(fee.sum((1, 2)))
         self._log(sold, sell_price, fee, now, -1, self.exit_kind)
+        self.sold_share_seconds.add_(
+            (sold * (now - self.first_fill).clamp_min(0)).sum((1, 2))
+        )
         self.quantity.sub_(sold)
         # Any protective/rotation/terminal exit cancels the unfilled parent.
         self.exit_cancelled_entry_shares.add_(
@@ -459,6 +500,7 @@ class SqueezeRunner:
         )
         stop_hit = active & (low[None, :, None] <= self.stop)
         target_hit = active & (high[None, :, None] >= self.target)
+        target_hit &= now - self.first_fill >= s.minimum_position_hold_seconds
         # Ambiguous completed bars use stop-first; an existing target can become
         # a stop, which has its own cumulative per-order fee history.
         kind = torch.where(target_hit & (self.exit_kind == 0), 1, self.exit_kind)
@@ -503,7 +545,7 @@ class SqueezeRunner:
         active_signal = (now >= self.tape.admission)[None] & (
             now - self.tape.admission <= self._value("maximum_signal_age_seconds", 2)
         )
-        watching = active_signal & ~self.used & (now >= self.start)
+        watching = active_signal & ~self.used & (now >= self.start_boundary)
         crossed = above[None] & ~self.previous_above & self.previous_valid & watching
         self.hold_since.copy_(
             torch.where(
@@ -572,7 +614,9 @@ class SqueezeRunner:
         basic &= (notional[None] >= self._value("minimum_dollar_volume", 2)) & (
             trades[None] >= self._value("minimum_trade_count", 2)
         )
-        terminal = now >= self.end - self._value("terminal_exit_lead_seconds", 2)
+        terminal = now >= self.end_boundary - self._value(
+            "terminal_exit_lead_seconds", 2
+        )
         ready = gate & basic & watching & ~terminal
         ready &= self._entry_filter(now, close)
         # Shared market geometry is selected once per tick, not once per B.
@@ -751,6 +795,7 @@ class SqueezeRunner:
         replaceable = (
             (self.quantity > 0) & (self.exit_kind == 0) & (self.remaining == 0)
         )
+        replaceable &= now - self.first_fill >= s.minimum_position_hold_seconds
         replaceable &= self.remaining.sum(-1, keepdim=True) == 0
         weak_scores = torch.where(replaceable, held_score, float("inf")).reshape(
             self.b, -1
@@ -881,6 +926,12 @@ class SqueezeRunner:
             torch.maximum(self.drawdown, self.equity_peak - self.equity)
         )
         self.exposure_seconds.add_((self.quantity > 0).sum((1, 2)))
+        # Integrate start-of-next-interval exposure using only the completed
+        # mark. One USD held one hour past the threshold contributes 3600.
+        overdue = (self.quantity > 0) & (now - self.first_fill >= s.long_hold_seconds)
+        self.long_hold_dollar_seconds.add_(
+            torch.where(overdue, self.quantity * mark, 0).sum((1, 2))
+        )
         self.financial_error.logical_or_(
             (self.cash < -1e-7) | ~torch.isfinite(self.equity)
         )
@@ -996,6 +1047,8 @@ class SqueezeRunner:
                 "rejected_geometry",
                 "rejected_size",
                 "exposure_seconds",
+                "long_hold_dollar_seconds",
+                "sold_share_seconds",
                 "expired_entry_shares",
                 "exit_cancelled_entry_shares",
                 "terminal_cancelled_entry_shares",
@@ -1032,6 +1085,10 @@ class SqueezeRunner:
         # entered counts submitted acquisition batches; activity constraints
         # must instead use child position orders that actually received fills.
         result["positions_opened"] = result["filled_entry_orders"]
+        # A batch is one ticker acquisition. Fifteen child orders or many
+        # partial-fill events still count as ONE activity unit.
+        result["filled_batches"] = (self.buy_filled.sum(-1) > 0).sum(-1)
+        result["sold_shares"] = self.buy_filled.sum((1, 2)) - self.quantity.sum((1, 2))
         result["terminal"] = terminal
         result["terminal_valid"] = (
             (result["open_quantity"] == 0)

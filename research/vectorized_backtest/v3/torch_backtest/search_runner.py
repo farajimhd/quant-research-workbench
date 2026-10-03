@@ -13,10 +13,20 @@ from .runner import SqueezeRunner
 
 
 class SearchRunner(SqueezeRunner):
-    def __init__(self, tape, space, population, *, backend="eager", **kwargs):
+    def __init__(
+        self,
+        tape,
+        space,
+        population,
+        *,
+        backend="eager",
+        precompute_rules=False,
+        **kwargs,
+    ):
         rows = space.validate(population)
         decoded = space.decode(rows)
         self.space, self.numeric = space, None
+        self.precompute_rules = precompute_rules
         # Allocate shared source histories once at grammar caps. Candidate masks
         # choose completed lookbacks; no gene changes a captured tensor shape.
         settings = replace(
@@ -59,6 +69,10 @@ class SearchRunner(SqueezeRunner):
         self._state_names.extend(("rule_history", "current_atoms"))
         self.set_genomes(rows)
         self.reset()
+        if precompute_rules:
+            from .rule_precompute import RuleCompiler
+
+            self.rule_compiler = RuleCompiler(self)
 
     def set_genomes(self, population):
         rows = self.space.validate(population)
@@ -160,6 +174,8 @@ class SearchRunner(SqueezeRunner):
             self.current_atoms.fill_(float("nan"))
 
     def _entry_filter(self, now, close):
+        if self.precompute_rules:
+            return self.rule_gate.index_select(0, self.index.reshape(1)).squeeze(0)
         bid, ask = self._row("bid"), self._row("ask")
         vwap = self._row("vwap")
         observed = self._row("observed")
@@ -203,6 +219,8 @@ class SearchRunner(SqueezeRunner):
         )
 
     def _observe_rule_history(self, close, observed):
+        if self.precompute_rules:
+            return
         self.rule_history.copy_(
             torch.cat(
                 (
@@ -220,5 +238,7 @@ class SearchRunner(SqueezeRunner):
             settings=asdict(self.settings),
             grammar=self.space.manifest(),
             genomes=self.genomes.tolist(),
+            ledger_mode=self.ledger_mode,
+            maximum_fills=self.maximum_fills,
         )
         return sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()

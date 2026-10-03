@@ -193,6 +193,8 @@ def test_optimizer_synthetic_main_runs_and_freezes_before_evaluation(tmp_path):
                 "4",
                 "--generations",
                 "1",
+                "--minimum-training-entries",
+                "0",
             ]
         )
         == 0
@@ -200,7 +202,8 @@ def test_optimizer_synthetic_main_runs_and_freezes_before_evaluation(tmp_path):
     run = next((tmp_path / "experiments").iterdir())
     report = json.loads((run / "report.json").read_text())
     assert report["synthetic"] and not report["validation_used_for_selection"]
-    assert (run / "winner_1.json").exists() and (run / "winner_2.json").exists()
+    assert (run / "winner.json").exists()
+    assert report["candidate_order"] == ["default", "optimized"]
     assert all(v is not None for v in report["validation_scores"])
 
 
@@ -326,10 +329,8 @@ def test_phase_checkpoint_resumes_exact_population_rng_and_fitness(tmp_path):
     )
     assert actual == expected
     for index in range(3):
-        a = json.loads((complete / f"phase_1_generation_{index:03d}.json").read_text())
-        b = json.loads(
-            (interrupted / f"phase_1_generation_{index:03d}.json").read_text()
-        )
+        a = json.loads((complete / f"generation_{index:03d}.json").read_text())
+        b = json.loads((interrupted / f"generation_{index:03d}.json").read_text())
         for key in ("population", "scores", "best_score", "repair_counts"):
             assert a[key] == b[key]
 
@@ -386,21 +387,16 @@ def test_search_state_checkpoint_preserves_atomic_history_and_swing_book():
     assert torch.equal(recovered.ledger, complete.ledger)
 
 
-def test_launcher_resume_uses_canonical_identity_and_skips_frozen_selection(
-    tmp_path, monkeypatch
-):
+def test_launcher_resume_skips_frozen_selection(tmp_path, monkeypatch):
     from research.vectorized_backtest.v3.torch_backtest import optimize
 
     real_phase = optimize.phase
-    calls = []
 
-    def interrupt_second(*args, **kwargs):
-        calls.append(args[4])
-        if args[4] == 2:
-            raise RuntimeError("injected phase boundary")
-        return real_phase(*args, **kwargs)
+    def freeze_then_interrupt(*args, **kwargs):
+        real_phase(*args, **kwargs)
+        raise RuntimeError("injected frozen boundary")
 
-    monkeypatch.setattr(optimize, "phase", interrupt_second)
+    monkeypatch.setattr(optimize, "phase", freeze_then_interrupt)
     command = [
         "--synthetic",
         "--runtime",
@@ -413,19 +409,20 @@ def test_launcher_resume_uses_canonical_identity_and_skips_frozen_selection(
         "4",
         "--generations",
         "1",
+        "--minimum-training-entries",
+        "0",
     ]
-    with pytest.raises(RuntimeError, match="phase boundary"):
+    with pytest.raises(RuntimeError, match="frozen boundary"):
         optimize.main(command)
     run = next((tmp_path / "experiments").iterdir())
-    frozen = (run / "winner_1.json").read_bytes()
+    frozen = (run / "winner.json").read_bytes()
 
-    def observe_resume(*args, **kwargs):
-        assert args[4] == 2  # Already frozen one-session winner cannot be reselected.
-        return real_phase(*args, **kwargs)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Frozen winner must not be reselected")
 
-    monkeypatch.setattr(optimize, "phase", observe_resume)
+    monkeypatch.setattr(optimize, "phase", forbidden)
     assert optimize.main(command + ["--resume", str(run)]) == 0
-    assert frozen == (run / "winner_1.json").read_bytes()
+    assert frozen == (run / "winner.json").read_bytes()
     with pytest.raises(RuntimeError, match="immutable"):
         optimize.main(command + ["--resume", str(run)])
 

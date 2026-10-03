@@ -1,6 +1,6 @@
 # Decision-time and optimization contract
 
-This is the maintained contract for `semantic-squeeze-search-v3-2`, not a reinterpretation of
+This is the maintained contract for `semantic-squeeze-search-v3-3`, not a reinterpretation of
 array indices. The machine authority is `timing.py`, plus `StrategySpace.manifest()`.
 Tape provenance contains the exact time contract and its SHA-256 seal. The same
 contract/seal is in the search identity. Validation rejects missing, different
@@ -209,36 +209,49 @@ Only downstream policy is searched; price-envelope or indicator-calculation
 parameters are not genes. Prepared population/source coverage cannot be narrowed
 using a proposed candidate if doing so would remove another candidate's evidence.
 
-Exactly two ordered training dates and at least one later disjoint evaluation
-date are required for historical search. Each window must remain within its
-New York date. Every session resets to an independent $10,000 account: no cash
-or positions carry between dates. Phase one uses only the first training date;
-phase two uses both and seeds one lane with the first winner. Evaluation tapes
-are constructed only after both winners are frozen. Preobserved evaluation
-is labelled; it is not a fresh holdout and never drives tuning or selection.
+One phase evaluates the entire ordered training set. At least one later,
+disjoint evaluation date is required. The workstation launcher reserves the last
+six available dates by default. Every session resets to an independent $10,000
+account; cash evolves inside each session, without inter-session carry. The
+initial tensor is random: neither default nor a prior winner is injected.
+Evaluation tapes are constructed after `winner.json` is frozen. Preobserved
+evaluation is labelled and never drives tuning, selection or constraint changes.
 
 Default objective: mean net return −0.5×mean normalized maximum drawdown
-−0.25×population standard deviation of session returns. Optional fixed costs
-penalize filled position count (divided by100) and sampled position-hours.
-All cost weights must be finite/nonnegative and remain fixed for the experiment.
+−0.25×population standard deviation of session returns −0.05×mean excess batch
+count above20 (divided by20) −0.01×mean overdue capital-hours. Overdue capital-hours
+integrate marked USD exposure after300s, divided by initial cash×3600. Optional
+fixed child-position and position-hour costs remain available. Costs are fixed
+before training and must be finite/nonnegative.
 
-`--minimum-training-entries K` imposes at least K actually filled position orders
-on **each** training session. K defaults to0, so inactivity is currently legal;
-unfilled submissions cannot satisfy K. There is no mandatory trade count,
-maximum drawdown cap, minimum holding period or minimum risk/reward ratio beyond
-these explicit settings. Changing those research constraints creates a new
-experiment; they must not be introduced after observing evaluation performance.
+Historical search requires at least one actually filled **acquisition batch on
+each session**. Splitting a batch into child positions or partial-fill events
+cannot satisfy additional activity. Inactivity or residual terminal exposure
+makes fitness null. Infeasible candidates receive feasibility ranks for genetic
+selection, with feasible candidates always dominating; financial fitness is never
+published for an infeasible winner. A budget exhausted without a feasible policy
+fails explicitly. There is no hard drawdown cap or minimum risk/reward ratio.
 
-CLI bounds: population4..64, generations1..100 per phase; defaults8×8.
-The GA is heuristic, with elitism, tournament selection, categorical crossover,
-15% coordinate mutation, bounded repairs and random immigrants. After three
-stagnant generations immigration increases; the fixed budget does not extend.
-It does not certify a global optimum. Every generation saves metrics/rejections;
-checkpoints preserve population/RNG/winner/repair state. All-invalid training
-fails explicitly. Resume requires identical code, grammar, split, budget,
-objective and certified source fingerprints. Artifacts live only under the
-configured runtime root. Source changes, including this fix, cannot resume an
-older experiment identity.
+Three-second minimum holding age is measured from each child position's first
+fill. Discretionary target triggers and replacement decisions are gated until
+age≥3s, with resulting fills eligible in a subsequent interval. Protective stops
+and terminal liquidation are exempt. Entry-mode `hold_seconds` is a separate
+condition on a pre-entry VWAP cross, not this position holding constraint.
+The fixed long-hold threshold defaults to300s and is not a gene.
+
+Population bounds4..1024, generations1..100; workstation defaults64×50.
+Actual populations must fit measured resource guards. The GA uses two elites,
+tournament3, coordinate crossover50%, mutation15% and random immigration20%,
+increasing to50% after three stagnant generations, within the fixed budget.
+It does not certify a global optimum. Wide nonnegative threshold/activity values
+use log1p random sampling within unchanged inclusive bounds; other values are
+uniform. Classes, inputs, operations, windows and thresholds remain searchable.
+
+Completed per-session receipts support mid-generation restart. Selection requires
+all training results. Resume requires identical code, grammar, split, budget,
+objective and certified source fingerprints. Artifacts live under the configured
+runtime root. Read the [workstation contract](WORKSTATION_OPTIMIZATION.md) for
+resource limits, profiling and desktop process ownership.
 
 ## Executable witnesses
 

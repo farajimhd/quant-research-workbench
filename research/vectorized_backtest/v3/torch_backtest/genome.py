@@ -15,7 +15,7 @@ from .grid import Candidate, Settings
 from .rules import ATOMS, CLAUSES, HISTORY, Compare, Temporal, validate_clause
 from .timing import TIMING_CONTRACT, timing_fingerprint
 
-VERSION = "semantic-squeeze-search-v3-2"
+VERSION = "semantic-squeeze-search-v3-3"
 ENTRY = ("signal", "hold", "retest", "macd")
 ALLOCATION = ("equal", "decreasing", "increasing")
 POLICY_FIELDS = (
@@ -141,6 +141,7 @@ class StrategySpace:
                 "threshold",
             ],
             threshold_role="numeric literal of selected input semantic kind; no register references",
+            random_value_density="log1p for nonnegative wide price/activity thresholds; uniform for other values; all class IDs random",
             connector_classes={0: "AND", 1: "OR"},
             history_capacity=HISTORY,
             history_allocation=dict(
@@ -314,8 +315,13 @@ class StrategySpace:
         rows = np.tile(self.default, (count, 1))
         for j, choices in enumerate(CLASSES):
             rows[:, j] = rng.choice(choices, count)
-        for j, (_, lo, hi, _) in enumerate(POLICY_FIELDS, self.policy_start):
-            rows[:, j] = rng.uniform(lo, hi, count)
+        for j, (name, lo, hi, _) in enumerate(POLICY_FIELDS, self.policy_start):
+            if name in ("minimum_dollar_volume", "minimum_trade_count"):
+                # A fixed random density across the SAME bounds. Uniform
+                # million-dollar thresholds almost always exclude premarket.
+                rows[:, j] = np.expm1(rng.uniform(np.log1p(lo), np.log1p(hi), count))
+            else:
+                rows[:, j] = rng.uniform(lo, hi, count)
         for row in rows:
             for clause in row[self.rules_start : self.connectors_start].reshape(
                 CLAUSES, 6
@@ -328,7 +334,12 @@ class StrategySpace:
                     rng.integers(1, HISTORY + 1),
                 ]
                 atom = ATOMS[int(clause[2])]
-                clause[5] = rng.uniform(atom.lower, atom.upper)
+                if atom.lower >= 0 and atom.upper >= 1000:
+                    clause[5] = np.expm1(
+                        rng.uniform(np.log1p(atom.lower), np.log1p(atom.upper))
+                    )
+                else:
+                    clause[5] = rng.uniform(atom.lower, atom.upper)
         rows[:, self.connectors_start :] = rng.integers(2, size=(count, CLAUSES - 1))
         return self.repair(rows)
 

@@ -1,10 +1,10 @@
 """Exact semantic grid; no random mutation and no duplicate singleton ANY/ALL."""
 
+import json
+import math
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from itertools import combinations, product
-import json
-import math
 
 VERSION = "squeeze-grid-v3-1"
 MACD_SECONDS = (1, 5, 10, 30)
@@ -112,6 +112,10 @@ class Settings:
     stagnation_weight: float = 0.15
     stagnation_seconds: int = 60
     drawdown_weight: float = 0.5
+    # Fixed experiment constraints, not searchable genes. Protective stops and
+    # terminal liquidation are exempt from the discretionary holding floor.
+    minimum_position_hold_seconds: int = 3
+    long_hold_seconds: int = 300
 
     def validate(self):
         if any(
@@ -138,11 +142,17 @@ class Settings:
             "momentum_lookback_seconds",
             "attention_lookback_seconds",
             "stagnation_seconds",
+            "minimum_position_hold_seconds",
+            "long_hold_seconds",
         )
         if any(type(getattr(self, name)) is not int for name in integer_fields):
             raise ValueError("Counts and durations must be integers")
         if self.clock_seconds != 1 or not 2 <= self.adaptive_window <= 64:
             raise ValueError("One-second clock and bounded adaptive history required")
+        if self.long_hold_seconds < self.minimum_position_hold_seconds:
+            raise ValueError("Long-hold threshold cannot precede minimum hold")
+        if self.minimum_position_hold_seconds != 3:
+            raise ValueError("V3 fixed discretionary holding floor is three seconds")
         if not (
             0 < self.participation <= 1
             and self.initial_cash > 0

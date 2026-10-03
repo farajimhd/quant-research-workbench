@@ -43,15 +43,15 @@ def test_grid_exact_unique_and_approval_binds_settings():
         main(["--execute"])
 
 
-def test_v2_has_no_original_package_imports():
+def test_v3_has_no_v1_or_v2_package_imports():
     base = Path(__file__).parents[1]
     for path in base.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8-sig"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                assert not (node.module or "").startswith("research.vectorized_backtest.v1")
+                assert not (node.module or "").startswith(("research.vectorized_backtest.v1", "research.vectorized_backtest.v2"))
             if isinstance(node, ast.Import):
-                assert all(not n.name.startswith("research.vectorized_backtest.v1") for n in node.names)
+                assert all(not n.name.startswith(("research.vectorized_backtest.v1", "research.vectorized_backtest.v2")) for n in node.names)
 
 
 @pytest.mark.parametrize("m", [5, 10, 15])
@@ -254,7 +254,7 @@ def test_step_trail_raises_one_percent_per_three_percent_and_never_lowers():
 def test_target_closes_only_its_own_position_and_stop_wins_ambiguous_bar():
     tape = synthetic_tape([10.0] * 9 + [10.3] * 31)
     runner = SqueezeRunner(tape, [candidate()])
-    runner.run(steps=11)
+    runner.run(steps=13)  # 3s discretionary hold at 12, next-interval fill at 13.
     assert runner.quantity[0, 0, 0] == 0
     assert bool((runner.quantity[0, 0, 1:5] > 0).all())
     tape = synthetic_tape([10.0] * 40)

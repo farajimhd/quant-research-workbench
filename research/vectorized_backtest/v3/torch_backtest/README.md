@@ -3,8 +3,9 @@
 V3 builds on v2's causal Squeeze portfolio engine. Strategy choices, numeric
 policy values, atomic input IDs, temporal operation IDs and Boolean operation
 IDs are searchable. The optimizer starts from a random executable tensor,
-optimizes one training session, then both training sessions, and freezes both
-winners before constructing the evaluation tapes.
+runs ONE optimization phase over all training sessions, and freezes the winner
+before constructing the evaluation tapes. Each session resets cash; cash evolves
+causally within that session.
 
 The authoritative [time and search contract](TIME_AND_SEARCH_CONTRACT.md)
 defines candle indexing, execution boundaries, assumptions and every numeric
@@ -128,82 +129,62 @@ time. Source preparation and certification metrics are retained in
 A copied v2 default is evaluated after selection; it is not injected into the
 first random population.
 
-## Training, evaluation and activity
+## Multi-session workstation optimization
 
-Each session starts an independent account with $10,000. The two-session phase
-evaluates each candidate on both training dates; it does not carry cash or open
-positions across dates. It seeds one lane with the one-session winner and
-starts the remaining lanes randomly.
+Use [WORKSTATION_OPTIMIZATION.md](WORKSTATION_OPTIMIZATION.md) for the operational
+contract, visible SSH launcher and dashboard. All code is local to v3: no v1/v2
+package, deployment or runtime is required.
 
-The default fitness is:
+The optimizer has **one phase**, from a repaired random `[B,71]` tensor. Every
+candidate is scored across the complete training set before selection. Each
+session resets to $10,000; fills, fees, reservations and cash evolve causally
+inside that session. The last six available dates are reserved for later frozen
+evaluation by the workstation launcher. Previously inspected evaluation dates
+are explicitly labelled preobserved, never used in training selection.
 
-```text
-mean(session net P&L / initial cash)
-- 0.50 * mean(session maximum drawdown / initial cash)
-- 0.25 * population_std(session net P&L / initial cash)
-```
+Fixed defaults: three-second discretionary hold floor (protective stops and
+terminal exits exempt), at least one actually filled acquisition batch on
+**every training session**, a soft maximum of 20 batches/session, and an exposure
+penalty after 300 seconds. An acquisition split into fifteen child positions
+still counts as ONE batch. All numeric gene ranges remain searchable; these
+experiment constraints cannot be mutated away.
 
-The objective function also supports explicit entry-count and exposure costs.
-Those weights are fixed for an experiment, not optimized to improve its score.
-`--minimum-training-entries K` requires K actually filled position orders **on every training session**;
-its default is zero. A constraint changes the experiment identity. Inactivity
-is reported even when permitted; it is not evidence of a replay defect.
-Evaluation is always diagnostic and never feeds selection, mutation, weights
-or constraints. Mark previously inspected dates with `--validation-preobserved`;
-such dates are not a fresh holdout. Synthetic evaluation uses dummy fixtures
-and demonstrates the workflow, not out-of-sample profitability.
+The objective is mean net return minus 0.5 times normalized drawdown, 0.25 times
+return standard deviation, 0.05 times normalized excess batch count and 0.01
+times overdue capital-hours. Residual exposure or a missing required session
+activity makes fitness null. Feasibility ranks guide infeasible candidates toward
+satisfying all sessions; they never replace actual fitness or qualify a winner.
 
-The default budget is 8 candidates x 8 generations in each phase. The solver
-uses elitism, tournament selection, categorical crossover, bounded mutation
-and random immigrants after three stagnant generations. Every generation
-saves its evaluated population, metrics, rejection reasons and elapsed time.
-Checkpoints contain the next population, RNG state, best genome, repair counts
-and last completed metrics. An interrupted generation is rerun from its prior
-completed boundary; no partial evaluation becomes a selection result.
+`run_optimization_workstation.py` defaults to 64 candidates × 50 generations;
+the lower-level optimizer defaults to 32 × 50. Resource guards admit larger
+populations only when they fit. The search is heuristic, not a global-optimum
+certificate. Wide positive price/activity thresholds use a declared log1p random
+density over the unchanged bounds; default is never injected into the population.
 
-## Run it
-
-Run from the laptop repository, with outputs beneath `D:/TradingML/runtimes`.
-No command below writes market data.
+Completed session receipts allow mid-generation restart without replaying those
+sessions. Selection happens only after the entire generation is complete.
+Checkpoints seal code, source fingerprints, split, population, RNG, objective
+and budget. A frozen `winner.json` precedes evaluation; `report.json` orders
+finalists as `[default, optimized]`.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = '1'
-$python = 'C:/Users/g835l/miniconda3/envs/ml4t/python.exe'
-
-# Safe default: write the grammar, split and budget plan; no data fetch/search.
-& $python -B -m research.vectorized_backtest.v3.torch_backtest.optimize
-
-# Small executable qualification using dummy data and independent CPU accounts.
-& $python -B -m research.vectorized_backtest.v3.torch_backtest.optimize `
-  --synthetic --device cpu --backend eager --population 4 --generations 2
-
-# GPU compilation and replay using dummy data.
-& $python -B -m research.vectorized_backtest.v3.torch_backtest.optimize `
-  --synthetic --device cuda --backend compiled_graph --population 8 --generations 2
-
-# Historical run after providing certified producer paths and explicit dates.
-& $python -B -m research.vectorized_backtest.v3.torch_backtest.optimize `
-  --execute --sessions D:/TradingML/runtimes/vectorized_backtest/v3_sessions.json `
-  --minimum-training-entries 1
-
-# Resume with the identical split, code, seed, budget and objective arguments.
-# Add --resume <printed experiment directory> to the original command.
+$python = 'C:/Users/Mehdi/miniconda3/envs/ml4t/python.exe'
+# On the verified workstation deployment: discover and pin sources first.
+& $python -B -m research.vectorized_backtest.v3.torch_backtest.run_optimization_workstation dates
+& $python -B -m research.vectorized_backtest.v3.torch_backtest.run_optimization_workstation plan
+# Profile a TRAINING session before any full optimization.
+& $python -B -m research.vectorized_backtest.v3.torch_backtest.run_optimization_workstation profile
+# Run with the actual qualification path printed/saved by that profile.
+# Add: run --qualification <profile-job>/qualification.json
+# Reopen a live or completed dashboard without changing worker state:
+# Add: monitor --resume <optimization-job>/experiment
 ```
 
-The sessions JSON has exactly two ordered training dates and at least one
-later, disjoint evaluation date. Each item supplies `manifest`, `ledger`,
-`start`, and `end`. Start/end must have timezone offsets, for example
-`2026-08-18T04:00:00-04:00` to `2026-08-18T09:30:00-04:00`. Producer paths must
-refer to the matching certified source; no fabricated paths are supplied as
-executable defaults. Date checks use New York market dates.
-
-Status lives in the printed experiment directory. `entered` counts submitted ticker acquisition batches; `positions_opened` counts position orders that actually received fills, and `open_positions` counts remaining live positions. The activity constraint uses `positions_opened`, so an unfilled submission cannot satisfy it. `status.json` preserves the
-last complete generation's P&L, drawdown, entries, fills, open quantity and
-exposure during the next generation. Completed status retains finalist metrics too. `winner_1.json` and `winner_2.json` contain
-frozen decodes. `report.json` orders finalists as default, one-session winner,
-two-session winner and includes per-session training/evaluation metrics.
-Failure leaves receipts and checkpoints intact; identical `--resume` is the
-supported recovery path. Source/grammar changes require a new experiment.
+Laptop dummy qualification remains available through `optimize --synthetic
+--device cpu --backend eager --population 4 --generations 2
+--minimum-training-entries 0`; the zero override is allowed only for dummy data.
+Historical training cannot disable its minimum activity constraint.
 
 ## Qualification
 
