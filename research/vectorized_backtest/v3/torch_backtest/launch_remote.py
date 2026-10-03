@@ -80,6 +80,19 @@ def main(argv=None):
         ]
     )
     body64 = base64.b64encode(body.encode("utf-8")).decode()
+    # Task Scheduler may give an interactive task a hidden inherited console.
+    # Start-Process on Windows opens a NEW normal console, while the dispatcher
+    # waits and retains ownership/exit status. No hidden-window flag is used.
+    dispatch = "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            "$child = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File', "
+            + ps_literal('"' + job + '/visible-launch.ps1"')
+            + ") -WindowStyle Normal -Wait -PassThru",
+            "exit $child.ExitCode",
+        ]
+    )
+    dispatch64 = base64.b64encode(dispatch.encode("utf-8")).decode()
     remote = "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
@@ -95,9 +108,13 @@ def main(argv=None):
             "[IO.File]::WriteAllBytes($script, [Convert]::FromBase64String("
             + ps_literal(body64)
             + "))",
+            "$dispatcher = Join-Path $job 'visible-dispatch.ps1'",
+            "[IO.File]::WriteAllBytes($dispatcher, [Convert]::FromBase64String("
+            + ps_literal(dispatch64)
+            + "))",
             "$taskName = " + ps_literal(task),
             "$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited",
-            "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' + [char]34 + $script + [char]34)",
+            "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' + [char]34 + $dispatcher + [char]34)",
             "$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Days 7) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
             "Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null",
             "@{ task=$taskName; checkout=$checkout; job=$job; created_utc=[DateTime]::UtcNow.ToString('o'); transport='ssh+InteractiveToken' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $job 'launch.json') -Encoding UTF8",

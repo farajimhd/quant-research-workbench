@@ -345,6 +345,7 @@ def test_remote_launcher_streams_script_and_keeps_windows_command_bounded(monkey
         and "Interactive" in options["input"]
     )
     assert options["encoding"] == "utf-8"
+    assert "visible-dispatch.ps1" in options["input"]
 
 
 def test_atomic_json_retries_windows_reader_sharing_without_partial_publication(
