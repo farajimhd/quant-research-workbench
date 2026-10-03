@@ -106,7 +106,12 @@ def main(argv=None):
             "Write-Output ('Run: ' + $job)",
         ]
     )
-    encoded = base64.b64encode(remote.encode("utf-16le")).decode()
+    # Windows OpenSSH's cmd.exe has an 8191-character command limit. Send the
+    # whole script on stdin; only this short UTF-8 bootstrap is on the command
+    # line. Execute one script block so a failed preflight cannot continue into
+    # later registration/start statements.
+    bootstrap = "[Console]::InputEncoding=[Text.Encoding]::UTF8; & ([scriptblock]::Create([Console]::In.ReadToEnd()))"
+    encoded = base64.b64encode(bootstrap.encode("utf-16le")).decode()
     ssh = "C:/Windows/System32/OpenSSH/ssh.exe"
     subprocess.run(
         [
@@ -123,6 +128,9 @@ def main(argv=None):
             "-EncodedCommand",
             encoded,
         ],
+        input=remote,
+        text=True,
+        encoding="utf-8",
         check=True,
     )
     return 0

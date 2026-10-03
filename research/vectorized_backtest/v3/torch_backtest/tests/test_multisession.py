@@ -311,3 +311,37 @@ def test_prepared_snapshot_is_atomic_identity_bound_and_corruption_fails(tmp_pat
     (path / "tape.pt").write_bytes((path / "tape.pt").read_bytes() + b"corrupt")
     with pytest.raises(ValueError, match="integrity"):
         load_prepared(path, identity)
+
+
+def test_remote_launcher_streams_script_and_keeps_windows_command_bounded(monkeypatch):
+    from research.vectorized_backtest.v3.torch_backtest import launch_remote
+
+    calls = []
+    monkeypatch.setattr(
+        launch_remote.subprocess,
+        "run",
+        lambda command, **kw: calls.append((command, kw)),
+    )
+    assert (
+        launch_remote.main(
+            [
+                "--checkout",
+                "D:/TradingML/codes/quant-research-workbench-squeeze-v3-test",
+                "--job",
+                "D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v3/optimization_jobs/test",
+                "--command",
+                "profile",
+                "--",
+                "--population",
+                "64",
+            ]
+        )
+        == 0
+    )
+    command, options = calls[0]
+    assert sum(map(len, command)) < 2000
+    assert (
+        "Register-ScheduledTask" in options["input"]
+        and "Interactive" in options["input"]
+    )
+    assert options["encoding"] == "utf-8"
