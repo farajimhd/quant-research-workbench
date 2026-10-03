@@ -12,6 +12,20 @@ def release():
         approved_code_fingerprint="b" * 64, approval_reference="user-approved-app-comparison")
 
 
+def test_real_launch_definition_uses_strategy45_sources_without_strategy1_tokens():
+    from datetime import date, time
+    from src.backend.replay_run_service import ReplayRunDefinition
+    from src.trading_runtime.runtime import RunMode
+    market = dict(token="a" * 64, execution_interval=dict(milliseconds=100))
+    for name in ("history", "identity", "structure", "price", "liquidity"):
+        market[f"strategy_forty_five_{name}_token"] = "b" * 64
+    definition = ReplayRunDefinition(session_date=date(2026,9,3), start_time=time(4),
+        end_time=time(9,30), initial_cash=10000, mode=RunMode.BACKTEST,
+        execution_interval="100ms", market_data_plan=market,
+        configuration_revision=dict(revision_id="strategy-one-45:"+str(uuid4()),payload=release()["payload"]))
+    assert definition.configuration_revision["payload"]["strategy"]["revision"] == 45
+
+
 def test_independent_configuration_roundtrips_all_normalized_nodes():
     envelope = release()
     payload, nodes = verify_envelope(envelope)

@@ -482,7 +482,7 @@ class ReplayRunDefinition:
             if strategy.get("strategy_id") == "squeeze-grid-strategy" and strategy.get("revision") == 45:
                 from src.backend.backtest_strategy_forty_five_configuration import validate_definition_sources
                 validate_definition_sources(self)
-            if strategy.get("strategy_id") == "squeeze-grid-strategy" and strategy.get("revision") == 44:
+            elif strategy.get("strategy_id") == "squeeze-grid-strategy" and strategy.get("revision") == 44:
                 from src.backend.backtest_strategy_forty_four_configuration import validate_definition_sources
                 validate_definition_sources(self)
             elif strategy.get("strategy_id") == "squeeze-grid-strategy" and strategy.get("revision") == 43:

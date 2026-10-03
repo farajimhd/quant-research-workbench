@@ -1,5 +1,6 @@
 """App preflight for the bounded, independent Strategy 45 comparison."""
 from datetime import date, time
+from pipelines.strategy_one.strategy_forty_five_routing_repair import qualified_source_fingerprint
 from contextlib import closing
 
 from .backtest_strategy_forty_five_configuration import certify_configuration
@@ -37,7 +38,7 @@ def preflight(*, anchor_date, session_count, initial_cash, start_time, end_time,
     def code():
         manifest = configuration_revision["payload"]["strategy"]["numbered_release"]
         current = backend_source_fingerprint()
-        if current != LOADED_BACKEND_FINGERPRINT or current != manifest["approved_code_fingerprint"]:
+        if current != LOADED_BACKEND_FINGERPRINT or qualified_source_fingerprint(proof_digest="d50415070edef259175c250b0aef6d70b72f19de0641eb8174a7bce4c0a2b01d") != manifest["approved_code_fingerprint"]:
             raise RuntimeError("Strategy 45 approved source differs from the loaded backend; deploy and restart the approved source")
         return certify_projection()
     check("runtime_versions", code)
