@@ -336,6 +336,12 @@ def _assemble_v4_writer_lane(
     source_cursor: str = "start",
 ) -> FixedJournalAssembly:
     journal_type, publisher_type = BacktestMemoryJournal, BacktestTypedJournalPublisher
+    if (expected_config.get("strategy_id"), expected_config.get("strategy_revision")) == ("squeeze-grid-strategy", 44):
+        from .backtest_strategy_forty_four_journal import StrategyFortyFourJournal
+        from .backtest_strategy_forty_four_publisher import StrategyFortyFourPublisher
+        if initial_sequence or batch_size > 512:
+            raise ValueError("Strategy 44 requires a new bounded 512-event writer lane")
+        journal_type, publisher_type = StrategyFortyFourJournal, StrategyFortyFourPublisher
     if (expected_config.get("strategy_id"), expected_config.get("strategy_revision")) == ("squeeze-grid-strategy", 43):
         from .backtest_strategy_forty_three_journal import StrategyFortyThreeJournal
         from .backtest_strategy_forty_three_publisher import StrategyFortyThreePublisher

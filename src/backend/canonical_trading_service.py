@@ -195,6 +195,7 @@ def trading_state_payload(
                                    if k in ('execution_role', 'fill_role', 'action', 'reason', 'reason_code')}
         }) for row in presentation.orders))
     payload = presentation.to_dict()
+    payload.pop("leg_order_ownership",None)
     if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}:
         _compact_historical_broker_projection(payload)
     metrics = portfolio_metrics(payload.get("account_values", []), payload.get("ledger", []), payload.get("positions", []))
@@ -210,6 +211,11 @@ def trading_state_payload(
         snapshot.orders,
         snapshot.positions,
     )
+    leg_episodes = None
+    if snapshot.executions and all((e.strategy_id,e.strategy_revision) == ("squeeze-grid-strategy",44) for e in snapshot.executions):
+        from .backtest_strategy_forty_four_performance import derive_runtime_leg_positions
+        leg_episodes, position_lifecycles = derive_runtime_leg_positions(snapshot)
+        payload["portfolio"]["position_count"] = sum(row["status"] == "open" for row in position_lifecycles)
     from src.trading_runtime.protection_timeline import attach_protection_timelines
     payload['protection_unassigned_count'] = attach_protection_timelines(
         position_lifecycles, snapshot.protection_events, snapshot.executions, protection_as_of or snapshot.as_of)
@@ -259,6 +265,8 @@ def trading_state_payload(
         if snapshot.executions
         else episodes_from_round_trips(snapshot.closed_trades)
     )
+    if leg_episodes is not None:
+        episodes = leg_episodes
     report = build_performance_report(episodes, snapshot.executions, snapshot.orders)
     payload["performance_snapshot"] = performance_snapshot(snapshot, metrics, episodes, report=report, extrema=performance_extrema)
     payload["performance_journal"] = report

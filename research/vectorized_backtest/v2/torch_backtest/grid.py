@@ -5,7 +5,7 @@ from itertools import combinations, product
 import json
 import math
 
-VERSION = "squeeze-grid-v2-2"
+VERSION = "squeeze-grid-v2-3"
 MACD_SECONDS = (1, 5, 10, 30)
 MAX_POSITIONS = 15
 
@@ -75,7 +75,7 @@ class Settings:
     minimum_trail_fraction: float = 0.01
     trail_up_fraction: float = 0.03
     trail_stop_fraction: float = 0.01
-    entry_deadline_seconds: int = 5
+    entry_cutoff_lead_seconds: int = 300
     maximum_signal_age_seconds: int = 57600
     maximum_quote_age_seconds: float = 1.0
     maximum_entry_drift_fraction: float = 0.01
@@ -86,7 +86,7 @@ class Settings:
     replacement_margin: float = 0.15
     replacement_confirm_seconds: int = 3
     replacement_cooldown_seconds: int = 30
-    terminal_exit_lead_seconds: int = 10
+    terminal_exit_lead_seconds: int = 60
     drawdown_weight: float = 0.5
 
     def validate(self):
@@ -94,7 +94,7 @@ class Settings:
                or v < 0 for v in asdict(self).values()):
             raise ValueError("Settings must be finite nonnegative numbers")
         integer_fields = ("clock_seconds", "minimum_trade_count", "adaptive_window",
-                          "entry_deadline_seconds", "maximum_signal_age_seconds",
+                          "entry_cutoff_lead_seconds", "maximum_signal_age_seconds",
                           "retest_timeout_seconds", "swing_left_seconds", "swing_right_seconds",
                           "replacement_confirm_seconds", "replacement_cooldown_seconds",
                           "terminal_exit_lead_seconds")
@@ -107,7 +107,9 @@ class Settings:
                 and self.trail_up_fraction > 0 and self.trail_stop_fraction > 0
                 and self.minimum_trail_fraction > 0 and self.adaptive_multiplier > 0):
             raise ValueError("Invalid financial/trailing settings")
-        if min(self.entry_deadline_seconds, self.maximum_signal_age_seconds,
+        if self.entry_cutoff_lead_seconds <= self.terminal_exit_lead_seconds:
+            raise ValueError("Entry cutoff must precede terminal liquidation")
+        if min(self.entry_cutoff_lead_seconds, self.maximum_signal_age_seconds,
                self.retest_timeout_seconds, self.swing_left_seconds, self.swing_right_seconds,
                self.replacement_confirm_seconds, self.terminal_exit_lead_seconds) < 1:
             raise ValueError("Durations/history must be positive")
@@ -138,7 +140,7 @@ def grid_manifest(settings=Settings()):
     value = {"version": VERSION, "settings": asdict(settings),
              "implementation_sha256": code_hash(),
              "candidate_count": 4320, "candidates": [asdict(c) for c in build_grid()],
-             "execution_contract": "completed-1s-next-interval-quote-bound-v2",
+             "execution_contract": "completed-1s-next-interval-target-priority-persistent-batch-v2-3",
              "capital": "cash-after-pending-buys-and-protective-fee-reserves-one-batch-ranked-tickers",
              "structural": "entry-frozen-distinct-resistance-lower-minus-tick",
              "rotation": "one-weakest-position-exit-then-revalidate-new-batch"}

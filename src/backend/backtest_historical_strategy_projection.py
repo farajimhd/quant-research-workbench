@@ -74,6 +74,11 @@ def _verify_lineage():
 
 
 def historical_strategy_tree(tree: ast.Module, relative: str) -> ast.Module:
+    extension = Path(__file__).with_name("backtest_strategy_forty_four_historical_projection.py")
+    if sha256(ast.unparse(ast.parse(extension.read_text(encoding="utf-8"))).encode()).hexdigest() != "e9f3b891f7295cc59f62ce52029814e405af9a1f6469e1c968a8cb2cd94da4eb":
+        raise ValueError("Strategy 44 historical dispatch differs from reviewed source")
+    from .backtest_strategy_forty_four_historical_projection import strip_strategy44_extensions
+    tree = strip_strategy44_extensions(tree)
     relative = relative.replace("\\", "/").removeprefix("src/")
     if relative not in {"backend/backtest_v4_history.py", "backend/backtest_v4_saved_review.py", "pipelines/strategy_one/configuration_publisher.py",
                         "backend/replay_run_service.py", "backend/backtest_strategy_one_configuration.py",

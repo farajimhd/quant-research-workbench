@@ -34,6 +34,16 @@ def proportional_fill(wanted, capacity):
     return (allocated - prior).to(torch.int64)
 
 
+def priority_fill(wanted, capacity):
+    """Complete nearer target slots first, sharing integer capacity exactly.
+
+    Slots are frozen in ascending target distance at submission. Integer
+    cumulative demand avoids sorting, host reads and loops in the GPU clock.
+    """
+    prior = wanted.cumsum(-1) - wanted
+    return torch.minimum(wanted, (capacity[..., None] - prior).clamp_min(0))
+
+
 class SqueezeRunner:
     def __init__(self, tape, candidates, settings=Settings(), *, backend="eager",
                  maximum_state_gib=2.0, maximum_fills=16384, graph_steps=16):
@@ -100,6 +110,7 @@ class SqueezeRunner:
         state("attention_ring", (10, self.n), value=float("nan"))
         state("previous_close", (self.n,), value=float("nan"))
         state("swing_low", (self.n,), value=float("nan"))
+        state("setup_stop", (self.b, self.n))
         self.rank = torch.arange(1, 16, device=tape.device, dtype=torch.float64)[None, None]
         self.ticker_axis = torch.arange(self.n, device=tape.device)[None]
         self.slot_axis = torch.arange(self.n * 15, device=tape.device)[None]
@@ -215,7 +226,7 @@ class SqueezeRunner:
         allowed &= (buy_price > 0) & (buy_price <= self.buy_limit) & (self.exit_kind == 0)
         wanted = torch.where(allowed, self.remaining, 0)
         # All orders in one account share the SAME interval volume budget.
-        bought = proportional_fill(wanted, (capacity - sold.sum(-1)).clamp_min(0))
+        bought = priority_fill(wanted, (capacity - sold.sum(-1)).clamp_min(0))
         cumulative = self.buy_filled + bought
         buy_fee = torch.where(bought > 0, torch.maximum(torch.full_like(self.buy_paid, s.minimum_order_fee),
                               cumulative.to(torch.float64) * s.fee_per_share) - self.buy_paid, 0)
@@ -250,6 +261,12 @@ class SqueezeRunner:
         self.financial_error.logical_or_((active & (~torch.isfinite(low) | ~torch.isfinite(high))[None, :, None]).any((1, 2)))
         stop_hit = active & (low[None, :, None] <= self.stop)
         target_hit = active & (high[None, :, None] >= self.target)
+        # Completed evidence invalidates outstanding acquisitions prospectively.
+        # It cannot retrospectively suppress fills in the interval just replayed.
+        invalid_setup = (observed[None] & (low[None] <= self.setup_stop))[..., None]
+        cancelled = torch.where(invalid_setup, self.remaining, 0)
+        self.exit_cancelled_entry_shares.add_(cancelled.sum((1, 2)))
+        self.remaining.sub_(cancelled)
         # Ambiguous completed bars use stop-first; an existing target can become
         # a stop, which has its own cumulative per-order fee history.
         kind = torch.where(target_hit & (self.exit_kind == 0), 1, self.exit_kind)
@@ -300,7 +317,8 @@ class SqueezeRunner:
         basic &= torch.isfinite(low) & torch.isfinite(high)
         basic &= (notional >= s.minimum_dollar_volume) & (trades >= s.minimum_trade_count)
         terminal = now >= self.end - s.terminal_exit_lead_seconds
-        ready = gate & basic[None] & watching & ~terminal
+        entry_cutoff = now >= self.end - s.entry_cutoff_lead_seconds
+        ready = gate & basic[None] & watching & ~entry_cutoff
         # Shared market geometry is selected once per tick, not once per B.
         if self.tape.structural_targets is not None:
             # [N,15] already selected causally once per ticker/second, shared by B candidates.
@@ -368,9 +386,11 @@ class SqueezeRunner:
         self.remaining.copy_(torch.where(order_mask, desired, self.remaining))
         self.buy_limit.copy_(torch.where(order_mask, limit[None, :, None], self.buy_limit))
         self.buy_submitted.copy_(torch.where(order_mask, now, self.buy_submitted))
-        self.buy_deadline.copy_(torch.where(order_mask, now + s.entry_deadline_seconds, self.buy_deadline))
+        self.buy_deadline.copy_(torch.where(order_mask,
+            self.end - s.entry_cutoff_lead_seconds, self.buy_deadline))
         self.stop.copy_(torch.where(order_mask, initial[..., None], self.stop))
         self.initial_stop.copy_(torch.where(order_mask, initial[..., None], self.initial_stop))
+        self.setup_stop.copy_(torch.where(enter, initial, self.setup_stop))
         self.target.copy_(torch.where(order_mask, target, self.target))
         self.entry_reference.copy_(torch.where(order_mask, ask[None, :, None], self.entry_reference))
         self.used.logical_or_(enter)

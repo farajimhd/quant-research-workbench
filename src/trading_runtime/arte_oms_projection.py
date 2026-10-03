@@ -732,6 +732,16 @@ def reconstruct_strategy_one_oms_lineage(
     if (isinstance(getattr(state, "group", None), dict)
             and state.group.get("strategy_id") == "squeeze-grid-strategy"
             and type(state.group.get("strategy_revision")) is int
+            and state.group["strategy_revision"] == 44):
+        from .strategy_forty_four_lineage import reconstruct_leg_orders
+        if any(row is not None for row in (followthrough_row, profit_giveback_row,
+                                          confirmed_ah_row, liquidity_fade_row)):
+            raise ValueError("Strategy 44 cannot inherit another strategy's exit witness")
+        return reconstruct_leg_orders(state, source_intent, protection_history,
+            admission_reservation=admission_reservation, admission_decision=admission_decision)
+    if (isinstance(getattr(state, "group", None), dict)
+            and state.group.get("strategy_id") == "squeeze-grid-strategy"
+            and type(state.group.get("strategy_revision")) is int
             and state.group["strategy_revision"] == 43):
         from .strategy_forty_three_lineage import reconstruct_leg_orders
         if any(row is not None for row in (followthrough_row, profit_giveback_row,

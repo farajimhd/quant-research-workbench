@@ -11,6 +11,12 @@ import torch
 
 from research.vectorized_backtest.v2.torch_backtest import Candidate, SqueezeRunner, Settings
 from research.vectorized_backtest.v2.torch_backtest.fixtures import synthetic_tape
+
+# Explicit short-session policy; historical defaults remain 300s / 60s.
+_BaseRunner = SqueezeRunner
+def SqueezeRunner(tape, candidates, settings=Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), **kwargs):
+    return _BaseRunner(tape, candidates, settings, **kwargs)
+
 from research.vectorized_backtest.v2.torch_backtest.prepare import _align, dependencies, liquidity_sql
 from research.vectorized_backtest.v2.torch_backtest.run_grid import export_ledger, export_orders
 from research.vectorized_backtest.v2.torch_backtest.runtime import require_runtime
@@ -23,6 +29,7 @@ def test_synthetic_launcher_roundtrip_and_verified_resume(tmp_path, monkeypatch)
     manifest = {"candidate_count": 2, "approval_digest": "synthetic-test-only"}
     monkeypatch.setattr(launch, "build_grid", lambda: list(grid))
     monkeypatch.setattr(launch, "grid_manifest", lambda settings: manifest)
+    monkeypatch.setattr(launch, "Settings", lambda **kwargs: Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10, **kwargs))
     calls = []
     def prepare(*args, **kwargs):
         calls.append(True)
@@ -116,7 +123,7 @@ def test_terminal_residual_is_invalid_not_synthetic_liquidation():
     tape.volume[79:] = 0
     tape.notional[79:] = 0
     runner = SqueezeRunner(tape, [Candidate("signal", positions=5)],
-                            replace(Settings(), target_step_fraction=.25))
+                            replace(Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), target_step_fraction=.25))
     result = runner.run()
     assert result["open_quantity"][0] > 0
     assert result["terminal_valid"].tolist() == [False]
@@ -127,7 +134,7 @@ def test_adaptive_trail_uses_post_entry_window_and_never_loosens():
     prices = [10.0] * 9 + [10.05 + i * .01 for i in range(31)]
     tape = synthetic_tape(prices)
     runner = SqueezeRunner(tape, [Candidate("signal", positions=5, trailing="adaptive")],
-                            replace(Settings(), target_step_fraction=.25))
+                            replace(Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), target_step_fraction=.25))
     runner.run(steps=18)
     original = runner.initial_stop.clone()
     assert torch.equal(original, runner.stop)

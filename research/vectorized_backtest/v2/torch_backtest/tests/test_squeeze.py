@@ -9,6 +9,12 @@ import torch
 
 from research.vectorized_backtest.v2.torch_backtest import Candidate, Settings, SqueezeRunner, build_grid, grid_manifest
 from research.vectorized_backtest.v2.torch_backtest.fixtures import synthetic_tape
+
+# Explicit short-session policy; historical defaults remain 300s / 60s.
+_BaseRunner = SqueezeRunner
+def SqueezeRunner(tape, candidates, settings=Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), **kwargs):
+    return _BaseRunner(tape, candidates, settings, **kwargs)
+
 from research.vectorized_backtest.v2.torch_backtest.runner import proportional_fill
 from research.vectorized_backtest.v2.torch_backtest.run_grid import approval_check, main
 
@@ -36,7 +42,7 @@ def test_grid_exact_unique_and_approval_binds_settings():
     assert len({(c.macd_mask, c.macd_all) for c in grid if c.entry == "macd"}) == 26
     for m in (5, 10, 15):
         assert sum(c.positions == m for c in grid) == 1440
-    assert grid_manifest()["approval_digest"] != grid_manifest(replace(Settings(), minimum_trade_count=6))["approval_digest"]
+    assert grid_manifest()["approval_digest"] != grid_manifest(replace(Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), minimum_trade_count=6))["approval_digest"]
     with pytest.raises(ValueError, match="explicit approval"):
         approval_check(None, grid_manifest())
     with pytest.raises(ValueError, match="explicit approval"):
@@ -143,13 +149,15 @@ def test_capacity_remainder_partial_fills_and_per_order_commission():
     tape = synthetic_tape(prices=torch.full((90, 1), 10.0))
     tape.volume[:] = 10
     tape.notional[:] = 100
-    runner = SqueezeRunner(tape, [candidate()], replace(Settings(), participation=1.0, minimum_dollar_volume=100))
+    runner = SqueezeRunner(tape, [candidate()], replace(Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), participation=1.0, minimum_dollar_volume=100))
     runner.run(steps=10)
     assert runner.quantity.sum() == 20
     assert runner.remaining.sum() > 0
-    assert runner.fees.tolist() == [5]  # second partial fills do not pay five new minima.
+    assert runner.fees.tolist() == [1]  # Only nearest target is filled so far.
     runner.run(reset=False, steps=4)
-    assert runner.remaining.sum() == 0  # deadline expires; no replacement entry order.
+    assert runner.remaining.sum() > 0  # Still working beyond the former five-second deadline.
+    runner.run(reset=False, steps=56)
+    assert runner.remaining.sum() == 0  # Entry cutoff cancels the unfilled remainder.
 
 
 def test_missing_liquidity_cannot_fill_and_does_not_fabricate_cash():
@@ -157,7 +165,7 @@ def test_missing_liquidity_cannot_fill_and_does_not_fabricate_cash():
     tape.volume[:] = 0
     tape.notional[:] = 0
     tape.fill_price[:] = float("nan")
-    runner = SqueezeRunner(tape, [candidate()], replace(Settings(), minimum_dollar_volume=0))
+    runner = SqueezeRunner(tape, [candidate()], replace(Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), minimum_dollar_volume=0))
     result = runner.run()
     assert result["fill_count"].tolist() == [0]
     assert result["cash"].tolist() == [10000]
@@ -241,7 +249,7 @@ def test_structural_targets_frozen_and_insufficient_levels_reject():
 
 def test_step_trail_raises_one_percent_per_three_percent_and_never_lowers():
     tape = synthetic_tape([10.0] * 9 + [10.4, 10.0] + [10.0] * 30)
-    runner = SqueezeRunner(tape, [candidate()], replace(Settings(), target_step_fraction=0.25))
+    runner = SqueezeRunner(tape, [candidate()], replace(Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), target_step_fraction=0.25))
     runner.run(steps=9)
     original = runner.stop.clone()
     runner.run(reset=False, steps=1)
@@ -273,7 +281,7 @@ def test_rotation_waits_for_individual_exit_and_revalidates_new_batch():
     tape = synthetic_tape(prices)
     tape.admission[:] = torch.tensor([8, 35])
     runner = SqueezeRunner(tape, [Candidate("macd", macd_mask=1, positions=5, replacement=True)],
-                            replace(Settings(), target_step_fraction=.25))
+                            replace(Settings(entry_cutoff_lead_seconds=20, terminal_exit_lead_seconds=10), target_step_fraction=.25))
     result = runner.run()
     assert result["rotations"][0] >= 1
     rows = runner.ledger[0, :runner.fill_count[0]]
@@ -331,3 +339,36 @@ def test_cpu_cuda_captured_ledger_parity():
     for key in ("cash", "fees", "drawdown", "entered", "fill_count"):
         assert torch.allclose(reference[key], observed[key].cpu(), atol=1e-7, rtol=0)
     assert torch.allclose(cpu.ledger, gpu.ledger.cpu(), atol=1e-7, rtol=0)
+
+
+def test_target_priority_integer_capacity_and_large_axis():
+    from research.vectorized_backtest.v2.torch_backtest.runner import priority_fill
+    wanted = torch.tensor([[[5,7,9],[0,7,9]]])
+    assert priority_fill(wanted,torch.tensor([[8,4]])).tolist() == [[[5,3,0],[0,4,0]]]
+    generator = torch.Generator().manual_seed(44)
+    demand = torch.randint(0,1000,(64,833,15),generator=generator)
+    capacity = torch.randint(0,10000,(64,833),generator=generator)
+    filled = priority_fill(demand,capacity)
+    assert torch.equal(filled.sum(-1),torch.minimum(demand.sum(-1),capacity))
+    assert bool(((filled >= 0) & (filled <= demand)).all())
+    # No farther slot fills while an eligible nearer slot remains incomplete.
+    prior_missing = (demand - filled).cumsum(-1) - (demand - filled)
+    assert not bool(((prior_missing > 0) & (filled > 0)).any())
+
+
+def test_initial_stop_breach_cancels_batch_remainder_after_completed_interval():
+    tape = synthetic_tape(prices=torch.full((90,1),10.))
+    tape.volume[:] = 10; tape.notional[:] = 100
+    settings = Settings(entry_cutoff_lead_seconds=20,terminal_exit_lead_seconds=10,
+        participation=1.,minimum_dollar_volume=100)
+    runner = SqueezeRunner(tape,[candidate()],settings)
+    runner.run(steps=10)
+    assert runner.quantity[0,0,0] == 20 and runner.remaining.sum() > 0
+    tape.low[10,0] = 9.
+    runner.run(reset=False,steps=1)
+    assert runner.remaining.sum() == 0
+    assert runner.quantity[0,0,0] == 30  # Current interval fills precede its new invalidation evidence.
+    assert runner.exit_cancelled_entry_shares.item() > 0
+    runner.run(reset=False,steps=1)
+    assert runner.buy_filled.sum() == 30
+    assert runner.used.item() and runner.entered.item() == 1

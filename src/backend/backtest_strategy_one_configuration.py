@@ -56,6 +56,9 @@ class CertifiedStrategyOneConfiguration:
 
 def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> CertifiedStrategyOneConfiguration:
     """Exactly one coverage-last release may own each supported immutable number."""
+    if type(strategy_number) is int and strategy_number == 44:
+        from .backtest_strategy_forty_four_configuration import certify_configuration
+        return certify_configuration(client)
     if type(strategy_number) is int and strategy_number == 43:
         from .backtest_strategy_forty_three_configuration import certify_configuration
         return certify_configuration(client)
@@ -230,6 +233,10 @@ def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
     """Route legacy separately; later numbers require their complete installed seal."""
     strategy = dict(configuration.get("strategy") or {})
     number = strategy.get("strategy_number")
+    if type(number) is int and number == 44:
+        from src.trading_runtime.strategy_forty_four_release import verify_manifest
+        verify_manifest(strategy)
+        return True
     if type(number) is int and number == 43:
         from src.trading_runtime.strategy_forty_three_release import verify_manifest
         verify_manifest(strategy)
@@ -344,7 +351,7 @@ def selected_numbered_revision(*, revision_id: str = "", run_plan_id: str = "",
         if client is not None:
             kwargs["client"] = client
         return selected_strategy_one_revision(**kwargs)
-    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|43):[0-9a-fA-F-]{36}", revision_id):
+    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|43|44):[0-9a-fA-F-]{36}", revision_id):
         raise ValueError("Unknown immutable numbered configuration identity")
     if client is None:
         from src.backend.backtest_market_data import readonly_clickhouse_client

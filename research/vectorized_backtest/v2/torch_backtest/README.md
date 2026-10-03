@@ -46,7 +46,7 @@ No numeric threshold tuning is performed by this first grid.
 | Cash allocation | all free cash divided among M positions; residual rounding remains cash |
 | Competing tickers | highest current opportunity score, stable ticker order for ties; one new batch per account/second |
 | Acquisition | one submission batch/ticker/session; no additions or second entry batch |
-| Acquisition limit/deadline | proposal ask +1%; unfilled remainder expires after 5s |
+| Acquisition limit/deadline | proposal ask +1%; pending until entry cutoff, no resubmission |
 | Minimum size | all M positions must have ≥1 share; otherwise no batch is submitted |
 | Fees | $0.005/share, $1 minimum per distinct order; partial fills accumulate once |
 | Participation | 10% of eligible interval volume, shared across all orders and both sides |
@@ -59,7 +59,7 @@ No numeric threshold tuning is performed by this first grid.
 | Percentage trail | every 3% rise earns 1% of entry-price stop increase |
 | Stop ratchet | upward only; amendments after interval matching, capped below current fresh bid |
 | Same-bar stop/target evidence | old position only; stop-first, exit eligible in following interval |
-| Final liquidation | queue market-style exit 10s before session end; no invented final fill |
+| Final liquidation | queue market-style exit 60s before session end; no invented final fill |
 | Residual exposure | invalid candidate, null fitness, explicit quantity/count; never silently dropped |
 | Objective | (net P&L −0.5 × maximum sampled drawdown)/initial cash |
 
@@ -328,3 +328,26 @@ is discovered locally at `D:/TradingML/secrets/backtest_v3_read.env` only when
 explicit reader environment configuration is absent. Workstation help/import,
 date inventory and synthetic GPU checks are validation; historical experiments
 remain for the user to start.
+
+
+## Revision 3 persistent target-priority batches
+
+The grid remains 4,320 configurations. All M fixed-quantity parents are submitted
+once with cash and conservative fee cover reserved for the complete batch.
+Entry capacity completes nearer target ordinals before farther ones; integer
+cumulative demand keeps the GPU clock vectorized. Partial quantities remain
+working at the original price cap until the session entry cutoff. Completed
+price evidence at or below the frozen original setup stop cancels the remaining
+acquisitions prospectively. Existing protective or rotation exits still cancel
+their own pending parent. No rejection, cancellation or exit unlocks the ticker.
+
+Defaults are an entry cutoff five minutes before session end and liquidation
+one minute before session end. They are explicit Settings fields, with entry
+cutoff required to precede liquidation. They improve the opportunity to close,
+but do not guarantee sufficient executable liquidity. Remaining holdings fail
+terminal qualification. Brackets activate on partial acquisition; a newly
+activated bracket cannot trigger retrospectively in its parent's fill interval.
+
+Revision 3 changes the approval and resume digest. Previous revision 2 results
+remain preserved and cannot be mixed into a revision 3 campaign. No new full-grid
+historical experiment has been run as part of this implementation.
