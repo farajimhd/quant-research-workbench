@@ -85,6 +85,9 @@ class Ledger:
             ticker TEXT NOT NULL, attempt_id TEXT NOT NULL, mode INTEGER NOT NULL,
             predecessor_date TEXT NOT NULL, prior_build_id TEXT NOT NULL, prior_state_hash TEXT NOT NULL,
             PRIMARY KEY (build_id,session_date,ticker));
+          CREATE INDEX IF NOT EXISTS units_predecessor_v1
+            ON units(session_date,ticker,build_id)
+            WHERE stage='technical' AND status='complete';
         ''')
 
     def close(self):

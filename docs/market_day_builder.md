@@ -241,6 +241,14 @@ client timings, recent query IDs, and available query-log read/write/memory
 measurements. Query-log publication is asynchronous; missing metrics are
 explicitly marked unavailable. A controller code change produces a new build
 identity, so stages from a prior controller revision do not silently resume.
+Explicitly allowlisted resume-only revisions may retain the exact build ID when
+all other definition fields, including calculation source, match. Resume checks
+retain exact source/output hashes, unique keys, attempts and predecessor lineage.
+Source aggregation is bounded to four sessions per ticker; certified output
+hashes and final states are loaded in ticker batches. These caches last only for
+one ticker in one invocation. The SQLite ledger has a partial date/ticker index
+for completed technical predecessors, avoiding a full ledger scan per session.
+The index changes no receipt rows and is safe to create again after interruption.
 
 ## Validation
 
