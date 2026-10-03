@@ -23,6 +23,7 @@ from pipelines.strategy_one.strategy_forty_five_liquidity_publication import pub
 from research.mlops.clickhouse import ClickHouseHttpClient
 from scripts.clickhouse.provision_strategy_forty_five_liquidity import credential, grant_set, GRANTS, PRINCIPAL, URL
 from scripts.clickhouse.publish_strategy_forty_three_v7 import BUILD
+from scripts.clickhouse.install_market_day_certificate_layout import workstation_clickhouse_url
 
 
 def run(*, session, build, apply):
@@ -46,10 +47,10 @@ def run(*, session, build, apply):
         artifact = root / "strategy45" / "liquidity-publication" / uuid4().hex
         artifact.mkdir(parents=True, exist_ok=False)
         completed = []
-        with closing(ClickHouseHttpClient(URL, PRINCIPAL, credential(account_exists=True), persistent=True)) as writer:
+        with closing(ClickHouseHttpClient(workstation_clickhouse_url(), PRINCIPAL, credential(account_exists=True), persistent=True)) as writer:
             if writer.execute("SELECT currentUser()").strip() != PRINCIPAL or grant_set(writer) != GRANTS:
                 raise RuntimeError("Strategy 45 producer authority differs")
-            verify_tables(writer)
+            verify_tables(reader)
             with closing(open_workstation_keeper_session()) as owner:
                 for ticker in plan.tickers:
                     print(f"Windows | completed {len(completed)}/{len(plan.tickers)} | active {ticker} | queued {len(plan.tickers)-len(completed)-1} | skipped 0 | retried 0 | failed 0 | {monotonic()-started:.1f}s", flush=True)
@@ -67,7 +68,7 @@ def run(*, session, build, apply):
                         pending=len(plan.tickers)-len(completed)), indent=2), encoding="utf-8")
                     temporary.replace(artifact / "progress.json")
             certificate = certify_liquidity(plan, reader)
-            verify_tables(writer)
+            verify_tables(reader)
             (artifact / "certificate.json").write_text(json.dumps(dict(token=certificate.token,
                 completed=len(completed), elapsed_seconds=monotonic()-started), indent=2), encoding="utf-8")
             print(f"COMPLETE | {len(completed)} certified units | receipt {artifact}", flush=True)
