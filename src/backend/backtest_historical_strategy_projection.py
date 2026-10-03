@@ -75,13 +75,30 @@ def _verify_lineage():
 
 def historical_strategy_tree(tree: ast.Module, relative: str) -> ast.Module:
     relative = relative.replace("\\", "/").removeprefix("src/")
-    if relative not in {"backend/backtest_v4_saved_review.py", "pipelines/strategy_one/configuration_publisher.py",
+    if relative not in {"backend/backtest_v4_history.py", "backend/backtest_v4_saved_review.py", "pipelines/strategy_one/configuration_publisher.py",
                         "backend/replay_run_service.py", "backend/backtest_strategy_one_configuration.py",
                         "trading_runtime/numbered_fixed_strategy.py",
                         "trading_runtime/arte_journal_commit_v4.py",
                         "trading_runtime/arte_oms_projection.py"}:
         return tree
     result = deepcopy(tree)
+    if relative == "backend/backtest_v4_history.py":
+        original = "          AND c.strategy_id={strategy_id} AND c.strategy_revision IN ({revisions})"
+        extension = "          AND ((c.strategy_id={strategy_id} AND c.strategy_revision IN ({revisions}))\n               OR (c.strategy_id='squeeze-grid-strategy' AND c.strategy_revision=43))"
+        changed = 0
+        for node in ast.walk(result):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and extension in node.value:
+                node.value = node.value.replace(extension, original)
+                changed += 1
+            if isinstance(node, ast.Dict):
+                for index, key in enumerate(node.keys):
+                    if (isinstance(key, ast.Constant) and key.value == "strategy_id"
+                            and ast.unparse(node.values[index]) == "str(row['strategy_id'])"):
+                        node.values[index] = ast.Name(id="STRATEGY_ID", ctx=ast.Load())
+                        changed += 1
+        if changed != 2:
+            raise ValueError("Strategy 43 history identity extension changed")
+        return result
     if relative == "backend/backtest_v4_saved_review.py":
         expected = ast.parse('''
 if (context["strategy_id"], int(context["strategy_revision"])) == ("squeeze-grid-strategy", 43):

@@ -9,6 +9,9 @@ APPROVED_REPAIRS = frozenset({
     # 41222b767 release executor -> bounded native callback-suffix fence repair.
     ("a78ffa266194181d2139744edf33aa57c07d9962a62d73c948e07f659e47c041",
      "eae66f989897873fa746e7524a739db5c6d5a6b3a0c7de6ff6a873cd2fc0b1ff"),
+    # Same fence repair plus independent Strategy 43 Recent Backtests identity.
+    ("a78ffa266194181d2139744edf33aa57c07d9962a62d73c948e07f659e47c041",
+     "e2a7db930f6de27ebc3b978174b4cd49467da4dc12856fc7823935fd9b67309a"),
 })
 
 

@@ -116,7 +116,7 @@ secrets. The user approved this scope after asking what the tables contain.
 Application succeeded on the isolated workstation deployment of pushed commit
 `5dcfd357050c84bedccd29ddf7a02b12a9f82727`. All three SSD layouts and the
 exact six producer privileges were verified; the real Backtest reader can
-SELECT all three tables. They currently contain zero rows.
+SELECT all three tables. The subsequently published products are independently certified.
 
 A producer-only entry-point V7 witness prototype streams the previous certified
 checkpoint through the entry boundary using the native FixedV7Stream. It is not
@@ -165,9 +165,18 @@ The in-process history cache requires unchanged schema, SSD placement and exact
 immutable-part checksums; changes force full child re-audit. Cold readback additionally
 checks batch completeness, causal geometry, decreasing quantities and producer references.
 
-Remaining: publish the configuration, qualify
-the complete real app route and cold journal review, then compare the actual financial
-results. The source reader requires independently
+The release is published and certified. Native run `f0d31e83-5c39-4377-abf8-9ee275d2caa8` completed
+September 3 full premarket and passed independent cold review at terminal sequence 2264.
+Native P&L -$446.13, fees $170.37, 17,037 acquired shares and 77 fills;
+Torch P&L -$371.27, fees $163.87, 16,387 shares and 390 fills. Both trade GELS/MIMI;
+zero native holdings and working orders remain. Native 100ms quote/price-level matching
+and Torch 1s VWAP plus/minus spread are different execution models.
+The first run failed on journal-suffix fencing; bounded drain repair 8732e361e
+retains strict fence equality and is qualified by an exact executor fingerprint pair
+without modifying the immutable release. All 89 Strategy43 checks pass.
+Report: D:/TradingML/runtimes/strategy43/comparison/3649dda277b64b2aabeac122029ce28b/COMPARISON.md.
+Wider sessions and profitability remain unqualified. The source reader requires independently
 certified identity and causal V7 plans, not arbitrary strings as authority.
 Do not append 43 to the old executor allowlists or inherit its trading rules.
-Strategy 43 is not yet selectable, and no app historical run was performed.
+Strategy 43 is published; the laptop backend now runs under the unified manager.
+The qualified launch remains September 3 full premarket, $10,000 and complete population.

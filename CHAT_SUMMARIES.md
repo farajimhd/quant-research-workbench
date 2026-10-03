@@ -9,7 +9,7 @@ each year.
 
 ### [2026-10-02 - Squeeze Torch v2 and workstation launcher](docs/codex/chat-summaries/2026/CHAT-20261002-UNKNOWN-squeeze-torch-v2-workstation.md)
 
-TASK-0221. The corrected September 3 Torch grid completed 4,320 configurations; all 1,046 eligible flat configurations lost. Its first winner is being implemented as independent app Strategy43 with 1s decisions/native 100ms fills. All 833 causal V7 and dense history units now certify after missing-only preparation and exact Float64 publication. Independent configuration, app preflight/controller and bounded native session runner are implemented; 119 focused/regression tests pass, plus four corrected admission/controller checks. User authorized same-session execution and comparison after readiness. Real deployment/input qualification, immutable release publication, financial execution and cold comparison remain; no app financial run occurred.
+TASK-0221. Corrected September 3 Torch grid completed 4,320 configurations; all 1,046 eligible configurations lost. Independent Strategy43 is published with 1s decisions/native 100ms fills. All 833 causal sources certify. After a bounded journal-suffix fence repair, native run f0d31e83-5c39-4377-abf8-9ee275d2caa8 completed and passed cold review: -$446.13 P&L, $170.37 fees, 17,037 shares, 77 fills and zero exposure. Torch: -$371.27, $163.87 fees, 16,387 shares, 390 fills. Both trade GELS/MIMI. Execution models differ; this is not exact parity or profitability evidence. All 89 Strategy43 checks pass. Laptop backend runs under the unified manager. Wider dates remain unqualified.
 
 ### [2026-09-28 - BarGPT August evaluation and serving-capacity diagnosis](docs/codex/chat-summaries/2026/CHAT-20260928-UNKNOWN-bargpt-august-evaluation.md)
 
