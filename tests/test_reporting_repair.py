@@ -3,6 +3,8 @@ import json
 import pytest
 from scripts.audit_market_day_reporting_repair import independent_prices, recurrence
 from research.rl_trading.v6.run_reporting_repair import bar_arguments
+from research.rl_trading.v6.run_reporting_repair import require_completed_bar_verification
+from scripts import build_market_day as bars
 from research.rl_trading.v6.opportunity_dataset import reporting_plan, write_json, digest, REPORTING_REVISION
 
 
@@ -13,6 +15,21 @@ def test_repair_resumes_exact_immutable_build(tmp_path):
     assert '--rebuild' not in arguments
     assert arguments[-2:]==['--build-id','pinned']
     assert '--allow-carried-forward-universe' in arguments
+
+
+def test_completed_bar_verification_requires_full_exact_producer_completion():
+    definition=dict(version=bars.sql.VERSION,
+        calculation_source=bars.digest(Path(bars.sql.__file__).read_text()),
+        controller_source='fa4cd8a702b0224cb2a778540c0a4f1067641e2a997caab5070ba3f5a13e0cc0',
+        plan=dict(requested=['2026-07-31'],units=[dict(source_date='2026-07-31')]))
+    report=dict(status='core_complete',definition=definition,build_id=bars.digest(definition)+'-453f5b1cdbc5',completed=0,skipped=2)
+    require_completed_bar_verification(report)
+    for changed in [dict(report,status='running'),dict(report,skipped=1),dict(report,error='failed'),dict(report,build_id='other')]:
+        with pytest.raises(ValueError):
+            require_completed_bar_verification(changed)
+    report['definition']=dict(definition,calculation_source='changed')
+    with pytest.raises(ValueError,match='authority changed'):
+        require_completed_bar_verification(report)
 
 
 def test_independent_ohlc_excludes_delayed_trade_even_at_extreme():

@@ -47,6 +47,21 @@ def bar_arguments(runtime, *, canary=False, plan=False):
     return arguments + ['--rebuild']
 
 
+def require_completed_bar_verification(report):
+    """Consume successful immutable producer completion, never progress counters."""
+    definition=report['definition']
+    plan=definition['plan']
+    expected=2*sum(row['source_date'] in plan['requested'] for row in plan['units'])
+    if (report.get('status')!='core_complete' or report.get('error') or report.get('failed',0) or
+        int(report.get('completed',0))+int(report.get('skipped',0))!=expected or expected==0):
+        raise ValueError('Full successful bar verification is required')
+    if definition['version']!=bars.sql.VERSION or definition['calculation_source']!=bars.digest(Path(bars.sql.__file__).read_text()):
+        raise ValueError('Completed verifier calculation authority changed')
+    current=dict(definition,controller_source=bars.digest(Path(bars.__file__).read_text()))
+    if bars.digest(current)!=bars.digest(definition) and not bars.transport_compatible_resume(report,current):
+        raise ValueError('Completed verifier controller is not explicitly compatible')
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path, default=ROOT/'rl-v6-reporting-repair-20261002')
@@ -55,9 +70,13 @@ def main(argv=None):
         help='Wait for the already-owned workstation bank worker before resuming; never duplicate it')
     p.add_argument('--await-bar-verification-pid',type=int,
         help='Retain the owned bar verifier and await its successful completion without restarting its checks')
+    p.add_argument('--completed-bar-verification',type=Path,
+        help='Exact completed producer report; validate completion and still run the independent bar audit')
     a = p.parse_args(argv)
     if a.await_feature_bank_pid is not None and a.await_bar_verification_pid is not None:
         raise ValueError('Only one existing worker can be handed off')
+    if a.completed_bar_verification and (a.await_feature_bank_pid is not None or a.await_bar_verification_pid is not None):
+        raise ValueError('Completed verification cannot be combined with an active worker')
     output = a.output.resolve()
     if not ROOT.is_dir() or not output.is_relative_to(ROOT.resolve()):
         raise ValueError('Available workstation runtime root required')
@@ -107,6 +126,15 @@ def main(argv=None):
 
     client = None
     retained_bars = None
+    if a.completed_bar_verification:
+        if not a.completed_bar_verification.resolve().is_relative_to((output/'bars/runs').resolve()):
+            raise ValueError('Immutable producer run report in this repair runtime required')
+        retained_bars=json.loads(a.completed_bar_verification.read_text())
+        require_completed_bar_verification(retained_bars)
+        latest=json.loads((output/'bars/latest.json').read_text())
+        if latest['build_id']!=retained_bars['build_id'] or bars.digest(latest['definition'])!=bars.digest(retained_bars['definition']):
+            raise ValueError('Completed verifier differs from current exact build')
+        done.append('bars')
     if a.await_bar_verification_pid is not None:
         retained_bars=json.loads((output/'bars/latest.json').read_text())
     stage = 'event_flags'
