@@ -56,6 +56,11 @@ def classify_workload(method: str, path: str, *, journal_only: bool = False) -> 
     normalized_method = method.strip().upper()
     normalized_path = "/" + path.strip().lower().lstrip("/")
     parts = normalized_path.strip("/").split("/")
+    if (len(parts) == 6 and parts[:4] == ["api", "trading", "backtest", "runs"]
+            and ((normalized_method == "GET" and parts[5] in {
+                "v4-chart", "v4-chart-context", "v4-chart-trades"})
+                 or (normalized_method == "POST" and parts[5] == "v4-chart-overlays"))):
+        return "charts"
     if (journal_only and normalized_method == "GET" and len(parts) == 6
             and parts[:4] == ["api", "trading", "backtest", "runs"]
             and parts[5] in {"v4-performance", "v4-journal-query"}):

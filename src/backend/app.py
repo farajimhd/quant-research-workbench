@@ -5957,7 +5957,7 @@ async def trading_backtest_v4_chart(
             backtest_v4_operator_client_from_env,
         )
         with closing(backtest_v4_operator_client_from_env()) as journal_client, \
-                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client, saved_review_read_scope(journal_client, normalized):
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
             return cold_v4_chart_page(
                 journal_client, market_client, run_id=normalized,
                 ticker=ticker, timeframe=timeframe,
@@ -5997,7 +5997,7 @@ async def trading_backtest_v4_chart_overlays(
             backtest_v4_operator_client_from_env,
         )
         with closing(backtest_v4_operator_client_from_env()) as journal_client, \
-                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client, saved_review_read_scope(journal_client, normalized):
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
             return cold_v4_chart_overlays(
                 journal_client, market_client, run_id=normalized,
                 ticker=request.ticker, timeframe=request.timeframe,
@@ -6030,7 +6030,7 @@ async def trading_backtest_v4_chart_context(
             backtest_v4_operator_client_from_env,
         )
         with closing(backtest_v4_operator_client_from_env()) as journal_client, \
-                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client, saved_review_read_scope(journal_client, normalized):
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
             return cold_v4_chart_context_pair(
                 journal_client, market_client, run_id=normalized, ticker=ticker)
 
@@ -6117,11 +6117,11 @@ async def trading_backtest_v4_chart_trades(run_id: str, ticker: str) -> dict[str
 
     def read_chart_trades() -> dict[str, Any]:
         from contextlib import closing
-        from src.backend.backtest_v4_saved_review import load_v4_chart_trades
+        from src.backend.backtest_recorded_journal import load_recorded_chart_trades
         from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
 
-        with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, normalized):
-            return load_v4_chart_trades(client, normalized, ticker)
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            return load_recorded_chart_trades(client, normalized, ticker)
 
     try:
         return await asyncio.to_thread(read_chart_trades)

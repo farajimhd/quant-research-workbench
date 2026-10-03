@@ -33,7 +33,7 @@ def test_only_explicit_recorded_reads_use_the_read_workload_lane():
         assert classify_workload('GET', path, journal_only=True) == 'runtime_state'
         assert classify_workload('GET', path) == 'simulation'
         assert classify_workload('POST', path, journal_only=True) == 'simulation'
-    assert classify_workload('GET', '/api/trading/backtest/runs/run/v4-chart', journal_only=True) == 'simulation'
+    assert classify_workload('GET', '/api/trading/backtest/runs/run/v4-chart', journal_only=True) == 'charts'
 
 
 @pytest.mark.parametrize('damage', ['scalar', 'missing_row', 'duplicate_row', 'family', 'chain', 'running', 'sequence'])
@@ -95,3 +95,26 @@ def test_recorded_performance_uses_final_fees_and_the_same_financial_projection(
     monkeypatch.setattr(recorded, 'load_committed_commission_page', lambda *_a, **_k: ())
     with pytest.raises(RuntimeError, match='final fees'):
         recorded.project_recorded_performance(Client(), RUN)
+
+
+def test_recorded_chart_markers_preserve_positions_without_source_audit(monkeypatch):
+    from src.backend import backtest_v4_saved_review as full
+    from tests.test_backtest_v4_saved_review import RUN, Client, _prefix
+    lifecycle = dict(episode_id='episode-1', instrument={'symbol': 'MIMI'}, account_id='SIM-01-A',
+        opened_at='2026-09-03T12:00:00+00:00', entry_price=3.0, side='LONG', quantity=100,
+        current_quantity=75, status='open', protection_timeline=[])
+    monkeypatch.setattr(recorded, 'load_recorded_performance', lambda *_: {
+        'run_id': RUN, 'verified_sequence': 2, 'position_lifecycles': [lifecycle,
+            {**lifecycle, 'episode_id': 'other', 'instrument': {'symbol': 'OTHER'}}]})
+    monkeypatch.setattr(recorded, 'load_recorded_attestation', lambda *_: {'prefix': _prefix()})
+    monkeypatch.setattr(recorded, '_head_matches', lambda *_: True)
+    monkeypatch.setattr(full, '_terminal_attestation', lambda *_: pytest.fail('Chart triggered the full source audit'))
+    monkeypatch.setattr('src.trading_runtime.arte_intent_projection.load_committed_strategy_intent_page', lambda *_a, **_k: ())
+    result = recorded.load_recorded_chart_trades(Client(), RUN, 'mimi')
+    assert result['ticker'] == 'MIMI'
+    assert len(result['position_lifecycles']) == 1
+    assert result['position_lifecycles'][0]['current_quantity'] == 75
+    assert result['position_lifecycles'][0]['status'] == 'open'
+    monkeypatch.setattr(recorded, '_head_matches', lambda *_: False)
+    with pytest.raises(RuntimeError, match='head changed'):
+        recorded.load_recorded_chart_trades(Client(), RUN, 'MIMI')

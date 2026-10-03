@@ -11,6 +11,13 @@ from src.backend.workload_budget import (
 
 
 class WorkloadClassificationTests(unittest.TestCase):
+    def test_saved_chart_presentation_uses_the_bounded_chart_lane(self) -> None:
+        prefix = '/api/trading/backtest/runs/run-1/'
+        for endpoint in ('v4-chart', 'v4-chart-context', 'v4-chart-trades'):
+            self.assertEqual(classify_workload('GET', prefix + endpoint), 'charts')
+        self.assertEqual(classify_workload('POST', prefix + 'v4-chart-overlays'), 'charts')
+        self.assertEqual(classify_workload('GET', prefix + 'v4-terminal-page'), 'simulation')
+
     def test_existing_run_status_is_independent_of_simulation_work(self) -> None:
         for mode in ("backtest", "replay"):
             path = f"/api/trading/{mode}/runs/run-1"

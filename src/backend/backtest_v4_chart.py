@@ -26,7 +26,7 @@ from src.backend.backtest_market_data import (
 from src.backend.backtest_strategy_one_configuration import (
     certify_strategy_one_configuration, certify_numbered_configuration,
 )
-from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page
+from src.backend.backtest_recorded_journal import load_recorded_page
 from src.trading_runtime.arte_backtest_definition import load_backtest_definition
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
@@ -142,8 +142,9 @@ def certified_saved_run_plan(
 ) -> tuple[date, dict[str, Any], dict[str, Any], CertifiedMarketDayPlan]:
     """Shared immutable run authority for chart and producer-owned context."""
     normalized = str(UUID(run_id))
-    review = load_v4_terminal_review_page(
-        journal_client, normalized, after_sequence=0, limit=1)
+    # Presentation uses the sealed stored journal, independently of the full
+    # strategy source audit. Market certificates below remain mandatory.
+    review = load_recorded_page(journal_client, normalized)
     context = review["run"]
     cursor = review["market_cursor"]
     # A failed terminal run remains failed, but its cold-verified market cursor
@@ -166,13 +167,39 @@ def certified_saved_run_plan(
         raise RuntimeError("Saved chart configuration differs from the run release")
     session = date.fromisoformat(str(context["session_date"]))
     requested = tuple(row["ticker"] for row in definition["tickers"])
-    plan = plan_loader(
-        sessions=(session,), tickers=requested, configuration=release.payload)
+    if (context['strategy_id'], int(context['strategy_revision'])) == ('squeeze-grid-strategy', 43):
+        # Reproduce Strategy 43's sealed market population, exactly as its
+        # source-plan authority does. It excludes LGHL before computing the
+        # run token and does not use the numbered Strategy 1 resolutions.
+        plan = plan_loader(sessions=(session,), tickers=(), configuration={
+            'market_day_build_id': release.payload['market_day_build_id'],
+            'strategy': {'execution_interval': '100ms'}})
+        plan = project_market_day_plan(plan, tuple(t for t in plan.tickers if t != 'LGHL'))
+    else:
+        plan = plan_loader(
+            sessions=(session,), tickers=requested, configuration=release.payload)
     if (not isinstance(plan, CertifiedMarketDayPlan)
             or plan.token != context["market_plan_token"]
             or plan.sessions != (session.isoformat(),)):
         raise RuntimeError("Saved chart cannot reproduce its certified market plan")
     return session, context, cursor, plan
+
+
+def _chart_resolution_plan(market_client, session, context, plan, symbol, resolution, plan_loader):
+    """Certify additional display clocks against the run's exact attempts."""
+    if resolution in plan.required_resolutions_ms:
+        return plan
+    release = (certify_strategy_one_configuration(market_client) if int(context['strategy_revision']) == 1
+               else certify_numbered_configuration(market_client, int(context['strategy_revision'])))
+    if release.payload_hash != context['configuration_hash']:
+        raise RuntimeError('Saved chart display release changed')
+    display = plan_loader(sessions=(session,), tickers=(symbol,), configuration=release.payload)
+    original = {(unit.session_date, unit.ticker, unit.stage): unit for unit in plan.units if unit.ticker == symbol}
+    if (display.build_id != plan.build_id or display.sessions != plan.sessions
+            or display.tickers != (symbol,) or resolution not in display.required_resolutions_ms
+            or not original or {(unit.session_date, unit.ticker, unit.stage): unit for unit in display.units} != original):
+        raise RuntimeError('Saved chart display certificate differs from the run attempts')
+    return display
 
 
 def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
@@ -297,10 +324,10 @@ def cold_v4_chart_page(
         raise ValueError("Saved Strategy 1 chart request is invalid")
     session, run_context, cursor, plan = certified_saved_run_plan(
         journal_client, market_client, run_id=normalized, plan_loader=plan_loader)
-    if (symbol not in plan.tickers
-            or (not context_frame
-                and _RESOLUTIONS[timeframe] not in plan.required_resolutions_ms)):
+    if symbol not in plan.tickers:
         raise RuntimeError("Saved chart cannot reproduce its certified market plan")
+    display_plan = plan if context_frame else _chart_resolution_plan(
+        market_client, session, run_context, plan, symbol, _RESOLUTIONS[timeframe], plan_loader)
     cursor_ms = int(cursor["boundary_ms"])
     end_ms = min(cursor_ms, before_boundary_ms or cursor_ms)
     if end_ms <= 0:
@@ -322,7 +349,7 @@ def cold_v4_chart_page(
             page_end=market_day_boundary(session, end_ms), row_limit=row_limit,
             stage="full", indicator_columns=selected,
             include_market_signals=False, include_structure=False,
-            allow_persisted_bars=True, mode="backtest", pinned_plan=plan,
+            allow_persisted_bars=True, mode="backtest", pinned_plan=display_plan,
             read_client=market_client,
         )
     if page is None:
@@ -382,8 +409,9 @@ def cold_v4_chart_overlays(
     session, context, cursor, plan = certified_saved_run_plan(
         journal_client, market_client, run_id=normalized, plan_loader=plan_loader)
     resolution = _RESOLUTIONS[timeframe]
-    if symbol not in plan.tickers or resolution not in plan.required_resolutions_ms:
+    if symbol not in plan.tickers:
         raise RuntimeError("Saved overlay is outside the certified market plan")
+    plan = _chart_resolution_plan(market_client, session, context, plan, symbol, resolution, plan_loader)
     last_end_ms = (bucket_indices[-1] + 1) * resolution - SESSION_OPEN_OFFSET_MS
     first_start_ms = bucket_indices[0] * resolution - SESSION_OPEN_OFFSET_MS
     if not 0 <= first_start_ms < last_end_ms <= int(cursor["boundary_ms"]):

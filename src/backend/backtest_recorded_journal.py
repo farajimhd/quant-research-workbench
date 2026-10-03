@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
+import re
 from threading import Lock
 from uuid import UUID
 
@@ -251,6 +252,10 @@ def project_recorded_performance(client, run_id: str, *,
     episodes = derive_trade_episodes(executions)
     report = build_performance_report(episodes, executions, ())
     lifecycles = derive_position_lifecycles(executions, ())
+    if executions and all((e.strategy_id, e.strategy_revision) == ("squeeze-grid-strategy", 44) for e in executions):
+        from .backtest_strategy_forty_four_performance import derive_saved_leg_positions
+        episodes, lifecycles = derive_saved_leg_positions(client, prefix, executions)
+        report = build_performance_report(episodes, executions, ())
     protection_events = _saved_protection_events(client, prefix)
     # Opening-order identities, not ticker/price coincidence, assign broker
     # protection revisions to a lifecycle. Unmatched events remain journal
@@ -292,3 +297,82 @@ def load_recorded_performance(client, run_id):
     except ValueError:
         pass
     return result
+
+
+def load_recorded_chart_trades(client, run_id: str, ticker: str) -> dict:
+    """Bounded ticker projection of the verified terminal performance report.
+
+    A chart needs only position markers and effective protection rails, not
+    every execution, fee, episode, and journal-derived diagnostic for the run.
+    Keep the full-prefix/head check in the shared report reader before pruning.
+    """
+    symbol = ticker.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9.-]{1,24}", symbol):
+        raise ValueError("Saved chart trade ticker is invalid")
+    page = load_recorded_performance(client, run_id)
+    from src.trading_runtime.arte_intent_projection import (
+        load_committed_strategy_intent_page,
+    )
+    attestation = load_recorded_attestation(client, str(UUID(run_id)))
+    prefix = attestation["prefix"]
+    if int(page["verified_sequence"]) != prefix.last_sequence:
+        raise RuntimeError("Saved chart intent head differs from performance report")
+    intents = []
+    after_sequence = 0
+    while True:
+        batch = load_committed_strategy_intent_page(
+            client, prefix, after_sequence=after_sequence, limit=500)
+        if not batch:
+            break
+        for recovered in batch:
+            intent = recovered.intent
+            if intent.ticker.upper() != symbol or intent.action not in {
+                    "enter_long", "enter_short", "exit", "reduce_long",
+                    "reduce_short", "take_profit", "cover"}:
+                continue
+            intents.append({
+                "sequence": recovered.sequence,
+                "account_id": recovered.account_id,
+                "action": intent.action,
+                "event_time": intent.event_time.isoformat(),
+                "reference_price": intent.reference_price,
+                "reason": intent.reason,
+            })
+        after_sequence = batch[-1].sequence
+        if len(batch) < 500:
+            break
+    lifecycles = []
+    for row in page["position_lifecycles"]:
+        instrument = row.get("instrument")
+        if not isinstance(instrument, dict) or not isinstance(instrument.get("symbol"), str):
+            raise RuntimeError("Saved chart lifecycle lacks an instrument identity")
+        if instrument["symbol"].upper() != symbol:
+            continue
+        required = ("episode_id", "opened_at", "entry_price", "side",
+                    "quantity", "status", "protection_timeline")
+        if any(key not in row for key in required):
+            raise RuntimeError("Saved chart lifecycle lacks position evidence")
+        rails = []
+        for event in row["protection_timeline"]:
+            if event.get("phase") != "effective" or event.get("kind") not in {"stop", "target"}:
+                continue
+            keys = ("event_time", "sequence", "order_id", "kind",
+                    "phase", "price", "active")
+            if any(key not in event for key in keys):
+                raise RuntimeError("Saved chart protection rail lacks typed evidence")
+            rails.append({key: event[key] for key in keys})
+        lifecycles.append({
+            "episode_id": row["episode_id"],
+            "instrument": {"symbol": instrument["symbol"]},
+            **{key: row.get(key) for key in (
+                "account_id", "requested_at", "opened_at", "entry_price", "closed_at", "exit_price",
+                "side", "quantity", "current_quantity", "status", "exit_reason",
+                "presentation_exit_reason", "net_pnl")},
+            "protection_timeline": rails,
+        })
+    if not _head_matches(client, str(UUID(run_id)), prefix):
+        raise RuntimeError("Saved chart journal head changed during intent read")
+    return {"schema_version": "strategy-one-v4-chart-trades-v1",
+            "run_id": page["run_id"], "ticker": symbol,
+            "verified_sequence": page["verified_sequence"],
+            "position_lifecycles": lifecycles, "issued_intents": intents}

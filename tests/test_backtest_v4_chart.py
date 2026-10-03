@@ -26,7 +26,7 @@ def _fixtures(monkeypatch, *, token: str = TOKEN,
         "session_date": "2026-08-18", "configuration_hash": HASH,
         "market_plan_token": TOKEN,
     }
-    monkeypatch.setattr(subject, "load_v4_terminal_review_page", lambda *a, **kw: {
+    monkeypatch.setattr(subject, "load_recorded_page", lambda *a, **kw: {
         "run": context, "status": status, "market_cursor_verified": True,
         "market_cursor": {"session_date": "2026-08-18", "boundary_ms": 19_500_000},
     })
@@ -115,8 +115,52 @@ def test_cold_chart_rejects_different_certificate_without_market_read(monkeypatc
             timeframe="1s", plan_loader=lambda **kwargs: plan)
 
 
+def test_strategy_43_reproduces_its_sealed_population_before_chart_reads(monkeypatch):
+    raw = _fixtures(monkeypatch)
+    from src.backend.backtest_market_data import MARKET_DAY_STAGES
+    raw = replace(raw, tickers=('LGHL', 'SUGP'), units=tuple(
+        replace(raw.units[0], ticker=ticker, stage=stage)
+        for ticker in ('LGHL', 'SUGP') for stage in MARKET_DAY_STAGES))
+    projected = subject.project_market_day_plan(raw, ('SUGP',))
+    context = subject.load_recorded_page(None, None)['run']
+    context.update(strategy_id='squeeze-grid-strategy', strategy_revision=43,
+                   market_plan_token=projected.token)
+    release = subject.certify_strategy_one_configuration(None)
+    release = replace(release, payload={**release.payload, 'market_day_build_id': 'build'})
+    monkeypatch.setattr(subject, 'certify_numbered_configuration', lambda *_: release)
+    requested = []
+    def load(**kwargs):
+        requested.append(kwargs)
+        return raw
+    _, _, _, plan = subject.certified_saved_run_plan(None, None, run_id=RUN_ID, plan_loader=load)
+    assert plan.token == projected.token and plan.tickers == ('SUGP',)
+    assert requested == [{'sessions': (date(2026, 8, 18),), 'tickers': (),
+        'configuration': {'market_day_build_id': 'build', 'strategy': {'execution_interval': '100ms'}}}]
+
+
+@pytest.mark.parametrize('damage', [None, 'attempt', 'build', 'resolution'])
+def test_display_clock_certification_retains_exact_run_attempts(monkeypatch, damage):
+    run = _fixtures(monkeypatch)
+    context = subject.load_recorded_page(None, None)['run']
+    display = replace(run, required_resolutions_ms=(*run.required_resolutions_ms, 10_000))
+    if damage == 'attempt':
+        display = replace(display, units=(replace(display.units[0], attempt_id='22222222-2222-4222-8222-222222222222'),))
+    elif damage == 'build':
+        display = replace(display, build_id='different')
+    elif damage == 'resolution':
+        display = run
+    def read():
+        return subject._chart_resolution_plan(None, date(2026, 8, 18), context,
+            run, 'SUGP', 10_000, lambda **_: display)
+    if damage:
+        with pytest.raises(RuntimeError, match='differs from the run attempts'):
+            read()
+    else:
+        assert read() is display
+
+
 def test_cold_chart_rejects_invalid_page_before_any_authority_read(monkeypatch):
-    monkeypatch.setattr(subject, "load_v4_terminal_review_page", lambda *a, **kw:
+    monkeypatch.setattr(subject, "load_recorded_page", lambda *a, **kw:
                         pytest.fail("invalid request reached journal"))
     with pytest.raises(ValueError, match="invalid"):
         subject.cold_v4_chart_page(
