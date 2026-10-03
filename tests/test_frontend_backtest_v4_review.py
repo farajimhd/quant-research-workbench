@@ -16,6 +16,52 @@ def _performance_page():
 
 @unittest.skipUnless(os.environ.get("BACKTEST_REVIEW_UI"), "opt-in managed browser check")
 class BacktestV4ReviewUITests(unittest.TestCase):
+    def test_recorded_page_uses_sealed_read_path_for_performance_and_queries(self):
+        from playwright.sync_api import sync_playwright
+        from urllib.parse import parse_qs, urlsplit
+        run_id = '00000000-0000-0000-0000-000000000001'
+        reads = []
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                def handle(route):
+                    url = urlsplit(route.request.url)
+                    if url.path.endswith('/backtest/runs'):
+                        payload = {'rows': [{'run_id': run_id, 'status': 'completed',
+                            'journal_backend': 'arte_typed_journal_v4', 'v4_review_available': True}]}
+                    elif url.path.endswith('/v4-review-ready'):
+                        payload = {'status': 'ready', 'page': {
+                            'schema_version': 'backtest-v4-recorded-journal-page-v1',
+                            'journal_only': True, 'source_audit_status': 'not_requested',
+                            'run': {'run_id': run_id, 'session_date': '2026-08-18', 'strategy_revision': 43},
+                            'status': 'completed', 'verified_sequence': 10,
+                            'market_cursor_verified': True,
+                            'market_cursor': {'session_date': '2026-08-18', 'boundary_ms': 19800000},
+                            'limitations': [], 'financial_accounts': {}, 'events': [], 'complete': True}}
+                    elif url.path.endswith('/v4-performance'):
+                        reads.append(route.request.url)
+                        payload = _performance_page()
+                    elif url.path.endswith('/v4-journal-query'):
+                        reads.append(route.request.url)
+                        payload = ({'tickers': [], 'events': []} if 'facets' in parse_qs(url.query)
+                                   else {'events': [], 'complete': True, 'next_sequence': 0})
+                    else:
+                        payload = {'rows': [], 'items': [], 'checks': []}
+                    route.fulfill(json=payload)
+                page.route('**/api/trading/**', handle)
+                page.goto(f'http://127.0.0.1:5173/?backtest_run={run_id}#backtest-trading')
+                page.locator('.backtest-v4-canvas-review').wait_for()
+                query = page.locator('.saved-journal-query').first
+                query.get_by_role('button', name='Query', exact=True).click()
+                query.get_by_role('status').filter(has_text='0 results loaded').wait_for()
+                self.assertTrue(any('/v4-performance?' in url for url in reads))
+                self.assertTrue(any('after_sequence=' in url for url in reads))
+                self.assertTrue(all(parse_qs(urlsplit(url).query).get('journal_only') == ['true'] for url in reads))
+                self.assertEqual(page.get_by_text('Could not open backtest', exact=True).count(), 0)
+            finally:
+                browser.close()
+
     def test_cold_review_remains_open_past_old_request_deadline(self):
         """Exercise real timers and fetches; no longer timeout is configured."""
         from time import monotonic

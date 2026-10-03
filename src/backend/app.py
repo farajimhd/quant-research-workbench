@@ -761,7 +761,8 @@ async def request_identity_middleware(request: Request, call_next: Any) -> Any:
             response.headers[CORRELATION_HEADER] = correlation_id
             response.headers[CAUSATION_HEADER] = causation_id
             return response
-        lane = classify_workload(request.method, request.url.path)
+        lane = classify_workload(request.method, request.url.path,
+                                 journal_only=request.query_params.get("journal_only", "").lower() in {"true", "1"})
         try:
             async with workload_budget_manager.lease(lane):
                 response = await call_next(request)
@@ -5884,6 +5885,7 @@ async def trading_backtest_typed_financial_page(
 @app.get("/api/trading/backtest/runs/{run_id}/v4-journal-query")
 async def trading_backtest_v4_journal_query(
     run_id: str, domain: str = "activity", facets: bool = False,
+    journal_only: bool = False,
     ticker: str = "", event_type: str = "", start: str = "", end: str = "",
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=250, ge=1, le=500),
@@ -5895,7 +5897,7 @@ async def trading_backtest_v4_journal_query(
         with closing(backtest_v4_operator_client_from_env()) as client:
             return query_saved_journal(client, run_id, domain=domain, facets=facets,
                                       ticker=ticker, event_type=event_type, start=start, end=end,
-                                      after_sequence=after_sequence, limit=limit)
+                                      after_sequence=after_sequence, limit=limit, journal_only=journal_only)
     try:
         return await asyncio.to_thread(read_query)
     except (RuntimeError, ValueError) as exc:
@@ -6071,7 +6073,7 @@ async def trading_backtest_v4_trade_history(
 
 @app.get("/api/trading/backtest/runs/{run_id}/v4-performance")
 async def trading_backtest_v4_performance(
-    run_id: str, include_entry_context: bool = True,
+    run_id: str, include_entry_context: bool = True, journal_only: bool = False,
 ) -> dict[str, Any]:
     """Read-only, full-prefix Strategy 1 performance for the saved Canvas."""
     try:
@@ -6086,8 +6088,13 @@ async def trading_backtest_v4_performance(
         from src.trading_runtime.arte_journal_writer import (
             backtest_v4_operator_client_from_env, load_typed_run_context,
         )
-        with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, normalized):
-            page = load_cached_v4_performance_report(client, normalized)
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            if journal_only:
+                from src.backend.backtest_recorded_journal import load_recorded_performance
+                page = load_recorded_performance(client, normalized)
+            else:
+                with saved_review_read_scope(client, normalized):
+                    page = load_cached_v4_performance_report(client, normalized)
             if not include_entry_context:
                 return page
             context = load_typed_run_context(client, normalized)

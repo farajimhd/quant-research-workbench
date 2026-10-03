@@ -177,7 +177,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       const openV4Review = async () => {
         // The inventory is only a routing hint; this page is the authority.
         const page = await openSavedBacktestReview(selectedRunId, controller.signal);
-        if (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== selectedRunId) {
+        if ((page.schema_version !== "strategy-one-v4-terminal-review-page-v1" && page.schema_version !== "backtest-v4-recorded-journal-page-v1") || page.run.run_id !== selectedRunId) {
           throw new Error("Saved numbered strategy review identity differs from the selected run.");
         }
         if (!controller.signal.aborted) setV4ReviewPage(page);
@@ -350,7 +350,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       const controller = new AbortController();
       openSavedBacktestReview(run.run_id, controller.signal).then((page) => {
         if (controller.signal.aborted) return;
-        if (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== run.run_id) {
+        if ((page.schema_version !== "strategy-one-v4-terminal-review-page-v1" && page.schema_version !== "backtest-v4-recorded-journal-page-v1") || page.run.run_id !== run.run_id) {
           throw new Error("Saved numbered strategy review identity differs from the completed run.");
         }
         setV4ReviewPage(page);

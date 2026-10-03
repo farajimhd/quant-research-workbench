@@ -14,7 +14,9 @@ type Account = {
 };
 
 export type V4Page = {
-  schema_version: "strategy-one-v4-terminal-review-page-v1";
+  schema_version: "strategy-one-v4-terminal-review-page-v1" | "backtest-v4-recorded-journal-page-v1";
+  journal_only?: boolean;
+  source_audit_status?: "not_requested";
   run: { run_id: string; initial_cash?: number; session_date?: string; strategy_id?: string; strategy_revision?: number };
   status: string;
   verified_sequence: number;

@@ -180,13 +180,13 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
 
   useEffect(() => {
     const controller = new AbortController();
-    void savedReviewPage<PerformancePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-performance`, controller.signal).then(page => {
+    void savedReviewPage<PerformancePage>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-performance?journal_only=${initialPage.journal_only === true}`, controller.signal).then(page => {
       if (!controller.signal.aborted) setPerformance(page);
     }).catch(error => {
       if (!controller.signal.aborted) setPerformanceError(error instanceof Error ? error.message : String(error));
     });
     return () => controller.abort();
-  }, [runId]);
+  }, [runId, initialPage.journal_only]);
 
   const accounts = Object.entries(initialPage.financial_accounts).map(([account_id, account]) => ({ account_id, ...account }));
   const financialAccounts = accounts.map(account => ({
@@ -232,11 +232,11 @@ export function BacktestV4CanvasReview({ runId, initialPage, onClose, timing }: 
       initialStateOverride={savedLayout} layoutPreset="focus"
       historicalSourceReady mode="backtest" runLabel={`Strategy ${initialPage.run.strategy_revision ?? "unknown"}`} runStatus="completed"
       sourceLabel="ARTE typed journal" showHealth={false}
-      metaForContainer={() => ({ sourceLabel: "ARTE verified V4", status: "ready", freshness: "Saved run" })}
+      metaForContainer={() => ({ sourceLabel: initialPage.journal_only ? "ARTE sealed journal" : "ARTE verified V4", status: "ready", freshness: "Saved run" })}
       managementOpen={managementOpen} onManagementClose={() => setManagementOpen(false)}
       storageKeyOverride={V4_LAYOUT_KEY}
       renderContainer={definition => {
-        if (["strategy_activity", "orders", "fills"].includes(definition.id)) return <SavedJournalQuery
+        if (["strategy_activity", "orders", "fills"].includes(definition.id)) return <SavedJournalQuery journalOnly={initialPage.journal_only}
           runId={runId} domain={definition.id === "strategy_activity" ? "activity" : definition.id as "orders" | "fills"}
           strategyId={initialPage.run.strategy_id} strategyRevision={initialPage.run.strategy_revision}
           asOf={new Date(dateInTimeZone(initialPage.market_cursor?.session_date || initialPage.run.session_date || "1970-01-01", "04:00", "America/New_York").getTime() + Number(initialPage.market_cursor?.boundary_ms ?? 0)).toISOString()}

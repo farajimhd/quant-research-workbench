@@ -44,14 +44,14 @@ def saved_review_read_scope(client, run_id):
 
 def read_review_metadata(run_id):
     from src.backend import historical_runtime_versions as versions
-    from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page, _terminal_attestation
+    from src.backend.backtest_recorded_journal import load_recorded_page, load_recorded_attestation
     from src.backend.typed_backtest_review_core import _client_scope
     from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
     if versions.backend_source_fingerprint() != versions.LOADED_BACKEND_FINGERPRINT:
         raise RuntimeError("Saved review reader source changed after startup; restart the backend")
-    with closing(backtest_v4_operator_client_from_env()) as client, saved_review_read_scope(client, run_id):
-        page = load_v4_terminal_review_page(client, run_id, metadata_only=True, limit=100)
-        attestation = _terminal_attestation(client, run_id, None)
+    with closing(backtest_v4_operator_client_from_env()) as client:
+        page = load_recorded_page(client, run_id)
+        attestation = load_recorded_attestation(client, run_id)
         return {"page": page, "context": attestation["context"], "prefix": attestation["prefix"],
                 "scope": _client_scope(client)}
 

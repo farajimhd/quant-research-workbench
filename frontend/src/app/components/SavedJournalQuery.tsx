@@ -12,11 +12,12 @@ const EMPTY: Filters = { ticker: "", event_type: "", start: "", end: "" };
 const utc = (value: unknown) => String(value ?? "").replace(" ", "T").replace(/(?<!Z)$/, "Z");
 
 /** Query results are independent of the eager, complete position projection. */
-export function SavedJournalQuery({ runId, domain, asOf, onTickerSelect, activitySettings, fillSettings, strategyId, strategyRevision }: {
+export function SavedJournalQuery({ runId, domain, asOf, onTickerSelect, activitySettings, fillSettings, strategyId, strategyRevision, journalOnly }: {
   runId: string; domain: Domain; asOf: string; onTickerSelect: (ticker: string) => void;
   activitySettings: Parameters<typeof StrategyActivityContainer>[0]["settings"];
   fillSettings: Parameters<typeof ExecutionsPreview>[0]["settings"];
   strategyId?: string; strategyRevision?: number;
+  journalOnly?: boolean;
 }) {
   const [facets, setFacets] = useState<{ tickers: string[]; events: string[] }>({ tickers: [], events: [] });
   const [draft, setDraft] = useState(EMPTY);
@@ -30,10 +31,10 @@ export function SavedJournalQuery({ runId, domain, asOf, onTickerSelect, activit
   useEffect(() => {
     const controller = new AbortController();
     setPage(null);
-    api<typeof facets>(`${endpoint}?domain=${domain}&facets=true`, { signal: controller.signal, timeoutMs: 60000 })
+    api<typeof facets>(`${endpoint}?domain=${domain}&facets=true&journal_only=${journalOnly === true}`, { signal: controller.signal, timeoutMs: 60000 })
       .then(setFacets).catch(reason => { if (!controller.signal.aborted) setError(String(reason)); });
     return () => { controller.abort(); request.current?.abort(); };
-  }, [endpoint, domain]);
+  }, [endpoint, domain, journalOnly]);
   async function query(more = false) {
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
@@ -42,7 +43,7 @@ export function SavedJournalQuery({ runId, domain, asOf, onTickerSelect, activit
     if (!more) { setPage(null); setApplied(filters); }
     try {
       const params = new URLSearchParams({ domain, ticker: filters.ticker, event_type: filters.event_type,
-        after_sequence: String(more ? page?.next_sequence ?? 0 : 0), limit: "250" });
+        after_sequence: String(more ? page?.next_sequence ?? 0 : 0), limit: "250", journal_only: String(journalOnly === true) });
       for (const key of ["start", "end"] as const) if (filters[key]) {
         const [date, time] = filters[key].split("T");
         params.set(key, dateInTimeZone(date, time, "America/New_York").toISOString());

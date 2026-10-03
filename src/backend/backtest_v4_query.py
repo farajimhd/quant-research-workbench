@@ -10,7 +10,7 @@ from src.trading_runtime.arte_journal_writer import _CONTRACTS, _committed_batch
 
 def query_saved_journal(client, run_id, *, domain="activity", facets=False,
                         ticker="", event_type="", start="", end="",
-                        after_sequence=0, limit=250):
+                        after_sequence=0, limit=250, journal_only=False):
     if domain not in {"activity", "orders", "fills"}:
         raise ValueError("Unknown journal query domain")
     if type(limit) is not int or not 1 <= limit <= 500 or after_sequence < 0:
@@ -26,7 +26,11 @@ def query_saved_journal(client, run_id, *, domain="activity", facets=False,
         instants.append(instant)
     if all(instants) and instants[0] > instants[1]:
         raise ValueError("Query start exceeds end")
-    prefix = _terminal_attestation(client, str(UUID(run_id)), None)["prefix"]
+    if journal_only:
+        from src.backend.backtest_recorded_journal import load_recorded_attestation
+        prefix = load_recorded_attestation(client, str(UUID(run_id)))["prefix"]
+    else:
+        prefix = _terminal_attestation(client, str(UUID(run_id)), None)["prefix"]
     fence = (f"run_id={_literal(prefix.run_id)} AND sequence<={prefix.last_sequence} "
              f"{_committed_batch_filter(prefix)}")
     scope = {

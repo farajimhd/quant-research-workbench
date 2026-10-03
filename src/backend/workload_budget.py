@@ -52,10 +52,16 @@ def workload_limits() -> dict[str, int]:
     }
 
 
-def classify_workload(method: str, path: str) -> str:
+def classify_workload(method: str, path: str, *, journal_only: bool = False) -> str:
     normalized_method = method.strip().upper()
     normalized_path = "/" + path.strip().lower().lstrip("/")
     parts = normalized_path.strip("/").split("/")
+    if (journal_only and normalized_method == "GET" and len(parts) == 6
+            and parts[:4] == ["api", "trading", "backtest", "runs"]
+            and parts[5] in {"v4-performance", "v4-journal-query"}):
+        # Sealed recorded presentation reads do not run source certification
+        # or simulation. Keep them available while those workloads are busy.
+        return "runtime_state"
     if normalized_method == "GET" and normalized_path == "/api/trading/backtest/history-performance":
         return "runtime_state"
     if (normalized_method == "GET" and len(parts) == 6

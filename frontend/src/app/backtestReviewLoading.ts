@@ -18,7 +18,7 @@ export async function openSavedBacktestReview(runId: string, signal: AbortSignal
         `/api/trading/backtest/runs/${encodeURIComponent(runId)}/v4-review-ready`, { signal, timeoutMs: 15_000 });
       if (result.status === "ready") {
         const page = result.page;
-        if (!page || page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== runId) {
+        if (!page || (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" && page.schema_version !== "backtest-v4-recorded-journal-page-v1") || page.run.run_id !== runId) {
           throw new Error("Saved numbered strategy review identity differs from the selected run.");
         }
         return page;

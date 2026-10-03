@@ -1469,7 +1469,7 @@ export function SavedBacktestChartFocus({ runId, ticker }: { runId: string; tick
     const controller = new AbortController();
     void openSavedBacktestReview(runId, controller.signal).then(value => {
       if (controller.signal.aborted) return;
-      if (value.schema_version !== "strategy-one-v4-terminal-review-page-v1"
+      if ((value.schema_version !== "strategy-one-v4-terminal-review-page-v1" && value.schema_version !== "backtest-v4-recorded-journal-page-v1")
           || value.run.run_id !== runId || !value.market_cursor_verified
           || !value.market_cursor || !/^\d{4}-\d\d-\d\d$/.test(value.market_cursor.session_date)
           || !Number.isFinite(value.market_cursor.boundary_ms) || value.market_cursor.boundary_ms < 0) {
