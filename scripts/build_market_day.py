@@ -546,6 +546,9 @@ def reporting_coverage(client, start, end):
 
 
 def source_evidence(client, row):
+    cached = getattr(client, 'prefetched_source', {}).get((row['ticker'], row['source_date']))
+    if cached is not None:
+        return checked_source_evidence(row, cached)
     day = date.fromisoformat(row['source_date'])
     years = '|'.join(map(str,sorted({day.year,(day+timedelta(days=1)).year})))
     query = f"""SELECT count() AS n,uniqExact(ordinal) AS unique_ordinals,min(ordinal) AS first_ordinal,
@@ -559,6 +562,11 @@ def source_evidence(client, row):
       WHERE ticker={sql.literal(row['ticker'])} AND event_date BETWEEN toDate({sql.literal(day)}) AND toDate({sql.literal(day+timedelta(days=1))})
       AND sip_timestamp_us>={sql.bounds(day)} AND sip_timestamp_us<{sql.bounds(day+timedelta(days=1))}"""
     result = client.query(query, "source_integrity")[0]
+    return checked_source_evidence(row, result)
+
+
+def checked_source_evidence(row, result):
+    day = row['source_date']
     n = int(row['event_count'])
     if (int(result['n']) != n or int(result['unique_ordinals']) != n or
         (n and (int(result['last_ordinal']) != int(row['last_ordinal']) or
@@ -567,6 +575,45 @@ def source_evidence(client, row):
           int(result['last_us']) != int(row['last_sip_timestamp_us'])))):
         raise ValueError(f"Canonical continuity mismatch for {day} {row['ticker']}")
     return result
+
+
+def prefetch_source_evidence(client, ticker, rows):
+    """One bounded ticker scan; preserve each day's exact source hash and bounds."""
+    client.prefetched_source = {}
+    if not rows:
+        return
+    first = date.fromisoformat(min(row['source_date'] for row in rows))
+    last = date.fromisoformat(max(row['source_date'] for row in rows))
+    tomorrow = last + timedelta(days=1)
+    years = '|'.join(str(year) for year in range(first.year, tomorrow.year + 1))
+    day_expr = "toDate(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'America/New_York'))"
+    days = ','.join(sql.literal(row['source_date']) for row in rows)
+    actual = client.query(f"""SELECT toString({day_expr}) AS day,
+      count() AS n,uniqExact(ordinal) AS unique_ordinals,min(ordinal) AS first_ordinal,
+      max(ordinal) AS last_ordinal,min(sip_timestamp_us) AS first_us,max(sip_timestamp_us) AS last_us,
+      countIf(sip_timestamp_us>=toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString({day_expr}),' 04:00:00'),6,'America/New_York')))
+        AND sip_timestamp_us<toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString({day_expr}),' 20:00:00'),6,'America/New_York')))) AS session_events,
+      countIf(bitAnd(event_meta,1)=1 AND bitAnd(event_meta,{sql.DELAYED})!=0
+        AND sip_timestamp_us>=toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString({day_expr}),' 04:00:00'),6,'America/New_York')))
+        AND sip_timestamp_us<toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString({day_expr}),' 20:00:00'),6,'America/New_York')))) AS reporting_delayed_trades,
+      sum(cityHash64(tuple(*))) AS hash
+      FROM merge('market_sip_compact','^events_({years})$')
+      WHERE ticker={sql.literal(ticker)} AND event_date BETWEEN toDate({sql.literal(first)}) AND toDate({sql.literal(tomorrow)})
+        AND sip_timestamp_us>={sql.bounds(first)} AND sip_timestamp_us<{sql.bounds(tomorrow)}
+      GROUP BY {day_expr} HAVING day IN ({days})""", 'source_resume_integrity')
+    by_day = {}
+    for item in actual:
+        item = dict(item)
+        day = item.pop('day')
+        if day in by_day:
+            raise ValueError(f'{ticker}: duplicate source evidence for {day}')
+        by_day[day] = item
+    for row in rows:
+        result = by_day.get(row['source_date'], dict(n=0,unique_ordinals=0,
+            first_ordinal=0,last_ordinal=0,first_us=0,last_us=0,
+            session_events=0,reporting_delayed_trades=0,hash=0))
+        checked_source_evidence(row, result)
+        client.prefetched_source[(ticker,row['source_date'])] = result
 
 
 def evidence(client, db, kind, build, day, ticker, attempt):
@@ -590,6 +637,8 @@ def completed(ledger, client, db, build, day, ticker, stage, source_hash):
         result = evidence(client,db,stage,build,day,ticker,row['attempt_id'])
     if int(result['n']) != int(row['output_rows']) or str(result['hash']) != str(row['output_hash']) or result['n'] != result['unique_keys']:
         raise ValueError("Published output integrity failed; explicit rebuild required")
+    if hasattr(client, 'prefetched_evidence'):
+        client.prefetched_evidence[key] = result
     return row
 
 
@@ -600,6 +649,7 @@ def prefetch_certified_evidence(ledger, client, db, build, ticker, rows):
     The cache is scoped to one ticker and one invocation, never persisted.
     """
     client.prefetched_evidence={}
+    client.prefetched_final_states={}
     days=sorted({row['source_date'] for row in rows})
     if not days:
         return
@@ -625,6 +675,25 @@ def prefetch_certified_evidence(ledger, client, db, build, ticker, rows):
                 int(result['n'])!=int(result['unique_keys'])):
                 raise ValueError(f'{day} {ticker} {stage}: published output integrity failed')
             client.prefetched_evidence[(build,day,ticker,stage,attempt)]=result
+        if stage in ('bars','technical'):
+            names = (['close'] if stage=='bars' else
+                [f'ema_{period}' for period in sql.EMAS]+['macd_signal'])
+            expressions = ['close_int/10000.'] if stage=='bars' else names
+            values = ','.join(f'argMax({expression},bucket_index) AS {name}'
+                for expression,name in zip(expressions,names))
+            final = client.query(f"""SELECT toString(session_date) AS day,
+              toString(attempt_id) AS attempt,resolution_ms,{values}
+              FROM {sql.table(db,stage)}
+              WHERE build_id={sql.literal(build)} AND ticker={sql.literal(ticker)}
+                AND session_date BETWEEN toDate({sql.literal(days[0])}) AND toDate({sql.literal(days[-1])})
+                AND attempt_id IN ({attempt_sql}) {'AND price_valid=1' if stage=='bars' else ''}
+              GROUP BY day,attempt,resolution_ms""",stage+'_resume_final_states')
+            for day,unit in published.items():
+                client.prefetched_final_states[(build,day,ticker,stage,unit['attempt_id'])]=[]
+            for item in final:
+                key=(build,item['day'],ticker,stage,item['attempt'])
+                client.prefetched_final_states[key].append(
+                    {name:item[name] for name in ['resolution_ms']+names})
 
 
 def validate_bars(client, db, build, day, ticker, attempt):
@@ -726,8 +795,20 @@ def prior_indicator_state(ledger, client, db, build, day, ticker, predecessor, c
     if not bars_unit or not completed(ledger,client,db,old_build,old_day,ticker,'bars',bars_unit['source_hash']):
         raise ValueError(f'{predecessor} {ticker}: missing certified prior bars')
     factor=sql.split_factor(splits,day,ticker,f'toDate({sql.literal(predecessor)})')
-    technical=client.query(f"SELECT resolution_ms,{','.join(f'ema_{p}*({factor}) AS ema_{p}' for p in sql.EMAS)},macd_signal*({factor}) AS macd_signal FROM {sql.table(db,'technical')} WHERE {sql.selection(old_build,old_day,ticker,candidate['attempt_id'])} ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_technical_values')
-    closes=client.query(f"SELECT resolution_ms,close_int/10000.*({factor}) AS close FROM {sql.table(db,'bars')} WHERE {sql.selection(old_build,old_day,ticker,bars_unit['attempt_id'])} AND price_valid=1 ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_close_values')
+    cache=getattr(client,'prefetched_final_states',{})
+    technical=cache.get((old_build,predecessor,ticker,'technical',candidate['attempt_id']))
+    closes=cache.get((old_build,predecessor,ticker,'bars',bars_unit['attempt_id']))
+    multiplier=sql.split_factor_value(splits,day,ticker,predecessor)
+    if technical is None:
+        technical=client.query(f"SELECT resolution_ms,{','.join(f'ema_{p}*({factor}) AS ema_{p}' for p in sql.EMAS)},macd_signal*({factor}) AS macd_signal FROM {sql.table(db,'technical')} WHERE {sql.selection(old_build,old_day,ticker,candidate['attempt_id'])} ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_technical_values')
+    else:
+        technical=[{name:(value if name=='resolution_ms' else float(value)*multiplier)
+            for name,value in item.items()} for item in technical]
+    if closes is None:
+        closes=client.query(f"SELECT resolution_ms,close_int/10000.*({factor}) AS close FROM {sql.table(db,'bars')} WHERE {sql.selection(old_build,old_day,ticker,bars_unit['attempt_id'])} AND price_valid=1 ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_close_values')
+    else:
+        closes=[dict(resolution_ms=item['resolution_ms'],close=float(item['close'])*multiplier)
+            for item in closes]
     by_frame={int(row['resolution_ms']):row for row in technical}
     close_by_frame={int(row['resolution_ms']):float(row['close']) for row in closes}
     if not by_frame and not close_by_frame:
@@ -816,7 +897,11 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
         with state_lock:
             clients.append(client)
 
+    # Per-ticker, invocation-local caches never replace a fresh integrity scan.
+    client.prefetched_source = {}
     prefetch_certified_evidence(ledger,client,args.database,build,ticker,rows)
+    if all(ledger.unit(build,row['source_date'],ticker,'bars') for row in rows):
+        prefetch_source_evidence(client,ticker,rows)
 
     def mark(day, attempt, stage):
         with state_lock:

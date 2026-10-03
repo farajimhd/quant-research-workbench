@@ -20,6 +20,31 @@ from pipelines.market_sip.events import market_day_sql as S
 
 
 class Arguments(unittest.TestCase):
+    def test_batched_source_evidence_preserves_exact_values_and_rejects_mismatch(self):
+        row=dict(ticker='NVDA',source_date='2026-07-31',event_count=2,
+            next_ordinal=12,last_ordinal=11,first_sip_timestamp_us=100,last_sip_timestamp_us=200)
+        result=dict(n=2,unique_ordinals=2,first_ordinal=10,last_ordinal=11,
+            first_us=100,last_us=200,session_events=2,reporting_delayed_trades=1,hash=991)
+        class Client:
+            def query(self,query,label):
+                self.query_text=query
+                return [dict(day=row['source_date'],**result)]
+        client=Client()
+        B.prefetch_source_evidence(client,'NVDA',[row])
+        self.assertEqual(B.source_evidence(client,row),result)
+        self.assertIn("America/New_York",client.query_text)
+        result['unique_ordinals']=1
+        with self.assertRaisesRegex(ValueError,'continuity mismatch'):
+            B.prefetch_source_evidence(client,'NVDA',[row])
+
+    def test_cached_split_adjustment_matches_chronological_contract(self):
+        splits=[dict(provider_ticker='NVDA',execution_date='2026-08-03',split_from=1,split_to=2),
+            dict(provider_ticker='NVDA',execution_date='2026-08-10',split_from=1,split_to=3)]
+        self.assertEqual(S.split_factor_value(splits,'2026-08-03','NVDA','2026-07-31'),.5)
+        self.assertEqual(S.split_factor_value(splits,'2026-08-03','NVDA','2026-08-03'),1.)
+        self.assertEqual(S.split_factor_value(splits,'2026-08-10','NVDA','2026-07-31'),1/6)
+        self.assertEqual(S.split_factor_value(splits,'2026-08-10','AAPL','2026-07-31'),1.)
+
     def test_reporting_coverage_requires_complete_matching_source(self):
         source = dict(source_date='2026-07-31', trade_event_rows=2, updated_at='ignored')
         row = dict(source_date='2026-07-31', revision=S.REPORTING_REVISION,

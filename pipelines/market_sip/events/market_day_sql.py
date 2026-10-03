@@ -224,6 +224,13 @@ def split_factor(splits, day, ticker, date_column='b.session_date'):
     return '*'.join(terms) or '1.'
 
 
+def split_factor_value(splits, day, ticker, source_day):
+    """Numerical equivalent of split_factor for cached certified final states."""
+    return math.prod(float(row['split_from'])/float(row['split_to'])
+        for row in splits if row['provider_ticker']==ticker
+        and str(source_day)<str(row['execution_date'])<=str(day))
+
+
 def technical_sql(db, build, day, ticker, attempt, bar_attempt, prior=None):
     source = f"""SELECT b.session_date,b.resolution_ms,b.bucket_index,
       b.close_int,b.high_int,b.low_int
