@@ -24,6 +24,7 @@ export function SavedLabelResearch() {
     const abort = new AbortController(); setListings(null); setError("");
     api<Listings>(`/api/research/models/v6/saved-labels/listings${query({ day })}`, { signal: abort.signal, timeoutMs: 300000 }).then(result => {
       if (abort.signal.aborted) return;
+      if (result.dataset_sha256 !== catalog.dataset_sha256) throw new Error("Published labels changed. Reload labels to use the current dataset.");
       setListings(result);
       if (!result.listings.some(r => r.listing_id === identity)) setIdentity(result.listings.find(r => r.ticker === "NVDA")?.listing_id ?? result.listings[0]?.listing_id ?? "");
     }).catch(e => { if (!abort.signal.aborted) setError(String(e)); });
@@ -39,6 +40,7 @@ export function SavedLabelResearch() {
       <label>Find ticker<input aria-label="Find saved label ticker" placeholder="Ticker or venue" value={search} onChange={e => setSearch(e.target.value)} /></label>
       <label>Listing<select aria-label="Saved label listing" value={identity} onChange={e => setIdentity(e.target.value)}>{options.map(r => <option key={r.listing_id} value={r.listing_id}>{r.ticker} · {r.venue}</option>)}</select></label>
       <span>{session?.valid_rows.toLocaleString()} labelled candles · {session?.invalid_price_rows.toLocaleString()} invalid rows excluded</span>
+      <button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Reload labels</button>
     </div>
     {error ? <div className="canvas-inline-error" role="alert">{error}<button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Retry saved labels</button></div> : selected && listings && catalog ?
       <PriceActionResearch key={`${catalog.dataset_sha256}:${day}:${identity}`} saved={{ day, listing_id: identity, dataset_sha256: listings.dataset_sha256, supports_combined: catalog.supports_combined === true }} /> : <LoadingState label="Checking published labels and listing identities" />}
