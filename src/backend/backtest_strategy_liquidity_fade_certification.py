@@ -85,7 +85,8 @@ def certify_prepared_liquidity_fade_source(*, source_overrides=None):
     for relative, expected in LIQUIDITY_FADE_SOURCE_AST.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
         try:
-            tree = ast.parse(source)
+            from .backtest_historical_strategy_projection import historical_strategy_tree
+            tree = historical_strategy_tree(ast.parse(source), relative)
         except SyntaxError as exc:
             raise ValueError('Liquidity source cannot be parsed: ' + relative) from exc
         if sha256(ast.unparse(tree).encode()).hexdigest() != expected:

@@ -1,6 +1,7 @@
 # Strategy 43 implementation status
 
-Status: **rules implemented and tested; app integration and publication incomplete**.
+Status: **native execution and normalized journal bridge implemented and tested;
+historical publication and app routing remain incomplete**.
 This document does not authorize launch or claim that Strategy 43 is selectable.
 
 ## Selected research configuration
@@ -67,45 +68,71 @@ bid minus 0.01 and never decreases. Each amendment must affect one leg only.
 The session lock is acquired at submission of the one 15-order batch and
 survives rejection, cancellation, partial fill and all exits.
 
-## Remaining runnable integration
+## Native execution and journal
 
-The existing numbered 1–42 path cannot be reused by merely appending 43 to
-its allowlists. It would inherit other entry rules, the Strategy 1 financial
-view and ticker-scoped management. Its source certificates pin shared files
-and AST behavior. Those proofs must continue to pass without accepting
-arbitrary new source hashes or changing sealed older trading behavior.
+The concrete native port uses shared TradingRuntime, Portfolio, OMS and the
+existing simulated broker. It submits fifteen independently reserved parent
+orders, each with one full-size stop and target. Per-leg stop amendments retain
+the current OCA-reduced quantity and affect no sibling. Fill facts come from
+actual group-owned 100 ms executions, including dedicated leg liquidations;
+ticker holdings are checked against their summed inventories. Terminal
+qualification rejects residual holdings or working orders.
 
-Required before publication:
+The independent in-memory journal, bounded V4 projector and publisher reuse
+native typed rows, mandatory command lineage, writer receipts and Keeper
+fences. Sources are metadata-free normalized intents; no Strategy 1 BOS rows,
+SQLite journal or serialized coordinator substitute is created. The cold reader
+reconstructs typed entry lineage; full historical cold-review qualification is
+still required. The native order journal requires ten-decimal precision: buy
+caps and stops floor, targets ceil, while source Float64 facts remain unchanged.
 
-1. A separate Strategy 43 fixed executor, immutable release manifest and
-   normalized configuration publication, with 1-second decision and 100 ms
-   execution clocks explicitly distinguished.
-2. A producer-owned, coverage-last fact product for signal admission,
-   completed swing availability and ten-second movement evidence. Bind the
-   full pinned tradable listing population and explicit LGHL exclusion.
-3. General-population causal V7 authority: prior-session checkpoints available
-   before session open, then completed intraday 1-second updates. Reuse a
-   certified normalized interval derivative where its population and product
-   policy match; never use the tested session's end-of-day checkpoint or invoke
-   a private V7 calculation inside Strategy 43/Backtest.
-4. One deterministic shared Portfolio admission transaction for the selected
-   batch, no independent shadow account, per-leg OMS protection/partial-fill
-   state and session submission lock. Native broker holdings may aggregate by
-   ticker; that is distinct from the 15 independent bracket/order groups.
-5. Normalized source evidence and leg state in the Keeper-fenced ClickHouse
-   journal, including recoverable submission outcomes and group-specific
-   stop amendments. No metadata blob or SQLite journal substitute.
-6. App listing, preflight and controller routing; completed-input causality,
-   missing-coverage, shared cash/liquidity, partial-fill/protection and restart
-   checks, plus a bounded real app launch-to-terminal qualification.
+Historical 1-42 behavior hashes remain checked after removing only three exact
+reviewed Strategy 43 extensions: identity recognition, mandatory command
+lineage inclusion, and independent cold-order dispatch. The extension adapter
+and its lineage implementation have pinned AST hashes. Strategy 42 certifies
+with current source receipt
+`753062b970ef4d3748a1f93fac8d7f5fef52c66efa8b17823f714eebee4780c5`.
+This is a changed technical source receipt, not a replacement historical policy.
 
-No app backtest, Strategy 43 publication, market-product write, workstation
-deployment or modification of strategies 1–42 was performed in this stage.
+## Historical sources and operator setup
 
-## Validation
+Producer-owned Polars features preserve the prior confirmed swing, prior
+attention and current ten-change movement clocks. Three normalized tables bind
+features, selected listing/signal identities and coverage-last seals. The
+publisher resumes only an exact unsealed prefix, never repairs a sealed product,
+and never deletes a successor's Keeper lock after session expiry.
 
-The initial focused rules suite passed 29 tests, including the app's actual
-`IbkrStrategyOrderPlanner`: each of the 15 native intents produces one buy
-parent, one full-quantity stop and one full-quantity limit target. This proves
-the intent/planner representation, not Portfolio admission, broker execution,
-durable journaling, app selection or complete strategy readiness.
+The SELECT-only reader verifies market, identity and causal V7 parent plans,
+exact IEEE 754 feature hashes, dense clocks, population proof and attempts.
+It retains first-signal facts for rejected candidates and loads complete
+histories only for active tickers, rechecking their seals.
+
+The operator launcher is
+`scripts/clickhouse/provision_strategy_forty_three_facts.py`. Its default is a
+plan with no mutations. Explicit application creates only the three versioned
+SSD tables, a dedicated producer with six SELECT/INSERT privileges and three
+SELECT grants for the existing Backtest reader. Credentials stay in workstation
+secrets. The user approved this scope after asking what the tables contain.
+Before application, all three tables were confirmed absent using the real
+`backtest_v3_reader`; no historical rows have been published yet.
+
+A producer-only entry-point V7 witness prototype streams the previous certified
+checkpoint through the entry boundary using the native FixedV7Stream. It is not
+a published interval product or an admitted release input. The current release
+still pins the existing normalized full-session causal V7 interval contract.
+
+## Validation and remaining work
+
+155 focused/regression tests passed. The native integration test uses actual
+Portfolio, OMS, planner and simulated broker: fifteen parents produce 45 orders,
+fill on a later 100 ms bucket, liquidate independently, and finish with zero
+holdings/working orders and a fenced sequence. Its writer transport is a test
+fixture; this is not an actual ClickHouse or historical financial Backtest.
+
+Remaining: provision and publish historical general-population source evidence;
+implement immutable Strategy 43 configuration certification/publication and app
+catalog/preflight/controller routing; qualify the complete real app route and
+cold journal review. The source reader currently requires independently
+certified identity and causal V7 plans, not arbitrary strings as authority.
+Do not append 43 to the old executor allowlists or inherit its trading rules.
+Strategy 43 is not yet selectable, and no app historical run was performed.

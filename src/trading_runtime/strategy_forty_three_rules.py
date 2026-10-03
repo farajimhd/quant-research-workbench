@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from hashlib import sha256
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, localcontext
 import json
 from math import floor, isfinite, log1p
 from typing import Sequence
@@ -49,6 +50,19 @@ def verify_selection() -> None:
 
 def _finite(*values: float) -> bool:
     return all(type(value) in (int, float) and isfinite(value) for value in values)
+
+
+def native_price(value: float, *, upward: bool = False) -> float:
+    """Directional native order precision; producer/ranking facts stay raw."""
+    if not _finite(value) or value <= 0:
+        raise ValueError("Strategy 43 native order price must be finite and positive")
+    with localcontext() as context:
+        context.prec = 50
+        result = Decimal(str(value)).quantize(Decimal("0.0000000001"),
+            rounding=ROUND_CEILING if upward else ROUND_FLOOR)
+    if result <= 0 or result >= Decimal("1e28"):
+        raise ValueError("Strategy 43 native order price exceeds its journal contract")
+    return float(result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,7 +215,8 @@ def propose_batch(facts: EntryFacts, *, account_id: str, assignment_id: str,
     if geometry is None:
         return None
     stop, targets = geometry
-    limit = facts.ask * 1.01
+    limit = native_price(facts.ask * 1.01)
+    stop = native_price(stop)
     weights = tuple(1 / log1p(i) for i in range(1, 16))
     total = sum(weights)
     budget = max(0., free_cash_after_reservations - 15 * 5.)
@@ -209,7 +224,7 @@ def propose_batch(facts: EntryFacts, *, account_id: str, assignment_id: str,
     if min(quantities) < 1:
         return None
     return EntryBatch(account_id, assignment_id, facts, tuple(
-        EntryLeg(i, quantity, limit, stop, target.lower - .01, target.level_id)
+        EntryLeg(i, quantity, limit, stop, native_price(target.lower - .01, upward=True), target.level_id)
         for i, (quantity, target) in enumerate(zip(quantities, targets), 1)))
 
 
@@ -227,9 +242,9 @@ def entry_intents(batch: EntryBatch, *, session_date: date) -> tuple[StrategyInt
                    or not 0 < r.stop_price < batch.facts.bid <= batch.facts.ask < r.limit_price < r.target_price
                    or not r.target_level_id for r in batch.legs)):
         raise ValueError("Strategy 43 batch has invalid independent legs")
-    if any(leg.limit_price != batch.facts.ask * 1.01
-           or leg.stop_price != geometry[0]
-           or leg.target_price != source.lower - .01
+    if any(leg.limit_price != native_price(batch.facts.ask * 1.01)
+           or leg.stop_price != native_price(geometry[0])
+           or leg.target_price != native_price(source.lower - .01, upward=True)
            or leg.target_level_id != source.level_id
            for leg, source in zip(batch.legs, geometry[1])):
         raise ValueError("Strategy 43 leg differs from its producer source")
@@ -279,7 +294,8 @@ def adaptive_stop(*, boundary_ms: int, first_fill_ms: int, current_stop: float,
             or completed_ten_second_mean_movement < 0):
         return current_stop
     candidate = peak_after_entry - max(3 * completed_ten_second_mean_movement, average_entry * .01)
-    return max(current_stop, min(candidate, bid - .01))
+    proposed = min(candidate, bid - .01)
+    return max(current_stop, native_price(proposed)) if proposed > current_stop else current_stop
 
 
 def protective_fee_reserve(*, held_and_pending_shares: int,

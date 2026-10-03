@@ -17,17 +17,7 @@ per ticker/session, rather than a single parent acquisition split into parts.
 M is 5, 10 or 15. Each position has exactly one target and one stop; no later
 entry batch is allowed after submission, even after cancellation or an exit.
 
-The agreed grid contains 4,320 configurations: 30 entries, three position
-counts, three allocations, two target modes, two initial-stop modes, two trail
-modes and replacement off/on. Entries are signal-only, VWAP cross held for 2s
-or 5s, breakout/retest and 26 distinct MACD subset/ANY/ALL choices across
-1s/5s/10s/30s. Singleton ANY/ALL duplicates are excluded. Allocation is equal,
-inverse logarithmic or logarithmic by target ordinal. Percentage targets are
-ordinal multiples of 2.5%; structural targets freeze current causal resistance
-identities. Initial stops use 3% or a confirmed 2-left/2-right swing low. Trails
-use a 10-interval mean absolute movement distance or 3% rise/1% stop steps,
-always upward. Detailed fixed execution and score assumptions live in the
-version README and grid.py, not in duplicated history definitions.
+The agreed grid contains 4,320 configurations: 30 entries, three M values (5/10/15), three allocations, two target modes, two initial-stop modes, two trail modes and replacement off/on. Entry choices include immediate signal, VWAP holds of 2s/5s, retest and MACD 1s/5s/10s/30s subsets. Duplicate singleton ANY/ALL choices are removed. Exact formulas and execution/score assumptions are pinned in the version README and grid.py.
 
 The user required a new v2 folder with no imports from the original Torch
 package, preserving its vectorized, GPU-resident spirit. Needed compiler,
@@ -182,4 +172,4 @@ There are 1,046 fully exited eligible configurations, all with actual entry fill
 
 ## Strategy 43 app comparison requested
 
-The user requested the best eligible September 3 configuration as app Strategy43 and explicitly chose 1s decisions with native 100ms fills. Selection 3da6e376d107a979c18e96332386b0401d0797a472ce6bcf6226f1c9ced766b2 uses signal, 15 inverse-log orders, structural targets, swing stop, adaptive trailing and no replacement. Pure typed rules and separate single-slice native intents are implemented without research imports; 51 focused tests pass, including native order planning and unchanged Strategy42/registry. Strategy42 still certifies. App publication, executor/controller, general-population producer evidence, per-leg Portfolio/OMS and durable source/leg journaling remain incomplete. Strategy43 is not selectable; no app run or publication occurred. See docs/trading/STRATEGY_FORTY_THREE_IMPLEMENTATION.md.
+The user chose the best eligible September 3 candidate as independent Strategy43 with 1s decisions/native 100ms fills: signal, fifteen inverse-log orders, structural targets, swing stop, adaptive trail, no replacement. Native Portfolio/OMS/planner/broker integration now submits 15 separate brackets, reads actual group fills, amends one leg and liquidates all 15 to zero holdings/working orders. Normalized journal sources, bounded V4 projection/publication, mandatory command lineage and cold entry reconstruction are implemented; test writer transport is a fixture. Producer features and coverage-last Keeper publication preserve exact IEEE rows, unsealed-prefix restart and successor-lock ownership. SELECT-only history certification checks market/identity/V7 parents and loads full histories only for active tickers. Native order precision is directionally normalized to ten decimals. 155 focused/regression tests pass; Strategy42 still certifies without replaced historical policy hashes. Three source tables were confirmed absent; the user approved explicit SSD tables and narrow producer/reader grants after clarification. Provisioning/publication, immutable app configuration/catalog/preflight/controller, real historical app run and cold review remain. Strategy43 is not selectable. See docs/trading/STRATEGY_FORTY_THREE_IMPLEMENTATION.md.
