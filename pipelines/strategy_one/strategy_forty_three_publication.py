@@ -115,12 +115,10 @@ def read_facts(client, source):
     for name, kind in FACT_COLUMNS:
         if name in FLOAT_FIELDS:
             names.append(f"reinterpretAsUInt64({name}) AS {name}_bits")
-        elif kind in ("Date", "UUID"):
-            names.append(f"toString({name}) AS {name}")
         else:
             names.append(name)
     rows = read_rows(client, f"SELECT {','.join(names)} FROM {FACT_TABLE} "
-        f"WHERE {_where(source)} ORDER BY boundary_ms SETTINGS prefer_column_name_to_alias=1")
+        f"WHERE {_where(source)} ORDER BY boundary_ms")
     for row in rows:
         for name in FLOAT_FIELDS:
             bits = row.pop(name + "_bits")
