@@ -53,7 +53,11 @@ def main(argv=None):
     p.add_argument('--source-commit', required=True)
     p.add_argument('--await-feature-bank-pid',type=int,
         help='Wait for the already-owned workstation bank worker before resuming; never duplicate it')
+    p.add_argument('--await-bar-verification-pid',type=int,
+        help='Retain the owned bar verifier and await its successful completion without restarting its checks')
     a = p.parse_args(argv)
+    if a.await_feature_bank_pid is not None and a.await_bar_verification_pid is not None:
+        raise ValueError('Only one existing worker can be handed off')
     output = a.output.resolve()
     if not ROOT.is_dir() or not output.is_relative_to(ROOT.resolve()):
         raise ValueError('Available workstation runtime root required')
@@ -102,11 +106,15 @@ def main(argv=None):
         done.append(stage)
 
     client = None
+    retained_bars = None
+    if a.await_bar_verification_pid is not None:
+        retained_bars=json.loads((output/'bars/latest.json').read_text())
     stage = 'event_flags'
     try:
         with flags.exclusive(output):
-            if a.await_feature_bank_pid is not None:
-                if os.name!='nt' or a.await_feature_bank_pid<=0:
+            wait_pid=a.await_bar_verification_pid if a.await_bar_verification_pid is not None else a.await_feature_bank_pid
+            if wait_pid is not None:
+                if os.name!='nt' or wait_pid<=0:
                     raise ValueError('Positive Windows feature worker PID required')
                 import ctypes
                 from ctypes import wintypes
@@ -116,18 +124,36 @@ def main(argv=None):
                 kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
                 kernel.GetExitCodeProcess.argtypes=[wintypes.HANDLE,ctypes.POINTER(wintypes.DWORD)]
                 kernel.CloseHandle.argtypes=[wintypes.HANDLE]
-                handle=kernel.OpenProcess(0x100000|0x1000,False,a.await_feature_bank_pid)
-                if not handle: raise OSError('Existing feature worker must still be running at handoff')
+                handle=kernel.OpenProcess(0x100000|0x1000,False,wait_pid)
+                if not handle: raise OSError('Existing owned worker must still be running at handoff')
                 try:
-                    stage='feature_banks'
+                    stage='bars' if retained_bars else 'feature_banks'
+                    if retained_bars:
+                        ownership=json.loads((output/'bar-worker-handoff.json').read_text())
+                        if ownership['pid']!=wait_pid or ownership['build_id']!=retained_bars['build_id']:
+                            raise ValueError('Bar handoff ownership differs from exact retained build')
+                        creation=wintypes.FILETIME();exit_time=wintypes.FILETIME()
+                        kernel_time=wintypes.FILETIME();user_time=wintypes.FILETIME()
+                        kernel.GetProcessTimes.argtypes=[wintypes.HANDLE,*([ctypes.POINTER(wintypes.FILETIME)]*4)]
+                        if not kernel.GetProcessTimes(handle,ctypes.byref(creation),ctypes.byref(exit_time),ctypes.byref(kernel_time),ctypes.byref(user_time)):
+                            raise OSError('Cannot verify bar worker creation time')
+                        if ((creation.dwHighDateTime<<32)|creation.dwLowDateTime) != ownership['creation_filetime']:
+                            raise ValueError('Bar worker PID was reused')
                     while True:
-                        progress(stage,'awaiting_existing_feature_worker',pid=a.await_feature_bank_pid)
+                        progress(stage,'awaiting_existing_bar_verifier' if retained_bars else 'awaiting_existing_feature_worker',pid=wait_pid)
                         outcome=kernel.WaitForSingleObject(handle,15000)
                         if outcome==0: break
                         if outcome!=258: raise OSError('Cannot wait for existing feature worker')
                     code=wintypes.DWORD()
                     if not kernel.GetExitCodeProcess(handle,ctypes.byref(code)) or code.value:
-                        raise RuntimeError(f'Existing feature worker exited {code.value}; inspect feature_banks.log')
+                        raise RuntimeError(f'Existing {stage} worker exited {code.value}; inspect its stage log')
+                    if retained_bars:
+                        finished=json.loads((output/'bars/latest.json').read_text())
+                        if (finished.get('status')!='core_complete' or
+                            finished.get('build_id')!=retained_bars['build_id'] or
+                            bars.digest(finished['definition'])!=bars.digest(retained_bars['definition'])):
+                            raise ValueError('Retained bar verifier did not complete its exact build')
+                        done.append('bars')
                 finally: kernel.CloseHandle(handle)
                 stage='event_flags'
             arguments = flags.parse_args(['--start-date','2026-07-01','--end-date','2026-07-31'])
@@ -166,7 +192,8 @@ def main(argv=None):
             run(stage,['scripts/audit_market_day_reporting_repair.py','--manifest',str(output/'canary-bars/latest.json'),
                 '--output',str(output/'canary-audit.json'),'--tickers','NVDA,AAPL',*audit_original])
             stage = 'bars'
-            run(stage,['scripts/build_market_day.py',*bar_arguments(output/'bars')])
+            if not retained_bars:
+                run(stage,['scripts/build_market_day.py',*bar_arguments(output/'bars')])
             stage = 'bar_audit'
             run(stage,['scripts/audit_market_day_reporting_repair.py','--manifest',str(output/'bars/latest.json'),
                 '--output',str(output/'bar-audit.json'),*audit_original])
