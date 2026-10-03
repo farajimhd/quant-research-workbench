@@ -1,7 +1,7 @@
 # Current V6 label authority
 
-Current training requires `rl-v6-swing-opportunity-dataset-v4`, using the
-`price-action-long-opportunities-v3` algorithm with horizon audit attributes. Old portfolio
+Current training requires `rl-v6-swing-opportunity-dataset-v5`, using the
+`price-action-long-opportunities-v4` algorithm with horizon audit attributes. Old portfolio
 teachers, rolling-15 episode windows, fee-adjusted candidate targets, bracket
 sidecars and checkpoints from their datasets are rejected by current loaders.
 Historical files remain audit evidence, not current supervision.
@@ -29,7 +29,7 @@ or initialization from checkpoints with the old inclusive feature contract.
 ENTRY stores `entry_target_us` and `entry_horizon_seconds`: the strictly future
 long-episode close attaining its existing maximum positive discounted gain.
 HOLD stores `hold_target_us`, `hold_horizon_seconds`, and `hold_target_gain`:
-the highest strictly future long-episode close, with gain measured from the
+the strictly future long-episode close maximizing discounted continuation, with raw gain measured from the
 reference entry. Existing raw EXIT/HOLD gain remains the current close minus
 reference entry; the future HOLD target is separate, not a reinterpretation.
 Both searches stay within the same short-to-long pair. Equal maxima choose
@@ -132,3 +132,6 @@ The legacy candidate/fee-allocation execution-cost compiler and its old
 sidecars are also rejected. They cannot be mixed into the new price-only
 labels. A future causal execution-observation preparation must be versioned
 and bound to the new label certificate; it must not revive old label targets.
+
+## Time-aware single EXIT cluster
+Current positive liquidation gain is compared with maximum positive future gain from the same reference entry, discounted to the current close with the configured half-life. Earliest candle whose current gain dominates continuation is the reference EXIT. Only its first contiguous run of dominant candles has in_exit_cluster=true. Later candidate clusters are suppressed to HOLD in hypothetical held supervision; the reference trade already ended. Raw exit_gain remains undiscounted. liquidation_quality retains the current/maximum(current,continuation) comparison; exit_quality is gated to zero outside the selected cluster. HOLD targets witness discounted continuation; hold_target_gain stays raw, hold_discounted_gain is discounted. No profitable reference means no forced exit target or trade. This changes teacher targets, but not feature timing or loss definitions.

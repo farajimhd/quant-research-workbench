@@ -1,8 +1,8 @@
-"""V2: episode-local swing opportunity bands, separate from selected references.
+"""Episode-local swing opportunities with one time-aware exit cluster.
 
 ENTRY quality normalizes discounted future gain within the same S->L pair.
-EXIT quality normalizes current gain from its reference entry by the best
-subsequent L gain. Neither includes accumulated future trades. No fill model.
+EXIT compares current gain with discounted continuation from its reference
+entry. Only the first contiguous dominant cluster supervises EXIT. No fills.
 """
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -17,8 +17,8 @@ from research.mlops.manifest import write_run_manifest
 from research.rl_trading.v6 import label_audit as audit
 from research.rl_trading.v6 import price_action_labels as legacy
 
-VERSION = 'price-action-long-opportunities-v3'
-OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v3/NVDA/2026-07-31-reporting-repaired')
+VERSION = 'price-action-long-opportunities-v4'
+OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v4/NVDA/2026-07-31-reporting-repaired')
 DAY, TICKER = legacy.DAY, legacy.TICKER
 
 
@@ -43,8 +43,8 @@ def classify(frame, threshold=.9, view='combined'):
     if view not in ('combined','flat','held','reference'):
         raise ValueError('Invalid opportunity view')
     entry = (pl.col('entry_gain') > 0) & (pl.col('entry_quality') >= threshold)
-    exit_ = (pl.col('exit_gain') > 0) & (pl.col('exit_quality') >= threshold)
-    context = pl.col('in_reference_hold')
+    exit_ = pl.col('in_exit_cluster') & (pl.col('exit_gain') > 0) & (pl.col('exit_quality') >= threshold)
+    context = pl.col('exit_gain').is_not_null()
     if view == 'flat':
         action = pl.when(entry).then(pl.lit('ENTRY')).otherwise(pl.lit('WAIT'))
     elif view == 'held':
@@ -64,7 +64,8 @@ def calculate(bars, config=Config()):
     """O(sum(pair_length^2)) comparisons with O(N) retained arrays.
 
     Reference entry maximizes a later L close gain discounted to that entry.
-    Its reference exit is the highest strictly subsequent L close. Every candle
+    Its reference exit is the first strictly subsequent L close dominating
+    discounted continuation. Every candle
     keeps both conditional scores; the reference ledger has <=1 trade per pair.
     """
     config.validate()
@@ -77,6 +78,9 @@ def calculate(bars, config=Config()):
     exit_gain, exit_quality = np.full(n,np.nan), np.full(n,np.nan)
     basis = np.full(n,np.nan)
     held = np.zeros(n,dtype=bool)
+    exit_cluster = np.zeros(n,dtype=bool)
+    hold_discounted = np.full(n,np.nan)
+    liquidation_quality = np.full(n,np.nan)
     entry_targets = [None]*n
     hold_targets = [None]*n
     hold_target_gains = [None]*n
@@ -111,21 +115,35 @@ def calculate(bars, config=Config()):
         # Earliest equal best entry: deterministic plateau membership.
         i = int(indexes[np.flatnonzero(entry_gain[indexes] == best)[0]])
         future = long_indexes[long_indexes > i]
-        j = int(future[np.argmax(prices[future])])
-        pnl = float(prices[j]-prices[i])
-        assert pnl > 0 and j > i
         valid_exits = indexes[(indexes > i) & (directions[indexes] == 1)]
         exit_gain[valid_exits] = prices[valid_exits]-prices[i]
-        exit_quality[valid_exits] = np.clip(exit_gain[valid_exits]/pnl,0,1)
         basis[indexes[indexes > i]] = prices[i]
-        # Separate future HOLD target; exit_gain remains the current gain.
-        # Strictly subsequent L closes only, earliest equal maximum wins.
+        # Compare liquidation now with continuation discounted to now.
+        # Future target witnesses this value, with earliest equal maxima.
         for current in valid_exits:
             later = long_indexes[long_indexes > current]
+            hold_discounted[current] = 0.
             if len(later):
-                target = int(later[np.argmax(prices[later])])
-                hold_targets[current] = int(times[target])
-                hold_target_gains[current] = float(prices[target]-prices[i])
+                scores = (prices[later]-prices[i])*np.exp2(-(times[later]-times[current])/1e6/config.half_life_seconds)
+                target = int(later[np.argmax(scores)])
+                hold_discounted[current] = max(0.,float(scores.max()))
+                if scores.max() > 0:
+                    hold_targets[current] = int(times[target])
+                    hold_target_gains[current] = float(prices[target]-prices[i])
+            now = max(0.,float(exit_gain[current]))
+            exit_quality[current] = now/max(now,hold_discounted[current]) if now > 0 else 0.
+        optimal = (exit_gain[valid_exits] > 0) & (exit_quality[valid_exits] == 1.)
+        first = int(np.flatnonzero(optimal)[0])
+        j = int(valid_exits[first])
+        end = first
+        while end < len(valid_exits) and optimal[end]:
+            exit_cluster[valid_exits[end]] = True
+            end += 1
+        liquidation_quality[valid_exits] = exit_quality[valid_exits]
+        # Later hypothetical held rows remain HOLD, never reopen an exit cluster.
+        exit_quality[valid_exits[~exit_cluster[valid_exits]]] = 0.
+        pnl = float(prices[j]-prices[i])
+        assert pnl > 0 and j > i
         held[i+1:j] = True
         reference_actions[i], reference_actions[j] = 'ENTRY','EXIT'
         pair.update(reference_entry_us=int(times[i]),reference_exit_us=int(times[j]),
@@ -155,6 +173,9 @@ def calculate(bars, config=Config()):
         pl.Series('hold_target_us',hold_targets,dtype=pl.Int64),
         pl.Series('hold_horizon_seconds',[None if t is None else (t-int(times[i]))/1e6 for i,t in enumerate(hold_targets)],dtype=pl.Float64),
         pl.Series('hold_target_gain',hold_target_gains,dtype=pl.Float64),
+        pl.Series('hold_discounted_gain',nullable(hold_discounted),dtype=pl.Float64),
+        pl.Series('liquidation_quality',nullable(liquidation_quality),dtype=pl.Float64),
+        pl.Series('in_exit_cluster',exit_cluster),
         pl.Series('entry_quality',entry_quality),pl.Series('exit_gain',nullable(exit_gain),dtype=pl.Float64),
         pl.Series('exit_quality',nullable(exit_quality),dtype=pl.Float64),
         pl.Series('entry_basis',nullable(basis),dtype=pl.Float64),pl.Series('in_reference_hold',held),
@@ -239,7 +260,7 @@ def build_bank_preview(bank_root, output=OUTPUT, config=Config()):
         actions=labels.group_by('action').len().sort('action').to_dicts(),
         trades=trades.height,total_price_pnl=float(trades['price_pnl'].sum()),
         both_opportunities=int(labels['both_opportunities'].sum()),
-        semantics='Reporting-certified corrected source; ENTRY discounted-gain horizon; HOLD future maximum-price horizon; audit attributes only',
+        semantics='Reporting-certified corrected source; single time-aware EXIT cluster; HOLD discounted-continuation horizon; raw current gain preserved',
         sealed_test_accessed=False)
     (output/'complete.json').write_text(json.dumps(proof,indent=2),encoding='utf-8')
     return proof

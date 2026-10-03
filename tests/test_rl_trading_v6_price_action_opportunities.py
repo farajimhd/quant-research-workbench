@@ -34,7 +34,9 @@ def test_several_opportunities_around_swing_and_one_reference_pair():
         assert r['entry_quality']==pytest.approx(expected/pair['best_entry_gain'])
         if r['exit_quality'] is not None:
             gain=prices[i]-pair['reference_entry_price']
-            assert r['exit_quality']==pytest.approx(np.clip(gain/pair['best_exit_gain'],0,1))
+            expected= max(0,gain)/max(max(0,gain),r['hold_discounted_gain']) if gain>0 else 0
+            assert r['liquidation_quality']==pytest.approx(expected)
+            assert r['exit_quality']==(expected if r['in_exit_cluster'] else 0)
     assert labels['entry_quality'].max()==1.
     assert labels['exit_quality'].max()==1.
 
@@ -61,7 +63,22 @@ def test_elapsed_gap_discount_and_chronological_exit_only_in_long():
     assert labels['entry_gain'][1]==pytest.approx(.5)
     assert labels['exit_quality'][0] is None
     assert trades['entry_us'][0]<trades['exit_us'][0]
-    assert labels.filter(pl.col('action')=='EXIT')['direction'].to_list()==[1]
+    assert set(labels.filter(pl.col('action')=='EXIT')['direction'])=={1}
+
+
+def test_early_near_equal_peak_wins_and_later_cluster_is_suppressed():
+    labels,_,pairs,_=op.calculate(bars([9.,9.1,9.63,9.60,9.4,9.65,9.64],[-1.,1.,1.,1.,1.,1.,1.],[1,2,3,4,5,18,19]))
+    assert pairs['reference_exit_us'][0]==3_000_000
+    assert labels['in_exit_cluster'].to_list()==[False,False,True,True,False,False,False]
+    assert labels['action'][5]=='HOLD'
+    assert labels['exit_quality'][5]==0
+    assert labels['exit_gain'][5]==pytest.approx(.65)
+
+
+def test_materially_better_future_peak_keeps_middle_peak_on_hold():
+    labels,_,pairs,_=op.calculate(bars([9.,9.1,9.4,9.3,10.,9.95],[-1.,1.,1.,1.,1.,1.]))
+    assert labels['action'][2]=='HOLD'
+    assert pairs['reference_exit_us'][0]==5_000_000
 
 
 def test_horizons_match_value_witnesses_and_use_elapsed_close_time():
