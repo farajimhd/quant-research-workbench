@@ -34,12 +34,13 @@ def profile(item, args, output, panel):
         max_prepared_gib=args.maximum_tape_gib,
     )
     started = perf_counter()
+    progress_stage = "Prepare real tape"
 
     def progress(event):
         panel.emit(
             dict(
                 status="profiling",
-                stage=event.get("stage", "Prepare real tape"),
+                stage=event.get("stage", progress_stage),
                 focus=item["day"],
                 progress=event,
                 message=event.get("message", ""),
@@ -90,13 +91,16 @@ def profile(item, args, output, panel):
         ).compile()
         rule_times = []
         if precompute:
+            progress_stage = "Prepare atomic policy gates"
             rule_times.append(runner.rule_compiler.prepare(progress))
+        progress_stage = "Measure prepared replay"
         first = runner.run(progress=progress)
         ledger = runner.ledger.detach().cpu().clone()
         metrics = {
             k: first[k].cpu()
             for k in (
                 "cash",
+                "net_pnl",
                 "fees",
                 "drawdown",
                 "filled_batches",
@@ -122,7 +126,9 @@ def profile(item, args, output, panel):
         replay_times = [first["replay_seconds"]]
         for repeat in range(2):
             if precompute:
+                progress_stage = "Prepare atomic policy gates"
                 rule_times.append(runner.rule_compiler.prepare(progress))
+            progress_stage = "Measure prepared replay"
             panel.emit(
                 dict(
                     status="profiling",
@@ -184,7 +190,7 @@ def profile(item, args, output, panel):
         optimized_objective_seconds=best["steady_objective_seconds"],
         baseline_replay_seconds=timings[0]["median_replay_seconds"],
         full_ledger_parity=True,
-        baseline_pnl=float(reference["cash"][0]) - space.settings.initial_cash,
+        baseline_pnl=float(reference["net_pnl"][0]),
         baseline_open_positions=int(reference["open_positions"][0]),
         previous_v2_september3_64_lane_seconds=69.62,
         comparison_note="Past v2 grid has different policies; same-date inline v3 is the controlled performance baseline; fastest measured steady objective selected",
