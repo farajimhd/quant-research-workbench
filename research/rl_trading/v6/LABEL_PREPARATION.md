@@ -59,8 +59,6 @@ to `\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes` and can be explicitly
 configured with `RL_V6_LABEL_AUDIT_RUNTIME`. Historical audit and the single
 NVDA experiment retain their separate paths. No new teacher or PPO run is launched.
 
-## Reporting-certified source requirement
-
 ## Episode liquidity admission (dataset V9)
 
 The S-to-L opportunity pair is admitted only at its original start boundary,
@@ -81,6 +79,8 @@ volume/counts are not used for threshold decisions. New outputs must use a fresh
 runtime directory. Prior bars, banks and label publications remain immutable.
 Research shows accepted/rejected pair counts, rejection reasons, and per-candle
 prior trade count, share volume, active seconds and trade age.
+
+## Reporting-certified source requirement
 
 V3 label datasets require rebuilt feature banks bound to verified ingestion
 reporting coverage. The bar builder requires completed, source-matching
