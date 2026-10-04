@@ -1,6 +1,8 @@
 """Browser acceptance of the real published V6 teacher dataset (no fixtures)."""
 import argparse
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
@@ -25,10 +27,13 @@ def main():
                         context=browser.new_context(viewport=viewport)
                         context.add_init_script(f"localStorage.setItem('quant-research-workbench.theme','{theme}');localStorage.setItem('quant-research-workbench.ui-scale','{scale}');")
                         page=context.new_page(); page.on('pageerror',lambda e:errors.append(str(e)))
-                        responses=[]; requests=[]
+                        responses=[]; requests=[]; metadata=[]
                         def proxy(route):
                             parsed=urlsplit(route.request.url)
                             response=route.fetch(url=args.api_url+parsed.path+('?' + parsed.query if parsed.query else ''),timeout=300000)
+                            if '/saved-labels/metadata' in parsed.path and response.ok:
+                                raw=response.json()
+                                metadata.append(raw['data'] if response.headers.get('x-response-envelope')=='1' else raw)
                             if '/saved-labels/chart' in parsed.path:
                                 if not response.ok:
                                     route.fulfill(response=response)
@@ -51,6 +56,18 @@ def main():
                         assert scope.get_by_label('Saved label session',exact=True).locator('option').count()==19
                         assert scope.get_by_label('Opportunity quality threshold',exact=True).count()==0
                         assert scope.get_by_label('Opportunity label view',exact=True).input_value()=='combined'
+                        # Liquidity admission can correctly reject the opening
+                        # premarket move. Verify rejection, then inspect an
+                        # eligible RTH pair with its selected exit in this window.
+                        assert all(row['action']=='WAIT' for row in responses[-1]['labels']
+                                   if row['episode_liquidity_reason'] not in ('eligible','outside_opportunity_pair'))
+                        pair=next(pair for pair in metadata[-1]['pairs']
+                            if pair['liquidity_accepted'] and pair['reference_exit_us'] is not None
+                            and pair['reference_exit_us']-pair['start_us']<900_000_000
+                            and datetime.fromtimestamp(pair['start_us']/1e6,ZoneInfo('America/New_York')).hour>=10)
+                        with page.expect_response(lambda response:'/saved-labels/chart' in response.url):
+                            scope.get_by_label('Price-action episode pair',exact=True).select_option(str(pair['pair_id']))
+                        scope.locator('.chart-shell').wait_for(timeout=300000)
                         assert any(row['action']=='EXIT' for row in responses[-1]['labels'])
                         assert 'close t, never open' in scope.inner_text()
                         name=f'{theme}-{scale}-{size}'
