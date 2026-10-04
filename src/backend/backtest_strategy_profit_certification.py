@@ -50,8 +50,7 @@ def certify_profit_giveback_route_source(*, source_overrides=None):
     observed = []
     for relative, expected in REVIEWED_PROFIT_ROUTE.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
-        from .backtest_historical_strategy_projection import historical_strategy_tree
-        tree = historical_strategy_tree(ast.parse(source), relative)
+        tree = ast.parse(source)
         for name, digest in expected.items():
             nodes = [tree] if name == '__module__' else [n for n in ast.walk(tree)
                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]

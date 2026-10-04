@@ -215,15 +215,6 @@ def _terminal_attestation(client, normalized: str,
             prefix = load_verified_v4_prefix(client, normalized)
         if prefix is None or prefix.status not in {"completed", "stopped", "failed"}:
             raise ValueError("Saved review requires a cold-verified terminal V4 run")
-        if (context["strategy_id"], int(context["strategy_revision"])) == ("squeeze-grid-strategy", 45):
-            from .backtest_strategy_forty_five_review import audit_terminal_source
-            audit_terminal_source(client, prefix, context)
-        if (context["strategy_id"], int(context["strategy_revision"])) == ("squeeze-grid-strategy", 44):
-            from .backtest_strategy_forty_four_review import audit_terminal_source
-            audit_terminal_source(client, prefix, context)
-        if (context["strategy_id"], int(context["strategy_revision"])) == ("squeeze-grid-strategy", 43):
-            from .backtest_strategy_forty_three_review import audit_terminal_source
-            audit_terminal_source(client, prefix, context)
         accounts = {
             account_id: load_terminal_backtest_snapshot(
                 client, prefix, account_id=account_id)
@@ -556,14 +547,6 @@ def load_v4_performance_report(client, run_id: str, *,
     episodes = derive_trade_episodes(executions)
     report = build_performance_report(episodes, executions, ())
     lifecycles = derive_position_lifecycles(executions, ())
-    if executions and all((e.strategy_id, e.strategy_revision) == ("squeeze-grid-strategy", 45) for e in executions):
-        from .backtest_strategy_forty_five_performance import derive_saved_leg_positions
-        episodes, lifecycles = derive_saved_leg_positions(client, prefix, executions)
-        report = build_performance_report(episodes, executions, ())
-    if executions and all((e.strategy_id, e.strategy_revision) == ("squeeze-grid-strategy", 44) for e in executions):
-        from .backtest_strategy_forty_four_performance import derive_saved_leg_positions
-        episodes, lifecycles = derive_saved_leg_positions(client, prefix, executions)
-        report = build_performance_report(episodes, executions, ())
     protection_events = _saved_protection_events(client, prefix)
     # Opening-order identities, not ticker/price coincidence, assign broker
     # protection revisions to a lifecycle. Unmatched events remain journal

@@ -104,15 +104,6 @@ def publish_configuration(client: Any, keeper: Any,
     number = dict(dict(envelope.get("payload") or {}).get("strategy") or {}).get("strategy_number")
     if number == 1:
         payload, nodes = _verified_envelope(envelope)
-    elif type(number) is int and number == 45:
-        from src.backend.backtest_strategy_forty_five_configuration import verify_envelope
-        payload, nodes = verify_envelope(dict(envelope))
-    elif type(number) is int and number == 44:
-        from src.backend.backtest_strategy_forty_four_configuration import verify_envelope
-        payload, nodes = verify_envelope(dict(envelope))
-    elif type(number) is int and number == 43:
-        from src.backend.backtest_strategy_forty_three_configuration import verify_envelope
-        payload, nodes = verify_envelope(dict(envelope))
     elif type(number) is int and number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42):
         payload, nodes = _verified_numbered_envelope(envelope)
         if number == 2:
@@ -267,7 +258,7 @@ def publish_configuration(client: Any, keeper: Any,
         release = {
             "strategy_number": number,
             "release_attempt_id": attempt,
-            "strategy_id": payload["strategy"]["strategy_id"],
+            "strategy_id": STRATEGY_ID,
             "source_candidate_id": envelope["source_candidate_id"],
             "source_candidate_hash": envelope["source_candidate_hash"],
             "payload_hash": envelope["payload_hash"],

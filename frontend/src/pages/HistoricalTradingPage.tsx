@@ -134,7 +134,6 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
-  const [preparationWaitSeconds, setPreparationWaitSeconds] = useState(0);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [creating, setCreating] = useState(false);
@@ -163,18 +162,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const resolvedSessionMatches = preflight?.window.sessions.length === 1 && preflight.window.sessions[0] === sessionDate;
   const selectedPlan = configurationOptions?.candidate_id === candidateId
     ? configurationOptions.available_run_plans.find((plan) => plan.run_plan_id === runPlanId) : undefined;
-  const extendedPreparation = fullMarket && selectedPlan?.strategy_id === "squeeze-grid-strategy" && selectedPlan.strategy_revision === 45;
-  const preparationTimeoutMs = extendedPreparation ? 900_000 : fullMarket ? 180_000 : 60_000;
   const setupKey = JSON.stringify([candidateId, runPlanId, sessionDate, startTime, endTime, initialCash, normalizedTickers, tickerPreset, refreshKey]);
   const currentPreflight = checkedSetupKey === setupKey && preflight?.configuration_revision_id === candidateId && preflight.run_plan_id === runPlanId && preflight.initial_cash === initialCash;
-
-  useEffect(() => {
-    setPreparationWaitSeconds(0);
-    if (!checking || loadingOptions || !extendedPreparation) return;
-    const started = Date.now();
-    const timer = window.setInterval(() => setPreparationWaitSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => window.clearInterval(timer);
-  }, [checking, loadingOptions, extendedPreparation, setupKey]);
 
   useEffect(() => {
     if (!selectedRunId) return;
@@ -311,7 +300,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           tickers: normalizedTickers,
         }),
         method: "POST",
-        timeoutMs: preparationTimeoutMs,
+        timeoutMs: fullMarket ? 180_000 : 60_000,
       })
         .then((payload) => {
           if (!cancelled) {
@@ -334,7 +323,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [anchorDate, candidateId, endTime, fullMarket, initialCash, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId, preparationTimeoutMs]);
+  }, [anchorDate, candidateId, endTime, fullMarket, initialCash, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId]);
 
   usePollingTask({
     enabled: Boolean(run && (run.work_progress?.active || !["completed", "stopped", "failed"].includes(run.status))),
@@ -406,7 +395,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
             ...(fullMarket ? { new_order_activation_delay_ms: 0 } : {}),
           }),
           method: "POST",
-          timeoutMs: preparationTimeoutMs,
+          timeoutMs: fullMarket ? 180_000 : 60_000,
       });
       setResults(null);
       setComparison(null);
@@ -570,7 +559,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       actionSummary={launchReady ? <><strong>{fullMarket ? 'The signal-admitted market' : normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and immutable Strategy <strong>{selectedPlan?.strategy_revision}</strong>.</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || loadingOptions}
-      checkingLabel={loadingOptions ? "Loading strategy settings…" : extendedPreparation ? `Checking historical inputs · ${Math.floor(preparationWaitSeconds / 60)}:${String(preparationWaitSeconds % 60).padStart(2, "0")} elapsed. First check can take several minutes.` : "Checking persisted market products…"}
+      checkingLabel={loadingOptions ? "Loading strategy settings…" : "Checking persisted market products…"}
       checks={launchChecks}
       description="Evaluate a published strategy using certified market data and one shared simulated portfolio."
       error={optionsError || error}

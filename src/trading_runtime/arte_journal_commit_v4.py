@@ -1721,12 +1721,6 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         if str(row["strategy_id"]) == "early-squeeze-strategy"
         and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42)
     }
-    from .strategy_forty_three_lineage import command_ids
-    strategy_one_commands.update(command_ids(command_rows))
-    from .strategy_forty_five_lineage import command_ids as forty_five_command_ids
-    strategy_one_commands.update(forty_five_command_ids(command_rows))
-    from .strategy_forty_four_lineage import command_ids as forty_four_command_ids
-    strategy_one_commands.update(forty_four_command_ids(command_rows))
     lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)
                          for row in batch.v4_command_lineages)
     lineage_parents = {str(UUID(str(row["parent_record_id"])))

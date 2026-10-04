@@ -58,32 +58,18 @@ _NUMBERED_FIXED_CONTRACT = Path(__file__).parents[1] / "trading_runtime" / "numb
 
 def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
     source = path.read_text(encoding="utf-8")
-    adapter_source = Path(__file__).with_name(
-        "backtest_historical_strategy_projection.py").read_text(encoding="utf-8")
-    if sha256(ast.unparse(ast.parse(adapter_source)).encode()).hexdigest() != "c05609eed136d30cd04dd7068525aa619d0816e98ea0de6fe49d2eb4fab90e31":
-        raise ValueError("Historical numbered dispatch projection source changed")
-    from .backtest_historical_strategy_projection import historical_strategy_tree
-    tree = historical_strategy_tree(ast.parse(source), "trading_runtime/numbered_fixed_strategy.py")
+    tree = ast.parse(source)
     predicates = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                   and node.name == "is_numbered_fixed_strategy"]
     expected = "return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42))"
     if (len(predicates) != 1 or len(predicates[0].body) != 1
             or ast.unparse(predicates[0].body[0]) != expected):
         raise ValueError("Numbered fixed identity whitelist changed")
-    return sha256((source + adapter_source).encode()).hexdigest()
+    return sha256(source.encode()).hexdigest()
 
 
 def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
-    if type(strategy_number) is int and strategy_number == 45:
-        from .backtest_strategy_forty_five_certification import certify_projection
-        return certify_projection()
-    if type(strategy_number) is int and strategy_number == 44:
-        from .backtest_strategy_forty_four_certification import certify_projection
-        return certify_projection()
-    if type(strategy_number) is int and strategy_number == 43:
-        from .backtest_strategy_forty_three_certification import certify_projection
-        return certify_projection()
     if type(strategy_number) is int and strategy_number == 42:
         from .backtest_strategy_forty_two_certification import certify_strategy_forty_two_source
         from src.trading_runtime.strategy_forty_two_release import release_contract
@@ -1227,8 +1213,7 @@ def certify_rising_momentum_entry_source(*, source_overrides: dict[str, Path] | 
         path = overrides.get(relative, root / relative)
         source = path.read_text(encoding="utf-8")
         try:
-            from .backtest_historical_strategy_projection import historical_strategy_tree
-            tree = historical_strategy_tree(ast.parse(source), relative)
+            tree = ast.parse(source)
         except SyntaxError as exc:
             raise ValueError("Strategy 13 source cannot be parsed: " + relative) from exc
         for name, digest in expected.items():

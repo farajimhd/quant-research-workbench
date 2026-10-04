@@ -167,17 +167,8 @@ def certified_saved_run_plan(
         raise RuntimeError("Saved chart configuration differs from the run release")
     session = date.fromisoformat(str(context["session_date"]))
     requested = tuple(row["ticker"] for row in definition["tickers"])
-    if context['strategy_id'] == 'squeeze-grid-strategy' and int(context['strategy_revision']) in {43, 44}:
-        # Reproduce Strategies 43 and 44's sealed market population, exactly as their
-        # source-plan authority does. It excludes LGHL before computing the
-        # run token and does not use the numbered Strategy 1 resolutions.
-        plan = plan_loader(sessions=(session,), tickers=(), configuration={
-            'market_day_build_id': release.payload['market_day_build_id'],
-            'strategy': {'execution_interval': '100ms'}})
-        plan = project_market_day_plan(plan, tuple(t for t in plan.tickers if t != 'LGHL'))
-    else:
-        plan = plan_loader(
-            sessions=(session,), tickers=requested, configuration=release.payload)
+    plan = plan_loader(
+        sessions=(session,), tickers=requested, configuration=release.payload)
     if (not isinstance(plan, CertifiedMarketDayPlan)
             or plan.token != context["market_plan_token"]
             or plan.sessions != (session.isoformat(),)):
@@ -215,13 +206,6 @@ def _causal_v7_chart_segments(journal_client: Any, market_client: Any, *,
     """
     if not bars or len(bars) > 1000:
         return [], "No completed bars in this chart page"
-    if run_context['strategy_id'] == 'squeeze-grid-strategy' and int(run_context['strategy_revision']) in {43, 44}:
-        from src.backend.backtest_recorded_v7 import recorded_v7_ticker_intervals
-        definition = load_backtest_definition(journal_client, run_id, run_context=run_context)
-        rows = recorded_v7_ticker_intervals(market_client, market=plan,
-            session=session.isoformat(), ticker=ticker,
-            structure_pin=definition['definition']['causal_v7_plan_token'])
-        return _clip_v7_chart_rows(rows, session, bars)
     cache_key = (run_id, plan.token, session.isoformat(), ticker)
     with _v7_chart_cache_lock:
         rows = _v7_chart_cache.get(cache_key)

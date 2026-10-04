@@ -17,8 +17,7 @@ def certify_strategy_forty_one_source(*, source_overrides=None):
     for relative, expected in STRATEGY41_SOURCE_AST.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
         try:
-            from .backtest_historical_strategy_projection import historical_strategy_tree
-            tree = historical_strategy_tree(ast.parse(source), relative)
+            tree = ast.parse(source)
         except SyntaxError as exc:
             raise ValueError('Strategy41 source cannot be parsed: ' + relative) from exc
         if sha256(ast.unparse(tree).encode()).hexdigest() != expected:

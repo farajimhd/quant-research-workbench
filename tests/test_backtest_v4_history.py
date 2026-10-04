@@ -56,18 +56,6 @@ def test_history_query_uses_installed_release_inventory(monkeypatch):
     assert "LIMIT 33" in queries[0]
 
 
-def test_independent_strategy43_history_preserves_own_identity(monkeypatch):
-    def rows(_client, sql):
-        if "trading_run_v1 AS r" in sql:
-            assert "c.strategy_id='squeeze-grid-strategy' AND c.strategy_revision=43" in sql
-            return [{**_context(), "strategy_id":"squeeze-grid-strategy", "strategy_revision":43}]
-        return [_head()]
-    monkeypatch.setattr(history, "_rows", rows)
-    row, = history.load_strategy_one_v4_history(object())
-    assert row["strategy_id"] == "squeeze-grid-strategy"
-    assert row["configuration_label"] == "Strategy 43"
-    assert row["status"] == "completed"
-    assert row["v4_review_available"]
 
 
 def test_history_lists_normalized_record_without_claiming_review(monkeypatch):

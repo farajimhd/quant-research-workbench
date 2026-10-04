@@ -55,8 +55,7 @@ def certify_entry_activity_source(*, source_overrides=None):
     for relative, expected in ENTRY_ACTIVITY_SOURCE_AST.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
         try:
-            from .backtest_historical_strategy_projection import historical_strategy_tree
-            tree = historical_strategy_tree(ast.parse(source), relative)
+            tree = ast.parse(source)
         except SyntaxError as exc:
             raise ValueError('Entry activity source cannot be parsed: ' + relative) from exc
         if sha256(ast.unparse(tree).encode()).hexdigest() != expected:

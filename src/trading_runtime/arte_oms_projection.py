@@ -729,36 +729,6 @@ def reconstruct_strategy_one_oms_lineage(
     This returns recovery evidence only; it does not reconcile broker orders,
     restore OMS tasks, or grant live order admission.
     """
-    if (isinstance(getattr(state, "group", None), dict)
-            and state.group.get("strategy_id") == "squeeze-grid-strategy"
-            and type(state.group.get("strategy_revision")) is int
-            and state.group["strategy_revision"] == 45):
-        from .strategy_forty_five_lineage import reconstruct_leg_orders
-        if any(row is not None for row in (followthrough_row, profit_giveback_row,
-                                          confirmed_ah_row, liquidity_fade_row)):
-            raise ValueError("Strategy 45 cannot inherit another strategy's exit witness")
-        return reconstruct_leg_orders(state, source_intent, protection_history,
-            admission_reservation=admission_reservation, admission_decision=admission_decision)
-    if (isinstance(getattr(state, "group", None), dict)
-            and state.group.get("strategy_id") == "squeeze-grid-strategy"
-            and type(state.group.get("strategy_revision")) is int
-            and state.group["strategy_revision"] == 44):
-        from .strategy_forty_four_lineage import reconstruct_leg_orders
-        if any(row is not None for row in (followthrough_row, profit_giveback_row,
-                                          confirmed_ah_row, liquidity_fade_row)):
-            raise ValueError("Strategy 44 cannot inherit another strategy's exit witness")
-        return reconstruct_leg_orders(state, source_intent, protection_history,
-            admission_reservation=admission_reservation, admission_decision=admission_decision)
-    if (isinstance(getattr(state, "group", None), dict)
-            and state.group.get("strategy_id") == "squeeze-grid-strategy"
-            and type(state.group.get("strategy_revision")) is int
-            and state.group["strategy_revision"] == 43):
-        from .strategy_forty_three_lineage import reconstruct_leg_orders
-        if any(row is not None for row in (followthrough_row, profit_giveback_row,
-                                          confirmed_ah_row, liquidity_fade_row)):
-            raise ValueError("Strategy 43 cannot inherit another strategy's exit witness")
-        return reconstruct_leg_orders(state, source_intent, protection_history,
-            admission_reservation=admission_reservation, admission_decision=admission_decision)
     from src.trading_runtime.arte_intent_projection import RecoveredIntent
     from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
     from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
