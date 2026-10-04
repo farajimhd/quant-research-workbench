@@ -18,7 +18,7 @@ from research.rl_trading.v6 import label_audit as audit
 from research.rl_trading.v6 import price_action_labels as legacy
 
 VERSION = 'price-action-long-opportunities-v7'
-OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v7/NVDA/2026-07-31-liquidity-gated')
+OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v7/NVDA/2026-07-31-liquidity-bounded')
 DAY, TICKER = legacy.DAY, legacy.TICKER
 
 

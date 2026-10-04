@@ -2,7 +2,7 @@ import numpy as np
 import polars as pl
 import pytest
 from research.rl_trading.v6.price_action_opportunities import Config, calculate
-from research.rl_trading.v6.episode_liquidity import evidence
+from research.rl_trading.v6.episode_liquidity import evidence, has_gap
 
 
 def activity(times):
@@ -24,6 +24,15 @@ def test_prior_window_excludes_target_and_has_exact_inclusive_threshold():
     assert e['liquidity_eligible'].to_list()==[False,True]
     changed=a.with_columns(pl.when(pl.col('time_us')==11_000_000).then(999999.).otherwise(pl.col('volume')).alias('volume'))
     assert evidence(np.array([11])*1_000_000,changed,Config())['prior_shares_60s'][0]==2000
+
+
+def test_one_second_buckets_never_overstate_freshness_or_gap_bound():
+    a=activity([1]).with_columns(pl.lit(20).alias('trade_count'),pl.lit(2000.).alias('volume'))
+    e=evidence(np.array([5,6])*1_000_000,a,Config(minimum_active_seconds_60s=1))
+    assert e['prior_trade_age_seconds'].to_list()==[5.,6.]
+    assert e['liquidity_eligible'].to_list()==[True,False]
+    assert has_gap(activity([1,6]),1_000_000,7_000_000,5)
+    assert not has_gap(activity([1,5]),1_000_000,6_000_000,5)
 
 
 def test_sparse_nuv_style_gap_never_gets_normalized_entry():

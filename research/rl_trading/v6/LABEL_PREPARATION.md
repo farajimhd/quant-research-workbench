@@ -66,7 +66,8 @@ NVDA experiment retain their separate paths. No new teacher or PPO run is launch
 The S-to-L opportunity pair is admitted only at its original start boundary,
 using exact pinned repaired ARTE activity in `[start-60 seconds, start)`:
 at least 20 trades, 2,000 shares, 10 distinct active seconds, and a prior trade
-no older than five seconds. The target candle is excluded. Rising liquidity
+no older than five seconds. Freshness and internal gaps use conservative
+upper bounds for the one-second trade buckets; exact tick times are not claimed. The target candle is excluded. Rising liquidity
 inside an existing move cannot reopen it. Any trade inactivity interval longer
 than five seconds through the pair invalidates its hindsight ENTRY/EXIT
 supervision; every price candle remains present as WAIT, with explicit reasons.

@@ -46,7 +46,9 @@ def evidence(targets, activity, config):
     index = np.searchsorted(active, targets, side='left')-1
     age = np.full(len(targets), np.nan)
     present = index >= 0
-    age[present] = (targets[present]-active[index[present]])/1e6
+    # A trade lies somewhere in [bucket close - 1s, bucket close).
+    # Use the oldest possible trade time: never overstate freshness.
+    age[present] = (targets[present]-active[index[present]])/1e6+1.
     eligible = ((count >= config.minimum_trades_60s) &
                 (shares >= config.minimum_shares_60s) &
                 (seconds >= config.minimum_active_seconds_60s) &
@@ -71,5 +73,10 @@ def has_gap(activity, start, end, maximum_seconds):
     times = activity['time_us'].to_numpy()
     left, right = np.searchsorted(times, [start, end])
     active = times[left:right][activity['trade_count'].to_numpy()[left:right] > 0]
-    clocks = np.r_[start, active, end]
-    return bool(np.any(np.diff(clocks) > maximum_seconds*1e6))
+    if not len(active):
+        return end-start > maximum_seconds*1e6
+    # Worst-case interval from an early trade in one bucket to a late
+    # trade in the next. Bound both ends of the original pair as well.
+    intervals = np.r_[active[0]-start, np.diff(active)+1_000_000,
+                      end-active[-1]+1_000_000]
+    return bool(np.any(intervals > maximum_seconds*1e6))
