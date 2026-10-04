@@ -9,15 +9,15 @@ import { ResearchCanvas } from "./ResearchCanvas";
 import { researchBandColor, researchClock as clock } from "./researchChart";
 import { useResearchState } from "./researchState";
 
-type Pair = { pair_id: number; short_episode: number | null; long_episode: number; start_us: number; end_us: number;
+type Pair = { liquidity_accepted?: boolean; liquidity_rejection_reason?: string; pair_id: number; short_episode: number | null; long_episode: number; start_us: number; end_us: number;
   best_start_price: number; best_end_price: number; best_stop: number; best_target: number; reference_range: number; reference_entry_us: number | null; reference_exit_us: number | null; reference_entry_price: number | null; reference_exit_price: number | null; best_entry_gain: number; best_exit_gain: number; carried_next_pair_value: number };
-type Row = { time_us: number; episode_id: number; pair_id: number; direction: number; close: number; action: string;
+type Row = { liquidity_eligible?: boolean; liquidity_reason?: string; episode_liquidity_reason?: string; prior_trades_60s?: number; prior_shares_60s?: number; prior_active_seconds_60s?: number; prior_trade_age_seconds?: number | null; time_us: number; episode_id: number; pair_id: number; direction: number; close: number; action: string;
   entry_gain: number; entry_quality: number; exit_gain: number | null; exit_quality: number | null;
   entry_target_us?: number | null; entry_horizon_seconds?: number | null; hold_target_us?: number | null; hold_horizon_seconds?: number | null; hold_target_gain?: number | null;
   hold_discounted_gain?: number | null; liquidation_quality?: number | null; in_exit_cluster?: boolean;
   entry_basis: number | null; label_value: number | null; reference_action: string; carried_next_pair_value: number; both_opportunities: boolean };
 type Experiment = { ticker: string; day: string; session: string; version: string; semantics: string;
-  config: { timeframe_seconds: number; half_life_seconds: number; stop_offset: number; minimum_position_seconds: number; quality_threshold: number };
+  config: { liquidity_gate?: boolean; minimum_trades_60s?: number; minimum_shares_60s?: number; minimum_active_seconds_60s?: number; maximum_inactivity_seconds?: number; timeframe_seconds: number; half_life_seconds: number; stop_offset: number; minimum_position_seconds: number; quality_threshold: number };
   actions: { action: string; len: number }[]; teacher_actions?: { branch: string; action: string; len: number }[]; observed_price_candles: number; consumed_activity_rows: number;
   omitted_invalid_price_rows: number; absent_second_slots: number; approximate_volume: number;
   trades: number; total_price_pnl: number; both_opportunities: number; pairs: Pair[]; price_source: string;
@@ -94,12 +94,14 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
         <div><dt>Best start reference</dt><dd>{number(pair.best_start_price)}</dd></div><div><dt>Best end reference</dt><dd>{number(pair.best_end_price)}</dd></div>
         <div><dt>Stop reference · offset {experiment.config.stop_offset}</dt><dd>{number(pair.best_stop)}</dd></div><div><dt>Target reference</dt><dd>{number(pair.best_target)}</dd></div>
         <div><dt>Reference range</dt><dd>{number(pair.reference_range)}</dd></div>
-        <div><dt>Selected entry / exit close ET</dt><dd>{pair.reference_entry_us == null ? "No positive gain" : `${clock(pair.reference_entry_us)} / ${clock(pair.reference_exit_us!)}`}</dd></div>
+        <div><dt>Selected entry / exit close ET</dt><dd>{pair.reference_entry_us == null ? (pair.liquidity_accepted === false ? "Rejected by liquidity gate" : "No positive gain") : `${clock(pair.reference_entry_us)} / ${clock(pair.reference_exit_us!)}`}</dd></div>
         <div><dt>Selected entry / exit price</dt><dd>{number(pair.reference_entry_price)} / {number(pair.reference_exit_price)}</dd></div>
         <div><dt>Best discounted entry gain</dt><dd>{number(pair.best_entry_gain)}</dd></div><div><dt>Best exit price gain</dt><dd>{number(pair.best_exit_gain)}</dd></div></dl>}
+      {experiment.config.liquidity_gate && <section aria-label="Episode liquidity audit"><h2>Episode liquidity audit</h2><p>Start requires {experiment.config.minimum_trades_60s} trades, {count(experiment.config.minimum_shares_60s)} shares and {experiment.config.minimum_active_seconds_60s} active seconds in the prior 60 seconds. Last trade must be within {experiment.config.maximum_inactivity_seconds}s. Target candle excluded.</p><p>{count(experiment.pairs.filter(p => p.liquidity_accepted).length)} accepted / {count(experiment.pairs.filter(p => p.liquidity_accepted === false).length)} rejected pairs. Original MACD runs remain visible; rejected opportunities become WAIT.</p>{pair && <p>Selected pair: {pair.liquidity_accepted ? "Accepted" : "Rejected"} · {pair.liquidity_rejection_reason?.replaceAll("_", " ")}</p>}</section>}
       <h2>Inspect one candle</h2><label className="research-field">Candle close ET<select aria-label="Price-action candle" value={row?.time_us ?? ""} onChange={e => setSelectedClock(Number(e.target.value))}>
         {chart?.labels.map(r => <option key={r.time_us} value={r.time_us}>{clock(r.time_us)} · {r.action}</option>)}</select></label>
       {row && <div className="research-candle-values"><dl><div><dt>Close / MACD episode</dt><dd>{number(row.close)} / {row.direction === 1 ? "L" : "S"}{row.episode_id}</dd></div>
+        {row.liquidity_reason && <><div><dt>Prior 60s trades / shares / active seconds</dt><dd>{count(row.prior_trades_60s)} / {count(row.prior_shares_60s)} / {count(row.prior_active_seconds_60s)}</dd></div><div><dt>Prior trade age · seconds</dt><dd>{number(row.prior_trade_age_seconds)}</dd></div><div><dt>Candle liquidity / episode decision</dt><dd>{row.liquidity_reason.replaceAll("_", " ")} / {row.episode_liquidity_reason?.replaceAll("_", " ")}</dd></div></>}
         <div><dt>Displayed label / quality</dt><dd>{row.action} / {number(row.label_value)}</dd></div>
         <div><dt>ENTRY quality · if flat</dt><dd>{number(row.entry_quality)}</dd></div><div><dt>Discounted local entry gain</dt><dd>{number(row.entry_gain)}</dd></div>
         <div><dt>EXIT quality · reference entry</dt><dd>{number(row.exit_quality)}</dd></div><div><dt>Local exit price gain</dt><dd>{number(row.exit_gain)}</dd></div>
@@ -122,6 +124,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
         <span>{chart ? `${clock(chart.start_us-1e6)}–${clock(chart.end_us-1e6)} ET · 1s` : "Loading window"}</span>
         <button className="button secondary compact" disabled={busy || !chart?.next_available} onClick={() => { setStart(chart!.end_us); setSelectedClock(null); }}>Next 15 min</button></div>
       <p className="research-muted">1s MACD: green ≥ signal, red &lt; signal · ENTRY ↑ / EXIT ↓ · Top: quality 0–1 · Bottom: raw gain $/share · HOLD: blue · WAIT: gray</p>
+      {experiment.config.liquidity_gate && <p className="research-muted">Liquidity-gated episodes: {count(experiment.pairs.filter(p => p.liquidity_accepted).length)} accepted / {count(experiment.pairs.filter(p => p.liquidity_accepted === false).length)} rejected. Inspect reasons and prior activity in Session &amp; episode values.</p>}
       <label className="research-checkbox"><input type="checkbox" checked={holdNumbers} onChange={e => setHoldNumbers(e.target.checked)} /><span>Show HOLD values</span></label>
       {busy ? <LoadingState fill label="Loading saved price-action labels" /> : error ? <div className="canvas-inline-error" role="alert">{error}<button onClick={() => setAttempt(a => a+1)}>Retry chart</button></div> : chart?.candles.length ?
         <ChartPanel ticker={experiment.ticker} timeframe="1s" timeframes={["1s"]} payload={payload}

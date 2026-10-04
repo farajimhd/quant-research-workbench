@@ -1,7 +1,7 @@
 # Current V6 label authority
 
-Current training requires `rl-v6-swing-opportunity-dataset-v8`, using the
-`price-action-long-opportunities-v6` algorithm with horizon audit attributes. Old portfolio
+Current training requires `rl-v6-swing-opportunity-dataset-v9`, using the
+`price-action-long-opportunities-v7` algorithm with horizon audit attributes. Old portfolio
 teachers, rolling-15 episode windows, fee-adjusted candidate targets, bracket
 sidecars and checkpoints from their datasets are rejected by current loaders.
 Historical files remain audit evidence, not current supervision.
@@ -60,6 +60,26 @@ configured with `RL_V6_LABEL_AUDIT_RUNTIME`. Historical audit and the single
 NVDA experiment retain their separate paths. No new teacher or PPO run is launched.
 
 ## Reporting-certified source requirement
+
+## Episode liquidity admission (dataset V9)
+
+The S-to-L opportunity pair is admitted only at its original start boundary,
+using exact pinned repaired ARTE activity in `[start-60 seconds, start)`:
+at least 20 trades, 2,000 shares, 10 distinct active seconds, and a prior trade
+no older than five seconds. The target candle is excluded. Rising liquidity
+inside an existing move cannot reopen it. Any trade inactivity interval longer
+than five seconds through the pair invalidates its hindsight ENTRY/EXIT
+supervision; every price candle remains present as WAIT, with explicit reasons.
+This later invalidation is a hindsight audit attribute, never a causal feature.
+Original MACD sign runs are retained as diagnostic geometry, not tradable episodes.
+
+Generation additionally requires `--bar-manifest` and `--bar-ledger` pointing
+to the certified source used by the unchanged banks. Exact bar output hashes,
+attempt identities and all activity clocks are verified; compressed feature
+volume/counts are not used for threshold decisions. New outputs must use a fresh
+runtime directory. Prior bars, banks and label publications remain immutable.
+Research shows accepted/rejected pair counts, rejection reasons, and per-candle
+prior trade count, share volume, active seconds and trade age.
 
 V3 label datasets require rebuilt feature banks bound to verified ingestion
 reporting coverage. The bar builder requires completed, source-matching

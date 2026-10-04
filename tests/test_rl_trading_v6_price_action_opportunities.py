@@ -144,14 +144,14 @@ def test_routes_bound_quality_and_view():
 
 
 def calculate(frame):
-    return op.calculate(frame, op.Config(minimum_position_seconds=1))
+    return op.calculate(frame, op.Config(minimum_position_seconds=1, liquidity_gate=False))
 
 
 def test_five_second_minimum_removes_short_trade_and_late_entries():
-    labels,_,_,trades=op.calculate(bars([9.,10.,11.],[-1.,1.,1.]))
+    labels,_,_,trades=op.calculate(bars([9.,10.,11.],[-1.,1.,1.]),op.Config(liquidity_gate=False))
     assert trades.is_empty()
     assert labels['action'].to_list()==['WAIT']*3
-    labels,_,_,trades=op.calculate(bars([9.,9.1,10.,10.1,10.2,10.3,10.4],[-1.,1.,1.,1.,1.,1.,1.]))
+    labels,_,_,trades=op.calculate(bars([9.,9.1,10.,10.1,10.2,10.3,10.4],[-1.,1.,1.,1.,1.,1.,1.]),op.Config(liquidity_gate=False))
     assert trades['hold_seconds'].min()>=5
     entry=labels.filter(pl.col('action')=='ENTRY')
     assert (entry['entry_horizon_seconds']>=5).all()

@@ -233,13 +233,14 @@ def main(argv=None):
             stage = 'labels'
             run(stage,['research/rl_trading/v6/run_prepare_labels.py',
                 '--source-manifest',str(output/'banks-us-listed-v1/day-roots.json'),
-                '--output',str(output/'labels-us-listed-v1'),'--workers','8','--listings-per-shard','32',
+                '--bar-manifest',manifest,'--bar-ledger',str(output/'build-ledger-v2.sqlite3'),
+                '--output',str(output/'labels-liquidity-v1'),'--workers','8','--listings-per-shard','32',
                 '--source-commit',a.source_commit])
             stage = 'publication_audit'; progress(stage)
             active = json.loads((ROOT/'rl-v6-active-labels.json').read_text())
-            if Path(active['dataset']).resolve() != (output/'labels-us-listed-v1/dataset.json').resolve():
+            if Path(active['dataset']).resolve() != (output/'labels-liquidity-v1/dataset.json').resolve():
                 raise ValueError('Active labels do not point to repaired publication')
-            audit = json.loads((output/'labels-us-listed-v1/publication-audit.json').read_text())
+            audit = json.loads((output/'labels-liquidity-v1/publication-audit.json').read_text())
             if audit['status'] != 'passed':
                 raise ValueError('Label publication audit failed')
             done.append(stage)

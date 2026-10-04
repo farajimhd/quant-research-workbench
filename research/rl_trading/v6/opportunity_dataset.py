@@ -24,8 +24,8 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.split import TRAIN, DEVELOPMENT, CONTEXT_ONLY, role
 from pipelines.market_sip.events.trade_reporting_flags import REVISION as REPORTING_REVISION
 
-VERSION = 'rl-v6-swing-opportunity-dataset-v8'
-DAY_VERSION = 'rl-v6-swing-opportunity-shards-v8'
+VERSION = 'rl-v6-swing-opportunity-dataset-v9'
+DAY_VERSION = 'rl-v6-swing-opportunity-shards-v9'
 STATUS = 'certified_swing_opportunities'
 FILES = ('labels', 'episodes', 'pairs', 'trades')
 
@@ -90,7 +90,7 @@ def decoded_bars(values):
 
 
 def build_shard(task):
-    bank_root, output, identities, binding, config = task
+    bank_root, output, identities, binding, config, *exact = task
     output = Path(output)
     if (output/'complete.json').is_file():
         return verify_shard(output, binding)
@@ -100,19 +100,43 @@ def build_shard(task):
         raise ValueError('Bank certificate changed during campaign')
     bank = open_bank(Path(bank_root), verify_hashes=False)
     products = {name:[] for name in FILES}
+    client = None
+    if Config(**config).liquidity_gate:
+        if len(exact) != 2:
+            raise ValueError('Pinned exact activity source required')
+        source, tickers = exact
+        if (source['build_id'] != binding.get('activity_build_id') or
+                digest(source['units']) != binding.get('activity_units_hash')):
+            raise ValueError('Exact activity receipt binding changed')
+        from research.mlops.clickhouse import discover_clickhouse_env_files
+        from research.mlops.env import load_env_files
+        from research.rl_trading.v1 import arte_source
+        load_env_files(discover_clickhouse_env_files(), verbose=False)
+        client = arte_source.reader(threads=1)
+        arte_source.storage_check(client)
     activity = invalid = 0; empty = []
-    for identity in identities:
-        values = bank.listing(identity); activity += len(values.close_us)
-        bars, rejected = decoded_bars(values); invalid += rejected
-        if not bars.height:
-            empty.append(identity); continue
-        frames = calculate(bars, Config(**config))
-        for name, frame in zip(FILES, frames):
-            if frame.width:
-                products[name].append(frame.with_columns(pl.lit(identity).alias('listing_id')))
+    try:
+        for identity in identities:
+            values = bank.listing(identity); activity += len(values.close_us)
+            bars, rejected = decoded_bars(values); invalid += rejected
+            if not bars.height:
+                empty.append(identity); continue
+            activity_frame = None
+            if client is not None:
+                from research.rl_trading.v6.episode_liquidity import read_activity
+                source, tickers = exact
+                activity_frame = read_activity(client, source, binding['day'], tickers[identity], values.close_us)
+            frames = calculate(bars, Config(**config), activity=activity_frame)
+            for name, frame in zip(FILES, frames):
+                if frame.width:
+                    products[name].append(frame.with_columns(pl.lit(identity).alias('listing_id')))
+    finally:
+        if client is not None:
+            client.close()
     # Explicit empty schemas make all-invalid/all-short shards readable.
     sample = pl.DataFrame(dict(time_us=[1_000_000],open=[1.],high=[1.],low=[1.],close=[1.],macd_line=[1.],macd_signal=[0.]))
-    templates = dict(zip(FILES, calculate(sample, Config(**config))))
+    sample_activity = pl.DataFrame(dict(time_us=[1_000_000],volume=[0.],trade_count=[0]))
+    templates = dict(zip(FILES, calculate(sample, Config(**config), activity=sample_activity)))
     output.mkdir(parents=True, exist_ok=True); files = {}
     for name in FILES:
         frames = products[name]
@@ -263,6 +287,8 @@ def main(argv=None):
     parser.add_argument('--workers',type=int,default=8)
     parser.add_argument('--listings-per-shard',type=int,default=32)
     parser.add_argument('--canary',action='store_true')
+    parser.add_argument('--bar-manifest', type=Path, required=True)
+    parser.add_argument('--bar-ledger', type=Path, required=True)
     parser.add_argument('--source-commit',help='Exact pushed commit for an immutable archive snapshot')
     parser.add_argument('--reuse-receipts-from-source',type=Path,
         help='Explicitly verify/reuse completed receipts from a compatible immutable producer snapshot; no new shards permitted')
@@ -279,7 +305,7 @@ def main(argv=None):
     if args.reuse_receipts_from_source:
         prior=args.reuse_receipts_from_source.resolve()/'research'/'rl_trading'/'v6'
         if not prior.is_dir(): raise ValueError('Prior immutable producer snapshot unavailable')
-        for name in ('price_action_opportunities.py','price_action_labels.py'):
+        for name in ('price_action_opportunities.py','price_action_labels.py','episode_liquidity.py'):
             if file_hash(prior/name)!=file_hash(producer/name): raise ValueError('Cannot reuse receipts from a different label algorithm')
         def worker_ast(path):
             tree=ast.parse(path.read_text(encoding='utf-8'))
@@ -301,7 +327,7 @@ def main(argv=None):
         manifest['git_commit']=args.source_commit
     if manifest['git_commit']=='unknown': raise ValueError('Pass --source-commit for an archive snapshot')
     manifest['producer_files_sha256']={name:file_hash(Path(__file__).parent/name) for name in
-        ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py','run_prepare_labels.py')}
+        ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py','episode_liquidity.py','run_prepare_labels.py')}
     if args.reuse_receipts_from_source:
         manifest['receipt_producer_files_sha256']={name:file_hash(producer/name) for name in
             ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py')}
@@ -316,16 +342,34 @@ def main(argv=None):
         if not root.is_relative_to(runtime): raise ValueError('Bank escaped runtime')
         progress(status='verifying_bank',day=day,active=0,queued=0,completed=0)
         reporting_plan(root, day)
+        from research.rl_trading.v1 import arte_source
+        from research.mlops.clickhouse import discover_clickhouse_env_files
+        from research.mlops.env import load_env_files
+        load_env_files(discover_clickhouse_env_files(), verbose=False)
+        exact_source = arte_source.load_build(args.bar_manifest,args.bar_ledger,[date.fromisoformat(day)])
+        plan = reporting_plan(root,day)
+        if (exact_source['build_id'] != plan['source_build_id'] or
+                exact_source['definition_hash'] != plan['source_definition_hash'] or
+                digest(exact_source['units']) != plan['source_units_hash']):
+            raise ValueError('Liquidity source differs from repaired bank source')
+        client = arte_source.reader(threads=1)
+        try:
+            arte_source.storage_check(client)
+            population, _ = arte_source.population(client,exact_source,date.fromisoformat(day))
+        finally:
+            client.close()
+        tickers = {r['listing_id']:r['ticker'] for r in population}
         session=open_session(root,runtime_root=runtime,previous_root=Path(roots[previous]) if previous else None)
         bank_hash=file_hash(root/'complete.json'); config_hash=digest(config)
         binding=dict(day=day,bank_certificate_sha256=bank_hash,bank_manifest_sha256=file_hash(root/'bank'/'complete.json'),config_hash=config_hash,
-            producer_sha256={name:file_hash(producer/name) for name in ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py')})
+            producer_sha256={name:file_hash(producer/name) for name in ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py','episode_liquidity.py')},
+            activity_build_id=exact_source['build_id'],activity_units_hash=digest(exact_source['units']))
         identities=list(session.listings); original_identities=identities
         if args.canary: identities=identities[:2]
         del session
         folder=output/day; tasks=[]
         for index,left in enumerate(range(0,len(identities),args.listings_per_shard)):
-            tasks.append((str(root/'bank'),str(folder/'shards'/f'{index:05d}'),identities[left:left+args.listings_per_shard],binding,config))
+            tasks.append((str(root/'bank'),str(folder/'shards'/f'{index:05d}'),identities[left:left+args.listings_per_shard],binding,config,exact_source,tickers))
         if args.reuse_receipts_from_source and any(not (Path(task[1])/'complete.json').is_file() for task in tasks):
             raise ValueError('Compatible-source receipt recovery requires every shard already complete; no mixed-producer generation allowed')
         receipts=[]; queued=iter(tasks); pending={}; completed=0
@@ -363,7 +407,8 @@ def main(argv=None):
         progress(status='canary_complete',active=0,queued=0,completed=len(records)); return
     data=dict(version=VERSION,algorithm=ALGORITHM,status='audited_ready_for_training',sealed_test_accessed=False,
         days=[r for r in records if r['role']!='context_only'],context=records[0],ranking=dict(top_r=1000,sort_secs=1,market_tokens=8,heads=4),
-        label_root=str(output),config=config,raw_value_units='dollars_per_share',source_manifest_sha256=file_hash(args.source_manifest))
+        label_root=str(output),config=config,raw_value_units='dollars_per_share',source_manifest_sha256=file_hash(args.source_manifest),
+        activity_source=dict(manifest=str(args.bar_manifest.resolve()),manifest_sha256=file_hash(args.bar_manifest),ledger=str(args.bar_ledger.resolve())))
     data['hash']=digest(data); write_json(output/'dataset.json',data)
     from research.rl_trading.v6.audit_opportunity_dataset import audit_and_publish
     audit_and_publish(output/'dataset.json',runtime_root=runtime)

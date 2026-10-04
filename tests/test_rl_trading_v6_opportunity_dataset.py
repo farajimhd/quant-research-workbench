@@ -28,11 +28,11 @@ def fixture_shard(tmp_path, monkeypatch, scale=1.):
     monkeypatch.setattr(data,'open_bank',lambda *a,**k:SimpleNamespace(listing=lambda identity:values))
     binding=dict(bank_manifest_sha256=data.file_hash(source/'complete.json'))
     output=tmp_path/'labels'/'shards'/'00000'
-    task=(str(source),str(output),['identity'],binding,asdict(Config()))
+    task=(str(source),str(output),['identity'],binding,asdict(Config(liquidity_gate=False)))
     proof=data.build_shard(task)
     day=tmp_path/'labels'
     certificate=dict(version=data.DAY_VERSION,algorithm=VERSION,status=data.STATUS,day='2026-07-31',role='train',
-        bank_certificate_sha256='bankhash',binding=binding,config=asdict(Config()),identities=['identity'],
+        bank_certificate_sha256='bankhash',binding=binding,config=asdict(Config(liquidity_gate=False)),identities=['identity'],
         shards=[dict(path='shards/00000',sha256=data.file_hash(output/'complete.json'))],sealed_test_accessed=False,
         **{k:proof[k] for k in ('activity_rows','valid_rows','invalid_price_rows')})
     data.write_json(day/'complete.json',certificate)
@@ -44,7 +44,7 @@ def test_saved_raw_quality_exact_and_resume(tmp_path,monkeypatch):
     proof=data.verify_day(day,'bankhash')
     assert (proof['activity_rows'],proof['valid_rows'],proof['invalid_price_rows'])==(6,5,1)
     bars,_=data.decoded_bars(values)
-    expected=calculate(bars)[0]
+    expected=calculate(bars,Config(liquidity_gate=False))[0]
     actual=pl.read_parquet(Path(task[1])/'labels.parquet').drop('listing_id')
     assert actual.equals(expected)
     assert data.build_shard(task)==data.verify_shard(task[1],task[3])
@@ -123,5 +123,5 @@ def test_atomic_receipt_retry_preserves_old_json(tmp_path,monkeypatch):
 @pytest.mark.parametrize('long',[True,False])
 def test_single_price_candle_is_accounted(long):
     bars=pl.DataFrame(dict(time_us=[1_000_000],open=[1.],high=[1.],low=[1.],close=[1.],macd_line=[1. if long else -1.],macd_signal=[0.]))
-    labels,_,_,trades=calculate(bars)
+    labels,_,_,trades=calculate(bars, Config(liquidity_gate=False))
     assert labels['action'].to_list()==['WAIT'] and labels['entry_gain'].item()==0 and trades.height==0

@@ -17,8 +17,8 @@ from research.mlops.manifest import write_run_manifest
 from research.rl_trading.v6 import label_audit as audit
 from research.rl_trading.v6 import price_action_labels as legacy
 
-VERSION = 'price-action-long-opportunities-v6'
-OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v6/NVDA/2026-07-31-reporting-repaired')
+VERSION = 'price-action-long-opportunities-v7'
+OUTPUT = Path('D:/TradingML/runtimes/rl-v6-price-action-long-v7/NVDA/2026-07-31-liquidity-gated')
 DAY, TICKER = legacy.DAY, legacy.TICKER
 
 
@@ -26,9 +26,18 @@ DAY, TICKER = legacy.DAY, legacy.TICKER
 class Config(legacy.Config):
     quality_threshold: float = .9
     minimum_position_seconds: float = 5.
+    liquidity_gate: bool = True
+    minimum_trades_60s: int = 20
+    minimum_shares_60s: float = 2000.
+    minimum_active_seconds_60s: int = 10
+    maximum_inactivity_seconds: float = 5.
 
     def validate(self):
         super().validate()
+        if (not isinstance(self.minimum_trades_60s,int) or self.minimum_trades_60s < 1 or not np.isfinite(self.minimum_shares_60s) or
+                self.minimum_shares_60s <= 0 or not 1 <= self.minimum_active_seconds_60s <= 60 or
+                not np.isfinite(self.maximum_inactivity_seconds) or self.maximum_inactivity_seconds <= 0):
+            raise ValueError('Invalid episode liquidity thresholds')
         if not np.isfinite(self.minimum_position_seconds) or self.minimum_position_seconds <= 0:
             raise ValueError('Minimum position duration must be positive')
         if not np.isfinite(self.quality_threshold) or not 0 < self.quality_threshold <= 1:
@@ -65,7 +74,7 @@ def classify(frame, threshold=.9, view='combined'):
         .otherwise(1-pl.col('entry_quality')).alias('label_value'))
 
 
-def calculate(bars, config=Config()):
+def calculate(bars, config=Config(), *, activity=None):
     """O(sum(pair_length^2)) comparisons with O(N) retained arrays.
 
     Reference entry maximizes a later L close gain discounted to that entry.
@@ -78,6 +87,9 @@ def calculate(bars, config=Config()):
     times, prices = frame['time_us'].to_numpy(), frame['close'].to_numpy()
     directions = frame['direction'].to_numpy()
     n = len(prices)
+    from research.rl_trading.v6.episode_liquidity import evidence, has_gap
+    liquidity = evidence(times, activity, config) if config.liquidity_gate else None
+    rejected_reasons = np.full(n, 'outside_opportunity_pair', dtype=object)
     pair_ids = np.zeros(n,dtype=np.int64)
     entry_gain, entry_quality = np.zeros(n), np.zeros(n)
     exit_gain, exit_quality = np.full(n,np.nan), np.full(n,np.nan)
@@ -96,6 +108,20 @@ def calculate(bars, config=Config()):
         indexes = np.arange(left, right)
         long_indexes = indexes[directions[indexes] == 1]
         pair_ids[indexes] = pair['pair_id']
+        pair['liquidity_accepted'] = True
+        pair['liquidity_rejection_reason'] = 'eligible' if config.liquidity_gate else 'gate_disabled'
+        if liquidity is not None:
+            if not liquidity['liquidity_eligible'][int(left)]:
+                pair['liquidity_rejection_reason'] = 'start_'+liquidity['liquidity_reason'][int(left)]
+            elif has_gap(activity, pair['start_us'], pair['end_us'], config.maximum_inactivity_seconds):
+                pair['liquidity_rejection_reason'] = 'inactivity_gap'
+            pair['liquidity_accepted'] = pair['liquidity_rejection_reason'] == 'eligible'
+        rejected_reasons[indexes] = pair['liquidity_rejection_reason']
+        pair.update(best_entry_gain=0., best_entry_gain_at_pair_start=0.,
+            reference_entry_us=None, reference_exit_us=None, reference_entry_price=None,
+            reference_exit_price=None, best_exit_gain=0., best_discounted_exit_us=None)
+        if not pair['liquidity_accepted']:
+            continue
         discounted_exits = {}
         for i in indexes:
             future = long_indexes[(long_indexes > i) & (times[long_indexes]-times[i] >= config.minimum_position_seconds*1e6)]
@@ -191,12 +217,15 @@ def calculate(bars, config=Config()):
         pl.Series('entry_basis',nullable(basis),dtype=pl.Float64),pl.Series('in_reference_hold',held),
         pl.Series('reference_action',reference_actions),pl.Series('carried_next_pair_value',carried))
     labels = classify(labels,config.quality_threshold)
+    labels = labels.with_columns(pl.Series('episode_liquidity_reason', rejected_reasons))
+    if liquidity is not None:
+        labels = labels.join(liquidity, on='time_us', how='left', validate='1:1')
     trade_frame = pl.DataFrame(trades,schema=dict(pair_id=pl.Int64,entry_us=pl.Int64,exit_us=pl.Int64,
         entry_price=pl.Float64,exit_price=pl.Float64,price_pnl=pl.Float64,hold_seconds=pl.Float64))
     return labels,episodes,pl.DataFrame(pairs),trade_frame
 
 
-def build(output=OUTPUT, config=Config()):
+def build(output=OUTPUT, config=Config(), *, activity=None):
     config.validate()
     output = Path(output).resolve()
     if not output.is_relative_to(Path('D:/TradingML/runtimes').resolve()):
@@ -206,7 +235,7 @@ def build(output=OUTPUT, config=Config()):
     started = time.perf_counter()
     parent, original = legacy.product()
     bars = original['labels'].select('time_us','open','high','low','close','macd_line','macd_signal')
-    products = dict(zip(['labels','episodes','pairs','trades'],calculate(bars,config)))
+    products = dict(zip(['labels','episodes','pairs','trades'],calculate(bars,config,activity=activity)))
     output.mkdir(parents=True,exist_ok=True)
     files = {}
     for name,frame in products.items():
@@ -233,7 +262,7 @@ def build(output=OUTPUT, config=Config()):
     return proof
 
 
-def build_bank_preview(bank_root, output=OUTPUT, config=Config()):
+def build_bank_preview(bank_root, output=OUTPUT, config=Config(), *, activity=None):
     """Bounded NVDA RTH audit preview from reporting-certified repaired bank.
 
     Separate experimental product; never publishes the teacher registry.
@@ -255,7 +284,7 @@ def build_bank_preview(bank_root, output=OUTPUT, config=Config()):
     begin=int(datetime.fromisoformat(DAY+'T09:30:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()*1e6)+1_000_000
     finish=begin+int(6.5*3600e6)
     bars=bars.filter((pl.col('time_us')>=begin)&(pl.col('time_us')<finish))
-    products=dict(zip(['labels','episodes','pairs','trades'],calculate(bars,config)))
+    products=dict(zip(['labels','episodes','pairs','trades'],calculate(bars,config,activity=activity)))
     output.mkdir(parents=True,exist_ok=True); files={}
     for name, frame in products.items():
         path=output/(name+'.parquet');frame.write_parquet(path)
