@@ -54,6 +54,9 @@ class SessionObjective:
             "terminal_valid",
             "filled_batches",
             "long_hold_dollar_seconds",
+            "stop_risk_dollar_seconds",
+            "capital_dollar_seconds",
+            "peak_reserved_stop_risk",
             "sold_share_seconds",
             "sold_shares",
             "entry_retry_count",
@@ -125,14 +128,17 @@ def score(
     results,
     *,
     initial_cash=10000,
-    drawdown_weight=0.5,
+    drawdown_weight=0.25,
     dispersion_weight=0.25,
     position_weight=0.0,
     exposure_weight=0.0,
     minimum_training_entries=0,
     maximum_training_batches=20,
-    excess_activity_weight=0.05,
-    long_hold_weight=0.01,
+    excess_activity_weight=0.0,
+    long_hold_weight=0.0,
+    stop_risk_weight=0.10,
+    capital_time_weight=0.002,
+    with_components=False,
 ):
     """Independent-session return/risk objective. Invalid residuals score null.
 
@@ -146,6 +152,8 @@ def score(
         exposure_weight,
         excess_activity_weight,
         long_hold_weight,
+        stop_risk_weight,
+        capital_time_weight,
     )
     if (
         not results
@@ -171,24 +179,31 @@ def score(
         [r.get("long_hold_dollar_seconds", [0] * len(r["net_pnl"])) for r in results],
         dtype=float,
     ) / (initial_cash * 3600)
+    # Missing metrics are an error when their weights are enabled. Never
+    # silently give an older replay a free risk/holding penalty.
+    def hours(name, weight):
+        if weight and any(name not in r for r in results):
+            raise ValueError(f"Objective requires replay metric {name}")
+        return np.array([r.get(name, [0] * len(r['net_pnl'])) for r in results], dtype=float) / (initial_cash * 3600)
+    risk_hours = hours('stop_risk_dollar_seconds', stop_risk_weight)
+    capital_hours = hours('capital_dollar_seconds', capital_time_weight)
     if not all(
-        np.isfinite(v).all() for v in (pnl, dd, entries, exposure, batches, overdue)
+        np.isfinite(v).all() for v in (pnl, dd, entries, exposure, batches, overdue, risk_hours, capital_hours)
     ):
         raise ValueError(
             "Nonfinite financial result; reject evaluation rather than skip it"
         )
-    values = (
-        pnl.mean(0)
-        - drawdown_weight * dd.mean(0)
-        - dispersion_weight * pnl.std(0)
-        - position_weight * entries.mean(0) / 100
-        - exposure_weight * exposure.mean(0)
-        - excess_activity_weight
-        * (
-            np.maximum(batches - maximum_training_batches, 0) / maximum_training_batches
-        ).mean(0)
-        - long_hold_weight * overdue.mean(0)
+    components = dict(
+        mean_return=pnl.mean(0), drawdown_penalty=drawdown_weight * dd.mean(0),
+        downside_penalty=dispersion_weight * np.sqrt(np.square(np.minimum(pnl, 0)).mean(0)),
+        position_penalty=position_weight * entries.mean(0) / 100,
+        exposure_penalty=exposure_weight * exposure.mean(0),
+        excess_activity_penalty=excess_activity_weight * (np.maximum(batches - maximum_training_batches, 0) / maximum_training_batches).mean(0),
+        legacy_long_hold_penalty=long_hold_weight * overdue.mean(0),
+        stop_risk_penalty=stop_risk_weight * risk_hours.mean(0),
+        capital_time_penalty=capital_time_weight * capital_hours.mean(0),
     )
+    values = components['mean_return'] - sum(v for k, v in components.items() if k != 'mean_return')
     valid = np.array([r["terminal_valid"] for r in results], dtype=bool).all(0)
     active = (batches >= minimum_training_entries).all(0)
     reasons = [
@@ -199,6 +214,9 @@ def score(
         else "minimum_training_activity"
         for v, a in zip(valid, active)
     ]
-    return [
+    scores = [
         float(v) if reason is None else None for v, reason in zip(values, reasons)
-    ], reasons
+    ]
+    if with_components:
+        return scores, reasons, {k: v.tolist() for k, v in components.items()}
+    return scores, reasons

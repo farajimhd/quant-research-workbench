@@ -15,7 +15,7 @@ from .grid import Candidate, Settings
 from .rules import ATOMS, CLAUSES, HISTORY, Compare, Temporal, validate_clause
 from .timing import TIMING_CONTRACT, timing_fingerprint
 
-VERSION = "semantic-squeeze-search-v3-4"
+VERSION = "semantic-squeeze-search-v3-5-risk-time"
 ENTRY = ("signal", "hold", "retest", "macd")
 ALLOCATION = ("equal", "decreasing", "increasing")
 POLICY_FIELDS = (
@@ -353,8 +353,29 @@ class StrategySpace:
     def offspring(self, rng, a, b):
         child = np.where(rng.random(self.size) < 0.5, a, b)
         proposal = self.sample(rng, 1)[0]
-        child = np.where(rng.random(self.size) < 0.15, proposal, child)
-        # Crossover preserves class IDs; repair canonicalizes conditional genes.
+        # Keep operation/input/history/threshold clauses semantically together.
+        # Numeric policy mutations explore locally instead of replacing every
+        # threshold with an unrelated uniformly random proposal.
+        for i, (_, lower, upper, integer) in enumerate(POLICY_FIELDS):
+            index = self.policy_start + i
+            if rng.random() < .15:
+                categorical = NAMES[i] in ('remainder_policy_id', 'require_signal_valid')
+                value = proposal[index] if categorical else child[index] + rng.normal(0, .08 * (upper - lower))
+                child[index] = np.clip(round(value) if integer else value, lower, upper)
+        for i in range(CLAUSES):
+            start = self.rules_start + i * 6
+            parent = a if rng.random() < .5 else b
+            child[start:start + 6] = parent[start:start + 6]
+            if rng.random() < .15:
+                child[start:start + 6] = proposal[start:start + 6]
+            elif rng.random() < .25:
+                atom = ATOMS[int(child[start + 2])]
+                child[start + 5] = np.clip(child[start + 5] + rng.normal(0, .05 * (atom.upper - atom.lower)), atom.lower, atom.upper)
+        # Other bounded classes/connectors remain searchable.
+        indices = list(range(self.policy_start)) + list(range(self.connectors_start, self.size))
+        for index in indices:
+            if rng.random() < .15:
+                child[index] = proposal[index]
         return self.repair([child])[0]
 
     def identity(self, row):

@@ -62,7 +62,7 @@ def main(argv=None):
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("dates", "plan", "profile", "run", "monitor"),
+        choices=("dates", "plan", "profile", "run", "monitor", "study"),
         default="plan",
     )
     parser.add_argument("--from", dest="start_date")
@@ -99,8 +99,12 @@ def main(argv=None):
     parser.add_argument("--minimum-training-entries", type=int, default=1)
     parser.add_argument("--maximum-training-batches", type=int, default=20)
     parser.add_argument("--long-hold-seconds", type=int, default=300)
-    parser.add_argument("--long-hold-weight", type=float, default=0.01)
-    parser.add_argument("--excess-activity-weight", type=float, default=0.05)
+    parser.add_argument("--long-hold-weight", type=float, default=0.0)
+    parser.add_argument("--excess-activity-weight", type=float, default=0.0)
+    parser.add_argument("--stop-risk-weight", type=float, default=0.10)
+    parser.add_argument("--capital-time-weight", type=float, default=0.002)
+    parser.add_argument("--maximum-stop-risk-fraction", type=float, default=0.02)
+    parser.add_argument("--maximum-position-hold-seconds", type=int, default=3600)
     parser.add_argument("--plain", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "monitor":
@@ -185,6 +189,9 @@ def main(argv=None):
                 "Requires workstation 96GB CUDA GPU; no laptop or CPU fallback"
             )
         configure_caches(runtime)
+        if args.command == 'study':
+            from research.vectorized_backtest.v3.torch_backtest.population_study import run
+            return run(spec, args, job, panel)
         if args.command == "profile":
             from research.vectorized_backtest.v3.torch_backtest.profile_session import (
                 profile,
@@ -254,6 +261,10 @@ def main(argv=None):
         "long_hold_seconds",
         "long_hold_weight",
         "excess_activity_weight",
+        "stop_risk_weight",
+        "capital_time_weight",
+        "maximum_stop_risk_fraction",
+        "maximum_position_hold_seconds",
     ):
         command += ["--" + name.replace("_", "-"), str(getattr(args, name))]
     if qualification["precompute_rules"]:

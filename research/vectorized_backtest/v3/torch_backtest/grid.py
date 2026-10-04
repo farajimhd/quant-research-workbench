@@ -123,6 +123,8 @@ class Settings:
     # terminal liquidation are exempt from the discretionary holding floor.
     minimum_position_hold_seconds: int = 3
     long_hold_seconds: int = 300
+    maximum_position_hold_seconds: int = 3600
+    maximum_stop_risk_fraction: float = 0.02
 
     def validate(self):
         if any(
@@ -156,6 +158,7 @@ class Settings:
             "stagnation_seconds",
             "minimum_position_hold_seconds",
             "long_hold_seconds",
+            "maximum_position_hold_seconds",
         )
         if any(type(getattr(self, name)) is not int for name in integer_fields):
             raise ValueError("Counts and durations must be integers")
@@ -172,6 +175,8 @@ class Settings:
             raise ValueError("Long-hold threshold cannot precede minimum hold")
         if self.minimum_position_hold_seconds != 3:
             raise ValueError("V3 fixed discretionary holding floor is three seconds")
+        if self.maximum_position_hold_seconds < self.minimum_position_hold_seconds or not 0 < self.maximum_stop_risk_fraction <= 1:
+            raise ValueError("Invalid holding ceiling or account stop-risk budget")
         if not (
             0 < self.participation <= 1
             and self.initial_cash > 0

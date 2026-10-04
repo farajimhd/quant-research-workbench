@@ -101,10 +101,13 @@ def render_search(s, elapsed, *, width=110, height=28):
                     f"Open {best['open']:,}  |  worst drawdown ${best['worst_drawdown']:,.2f}  |  batches {best['batches']:,}  ·  positions {best['positions']:,}  ·  fills {best['fills']:,}"
                 ),
                 Text(
-                    f"Sold-share weighted hold {best['mean_hold_seconds']:.1f}s  |  overdue capital-hours {best['long_hold_capital_hours']:.3f}"
+                    f"Sold-share weighted hold {best['mean_hold_seconds']:.1f}s  |  stop-risk hours {best.get('stop_risk_hours', 0):.3f}  |  capital hours {best.get('capital_hours', 0):.3f}"
                 ),
             ]
         )
+        costs = best.get('objective_components')
+        if costs:
+            rows.append(Text(f"Costs: DD {costs['drawdown_penalty']:.4f} · downside {costs['downside_penalty']:.4f} · stop risk {costs['stop_risk_penalty']:.4f} · holding {costs['capital_time_penalty']:.4f}"))
     else:
         rows.extend(
             [
@@ -143,7 +146,7 @@ def render_search(s, elapsed, *, width=110, height=28):
                 f"Constraints: hold >=3s (risk exits exempt)  ·  batches/session >= {config.get('minimum_training_entries', 1)}  ·  soft maximum {config.get('maximum_training_batches', 20)}"
             ),
             Text(
-                f"Long hold: >{config.get('long_hold_seconds', 300)}s  ·  penalty {config.get('long_hold_weight', 0.01)} per capital-hour  ·  account resets each session"
+                f"Holding 3s–{config.get('maximum_position_hold_seconds', 3600)}s; stop-risk admission {100*config.get('maximum_stop_risk_fraction', .02):g}%; daily cash reset"
             ),
             *([] if pipeline else [gpu_line]),
             Text("Checkpoint: " + s.get("checkpoint", "not yet saved")),

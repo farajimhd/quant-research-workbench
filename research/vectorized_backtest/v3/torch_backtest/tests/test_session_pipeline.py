@@ -46,6 +46,7 @@ def test_preparation_overlaps_first_replay_and_selection_waits_all(tmp_path):
                 return dict(net_pnl=[float(self.index)] * b, drawdown=[0.] * b,
                             positions_opened=[1] * b, filled_batches=[1] * b,
                             exposure_seconds=[0.] * b, terminal_valid=[True] * b,
+                            stop_risk_dollar_seconds=[0.] * b, capital_dollar_seconds=[0.] * b,
                             compile_seconds=0., replay_seconds=0.)
 
         def seal():

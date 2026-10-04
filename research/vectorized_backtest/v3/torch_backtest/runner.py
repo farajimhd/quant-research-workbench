@@ -150,6 +150,9 @@ class SqueezeRunner:
             "drawdown",
             "exposure_seconds",
             "long_hold_dollar_seconds",
+            "stop_risk_dollar_seconds",
+            "capital_dollar_seconds",
+            "peak_reserved_stop_risk",
             "sold_share_seconds",
         ):
             state(name, (self.b,))
@@ -469,6 +472,18 @@ class SqueezeRunner:
             (buy_price > 0) & (buy_price <= self.buy_limit) & (self.exit_kind == 0)
         )
         wanted = torch.where(allowed, self.remaining, 0)
+        # Pending parents reserve risk at their worst permitted entry price.
+        # Repricing cannot evade this account-wide gate: trim reservations
+        # before consuming this interval's shared liquidity. No future marks.
+        held_risk = (self.quantity * (self.average - self.stop).clamp_min(0)).sum((1, 2))
+        risk_per_share = (self.buy_limit - self.stop).clamp_min(0)
+        pending_risk = (self.remaining * risk_per_share).sum((1, 2))
+        room = (self.equity.clamp_min(0) * s.maximum_stop_risk_fraction - held_risk).clamp_min(0)
+        scale = (room / pending_risk.clamp_min(1e-12)).clamp(max=1)
+        capped = torch.floor(self.remaining * scale[:, None, None]).to(torch.int64)
+        self.policy_cancelled_entry_shares.add_((self.remaining - capped).sum((1, 2)))
+        self.remaining.copy_(capped)
+        wanted = torch.minimum(wanted, self.remaining)
         # All orders in one account share the SAME interval volume budget.
         bought = proportional_fill(wanted, (capacity - sold.sum(-1)).clamp_min(0))
         cumulative = self.buy_filled + bought
@@ -827,6 +842,17 @@ class SqueezeRunner:
         desired = torch.floor(
             budget[:, None, None] * weights / (limit[..., None] + 2 * s.fee_per_share)
         ).to(torch.int64)
+        # Reserve risk for existing positions AND all unfilled parents before
+        # submitting a new ticker. The one selected ticker uses the remaining
+        # risk budget; additions/partial retries keep the same reservation.
+        reserved_risk = (
+            self.quantity * (self.average - self.stop).clamp_min(0)
+            + self.remaining * (self.buy_limit - self.stop).clamp_min(0)
+        ).sum((1, 2))
+        risk_room = (self.equity.clamp_min(0) * s.maximum_stop_risk_fraction - reserved_risk).clamp_min(0)
+        proposed_risk = (desired * (limit - initial).clamp_min(0)[..., None]).sum(-1)
+        risk_scale = (risk_room[:, None] / proposed_risk.clamp_min(1e-12)).clamp(max=1)
+        desired = torch.floor(desired * risk_scale[..., None]).to(torch.int64)
         size_ok = ((~slots) | (desired >= 1)).all(-1)
         chosen_ready = (ranked_ready & choose_mask).any(-1) & ~waiting
         can_enter = chosen_ready & (size_ok & choose_mask).any(-1)
@@ -969,6 +995,10 @@ class SqueezeRunner:
         self.exit_kind.copy_(
             torch.where(terminal[..., None] & (self.quantity > 0), 4, self.exit_kind)
         )
+        # Expiry is a market exit intent for the NEXT broker interval. It does
+        # not fabricate a fill at this decision or bypass liquidity limits.
+        expired_hold = (self.quantity > 0) & (now - self.first_fill >= s.maximum_position_hold_seconds)
+        self.exit_kind.copy_(torch.where(expired_hold & (self.exit_kind == 0), 3, self.exit_kind))
         # Source-history rings [H,N], not [B,N,H]. They advance once per second;
         # NaN gaps reset complete-window evidence instead of repeating a bar.
         self.attention_ring.copy_(
@@ -1010,6 +1040,17 @@ class SqueezeRunner:
             torch.maximum(self.drawdown, self.equity_peak - self.equity)
         )
         self.exposure_seconds.add_((self.quantity > 0).sum((1, 2)))
+        self.capital_dollar_seconds.add_((self.quantity * mark).sum((1, 2)))
+        risk = self.quantity * (self.average - self.stop).clamp_min(0)
+        self.stop_risk_dollar_seconds.add_(risk.sum((1, 2)))
+        # Repriced pending parents must also fit at this decision boundary.
+        pending_risk = (self.remaining * (self.buy_limit - self.stop).clamp_min(0)).sum((1, 2))
+        room = (self.equity.clamp_min(0) * s.maximum_stop_risk_fraction - risk.sum((1, 2))).clamp_min(0)
+        capped = torch.floor(self.remaining * (room / pending_risk.clamp_min(1e-12)).clamp(max=1)[:, None, None]).to(torch.int64)
+        self.policy_cancelled_entry_shares.add_((self.remaining - capped).sum((1, 2)))
+        self.remaining.copy_(capped)
+        reserved_risk = (risk + self.remaining * (self.buy_limit - self.stop).clamp_min(0)).sum((1, 2))
+        self.peak_reserved_stop_risk.copy_(torch.maximum(self.peak_reserved_stop_risk, reserved_risk))
         # Integrate start-of-next-interval exposure using only the completed
         # mark. One USD held one hour past the threshold contributes 3600.
         overdue = (self.quantity > 0) & (now - self.first_fill >= s.long_hold_seconds)
@@ -1141,6 +1182,9 @@ class SqueezeRunner:
                 "rejected_size",
                 "exposure_seconds",
                 "long_hold_dollar_seconds",
+                "stop_risk_dollar_seconds",
+                "capital_dollar_seconds",
+                "peak_reserved_stop_risk",
                 "sold_share_seconds",
                 "expired_entry_shares",
                 "policy_cancelled_entry_shares",

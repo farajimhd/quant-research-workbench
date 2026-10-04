@@ -217,12 +217,13 @@ initial tensor is random: neither default nor a prior winner is injected.
 Evaluation tapes are constructed after `winner.json` is frozen. Preobserved
 evaluation is labelled and never drives tuning, selection or constraint changes.
 
-Default objective: mean net return −0.5×mean normalized maximum drawdown
-−0.25×population standard deviation of session returns −0.05×mean excess batch
-count above20 (divided by20) −0.01×mean overdue capital-hours. Overdue capital-hours
-integrate marked USD exposure after300s, divided by initial cash×3600. Optional
-fixed child-position and position-hour costs remain available. Costs are fixed
-before training and must be finite/nonnegative.
+Current default objective: mean net return −0.25×mean normalized maximum drawdown
+−0.25×root-mean-square negative session return −0.10×mean stop-risk hours
+−0.002×mean invested-capital hours. Stop risk is quantity times positive entry-to-
+current-stop distance; both integrals divide dollar-seconds by initial cash×3600.
+Costs accrue from entry. Upside dispersion is not a cost. Legacy activity and
+overdue-capital weights default to zero; optional costs must be finite/nonnegative.
+See [POPULATION_STUDY.md](POPULATION_STUDY.md) for the fixed comparison grid.
 
 Historical search requires at least one actually filled **acquisition batch on
 each session**. Splitting a batch into child positions or partial-fill events
@@ -237,11 +238,16 @@ fill. Discretionary target triggers and replacement decisions are gated until
 age≥3s, with resulting fills eligible in a subsequent interval. Protective stops
 and terminal liquidation are exempt. Entry-mode `hold_seconds` is a separate
 condition on a pre-entry VWAP cross, not this position holding constraint.
-The fixed long-hold threshold defaults to300s and is not a gene.
+At age3600s, a market exit intent is queued for the next interval; constrained
+liquidity can delay its fill. New and pending orders reserve no more than2% of
+current equity as stop risk. This admission limit is not a guaranteed loss cap:
+market moves, gaps and execution costs can exceed it on existing positions.
+The legacy long-hold threshold300s remains available with default cost weight0.
 
 Population bounds4..1024, generations1..100; workstation defaults64×50.
 Actual populations must fit measured resource guards. The GA uses two elites,
-tournament3, coordinate crossover50%, mutation15% and random immigration20%,
+tournament3, policy crossover50%, whole-clause crossover, bounded local numeric
+mutation and categorical mutation15%, with random immigration20%,
 increasing to50% after three stagnant generations, within the fixed budget.
 It does not certify a global optimum. Wide nonnegative threshold/activity values
 use log1p random sampling within unchanged inclusive bounds; other values are

@@ -164,6 +164,8 @@ def test_activity_counts_batches_not_child_orders_and_every_session():
         positions_opened=[15, 15],
         filled_batches=[1, 1],
         exposure_seconds=[0, 0],
+        stop_risk_dollar_seconds=[0, 0],
+        capital_dollar_seconds=[0, 0],
         terminal_valid=[True, True],
         long_hold_dollar_seconds=[0, 36000000],
     )
@@ -171,7 +173,8 @@ def test_activity_counts_batches_not_child_orders_and_every_session():
     scores, reasons = score([a, b], minimum_training_entries=1, initial_cash=10000)
     assert scores[0] is None and reasons[0] == "minimum_training_activity"
     assert scores[1] is not None
-    values, _ = score([dict(a, filled_batches=[1, 30])], minimum_training_entries=1)
+    values, _ = score([dict(a, filled_batches=[1, 30])], minimum_training_entries=1,
+                      excess_activity_weight=.05, long_hold_weight=.01)
     assert values[1] < values[0]  # greater P&L does not hide excess/overdue cost.
     ranks, _ = constraint_ranks([a, b], scores, 1)
     assert ranks[1] > ranks[0]

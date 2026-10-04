@@ -151,6 +151,8 @@ def test_residual_positions_invalid_and_activity_constraint_is_explicit():
         entered=[1, 0],
         positions_opened=[1, 0],
         exposure_seconds=[1, 0],
+        stop_risk_dollar_seconds=[0, 0],
+        capital_dollar_seconds=[0, 0],
         terminal_valid=[False, True],
     )
     values, reasons = score([result])
@@ -302,6 +304,8 @@ def test_phase_checkpoint_resumes_exact_population_rng_and_fitness(tmp_path):
                 entered=[1] * size,
                 positions_opened=[1] * size,
                 exposure_seconds=[0.0] * size,
+                stop_risk_dollar_seconds=[0.0] * size,
+                capital_dollar_seconds=[0.0] * size,
                 terminal_valid=[True] * size,
                 compile_seconds=0.0,
                 replay_seconds=0.0,
@@ -434,6 +438,8 @@ def test_submitted_but_unfilled_orders_do_not_satisfy_activity():
         entered=[1],
         positions_opened=[0],
         exposure_seconds=[0],
+        stop_risk_dollar_seconds=[0],
+        capital_dollar_seconds=[0],
         terminal_valid=[True],
     )
     values, reasons = score([result], minimum_training_entries=1)

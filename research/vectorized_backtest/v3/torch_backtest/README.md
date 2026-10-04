@@ -1,5 +1,9 @@
 # Semantic GPU strategy optimization
 
+The current [risk objective and population study](POPULATION_STUDY.md) compares
+64, 128, 192, 256 and 512 candidates with separate replay and search-quality
+measurements. The earlier campaign remains stopped.
+
 V3 builds on v2's causal Squeeze portfolio engine. Strategy choices, numeric
 policy values, atomic input IDs, temporal operation IDs and Boolean operation
 IDs are searchable. The optimizer starts from a random executable tensor,

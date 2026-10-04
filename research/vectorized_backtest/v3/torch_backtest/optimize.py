@@ -78,6 +78,8 @@ def summarize(results, lane, initial_cash=10000):
             for r in results
         )
         / (initial_cash * 3600),
+        stop_risk_hours=sum(r.get('stop_risk_dollar_seconds', [0] * len(r['net_pnl']))[lane] for r in results) / (initial_cash * 3600),
+        capital_hours=sum(r.get('capital_dollar_seconds', [0] * len(r['net_pnl']))[lane] for r in results) / (initial_cash * 3600),
     )
 
 
@@ -105,6 +107,7 @@ def phase(
     evaluators, space, args, output, number=1, seed=None, checkpoint=None, panel=None,
     before_selection=None,
     pipeline_state=None,
+    initial_rows=None,
 ):
     """ONE phase on the complete training set; compatibility name is internal."""
     if seed is not None or number != 1:
@@ -124,7 +127,9 @@ def phase(
         seen = set(checkpoint.get("seen", []))
         space.repair_counts = dict(checkpoint["repair_counts"])
     else:
-        rows = space.sample(rng, args.population)
+        rows = space.sample(rng, args.population) if initial_rows is None else space.validate(initial_rows)
+        if len(rows) != args.population:
+            raise ValueError('Initial random population has wrong batch size')
         write_json(
             output / "population_initial.json",
             dict(
@@ -242,10 +247,11 @@ def phase(
         # a prerequisite for replaying an already certified earlier session.
         if before_selection:
             before_selection()
-        scores, reasons = score(
+        scores, reasons, components = score(
             results,
             **args.weights,
             minimum_training_entries=args.minimum_training_entries,
+            with_components=True,
         )
         ranks, violations = constraint_ranks(
             results, scores, args.minimum_training_entries
@@ -258,6 +264,7 @@ def phase(
         if improved:
             best, best_score, stagnant = rows[winner].tolist(), scores[winner], 0
             best_metrics = summarize(results, winner)
+            best_metrics['objective_components'] = {k: v[winner] for k, v in components.items()}
         else:
             stagnant += 1
         receipt = dict(
@@ -265,6 +272,7 @@ def phase(
             population=rows.tolist(),
             repair_counts=dict(space.repair_counts),
             scores=scores,
+            objective_components=components,
             rejection_reasons=reasons,
             constraint_violations=violations.tolist(),
             selection_ranks=ranks.tolist(),
@@ -276,6 +284,19 @@ def phase(
             pipeline=pipeline_state() if pipeline_state else None,
         )
         write_json(output / f"generation_{generation:03d}.json", receipt)
+        # Bounded training-only archive preserves alternative profit/risk
+        # policies even when the scalar winner changes. No evaluation inputs.
+        archive_path = output / 'training_archive.json'
+        archive = json.loads(archive_path.read_text()) if archive_path.exists() else []
+        for lane, value in enumerate(scores):
+            if value is not None:
+                metrics = summarize(results, lane)
+                archive.append(dict(genome=rows[lane].tolist(), sha256=space.identity(rows[lane]), objective=value, metrics=metrics))
+        archive = list({item['sha256']: item for item in archive}.values())
+        # Preserve both objective leaders and profit leaders, bounded at64.
+        keep = sorted(archive, key=lambda x: x['objective'], reverse=True)[:32]
+        keep += sorted(archive, key=lambda x: x['metrics']['total_pnl'], reverse=True)[:32]
+        write_json(archive_path, list({item['sha256']: item for item in keep}.values()))
         last = dict(
             generation=generation + 1,
             best_score=best_score,
@@ -376,8 +397,12 @@ def main(argv=None):
     )
     parser.add_argument("--minimum-training-entries", type=int, default=1)
     parser.add_argument("--maximum-training-batches", type=int, default=20)
-    parser.add_argument("--excess-activity-weight", type=float, default=0.05)
-    parser.add_argument("--long-hold-weight", type=float, default=0.01)
+    parser.add_argument("--excess-activity-weight", type=float, default=0.0)
+    parser.add_argument("--long-hold-weight", type=float, default=0.0)
+    parser.add_argument("--stop-risk-weight", type=float, default=0.10)
+    parser.add_argument("--capital-time-weight", type=float, default=0.002)
+    parser.add_argument("--maximum-stop-risk-fraction", type=float, default=0.02)
+    parser.add_argument("--maximum-position-hold-seconds", type=int, default=3600)
     parser.add_argument("--long-hold-seconds", type=int, default=300)
     parser.add_argument("--resident-gib", type=float, default=48)
     parser.add_argument("--maximum-host-gib", type=float, default=320)
@@ -396,7 +421,7 @@ def main(argv=None):
         help="Compile immutable atomic gates before account replay",
     )
     parser.add_argument("--validation-preobserved", action="store_true")
-    parser.add_argument("--drawdown-weight", type=float, default=0.5)
+    parser.add_argument("--drawdown-weight", type=float, default=0.25)
     parser.add_argument("--dispersion-weight", type=float, default=0.25)
     parser.add_argument("--position-weight", type=float, default=0.0)
     parser.add_argument("--exposure-weight", type=float, default=0.0)
@@ -434,12 +459,16 @@ def main(argv=None):
         maximum_training_batches=args.maximum_training_batches,
         excess_activity_weight=args.excess_activity_weight,
         long_hold_weight=args.long_hold_weight,
+        stop_risk_weight=args.stop_risk_weight,
+        capital_time_weight=args.capital_time_weight,
     )
     if not all(np.isfinite(v) and v >= 0 for v in args.weights.values()):
         parser.error("Invalid objective weights")
     torch.set_num_threads(1)
     root = require_runtime(args.runtime)
-    space = StrategySpace(replace(Settings(), long_hold_seconds=args.long_hold_seconds))
+    space = StrategySpace(replace(Settings(), long_hold_seconds=args.long_hold_seconds,
+                                 maximum_stop_risk_fraction=args.maximum_stop_risk_fraction,
+                                 maximum_position_hold_seconds=args.maximum_position_hold_seconds))
     spec = (
         json.loads(args.sessions.read_text(encoding="utf-8")) if args.sessions else None
     )
@@ -545,6 +574,8 @@ def main(argv=None):
         maximum_training_batches=args.maximum_training_batches,
         long_hold_seconds=args.long_hold_seconds,
         long_hold_weight=args.long_hold_weight,
+        maximum_position_hold_seconds=args.maximum_position_hold_seconds,
+        maximum_stop_risk_fraction=args.maximum_stop_risk_fraction,
     )
     options = dict(
         maximum_state_gib=args.maximum_state_gib,

@@ -60,7 +60,7 @@ def load_prepared(path, identity):
     return tape
 
 
-def import_prepared(origin, destination, identity, grammar):
+def import_prepared(origin, destination, identity, grammar, *, execution_contract_only=False):
     """Explicit reuse of a sealed dataset by a NEW consumer implementation.
 
     Never resume the old experiment as new code or rewrite its source receipt.
@@ -74,7 +74,17 @@ def import_prepared(origin, destination, identity, grammar):
     experiment = json.loads((origin.parent.parent / "identity.json").read_text(encoding="utf-8"))
     if experiment["code_hash"] != previous["identity"]["code_hash"]:
         raise ValueError("Dataset creator code identity mismatch")
-    if experiment["grammar"] != json.loads(json.dumps(grammar)):
+    old_grammar = json.loads(json.dumps(experiment['grammar']))
+    new_grammar = json.loads(json.dumps(grammar))
+    if execution_contract_only:
+        # Explicit dataset migration: these fields affect execution/search only,
+        # never prepared bars/features. All input/timing/source fields still
+        # match, and the unchanged producer algorithm hash is checked below.
+        for value in (old_grammar, new_grammar):
+            value.pop('version', None)
+            for name in ('maximum_stop_risk_fraction', 'maximum_position_hold_seconds'):
+                value['fixed_settings'].pop(name, None)
+    if old_grammar != new_grammar:
         raise ValueError("Prepared dataset grammar/settings/timing contract differs")
     old_request = {k: v for k, v in previous["identity"].items() if k != "code_hash"}
     new_request = {k: v for k, v in identity.items() if k != "code_hash"}
@@ -96,7 +106,8 @@ def import_prepared(origin, destination, identity, grammar):
         identity=identity, sha256=previous["sha256"], bytes=previous["bytes"],
         source_fingerprint=previous["source_fingerprint"],
         imported_from=dict(path=str(origin), identity=previous["identity"],
-                           sha256=previous["sha256"], contract="sealed-dataset-import-v1"),
+                           sha256=previous["sha256"], contract="sealed-dataset-import-v1",
+                           execution_contract_only=execution_contract_only),
     ))
     staging.rename(destination)
     return tape
