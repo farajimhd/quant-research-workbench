@@ -390,6 +390,10 @@ def test_remote_launcher_streams_script_and_keeps_windows_command_bounded(monkey
     )
     assert options["encoding"] == "utf-8"
     assert "visible-dispatch.ps1" in options["input"]
+    assert options['input'].splitlines()[-1].startswith('__V3_SCRIPT_END_')
+    import base64
+    bootstrap = base64.b64decode(command[-1]).decode('utf-16le')
+    assert 'ReadLine' in bootstrap and 'ReadToEnd' not in bootstrap
 
 
 def test_atomic_json_retries_windows_reader_sharing_without_partial_publication(

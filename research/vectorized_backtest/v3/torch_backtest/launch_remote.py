@@ -131,7 +131,17 @@ def main(argv=None):
     # whole script on stdin; only this short UTF-8 bootstrap is on the command
     # line. Execute one script block so a failed preflight cannot continue into
     # later registration/start statements.
-    bootstrap = "[Console]::InputEncoding=[Text.Encoding]::UTF8; & ([scriptblock]::Create([Console]::In.ReadToEnd()))"
+    # Windows OpenSSH may retain stdin after subprocess.communicate closes its
+    # pipe. Read an explicit unique terminator, never wait for transport EOF.
+    terminator = "__V3_SCRIPT_END_" + token + "__"
+    bootstrap = (
+        "[Console]::InputEncoding=[Text.Encoding]::UTF8; "
+        "$lines=[Collections.Generic.List[string]]::new(); "
+        "while (($line=[Console]::In.ReadLine()) -ne $null) { "
+        "if ($line -eq " + ps_literal(terminator) + ") { break }; $lines.Add($line) }; "
+        "if ($line -ne " + ps_literal(terminator) + ") { throw 'Incomplete launch script' }; "
+        "& ([scriptblock]::Create([string]::Join([Environment]::NewLine,$lines)))"
+    )
     encoded = base64.b64encode(bootstrap.encode("utf-16le")).decode()
     ssh = "C:/Windows/System32/OpenSSH/ssh.exe"
     subprocess.run(
@@ -149,7 +159,7 @@ def main(argv=None):
             "-EncodedCommand",
             encoded,
         ],
-        input=remote,
+        input=remote + "\n" + terminator + "\n",
         text=True,
         encoding="utf-8",
         check=True,
