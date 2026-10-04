@@ -222,7 +222,8 @@ def calculate(bars, config=Config(), *, activity=None):
         labels = labels.join(liquidity, on='time_us', how='left', validate='1:1')
     trade_frame = pl.DataFrame(trades,schema=dict(pair_id=pl.Int64,entry_us=pl.Int64,exit_us=pl.Int64,
         entry_price=pl.Float64,exit_price=pl.Float64,price_pnl=pl.Float64,hold_seconds=pl.Float64))
-    return labels,episodes,pl.DataFrame(pairs),trade_frame
+    return labels,episodes,pl.DataFrame(pairs,infer_schema_length=None,
+        schema_overrides={name:pl.Int64 for name in ('reference_entry_us','reference_exit_us','best_discounted_exit_us')} if pairs else None),trade_frame
 
 
 def build(output=OUTPUT, config=Config(), *, activity=None):

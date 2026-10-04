@@ -66,6 +66,15 @@ def test_missing_activity_fails_closed():
         calculate(bars([1,2],[-1.,1.]))
 
 
+def test_many_rejected_pairs_before_admitted_pair_keep_nullable_clock_schema():
+    times=list(range(1,211))+list(range(220,240))
+    signs=[-1.,1.]*105+[-1.]*4+[1.]*16
+    a=activity(times).with_columns(pl.when(pl.col('time_us')<220_000_000)
+        .then(0.).otherwise(pl.col('volume')).alias('volume'))
+    _,_,pairs,_=calculate(bars(times,signs),activity=a)
+    assert pairs.height>100 and pairs['reference_entry_us'].dtype==pl.Int64
+
+
 def test_exact_adapter_binds_output_hash_and_all_activity_clocks(monkeypatch):
     from research.rl_trading.v6.episode_liquidity import read_activity
     from research.rl_trading.v1 import arte_source, arte_sql
