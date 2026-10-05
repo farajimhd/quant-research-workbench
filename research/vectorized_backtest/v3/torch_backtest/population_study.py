@@ -9,6 +9,8 @@ evaluation tapes, tune from finalist results, or silently reduce a large batch.
 
 import gc
 import json
+import os
+from math import ceil
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
@@ -44,8 +46,30 @@ def run(spec, args, output, panel):
         maximum_position_hold_seconds=args.maximum_position_hold_seconds))
     weights = dict(WEIGHTS, stop_risk_weight=args.stop_risk_weight,
                    capital_time_weight=args.capital_time_weight)
+    short_origin = getattr(args, 'short_study_origin', None)
+    seeds = SEEDS[:1] if short_origin else SEEDS
+    generations = {b: ceil(512/b) if short_origin else BUDGET//b for b in POPULATIONS}
+    if short_origin:
+        short_origin = Path(short_origin)
+        previous = json.loads((short_origin / 'study_identity.json').read_text())
+        if previous['grammar'] != json.loads(json.dumps(space.manifest())) or previous['weights'] != weights or previous['training'] != spec['training']:
+            raise ValueError('Short-study source contracts differ')
+        # Timing reuse requires identical execution implementation, not merely
+        # equal settings. Only study orchestration and its CLI may differ.
+        launch = json.loads((short_origin / 'launch.json').read_text(encoding='utf-8-sig'))
+        old_package = Path(launch['checkout']) / 'research/vectorized_backtest/v3/torch_backtest'
+        for source in Path(__file__).parent.rglob('*.py'):
+            relative = source.relative_to(Path(__file__).parent)
+            if 'tests' in relative.parts or relative.as_posix() in ('population_study.py', 'run_optimization_workstation.py'):
+                continue
+            if file_hash(source) != file_hash(old_package / relative):
+                raise ValueError(f'Imported timing execution source differs: {relative}')
+        checkpoint_source = short_origin / f'search_{seeds[0]}_64' / 'checkpoint.json'
+        checkpoint_hash = file_hash(checkpoint_source)
     identity = dict(code_hash=code_hash(), grammar=space.manifest(), weights=weights,
-                    populations=POPULATIONS, seeds=SEEDS, budget=BUDGET,
+                    populations=POPULATIONS, seeds=seeds, budget=512 if short_origin else BUDGET,
+                    generations=generations, short_origin=str(short_origin) if short_origin else None,
+                    imported_checkpoint_sha256=checkpoint_hash if short_origin else None,
                     search_dates=SEARCH_DATES, training=spec['training'],
                     validation_read=False, origin=args.reuse_prepared)
     identity = json.loads(json.dumps(identity))
@@ -87,6 +111,15 @@ def run(spec, args, output, panel):
     shared = space.sample(np.random.default_rng(SEEDS[0]), max(POPULATIONS))
     timing = output / 'timing'
     timing.mkdir(exist_ok=True)
+    if short_origin:
+        for source in (short_origin / 'timing').iterdir():
+            if source.suffix not in ('.json', '.pt'):
+                continue
+            target = timing / source.name
+            if not target.exists():
+                os.link(source, target)
+            if file_hash(source) != file_hash(target):
+                raise ValueError('Imported timing receipt hash differs')
     reference = None
     for batch in POPULATIONS:
         path = timing / f'batch_{batch}.json'
@@ -135,12 +168,35 @@ def run(spec, args, output, panel):
     write_json(output / 'timing_summary.json', [json.loads((timing / f'batch_{b}.json').read_text()) for b in POPULATIONS])
 
     finalists, labels = [], []
-    for seed in SEEDS:
+    for seed in seeds:
         initial = space.sample(np.random.default_rng(seed), max(POPULATIONS))
         for batch in POPULATIONS:
             destination = output / f'search_{seed}_{batch}'
             destination.mkdir(exist_ok=True)
             winner_path = destination / 'winner.json'
+            if short_origin and batch == 64 and not winner_path.exists():
+                saved = json.loads(checkpoint_source.read_text())
+                winner = saved['best']
+                if winner is None or saved['best_score'] is None:
+                    raise ValueError('No completed feasible B64 result to reuse')
+                space.validate([winner])
+                # Verify that the saved leader was actually evaluated in a
+                # complete generation, not an active partial session.
+                observed = False
+                for receipt_path in checkpoint_source.parent.glob('generation_*.json'):
+                    receipt_value = json.loads(receipt_path.read_text())
+                    if receipt_value['generation'] > saved['next_generation']:
+                        continue
+                    for row, value in zip(receipt_value['population'], receipt_value['scores']):
+                        if space.identity(row) == space.identity(winner) and value == saved['best_score']:
+                            observed = True
+                if not observed:
+                    raise ValueError('B64 checkpoint leader lacks completed generation evidence')
+                write_json(winner_path, dict(genome=winner, genome_sha256=space.identity(winner),
+                    decoded=asdict(space.decode([winner])[0]), fitness=saved['best_score'],
+                    metrics=saved['best_metrics'], imported_checkpoint_sha256=checkpoint_hash,
+                    completed_generations=saved['next_generation'],
+                    candidate_evaluations=saved['next_generation']*64))
             if winner_path.exists():
                 frozen = json.loads(winner_path.read_text())
                 winner = frozen['genome']
@@ -149,15 +205,15 @@ def run(spec, args, output, panel):
                     raise ValueError('Frozen study winner hash/decode mismatch')
             else:
                 holder = pool(inputs, batch)
-                options = SimpleNamespace(population=batch, generations=BUDGET//batch, seed=seed,
+                options = SimpleNamespace(population=batch, generations=generations[batch], seed=seed,
                                           weights=weights, minimum_training_entries=1)
                 checkpoint = destination / 'checkpoint.json'
                 saved = json.loads(checkpoint.read_text()) if checkpoint.exists() else None
-                panel.emit(dict(config=dict(population=batch, generations=BUDGET//batch, training_sessions=3,
+                panel.emit(dict(config=dict(population=batch, generations=generations[batch], training_sessions=3,
                                 seed=seed, maximum_position_hold_seconds=args.maximum_position_hold_seconds,
                                 maximum_stop_risk_fraction=args.maximum_stop_risk_fraction),
                                 status='training', stage='Matched-budget population study',
-                                message=f'Seed{seed}; B{batch}; {BUDGET} candidate evaluations; training-only'))
+                                message=f'Seed {seed}; B{batch}; {generations[batch]*batch} candidate evaluations; training-only'))
                 try:
                     winner = phase(holder.objectives(), space, options, destination,
                                    checkpoint=saved, panel=panel, initial_rows=initial[:batch])
@@ -167,7 +223,8 @@ def run(spec, args, output, panel):
                     gc.collect()
                     torch.cuda.empty_cache()
             finalists.append(winner)
-            labels.append(dict(seed=seed, population=batch, selection_dates=SEARCH_DATES))
+            labels.append(dict(seed=seed, population=batch, selection_dates=SEARCH_DATES,
+                candidate_evaluations=frozen['candidate_evaluations'] if short_origin and batch == 64 else generations[batch]*batch))
     # Freeze ALL15 policies before inspecting transfer to other training days.
     write_json(output / 'frozen_finalists.json', dict(labels=labels, genomes=finalists,
                                                    fingerprints=[space.identity(v) for v in finalists]))
@@ -186,7 +243,7 @@ def run(spec, args, output, panel):
     quality = []
     for batch in POPULATIONS:
         values = [scores[i] for i, label in enumerate(labels) if label['population'] == batch and scores[i] is not None]
-        quality.append(dict(population=batch, feasible_finalists=len(values), seeds=len(SEEDS),
+        quality.append(dict(population=batch, feasible_finalists=len(values), seeds=len(seeds),
                             median_objective=float(np.median(values)) if values else None,
                             best_objective=max(values) if values else None,
                             worst_objective=min(values) if values else None,
@@ -197,5 +254,5 @@ def run(spec, args, output, panel):
                                                validation_read=False,
                                                scope='training search-quality comparison; no global-optimum accuracy claim'))
     panel.emit(dict(status='completed', stage='Population comparison saved',
-                    message='All15 frozen finalists scored on30 training days; validation untouched'))
+                    message=f'All {len(finalists)} frozen finalists scored on30 training days; validation untouched'))
     return 0

@@ -57,9 +57,9 @@ def test_import_allows_only_explicit_execution_contract_migration(tmp_path):
 def test_study_runs_all_population_budgets_and_freezes_before_transfer(tmp_path, monkeypatch):
     """Exercise orchestration cheaply; production grid is separately asserted."""
     from research.vectorized_backtest.v3.torch_backtest import population_study as study
-    monkeypatch.setattr(study, 'POPULATIONS', (4, 8))
+    monkeypatch.setattr(study, 'POPULATIONS', (64, 128))
     monkeypatch.setattr(study, 'SEEDS', (42,))
-    monkeypatch.setattr(study, 'BUDGET', 8)
+    monkeypatch.setattr(study, 'BUDGET', 128)
     manifest = tmp_path / 'manifest.json'
     manifest.write_text('{}')
     spec = dict(training=[dict(day=day, manifest=str(manifest), ledger=str(manifest),
@@ -83,7 +83,7 @@ def test_study_runs_all_population_budgets_and_freezes_before_transfer(tmp_path,
     class Pool:
         def __init__(self, inputs, space, batch, **kw):
             self.batch = batch
-            self.evaluators = {0: SimpleNamespace(runners={0: SimpleNamespace(ledger=torch.zeros(4, 1, 1))})}
+            self.evaluators = {0: SimpleNamespace(runners={0: SimpleNamespace(ledger=torch.zeros(64, 1, 1))})}
         def evaluate(self, index, rows):
             calls.append((self.batch, index, len(rows)))
             return result(rows)
@@ -100,11 +100,11 @@ def test_study_runs_all_population_budgets_and_freezes_before_transfer(tmp_path,
         stop_risk_weight=.10, capital_time_weight=.002, maximum_tape_gib=12,
         maximum_host_gib=320, maximum_state_gib=8, maximum_fills=100, graph_steps=32)
     assert study.run(spec, args, tmp_path, Panel()) == 0
-    for batch in (4, 8):
+    for batch in (64, 128):
         folder = tmp_path / f'search_42_{batch}'
         receipts = list(folder.glob('generation_*.json'))
-        assert len(receipts) == 8 // batch
-        assert sum(len(json.loads(p.read_text())['population']) for p in receipts) == 8
+        assert len(receipts) == 128 // batch
+        assert sum(len(json.loads(p.read_text())['population']) for p in receipts) == 128
     report = json.loads((tmp_path / 'study_report.json').read_text())
     assert report['validation_read'] is False
     assert len(report['scores']) == 2
@@ -112,3 +112,16 @@ def test_study_runs_all_population_budgets_and_freezes_before_transfer(tmp_path,
     before = len(calls)
     assert study.run(spec, args, tmp_path, Panel()) == 0
     assert len(calls) == before  # Resume never replays completed work.
+    # A new immutable short study imports B64 and timing without reevaluation,
+    # but runs exactly four fresh B128 generations (512 evaluations).
+    write_json(tmp_path / 'launch.json', dict(checkout=str(Path.cwd())))
+    args.short_study_origin = tmp_path
+    shortened = tmp_path / 'shortened'
+    shortened.mkdir()
+    assert study.run(spec, args, shortened, Panel()) == 0
+    leader = json.loads((shortened / 'search_42_64/winner.json').read_text())
+    assert leader['candidate_evaluations'] == 128
+    assert not list((shortened / 'search_42_64').glob('generation_*.json'))
+    assert len(list((shortened / 'search_42_128').glob('generation_*.json'))) == 4
+    labels = json.loads((shortened / 'frozen_finalists.json').read_text())['labels']
+    assert [v['candidate_evaluations'] for v in labels] == [128, 512]

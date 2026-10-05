@@ -82,6 +82,8 @@ def main(argv=None):
     parser.add_argument("--preparation-workers", type=int, default=2)
     parser.add_argument("--preparation-lookahead", type=int, default=2)
     parser.add_argument("--reuse-prepared", help="Previous experiment with compatible sealed inputs")
+    parser.add_argument("--short-study-origin", type=Path,
+                        help="Stopped full population study; reuse measured timing and its frozen B64 checkpoint")
     parser.add_argument("--runtime", type=Path, default=DEFAULT)
     parser.add_argument("--resume", type=Path)
     parser.add_argument(

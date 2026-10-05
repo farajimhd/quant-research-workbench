@@ -1,5 +1,18 @@
 # Risk and population comparison
 
+## Current shortened experiment
+
+At the user's request, the original study was stopped after twelve completed
+B64 generations (768 evaluations). Its checkpoint leader is frozen and reused.
+Only seed20261004 continues: B128 gets4 generations/512 evaluations; B192 gets3/
+576; B256 gets2/512; B512 gets1/512. No further B64 training is performed.
+Timing receipts are reused only after execution-source hashes match. Imported
+checkpoint hashes and completed-generation evidence bind the B64 result. A new
+immutable job records the changed budget; original artifacts stay unchanged.
+All five winners are frozen before assessment on thirty training dates.
+Validation remains untouched. This is preliminary single-seed evidence with
+unequal budgets, not the equal-budget three-seed design described below.
+
 The previous campaign is stopped. This experiment uses new immutable source,
 random initial tensors and training data only. It does not read the six held-out
 evaluation sessions and does not claim to measure distance to a global optimum.
