@@ -76,9 +76,9 @@ prediction head, changing its losses, or exposing hindsight in input features.
 The repaired NVDA RTH preview is experimental; full-session certified labels
 remain exclusively behind the active registry after publication audit.
 
-Research â†’ **Current V6 labels** reads `rl-v6-active-labels.json` and its
+Research â†’ **1a labels** reads `rl-v6-active-labels.json` and its
 published dataset/audit certificates from the workstation runtime. Select
-any of the 19 saved sessions and a ticker/listing. The three existing Canvas
+any of the 23 saved sessions and a ticker/listing. The three existing Canvas
 containers show algorithm/timing, session/pair statistics, and saved candles
 with 1s MACD shading. Arrow rows show quality and raw dollars per share.
 The default chart shows both ENTRY and EXIT opportunities, with EXIT taking
