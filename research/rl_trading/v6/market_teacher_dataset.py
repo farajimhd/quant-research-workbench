@@ -44,10 +44,23 @@ def read_targets(root):
     if file_hash(path)!=receipt['files']['labels']['sha256']:raise ValueError('1b target bytes changed')
     return pl.read_parquet(path)
 
+def validate_population(dataset, original):
+    """Require the exact original inventory/roles, including reused context."""
+    expected=[original['context']]+original['days']
+    if original.get('validation_split'):
+        if dataset.get('validation_split')!=original['validation_split']:
+            raise ValueError('1b extension split differs from 1a')
+        count=8
+    else:
+        if dataset.get('validation_split'):raise ValueError('Unexpected 1b extension')
+        count=19
+    if len(dataset['days'])!=count or [(e['day'],e['role']) for e in dataset['days']] != [(e['day'],e['role']) for e in expected]:
+        raise ValueError('Incomplete approved 1b population')
+
+
 def audit_dataset(dataset, original, progress):
     """Independent read-back of every shard plus timestamp-event sizing audit."""
-    if len(dataset['days'])!=19 or [e['day'] for e in dataset['days']] != [e['day'] for e in [original['context']]+original['days']]:
-        raise ValueError('Incomplete approved 1b population')
+    validate_population(dataset,original)
     totals=dict(rows=0,suppressed_rows=0,selected=0,groups=0,shards=0)
     for entry,prior in zip(dataset['days'],[original['context']]+original['days']):
         root=Path(entry['root']);proof=json.loads((root/'complete.json').read_text())
@@ -177,3 +190,50 @@ def main(argv=None):
     return 0
 
 if __name__=='__main__':raise SystemExit(main())
+
+
+def audit_existing_extension(source_dataset, output, runtime, producer, audit_commit):
+    """Explicit audit-only recovery: verify immutable producer, never write shards."""
+    import ast
+    producer=Path(producer)/'research/rl_trading/v6'
+    here=Path(__file__).parent
+    def functions(path):
+        tree=ast.parse(path.read_text(encoding='utf-8'))
+        return {node.name:ast.dump(node,include_attributes=False) for node in tree.body
+            if isinstance(node,ast.FunctionDef) and node.name in ('copy_labels','read_targets','main')}
+    if functions(producer/'market_teacher_dataset.py')!=functions(Path(__file__)):
+        raise ValueError('1b producer functions changed; audit-only recovery forbidden')
+    if file_hash(producer/'market_teacher_preview.py')!=file_hash(here/'market_teacher_preview.py'):
+        raise ValueError('Grouping/selection changed; audit-only recovery forbidden')
+    original=source.require_dataset(source_dataset,runtime_root=runtime,allow_extension=True)
+    if not original.get('validation_split'):raise ValueError('Recovery is restricted to the frozen extension')
+    source_hash=file_hash(source_dataset)
+    expected_binding=dict(version=VERSION,grouping=GROUPING,source_sha256=source_hash,
+        source_commit=json.loads((Path(output).parent/'manifest.json').read_text())['binding']['source_commit'],config=vars(Config()),
+        calculation_sha256=file_hash(producer/'market_teacher_dataset.py'),grouping_sha256=file_hash(producer/'market_teacher_preview.py'))
+    entries=[];rows=0
+    for entry in [original['context']]+original['days']:
+        root=Path(output)/entry['day'];marker=root/'complete.json';proof=json.loads(marker.read_text())
+        if (proof['binding']!=expected_binding or proof['day']!=entry['day'] or proof['role']!=entry['role']
+            or proof['source_teacher_sha256']!=entry['teacher_sha256']):raise ValueError('Existing producer/source/day receipt differs')
+        original_proof=source.verify_day(entry['teacher_root'],entry['bank_certificate_sha256'],verify_files=False)
+        if [x['path'] for x in proof['shards']]!=[x['path'] for x in original_proof['shards']]:raise ValueError('Existing shard inventory differs')
+        for item,source_receipt in zip(proof['shards'],original_proof['shards']):
+            receipt=json.loads((root/item['path']/'complete.json').read_text())
+            if receipt['binding']!=dict(**expected_binding,source_shard_sha256=source_receipt['sha256']):raise ValueError('Existing shard producer/source differs')
+            original_receipt=json.loads((Path(entry['teacher_root'])/item['path']/'complete.json').read_text())
+            if any(receipt['files'][name]['sha256']!=original_receipt['files'][name]['sha256'] for name in ('episodes','pairs','trades')):
+                raise ValueError('Immutable source sidecar differs')
+        entries.append(dict(day=entry['day'],role=entry['role'],root=str(root),sha256=file_hash(marker),rows=proof['rows']));rows+=proof['rows']
+    dataset=dict(version=VERSION,status='audited_1b_labels',binding=expected_binding,source_dataset=str(source_dataset),action_order=ACTION_ORDER,
+        days=entries,rows=rows,sealed_test_accessed=False,training_started=False,validation_split=original['validation_split'],
+        sealed_labels_generated=True,sealed_access_policy=original['sealed_access_policy'],audit_source_commit=audit_commit)
+    def progress(stage,**extra):source.write_json(Path(output)/'progress.json',dict(status='running',stage=stage,**extra))
+    audit=audit_dataset(dataset,original,progress)
+    audit['audit_source_commit']=audit_commit;audit['audit_source_sha256']=file_hash(Path(__file__))
+    if file_hash(source_dataset)!=source_hash:raise ValueError('1a changed during audit')
+    source.write_json(Path(output)/'publication-audit.json',audit)
+    dataset['publication_audit']=str(Path(output)/'publication-audit.json');dataset['publication_audit_sha256']=file_hash(dataset['publication_audit'])
+    dataset['hash']=digest(dataset);source.write_json(Path(output)/'dataset.json',dataset)
+    source.write_json(Path(output)/'progress.json',dict(status='complete',completed_days=len(entries),total_days=len(entries),rows=rows,audit_only_recovery=True))
+    return dataset

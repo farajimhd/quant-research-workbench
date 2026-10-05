@@ -26,6 +26,7 @@ def main(argv=None):
     parser.add_argument('--source-commit',required=True)
     parser.add_argument('--workers',type=int,default=16)
     parser.add_argument('--preflight-only',action='store_true')
+    parser.add_argument('--audit-existing-1b-from',type=Path,help='Explicit completed-shard recovery from exact immutable producer snapshot')
     args=parser.parse_args(argv)
     runtime=Path('D:/TradingML/runtimes').resolve();output=args.output.resolve()
     if not runtime.is_dir() or not output.is_relative_to(runtime) or not args.split_manifest.resolve().is_relative_to(output):
@@ -33,6 +34,8 @@ def main(argv=None):
     if len(args.source_commit)!=40 or any(c not in '0123456789abcdef' for c in args.source_commit) or not 1<=args.workers<=16:
         raise ValueError('Exact pushed source commit and bounded workers required')
     split=read_split(args.split_manifest)
+    if args.audit_existing_1b_from:
+        return recover_audit(args,runtime,output,split)
     repair=runtime/'rl-v6-reporting-repair-20261002'
     manifest=repair/'bars/latest.json';ledger=repair/'build-ledger-v2.sqlite3'
     registries={name:file_hash(runtime/name) for name in ('rl-v6-active-labels.json','rl-v6-active-market-teacher.json')}
@@ -103,6 +106,27 @@ def main(argv=None):
             stage='complete';progress('complete',completed_sessions=7,total_sessions=7)
         except Exception as error:
             progress('failed',reason=str(error));raise
+    return 0
+
+def recover_audit(args,runtime,output,split):
+    from scripts.backfill_trade_reporting_flags import exclusive
+    from research.rl_trading.v6.market_teacher_dataset import audit_existing_extension
+    with exclusive(output/'writer'):
+        binding=json.loads((output/'manifest.json').read_text())['binding']
+        if file_hash(args.split_manifest)!=binding['split_sha256']:raise ValueError('Frozen split changed')
+        if any(file_hash(runtime/name)!=sha for name,sha in binding['registries'].items()):raise ValueError('Original public registries changed')
+        write_json(output/'progress.json',dict(status='running',stage='labels-1b-audit-recovery',audit_source_commit=args.source_commit))
+        try:
+            audit_existing_extension(output/'labels-1a/dataset.json',output/'labels-1b',runtime,args.audit_existing_1b_from,args.source_commit)
+            one=json.loads((output/'labels-1a/dataset.json').read_text())
+            if any(file_hash(runtime/name)!=sha for name,sha in binding['registries'].items()):raise ValueError('Original public registries changed during audit')
+            write_json(output/'complete.json',dict(status='complete',binding=binding,audit_source_commit=args.source_commit,roles=split['roles'],sessions=7,
+                dataset_1a_sha256=file_hash(output/'labels-1a/dataset.json'),dataset_1b_sha256=file_hash(output/'labels-1b/dataset.json'),
+                rows=sum(e['valid_rows'] for e in one['days']),shards=sum(len(json.loads((Path(e['teacher_root'])/'complete.json').read_text())['shards']) for e in one['days']),
+                registries_preserved=True,training_started=False,sealed_labels_exposed=False,audit_only_recovery=True))
+            write_json(output/'progress.json',dict(status='complete',stage='complete',completed_sessions=7,total_sessions=7))
+        except Exception as error:
+            write_json(output/'progress.json',dict(status='failed',stage='labels-1b-audit-recovery',reason=str(error)));raise
     return 0
 
 if __name__=='__main__':raise SystemExit(main())

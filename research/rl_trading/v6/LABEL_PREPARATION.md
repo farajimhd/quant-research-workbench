@@ -40,7 +40,7 @@ prediction head, changing its losses, or exposing hindsight in input features.
 The repaired NVDA RTH preview is experimental; full-session certified labels
 remain exclusively behind the active registry after publication audit.
 
-Research â†’ **Current V6 labels** reads `rl-v6-active-labels.json` and its
+Research Ã¢â€ â€™ **Current V6 labels** reads `rl-v6-active-labels.json` and its
 published dataset/audit certificates from the workstation runtime. Select
 any of the 19 saved sessions and a ticker/listing. The three existing Canvas
 containers show algorithm/timing, session/pair statistics, and saved candles
@@ -105,9 +105,9 @@ The same command and exact producer source resume verified completed shards.
 
 The complete workstation repair is launched with
 `python -B research/rl_trading/v6/run_reporting_repair.py --source-commit FULL_PUSHED_SHA`.
-It awaits an existing July migration, verifies all 56 certified Julyâ€“September
+It awaits an existing July migration, verifies all 56 certified JulyÃ¢â‚¬â€œSeptember
 source sessions, runs an NVDA/AAPL bar canary and independent audit, rebuilds
-the existing July 30â€“September 18 market-day range immutably, audits the full
+the existing July 30Ã¢â‚¬â€œSeptember 18 market-day range immutably, audits the full
 population's stage counts and representative OHLC/MACD, then regenerates the
 19 V6 banks and labels. It never trains. `progress.json` and per-stage logs
 live beneath `D:/TradingML/runtimes/rl-v6-reporting-repair-20261002`; failures
@@ -186,7 +186,7 @@ Universe policy rl-v6-us-exchange-listed-stocks-v1 independently verifies canoni
 
 ## Isolated supervised 1b preview
 
-Research â†’ **1b selection & sizing** exposes a provisional session preview,
+Research Ã¢â€ â€™ **1b selection & sizing** exposes a provisional session preview,
 without publishing training data or changing approved 1a labels. Prepare one
 approved session with frozen settings, then inspect selected/rejected pairs,
 group members, cash ratios and exact original/copied candle targets.
@@ -196,7 +196,7 @@ For fee `f` per share per side, score is `(entry_gain - 2*f)/(close + f)`.
 uses `score > m*2*f/(close + f)`; `m=2, f=0.005` means `entry_gain > 0.03`.
 Selection now requires both the strict fee floor and `score >= 0.001` (0.1%)
 by default. The 0.1% return floor is user-approved for the preview; full
-extraction still awaits grouping validation. Each listing/Sâ†’L pair
+extraction still awaits grouping validation. Each listing/SÃ¢â€ â€™L pair
 contributes its first qualifying **existing 1a ENTRY**, once, rather than all
 qualifying candle rows. Rejected pairs retain their best ENTRY candidate for
 the decision audit; liquidity rejection and absence of 1a ENTRY are explicit.
@@ -317,3 +317,10 @@ training and published Research loaders reject them, and neither active
 1a nor 1b registry is replaced. A future development-only UI publication must
 filter sealed dates explicitly. Split/roles/source hashes are pinned, and
 resume never changes the random draw or recalculates certified bar products.
+
+The audit-only recovery option `--audit-existing-1b-from SNAPSHOT` verifies
+that copy/read/producer functions are AST-identical and selection/grouping
+bytes are unchanged, authenticates all existing producer/source/shard
+receipts, and reruns the full read-back audit. It writes only audit/dataset
+metadata, preserving all feature, label and sidecar bytes. Audit provenance
+records the corrected auditor commit separately from the original producer.

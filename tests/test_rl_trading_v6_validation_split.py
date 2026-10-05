@@ -56,3 +56,17 @@ def test_extension_bank_denied_without_explicit_generation_split(tmp_path):
     (root/'complete.json').write_text('{}')
     with pytest.raises(ValueError,match='explicit generation-only'):
         open_session(root,runtime_root=tmp_path)
+
+
+def test_1b_extension_audit_accepts_exact_eight_days_and_rejects_missing_or_changed_roles():
+    from research.rl_trading.v6.market_teacher_dataset import validate_population
+    import copy
+    original=dict(context=dict(day='2026-08-25',role='development'),days=[dict(day=d,role='sealed_test' if i<3 else 'development') for i,d in enumerate(DAYS)],validation_split=dict(hash='pinned'))
+    dataset=dict(days=[original['context']]+original['days'],validation_split=original['validation_split'])
+    validate_population(dataset,original)
+    missing=copy.deepcopy(dataset);missing['days'].pop()
+    with pytest.raises(ValueError):validate_population(missing,original)
+    changed=copy.deepcopy(dataset);changed['days'][1]['role']='development'
+    with pytest.raises(ValueError):validate_population(changed,original)
+    changed=copy.deepcopy(dataset);changed['validation_split']['hash']='other'
+    with pytest.raises(ValueError):validate_population(changed,original)
