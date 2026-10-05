@@ -73,6 +73,16 @@ class PackedSession:
             yield CandleEvent(int(sorted_clocks[left]), listing, rows)
 
 
+def validate_previous_context(plan, prior_plan, prior_certificate):
+    """Causal feature context may precede a public day without public labels."""
+    if (prior_plan['day'] != plan['previous_day'] or
+        digest({key:value for key,value in prior_plan.items() if key!='hash'}) != prior_plan.get('hash') or
+        prior_certificate.get('status') != 'complete' or
+        prior_certificate.get('plan_hash') != prior_plan.get('hash') or
+        prior_plan.get('source_build_id') != plan.get('previous_build_id')):
+        raise ValueError('Previous-day context or source authority changed')
+
+
 def open_session(root: Path, *, runtime_root: Path,
                  previous_root: Path | None = None, split_manifest: Path | None = None) -> PackedSession:
     """Bind the day plan, top-level certificate, feature bank and prior tail.
@@ -124,13 +134,7 @@ def open_session(root: Path, *, runtime_root: Path,
             raise ValueError('Prior certified day is required for 120 candles')
         prior_plan = json.loads((previous_root / 'plan.json').read_text())
         prior_certificate = json.loads((previous_root / 'complete.json').read_text())
-        if (prior_plan['day'] != previous_day or
-                digest({key: value for key, value in prior_plan.items()
-                        if key != 'hash'}) != prior_plan.get('hash') or
-                prior_certificate.get('status') != 'complete' or
-                prior_certificate.get('plan_hash') != prior_plan.get('hash') or
-                prior_plan.get('source_build_id') != plan.get('previous_build_id')):
-            raise ValueError('Previous-day context or source authority changed')
+        validate_previous_context(plan,prior_plan,prior_certificate)
         previous = open_bank(previous_root / 'bank', verify_hashes=True)
         if (previous.manifest['source_hash'] != prior_plan['hash'] or
                 previous.manifest['files_sha256'] !=

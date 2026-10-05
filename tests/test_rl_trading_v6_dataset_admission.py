@@ -35,3 +35,13 @@ def test_composition_requires_exact_producer_bytes_and_calculation_parity(tmp_pa
     with pytest.raises(ValueError,match='bytes changed'):grouping_parity(tmp_path,a,b)
     b['grouping_sha256']=file_hash(new)
     with pytest.raises(ValueError,match='calculation differs'):grouping_parity(tmp_path,a,b)
+
+def test_prior_feature_context_does_not_require_public_labels():
+    from research.rl_trading.v6.session_data import validate_previous_context
+    prior=dict(day='2026-08-26',source_build_id='immutable-build')
+    prior['hash']=digest(prior)
+    certificate=dict(status='complete',plan_hash=prior['hash'])
+    current=dict(previous_day='2026-08-26',previous_build_id='immutable-build')
+    validate_previous_context(current,prior,certificate)
+    with pytest.raises(ValueError,match='authority changed'):
+        validate_previous_context(dict(current,previous_build_id='other-build'),prior,certificate)

@@ -238,9 +238,12 @@ def model_chart(day,identity,proof,frames,start_us,offset,view):
     previous=None
     if entry['previous_root']:
         previous_root=mapped(entry['previous_root'])
-        _,dataset=published()
-        previous_entry=next(e for e in [dataset['context']]+dataset['days'] if mapped(e['bank_root'])==previous_root)
-        previous_bank=certified_bank(str(previous_root),previous_entry['bank_certificate_sha256'])
+        from research.rl_trading.v6.session_data import validate_previous_context
+        prior_plan=read_json(previous_root/'plan.json')
+        prior_certificate=read_json(previous_root/'complete.json')
+        validate_previous_context(read_json(bank_root/'plan.json'),prior_plan,prior_certificate)
+        # Read feature context only. Never resolve a preceding sealed day's labels.
+        previous_bank=certified_bank(str(previous_root),file_hash(previous_root/'complete.json'))
         if identity in previous_bank.manifest['offsets']: previous=previous_bank.listing(identity)
     raw,window=select_window(bank.listing(identity),previous,offset=offset,start_us=start_us)
     candles,overlays,oscillators=project(raw)
