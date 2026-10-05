@@ -36,7 +36,7 @@ def main(argv=None):
         "--key", type=Path, default=Path.home() / ".ssh/id_ed25519_codex_workstation"
     )
     p.add_argument(
-        "--command", choices=("dates", "plan", "profile", "run", "study"), required=True
+        "--command", choices=("dates", "plan", "profile", "run", "study", "resume-ui"), required=True
     )
     p.add_argument("arguments", nargs=argparse.REMAINDER)
     args = p.parse_args(argv)
@@ -58,6 +58,9 @@ def main(argv=None):
         + "/research/vectorized_backtest/v3/torch_backtest/run_optimization_workstation.py"
     )
     command = [args.command, "--resume", job, *extra]
+    if args.command == 'resume-ui':
+        script = checkout + '/research/vectorized_backtest/v3/torch_backtest/resume_console.py'
+        command = ['--output', job, *extra]
     body = "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",

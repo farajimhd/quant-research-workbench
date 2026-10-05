@@ -269,3 +269,23 @@ qualification passes full financial and fill-ledger parity. A failed profile
 stops before training. Use `--continue-training OLD_EXPERIMENT` and
 `--reuse-prepared OLD_EXPERIMENT` to retain certified training bytes and
 completed generations while changing mutation implementation.
+
+### One console owner and display-only resume
+
+Qualification must release its live panel before starting the optimizer. The
+handoff explicitly closes the old renderer; its later context exit is idempotent.
+This prevents a completed qualification panel from repainting stale
+"Checkpoint: not yet saved" over a running optimizer.
+
+For an active immutable experiment, `resume_console.py --output NEW_CONSOLE_JOB
+--worker-checkout ORIGINAL_CHECKOUT --worker-job ORIGINAL_JOB` resumes the exact
+original optimizer command/population/RNG/session receipts with `--plain`.
+The worker writes its diagnostic output to the console job's `worker.log`.
+Only a separate read-only panel renders the authoritative experiment status.
+The supervisor records worker PID, parent PID, command and source hash, verifies
+all original deployment files and the existing checkpoint, propagates worker
+exit codes, and stops its owned child on interruption. Display repair does not
+regenerate a population or require rerunning an unchanged engine qualification.
+Use `launch_remote.py --command resume-ui` to open this supervisor in the
+workstation's visible console. Its fresh UI source and original immutable
+backtest source are deliberately recorded separately.

@@ -131,6 +131,14 @@ def render_search(s, elapsed, *, width=110, height=28):
                 )
             )
     last = s.get("last_completed") or {}
+    mutation = config.get('mutation') or {}
+    if mutation:
+        percentages = lambda key: '/'.join(f'{100*v:g}' for v in mutation[key])
+        mutation_line = (f"Mutation: mix {percentages('probabilities')}% | "
+                         f"gene rates {percentages('coordinate_rates')}% | "
+                         f"steps {percentages('scales')}%")
+    else:
+        mutation_line = 'Mutation: legacy settings' if config else 'Mutation: not used during qualification'
     rows.extend(
         [
             Text(
@@ -140,8 +148,9 @@ def render_search(s, elapsed, *, width=110, height=28):
                 f"Rejected candidates {s.get('invalid_candidates', 0)}  |  stagnant generations {s.get('stagnant_generations', 0)}  |  ETA {s.get('eta', 'measuring')}"
             ),
             Text(
-                f"GA: seed {config.get('seed', '?')}  ·  elites 2  ·  tournament 3  ·  crossover 50%  ·  mutation 15%  ·  immigrants {s.get('immigrant_percent', 20)}%"
+                f"GA: seed {config.get('seed', '?')} · elites 2 · tournament 3 · immigrants {s.get('immigrant_percent', 20)}%"
             ),
+            Text(mutation_line),
             Text(
                 f"Constraints: hold >=3s (risk exits exempt)  ·  batches/session >= {config.get('minimum_training_entries', 1)}  ·  soft maximum {config.get('maximum_training_batches', 20)}"
             ),
@@ -149,7 +158,7 @@ def render_search(s, elapsed, *, width=110, height=28):
                 f"Holding 3s–{config.get('maximum_position_hold_seconds', 3600)}s; stop-risk admission {100*config.get('maximum_stop_risk_fraction', .02):g}%; daily cash reset"
             ),
             *([] if pipeline else [gpu_line]),
-            Text("Checkpoint: " + s.get("checkpoint", "not yet saved")),
+            Text("Checkpoint: " + s.get("checkpoint", "not applicable during qualification" if s.get('status') == 'profiling' else "pending optimizer initialization")),
             Text("Run: " + s.get("output", "pending")),
         ]
     )
@@ -273,9 +282,14 @@ class SearchPanel:
                     message=safe_diagnostic(value),
                 )
             )
+        self.close_live()
+
+    def close_live(self):
+        """Release console ownership before handing off to another live panel."""
         if self.live:
             self.live.update(self.view(), refresh=True)
             self.live.stop()
+            self.live = None
 
 
 def monitor(output):

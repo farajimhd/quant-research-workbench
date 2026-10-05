@@ -242,6 +242,9 @@ def main(argv=None):
                 if not result.get('passed') or not result.get('full_ledger_parity'):
                     raise ValueError('Automatic continuation requires passed full-ledger qualification')
                 command = qualified_followup_arguments(args, job)
+                # Recursive main runs before this with-context exits. Release
+                # its refresh thread now so it cannot redraw stale profile data.
+                panel.close_live()
                 return main(command)
             return 0
     # The optimization owns the panel below. Profile and plan never launch GA.
