@@ -1,6 +1,8 @@
 """Read-only causal exit and broker-observed equity evidence for saved runs."""
 from __future__ import annotations
 
+from src.backend.backtest_v4_saved_review import declared_saved_read_operation
+
 from datetime import datetime
 from decimal import Decimal
 
@@ -137,6 +139,7 @@ def attach_exit_evidence(client, prefix, lifecycles, executions):
             lifecycle["presentation_exit_reason_source"] = "+".join(sorted({row["source"] for row in terminal}))
 
 
+@declared_saved_read_operation
 def load_broker_observed_drawdown(client, run_id):
     """Verify normalized snapshot families and the terminal committed market cursor."""
     from src.backend.backtest_v4_saved_review import _terminal_attestation

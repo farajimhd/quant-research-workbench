@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import re
+from src.backend.backtest_v4_saved_review import declared_saved_read_operation
+
 from collections import OrderedDict
 from datetime import date, datetime
 from threading import Lock
@@ -136,6 +138,7 @@ def _pinned_execution_vwap(client: Any, plan: CertifiedMarketDayPlan, *,
     return result
 
 
+@declared_saved_read_operation
 def certified_saved_run_plan(
     journal_client: Any, market_client: Any, *, run_id: str,
     plan_loader: Callable[..., CertifiedMarketDayPlan] = certified_market_plan_from_arte,

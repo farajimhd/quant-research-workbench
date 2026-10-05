@@ -1274,7 +1274,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                          'bind_first_price_source': 'b9524c1b3ddec5d014e6b10c7dc801a694613f28eb61a11abb4cd1a9c6aa0561'},
  'backend/backtest_v4_history.py': {'__module__': '9ed3f860d27d2b6f776d4b42c0e9225fc84a75744504fa9dce60dcdd1326bd23'},
  'backend/backtest_v4_saved_review.py': {'_saved_twenty_price_source': 'ca792d4aa5df56fb3f8906af250a2e5c459839573255d6ae671a1976a12074cf',
-                                         '_terminal_attestation': 'b7b2ccaa338cdb7c4d00a088292b4df41dfd6dcd7c4c576caa1c92c6a1bd415e'},
+                                         '_terminal_attestation': 'f5bad9a348ca0491b588c6141e9850323b8cf97303fc882194714651b45c4aa1'},
  'backend/historical_runtime_versions.py': {'__module__': '96941bdcb6b84439c3ba3f0d1fc0deb9cde238746088d1b284284aa0969857ec'},
  'backend/replay_run_service.py': {'_save_restart_checkpoint_responsive': '5f54ab88d56dbd588090b9de2e7404da167ae261a82eeb5b53f1830130ee568e',
                                    '_confirm_profit_arming_checkpoint': '1a39d253453b04c20bc44d97dfed415083f4a5f8b34c0237cafc0ac37c98120d',

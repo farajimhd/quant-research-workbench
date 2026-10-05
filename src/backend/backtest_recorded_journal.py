@@ -4,6 +4,8 @@ This verifies the complete stored normalized journal and its contiguous commit
 chain. It grants neither execution admission nor recovery/write authority.
 The full strategy-source auditor remains a separate, unchanged reader.
 """
+from src.backend.backtest_v4_saved_review import declared_saved_read_operation, _require_declared_read_profile
+
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -83,6 +85,7 @@ def verify_recorded_chain(commits, families, rows_by_family, run_id):
     return V4CommittedPrefix(run_id, sequence, previous, commits[-1]['source_cursor'], status, tuple(ids))
 
 
+@declared_saved_read_operation
 def load_recorded_attestation(client, run_id):
     from src.backend import historical_runtime_versions as versions
     from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
@@ -96,6 +99,7 @@ def load_recorded_attestation(client, run_id):
     context = load_typed_run_context(client, normalized)
     if context['mode'] != 'backtest' or not is_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision'])):
         raise ValueError('Recorded Review requires an installed numbered Backtest strategy')
+    _require_declared_read_profile(client, context)
     with _recorded_read_scope(_client_scope(client), normalized):
         for key in _CACHE.candidate_keys(_client_scope(client), normalized):
             cached = _CACHE.get(key)
@@ -150,6 +154,7 @@ def load_recorded_attestation(client, run_id):
         return value
 
 
+@declared_saved_read_operation
 def load_recorded_page(client, run_id):
     attestation = load_recorded_attestation(client, run_id)
     prefix = attestation['prefix']
@@ -280,6 +285,7 @@ def project_recorded_performance(client, run_id: str, *,
 
 
 
+@declared_saved_read_operation
 def load_recorded_performance(client, run_id):
     attestation = load_recorded_attestation(client, run_id)
     key = _cache_key(client, str(UUID(run_id)), attestation['context'], attestation['prefix'])
@@ -295,6 +301,7 @@ def load_recorded_performance(client, run_id):
     return result
 
 
+@declared_saved_read_operation
 def load_recorded_chart_trades(client, run_id: str, ticker: str) -> dict:
     """Bounded ticker projection of the verified terminal performance report.
 

@@ -38,6 +38,74 @@ _V4_PERFORMANCE_CACHE = AuditedSessionCache(
 )
 
 
+from contextvars import ContextVar
+
+_DECLARED_READ_SCOPE = ContextVar("declared_saved_read_scope", default=None)
+
+
+class _DeclaredReadProfileRequired(Exception):
+    def __init__(self, options):
+        self.options = options
+
+
+def _require_declared_read_profile(client, context):
+    """Select authority from the already validated typed run context."""
+    from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
+    contract = resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision']))
+    options = ({'automatic_ladder': True}
+               if getattr(contract, 'automatic_entry_policy', None) is not None
+               else {'entry_spread_risk': True}
+               if getattr(contract, 'entry_spread_risk_policy', None) is not None else {})
+    flag = ('automatic_ladder_profile' if 'automatic_ladder' in options
+            else 'entry_spread_risk_profile' if options else None)
+    if flag is not None and getattr(client, flag, False) is not True:
+        if _DECLARED_READ_SCOPE.get() is not None:
+            raise _DeclaredReadProfileRequired(options)
+    return options if flag is not None and getattr(client, flag, False) is not True else {}
+
+
+def declared_saved_read_operation(operation):
+    """Keep the selected SELECT-only reader alive through the complete read."""
+    from contextlib import closing
+    from functools import wraps
+    from inspect import signature
+    parameters = signature(operation)
+    client_name = next(iter(parameters.parameters))
+
+    @wraps(operation)
+    def selected(*args, **kwargs):
+        bound = parameters.bind(*args, **kwargs)
+        client = bound.arguments[client_name]
+        raw_run_id = str(bound.arguments['run_id'])
+        try:
+            scope_run_id = str(UUID(raw_run_id))
+        except ValueError:
+            # Leave input rejection to the original operation.
+            scope_run_id = raw_run_id
+        scope = (id(client), scope_run_id)
+        if _DECLARED_READ_SCOPE.get() == scope:
+            return operation(*args, **kwargs)
+        token = _DECLARED_READ_SCOPE.set(scope)
+        try:
+            try:
+                return operation(*args, **kwargs)
+            except _DeclaredReadProfileRequired as required:
+                from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env, _v4_preflight
+                with closing(backtest_v4_operator_client_from_env(**required.options)) as reader:
+                    _v4_preflight(reader)
+                    wrap = getattr(client, 'declared_read_wrapper', None)
+                    bound.arguments[client_name] = wrap(reader) if callable(wrap) else reader
+                    selected_token = _DECLARED_READ_SCOPE.set((id(bound.arguments[client_name]), scope[1]))
+                    try:
+                        return operation(*bound.args, **bound.kwargs)
+                    finally:
+                        _DECLARED_READ_SCOPE.reset(selected_token)
+        finally:
+            _DECLARED_READ_SCOPE.reset(token)
+    return selected
+
+
+
 def _saved_twenty_price_source(client, run_id: str, context: dict, release):
     """Rebuild native entry authority from the fenced definition and market seals.
 
@@ -206,12 +274,11 @@ def _terminal_attestation(client, normalized: str,
             release = certify_numbered_configuration(market, int(context["strategy_revision"]))
         if release.payload_hash != context["configuration_hash"]:
             raise ValueError("Saved numbered configuration differs from its sealed release")
-    from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
-    cost_policy = getattr(resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision'])), 'entry_spread_risk_policy', None)
-    if cost_policy is not None and not getattr(client, 'entry_spread_risk_profile', False):
+    options = _require_declared_read_profile(client, context)
+    if options:
         from contextlib import closing
         from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env, _v4_preflight
-        with closing(backtest_v4_operator_client_from_env(entry_spread_risk=True)) as reader:
+        with closing(backtest_v4_operator_client_from_env(**options)) as reader:
             _v4_preflight(reader)
             return _terminal_attestation(reader, normalized, cache)
     attestation = None
@@ -275,6 +342,7 @@ def _terminal_attestation(client, normalized: str,
     return attestation
 
 
+@declared_saved_read_operation
 def load_v4_terminal_review_page(client, run_id: str, *,
                                  after_sequence: int = 0,
                                  limit: int = 250,
@@ -323,6 +391,7 @@ def load_v4_terminal_review_page(client, run_id: str, *,
     }
 
 
+@declared_saved_read_operation
 def load_v4_trade_history_page(client, run_id: str, *,
                                after_fill_sequence: int = 0,
                                after_commission_sequence: int = 0,
@@ -364,6 +433,7 @@ def load_v4_trade_history_page(client, run_id: str, *,
     }
 
 
+@declared_saved_read_operation
 def load_v4_order_history_page(client, run_id: str, *,
                                after_command_sequence: int = 0,
                                after_transition_sequence: int = 0,
@@ -487,6 +557,7 @@ def _saved_protection_events(client, prefix, *, maximum: int = 20_000) -> list[d
     return events
 
 
+@declared_saved_read_operation
 def load_v4_performance_report(client, run_id: str, *,
                                cache: AuditedSessionCache | None = None) -> dict:
     """Derive the existing flat-to-flat report from complete normalized facts.
@@ -600,6 +671,7 @@ def load_v4_performance_report(client, run_id: str, *,
     }
 
 
+@declared_saved_read_operation
 def load_cached_v4_performance_report(client, run_id: str, *,
                                       cache: AuditedSessionCache | None = None) -> dict:
     """Reuse only a fully verified terminal projection, never its authority.
@@ -635,6 +707,7 @@ def load_cached_v4_performance_report(client, run_id: str, *,
     return report
 
 
+@declared_saved_read_operation
 def load_v4_chart_trades(client, run_id: str, ticker: str) -> dict:
     """Bounded ticker projection of the verified terminal performance report.
 

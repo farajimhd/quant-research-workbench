@@ -6,6 +6,7 @@ projection requires a new output directory rather than replacing evidence.
 from __future__ import annotations
 
 import argparse
+
 from contextlib import closing
 from datetime import datetime
 from decimal import Decimal
@@ -28,7 +29,7 @@ from scripts.clickhouse.smoke_strategy_one_backtest import _load_private_credent
 from src.backend.backtest_market_data import assert_select_only
 from src.backend.backtest_v3_clients import v3_client
 from src.backend.backtest_v4_chart import certified_saved_run_plan
-from src.backend.backtest_v4_saved_review import load_v4_performance_report, load_v4_terminal_review_page
+from src.backend.backtest_v4_saved_review import declared_saved_read_operation, load_v4_performance_report, load_v4_terminal_review_page
 from src.backend.strategy_one_entry_context import pinned_entry_volume
 from src.backend.backtest_v4_performance_evidence import load_broker_observed_drawdown
 from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
@@ -48,6 +49,12 @@ class SelectOnly:
         self.base_url = client.base_url
         self.user = client.user
         self.password = client.password
+        self.entry_spread_risk_profile = getattr(client, 'entry_spread_risk_profile', False)
+        self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
+        self.v4_batched_detail_readback = getattr(client, 'v4_batched_detail_readback', False)
+
+    def declared_read_wrapper(self, client):
+        return type(self)(client)
 
     def execute(self, query, *args, **kwargs):
         return self.client.execute(report_select_query(query), *args, **kwargs)
@@ -72,6 +79,7 @@ def et(value: str) -> str:
     return stamp.astimezone(NY).isoformat(timespec="microseconds")
 
 
+@declared_saved_read_operation
 def build_report(journal, market, run_id: str) -> dict:
     terminal = load_v4_terminal_review_page(journal, run_id, after_sequence=0, limit=1)
     if terminal["status"] != "completed":

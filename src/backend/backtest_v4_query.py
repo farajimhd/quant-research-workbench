@@ -1,4 +1,6 @@
 """SELECT-only, bounded saved-Canvas queries; positions retain their full reader."""
+from src.backend.backtest_v4_saved_review import declared_saved_read_operation
+
 from datetime import datetime
 from uuid import UUID
 
@@ -8,6 +10,7 @@ from src.trading_runtime.arte_journal_reader import _detail_family, _verified_ro
 from src.trading_runtime.arte_journal_writer import _CONTRACTS, _committed_batch_filter, _literal, _rows
 
 
+@declared_saved_read_operation
 def query_saved_journal(client, run_id, *, domain="activity", facets=False,
                         ticker="", event_type="", start="", end="",
                         after_sequence=0, limit=250, journal_only=False):
