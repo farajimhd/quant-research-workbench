@@ -201,16 +201,24 @@ contributes its first qualifying **existing 1a ENTRY**, once, rather than all
 qualifying candle rows. Rejected pairs retain their best ENTRY candidate for
 the decision audit; liquidity rejection and absence of 1a ENTRY are explicit.
 
-Chronologically ordered candidates are partitioned by exact dynamic programming
-to minimize `sum_g sum_i score_i*(time_i-weighted_mean_g)^2 + penalty*group_count`.
-Times are elapsed seconds; `penalty=median(selected_scores)*grouping_seconds^2`.
-Equal timestamps remain atomic. An explicit adjustable maximum group span
-bounds the search. Defaults are 30-second strength and 300-second maximum span.
-This objective is score-weighted temporal clustering, not a session-P&L
-optimizer, and both grouping parameters remain subject to user validation.
+Selected candidates are sorted by ENTRY close timestamp, listing and pair.
+Their half-open lifetimes `[time_us, entry_target_us)` form interval-graph
+connected components. Touching endpoints do not overlap; transitive overlap
+chains share a group even when two distant members never overlap directly.
+An earliest-start sweep extends the current component's latest target time.
+There is no timestamp-distance penalty or maximum component span.
 
-Each selected pair receives `allocation_ratio=score/group_score_sum`, summing
-to one per group. It is a target fraction of available cash, not a share count.
+At each selected ENTRY, expire endpoints `<= time_us`, then include every
+selected episode starting at this timestamp. The denominator is the sum of
+scores of episodes with `start <= time_us < target`. Allocation ratio is the
+entry's score divided by that denominator. Simultaneous entries use the same
+active set. An isolated entry gets one. Ratios across an entire component do
+not have to sum to one because the active set changes. These are supervised
+relative-size targets, not reservations or a cash/rebalancing ledger. The UI
+shows the exact active set for the selected decision. Legacy grouping settings
+remain readable in old receipts but are not used by the overlap algorithm.
+
+Each selected pair receives its chosen ENTRY's active-set allocation ratio.
 The UI's $10K equivalent is illustrative. Selected pairs preserve 1a actions;
 rejected pair actions ENTRY/HOLD/EXIT become WAIT in the copied preview with
 zero sizing target. Context remains context. Only selected ENTRY rows enable

@@ -116,3 +116,8 @@ def chart(day: str, listing_id: str, episode_uid: str | None = None,
           branch: Literal['flat', 'held'] = 'flat', start_us: int | None = None,
           seconds: int = Query(900, ge=60, le=3600)):
     return read(label_audit.chart, day, listing_id, episode_uid, branch, start_us, seconds)
+
+
+@router.get('/v6/market-preview/competitors')
+def preview_competitors(job_id: str, listing_id: str, pair_id: int):
+    return read(market_preview.competitors, job_id, listing_id, pair_id)

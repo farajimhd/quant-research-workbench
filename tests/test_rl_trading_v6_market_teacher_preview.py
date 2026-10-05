@@ -27,29 +27,20 @@ def test_target_witness_tracks_chosen_entry_and_best_rejected_candidate():
  assert out.filter(pl.col("listing_id")=="a")["entry_target_us"].item()==22
  assert out.filter(pl.col("listing_id")=="b")["entry_target_us"].item()==44
 
-def test_group_matches_bruteforce_and_equal_clock_atom():
- cfg=Config(grouping_seconds=3,maximum_group_seconds=30)
- source=pl.DataFrame(dict(time_us=[0,0,2_000_000,20_000_000],selection_score=[.02,.03,.02,.01],listing_id=["a","b","c","d"],pair_id=[1]*4))
- members,groups=group(source,cfg)
- t=np.array([0.,2.,20.]);w=np.array([.05,.02,.01]);penalty=.02*9
- objective=0
- for g in groups:
-  mask=(t>=g["start_us"]/1e6)&(t<=g["end_us"]/1e6);mean=np.average(t[mask],weights=w[mask]);objective+=sum(w[mask]*(t[mask]-mean)**2)+penalty
- costs=[]
- for splits in itertools.product([False,True],repeat=2):
-  endpoints=[0]+[i+1 for i,b in enumerate(splits) if b]+[3];cost=0
-  for l,r in zip(endpoints,endpoints[1:]):cost+=sum(w[l:r]*(t[l:r]-np.average(t[l:r],weights=w[l:r]))**2)+penalty
-  costs.append(cost)
- assert objective==pytest.approx(min(costs))
- assert members["group_id"][0]==members["group_id"][1]
- assert np.allclose(members.group_by("group_id").agg(pl.col("allocation_ratio").sum())["allocation_ratio"],1)
- assert sum(g["members"] for g in groups)==4
+def test_overlap_chain_atomic_entries_and_touching_endpoints():
+ candidates=pl.DataFrame(dict(listing_id=["a","b","c","d","e"],pair_id=[1]*5,time_us=[0,5,5,11,20],entry_target_us=[10,15,9,20,25],selection_score=[1.,2.,1.,4.,3.]))
+ out,groups=group(candidates,Config())
+ assert out["group_id"].to_list()==[1,1,1,1,2]
+ assert out["active_count"].to_list()==[1,3,3,2,1]
+ assert out["active_score_sum"].to_list()==pytest.approx([1,4,4,6,3])
+ assert out["allocation_ratio"].to_list()==pytest.approx([1,.5,.25,4/6,1])
+ assert groups[0]["end_us"]==20 and groups[1]["start_us"]==20
+ assert groups[0]["members"]==4
 
-def test_empty_and_span_bound():
- cfg=Config(maximum_group_seconds=1)
- candidates=pl.DataFrame(dict(time_us=[0,2_000_000],selection_score=[.02,.02]))
- out,groups=group(candidates,cfg);assert len(groups)==2
- empty,groups=group(candidates.head(0),cfg);assert empty.height==0 and not groups
+def test_overlap_empty_and_invalid_witness():
+ candidates=pl.DataFrame(dict(listing_id=["a"],pair_id=[1],time_us=[0],entry_target_us=[0],selection_score=[1.]))
+ with pytest.raises(ValueError):group(candidates,Config())
+ out,groups=group(candidates.head(0),Config());assert out.height==0 and not groups
  with pytest.raises(ValueError):Config(grouping_seconds=float("nan")).validate()
 
 def test_liquidity_rejection_and_zero_score_never_get_allocation():

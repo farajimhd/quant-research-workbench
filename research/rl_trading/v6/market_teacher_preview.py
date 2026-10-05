@@ -2,6 +2,7 @@
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import math
+import heapq
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -10,7 +11,7 @@ from research.rl_trading.v6 import saved_label_audit as source
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v6.opportunity_dataset import write_json
 
-VERSION = "rl-v6-market-teacher-preview-v6"
+VERSION = "rl-v6-market-teacher-preview-v7"
 ROOT = Path("D:/TradingML/runtimes/rl-v6-market-teacher-preview")
 POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="teacher-preview")
 LOCK = threading.Lock()
@@ -57,35 +58,30 @@ def select(rows, pairs, config):
         *[pl.coalesce(k,"audit_"+k).alias(k) for k in ("time_us","close","entry_gain","score_threshold","entry_target_us")])
 
 def group(candidates, config):
-    """Exact penalized ordered segmentation within the explicitly bounded span.
-
-    Atomic equal-time members cannot be split. Cost is score-weighted temporal
-    SSE plus median candidate score * grouping_seconds**2 per group.
-    """
+    """Half-open overlap components; sizing compares active scores at each ENTRY."""
+    config.validate()
     if candidates.is_empty():
-        return candidates.with_columns(pl.lit(None,dtype=pl.Int64).alias("group_id"),pl.lit(0.).alias("allocation_ratio")), []
-    atoms=candidates.group_by("time_us").agg(pl.col("selection_score").sum().alias("weight")).sort("time_us")
-    clock=atoms["time_us"].to_numpy(); t=(clock-clock[0])/1e6; w=atoms["weight"].to_numpy()
-    prefix=[np.r_[0,np.cumsum(x)] for x in (w,w*t,w*t*t)]
-    penalty=float(candidates["selection_score"].median())*config.grouping_seconds**2
-    n=len(t); dp=np.full(n+1,np.inf); dp[0]=0; prev=np.zeros(n+1,dtype=np.int64)
-    for right in range(1,n+1):
-        left=np.arange(np.searchsorted(t,t[right-1]-config.maximum_group_seconds),right)
-        a,b,c=[v[right]-v[left] for v in prefix]
-        costs=dp[left]+np.maximum(0,c-b*b/a)+penalty
-        choice=int(np.argmin(costs));dp[right]=costs[choice];prev[right]=left[choice]
-    spans=[];r=n
-    while r: spans.append((int(prev[r]),r));r=int(prev[r])
-    spans.reverse();ids=np.empty(n,dtype=np.int64);summaries=[]
-    for number,(l,r) in enumerate(spans,1):
-        ids[l:r]=number;summaries.append(dict(group_id=number,start_us=int(clock[l]),end_us=int(clock[r-1]),duration_seconds=float(t[r-1]-t[l]),score_sum=float(w[l:r].sum()),objective_penalty=penalty))
-    members=candidates.join(pl.DataFrame(dict(time_us=clock,group_id=ids)),on="time_us",validate="m:1").with_columns(
-        (pl.col("selection_score")/pl.col("selection_score").sum().over("group_id")).alias("allocation_ratio"))
-    totals=members.group_by("group_id").agg(pl.col("allocation_ratio").sum())
-    if not np.allclose(totals["allocation_ratio"].to_numpy(),1,rtol=0,atol=1e-12):raise ValueError("Allocation ratios do not conserve group weight")
-    counts=dict(members.group_by("group_id").len().iter_rows())
-    for item in summaries:item["members"]=counts[item["group_id"]]
-    return members,summaries
+        return candidates.with_columns(pl.lit(None,dtype=pl.Int64).alias("group_id"),pl.lit(0.).alias("allocation_ratio"),pl.lit(0.).alias("active_score_sum"),pl.lit(0,dtype=pl.Int64).alias("active_count")), []
+    candidates=candidates.sort("time_us","listing_id","pair_id")
+    if candidates.filter(pl.col("entry_target_us").is_null() | (pl.col("entry_target_us")<=pl.col("time_us")) | (pl.col("selection_score")<=0)).height:
+        raise ValueError("Overlap grouping requires positive scores and future target witnesses")
+    starts=candidates["time_us"].to_list();ends=candidates["entry_target_us"].to_list();scores=candidates["selection_score"].to_list()
+    ids=[];ratios=[];denominators=[];counts=[];groups=[];heap=[];active=0.;right=None;number=0;i=0
+    while i<len(starts):
+        t=starts[i];j=i+1
+        while j<len(starts) and starts[j]==t:j+=1
+        while heap and heap[0][0]<=t:
+            _,_,weight=heapq.heappop(heap);active-=weight
+        if right is None or t>=right:
+            number+=1;groups.append(dict(group_id=number,start_us=t,end_us=t,duration_seconds=0.,score_sum=0.,members=0));heap=[];active=0.
+        batch=sum(scores[i:j]);denominator=active+batch;count=len(heap)+j-i
+        for k in range(i,j):
+            ids.append(number);ratios.append(scores[k]/denominator);denominators.append(denominator);counts.append(count)
+            heapq.heappush(heap,(ends[k],k,scores[k]));groups[-1]["score_sum"]+=scores[k];groups[-1]["members"]+=1
+        active=denominator;right=max(groups[-1]["end_us"],max(ends[i:j]))
+        groups[-1]["end_us"]=right;groups[-1]["duration_seconds"]=(right-groups[-1]["start_us"])/1e6;i=j
+    return candidates.with_columns(pl.Series("group_id",ids,dtype=pl.Int64),pl.Series("allocation_ratio",ratios),pl.Series("active_score_sum",denominators),pl.Series("active_count",counts,dtype=pl.Int64)),groups
+
 
 def prepare(day, config, dataset_sha256, job):
     try:
@@ -119,13 +115,13 @@ def prepare(day, config, dataset_sha256, job):
             write_json(marker,dict(candidates_sha256=file_hash(cache/"candidates.parquet"),pairs_sha256=file_hash(cache/"pairs.parquet"),counts=counts,source_rows=total))
         JOBS[job].update(stage="Scoring and grouping",completed=0,total=1)
         decisions=select(rows,pairs,config);members,groups=group(decisions.filter(pl.col("selected")),config)
-        decisions=decisions.join(members.select("listing_id","pair_id","group_id","allocation_ratio"),on=["listing_id","pair_id"],how="left",validate="1:1").with_columns(pl.col("allocation_ratio").fill_null(0.))
+        decisions=decisions.join(members.select("listing_id","pair_id","group_id","allocation_ratio","active_score_sum","active_count"),on=["listing_id","pair_id"],how="left",validate="1:1").with_columns(pl.col("allocation_ratio").fill_null(0.))
         names={r["listing_id"]:r["ticker"] for r in source.listings(day)["listings"]}
         decisions=decisions.with_columns(pl.col("listing_id").replace_strict(names).alias("ticker"))
         decisionpath=ROOT/(job+".parquet");decisions.write_parquet(decisionpath)
         receipt=source.read_json(marker)
         changed=rows.filter(pl.col("action")=="ENTRY").join(decisions.filter(~pl.col("selected")).select("listing_id","pair_id"),on=["listing_id","pair_id"],how="semi").height
-        result=dict(version=VERSION,day=day,dataset_sha256=dataset_sha256,config=asdict(config),groups=groups,source_rows=receipt["source_rows"],source_actions=receipt["counts"],pairs=pairs.height,selected=members.height,rejected=pairs.height-members.height,suppressed_entry_rows=changed,decisions_path=str(decisionpath),status="preview_only_not_training",objective="Weighted timestamp spread plus group penalty; no portfolio P&L or cash simulation",sizing="Ratio target applies only to selected ENTRY rows; HOLD/EXIT sizing loss masked")
+        result=dict(version=VERSION,day=day,dataset_sha256=dataset_sha256,config=asdict(config),groups=groups,source_rows=receipt["source_rows"],source_actions=receipt["counts"],pairs=pairs.height,selected=members.height,rejected=pairs.height-members.height,suppressed_entry_rows=changed,decisions_path=str(decisionpath),status="preview_only_not_training",objective="Half-open interval overlap components; active-score sizing at ENTRY; no cash simulation",sizing="Ratio target applies only to selected ENTRY rows; HOLD/EXIT sizing loss masked")
         result["decisions_sha256"]=file_hash(decisionpath)
         result["source_input_key"]=input_key
         write_json(ROOT/(job+".json"),result);JOBS[job].update(status="complete",stage="Ready to audit",completed=1,total=1)
@@ -226,3 +222,15 @@ def apply_decisions(payload,decisions):
         row["group_id"]=decision["group_id"] if decision else None
     payload["preview_version"]=VERSION
     return payload
+
+
+def competitors(job,listing_id,pair_id):
+    if status(job)["status"]!="complete":raise ValueError("Preview not ready")
+    meta=source.read_json(ROOT/(job+".json"));frame=pl.read_parquet(source.verified_local(ROOT/(job+".parquet"),meta["decisions_sha256"]))
+    chosen=frame.filter((pl.col("listing_id")==listing_id)&(pl.col("pair_id")==pair_id))
+    if chosen.height!=1:raise ValueError("Unknown episode")
+    row=chosen.row(0,named=True)
+    if not row["selected"]:return dict(time_us=row["time_us"],active_score_sum=0.,rows=[])
+    t=row["time_us"]
+    active=frame.filter(pl.col("selected")&(pl.col("time_us")<=t)&(pl.col("entry_target_us")>t)).sort("time_us","listing_id","pair_id")
+    return dict(time_us=t,active_score_sum=active["selection_score"].sum(),rows=active.select("listing_id","ticker","pair_id","time_us","entry_target_us","selection_score").to_dicts())
