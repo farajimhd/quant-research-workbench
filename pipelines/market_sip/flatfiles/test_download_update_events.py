@@ -18,6 +18,7 @@ from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import Downlo
 from pipelines.market_sip.flatfiles.download_update_events import (
     DayFiles,
     RemoteDayInventory,
+    ResourceAwareClickHouseClient,
     build_auto_update_plan,
     clickhouse_price_int,
     confirm_auto_update,
@@ -200,6 +201,22 @@ class EventEncodingTests(unittest.TestCase):
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
+    def test_resource_admission_waits_without_cancelling_other_queries(self) -> None:
+        client = ResourceAwareClickHouseClient("http://unused", "", "", server_memory_ceiling=100)
+        with mock.patch("pipelines.market_sip.flatfiles.download_update_events.ClickHouseHttpClient.execute", side_effect=["101", "50", "ok"]) as execute, \
+             mock.patch("pipelines.market_sip.flatfiles.download_update_events.time.sleep") as sleep, redirect_stdout(io.StringIO()):
+            self.assertEqual(client.execute("INSERT INTO target SELECT 1", query_id="owned"), "ok")
+        sleep.assert_called_once_with(30)
+        self.assertEqual(execute.call_args.args[0], "INSERT INTO target SELECT 1")
+        self.assertEqual(execute.call_args.kwargs["query_id"], "owned")
+        self.assertFalse(any("KILL" in call.args[0] for call in execute.call_args_list))
+
+    def test_resource_admission_fails_closed_without_telemetry(self) -> None:
+        client = ResourceAwareClickHouseClient("http://unused", "", "", server_memory_ceiling=100)
+        with mock.patch("pipelines.market_sip.flatfiles.download_update_events.ClickHouseHttpClient.execute", return_value=""), \
+             self.assertRaisesRegex(RuntimeError, "telemetry is missing"):
+            client.execute("INSERT INTO target SELECT 1")
+
     def test_coverage_batches_preserve_every_ticker_and_exact_day_ordinals(self) -> None:
         client = mock.Mock()
         client.query_tsv.return_value = "A\t10\t12\nB\t100\t104\nC\t8\t20\nD\t1\t2\n"

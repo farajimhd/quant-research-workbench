@@ -150,6 +150,26 @@ SOURCE_DAY_STATS_VERSION = 1
 SAFE_TEST_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+class ResourceAwareClickHouseClient(ClickHouseHttpClient):
+    """Wait between queries without cancelling or changing other users' work."""
+
+    def __init__(self, *args: Any, server_memory_ceiling: int, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if server_memory_ceiling <= 0:
+            raise ValueError("server memory admission ceiling must be positive")
+        self.server_memory_ceiling = server_memory_ceiling
+
+    def execute(self, sql: str | bytes, *, query_id: str | None = None) -> str:
+        while True:
+            usage = super().execute("SELECT value FROM system.metrics WHERE metric = 'MemoryTracking' FORMAT TSV").strip()
+            if not usage:
+                raise RuntimeError("ClickHouse server memory telemetry is missing; refusing to start query")
+            if int(usage) <= self.server_memory_ceiling:
+                return super().execute(sql, query_id=query_id)
+            print(f"RESOURCE WAIT server_memory_bytes={usage} ceiling_bytes={self.server_memory_ceiling} query_id={query_id or 'unprofiled'}", flush=True)
+            time.sleep(30)
+
+
 @dataclass(frozen=True, slots=True)
 class DayFiles:
     source_date: str
@@ -291,6 +311,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-memory-usage", default="16G")
     parser.add_argument("--external-sort-bytes", default="512M", help="Spill large sorts to disk above this threshold.")
     parser.add_argument("--external-group-by-bytes", default="512M", help="Spill large aggregations to disk above this threshold.")
+    parser.add_argument("--max-server-memory-before-query", default="64G", help="Wait between queries while total ClickHouse memory exceeds this admission ceiling.")
     parser.add_argument("--execution-clock-batch-events", type=int, default=5_000_000)
     parser.add_argument("--execution-clock-batch-tickers", type=int, default=128)
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN / "flatfile_event_update"))
@@ -4095,13 +4116,15 @@ def main() -> None:
     config = download_config(args)
     if args.execution_clock_batch_events <= 0 or args.execution_clock_batch_tickers <= 0:
         raise ValueError("execution-clock batch limits must be positive")
-    client = ClickHouseHttpClient(
+    client = ResourceAwareClickHouseClient(
         args.clickhouse_url, args.user, args.password,
+        server_memory_ceiling=parse_size_bytes(args.max_server_memory_before_query),
         default_query_params={
             "max_threads": args.max_threads,
             "max_memory_usage": parse_size_bytes(args.max_memory_usage),
             "max_bytes_before_external_sort": parse_size_bytes(args.external_sort_bytes),
             "max_bytes_before_external_group_by": parse_size_bytes(args.external_group_by_bytes),
+            "priority": 10,
         },
     )
     database_frontier = "" if args.test_mode else query_database_frontier(client, args, required=auto_update)
