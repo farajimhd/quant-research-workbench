@@ -30,6 +30,31 @@ Audit source and order/fill evidence before interpreting their losses as a
 comparison of strategy quality. Do not import their execution assumptions into
 the app or restore withdrawn implementation files to shortcut that audit.
 
+### Development audit: first eleven Strategy 42 sessions
+
+Cold verified reports contain 71 closed positions. Follow-through failure exits
+account for 22 positions and -$3,216.03 net; stop exits account for 17 positions
+and -$2,188.21 net. Nineteen target exits contribute +$5,287.18 net. These are
+observed exit groups, not estimates of what replacement exits would earn.
+The runtime receipt is `strategy42-development-trade-audit-v1.json`, under the
+strategy optimization runtime root; each row retains its report source hash.
+
+Several large losses had substantial entry activity: ATPC Aug 4 PM had 991
+eligible trades and 96,985 shares in the last completed minute; BJDX Aug 4 AH
+had 1,743 trades and 232,952 shares. Entry liquidity alone does not distinguish
+these failures. First effective stop distances were about 17.42% and 10.81%,
+respectively. Audit original proposal and subsequent protection separately;
+these distances are measured from actual average entry to first effective stop.
+
+A blanket maximum stop-distance entry veto is not supported by these reports:
+29 positions with first effective stops more than 10% away contributed
++$2,942.14 net, including thirteen winners. The best YJ, BTCT and GNPX positions
+also had wide initial stops. This fixed-trade grouping is diagnostic only and
+does not simulate changed cash allocation, orders or subsequent opportunities.
+Prefer testing confirmed breakout invalidation and post-entry activity decay
+before a blanket veto. No MFE/MAE or causal float evidence is available in this
+receipt, so it cannot establish earlier-exit profit or fundamental predictors.
+
 September 1–2 were exposed by the related research. They are exposed test days
 for this idea, not untouched holdouts. Select and freeze two later certified,
 uninspected sessions before final validation. Do not inspect their strategy
