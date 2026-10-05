@@ -6,10 +6,10 @@ from pathlib import Path
 
 STRATEGY39_SOURCE_AST = {'src/trading_runtime/strategy_thirty_nine_release.py': '0b3a73c0d34d2810e815f07ab21b1d6e5dd4c128b087c1fea77abb662bebf155',
  'pipelines/strategy_one/strategy_thirty_nine_configuration.py': 'ab868da6d6f1ed4be17564539f894bdb535d64804cc4931fb8c8d07017ae315f',
- 'src/trading_runtime/strategy_registry.py': '65220011cea8e502d82fee5bbaf58d856e648ceace15dc48e2d0e9020e81f40d',
- 'src/trading_runtime/numbered_fixed_strategy.py': 'f9c42ddd6921012fcf3d761a0fd718a8d207df5601d4440b682b40b0769a0784',
- 'src/backend/backtest_strategy_one_configuration.py': 'e704996f009d645191178125570420d5ff694577eedac9ff731eea0e4f1d8516',
- 'pipelines/strategy_one/configuration_publisher.py': '3d5ad0a8e627ca8f2ebdb64d469e5babbb49fd8fb349a1997a861b27185ddb6d',
+ 'src/trading_runtime/strategy_registry.py': '26edcb6ae79806ee700e50bc3ca771aa5004dcb8c58a6ab6ea3d116feecf4be1',
+ 'src/trading_runtime/numbered_fixed_strategy.py': 'f9cdbb5afd51b1d9ccad16e42d89b7380c77f7ecad2c48cd785aed63ecaf98b0',
+ 'src/backend/backtest_strategy_one_configuration.py': '5ea3a8b17b014e119e6ae181202d815fd8307346b5adf3d694f6538d43c1bd5e',
+ 'pipelines/strategy_one/configuration_publisher.py': '212d1bd2cca308ae71c4a4c711747faf5ea3cc34689e5a0f078984cd3339a54d',
  'scripts/clickhouse/publish_strategy_thirty_nine_configuration.py': '65985cb49ccd17778f47c970cb0413d2e88b2b7d96c94d67b6640057f9fb97f3'}
 
 
