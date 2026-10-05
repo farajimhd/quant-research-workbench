@@ -69,7 +69,7 @@ STRATEGY51_SOURCE_AST = {'src/trading_runtime/strategy_fifty_one_contract.py': '
  'src/trading_runtime/squeeze_ladder_automatic.py': '820e57f05b18e99f591c7d2de6db2e1db1db89f3bbb29d948b902c771c2758ae',
  'src/trading_runtime/automatic_ladder_transport.py': 'f500de7c93c19127ed8749f7b25510cb88fe819749074866c47bb8f84e2ddb1d',
  'src/backend/backtest_ladder_entry_authority.py': '5f92ae6f64b3820cdeedd63fd75089aa03ce725d65e7995c10739639401ed3b0',
- 'src/backend/backtest_ladder_source_authority.py': 'c2b068dd9dd31ddf170c0a08d143864b5dbd212dc021f261448c8c54aad27a71',
+ 'src/backend/backtest_ladder_source_authority.py': '5477f63cf796f4e7cd277d5d0bf326efc1111f852f1817c499db89a493495eb7',
  'src/backend/backtest_market_data.py': 'ad4135f16a0979b5af821b0c00c294511635b3b84b37b90f7bdff79e503cf9d3',
  'src/data_provider/calendar.py': '82706e238be3f8e13dae1177928c02a09288fed18540932dfedc11e794ca4c0e',
  'src/trading_runtime/arte_backtest_snapshot_anchor.py': '234893befe310819b6679a5541836789dc00d23b7ad9cdc10076ca3395c01087',

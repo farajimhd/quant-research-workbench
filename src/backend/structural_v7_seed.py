@@ -93,8 +93,11 @@ class CertifiedSeedPlan:
                 "source_tables": [_LEVELS, _OBSERVATIONS, _COVERAGE]}
 
 
-def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
+def certified_seed_plan(market: Any, client: Any, *, canonical_selector=None) -> CertifiedSeedPlan:
     """Batch-check every selected ticker's filtered prior seed before Backtest."""
+    if canonical_selector is not None:
+        from src.backend.canonical_v7_seed import certified_canonical_seed_plan
+        return certified_canonical_seed_plan(market, client, canonical_selector)
     bars = {(unit.session_date, unit.ticker) for unit in market.units if unit.stage == "bars"}
     if not bars:
         raise ValueError("V7 seed preflight requires pinned market-day bars")
@@ -254,8 +257,14 @@ def split_evidence_batch(client: Any, *, seed_sessions: dict[str, date],
 
 
 def load_seed(client: Any, *, ticker: str, session: date,
-              coverage: dict[str, Any] | None = None) -> dict[str, Any]:
+              coverage: dict[str, Any] | None = None, canonical_selector=None) -> dict[str, Any]:
     """Load one complete typed seed; any missing level/observation fails closed."""
+    if canonical_selector is not None:
+        from src.backend.canonical_v7_seed import load_canonical_seed
+        return load_canonical_seed(client, ticker=ticker, session=session,
+            coverage=coverage, selector=canonical_selector)
+    if coverage is not None and 'canonical_namespace' in coverage:
+        raise ValueError('Canonical V7 coverage requires its explicit sealed selector')
     pinned = coverage or preceding_coverage(client, ticker=ticker, session=session)
     current = preceding_coverage(client, ticker=ticker, session=session)
     if any(current.get(key) != pinned.get(key) for key in
@@ -333,7 +342,7 @@ def _assemble_seed(ticker: str, session: date, pinned: dict[str, Any],
 
 
 def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
-                     coverage: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+                     coverage: dict[str, dict[str, Any]], canonical_selector=None) -> dict[str, dict[str, Any]]:
     """Recheck and decode at most eight prior books with three bounded SELECTs.
 
     This only changes the read shape. Every ticker still uses the exact
@@ -344,6 +353,12 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
             or any(not isinstance(ticker, str) or not ticker for ticker in tickers)
             or set(coverage) != set(tickers)):
         raise ValueError("V7 batch requires one to eight distinct certified tickers")
+    if canonical_selector is not None:
+        from src.backend.canonical_v7_seed import load_canonical_seed
+        return {ticker:load_canonical_seed(client, ticker=ticker, session=session,
+            coverage=coverage[ticker], selector=canonical_selector) for ticker in tickers}
+    if any('canonical_namespace' in value for value in coverage.values()):
+        raise ValueError('Canonical V7 coverage requires its explicit sealed selector')
     names = ",".join(_literal(ticker) for ticker in tickers)
     cutoff = _literal(_cutoff(session))
     current_rows = _rows(client,

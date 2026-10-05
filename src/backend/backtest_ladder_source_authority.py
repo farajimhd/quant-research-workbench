@@ -170,6 +170,7 @@ class DeclaredLadderSourceAuthority:
     def context_for(self, ticker):
         from src.backend.backtest_ladder_entry_authority import NativeLadderMarketContext
         from src.backend.structural_v7_seed import certified_seed_plan
+        from src.backend.canonical_v7_seed import selector_from_configuration
         from src.backend.backtest_declared_ladder_seed import verify_declared_ladder_seed_plan
         from src.backend.backtest_strategy_one_v7_interval_store import certify_v7_interval_plan
         from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
@@ -182,7 +183,12 @@ class DeclaredLadderSourceAuthority:
             return self._contexts[ticker]
         scan = self.certified_scan
         day, scope = self.session_date.isoformat(), (ticker,)
-        seeds = certified_seed_plan(self.market, self.client)
+        release = self.configuration.payload['strategy']['numbered_release']
+        if 'canonical_v7_source' in release:
+            selector = selector_from_configuration(self.configuration)
+            seeds = certified_seed_plan(self.market, self.client, canonical_selector=selector)
+        else:
+            seeds = certified_seed_plan(self.market, self.client)
         verify_declared_ladder_seed_plan(self.market, seeds)
         v7 = certify_v7_interval_plan(self.market, seeds, session_date=day,
             candidate_tickers=scope, client=self.client)
