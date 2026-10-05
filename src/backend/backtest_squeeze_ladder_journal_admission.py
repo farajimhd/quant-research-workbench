@@ -5,9 +5,11 @@ from src.backend.backtest_squeeze_ladder_evidence import SETUP, TARGET
 from src.backend.backtest_squeeze_ladder_readback import reconstruct_ladder_evidence
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 
 
-def prepare_ladder_journal_families(batch: TypedJournalBatch, rows, **certified_context):
+def prepare_ladder_journal_families(batch: TypedJournalBatch, rows, *, verified_prior_prefix,
+                                   **certified_context):
     """Verify one original strategy intent and its exact evidence companions.
 
     A future writer envelope must bind certified_context to independently
@@ -17,6 +19,15 @@ def prepare_ladder_journal_families(batch: TypedJournalBatch, rows, **certified_
     if (not isinstance(batch, TypedJournalBatch) or batch.status != 'running'
             or len(batch.events) != 1 or len(batch.intents) != 1):
         raise ValueError('Ladder journal admission requires one running intent parent')
+    if (not isinstance(verified_prior_prefix, V4CommittedPrefix)
+            or verified_prior_prefix.run_id != batch.run_id
+            or verified_prior_prefix.status != 'running'
+            or verified_prior_prefix.last_sequence != batch.first_sequence - 1
+            or verified_prior_prefix.last_batch_id != batch.prior_batch_id
+            or not verified_prior_prefix.batch_ids
+            or verified_prior_prefix.batch_ids[-1] != batch.prior_batch_id
+            or len(set(verified_prior_prefix.batch_ids)) != len(verified_prior_prefix.batch_ids)):
+        raise ValueError('Ladder journal admission requires the exact verified prior V4 prefix')
     event = batch.events[0]
     parent = batch.intents[0]
     financial = certified_context['financial']

@@ -298,6 +298,16 @@ ClickHouse padding from changing the persisted representation. Existing writer
 and V4 commit regressions plus ladder checks pass 138 tests. Complete ladder
 commit/source authority and cold family readback remain required before runs.
 
+Prepared journal admission now requires a native `V4CommittedPrefix` receipt
+for the same run, in running status, whose final batch and sequence exactly
+precede the entry batch. Missing, foreign, terminal and mismatched receipts
+reject before source reconstruction. The native writer must obtain that receipt
+through its verified prefix reader, then bind the historical financial and OMS
+context to that prefix; manually constructing the dataclass does not prove
+durability or source membership. Sixty-two focused source/evidence and existing
+V4 commit tests pass. Writer dispatch, context reconstruction from committed
+facts and actual Keeper-backed publication/recovery remain unfinished.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute
