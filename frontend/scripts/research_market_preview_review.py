@@ -29,10 +29,11 @@ def main():
         raw=response.json();timelines.append(raw['data'] if response.headers.get('x-response-envelope')=='1' else raw)
        route.fulfill(response=response)
       page.route('**/api/research/models**',proxy)
-      page.goto('http://127.0.0.1:5173/#research-workspace');page.get_by_role('button',name='1b selection & sizing',exact=True).click()
+      page.goto('http://127.0.0.1:5173/#research-workspace');page.get_by_role('button',name='1b labels & grouping',exact=True).click()
       page.get_by_label('1b session',exact=True).select_option('2026-07-31')
-      page.get_by_role('button',name='Prepare session preview',exact=True).click()
       page.get_by_text('3 · Inspect copied 1b labels',exact=True).wait_for(timeout=300000)
+      assert page.locator('[aria-label="Research paths"] > button').count()==2
+      assert page.get_by_label('1b return threshold',exact=True).get_attribute('readonly') is not None
       scope=page.locator('.research-market-preview');name=f'{theme}-{scale}-{size}'
       bands=scope.get_by_role('group',name='Group timeline',exact=True)
       boxes=scope.get_by_role('group',name='Episode score boxes',exact=True)
@@ -52,13 +53,13 @@ def main():
       boxes.wait_for(timeout=300000)
       assert timelines[-1]['start_us']>first_start
       assert boxes.evaluate("svg=>svg===window.__groupingSvg")
-      with page.expect_response(lambda r:'/market-preview/timeline' in r.url,timeout=300000):scope.get_by_role('button',name='Zoom in',exact=True).click()
+      with page.expect_response(lambda r:'/market-preview/timeline' in r.url and 'seconds=150' in r.url,timeout=300000):scope.get_by_role('button',name='Zoom in',exact=True).click()
       boxes.wait_for(timeout=300000)
       assert timelines[-1]['end_us']-timelines[-1]['start_us']==150_000_000
       boxes.scroll_into_view_if_needed()
       bounds=boxes.bounding_box();assert bounds
       page.mouse.move(bounds['x']+bounds['width']*.5,bounds['y']+bounds['height']*.5)
-      with page.expect_response(lambda r:'/market-preview/timeline' in r.url,timeout=300000):page.mouse.wheel(0,100)
+      with page.expect_response(lambda r:'/market-preview/timeline' in r.url and 'seconds=188' in r.url,timeout=300000):page.mouse.wheel(0,100)
       boxes.wait_for(timeout=300000)
       assert timelines[-1]['end_us']-timelines[-1]['start_us']==188_000_000
       with page.expect_response(lambda r:'/market-preview/timeline' in r.url,timeout=300000):scope.get_by_label('Grouping chart window',exact=True).select_option('300')
@@ -82,7 +83,8 @@ def main():
       scope.locator('.chart-shell').wait_for(timeout=300000)
       page.wait_for_timeout(500)
       assert scope.get_by_text('Chart renderer stopped',exact=True).count()==0
-      assert charts and any(r['allocation_loss_mask'] for r in charts[-1]['labels'])
+      assert charts and charts[-1]['label_source']=='published_1b_shard'
+      assert any(r['allocation_loss_mask'] for r in charts[-1]['labels'])
       page.screenshot(path=str(out/(name+'-selection.png')),full_page=True)
       scope.get_by_text('Exact 1a → 1b candle targets',exact=True).click()
       scope.get_by_role('checkbox',name='Show original 1a markers',exact=True).check()
@@ -90,7 +92,7 @@ def main():
       page.get_by_label('1b selection',exact=True).select_option('rejected')
       with page.expect_response(lambda r:'/market-preview/result' in r.url and 'search=NVDA' in r.url,timeout=300000):
        page.get_by_label('1b find ticker',exact=True).fill('NVDA')
-      page.wait_for_timeout(100)
+      page.wait_for_function("()=>{const b=document.querySelector('.research-market-preview > .research-preview-table button');return b?.textContent?.trim().startsWith('NVDA')&&!b.disabled;}")
       with page.expect_response(lambda r:'/market-preview/chart' in r.url,timeout=300000):
        scope.locator(':scope > .research-preview-table button').first.click()
       assert all(not r['allocation_loss_mask'] for r in charts[-1]['labels'] if r.get('group_id') is None)
@@ -99,6 +101,7 @@ def main():
       assert scope.get_by_text('Chart renderer stopped',exact=True).count()==0
       page.screenshot(path=str(out/(name+'-rejected.png')),full_page=True)
       records.append(dict(theme=theme,scale=scale,viewport=size,charts=len(charts)))
+      print(json.dumps(dict(case=name,status='passed')),flush=True)
       context.close()
   finally:browser.close()
  if errors:raise AssertionError(errors)

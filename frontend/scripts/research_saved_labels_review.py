@@ -57,7 +57,7 @@ def main():
                         page.route('**/api/research/models**',proxy)
                         page.on('request',lambda r:requests.append(r.url) if '/saved-labels' in r.url else None)
                         page.goto(args.base_url+'/#research-workspace')
-                        page.get_by_role('button',name='Current V6 labels',exact=True).click()
+                        page.get_by_role('button',name='1a labels',exact=True).click()
                         scope=page.locator('.research-path-content:visible')
                         scope.locator('.chart-shell').wait_for(timeout=300000)
                         assert 'NVDA' in scope.inner_text()

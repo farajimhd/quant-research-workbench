@@ -10,6 +10,11 @@ from research.rl_trading.v6 import price_action_opportunities as price_action_la
 
 router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'])
 
+@router.get('/v6/market-labels')
+def published_market_session(day: str):
+    from research.rl_trading.v6.published_market_audit import open_session
+    return read(open_session,day)
+
 
 class PreviewRequest(BaseModel):
     day: str

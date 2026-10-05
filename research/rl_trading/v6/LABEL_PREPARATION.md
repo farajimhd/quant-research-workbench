@@ -287,3 +287,12 @@ independent timestamp-event sizing-denominator audit. The separate registry
 `rl-v6-active-market-teacher.json` preserves `rl-v6-active-labels.json` and the
 approved immutable 1a data. Publication status is `audited_1b_labels`, distinct
 from the legacy training contract.
+
+Research exposes two audit pages: **1a labels** and **1b labels & grouping**.
+The 1b page opens published session decisions via `/v6/market-labels`; it does
+not recompute selection or offer draft generation settings. The retained
+grouping chart, active competitors and candidate table use these saved decisions.
+Candle actions, probabilities and sizing targets read the hash-verified copied
+1b shard directly, with optional original 1a markers. Historical/experiment tabs
+are removed; obsolete workspace selections return to 1a. Publication changes
+require reloading, and sessions outside the approved dataset fail closed.
