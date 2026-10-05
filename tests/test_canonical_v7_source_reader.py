@@ -22,6 +22,8 @@ class Client:
         self.calls.append(sql)
         if sql=='SELECT currentUser()':return self.user
         if sql=="SELECT getSetting('readonly')":return self.state.get('readonly','1')
+        if sql=="SELECT getSetting('max_threads')":return self.state.get('max_threads','2')
+        if sql=="SELECT getSetting('max_execution_time')":return self.state.get('max_execution_time','60')
         if sql.startswith('SELECT name FROM system.tables'):
             return '\n'.join(json.dumps({'name':name}) for name in self.state.get('catalog',CATALOG))
         if sql.startswith('SELECT database,name FROM system.tables'):
@@ -29,6 +31,9 @@ class Client:
         if sql.startswith('SELECT count() FROM system.users'):return self.state.get('present','1')
         if sql=='SHOW GRANTS FINAL':return '\n'.join(self.state.get('grants',[]))
         if sql.startswith('CREATE USER '):self.state['present']='1';return ''
+        if sql.startswith('ALTER USER '):
+            for key,value in source.READ_SETTINGS:self.state[key]=str(value)
+            return ''
         if sql.startswith('GRANT '):self.state.setdefault('grants',[]).append(sql);return ''
         raise AssertionError('Unexpected test query')
     def close(self):self.closed=True
@@ -83,6 +88,7 @@ def test_new_reader_gets_exact_select_only_readonly_and_readback():
         client_factory=lambda *args:reader)
     created=[query for query in admin.calls if query.startswith('CREATE')]
     assert len(created)==1 and 'SETTINGS readonly=1 READONLY' in created[0]
+    assert 'max_threads=2 READONLY, max_execution_time=60 READONLY' in created[0]
     assert PASSWORD not in created[0]
     assert frozenset(state['grants'])==frozenset(plan.grants())
     assert all(query.startswith('GRANT SELECT ON ') for query in state['grants'])
@@ -104,6 +110,7 @@ def test_reader_exact_identity_grants_and_mutation_guard(monkeypatch):
     reader=source.canonical_source_client(environment={},client_factory=factory)
     assert calls[0][0][1]==source.PRINCIPAL
     assert calls[0][1]['default_query_params']['readonly']==1
+    assert calls[0][1]['default_query_params']=={'readonly':1}
     before=len(transport.calls)
     for sql in ('INSERT INTO x VALUES (1)','CREATE TABLE x(a UInt8)','SET readonly=0'):
         with pytest.raises(ValueError):reader.execute(sql)
@@ -151,3 +158,23 @@ def test_select_transport_error_cannot_echo_private_credentials():
     with pytest.raises(ValueError,match='SELECT transport failed') as error:
         reader.execute('SELECT 1')
     assert PASSWORD not in str(error.value)
+
+
+def test_existing_owned_reader_gets_server_limits_without_new_grants():
+    state={'grants':list(provision.desired_plan(CATALOG).grants()),
+        'max_threads':'16','max_execution_time':'0'}
+    admin=Client(state,'administrator')
+    reader=Client(state,source.PRINCIPAL)
+    provision.apply_with_clients(admin=admin,credential=lambda **kwargs:PASSWORD,
+        client_factory=lambda *args:reader)
+    assert [sql for sql in admin.calls if sql.startswith(('ALTER','CREATE','GRANT'))]==[
+        f'ALTER USER {source.PRINCIPAL} SETTINGS readonly=1 READONLY, max_threads=2 READONLY, max_execution_time=60 READONLY']
+    assert reader.closed
+
+
+def test_read_client_rejects_unbounded_server_profile(monkeypatch):
+    private_file(monkeypatch)
+    transport=Client({'max_execution_time':'0'},source.PRINCIPAL)
+    with pytest.raises(ValueError,match='authentication failed'):
+        source.canonical_source_client(environment={},client_factory=lambda *args,**kwargs:transport)
+    assert transport.closed

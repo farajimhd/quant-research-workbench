@@ -16,7 +16,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import (
     PrincipalPlan, WORKSTATION_IPV4, _desired_grants, _effective_grants)
 from scripts.clickhouse.provision_trading_journal import SECRET_ROOT, _admin_client, _restrict_secret_file
-from src.backend.canonical_v7_source_client import PRINCIPAL, STEM, URL, CanonicalSourceReadClient
+from src.backend.canonical_v7_source_client import PRINCIPAL, STEM, URL, READ_SETTINGS, CanonicalSourceReadClient
 
 SECRET_PATH=SECRET_ROOT/(PRINCIPAL+'.env')
 REQUIRED_SOURCE_TABLES=frozenset({('market_sip_compact','events_source_day_stats'),
@@ -79,21 +79,24 @@ def apply_with_clients(*,admin,credential,client_factory):
     if type(password) is not str or len(password)<40:
         raise RuntimeError('Canonical source principal requires a complete private credential')
     reader=None
+    settings = ', '.join(f'{key}={value} READONLY' for key,value in READ_SETTINGS)
     try:
         if present=='1':
             reader=client_factory(PRINCIPAL,password)
             if reader.execute('SELECT currentUser()').strip()!=PRINCIPAL:
                 raise RuntimeError('Canonical private credential authenticates as another user')
             have=_effective_grants(reader,plan) # Reject inherited/broad/unexpected authority before mutation.
+            admin.execute(f'ALTER USER {PRINCIPAL} SETTINGS {settings}')
         else:
             have=frozenset()
             admin.execute(f"CREATE USER {PRINCIPAL} IDENTIFIED WITH sha256_hash BY '{sha256(password.encode()).hexdigest()}' "
-                "HOST IP '172.16.0.0/12', IP '127.0.0.1', IP '::1' SETTINGS readonly=1 READONLY")
+                f"HOST IP '172.16.0.0/12', IP '127.0.0.1', IP '::1' SETTINGS {settings}")
             reader=client_factory(PRINCIPAL,password)
         for privilege,database,table in sorted(_desired_grants(plan)-have):
             admin.execute(f'GRANT {privilege} ON {database}.{table} TO {PRINCIPAL}')
         if (reader.execute('SELECT currentUser()').strip()!=PRINCIPAL
-                or reader.execute("SELECT getSetting('readonly')").strip()!='1'
+                or any(reader.execute(f"SELECT getSetting('{key}')").strip()!=str(value)
+                    for key,value in READ_SETTINGS)
                 or _effective_grants(reader,plan)!=_desired_grants(plan)
                 or discover_event_tables(reader)!=tuple(sorted(name for database,name in plan.select_reference if database=='market_sip_compact' and re.fullmatch(r'events_[0-9]{4}',name)))):
             raise RuntimeError('Canonical source exact grants/read identity/catalog differ after provisioning')

@@ -10,6 +10,7 @@ PRINCIPAL = 'canonical_v7_source_reader'
 STEM = 'CANONICAL_V7_SOURCE_CLICKHOUSE_'
 URL = 'http://DESKTOP-SAAI85T:18123'
 SECRET_PATH = 'D:/TradingML/secrets/canonical_v7_source_reader.env'
+READ_SETTINGS = (('readonly', 1), ('max_threads', 2), ('max_execution_time', 60))
 
 
 def _credential(environment):
@@ -60,12 +61,13 @@ def canonical_source_client(*, environment=None, client_factory=None):
     try:
         transport = client_factory(workstation_ipv4_transport(URL),PRINCIPAL,password,
             timeout_seconds=60,persistent=True,
-            default_query_params={'readonly':1,'max_threads':2,'max_execution_time':60})
+            default_query_params={'readonly':1})
     except Exception:
         raise ValueError('Canonical source dedicated read transport failed') from None
     try:
         if (transport.execute('SELECT currentUser()').strip() != PRINCIPAL
-                or transport.execute("SELECT getSetting('readonly')").strip() != '1'):
+                or any(transport.execute(f"SELECT getSetting('{key}')").strip() != str(value)
+                    for key, value in READ_SETTINGS)):
             raise ValueError('Canonical source read identity or readonly setting differs')
         from scripts.clickhouse.provision_canonical_v7_source_reader import (
             discover_event_tables, desired_plan, verify_required_source_catalog)
