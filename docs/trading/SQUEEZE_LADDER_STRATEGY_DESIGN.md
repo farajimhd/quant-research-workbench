@@ -265,6 +265,18 @@ installation, independent source reconstruction at writer admission, V4 family
 commit/readback, Keeper recovery and coordinator use are not yet implemented.
 No new database tables or journal rows have been created by this stage.
 
+`backtest_squeeze_ladder_readback.py` now independently reconstructs prepared
+evidence from supplied certified observation/V7/pivot plans and the declared
+policy. It selects the exact qualification clock, rebinds setup geometry,
+rechecks the breakout and financial admission, and compares every saved row
+against the reconstructed result. Observation reads are truncated to the entry
+boundary before setup reconstruction. A source-integrated test recovers the
+same intent and rejects a false target despite its recomputed hash. Four focused
+readback/evidence tests pass. Native writer integration must still supply its
+verified current-run financial prefix, sealed release policy and validated
+intent/event parent; these caller-provided objects are not a new durability
+authority. No native writer, table installation or financial run is enabled.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute
