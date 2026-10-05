@@ -250,6 +250,21 @@ source, geometry, OMS and projection regression tests pass. Complete normalized
 market-decision evidence, verified-prefix coordinator binding and full native
 release qualification remain required before publication.
 
+`backtest_squeeze_ladder_evidence.py` defines separate prepared normalized
+setup and target-evidence families. The setup stores admission/qualification/
+entry clocks, source-plan identities, original binary V7/VWAP geometry,
+confirmed pivot identity/clocks, fixed stop and adjacent breakout closes.
+Distinct target children preserve level and slice IDs, price and allocation
+bits, ordinal and exact intent-event parent identity. These are named scalar
+columns, not Strategy 1 BOS/frozen-gap placeholders or generic payload blobs.
+Projection verifies the admitted intent's session clock and protection; exact
+comparison against independently reconstructed expected rows rejects missing
+lots and rehashed altered targets. One hundred source/admission/OMS/projection
+regression tests pass. This is projection validation only: operator-owned table
+installation, independent source reconstruction at writer admission, V4 family
+commit/readback, Keeper recovery and coordinator use are not yet implemented.
+No new database tables or journal rows have been created by this stage.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute
