@@ -194,8 +194,9 @@ group members, cash ratios and exact original/copied candle targets.
 For fee `f` per share per side, score is `(entry_gain - 2*f)/(close + f)`.
 `entry_gain` already discounts actual elapsed time. The adjustable fee rule
 uses `score > m*2*f/(close + f)`; `m=2, f=0.005` means `entry_gain > 0.03`.
-The comparison return rule uses `score >= threshold`, default `0.01` (1%).
-Neither default is approved for full extraction yet. Each listing/S→L pair
+Selection now requires both the strict fee floor and `score >= 0.001` (0.1%)
+by default. The 0.1% return floor is user-approved for the preview; full
+extraction still awaits grouping validation. Each listing/S→L pair
 contributes its first qualifying **existing 1a ENTRY**, once, rather than all
 qualifying candle rows. Rejected pairs retain their best ENTRY candidate for
 the decision audit; liquidity rejection and absence of 1a ENTRY are explicit.
@@ -220,3 +221,12 @@ Compact source caches and hash-bound decision receipts live exclusively under
 `D:/TradingML/runtimes/rl-v6-market-teacher-preview`. The chart reads the same
 saved bank indicators as 1a and applies the copy/suppression view on demand.
 No full copied candle dataset is extracted until validation authorizes it.
+
+The positive-row table precedes Dataset and preview boundary. It shows every
+positive net-discounted-score candle row at the chosen observed 1s close,
+including WAIT/HOLD/EXIT rows when their saved entry gain is positive. Filters
+cover ticker, selected/rejected pair and minimum score (percent). Previous/next
+close navigation visits closes containing matching rows; it does not synthesize
+missing seconds. The original action, threshold eligibility, pair group and
+first-qualifying group-contributor flag are separate columns. Positive-score
+rows do not automatically become ENTRY or add repeated group weight.

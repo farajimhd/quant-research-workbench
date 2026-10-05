@@ -18,11 +18,13 @@ def main():
       context=browser.new_context(viewport=viewport)
       context.add_init_script(f"localStorage.setItem('quant-research-workbench.theme','{theme}');localStorage.setItem('quant-research-workbench.ui-scale','{scale}');")
       page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
-      charts=[]
+      charts=[];candidates=[]
       def proxy(route):
        u=urlsplit(route.request.url);response=route.fetch(url='http://127.0.0.1:8000'+u.path+('?' + u.query if u.query else ''),timeout=300000)
        if '/market-preview/chart' in u.path and response.ok:
         raw=response.json();charts.append(raw['data'] if response.headers.get('x-response-envelope')=='1' else raw)
+       if '/market-preview/rows' in u.path and response.ok:
+        raw=response.json();candidates.append(raw['data'] if response.headers.get('x-response-envelope')=='1' else raw)
        route.fulfill(response=response)
       page.route('**/api/research/models**',proxy)
       page.goto('http://127.0.0.1:5173/#research-workspace');page.get_by_role('button',name='1b selection & sizing',exact=True).click()
@@ -30,7 +32,13 @@ def main():
       page.get_by_role('button',name='Prepare session preview',exact=True).click()
       page.get_by_text('3 · Inspect copied 1b labels',exact=True).wait_for(timeout=300000)
       scope=page.locator('.research-market-preview');name=f'{theme}-{scale}-{size}'
-      scope.locator('.research-preview-table button').first.click()
+      page.get_by_role('button',name='Next 1s close',exact=True).wait_for()
+      page.wait_for_function("()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Next 1s close')?.disabled")
+      with page.expect_response(lambda r:'/market-preview/rows' in r.url,timeout=300000):
+       page.get_by_role('button',name='Next 1s close',exact=True).click()
+      assert candidates and all(r['score']>0 for r in candidates[-1]['rows'])
+      assert candidates[-1]['time_us']>candidates[0]['time_us']
+      scope.locator(':scope > .research-preview-table button').first.click()
       scope.locator('.chart-shell').wait_for(timeout=300000)
       page.wait_for_timeout(500)
       assert scope.get_by_text('Chart renderer stopped',exact=True).count()==0
@@ -44,7 +52,7 @@ def main():
        page.get_by_label('1b find ticker',exact=True).fill('NVDA')
       page.wait_for_timeout(100)
       with page.expect_response(lambda r:'/market-preview/chart' in r.url,timeout=300000):
-       scope.locator('.research-preview-table button').first.click()
+       scope.locator(':scope > .research-preview-table button').first.click()
       assert all(not r['allocation_loss_mask'] for r in charts[-1]['labels'] if r.get('group_id') is None)
       assert any(r['action_1a'] in ('ENTRY','HOLD','EXIT') and r['action']=='WAIT' for r in charts[-1]['labels'])
       page.wait_for_timeout(500)

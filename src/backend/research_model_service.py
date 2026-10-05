@@ -14,9 +14,9 @@ router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'
 class PreviewRequest(BaseModel):
     day: str
     fee_per_share: float = .005
-    threshold_mode: Literal['fee_multiple', 'return'] = 'fee_multiple'
+    threshold_mode: Literal['fee_multiple', 'return'] = 'return'
     minimum_net_fee_multiple: float = 2.
-    minimum_return: float = .01
+    minimum_return: float = .001
     grouping_seconds: float = 30.
     maximum_group_seconds: int = 300
 
@@ -41,6 +41,13 @@ def preview_result(job_id: str, group_id: int | None = None, search: str = '', o
 @router.get('/v6/market-preview/chart')
 def preview_chart(job_id: str, listing_id: str, start_us: int):
     return read(market_preview.chart, job_id, listing_id, start_us)
+
+
+@router.get('/v6/market-preview/rows')
+def preview_rows(job_id: str, time_us: int | None = None, search: str = '',
+                 selection: Literal['all','selected','rejected'] = 'all',
+                 minimum_score: float = Query(0, ge=0, le=1), offset: int = Query(0, ge=0)):
+    return read(market_preview.positive_rows, job_id, time_us, search, selection, minimum_score, offset)
 
 
 @router.get('/v6/saved-labels')

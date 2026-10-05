@@ -10,7 +10,7 @@ from research.rl_trading.v6 import saved_label_audit as source
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v6.opportunity_dataset import write_json
 
-VERSION = "rl-v6-market-teacher-preview-v4"
+VERSION = "rl-v6-market-teacher-preview-v5"
 ROOT = Path("D:/TradingML/runtimes/rl-v6-market-teacher-preview")
 POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="teacher-preview")
 LOCK = threading.Lock()
@@ -19,9 +19,9 @@ JOBS = {}
 @dataclass(frozen=True)
 class Config:
     fee_per_share: float = .005
-    threshold_mode: str = "fee_multiple"
+    threshold_mode: str = "return"
     minimum_net_fee_multiple: float = 2.
-    minimum_return: float = .01
+    minimum_return: float = .001
     grouping_seconds: float = 30.
     maximum_group_seconds: int = 300
     def validate(self):
@@ -37,9 +37,9 @@ def select(rows, pairs, config):
     scored = rows.filter((pl.col("action")=="ENTRY") & (pl.col("pair_id")>0)).with_columns(
         ((pl.col("entry_gain")-2*config.fee_per_share)/(pl.col("close")+config.fee_per_share)).alias("selection_score"))
     cutoff = config.minimum_net_fee_multiple*2*config.fee_per_share/(pl.col("close")+config.fee_per_share)
-    scored = scored.with_columns((cutoff if config.threshold_mode=="fee_multiple" else pl.lit(config.minimum_return)).alias("score_threshold"))
-    # Strict > matches the proposed gain > 6f contract; old return mode retains >=.
-    passes = pl.col("selection_score")>pl.col("score_threshold") if config.threshold_mode=="fee_multiple" else pl.col("selection_score")>=pl.col("score_threshold")
+    scored = scored.with_columns(pl.max_horizontal(cutoff,pl.lit(config.minimum_return)).alias("score_threshold"))
+    # Both floors apply: strict fee comparison, inclusive capital-return floor.
+    passes = (pl.col("selection_score")>cutoff) & (pl.col("selection_score")>=config.minimum_return)
     eligible = scored.filter(passes & (pl.col("selection_score") > 0)).join(
         pairs.filter(pl.col("liquidity_accepted")).select("listing_id","pair_id"),
         on=["listing_id","pair_id"],how="semi").sort(["listing_id","pair_id","time_us"]).unique(["listing_id","pair_id"],keep="first",maintain_order=True)
@@ -91,12 +91,12 @@ def prepare(day, config, dataset_sha256, job):
         JOBS[job].update(status="running", stage="Checking published 1a bindings")
         active,entry,proof,root,bankroot,_=source.session(day)
         if active["sha256"]!=dataset_sha256:raise ValueError("Published 1a dataset changed")
-        input_key=digest(dict(dataset=dataset_sha256,day=day,certificate=entry["teacher_sha256"]))
+        input_key=digest(dict(dataset=dataset_sha256,day=day,certificate=entry["teacher_sha256"],projection="positive-gain-rows-v2"))
         ROOT.mkdir(parents=True,exist_ok=True); cache=ROOT/input_key;cache.mkdir(exist_ok=True)
         marker=cache/"complete.json"
         if marker.exists():
             receipt=source.read_json(marker)
-            rows=pl.read_parquet(source.verified_local(cache/"entries.parquet",receipt["entries_sha256"]))
+            rows=pl.read_parquet(source.verified_local(cache/"candidates.parquet",receipt["candidates_sha256"]))
             pairs=pl.read_parquet(source.verified_local(cache/"pairs.parquet",receipt["pairs_sha256"]))
         else:
             chunks=[];pairchunks=[];counts={};total=0
@@ -109,13 +109,13 @@ def prepare(day, config, dataset_sha256, job):
                 count=frame.select(pl.len()).collect().item();total+=count
                 if count!=receipt["valid_rows"]:raise ValueError("Preview source row coverage mismatch")
                 for row in frame.group_by("action").len().collect().iter_rows():counts[row[0]]=counts.get(row[0],0)+row[1]
-                chunks.append(frame.filter(pl.col("action")=="ENTRY").select("listing_id","pair_id","time_us","close","entry_gain","action").collect())
+                chunks.append(frame.filter(pl.col("entry_gain")>0).select("listing_id","pair_id","time_us","close","entry_gain","action").collect())
                 pairfile=source.verified_local(folder/"pairs.parquet",receipt["files"]["pairs"]["sha256"])
                 pairchunks.append(pl.read_parquet(pairfile).select("listing_id","pair_id","start_us","end_us","liquidity_accepted","liquidity_rejection_reason","reference_entry_us","reference_exit_us"))
             if total!=proof["valid_rows"]:raise ValueError("Full session coverage mismatch")
             rows=pl.concat(chunks);pairs=pl.concat(pairchunks)
-            rows.write_parquet(cache/"entries.parquet");pairs.write_parquet(cache/"pairs.parquet")
-            write_json(marker,dict(entries_sha256=file_hash(cache/"entries.parquet"),pairs_sha256=file_hash(cache/"pairs.parquet"),counts=counts,source_rows=total))
+            rows.write_parquet(cache/"candidates.parquet");pairs.write_parquet(cache/"pairs.parquet")
+            write_json(marker,dict(candidates_sha256=file_hash(cache/"candidates.parquet"),pairs_sha256=file_hash(cache/"pairs.parquet"),counts=counts,source_rows=total))
         JOBS[job].update(stage="Scoring and grouping",completed=0,total=1)
         decisions=select(rows,pairs,config);members,groups=group(decisions.filter(pl.col("selected")),config)
         decisions=decisions.join(members.select("listing_id","pair_id","group_id","allocation_ratio"),on=["listing_id","pair_id"],how="left",validate="1:1").with_columns(pl.col("allocation_ratio").fill_null(0.))
@@ -123,9 +123,10 @@ def prepare(day, config, dataset_sha256, job):
         decisions=decisions.with_columns(pl.col("listing_id").replace_strict(names).alias("ticker"))
         decisionpath=ROOT/(job+".parquet");decisions.write_parquet(decisionpath)
         receipt=source.read_json(marker)
-        changed=rows.join(decisions.filter(~pl.col("selected")).select("listing_id","pair_id"),on=["listing_id","pair_id"],how="semi").height
+        changed=rows.filter(pl.col("action")=="ENTRY").join(decisions.filter(~pl.col("selected")).select("listing_id","pair_id"),on=["listing_id","pair_id"],how="semi").height
         result=dict(version=VERSION,day=day,dataset_sha256=dataset_sha256,config=asdict(config),groups=groups,source_rows=receipt["source_rows"],source_actions=receipt["counts"],pairs=pairs.height,selected=members.height,rejected=pairs.height-members.height,suppressed_entry_rows=changed,decisions_path=str(decisionpath),status="preview_only_not_training",objective="Weighted timestamp spread plus group penalty; no portfolio P&L or cash simulation",sizing="Ratio target applies only to selected ENTRY rows; HOLD/EXIT sizing loss masked")
         result["decisions_sha256"]=file_hash(decisionpath)
+        result["source_input_key"]=input_key
         write_json(ROOT/(job+".json"),result);JOBS[job].update(status="complete",stage="Ready to audit",completed=1,total=1)
     except Exception as error:JOBS[job].update(status="failed",stage=str(error))
 
@@ -155,6 +156,32 @@ def result(job,group_id=None,search="",offset=0,selection="all"):
     if search:frame=frame.filter(pl.col("ticker").str.to_uppercase().str.contains(search.upper(),literal=True))
     count=frame.height;frame=frame.sort(["selected","time_us","ticker"],descending=[True,False,False],nulls_last=True)
     return dict(**meta,filtered_rows=count,offset=offset,decisions=frame.slice(offset,100).to_dicts())
+
+def positive_rows(job,time_us=None,search="",selection="all",minimum_score=0.,offset=0):
+    """All positive-scored 1a candle rows at one observed 1s close, not just winners."""
+    if status(job)["status"]!="complete":raise ValueError("Preview not ready")
+    if selection not in ("all","selected","rejected"):raise ValueError("Invalid selection filter")
+    meta=source.read_json(ROOT/(job+".json"));cache=ROOT/meta["source_input_key"]
+    receipt=source.read_json(cache/"complete.json")
+    rows=pl.read_parquet(source.verified_local(cache/"candidates.parquet",receipt["candidates_sha256"]))
+    decisions=pl.read_parquet(source.verified_local(ROOT/(job+".parquet"),meta["decisions_sha256"]))
+    return candidate_window(rows,decisions,Config(**meta["config"]),time_us,search,selection,minimum_score,offset)
+
+def candidate_window(rows,decisions,config,time_us=None,search="",selection="all",minimum_score=0.,offset=0):
+    fee=config.fee_per_share
+    frame=rows.with_columns(((pl.col("entry_gain")-2*fee)/(pl.col("close")+fee)).alias("score"))
+    frame=frame.filter((pl.col("score")>0)&(pl.col("score")>=minimum_score)).join(
+        decisions.select("listing_id","pair_id","ticker","selected","selection_reason","group_id","allocation_ratio",pl.col("time_us").alias("first_eligible_us")),
+        on=["listing_id","pair_id"],how="left",validate="m:1")
+    if search:frame=frame.filter(pl.col("ticker").str.to_uppercase().str.contains(search.upper(),literal=True))
+    if selection!="all":frame=frame.filter(pl.col("selected")== (selection=="selected"))
+    clocks=frame["time_us"].unique().sort().to_list()
+    if time_us is None:time_us=clocks[0] if clocks else None
+    frame=frame.filter(pl.col("time_us")==time_us).with_columns(
+        (pl.col("selected")&(pl.col("time_us")==pl.col("first_eligible_us"))).alias("group_contributor"),
+        ((pl.col("score")>=config.minimum_return)&(pl.col("entry_gain")>(config.minimum_net_fee_multiple+1)*2*fee)).alias("passes_threshold"))
+    frame=frame.sort(["score","ticker","pair_id"],descending=[True,False,False])
+    return dict(timeframe="1s",time_us=time_us,clocks=clocks,total=frame.height,offset=offset,rows=frame.slice(offset,100).to_dicts())
 
 def chart(job,listing_id,start_us):
     if status(job)["status"]!="complete":raise ValueError("Preview not ready")
