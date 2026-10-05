@@ -597,3 +597,29 @@ the pivot plan token is
 Do not remove these guards merely to force entries. This is development
 source/setup qualification for one ticker; broader candidate coverage and the
 complete native Portfolio/OMS/journal path remain unqualified.
+
+### Big-move development check: YJ August 19 premarket
+
+Immutable native receipts `ladder-yj-aug19-native-setup-probe-v1.json` and
+`v2.json` test the unchanged diagnostic policy on the ticker whose Strategy42
+development position netted $1,802.50. This is deliberate development sampling,
+not validation selection. The probe loads 101,910 observations, 43 squeeze
+admissions and 49 eligible VWAP crossings; 38 setups qualify and 11 lack swing
+stops. It produces zero proposals. Preliminary candidates reject for V7
+continuity (556), missing adjacent crossing (102), price evidence (55), VWAP
+loss (2) and frozen-resistance invalidation (858). These are candidate checks,
+not unique trades or missed-trade counts.
+
+All 858 invalidated cases retain their level identity but have a changed
+confirmation epoch. Overlapping diagnostic counts include 783 current
+transition roles, 27 support roles and 642 changed band bounds. Requiring one
+unchanged V7 version across qualification and breakout may therefore suppress
+the very structural event the strategy intends to catch. Inspect producer
+confirmation/transition semantics before changing this predicate; do not
+reinterpret transitions or shifted bands as permission without source proof.
+The V7 token is
+`a9ab04deb9c56a948c5159ee05a08c014f1820bac9a6363fd4bdcd6ca5be3784`;
+the pivot token is
+`635b74acb226f4d69c799efa1ab2863499e73559c450b9a56c5c9551e5030632`.
+Both probes complete in under eight seconds. No financial result or altered
+profit is established; all validation sources remain untouched.
