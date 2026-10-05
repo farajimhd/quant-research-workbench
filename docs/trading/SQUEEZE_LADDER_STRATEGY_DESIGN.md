@@ -662,3 +662,29 @@ The probe completes in 6.39 seconds; no financial replay or profit claim follows
 Focused tests preserve the frozen threshold through a forward transition and
 reject transition-from-support, future confirmation, unavailable identity and
 an earlier break. Native writer integration remains unfinished.
+
+### GNPX August 18 development entry comparison
+
+Native receipts `ladder-gnpx-aug18-native-setup-probe-v1.json` and `v2.json`
+repeat the same provisional policy on a Strategy42 winner (+$545.48). The
+certified source has 9,858 observations, 25 admissions, three eligible VWAP
+crossings and two complete setups. No preliminary resistance break reaches
+the proposal evaluator, so target availability is not the limiting condition.
+
+At the saved position's first fill (11,318,000 ms since 04:00), the exact native
+observation has valid close $5.79 and execution VWAP $5.3240103062626005. Its
+latest admission is 11,224,000 ms, but there has been no eligible VWAP crossing
+by the first fill. Only the provisional liquidity bit rejects that observation.
+This is a source comparison at first fill, not the earlier Strategy42 proposal
+clock or a causal counterfactual entry. It establishes neither the effect of
+removing a gate nor hypothetical profit under the ladder.
+
+Next development ablations should separate strict post-admission VWAP crossing
+from an observed-above-VWAP qualification at admission, and separate provisional
+activity thresholds from structural/target rules. All must retain completed
+source clocks, explicit missing-data behavior and immutable policy identities.
+The probe's V7 token is
+`57ba7f32c3fa01a3d75c813424c86b6ad67390113acd8c7d4078af2777af5dc7`;
+pivot token is
+`6fa2ae4fc16c3a038b48fd88c01f0f341b41f0dd05a1126ff19e2eacf0953a49`.
+These are development diagnostics only; no financial simulation ran.
