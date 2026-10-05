@@ -226,6 +226,8 @@ class AutoUpdatePlanningTests(unittest.TestCase):
         self.assertEqual(settings['max_parsing_threads'], 1)
         self.assertEqual(settings['max_insert_block_size'], 65536)
         self.assertEqual(settings['max_bytes_before_external_sort'], 512 * 1024**2)
+        self.assertEqual(settings['max_bytes_ratio_before_external_sort'], 0)
+        self.assertEqual(settings['max_bytes_ratio_before_external_group_by'], 0)
         self.assertEqual(settings['query_plan_join_swap_table'], 'false')
 
     def test_resource_admission_waits_without_cancelling_other_queries(self) -> None:

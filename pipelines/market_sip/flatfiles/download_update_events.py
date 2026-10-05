@@ -177,6 +177,10 @@ def updater_query_settings(args: argparse.Namespace) -> dict[str, str | int]:
         "max_memory_usage": parse_size_bytes(args.max_memory_usage),
         "max_bytes_before_external_sort": parse_size_bytes(args.external_sort_bytes),
         "max_bytes_before_external_group_by": parse_size_bytes(args.external_group_by_bytes),
+        # The server's default 0.5 ratios otherwise replace these byte limits
+        # with a fraction of server headroom, above our per-query memory cap.
+        "max_bytes_ratio_before_external_sort": 0,
+        "max_bytes_ratio_before_external_group_by": 0,
         "priority": 10,
         "input_format_parallel_parsing": 0,
         "max_parsing_threads": 1,
