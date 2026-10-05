@@ -19,6 +19,14 @@ def prepare_ladder_journal_families(batch: TypedJournalBatch, rows, *, verified_
     if (not isinstance(batch, TypedJournalBatch) or batch.status != 'running'
             or len(batch.events) != 1 or len(batch.intents) != 1):
         raise ValueError('Ladder journal admission requires one running intent parent')
+    # This unit publishes the original proposal only. Portfolio approvals,
+    # reservations and OMS commands have their own sequential writer units;
+    # checking the proposal cannot grant authority to unrelated mutations.
+    allowed = {'trading_event_v1', 'trading_strategy_intent_v1',
+               'trading_intent_protection_slice_v1'}
+    unexpected = [name for name, family in batch.families() if family and name not in allowed]
+    if unexpected or batch.v4_command_lineages:
+        raise ValueError('Ladder journal admission contains unrelated mutation families')
     if (not isinstance(verified_prior_prefix, V4CommittedPrefix)
             or verified_prior_prefix.run_id != batch.run_id
             or verified_prior_prefix.status != 'running'

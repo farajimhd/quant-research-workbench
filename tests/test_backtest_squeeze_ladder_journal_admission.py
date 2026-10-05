@@ -31,6 +31,18 @@ def test_native_intent_parent_binds_exact_capital_request_and_three_evidence_lot
     context['verified_prior_prefix'] = V4CommittedPrefix(batch.run_id, 1, prior, 'before-entry', 'running', (prior,))
     families = prepare_ladder_journal_families(batch, rows, **context)
     assert [len(family[1]) for family in families] == [1,3]
+    # Every other native family is outside this proposal's authority. Reject
+    # it before source reconstruction, even when the proposal itself is valid.
+    from src.trading_runtime.arte_journal_writer import _FAMILIES
+    for _, attribute, _, _ in _FAMILIES:
+        if attribute in {'events', 'intents', 'intent_slices'}:
+            continue
+        with pytest.raises(ValueError, match='unrelated mutation families'):
+            prepare_ladder_journal_families(
+                replace(batch, **{attribute: ({'record_id': str(uuid4())},)}), rows, **context)
+    with pytest.raises(ValueError, match='unrelated mutation families'):
+        prepare_ladder_journal_families(
+            replace(batch, v4_command_lineages=({'record_id': str(uuid4())},)), rows, **context)
     # Stored evidence cannot authorize another capital request or altered slice.
     changed = dict(batch.intents[0], reference_price='11.000000000000000000')
     with pytest.raises(ValueError, match='parent intent'):
