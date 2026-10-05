@@ -45,6 +45,14 @@ def main():
                                 assert len(data['oscillator_series'])==3
                                 assert data['timing']['feature_cutoff'].endswith('exclude target candle')
                                 assert all(r['label_value'] is None or 0<=r['label_value']<=1 for r in data['labels'])
+                                assert data['mode']=='actual_candles'
+                                assert data['context_candles']<=120 and data['session_candles']<=120
+                                assert len(data['candles'])==data['context_candles']+data['session_candles']
+                                assert all(row['model_features']['part']=='context' and row['action']=='CONTEXT'
+                                           for row in data['labels'][:data['context_candles']])
+                                assert all(all(clock<row['time_us'] for clock in row['model_features']['input_close_us'])
+                                           for row in data['labels'][data['context_candles']:])
+                                assert {'bar_vwap','session_vwap','v7_0_0_center','v7_1_0_center'}<=set(s['column'] for s in data['overlay_series'])
                             route.fulfill(response=response)
                         page.route('**/api/research/models**',proxy)
                         page.on('request',lambda r:requests.append(r.url) if '/saved-labels' in r.url else None)
@@ -60,10 +68,10 @@ def main():
                         # premarket move. Verify rejection, then inspect an
                         # eligible RTH pair with its selected exit in this window.
                         assert all(row['action']=='WAIT' for row in responses[-1]['labels']
-                                   if row['episode_liquidity_reason'] not in ('eligible','outside_opportunity_pair'))
+                                   if row['action']!='CONTEXT' and row['episode_liquidity_reason'] not in ('eligible','outside_opportunity_pair'))
                         pair=next(pair for pair in metadata[-1]['pairs']
                             if pair['liquidity_accepted'] and pair['reference_exit_us'] is not None
-                            and pair['reference_exit_us']-pair['start_us']<900_000_000
+                            and pair['reference_exit_us']-pair['start_us']<100_000_000
                             and datetime.fromtimestamp(pair['start_us']/1e6,ZoneInfo('America/New_York')).hour>=10)
                         with page.expect_response(lambda response:'/saved-labels/chart' in response.url):
                             scope.get_by_label('Price-action episode pair',exact=True).select_option(str(pair['pair_id']))

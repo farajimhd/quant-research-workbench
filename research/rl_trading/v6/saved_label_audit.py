@@ -107,10 +107,45 @@ def identity_rows(path, expected):
 
 def listings(day):
     active, entry, proof, root, bank_root, bank = session(day)
-    symbols = {r['listing_id']:r['ticker'] for r in identity_rows(str(bank_root/'episodes.parquet'), bank['outputs']['episodes']['sha256'])}
+    symbols = saved_symbols(str(bank_root),entry['bank_certificate_sha256'])
+    plan = read_json(bank_root/'plan.json')
+    empty=empty_price_listings(str(root),entry['teacher_sha256'])
     return dict(day=day, role=entry['role'], dataset_sha256=active['sha256'],
         valid_rows=proof['valid_rows'], invalid_price_rows=proof['invalid_price_rows'],
-        listings=[dict(listing_id=i, ticker=symbols.get(i,i), venue=i.split(':')[-2]) for i in proof['identities']])
+        listings=sorted([dict(listing_id=i, ticker=symbols[i], venue=i.split(':')[-2],
+            activity_rows=plan['census'][i],has_price_targets=i not in empty) for i in proof['identities']],key=lambda r:(r['ticker'],r['venue'])))
+
+
+@lru_cache(maxsize=24)
+def empty_price_listings(root,certificate_hash):
+    root=Path(root);proof=read_json(root/'complete.json',certificate_hash);empty=set()
+    for shard in proof['shards']:
+        receipt=read_json(root/shard['path']/'complete.json',shard['sha256'])
+        if receipt['binding']!=proof['binding']: raise ValueError('Empty listing receipt binding changed')
+        empty.update(receipt['all_invalid_listings'])
+    if not empty<=set(proof['identities']): raise ValueError('Unknown empty price listing')
+    return frozenset(empty)
+
+
+@lru_cache(maxsize=24)
+def saved_symbols(root, certificate_hash):
+    """Resolve even zero-episode symbols from the original compiler receipts."""
+    from hashlib import sha256
+    root=Path(root); bank=read_json(root/'complete.json',certificate_hash)
+    plan=read_json(root/'plan.json')
+    if plan['hash']!=bank['plan_hash'] or digest({k:v for k,v in plan.items() if k!='hash'})!=plan['hash']:
+        raise ValueError('Saved identity plan changed')
+    episode_receipt=bank['outputs']['episodes']
+    symbols=({r['listing_id']:r['ticker'] for r in identity_rows(str(root/'episodes.parquet'),episode_receipt['sha256'])}
+             if episode_receipt.get('rows',1)>0 else {})
+    for identity,size in plan['census'].items():
+        if identity in symbols: continue
+        fragment=read_json(root/'fragments'/sha256(identity.encode()).hexdigest()[:24]/'complete.json')
+        if (fragment['listing_id']!=identity or fragment['report']['candles']!=size or
+                not fragment['ticker'] or fragment['ticker'].startswith('listing:')):
+            raise ValueError('Saved compiler symbol receipt mismatch')
+        symbols[identity]=fragment['ticker']
+    return symbols
 
 
 @lru_cache(maxsize=4)
@@ -140,7 +175,7 @@ def product(day, listing_id):
             frames = selected_frames(str(folder),shard['sha256'],listing_id)
             break
     else: raise ValueError('Listing missing from certified shards')
-    symbols = {r['listing_id']:r['ticker'] for r in identity_rows(str(bank_root/'episodes.parquet'),bank['outputs']['episodes']['sha256'])}
+    symbols = saved_symbols(str(bank_root),entry['bank_certificate_sha256'])
     begin = int(datetime.fromisoformat(day+'T04:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()*1e6)+1_000_000
     finish = begin+16*3600_000_000
     labels = frames['labels']; trades = frames['trades']
@@ -148,7 +183,7 @@ def product(day, listing_id):
     held = labels.filter(pl.col('exit_gain').is_not_null()).with_columns(
         pl.when((pl.col('exit_gain')>0)&(pl.col('exit_quality')>=proof['config']['quality_threshold']))
         .then(pl.lit('EXIT')).otherwise(pl.lit('HOLD')).alias('action'))
-    metadata = dict(day=day, ticker=symbols.get(listing_id,listing_id), listing_id=listing_id, session='Saved extended session',
+    metadata = dict(day=day, ticker=symbols[listing_id], listing_id=listing_id, session='Saved extended session',
         version=algorithm.VERSION, config=proof['config'], begin_us=begin, finish_us=finish,
         dataset_sha256=active['sha256'], certificate_sha256=entry['teacher_sha256'], shard_sha256=shard['sha256'], timing=CONTRACT,
         observed_price_candles=labels.height, consumed_activity_rows=None, omitted_invalid_price_rows=None,
@@ -173,16 +208,55 @@ def metadata(day, listing_id):
     return product(day,listing_id)[0]
 
 
-def chart(day, listing_id, start_us=None, seconds=900, view='combined'):
+def chart(day, listing_id, start_us=None, seconds=900, view='combined', candle_offset=None):
     proof, frames = product(day,listing_id)
     if view not in ('combined','flat','held','reference'): raise ValueError('Select teacher opportunities, a conditional branch, or reference')
-    result = algorithm.chart_frames(proof,frames,start_us,seconds,proof['config']['quality_threshold'],view)
+    if candle_offset is None:
+        result = algorithm.chart_frames(proof,frames,start_us,seconds,proof['config']['quality_threshold'],view)
+    else:
+        result = model_chart(day,listing_id,proof,frames,start_us,candle_offset,view)
     if view=='held':
         # Training has held supervision only where a saved exit gain is defined.
         for row in result['labels']:
+            if row['action']=='CONTEXT': continue
             if row['exit_gain'] is None: row.update(action='UNLABELLED',label_value=None)
             else:
                 row['action']='EXIT' if row['exit_gain']>0 and row['exit_quality']>=proof['config']['quality_threshold'] else 'HOLD'
                 row['label_value']=row['exit_quality'] if row['action']=='EXIT' else 1-row['exit_quality']
     result.update(dataset_sha256=proof['dataset_sha256'],timing=CONTRACT)
     return result
+
+
+def model_chart(day,identity,proof,frames,start_us,offset,view):
+    from research.rl_trading.v6.model_candle_audit import certified_bank,select_window,project
+    active,entry,receipt,root,bank_root,certificate=session(day)
+    bank=certified_bank(str(bank_root),entry['bank_certificate_sha256'])
+    previous=None
+    if entry['previous_root']:
+        previous_root=mapped(entry['previous_root'])
+        _,dataset=published()
+        previous_entry=next(e for e in [dataset['context']]+dataset['days'] if mapped(e['bank_root'])==previous_root)
+        previous_bank=certified_bank(str(previous_root),previous_entry['bank_certificate_sha256'])
+        if identity in previous_bank.manifest['offsets']: previous=previous_bank.listing(identity)
+    raw,window=select_window(bank.listing(identity),previous,offset=offset,start_us=start_us)
+    candles,overlays,oscillators=project(raw)
+    session_clocks=[r['time_us'] for r in raw if r['part']=='session']
+    classified=algorithm.classify(frames['labels'].filter(pl.col('time_us').is_in(session_clocks)),proof['config']['quality_threshold'],view)
+    rows={r['time_us']:r for r in classified.to_dicts()}
+    labels=[]
+    for r in raw:
+        label=rows.get(r['time_us']) if r['part']=='session' else None
+        if r['part']=='session' and label is None: raise ValueError('Model price candle lacks certified teacher target')
+        if label is None:
+            label=dict(time_us=r['time_us'],close=candles[len(labels)]['close'],action='CONTEXT',label_value=None,
+                entry_gain=0.,entry_quality=0.,exit_gain=None,exit_quality=None,reference_action='CONTEXT',
+                episode_id=None,pair_id=None,both_opportunities=False,entry_basis=None,carried_next_pair_value=0.)
+        labels.append(dict(**label,model_features=r))
+    start=raw[0]['time_us'] if raw else proof['begin_us'];end=raw[-1]['time_us']+1 if raw else start
+    regions=[dict(start=r['start_us']//1_000_000-1,end=r['end_us']//1_000_000-1,
+        color='var(--success)' if r['direction']==1 else 'var(--danger)',label='')
+        for r in frames['episodes'].filter((pl.col('start_us')<end)&(pl.col('end_us')>start)).to_dicts()]
+    window.update(bank_file_sha256=bank.manifest['files_sha256'],previous_context_available=previous is not None)
+    return dict(ticker=proof['ticker'],version=algorithm.VERSION,candles=candles,labels=labels,oscillator_series=oscillators,
+        overlay_series=overlays,regions=regions,start_us=start,end_us=end,view=view,
+        quality_threshold=proof['config']['quality_threshold'],**window)

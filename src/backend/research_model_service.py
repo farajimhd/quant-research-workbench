@@ -27,8 +27,8 @@ def saved_metadata(day: str, listing_id: str):
 @router.get('/v6/saved-labels/chart')
 def saved_chart(day: str, listing_id: str, start_us: int | None = None,
                 seconds: int = Query(900,ge=60,le=3600), view: Literal['combined','flat','held','reference']='combined',
-                dataset_sha256: str | None = None):
-    result = read(saved_label_audit.chart,day,listing_id,start_us,seconds,view)
+                dataset_sha256: str | None = None, candle_offset: int | None = Query(None,ge=0)):
+    result = read(saved_label_audit.chart,day,listing_id,start_us,seconds,view,candle_offset)
     if dataset_sha256 is not None and result['dataset_sha256'] != dataset_sha256:
         raise HTTPException(409, 'Published labels changed. Reload Research to use the current dataset.')
     return result

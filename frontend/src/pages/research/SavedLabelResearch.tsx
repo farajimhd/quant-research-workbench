@@ -6,7 +6,7 @@ import { PriceActionResearch } from "./PriceActionResearch";
 import { useResearchState } from "./researchState";
 
 type Catalog = { dataset_sha256: string; supports_combined?: boolean; days: { day: string; role: string; valid_rows: number; invalid_price_rows: number }[] };
-type Listings = { dataset_sha256: string; listings: { listing_id: string; ticker: string; venue: string }[] };
+type Listings = { dataset_sha256: string; listings: { listing_id: string; ticker: string; venue: string; activity_rows: number; has_price_targets?: boolean }[] };
 
 export function SavedLabelResearch() {
   const [catalog, setCatalog] = useState<Catalog | null>(null), [listings, setListings] = useState<Listings | null>(null);
@@ -38,7 +38,7 @@ export function SavedLabelResearch() {
     <div className="research-controls research-saved-selection">
       <label>Saved session<select aria-label="Saved label session" value={day} onChange={e => setDay(e.target.value)}>{catalog?.days.map(d => <option key={d.day} value={d.day}>{d.day} · {d.role}</option>)}</select></label>
       <label>Find ticker<input aria-label="Find saved label ticker" placeholder="Ticker or venue" value={search} onChange={e => setSearch(e.target.value)} /></label>
-      <label>Listing<select aria-label="Saved label listing" value={identity} onChange={e => setIdentity(e.target.value)}>{options.map(r => <option key={r.listing_id} value={r.listing_id}>{r.ticker} · {r.venue}</option>)}</select></label>
+      <label>Ticker<select aria-label="Saved label listing" value={identity} onChange={e => setIdentity(e.target.value)}>{options.map(r => <option key={r.listing_id} value={r.listing_id}>{r.ticker} · {r.venue}{r.has_price_targets===false ? " · no session price targets" : r.activity_rows===0 ? " · no session candles" : ""}</option>)}</select></label>
       <span>{session?.valid_rows.toLocaleString()} labelled candles · {session?.invalid_price_rows.toLocaleString()} invalid rows excluded</span>
       <button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Reload labels</button>
     </div>

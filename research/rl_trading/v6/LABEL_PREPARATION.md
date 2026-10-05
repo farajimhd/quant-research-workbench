@@ -154,6 +154,27 @@ sidecars are also rejected. They cannot be mixed into the new price-only
 labels. A future causal execution-observation preparation must be versioned
 and bound to the new label certificate; it must not revive old label targets.
 
+## Research model-bank candle audit
+
+Saved Research charts accept `candle_offset` for an observed-candle window:
+up to 120 valid-price historical context candles, followed by the next 120
+valid-price session candles (all remaining when fewer exist). Context has no
+current-session teacher markers. This 240-candle audit view is not one model
+input. The main V6 teacher uses up to 120 actual bank rows strictly before
+each target; unpriced rows retain masks and may not be drawn as candles.
+The inspector exposes those input clocks and padding. The existing local
+ResNet diagnostic instead includes the target in its 120-row window; the
+chart reports that difference without changing either training path.
+
+Prices, bar/session VWAP, one-second MACD and five V7 slots per side are decoded
+from the published float32 feature bank, including historical bank values.
+No indicator or level engine is rerun. Stored scalar/tensor fields remain
+available in the inspector; bps conversion and train-only normalization are
+separate encoder operations. Ticker names come from the saved compiler
+receipts even for zero-episode/context-only listings. Empty-price membership
+is certified by the label shard receipts and is labelled explicitly in the
+dropdown. No bars, banks, labels or model checkpoints are rewritten.
+
 ## Time-aware single EXIT cluster
 Current positive liquidation gain is compared with maximum positive future gain from the same reference entry, discounted to the current close with the configured half-life. Earliest candle whose current gain dominates continuation is the reference EXIT. Only its first contiguous run of dominant candles has in_exit_cluster=true. Later candidate clusters are suppressed to HOLD in hypothetical held supervision; the reference trade already ended. Raw exit_gain remains undiscounted. liquidation_quality retains the current/maximum(current,continuation) comparison; exit_quality is gated to zero outside the selected cluster. HOLD targets witness discounted continuation; hold_target_gain stays raw, hold_discounted_gain is discounted. No profitable reference means no forced exit target or trade. This changes teacher targets, but not feature timing or loss definitions.
 

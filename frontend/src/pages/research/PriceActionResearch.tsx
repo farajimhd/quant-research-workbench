@@ -12,6 +12,7 @@ import { useResearchState } from "./researchState";
 type Pair = { liquidity_accepted?: boolean; liquidity_rejection_reason?: string; pair_id: number; short_episode: number | null; long_episode: number; start_us: number; end_us: number;
   best_start_price: number; best_end_price: number; best_stop: number; best_target: number; reference_range: number; reference_entry_us: number | null; reference_exit_us: number | null; reference_entry_price: number | null; reference_exit_price: number | null; best_entry_gain: number; best_exit_gain: number; carried_next_pair_value: number };
 type Row = { liquidity_eligible?: boolean; liquidity_reason?: string; episode_liquidity_reason?: string; prior_trades_60s?: number; prior_shares_60s?: number; prior_active_seconds_60s?: number; prior_trade_age_seconds?: number | null; time_us: number; episode_id: number; pair_id: number; direction: number; close: number; action: string;
+  model_features?: { part: string; scalar: number[]; levels: number[][][]; input_close_us: number[]; input_padding: number | null; diagnostic_input_close_us?: number[] };
   entry_gain: number; entry_quality: number; exit_gain: number | null; exit_quality: number | null;
   entry_target_us?: number | null; entry_horizon_seconds?: number | null; hold_target_us?: number | null; hold_horizon_seconds?: number | null; hold_target_gain?: number | null;
   hold_discounted_gain?: number | null; liquidation_quality?: number | null; in_exit_cluster?: boolean;
@@ -23,6 +24,7 @@ type Experiment = { ticker: string; day: string; session: string; version: strin
   trades: number; total_price_pnl: number; both_opportunities: number; pairs: Pair[]; price_source: string;
   reporting?: { revision: string; counts: { n: number; delayed: number; unknown: number } } };
 type Window = { ticker: string; candles: ChartPayload["candles"]; oscillator_series: ChartPayload["oscillator_series"];
+  overlay_series?: ChartPayload["overlay_series"]; context_candles?: number; session_candles?: number; offset?: number; previous_offset?: number; next_offset?: number; scalar_names?: string[]; level_names?: string[];
   regions: ChartPayload["regions"]; labels: Row[]; start_us: number; end_us: number; previous_available: boolean; next_available: boolean };
 const cache = new Map<string, Window>();
 const number = (value: number | null | undefined) => value == null ? "—" : value.toFixed(4);
@@ -35,7 +37,9 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
   const [experiment, setExperiment] = useState<Experiment | null>(null);
   const [chart, setChart] = useState<Window | null>(null), [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0), [busy, setBusy] = useState(true);
-  const [start, setStart] = useResearchState<number | null>(`${prefix}:start`, null);
+  const [start, setStart] = useResearchState<number | null>(`${prefix}:actual-candles:start`, null);
+  const [offset, setOffset] = useResearchState(`${prefix}:actual-candles:offset`, 0);
+  const [showLevels, setShowLevels] = useResearchState(`${prefix}:model-levels`, true);
   const [pairId, setPairId] = useResearchState(`${prefix}:pair`, 1);
   const [selectedClock, setSelectedClock] = useResearchState<number | null>(`${prefix}:clock`, null);
   const [threshold, setThreshold] = useResearchState(`${prefix}:v2:threshold`, .9);
@@ -51,19 +55,19 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
   useEffect(() => {
     if (!ready) return;
     const abort = new AbortController(); setBusy(true); setError("");
-    const url = `${endpoint}/chart${query({ day: saved?.day, listing_id: saved?.listing_id, dataset_sha256: saved?.dataset_sha256, start_us: start ?? undefined, seconds: 900, quality_threshold: saved ? undefined : threshold, view })}`;
+    const url = `${endpoint}/chart${query({ day: saved?.day, listing_id: saved?.listing_id, dataset_sha256: saved?.dataset_sha256, candle_offset: saved ? offset : undefined, start_us: start ?? undefined, seconds: 900, quality_threshold: saved ? undefined : threshold, view })}`;
     const cached = cache.get(url);
     if (cached && !attempt) { setChart(cached); setBusy(false); return () => abort.abort(); }
     api<Window>(url, { signal: abort.signal, timeoutMs: 300000 }).then(result => {
       if (!abort.signal.aborted) { if (cache.size >= 32) cache.delete(cache.keys().next().value!); cache.set(url, result); setChart(result); }
     }).catch(reason => { if (!abort.signal.aborted) setError(String(reason)); }).finally(() => { if (!abort.signal.aborted) setBusy(false); });
     return () => abort.abort();
-  }, [ready, start, attempt, threshold, view]);
+  }, [ready, start, offset, attempt, threshold, view]);
   const pair = experiment?.pairs.find(p => p.pair_id === pairId);
   const row = chart?.labels.find(r => r.time_us === selectedClock) ?? chart?.labels.find(r => r.action === "ENTRY") ?? chart?.labels[0];
-  const payload = useMemo<ChartPayload>(() => ({ candles: chart?.candles ?? [], volume: [], overlay_series: [],
+  const payload = useMemo<ChartPayload>(() => ({ candles: chart?.candles ?? [], volume: [], overlay_series: chart?.overlay_series ?? [],
     oscillator_series: chart?.oscillator_series ?? [], regions: (chart?.regions ?? []).map(r => ({ ...r, color: researchBandColor(r.color) })),
-    markers: (chart?.labels ?? []).filter(r => r.action !== "UNLABELLED").map((r, i) => ({ id: `price-action-${i}`, time: (r.time_us/1e6-1) as UTCTimestamp,
+    markers: (chart?.labels ?? []).filter(r => !["UNLABELLED","CONTEXT"].includes(r.action)).map((r, i) => ({ id: `price-action-${i}`, time: (r.time_us/1e6-1) as UTCTimestamp,
       position: r.action === "EXIT" ? "aboveBar" : "belowBar", size: .5,
       shape: r.action === "ENTRY" ? "arrowUp" : r.action === "EXIT" ? "arrowDown" : "circle",
       color: r.action === "ENTRY" ? "var(--success)" : r.action === "EXIT" ? "var(--danger)" : r.action === "HOLD" ? "var(--info)" : "var(--muted-foreground)",
@@ -75,6 +79,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
     sources={{ architecture: saved ? "Current V6 teacher label authority" : "Experimental · not used in teacher training", analytics: saved ? "Published full-session shard" : "Full RTH session · saved price-action values", chart: "Saved 1s prices & labels · no fill model" }}
     toolbar={<><strong>{saved ? "Current V6 teacher labels" : "Long price-action experiment"}</strong><span>{experiment.ticker} · {experiment.day} · {saved ? "04:00–20:00" : "09:30–16:00"} ET</span></>}>
     {{ architecture: <div className="research-container"><h2>Price action only</h2><p>Targets are attached to candle close t, never open. Model features use only candles with close time &lt; t: the target candle is excluded, including its OHLC, indicators and held-position mark. Hindsight targets use later prices and are retrospective supervision.</p>{saved && <details><summary>Published dataset identity</summary><p className="research-source">SHA-256 {saved.dataset_sha256}</p></details>}<p>1s MACD · {experiment.config.half_life_seconds}s discount half-life · zero fees.</p>
+      {saved && <p>The 120 context + 120 session chart is an audit view. Model supervision uses a rolling 120 actual bank rows strictly before the target, including unpriced rows with masks. VWAP and the ten V7 slots decode stored float32 features; training then converts units and applies train-only normalization.</p>}
       <p>Each liquidity-qualified short→long pair is one opportunity. ENTRY quality compares its discounted future gain with the pair’s best entry gain. EXIT compares liquidation now with discounted future holding; only the first contiguous winning cluster receives EXIT.</p>
       <p>Quality ≥ {(threshold*100).toFixed(0)}% gives an opportunity arrow. Several candles may qualify. One reference entry/exit pair measures the price change; opportunity arrows are alternatives, not repeated trades.</p>
       <p className="research-muted">Scores stay between 0 and 1. Carry to the next opportunity is separate. Stop/target are references.</p></div>,
@@ -100,7 +105,8 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
       {experiment.config.liquidity_gate && <section aria-label="Episode liquidity audit"><h2>Episode liquidity audit</h2><p>Start requires {experiment.config.minimum_trades_60s} trades, {count(experiment.config.minimum_shares_60s)} shares and {experiment.config.minimum_active_seconds_60s} active seconds in the prior 60 seconds. Last trade age upper bound must be within {experiment.config.maximum_inactivity_seconds}s. Target candle excluded.</p><p>{count(experiment.pairs.filter(p => p.liquidity_accepted).length)} accepted / {count(experiment.pairs.filter(p => p.liquidity_accepted === false).length)} rejected pairs. Original MACD runs remain visible; rejected opportunities become WAIT.</p>{pair && <p>Selected pair: {pair.liquidity_accepted ? "Accepted" : "Rejected"} · {pair.liquidity_rejection_reason?.replaceAll("_", " ")}</p>}</section>}
       <h2>Inspect one candle</h2><label className="research-field">Candle close ET<select aria-label="Price-action candle" value={row?.time_us ?? ""} onChange={e => setSelectedClock(Number(e.target.value))}>
         {chart?.labels.map(r => <option key={r.time_us} value={r.time_us}>{clock(r.time_us)} · {r.action}</option>)}</select></label>
-      {row && <div className="research-candle-values"><dl><div><dt>Close / MACD episode</dt><dd>{number(row.close)} / {row.direction === 1 ? "L" : "S"}{row.episode_id}</dd></div>
+      {row && <div className="research-candle-values"><dl><div><dt>Close / MACD episode</dt><dd>{number(row.close)} / {row.action === "CONTEXT" ? "Historical context" : `${row.direction === 1 ? "L" : "S"}${row.episode_id}`}</dd></div>
+        {row.model_features && <><div><dt>Displayed candle source</dt><dd>{row.model_features.part === "context" ? "Historical context · no current-session target" : "Current session"}</dd></div><div><dt>Model input before this target</dt><dd>{row.model_features.part === "context" ? "Context source row" : `${row.model_features.input_close_us.length} actual rows · ${row.model_features.input_padding} padding slots · target excluded`}</dd></div><div><dt>Input first / last close ET</dt><dd>{row.model_features.input_close_us.length ? `${clock(row.model_features.input_close_us[0])} / ${clock(row.model_features.input_close_us.at(-1)!)}` : "—"}</dd></div></>}
         {row.liquidity_reason && <><div><dt>Prior 60s trades / shares / active seconds</dt><dd>{count(row.prior_trades_60s)} / {count(row.prior_shares_60s)} / {count(row.prior_active_seconds_60s)}</dd></div><div><dt>Prior trade age upper bound · seconds</dt><dd>{number(row.prior_trade_age_seconds)}</dd></div><div><dt>Candle liquidity / episode decision</dt><dd>{row.liquidity_reason.replaceAll("_", " ")} / {row.episode_liquidity_reason?.replaceAll("_", " ")}</dd></div></>}
         <div><dt>Displayed label / quality</dt><dd>{row.action} / {number(row.label_value)}</dd></div>
         <div><dt>ENTRY quality · if flat</dt><dd>{number(row.entry_quality)}</dd></div><div><dt>Discounted local entry gain</dt><dd>{number(row.entry_gain)}</dd></div>
@@ -111,7 +117,9 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
         <div><dt>HOLD future target gain · $/share</dt><dd>{number(row.hold_target_gain ?? null)}</dd></div>
         <div><dt>HOLD discounted continuation · $/share</dt><dd>{number(row.hold_discounted_gain)}</dd></div>
         <div><dt>Liquidation comparison quality</dt><dd>{number(row.liquidation_quality)}</dd></div>
-        <div><dt>Next opportunity carry · separate</dt><dd>{number(row.carried_next_pair_value)}</dd></div></dl></div>}
+        <div><dt>Next opportunity carry · separate</dt><dd>{number(row.carried_next_pair_value)}</dd></div></dl>
+        {row.model_features && <details><summary>Exact stored model features · VWAP and V7</summary><p>These float32 bank values are the source features. Training converts distances to bps and applies train-only normalization. V7 shows the five below and five above slots; masked slots are absent. The existing local ResNet diagnostic uses an inclusive target window, unlike the main V6 strict-prior teacher path.</p><p>Local ResNet diagnostic window: {row.model_features.diagnostic_input_close_us?.length ?? 0} actual rows · includes target candle. This audit does not change training alignment.</p><table><thead><tr><th>Scalar</th><th>Stored value</th></tr></thead><tbody>{row.model_features.scalar.map((v,i) => <tr key={i}><th>{chart?.scalar_names?.[i]}</th><td>{v.toPrecision(9)}</td></tr>)}</tbody></table><table><thead><tr><th>V7 slot</th><th>Role / presence</th><th>Stored V7 fields · manifest order</th></tr></thead><tbody>{row.model_features.levels.flatMap((slots,side) => slots.map((v,slot) => <tr key={`${side}:${slot}`}><th>{side ? "Above" : "Below"} {slot+1}</th><td>{!v[10] ? "Absent" : v[6] ? "Support" : v[7] ? "Resistance" : "Transition"}</td><td>{v.map(x=>x.toPrecision(9)).join(" / ")}</td></tr>))}</tbody></table></details>}
+        </div>}
       <p className="research-muted">Arrow numbers: normalized quality above, raw gain ($/share) below. Gray dots = WAIT; blue dots = HOLD. Unlabelled held candles have no marker.</p>
       {experiment.both_opportunities > 0 && <p className="research-muted">{experiment.both_opportunities} candles qualify for both alternatives. Combined view shows EXIT; use ENTRY / WAIT to inspect their entry opportunities.</p>}
       <details><summary>Source & parameters</summary><p>{experiment.price_source}</p><p>{experiment.version} · tf={experiment.config.timeframe_seconds}s · {experiment.semantics}</p>
@@ -120,20 +128,22 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
       chart: <div className="research-chart-container research-price-action-chart"><div className="research-controls">
         {!saved && <label>Opportunity quality<select aria-label="Opportunity quality threshold" value={threshold} onChange={e => setThreshold(Number(e.target.value))}>{[.8,.9,.95,1].map(t => <option key={t} value={t}>≥ {(t*100).toFixed(0)}%</option>)}</select></label>}
         <label>Label view<select aria-label="Opportunity label view" value={view} onChange={e => setView(e.target.value)}>{(!saved || saved.supports_combined) && <option value="combined">ENTRY / EXIT opportunities</option>}<option value="flat">ENTRY / WAIT</option><option value="held">EXIT / HOLD</option><option value="reference">Selected reference pair</option></select></label></div><div className="research-chart-nav">
-        <button className="button secondary compact" disabled={busy || !chart?.previous_available} onClick={() => { setStart(chart!.start_us-900e6); setSelectedClock(null); }}>Previous 15 min</button>
-        <span>{chart ? `${clock(chart.start_us-1e6)}–${clock(chart.end_us-1e6)} ET · 1s` : "Loading window"}</span>
-        <button className="button secondary compact" disabled={busy || !chart?.next_available} onClick={() => { setStart(chart!.end_us); setSelectedClock(null); }}>Next 15 min</button></div>
+        <button className="button secondary compact" disabled={busy || !chart?.previous_available} onClick={() => { setStart(saved ? null : chart!.start_us-900e6); if (saved) setOffset(chart!.previous_offset!); setSelectedClock(null); }}>{saved ? "Previous 120 candles" : "Previous 15 min"}</button>
+        <span>{chart ? saved ? `${chart.context_candles} context + ${chart.session_candles} session candles · 1s` : `${clock(chart.start_us-1e6)}–${clock(chart.end_us-1e6)} ET · 1s` : "Loading window"}</span>
+        <button className="button secondary compact" disabled={busy || !chart?.next_available} onClick={() => { setStart(saved ? null : chart!.end_us); if (saved) setOffset(chart!.next_offset!); setSelectedClock(null); }}>{saved ? "Next 120 candles" : "Next 15 min"}</button></div>
+      {saved && <p className="research-muted">Historical context has no teacher markers · VWAP and ten V7 slots: saved model-bank values · inspect exact inputs in Session &amp; episode values.</p>}
       <p className="research-muted">1s MACD: green ≥ signal, red &lt; signal · ENTRY ↑ / EXIT ↓ · Top: quality 0–1 · Bottom: raw gain $/share · HOLD: blue · WAIT: gray</p>
       {experiment.config.liquidity_gate && <p className="research-muted">Liquidity-gated episodes: {count(experiment.pairs.filter(p => p.liquidity_accepted).length)} accepted / {count(experiment.pairs.filter(p => p.liquidity_accepted === false).length)} rejected. Inspect reasons and prior activity in Session &amp; episode values.</p>}
       <label className="research-checkbox"><input type="checkbox" checked={holdNumbers} onChange={e => setHoldNumbers(e.target.checked)} /><span>Show HOLD values</span></label>
+      {saved && <label className="research-checkbox"><input type="checkbox" checked={showLevels} onChange={e=>setShowLevels(e.target.checked)} /><span>Show model V7 level slots</span></label>}
       {busy ? <LoadingState fill label="Loading saved price-action labels" /> : error ? <div className="canvas-inline-error" role="alert">{error}<button onClick={() => setAttempt(a => a+1)}>Retry chart</button></div> : chart?.candles.length ?
         <ChartPanel ticker={experiment.ticker} timeframe="1s" timeframes={["1s"]} payload={payload}
-          reference={row ? { time: row.time_us/1e6-1, startTime: row.time_us/1e6-1, endTime: row.time_us/1e6-1 } : undefined}
-          featureOptions={[]} indicatorOptions={[]} visibleColumns={["macd_line", "macd_signal", "macd_histogram"]} visibleSupervisionGroups={[]}
+          reference={!saved && row ? { time: row.time_us/1e6-1, startTime: row.time_us/1e6-1, endTime: row.time_us/1e6-1 } : undefined}
+          featureOptions={[]} indicatorOptions={[]} visibleColumns={["macd_line", "macd_signal", "macd_histogram", "bar_vwap", "session_vwap", ...(showLevels ? (chart.overlay_series ?? []).filter(s=>s.column.endsWith("_center")).map(s=>s.column) : [])]} visibleSupervisionGroups={[]}
           onTickerChange={() => {}} onTimeframeChange={() => {}} onVisibleColumnsChange={() => {}} onVisibleSupervisionGroupsChange={() => {}}
           tickerEditable={false} toolbarVariant="compact" showIndicatorControls={false} showSupervisionControls={false} fillHeight baseHeight={300}
-          persistedOnly initialFitMode="last_market_day" settingsStorageKey={saved ? "research.saved-labels.chart.v1" : "research.price-action.chart.v2"}
-          appearanceDefaults={{ legendGutterVisible: false, rightLegendGutterVisible: false }} /> : <div className="research-empty">No valid-price candles in this window.</div>}
+          persistedOnly initialFitMode={saved ? "default" : "last_market_day"} settingsStorageKey={saved ? "research.saved-labels.model-candles.v1" : "research.price-action.chart.v2"}
+          appearanceDefaults={{ legendGutterVisible: false, rightLegendGutterVisible: false }} /> : <div className="research-empty">{saved ? "This listing has no valid-price candles in the certified session or available context. Its activity rows have no price targets." : "No valid-price candles in this window."}</div>}
       <details className="research-label-detail"><summary>Read the labels on this chart</summary>
         <p>Minimum position: {experiment.config.minimum_position_seconds} seconds between closes. Short-duration entries become WAIT; held positions cannot EXIT earlier. ENTRY horizon reaches the strictly future L close maximizing discounted entry gain. HOLD horizon reaches the strictly future L close maximizing discounted continuation gain; its target gain is measured from the reference entry, separately from the existing current exit gain. Equal maxima choose the earliest close. Horizons use elapsed seconds between closes, including gaps; absent targets stay blank. These are hindsight audit attributes, excluded from model inputs.</p>
         <p>Each arrow has two rows: normalized quality first, then the saved unnormalized gain in dollars per share (four decimal places). ENTRY uses discounted future gain; EXIT uses undiscounted gain from the reference entry. {saved ? "Optional HOLD numbers show the quality complement and the same raw exit-gain target used by the held value head, including negative gains." : "Optional HOLD numbers show quality complements and current raw gain."} WAIT has no text; its raw entry gain remains available in the candle inspector.</p>
