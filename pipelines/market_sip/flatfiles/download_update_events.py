@@ -2475,6 +2475,19 @@ WHERE database = {sql_string(database)}
     return bool(row and int(float(row[0] or 0)) > 0)
 
 
+def frontier_recovery_requested(args: argparse.Namespace, frontier: str, status: str) -> bool:
+    recovery_status = (
+        status == "failed" and getattr(args, "retry_failed", False)
+    ) or (
+        status in {"started", "interrupted"} and getattr(args, "retry_started", False)
+    )
+    return bool(
+        recovery_status and getattr(args, "start_date", None) == frontier
+        and (getattr(args, "end_date", None) or "") >= frontier
+        and getattr(args, "force_day_delete", False)
+    )
+
+
 def query_database_frontier(client: ClickHouseHttpClient, args: argparse.Namespace, *, required: bool) -> str:
     if not clickhouse_table_exists(client, args.database, args.continuity_table):
         if required:
@@ -2503,17 +2516,7 @@ FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
     if status != "ok":
         # Manual recovery must begin at the failed frontier and retain run_day's
         # forced-delete and no-later-days guards. Bare auto-update still fails.
-        recovery_status = (
-            status == "failed" and getattr(args, "retry_failed", False)
-        ) or (
-            status in {"started", "interrupted"} and getattr(args, "retry_started", False)
-        )
-        if (
-            not required and recovery_status
-            and getattr(args, "start_date", None) == frontier
-            and getattr(args, "end_date", "") >= frontier
-            and getattr(args, "force_day_delete", False)
-        ):
+        if not required and frontier_recovery_requested(args, frontier, status):
             return frontier
         raise RuntimeError(
             f"Database frontier {frontier} has latest manifest status {status or 'missing'} for "
@@ -2668,7 +2671,10 @@ def validate_manual_append_selection(
             continue
         scoped_args = event_args_for_day(args, day)
         status = latest_day_status(client, scoped_args, DayJob(day.source_date, build_step_for_date(day.source_date)))
-        if status != "ok":
+        if status != "ok" and not (
+            day.source_date == database_frontier
+            and frontier_recovery_requested(args, database_frontier, status)
+        ):
             historical_missing.append(f"{day.source_date} status={status or 'missing'}")
     if historical_missing:
         raise RuntimeError(

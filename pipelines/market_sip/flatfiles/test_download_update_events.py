@@ -271,6 +271,18 @@ class AutoUpdatePlanningTests(unittest.TestCase):
                 with self.subTest(required=required, start=start, retry=retry, delete=delete), self.assertRaisesRegex(RuntimeError, "refusing to append"):
                     query_database_frontier(client, args, required=required)
 
+    def test_manual_selection_accepts_failed_frontier_recovery_but_rejects_internal_holes(self) -> None:
+        with mock.patch("sys.argv", ["download_update_events.py"]):
+            args = parse_args()
+        args.start_date, args.end_date = "2026-09-21", "2026-09-22"
+        args.retry_failed, args.force_day_delete = True, True
+        days = [_day(Path("unused"), value) for value in ("2026-09-21", "2026-09-22")]
+        inventory = RemoteDayInventory(tuple(days), ())
+        with mock.patch("pipelines.market_sip.flatfiles.download_update_events.latest_day_status", return_value="failed"):
+            validate_manual_append_selection(mock.Mock(), args, inventory, days, "2026-09-21")
+            with self.assertRaisesRegex(RuntimeError, "internal hole"):
+                validate_manual_append_selection(mock.Mock(), args, inventory, days, "2026-09-22")
+
     def test_execution_clock_existing_days_come_from_continuity_without_remote_discovery(self) -> None:
         client = mock.Mock()
         client.query_tsv.return_value = "2026-08-20\n2026-08-21\n"
