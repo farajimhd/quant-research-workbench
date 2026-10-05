@@ -638,3 +638,82 @@ def test_v4_cold_reader_requires_server_readonly_and_runner_identity():
         bootstrap._v4_cold_reader_preflight(Reader("0", "backtest_v4_runner"))
     with pytest.raises(RuntimeError, match="unexpected principal"):
         bootstrap._v4_cold_reader_preflight(Reader("1", "trading_journal"))
+
+
+class ProfileColdReader:
+    def __init__(self, principal, *, readonly='1', **profiles):
+        self.principal, self.readonly, self.queries = principal, readonly, []
+        for name, value in profiles.items():
+            setattr(self, name, value)
+
+    def execute(self, query):
+        self.queries.append(query)
+        if query == "SELECT getSetting('readonly')":
+            return self.readonly
+        if query == 'SELECT currentUser()':
+            return self.principal
+        raise AssertionError(query)
+
+
+@pytest.mark.parametrize('attribute,principal',[
+    ('entry_spread_risk_profile','backtest_v4_entry_cost_runner'),
+    ('automatic_ladder_profile','backtest_v4_ladder_runner'),
+])
+def test_v4_cold_reader_matches_only_exact_selected_profile(attribute,principal):
+    selected = {attribute: True}
+    bootstrap._v4_cold_reader_preflight(ProfileColdReader(principal, **selected))
+    with pytest.raises(RuntimeError,match='readonly=1'):
+        bootstrap._v4_cold_reader_preflight(ProfileColdReader(principal,readonly='0',**selected))
+    with pytest.raises(RuntimeError,match='unexpected principal'):
+        bootstrap._v4_cold_reader_preflight(ProfileColdReader('backtest_v4_runner',**selected))
+    with pytest.raises(RuntimeError,match='unexpected principal'):
+        bootstrap._v4_cold_reader_preflight(ProfileColdReader(principal))
+    with pytest.raises(RuntimeError,match='explicit'):
+        bootstrap._v4_cold_reader_preflight(ProfileColdReader(principal,**{attribute:1}))
+    with pytest.raises(RuntimeError,match='conflicting profiles'):
+        bootstrap._v4_cold_reader_preflight(ProfileColdReader(principal,
+            entry_spread_risk_profile=True,automatic_ladder_profile=True))
+
+
+@pytest.mark.parametrize('number',[53,54])
+def test_selected_entry_cost_publication_reaches_real_assembly(monkeypatch,number):
+    from src.backend import backtest_fixed_market_authority
+    dispatch = bootstrap.TypedInsertDispatch(object())
+    context_client = SimpleNamespace(typed_insert_strict=True,typed_insert_dispatch=dispatch)
+    writer_client = SimpleNamespace(typed_insert_strict=True,typed_insert_dispatch=dispatch,
+        entry_spread_risk_profile=True)
+    read = ProfileColdReader('backtest_v4_entry_cost_runner',entry_spread_risk_profile=True)
+    terminal = ProfileColdReader('backtest_v4_entry_cost_runner',entry_spread_risk_profile=True)
+    market = SimpleNamespace(token='b'*64)
+    run = dict(run_id=RUN,run_month='2026-08-01',mode='backtest',evaluation_interval_ms=100,
+        session_date='2026-08-18',configuration_hash='c'*64,code_hash='d'*64,
+        market_plan_token=market.token,started_at='2026-08-18T08:00:00+00:00')
+    config = dict(strategy_id='early-squeeze-strategy',strategy_revision=number,
+        anchor_date='2026-08-18',run_plan_id='plan-1',safety_supervisor_enabled=True,
+        checkpoint_interval_events=100,write_progress_checkpoints=True)
+    published = dict(run_id=RUN,mode='backtest',account_ids=('DU1',),
+        run_month='2026-08-01',configuration_hash='c'*64,market_plan_token='b'*64)
+    monkeypatch.setattr(backtest_fixed_market_authority,'_validate_plans',lambda *_:None)
+    monkeypatch.setattr(bootstrap,'fixed_backtest_v2_preflight',lambda *_:None)
+    monkeypatch.setattr(bootstrap,'_v4_preflight',lambda *_:None)
+    monkeypatch.setattr(bootstrap,'publish_fixed_run_context',lambda *args,**kwargs:published)
+    monkeypatch.setattr(bootstrap,'load_typed_run_context',lambda *_:published)
+    class Writer:
+        run_id=RUN
+        run_mode='backtest'
+        journal_profile='backtest_v4'
+        coalesce_batches=False
+        max_events_per_commit=1024
+        def close(self):pass
+    assembly = bootstrap.publish_and_assemble_fixed_v4_journal(
+        context_client,read,writer_client,terminal,run=run,config=config,account_ids=('DU1',),
+        attempt_id=ATTEMPT,expected_config={'mode':'backtest','strategy_id':config['strategy_id'],'strategy_revision':number},
+        fixed_market_parent_plan=market,fixed_market_execution_plan=market,
+        expected_market_start=datetime(2026,8,18,tzinfo=timezone.utc),
+        projection_certifier=lambda:'a'*64,writer_factory=lambda *args,**kwargs:Writer())
+    try:
+        assert assembly.publisher.expected_config['strategy_revision']==number
+        assert assembly.terminal_authority is None
+        assert read.queries == terminal.queries == ["SELECT getSetting('readonly')",'SELECT currentUser()']
+    finally:
+        assembly.journal.close()

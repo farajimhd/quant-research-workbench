@@ -663,5 +663,17 @@ def _v4_cold_reader_preflight(client: Any) -> None:
     """
     if client.execute("SELECT getSetting('readonly')").strip() != "1":
         raise RuntimeError("V4 cold reader must have ClickHouse readonly=1")
-    if client.execute("SELECT currentUser()").strip() != "backtest_v4_runner":
+    profiles = (('automatic_ladder_profile', 'backtest_v4_ladder_runner'),
+                ('entry_spread_risk_profile', 'backtest_v4_entry_cost_runner'))
+    selected = []
+    for attribute, principal in profiles:
+        enabled = getattr(client, attribute, False)
+        if type(enabled) is not bool:
+            raise RuntimeError('V4 cold reader profile selection must be explicit')
+        if enabled:
+            selected.append(principal)
+    if len(selected) > 1:
+        raise RuntimeError('V4 cold reader has conflicting profiles')
+    expected_principal = selected[0] if selected else 'backtest_v4_runner'
+    if client.execute("SELECT currentUser()").strip() != expected_principal:
         raise RuntimeError("V4 cold reader has unexpected principal")
