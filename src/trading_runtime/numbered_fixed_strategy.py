@@ -91,8 +91,14 @@ class NumberedFixedStrategyContract:
         if self.strategy_number == 54:
             from .strategy_fifty_four_release import ENTRY_SPREAD_RISK_POLICY
             return ENTRY_SPREAD_RISK_POLICY
+        if self.strategy_number == 57:
+            from .strategy_fifty_seven_release import ENTRY_SPREAD_RISK_POLICY
+            return ENTRY_SPREAD_RISK_POLICY
         if self.strategy_number == 55:
             from .strategy_fifty_five_release import ENTRY_SPREAD_RISK_POLICY
+            return ENTRY_SPREAD_RISK_POLICY
+        if self.strategy_number == 58:
+            from .strategy_fifty_eight_release import ENTRY_SPREAD_RISK_POLICY
             return ENTRY_SPREAD_RISK_POLICY
         if self.strategy_number == 56:
             from .strategy_fifty_six_release import ENTRY_SPREAD_RISK_POLICY
@@ -111,6 +117,19 @@ class NumberedFixedStrategyContract:
         return sources[0]
 
     @property
+    def entry_spread_risk_intent_recovery_contract(self):
+        if self.entry_spread_risk_policy is None:
+            return None
+        from .strategy_registry import numbered_strategy
+        sources = tuple(v for v in numbered_strategy(self.strategy_number).input_contracts
+                        if v.startswith('entry-spread-risk-intent-recovery@'))
+        if not sources:
+            return 'entry-spread-risk-intent-recovery@1'
+        if len(sources) != 1 or sources[0] != 'entry-spread-risk-intent-recovery@2':
+            raise ValueError('Entry cost recovery declaration is ambiguous or unsupported')
+        return sources[0]
+
+    @property
     def armed_profit_floor_policy(self):
         if self.strategy_number == 52:
             from .strategy_fifty_two_release import ARMED_PROFIT_FLOOR_POLICY
@@ -120,7 +139,7 @@ class NumberedFixedStrategyContract:
     @property
     def early_original_risk_policy(self):
         """A declared release rule, consumed generically by position management."""
-        if self.strategy_number in (50, 52, 53, 54, 55, 56):
+        if self.strategy_number in (50, 52, 53, 54, 55, 56, 57, 58):
             from .strategy_fifty_release import EARLY_FAILURE_POLICY
             return EARLY_FAILURE_POLICY
         if self.strategy_number == 48:
@@ -133,27 +152,27 @@ class NumberedFixedStrategyContract:
 
     @property
     def allows_session_exit(self) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56)
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
 
     @property
     def allows_adds(self) -> bool:
-        return self.strategy_number not in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56)
+        return self.strategy_number not in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
 
     @property
     def allows_completed_30s_trailing(self) -> bool:
-        return self.strategy_number not in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56)
+        return self.strategy_number not in (5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
 
     @property
     def allows_target_escalation(self) -> bool:
-        return self.strategy_number not in (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56)
+        return self.strategy_number not in (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
 
     @property
     def caps_entry_at_reference_ask(self) -> bool:
-        return self.strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56)
+        return self.strategy_number in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
 
     @property
     def allows_followthrough_failure_exit(self) -> bool:
-        return self.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56)
+        return self.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
 
     def entry_allowed(self, boundary_ms: int) -> bool:
         return (self.strategy_number == 1 or 0 < boundary_ms < 19_500_000
@@ -161,17 +180,17 @@ class NumberedFixedStrategyContract:
 
     def activation_allowed(self, boundary_ms: int, episode_start_ms: int) -> bool:
         """Strategy 3 requires an episode born in this extended session."""
-        if self.strategy_number not in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56):
+        if self.strategy_number not in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58):
             return True
         return (0 < episode_start_ms <= boundary_ms < 19_500_000
                 or 43_200_000 < episode_start_ms <= boundary_ms < 57_000_000)
 
     def acquisition_cutoff(self, boundary_ms: int) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56) and (
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58) and (
             19_500_000 <= boundary_ms <= 19_800_000 or 57_000_000 <= boundary_ms <= 57_600_000)
 
     def liquidation_due(self, boundary_ms: int) -> bool:
-        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56) and (
+        return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58) and (
             19_740_000 <= boundary_ms <= 19_800_000 or 57_300_000 <= boundary_ms <= 57_600_000)
 
 
@@ -182,7 +201,7 @@ def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
     if type(number) is int and number == 49:
         from .strategy_forty_nine_contract import strategy_forty_nine_contract
         return strategy_forty_nine_contract()
-    if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56):
+    if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58):
         raise ValueError("No installed numbered fixed Backtest contract")
     return NumberedFixedStrategyContract(number)
 
@@ -194,7 +213,7 @@ def resolve_numbered_fixed_strategy(strategy_id: str, revision: int) -> Numbered
 
 
 def is_numbered_fixed_strategy(strategy_id: str, revision: int) -> bool:
-    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56)
+    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58)
 
 
 _SESSION_EXIT_REASONS = MappingProxyType({
@@ -233,7 +252,7 @@ _SESSION_EXIT_REASONS = MappingProxyType({
     47: "strategy_forty_seven_session_exit",
     48: "strategy_forty_eight_session_exit",
     49: "strategy_forty_nine_session_exit",
- 50: "strategy_fifty_session_exit", 51: "strategy_fifty_one_session_exit", 52: 'strategy_fifty_two_session_exit', 53: "strategy_fifty_three_session_exit", 54: "strategy_fifty_four_session_exit", 55: 'strategy_fifty_five_session_exit', 56: 'strategy_fifty_six_session_exit'})
+ 50: "strategy_fifty_session_exit", 51: "strategy_fifty_one_session_exit", 52: 'strategy_fifty_two_session_exit', 53: "strategy_fifty_three_session_exit", 54: "strategy_fifty_four_session_exit", 55: 'strategy_fifty_five_session_exit', 56: 'strategy_fifty_six_session_exit', 57: 'strategy_fifty_seven_session_exit', 58: 'strategy_fifty_eight_session_exit'})
 
 
 def numbered_session_exit_reason(strategy_number: int) -> str:

@@ -24,7 +24,7 @@ def validate_confirmed_ah_rows(
     from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE
     if max(len(rows), len(intents), len(events)) > 65_536:
         raise ValueError('AH confirmation graph exceeds its bounded family limit')
-    reasons = {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56)}
+    reasons = {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)}
     parents = {str(p['record_id']): p for p in intents if p['reason'] in reasons}
     event_map = {str(e['record_id']): e for e in events}
     if (len({str(p['record_id']) for p in intents}) != len(intents)

@@ -13,12 +13,12 @@ from .strategy_one_stateful import StrategyOneFinancialView
 def validate_witness(witness, *, strategy_number=9):
     if type(witness) is not FollowThroughFailure:
         raise ValueError("Follow-through exit requires the exact scalar witness")
-    if type(strategy_number) is not int or strategy_number not in (9, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56):
+    if type(strategy_number) is not int or strategy_number not in (9, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58):
         raise ValueError("Failure factory requires legacy or inherited quarter-risk witness authority")
     from .strategy_premarket_quarter_risk_failure import premarket_quarter_risk_failure
     from .strategy_persistent_risk_failure import persistent_risk_failure
     from .strategy_zero_regime_risk_failure import zero_regime_risk_failure
-    rule = (zero_regime_risk_failure if strategy_number in (30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56)
+    rule = (zero_regime_risk_failure if strategy_number in (30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
             else persistent_risk_failure if strategy_number == 29
             else premarket_quarter_risk_failure if strategy_number in (25, 26, 27, 28)
             else followthrough_failure)
@@ -27,7 +27,7 @@ def validate_witness(witness, *, strategy_number=9):
         witness.reference_ask, witness.initial_stop, witness.boundary_ms,
         witness.completed_close_int, True, witness.macd_line, witness.macd_signal,
         witness.bid, witness.ask, witness.quote_age_us, 1.0, False)
-    if strategy_number in (46, 47, 48, 50, 52, 53, 54, 55, 56):
+    if strategy_number in (46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58):
         from .declared_followthrough_failure import declared_followthrough_failure
         from .numbered_fixed_strategy import numbered_fixed_strategy
         actual = declared_followthrough_failure(

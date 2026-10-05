@@ -8,17 +8,17 @@ from pathlib import Path
 STRATEGY47_SOURCE_AST = {'src/trading_runtime/early_original_risk_failure.py': '1df39278ef45fd7392fa570702b836588c21274aa0eb36c3667477dbcef0dc89',
  'src/trading_runtime/declared_followthrough_failure.py': '68c2ed0f236db57cf07b557a331448b77a35de9c0645f5e7ec5adde51e1f9920',
  'src/trading_runtime/strategy_forty_seven_release.py': '3a359bd3944fc9d01e9fdd87362b67c7fe5a58728fdb04a3a3a7d33f01c9ca52',
- 'src/trading_runtime/strategy_followthrough_exit.py': 'cfac0ff13329deaa3d42cdbcd44035c46f52a1a9d00ea9649024a629b2dad4fc',
- 'src/trading_runtime/arte_followthrough_failure_v4.py': '6601fcafd78180d4eec1141df586fd918177db44b079ffbb6605e70885f090f7',
- 'src/trading_runtime/strategy_registry.py': '56a9a7e178c7c062e7948ba495621e250572c15bd5063fff960e8c41a5ead0c8',
- 'src/trading_runtime/numbered_fixed_strategy.py': '59e01acb2138459dfa819c6853b8096688c15d9307ed03e2b1e841ebe01042ab',
- 'src/backend/backtest_strategy_one_management.py': 'c4d3722667eb5024f09086f5e65ce258361028993a65eef2de6af69ff4f645a9',
- 'src/backend/backtest_strategy_one_configuration.py': '9fc30e92b34bb1690625dd63a3cd18bd0ddfb89497fd1df33c67bfec804fcb21',
- 'pipelines/strategy_one/configuration_publisher.py': 'b6a7ce44ff0729b0eac8aa0dd0f2eac355661b9c1a76f1d94f159be28c5813d1',
+ 'src/trading_runtime/strategy_followthrough_exit.py': '2467b54df4bacefead61db45065dc90aba6879559f8f1373fbc742834daf34c2',
+ 'src/trading_runtime/arte_followthrough_failure_v4.py': '991107a7d1f30074fabe4a58fe4b0812b6af42d855bcbb2eb617ff9a765f57b5',
+ 'src/trading_runtime/strategy_registry.py': '92a48a835437bd4678381a3587299c4e766b2f449bdf0510f43b115fe873fb60',
+ 'src/trading_runtime/numbered_fixed_strategy.py': 'd09416b3fd0398aaed3bfa3e5d03f2fb5e3dfc8e13a0a216cad0fc1f72a9b773',
+ 'src/backend/backtest_strategy_one_management.py': '81b15b9bb8f3feae00e4439f8edbbde89cfc3e9a445695bca70da1903010a05c',
+ 'src/backend/backtest_strategy_one_configuration.py': 'b01f2373be42bfad44440e742b8c5476f12512afa1a7834a089f7175238799e9',
+ 'pipelines/strategy_one/configuration_publisher.py': '425c546664cdbfc6f01dbd153c90014de1e260c3494033d790621ef81471662c',
  'pipelines/strategy_one/strategy_forty_seven_configuration.py': '7a173f89e555c7b32ba160f2433eef69b86cbf6f9b6e2d7c3a6d52b9730481f1',
  'scripts/clickhouse/publish_strategy_forty_seven_configuration.py': 'fab6815de650b142433fd92c90ffc2f90e316b236b145dfae60b7295ac6ec1da',
- 'src/trading_runtime/arte_entry_activity_v4.py': 'baa2f4ce4dcb37d23d720363e18b21790c7fb545d254544ad723a6db4a11601e',
- 'src/trading_runtime/arte_oms_projection.py': 'b31004ffbfa21fb7a697e89031911a853175033597903ea9e2ca2891ccebe35a'}
+ 'src/trading_runtime/arte_entry_activity_v4.py': '6d90b449905e58bf317c6353b87067cb4e8c46e66276725de22c44d9ca6a3d14',
+ 'src/trading_runtime/arte_oms_projection.py': '797fb4d6a314663d5c455eb8c1d0a712f6b94543b237a8d34da872b9076c37f6'}
 
 
 def certify_strategy_forty_seven_source(*, source_overrides=None):
