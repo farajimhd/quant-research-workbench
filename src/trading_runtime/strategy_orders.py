@@ -37,6 +37,44 @@ class StrategyOrderPlan:
     def broker_batches(self) -> tuple[tuple[OrderRequest, ...], ...]:
         return self.batches or ((self.orders,) if self.orders else ())
 
+    def with_lot_repair_pair(self, *, lot_id: str,
+                             pair: tuple[OrderRequest, OrderRequest]) -> StrategyOrderPlan:
+        """Preserve one acknowledged standalone target/stop OCA submission.
+
+        The caller owns durable dispatch and broker acknowledgements. This
+        immutable extension retains its exact batch for cold recovery; it does
+        not authorize a repair or infer ownership from the nearest target.
+        """
+        if (not lot_id or lot_id not in self.order_slice_ids
+                or not isinstance(pair, tuple) or len(pair) != 2
+                or any(not isinstance(order, OrderRequest) for order in pair)):
+            raise ValueError("Lot repair requires a known lot and complete typed pair")
+        target, stop = pair
+        old_ids = {order.cOID for order in self.orders}
+        if (target.orderType != "LMT" or stop.orderType not in {"STP", "STOP_LIMIT"}
+                or target.side != stop.side or target.side not in {"SELL", "BUY"}
+                or target.quantity != stop.quantity or target.quantity <= 0
+                or not math.isfinite(target.quantity)
+                or target.acctId != stop.acctId or target.conid != stop.conid
+                or target.ticker != stop.ticker or target.tif != stop.tif
+                or target.outsideRTH != stop.outsideRTH
+                or any(order.parentId or not order.isSingleGroup or not order.cOID
+                       or order.cOID in old_ids for order in pair)
+                or target.cOID == stop.cOID):
+            raise ValueError("Lot repair pair must retain independent OCA ownership")
+        owners = [order for order, identity in zip(self.orders, self.order_slice_ids, strict=True)
+                  if identity == lot_id]
+        if any(order.acctId != target.acctId or order.conid != target.conid
+               or order.ticker != target.ticker for order in owners):
+            raise ValueError("Lot repair cannot change account or instrument ownership")
+        targets = {order.price for order in owners
+                   if order.orderType == "LMT" and order.side == target.side}
+        if target.price not in targets:
+            raise ValueError("Lot repair cannot change its frozen target")
+        return replace(self, orders=(*self.orders, *pair),
+                       batches=(*self.broker_batches, pair),
+                       order_slice_ids=(*self.order_slice_ids, lot_id, lot_id))
+
 
 class IbkrStrategyOrderPlanner:
     """Translate semantic strategy intents into one IBKR-compatible order plan."""

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal as D
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -46,6 +47,28 @@ def test_actual_planner_preserves_total_quantity_and_independent_brackets():
         assert stop.auxPrice == 9.5
         assert all(order.outsideRTH for order in batch)
     assert plan.order_slice_ids == tuple(f"lot-{j}" for j in (1, 2, 3) for _ in range(3))
+
+
+def test_lot_repair_extension_preserves_oca_batch_and_original_plan():
+    plan = IbkrStrategyOrderPlanner().plan(account_id="DU1",
+        instrument=InstrumentContract("TEST", 123, "TEST", "STK", "USD"),
+        intent=request(), strategy_id="prepared-ladder", strategy_revision=1)
+    _, target, stop = plan.broker_batches[1]
+    pair = (replace(target, cOID="repair-target-2", parentId=None, quantity=5),
+            replace(stop, cOID="repair-stop-2", parentId=None, quantity=5))
+    extended = plan.with_lot_repair_pair(lot_id="lot-2", pair=pair)
+    assert len(plan.orders) == 9
+    assert len(extended.orders) == 11
+    assert extended.broker_batches[-1] == pair
+    assert extended.order_slice_ids[-2:] == ("lot-2", "lot-2")
+    with pytest.raises(ValueError):
+        extended.with_lot_repair_pair(lot_id="lot-2", pair=pair)
+    with pytest.raises(ValueError):
+        plan.with_lot_repair_pair(lot_id="lot-2",
+            pair=(replace(pair[0], acctId="OTHER"), pair[1]))
+    with pytest.raises(ValueError, match="frozen target"):
+        plan.with_lot_repair_pair(lot_id="lot-2",
+            pair=(replace(pair[0], price=10.25), pair[1]))
 
 
 def test_insufficient_quantity_cannot_create_empty_protected_lots():
