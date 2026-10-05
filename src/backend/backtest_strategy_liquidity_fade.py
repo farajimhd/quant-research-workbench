@@ -105,10 +105,10 @@ class CompiledLiquidityFadeLookup:
                 or type(plan.units) is not tuple or len(plan.units) > 65_536
                 or any(type(u) is not MarketDayUnit for u in plan.units)):
             raise ValueError('Liquidity lookup requires one independently certified native session')
-        if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39, 40, 41, 42, 46):
+        if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39, 40, 41, 42, 46, 47):
             raise ValueError('Liquidity lookup requires an exact supported strategy number')
         activity_column = 'liquidity_fade'
-        if strategy_number in (39, 40, 41, 42, 46):
+        if strategy_number in (39, 40, 41, 42, 46, 47):
             from .backtest_strategy_half_risk_liquidity_fade import (
                 HALF_RISK_ACTIVITY_FADE, compile_half_risk_liquidity_observations,
             )

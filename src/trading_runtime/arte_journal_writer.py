@@ -612,10 +612,10 @@ class V4StrategyOneEntryBatch:
             if (type(self.first_price_source) is not CertifiedPriceReadbackAuthority
                     or self.first_price_source.run_id != self.base.run_id):
                 raise ValueError('Strategy entry envelope has a foreign certified price source')
-        if (self.entry_activity_evidence or any(row['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46) for row in self.entry_evidence)):
+        if (self.entry_activity_evidence or any(row['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46, 47) for row in self.entry_evidence)):
             if getattr(self.first_price_source, 'entry_activity_source', None) is None:
                 raise ValueError('Strategy 36 entry envelope requires certified activity source')
-            if any(row['strategy_number'] in (37, 38, 39, 40, 41, 42, 46) for row in self.entry_evidence):
+            if any(row['strategy_number'] in (37, 38, 39, 40, 41, 42, 46, 47) for row in self.entry_evidence):
                 from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
                 if (type(self.first_price_source.entry_activity_source) is not EpisodeActivityReadbackAuthority
                         or any(row['strategy_number'] != self.first_price_source.entry_activity_source.strategy_number
@@ -4586,7 +4586,7 @@ class ArteJournalWriter:
         StrategyOneManagementRunner._validate_capture(
             state, max_pending_breaks=256)
         if first_price_source is not None or any(
-                proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46) for _, proposal in state.submitted):
+                proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47) for _, proposal in state.submitted):
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
             if (type(first_price_source) is not CertifiedPriceReadbackAuthority
                     or first_price_source.run_id != self._run_id

@@ -103,9 +103,9 @@ def numbered_liquidity_fade_failure(value: LiquidityFadeInput, *, strategy_numbe
     numbers cannot reach the additional predicate; Strategy39 considers it
     only when the unchanged parent liquidity predicate did not produce an exit.
     """
-    if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39, 40, 41, 42, 46):
+    if type(strategy_number) is not int or strategy_number not in (35,36,37,38,39, 40, 41, 42, 46, 47):
         raise ValueError('Liquidity failure requires an exact supported strategy number')
     inherited = liquidity_fade_failure(value)
-    if inherited is not None or strategy_number not in (39, 40, 41, 42, 46):
+    if inherited is not None or strategy_number not in (39, 40, 41, 42, 46, 47):
         return inherited
     return half_risk_liquidity_fade_failure(value)

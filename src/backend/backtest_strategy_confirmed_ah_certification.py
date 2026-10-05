@@ -5,14 +5,12 @@ import json
 from pathlib import Path
 
 
-CONFIRMED_AH_SOURCE_AST = {
-    'src/trading_runtime/strategy_confirmed_ah_risk_failure.py': 'caa9e0df4a6e24deaf542d686f912bd598d3a360df5f3131c666753e79bfc598',
-    'src/trading_runtime/strategy_confirmed_ah_failure_exit.py': '634a59cef1ce7d43a8ed5d16a11a421cffc9412c5612e21bd58f514d3a7c31a4',
-    'src/trading_runtime/strategy_confirmed_ah_failure_source.py': 'fe2f10d379b99247c59a4dfa2711f8cf79d846e3560405195160d07cd6d046f2',
-    'src/trading_runtime/arte_confirmed_ah_failure_v4.py': '4ebe0ca036591de681ad94e435051de37d2cd7bd406a40d583c3e8e8d0d2213e',
-    'src/trading_runtime/strategy_thirty_four_release.py': '16a38bfab06bf59baa162907010724b731e76301ab4dc4c86b1e6f61a907a24b',
-    'pipelines/strategy_one/strategy_thirty_four_configuration.py': '8fa2652ce8e4975a4ce97bc7ce6c39d9ba68fb8563ff8eb8471c6971af80e335',
-}
+CONFIRMED_AH_SOURCE_AST = {'src/trading_runtime/strategy_confirmed_ah_risk_failure.py': 'caa9e0df4a6e24deaf542d686f912bd598d3a360df5f3131c666753e79bfc598',
+ 'src/trading_runtime/strategy_confirmed_ah_failure_exit.py': 'b57af2b4c91d03c3d05537184cf2b1101f80ecffae89b60f7072f731d0bc441e',
+ 'src/trading_runtime/strategy_confirmed_ah_failure_source.py': '0a1d41feddb4e7922e9670a6216f6e267f1ec268ddde59e6b09b5272c3cc98db',
+ 'src/trading_runtime/arte_confirmed_ah_failure_v4.py': '317fa8d3170c2a845e3569085f3269dfbff797f6d26124d3838cefba0cafc21a',
+ 'src/trading_runtime/strategy_thirty_four_release.py': '16a38bfab06bf59baa162907010724b731e76301ab4dc4c86b1e6f61a907a24b',
+ 'pipelines/strategy_one/strategy_thirty_four_configuration.py': '8fa2652ce8e4975a4ce97bc7ce6c39d9ba68fb8563ff8eb8471c6971af80e335'}
 
 
 def certify_confirmed_ah_source(*, source_overrides=None):

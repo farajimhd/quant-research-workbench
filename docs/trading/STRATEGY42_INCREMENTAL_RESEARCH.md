@@ -87,6 +87,12 @@ additional AH early-risk rule runs after every inherited exit. Strategy42's
 normalized release remains unchanged. The new source certificate requires the
 complete inherited proof plus exact reviewed successor sources; source mutation
 tests reject changed modules. Native financial execution remains required.
+The first full-population PM26 and AH28 runs of published Strategy46 passed
+preflight but failed durable entry publication because the activity source-type
+map omitted46. They have no verified financial results. Strategy46's normalized
+release and approved source remain immutable. Strategy47 binds that exact
+published parent and preserves its economic rules while correcting entry-source
+and OMS projection admission. It requires fresh clean source approval and reruns.
 
 Next: publish the fresh immutable release from its clean approved source,
 execute saved PM parity and AH comparisons, then all 26 development sessions.

@@ -127,7 +127,7 @@ def project_confirmed_ah_failure(
 
 def restore_confirmed_ah_failure(row):
     """Scalar replay only; stored-row hash/prefix verification must precede it."""
-    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46):
+    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47):
         raise ValueError('AH confirmation requires Strategy 34 through 36')
     integers = {'boundary_ms', 'first_held_boundary_ms', 'completed_close_int', 'quote_age_us'}
     values = {}
