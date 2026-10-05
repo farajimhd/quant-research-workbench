@@ -72,7 +72,9 @@ def main():
       assert page.get_by_label('1b group',exact=True).input_value()
       page.get_by_label('1b group',exact=True).select_option('')
       with page.expect_response(lambda r:'/market-preview/chart' in r.url,timeout=300000):
-       boxes.get_by_role('button').first.click()
+       # Very small scores can produce a two-pixel box. Exercise its supported
+       # keyboard activation rather than clicking the SVG group's empty bounds.
+       episode=boxes.get_by_role('button').first;episode.focus();episode.press('Enter')
       page.get_by_role('button',name='Next 1s close',exact=True).wait_for()
       page.wait_for_function("()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Next 1s close')?.disabled")
       with page.expect_response(lambda r:'/market-preview/rows' in r.url,timeout=300000):
