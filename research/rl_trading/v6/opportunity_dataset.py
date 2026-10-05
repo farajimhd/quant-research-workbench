@@ -174,14 +174,21 @@ def verify_day(root, bank_hash=None, *, verify_files=True):
     return proof
 
 
-def require_dataset(path, *, runtime_root):
+def require_dataset(path, *, runtime_root, allow_extension=False):
     path, runtime = Path(path).resolve(), Path(runtime_root).resolve()
     if not path.is_relative_to(runtime): raise ValueError('Dataset escaped runtime')
     data = json.loads(path.read_text())
+    from research.rl_trading.v6.validation_split import dataset_split
+    extension=dataset_split(data,runtime)
+    if extension is not None and not allow_extension:raise ValueError('Generation-only extension is unavailable to training or public audit loaders')
+    expected=extension['days'] if extension else list(map(str,TRAIN+DEVELOPMENT))
+    expected_status='audited_validation_extension' if extension else 'audited_ready_for_training'
+    if extension and (data['context']['day']!=extension['context_day'] or
+        any(e['role']!=extension['roles'][e['day']] for e in data['days'])):raise ValueError('Extension roles changed')
     if (data.get('version') != VERSION or data.get('algorithm') != ALGORITHM or
-        data.get('status') != 'audited_ready_for_training' or data.get('sealed_test_accessed') is not False or
+        data.get('status') != expected_status or data.get('sealed_test_accessed') is not False or
         data.get('hash') != digest({k:v for k,v in data.items() if k != 'hash'}) or
-        [e['day'] for e in data['days']] != list(map(str, TRAIN+DEVELOPMENT))):
+        [e['day'] for e in data['days']] != expected):
         raise ValueError('Current V6 requires the complete new opportunity dataset; legacy labels rejected')
     audit_path=Path(data.get('publication_audit','')).resolve()
     if not audit_path.is_relative_to(runtime) or not audit_path.is_file() or file_hash(audit_path)!=data.get('publication_audit_sha256'):
@@ -292,12 +299,17 @@ def main(argv=None):
     parser.add_argument('--source-commit',help='Exact pushed commit for an immutable archive snapshot')
     parser.add_argument('--reuse-receipts-from-source',type=Path,
         help='Explicitly verify/reuse completed receipts from a compatible immutable producer snapshot; no new shards permitted')
+    parser.add_argument('--split-manifest',type=Path)
+    parser.add_argument('--context-dataset',type=Path,help='Reuse certified Aug25 context without recalculating it')
     args = parser.parse_args(argv)
     runtime=args.runtime_root.resolve(); output=args.output.resolve()
     if not runtime.is_dir() or not output.is_relative_to(runtime) or not 1<=args.workers<=16 or not 1<=args.listings_per_shard<=64:
         raise ValueError('Invalid runtime or bounded concurrency')
     source=json.loads(args.source_manifest.read_text()); roots=source['day_roots']
-    expected=list(map(str,CONTEXT_ONLY+TRAIN+DEVELOPMENT))
+    from research.rl_trading.v6.validation_split import read_split, generation_role
+    extension=read_split(args.split_manifest) if args.split_manifest else None
+    expected=[extension['context_day']]+extension['days'] if extension else list(map(str,CONTEXT_ONLY+TRAIN+DEVELOPMENT))
+    if extension and not args.context_dataset:raise ValueError('Certified original context dataset required')
     if source.get('version')!='rl-trading-v6-forward-candle-day-roots' or sorted(roots)!=expected:
         raise ValueError('Inventory must contain all 19 saved forward banks; sealed holdout excluded')
     config=asdict(Config()); output.mkdir(parents=True,exist_ok=True)
@@ -338,6 +350,11 @@ def main(argv=None):
         write_json(state_path,state); print(json.dumps(state),flush=True)
     previous=None
     for day in expected[:1] if args.canary else expected:
+        if extension and day==extension['context_day']:
+            original=require_dataset(args.context_dataset,runtime_root=runtime)
+            entry=next(e for e in original['days'] if e['day']==day)
+            if Path(roots[day]).resolve()!=Path(entry['bank_root']).resolve():raise ValueError('Context bank differs from original publication')
+            records.append(entry);previous=day;continue
         root=Path(roots[day]).resolve()
         if not root.is_relative_to(runtime): raise ValueError('Bank escaped runtime')
         progress(status='verifying_bank',day=day,active=0,queued=0,completed=0)
@@ -359,7 +376,7 @@ def main(argv=None):
         finally:
             client.close()
         tickers = {r['listing_id']:r['ticker'] for r in population}
-        session=open_session(root,runtime_root=runtime,previous_root=Path(roots[previous]) if previous else None)
+        session=open_session(root,runtime_root=runtime,previous_root=Path(roots[previous]) if previous else None,split_manifest=args.split_manifest)
         bank_hash=file_hash(root/'complete.json'); config_hash=digest(config)
         binding=dict(day=day,bank_certificate_sha256=bank_hash,bank_manifest_sha256=file_hash(root/'bank'/'complete.json'),config_hash=config_hash,
             producer_sha256={name:file_hash(producer/name) for name in ('opportunity_dataset.py','price_action_opportunities.py','price_action_labels.py','episode_liquidity.py')},
@@ -394,7 +411,7 @@ def main(argv=None):
                 progress(status='generating',day=day,active=len(pending),queued=len(tasks)-completed-len(pending),completed=completed,total=len(tasks))
         receipts.sort(key=lambda r:r['path'])
         totals={k:sum(r['receipt'][k] for r in receipts) for k in ('activity_rows','valid_rows','invalid_price_rows')}
-        proof=dict(version=DAY_VERSION,algorithm=ALGORITHM,status=STATUS,day=day,role=role(date.fromisoformat(day)),
+        proof=dict(version=DAY_VERSION,algorithm=ALGORITHM,status=STATUS,day=day,role=generation_role(date.fromisoformat(day),extension),
             bank_certificate_sha256=bank_hash,binding=binding,config=config,identities=identities,
             shards=[{k:v for k,v in r.items() if k!='receipt'} for r in receipts],sealed_test_accessed=False,
             raw_value_units='dollars_per_share',value_head_conversion='entry_gain/current_close*10000; exit_gain/reference_entry*10000; no fees',
@@ -406,12 +423,17 @@ def main(argv=None):
     if args.canary:
         progress(status='canary_complete',active=0,queued=0,completed=len(records)); return
     data=dict(version=VERSION,algorithm=ALGORITHM,status='audited_ready_for_training',sealed_test_accessed=False,
-        days=[r for r in records if r['role']!='context_only'],context=records[0],ranking=dict(top_r=1000,sort_secs=1,market_tokens=8,heads=4),
+        days=records[1:],context=records[0],ranking=dict(top_r=1000,sort_secs=1,market_tokens=8,heads=4),
         label_root=str(output),config=config,raw_value_units='dollars_per_share',source_manifest_sha256=file_hash(args.source_manifest),
         activity_source=dict(manifest=str(args.bar_manifest.resolve()),manifest_sha256=file_hash(args.bar_manifest),ledger=str(args.bar_ledger.resolve())))
+    if extension:
+        data['status']='audited_validation_extension'
+        data['validation_split']=dict(path=str(args.split_manifest.resolve()),sha256=file_hash(args.split_manifest),hash=extension['hash'])
+        data['sealed_labels_generated']=True
+        data['sealed_access_policy']=extension['sealed_policy']
     data['hash']=digest(data); write_json(output/'dataset.json',data)
     from research.rl_trading.v6.audit_opportunity_dataset import audit_and_publish
-    audit_and_publish(output/'dataset.json',runtime_root=runtime)
+    audit_and_publish(output/'dataset.json',runtime_root=runtime,publish=not bool(extension))
     progress(status='complete',active=0,queued=0,completed=len(records),totals={k:sum(r[k] for r in records) for k in ('activity_rows','valid_rows','invalid_price_rows')})
 
 

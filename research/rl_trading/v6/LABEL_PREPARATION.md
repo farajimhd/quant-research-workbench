@@ -40,7 +40,7 @@ prediction head, changing its losses, or exposing hindsight in input features.
 The repaired NVDA RTH preview is experimental; full-session certified labels
 remain exclusively behind the active registry after publication audit.
 
-Research → **Current V6 labels** reads `rl-v6-active-labels.json` and its
+Research â†’ **Current V6 labels** reads `rl-v6-active-labels.json` and its
 published dataset/audit certificates from the workstation runtime. Select
 any of the 19 saved sessions and a ticker/listing. The three existing Canvas
 containers show algorithm/timing, session/pair statistics, and saved candles
@@ -105,9 +105,9 @@ The same command and exact producer source resume verified completed shards.
 
 The complete workstation repair is launched with
 `python -B research/rl_trading/v6/run_reporting_repair.py --source-commit FULL_PUSHED_SHA`.
-It awaits an existing July migration, verifies all 56 certified July–September
+It awaits an existing July migration, verifies all 56 certified Julyâ€“September
 source sessions, runs an NVDA/AAPL bar canary and independent audit, rebuilds
-the existing July 30–September 18 market-day range immutably, audits the full
+the existing July 30â€“September 18 market-day range immutably, audits the full
 population's stage counts and representative OHLC/MACD, then regenerates the
 19 V6 banks and labels. It never trains. `progress.json` and per-stage logs
 live beneath `D:/TradingML/runtimes/rl-v6-reporting-repair-20261002`; failures
@@ -186,7 +186,7 @@ Universe policy rl-v6-us-exchange-listed-stocks-v1 independently verifies canoni
 
 ## Isolated supervised 1b preview
 
-Research → **1b selection & sizing** exposes a provisional session preview,
+Research â†’ **1b selection & sizing** exposes a provisional session preview,
 without publishing training data or changing approved 1a labels. Prepare one
 approved session with frozen settings, then inspect selected/rejected pairs,
 group members, cash ratios and exact original/copied candle targets.
@@ -196,7 +196,7 @@ For fee `f` per share per side, score is `(entry_gain - 2*f)/(close + f)`.
 uses `score > m*2*f/(close + f)`; `m=2, f=0.005` means `entry_gain > 0.03`.
 Selection now requires both the strict fee floor and `score >= 0.001` (0.1%)
 by default. The 0.1% return floor is user-approved for the preview; full
-extraction still awaits grouping validation. Each listing/S→L pair
+extraction still awaits grouping validation. Each listing/Sâ†’L pair
 contributes its first qualifying **existing 1a ENTRY**, once, rather than all
 qualifying candle rows. Rejected pairs retain their best ENTRY candidate for
 the decision audit; liquidity rejection and absence of 1a ENTRY are explicit.
@@ -296,3 +296,24 @@ Candle actions, probabilities and sizing targets read the hash-verified copied
 1b shard directly, with optional original 1a markers. Historical/experiment tabs
 are removed; obsolete workspace selections return to 1a. Publication changes
 require reloading, and sessions outside the approved dataset fail closed.
+
+## Seven-session validation extension
+
+`run_validation_extension.py` accepts an explicit frozen random split for the
+seven sessions Aug26-Sep3. Four are development and three sealed test. This
+user-authorized randomized holdout replaces the earlier test arrangement; it
+is not a strictly later chronological holdout. No training is started.
+
+The campaign reuses the certified repaired bars, retains the exact existing
+Aug25 bank/1a context, builds all seven full scoped feature banks, generates
+1a, and copies/suppresses/sizes 1b using unchanged approved equations. All
+shards receive the existing full integrity/source recomputation audits.
+Sealed generation and mechanical integrity reads are explicitly authorized;
+`sealed_test_accessed=false` refers to model selection/performance inspection,
+not to those producer reads. `sealed_labels_generated=true` records production.
+
+Extension datasets are separate generation-only artifacts. The default
+training and published Research loaders reject them, and neither active
+1a nor 1b registry is replaced. A future development-only UI publication must
+filter sealed dates explicitly. Split/roles/source hashes are pinned, and
+resume never changes the random draw or recalculates certified bar products.
