@@ -12,6 +12,7 @@ from .backtest_strategy_first_price_source import CertifiedFirstPriceSource
 from .backtest_strategy_initial_price_break import stage_initial_price_break_plan
 from .backtest_strategy_rising_momentum import _frozen
 from .backtest_strategy_initial_ten_percent import CertifiedInitialTenPercentPlan
+from .backtest_declared_initial_momentum import CertifiedDeclaredInitialMomentumPlan
 from src.trading_runtime.strategy_initial_price_break import (
     FirstSetupPriceBreakWitness, PREMARKET_END_MS, first_setup_price_break,
 )
@@ -122,9 +123,15 @@ def compile_certified_price_static_gate(plan):
         raise ValueError('Price static gate requires exact certified plan')
     parent = plan.source.parent
     relaxed = type(parent) is CertifiedInitialTenPercentPlan
-    inherited = compile_static_entry_gate(plan.candidates, plan.entry,
-        strategy_number=18 if relaxed else 19, momentum_plan=plan.momentum,
-        initial_momentum_plan=parent.initial if relaxed else parent)
+    if type(parent) is CertifiedDeclaredInitialMomentumPlan:
+        inherited = compile_static_entry_gate(plan.candidates, plan.entry, strategy_number=12)
+        inherited = StrategyOneStaticGate(inherited.facts,
+            inherited.rejection_mask | ((~parent.eligible_mask).astype(np.uint8) * INITIAL_MOMENTUM_REQUIRED),
+            np.flatnonzero((inherited.rejection_mask == 0) & parent.eligible_mask).astype(np.int64))
+    else:
+        inherited = compile_static_entry_gate(plan.candidates, plan.entry,
+            strategy_number=18 if relaxed else 19, momentum_plan=plan.momentum,
+            initial_momentum_plan=parent.initial if relaxed else parent)
     reasons = inherited.rejection_mask | (
         (~plan.eligible_mask).astype(np.uint8) * INITIAL_MOMENTUM_REQUIRED)
     return StrategyOneStaticGate(inherited.facts, reasons,
@@ -176,7 +183,7 @@ class CertifiedPriceReadbackAuthority:
         seen = set()
         month = self.plan.source.market.sessions[0][:7] + '-01'
         for row in entries:
-            if row['strategy_number'] not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58):
+            if row['strategy_number'] not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
                 continue
             _source_parent_number(self.plan, row['strategy_number'])
             parent = row['parent_record_id']
@@ -203,10 +210,19 @@ def _source_parent_number(plan, strategy_number):
     """Bind the staged number to its exact first-momentum source policy."""
     if (type(plan) is not CertifiedInitialPriceBreakPlan
             or type(strategy_number) is not int
-            or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)):
+            or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)):
         raise ValueError('Price binding requires exact certified plan and staged number')
+    from src.trading_runtime.entry_momentum_growth import declared_momentum_policy
+    policy = declared_momentum_policy(strategy_number)
+    if policy is not None:
+        parent = plan.source.parent
+        if type(parent) is not CertifiedDeclaredInitialMomentumPlan or parent.policy != policy:
+            raise ValueError('Price binding declared momentum source policy differs')
+        return strategy_number
+    if type(plan.source.parent) is CertifiedDeclaredInitialMomentumPlan:
+        raise ValueError('Legacy price policy cannot consume declared momentum source')
     relaxed = type(plan.source.parent) is CertifiedInitialTenPercentPlan
-    if relaxed != (strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)):
+    if relaxed != (strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)):
         raise ValueError('Price binding number differs from first-momentum source policy')
     # Both existing scalar factories use the same financial and execution
     # checks. Only 19 adds the 50% first-setup requirement. Nothing is submitted
@@ -223,7 +239,7 @@ def bind_certified_price_break_proposal(plan, proposal, *, strategy_number=20):
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
     parent_number = _source_parent_number(plan, strategy_number)
-    if (type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
+    if (type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
             or type(plan) is not CertifiedInitialPriceBreakPlan
             or type(proposal) is not StrategyOneEntryProposal
             or proposal.strategy_number != parent_number or type(proposal.strategy_number) is not int):
@@ -234,10 +250,11 @@ def bind_certified_price_break_proposal(plan, proposal, *, strategy_number=20):
             or proposal.initial_momentum != parent.selection_witness(*key)):
         raise ValueError('Price proposal differs from original parent source selection')
     # Reuse complete scalar intent validation without routing or submitting it.
-    strategy_one_entry_intent(proposal, session_date=date.fromisoformat(plan.source.market.sessions[0]))
+    strategy_one_entry_intent(replace(proposal, first_price=None, price_source_token=None) if type(parent) is CertifiedDeclaredInitialMomentumPlan else proposal, session_date=date.fromisoformat(plan.source.market.sessions[0]))
     selection = plan.selection_witness(*key)
-    return replace(proposal, strategy_number=strategy_number, initial_momentum=selection,
+    bound = replace(proposal, strategy_number=strategy_number, initial_momentum=selection,
                    first_price=plan.price_witness(*key), price_source_token=plan.source.token)
+    return bound
 
 
 def propose_certified_price_entry(plan, candidate, fact, activation, financial, *, reentry=None,
@@ -250,7 +267,7 @@ def propose_certified_price_entry(plan, candidate, fact, activation, financial, 
     """
     from .backtest_strategy_one_stateful import propose_certified_strategy_one_entry
     if (type(plan) is not CertifiedInitialPriceBreakPlan
-            or type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)):
+            or type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)):
         raise ValueError('Price financial decision requires exact certified plan')
     parent_number = _source_parent_number(plan, strategy_number)
     key = (fact.ticker, fact.boundary_ms)
@@ -294,7 +311,7 @@ def project_certified_price_entry(plan, proposal, *, run_id, batch_id,
     )
     if (type(plan) is not CertifiedInitialPriceBreakPlan
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)):
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)):
         raise ValueError('Price projection requires exact certified20 proposal')
     key = (proposal.ticker, proposal.boundary_ms)
     original = replace(proposal, strategy_number=_source_parent_number(plan, proposal.strategy_number), first_price=None, price_source_token=None,
@@ -325,7 +342,7 @@ def restore_certified_price_proposal(source, proposal, rows, *, parent_record_id
     from uuid import UUID
     if (type(source) is not CertifiedPriceReadbackAuthority
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)):
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)):
         raise ValueError('Price recovery requires exact certified source and20 reference')
     if proposal.first_price is not None or proposal.price_source_token is not None:
         raise ValueError('Price recovery reference already carries price evidence')
@@ -366,7 +383,7 @@ def certified_price_entry_intent(plan, proposal, *, session_date):
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
     if (type(plan) is not CertifiedInitialPriceBreakPlan
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
             or type(session_date) is not date
             or session_date.isoformat() != plan.source.market.sessions[0]):
         raise ValueError('Price intent requires exact certified20 proposal and session')

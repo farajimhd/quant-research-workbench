@@ -116,6 +116,10 @@ def test_entry_cost_extension_preserves_existing_ladder_terminal_route(monkeypat
     from src.backend.typed_backtest_review_core import AuditedSessionCache
 
     context = {**_context(), 'strategy_revision': number, 'configuration_hash': 'a' * 64}
+    # This fixture already supplies the selected read-only profile. Production
+    # clients obtain it from the declared whole-operation reader scope.
+    client = Client()
+    client.automatic_ladder_profile = True
     release = SimpleNamespace(payload_hash='a' * 64)
     market = SimpleNamespace(close=lambda: None)
     source = object()
@@ -139,7 +143,7 @@ def test_entry_cost_extension_preserves_existing_ladder_terminal_route(monkeypat
         return None
     monkeypatch.setattr(review, 'load_verified_v4_prefix', prefix)
     with pytest.raises(ValueError, match='cold-verified terminal'):
-        review._terminal_attestation(Client(), RUN, AuditedSessionCache())
+        review._terminal_attestation(client, RUN, AuditedSessionCache())
     assert calls == ['release', 'ladder_source', 'prefix']
 
 @pytest.mark.parametrize('number',[57,58])

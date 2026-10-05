@@ -10,6 +10,7 @@ import numpy as np
 
 from .backtest_strategy_initial_momentum_growth import CertifiedInitialMomentumGrowthPlan
 from .backtest_strategy_initial_ten_percent import CertifiedInitialTenPercentPlan
+from .backtest_declared_initial_momentum import CertifiedDeclaredInitialMomentumPlan
 from .backtest_strategy_rising_momentum import _frozen
 from src.trading_runtime.strategy_initial_price_break import (
     POLICY_ID, first_setup_price_break_mask,
@@ -17,7 +18,7 @@ from src.trading_runtime.strategy_initial_price_break import (
 
 
 def _selection(parent, observations):
-    if type(parent) not in (CertifiedInitialMomentumGrowthPlan, CertifiedInitialTenPercentPlan):
+    if type(parent) not in (CertifiedInitialMomentumGrowthPlan, CertifiedInitialTenPercentPlan, CertifiedDeclaredInitialMomentumPlan):
         raise ValueError('Price refinement requires an exact certified first-momentum parent')
     if type(observations) is not tuple or len(observations) != 6:
         raise ValueError('Price refinement requires six aligned native producer columns')

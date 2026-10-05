@@ -6,11 +6,13 @@ from pathlib import Path
 
 EPISODE_ACTIVITY_SOURCE_AST = {'src/trading_runtime/strategy_episode_activity_veto.py': 'cb96806e4594bdb2b087b1c12925ee80d296e1313984dce6329f3eee4b911e06',
  'src/backend/backtest_strategy_episode_activity_gate.py': '43eaa3e95701f32ab02f5af501ca0e019b03ed91badb8f1bcb62ced3918510b5',
- 'src/backend/backtest_strategy_episode_activity_source.py': '92c1b9abdeb35321976d00e665a2b7dfd0fae8b7018d497edc771244052dd546',
+ 'src/backend/backtest_strategy_episode_activity_source.py': '0a1bb6874e6e36d377909dfad350b700095637e90cedc4bd4ac426ec9d891444',
  'src/trading_runtime/strategy_thirty_seven_release.py': '6966c161682e06421a8a0112980a3a487ac4485ca9d2d86700d6621ef3687892',
  'pipelines/strategy_one/strategy_thirty_seven_configuration.py': 'a4af45a5b3a4caca5de7eeee6f56cde807013fee3ec1f4e462e0a0f9027c29fa',
- 'pipelines/strategy_one/configuration_publisher.py': '425c546664cdbfc6f01dbd153c90014de1e260c3494033d790621ef81471662c',
- 'scripts/clickhouse/publish_strategy_thirty_seven_configuration.py': 'd7489b4edacd0a96aaf3521f189151398a832e3d60c04c5f402d4652c7ee2825'}
+ 'pipelines/strategy_one/configuration_publisher.py': 'bebbde79b2ad694092222e96d4e09bd50cb3579295a9ca85bf2fcbcb8ff6dc1f',
+ 'scripts/clickhouse/publish_strategy_thirty_seven_configuration.py': 'd7489b4edacd0a96aaf3521f189151398a832e3d60c04c5f402d4652c7ee2825',
+ 'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c',
+ 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'}
 
 
 def certify_episode_activity_source(*, source_overrides=None):

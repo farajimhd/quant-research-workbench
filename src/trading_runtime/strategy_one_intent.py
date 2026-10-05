@@ -6,6 +6,7 @@ published strategy number is immutable; a behavior change gets a new number.
 Proposal evidence needs its own normalized journal family before launch.
 """
 from __future__ import annotations
+from .entry_momentum_growth import selected_initial_entry, declared_momentum_policy, observation_entry
 
 from datetime import date, datetime, time, timedelta, timezone
 from math import isfinite
@@ -17,7 +18,7 @@ from .execution_policies import (
     PartialFillPolicy, ProtectionProfile, ProtectionSlice, StopRule,
     StopRuleType,
 )
-from .numbered_fixed_strategy import numbered_fixed_strategy
+from .numbered_fixed_strategy import numbered_fixed_strategy, is_numbered_fixed_strategy, STRATEGY_ID
 from .signals import CapitalRequest, StrategyIntent
 from .strategy_one_stateful import StrategyOneEntryProposal
 from .strategy_one_add import StrategyOneAddProposal
@@ -49,10 +50,14 @@ def strategy_one_entry_intent(
     No proposal-only evidence is hidden in metadata, reason or an opaque blob.
     The caller must journal that evidence separately before routing this intent.
     """
+    policy = (declared_momentum_policy(proposal.strategy_number)
+              if isinstance(proposal, StrategyOneEntryProposal)
+              and is_numbered_fixed_strategy(STRATEGY_ID, proposal.strategy_number)
+              else None)
     if (not isinstance(proposal, StrategyOneEntryProposal)
             or not isinstance(session_date, date)
             or isinstance(session_date, datetime)
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+            or type(proposal.strategy_number) is not int or (policy is None and proposal.strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19))
             or type(proposal.boundary_ms) is not int
             or not 0 < proposal.boundary_ms <= 57_600_000
             or proposal.boundary_ms % 100
@@ -69,12 +74,12 @@ def strategy_one_entry_intent(
         raise ValueError("Strategy 1 intent needs an exact numbered proposal and session")
     if proposal.first_price is not None or proposal.price_source_token is not None:
         raise ValueError("Installed entry cannot carry unpublished first-price evidence")
-    if proposal.strategy_number in (12, 13, 14, 15, 16, 17, 18, 19):
+    if policy is not None or proposal.strategy_number in (12, 13, 14, 15, 16, 17, 18, 19):
         from .strategy_recent_bos_entry import recent_bos_entry
         if not recent_bos_entry(boundary_ms=proposal.boundary_ms,
                                 bos_break_boundary_ms=proposal.bos_break_boundary_ms):
             raise ValueError("Strategy 12 entry requires recent supported BOS")
-    if proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19):
+    if policy is not None or proposal.strategy_number in (13, 14, 15, 16, 17, 18, 19):
         from .strategy_rising_momentum_witness import numbered_momentum_entry
         if (not numbered_momentum_entry(proposal.momentum, proposal.strategy_number)
                 or proposal.momentum.ticker != proposal.ticker
@@ -82,13 +87,13 @@ def strategy_one_entry_intent(
             raise ValueError("Strategy 13 entry requires rising completed momentum")
     elif proposal.momentum is not None:
         raise ValueError("Old numbered entry cannot carry Strategy 13 momentum witness")
-    if proposal.strategy_number in (18, 19):
+    if policy is not None or proposal.strategy_number in (18, 19):
         from .strategy_initial_strong_momentum import (
             validate_initial_momentum_selection, initial_strong_momentum_entry,
         )
         validate_initial_momentum_selection(proposal.momentum, proposal.initial_momentum,
                                            episode_start_ms=proposal.episode_start_ms)
-        if not initial_strong_momentum_entry(proposal.momentum, proposal.initial_momentum.initial):
+        if not selected_initial_entry(proposal.momentum, proposal.initial_momentum.initial, proposal.strategy_number):
             raise ValueError("Strategy 18 entry requires strong initial completed momentum")
         if proposal.strategy_number == 19:
             from .strategy_initial_momentum_growth import first_setup_momentum_growth_entry

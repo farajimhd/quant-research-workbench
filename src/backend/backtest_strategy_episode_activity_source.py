@@ -24,9 +24,10 @@ class EpisodeActivityReadbackAuthority:
     def __post_init__(self):
         if (type(self.run_id) is not str or not self.run_id
                 or type(self.gate) is not EpisodeActivityStaticGate
-                or type(self.strategy_number) is not int or self.strategy_number not in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)):
+                or type(self.strategy_number) is not int or self.strategy_number not in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)):
             raise ValueError('Episode activity readback requires exact run and certified gate')
-        _source_parent_number(self.gate.activity.parent, 35)
+        from src.trading_runtime.entry_momentum_growth import declared_momentum_policy
+        _source_parent_number(self.gate.activity.parent, self.strategy_number if declared_momentum_policy(self.strategy_number) is not None else 35)
 
     @property
     def plan(self):
@@ -75,7 +76,7 @@ def certified_episode_activity_witness(authority, proposal, *, session_date):
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     if (type(authority) is not CertifiedPriceReadbackAuthority
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
             or type(session_date) is not date
             or type(authority.entry_activity_source) is not EpisodeActivityReadbackAuthority
             or proposal.strategy_number != authority.entry_activity_source.strategy_number
@@ -109,9 +110,12 @@ def bind_episode_activity_proposal(authority, parent_proposal, *, session_date):
     """
     from .backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority, certified_price_entry_intent
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+    from src.trading_runtime.entry_momentum_growth import declared_momentum_policy
+    selected_number = authority.entry_activity_source.strategy_number if type(authority) is CertifiedPriceReadbackAuthority and type(authority.entry_activity_source) is EpisodeActivityReadbackAuthority else None
+    parent_number = selected_number if selected_number is not None and declared_momentum_policy(selected_number) is not None else 36
     if (type(authority) is not CertifiedPriceReadbackAuthority
             or type(parent_proposal) is not StrategyOneEntryProposal
-            or type(parent_proposal.strategy_number) is not int or parent_proposal.strategy_number != 36):
+            or type(parent_proposal.strategy_number) is not int or parent_proposal.strategy_number != parent_number):
         raise ValueError('Episode proposal requires exact certified Strategy36 parent')
     certified_price_entry_intent(authority.plan, parent_proposal, session_date=session_date)
     if type(authority.entry_activity_source) is not EpisodeActivityReadbackAuthority:
@@ -125,7 +129,8 @@ def certified_episode_entry_intent(authority, proposal, *, session_date):
     """Create one Strategy37 identity after parent rebinding and prefix proof."""
     from .backtest_strategy_certified_price_break import certified_price_entry_intent
     certified_episode_activity_witness(authority, proposal, session_date=session_date)
-    parent = replace(proposal, strategy_number=36)
+    from src.trading_runtime.entry_momentum_growth import declared_momentum_policy
+    parent = replace(proposal, strategy_number=proposal.strategy_number if declared_momentum_policy(proposal.strategy_number) is not None else 36)
     # The parent intent factory performs complete native rebinding itself.
     # Avoid repeating that work through the proposal adapter on each entry.
     intent = certified_price_entry_intent(authority.plan, parent, session_date=session_date)

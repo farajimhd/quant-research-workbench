@@ -9,6 +9,7 @@ import pyarrow as pa
 from .backtest_market_data import CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS, _literal, assert_select_only
 from .backtest_strategy_initial_momentum_growth import CertifiedInitialMomentumGrowthPlan
 from .backtest_strategy_initial_ten_percent import CertifiedInitialTenPercentPlan
+from .backtest_declared_initial_momentum import CertifiedDeclaredInitialMomentumPlan
 from .backtest_strategy_initial_price_break import stage_initial_price_break_plan
 from .backtest_strategy_rising_momentum import _frozen
 from src.trading_runtime.strategy_initial_price_break import PREMARKET_END_MS
@@ -46,7 +47,7 @@ class CertifiedFirstPriceSource:
 
 def _authority(market, parent):
     if (type(market) is not CertifiedMarketDayPlan
-            or type(parent) not in (CertifiedInitialMomentumGrowthPlan, CertifiedInitialTenPercentPlan)
+            or type(parent) not in (CertifiedInitialMomentumGrowthPlan, CertifiedInitialTenPercentPlan, CertifiedDeclaredInitialMomentumPlan)
             or len(market.sessions) != 1
             or 1000 not in market.required_resolutions_ms
             or market.build_id != parent.momentum.source_build_id

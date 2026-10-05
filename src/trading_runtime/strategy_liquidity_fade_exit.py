@@ -17,9 +17,9 @@ REASON = "strategy_thirty_five_liquidity_fade_failure"
 
 def liquidity_fade_reason(strategy_number):
     """Number the intent without changing its independently verified exit rule."""
-    if type(strategy_number) is not int or strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58):
+    if type(strategy_number) is not int or strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
         raise ValueError('Liquidity fade exit requires Strategy 35 through 42')
-    return {35: REASON, 36: 'strategy_thirty_six_liquidity_fade_failure', 37: 'strategy_thirty_seven_liquidity_fade_failure', 38: 'strategy_thirty_eight_liquidity_fade_failure', 39: 'strategy_thirty_nine_liquidity_fade_failure', 40: 'strategy_forty_liquidity_fade_failure', 41: 'strategy_forty_one_liquidity_fade_failure', 42: 'strategy_forty_two_liquidity_fade_failure', 46: 'strategy_forty_six_liquidity_fade_failure', 47: 'strategy_forty_seven_liquidity_fade_failure', 48: 'strategy_forty_eight_liquidity_fade_failure', 50: 'strategy_fifty_liquidity_fade_failure', 52: 'strategy_fifty_two_liquidity_fade_failure', 53: 'strategy_fifty_three_liquidity_fade_failure', 54: 'strategy_fifty_four_liquidity_fade_failure', 55: 'strategy_fifty_five_liquidity_fade_failure', 56: 'strategy_fifty_six_liquidity_fade_failure', 57: 'strategy_fifty_seven_liquidity_fade_failure', 58: 'strategy_fifty_eight_liquidity_fade_failure'}[strategy_number]
+    return {35: REASON, 36: 'strategy_thirty_six_liquidity_fade_failure', 37: 'strategy_thirty_seven_liquidity_fade_failure', 38: 'strategy_thirty_eight_liquidity_fade_failure', 39: 'strategy_thirty_nine_liquidity_fade_failure', 40: 'strategy_forty_liquidity_fade_failure', 41: 'strategy_forty_one_liquidity_fade_failure', 42: 'strategy_forty_two_liquidity_fade_failure', 46: 'strategy_forty_six_liquidity_fade_failure', 47: 'strategy_forty_seven_liquidity_fade_failure', 48: 'strategy_forty_eight_liquidity_fade_failure', 50: 'strategy_fifty_liquidity_fade_failure', 52: 'strategy_fifty_two_liquidity_fade_failure', 53: 'strategy_fifty_three_liquidity_fade_failure', 54: 'strategy_fifty_four_liquidity_fade_failure', 55: 'strategy_fifty_five_liquidity_fade_failure', 56: 'strategy_fifty_six_liquidity_fade_failure', 57: 'strategy_fifty_seven_liquidity_fade_failure', 58: 'strategy_fifty_eight_liquidity_fade_failure', 59: 'strategy_fifty_nine_liquidity_fade_failure', 60: 'strategy_sixty_liquidity_fade_failure', 61: 'strategy_sixty_one_liquidity_fade_failure'}[strategy_number]
 
 
 def validate_liquidity_fade_witness(witness, *, strategy_number=35):
@@ -28,7 +28,7 @@ def validate_liquidity_fade_witness(witness, *, strategy_number=35):
         HalfRiskLiquidityFadeFailure, numbered_liquidity_fade_failure,
     )
     liquidity_fade_reason(strategy_number)
-    allowed = (LiquidityFadeFailure, HalfRiskLiquidityFadeFailure) if strategy_number in (39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58) else (LiquidityFadeFailure,)
+    allowed = (LiquidityFadeFailure, HalfRiskLiquidityFadeFailure) if strategy_number in (39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) else (LiquidityFadeFailure,)
     if type(witness) not in allowed:
         raise ValueError("Liquidity fade exit requires its complete typed witness")
     w = witness
