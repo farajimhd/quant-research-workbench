@@ -142,6 +142,9 @@ def start(day, config):
 
 def status(job):
     if job not in JOBS:raise ValueError("Preview job unavailable; prepare again")
+    meta=source.read_json(ROOT/(job+'.json')) if (ROOT/(job+'.json')).exists() else {}
+    if meta.get('published_1b') and source.read_json(source.runtime()/'rl-v6-active-market-teacher.json')['sha256']!=meta['dataset_sha256']:
+        raise ValueError('1b publication changed; reload labels')
     return dict(JOBS[job])
 
 def result(job,group_id=None,search="",offset=0,selection="all"):
@@ -159,6 +162,9 @@ def positive_rows(job,time_us=None,search="",selection="all",minimum_score=0.,of
     if status(job)["status"]!="complete":raise ValueError("Preview not ready")
     if selection not in ("all","selected","rejected"):raise ValueError("Invalid selection filter")
     meta=source.read_json(ROOT/(job+".json"));cache=ROOT/meta["source_input_key"]
+    if meta.get('published_1b'):
+        from research.rl_trading.v6.published_market_audit import ensure_candidates
+        ensure_candidates(meta)
     receipt=source.read_json(cache/"complete.json")
     rows=pl.read_parquet(source.verified_local(cache/"candidates.parquet",receipt["candidates_sha256"]))
     decisions=pl.read_parquet(source.verified_local(ROOT/(job+".parquet"),meta["decisions_sha256"]))
@@ -202,6 +208,9 @@ def candidate_window(rows,decisions,config,time_us=None,search="",selection="all
 def chart(job,listing_id,start_us):
     if status(job)["status"]!="complete":raise ValueError("Preview not ready")
     meta=source.read_json(ROOT/(job+".json"))
+    if meta.get('published_1b'):
+        from research.rl_trading.v6.published_market_audit import chart as saved_chart
+        return saved_chart(meta,listing_id,start_us)
     active,_=source.published()
     if active["sha256"]!=meta["dataset_sha256"]:raise ValueError("1a publication changed")
     decisions=pl.read_parquet(source.verified_local(ROOT/(job+".parquet"),meta["decisions_sha256"])).filter(pl.col("listing_id")==listing_id)
