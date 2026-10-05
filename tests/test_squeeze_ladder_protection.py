@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal as D
+import asyncio
 
 import pytest
 
@@ -10,6 +11,12 @@ from src.trading_runtime.squeeze_ladder_protection import (
     ladder_profile, ladder_weights, percentage_ladder, structural_ladder,
 )
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
+from src.trading_runtime.domain import TradingMode
+from src.trading_runtime.journal import TradingJournal
+from src.trading_runtime.order_management import OrderManagementEngine
+from src.trading_runtime.risk import RiskAuthority
+from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+from tests.test_adaptive_execution_risk import portfolio_approved
 
 
 def request(quantity=101):
@@ -94,3 +101,47 @@ def test_invalid_stop_fails_before_order_planning(stop):
 def test_native_float_conversion_cannot_silently_collapse_distinct_targets():
     with pytest.raises(ValueError, match="collapsed"):
         ladder_profile(D("10"), D("9"), (D("11"), D("11.00000000000000000001")))
+
+
+def test_actual_oms_submission_and_cold_recovery_preserve_lot_brackets(tmp_path):
+    """Exercise shared OMS contracts; this unit journal is not app authority."""
+    async def exercise():
+        broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
+        await broker.initialize()
+        journal = TradingJournal(tmp_path / "ladder-unit.sqlite3")
+        instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+        def planner(intent, account_id, _event):
+            return IbkrStrategyOrderPlanner().plan(
+                account_id=account_id, instrument=instrument, intent=intent,
+                strategy_id="prepared-ladder", strategy_revision=1)
+        managers = []
+        try:
+            for name in ("before", "after"):
+                risk = RiskAuthority()
+                await risk.prime(broker, ["DU1"])
+                manager = OrderManagementEngine(
+                    broker=broker, planner=planner, risk=risk, journal=journal,
+                    run_id=name, strategy_id="prepared-ladder", strategy_revision=1)
+                managers.append(manager)
+                if name == "before":
+                    group = await manager.submit_intent(
+                        portfolio_approved(journal, request()), account_id="DU1", event=None)
+                    assert len(group.broker_order_ids) == 9
+                    original = manager._groups[group.group_id]
+                    assert len(original.plan.broker_batches) == 3
+                    await manager.close()
+                else:
+                    recovered = await manager.recover()
+                    assert len(recovered) == 1
+                    restored = recovered[0]
+                    assert restored.group_id == group.group_id
+                    assert restored.broker_order_ids == group.broker_order_ids
+                    restored_state = manager._groups[restored.group_id]
+                    assert restored_state.broker_order_slices == original.broker_order_slices
+                    assert restored_state.plan.order_slice_ids == original.plan.order_slice_ids
+                    assert restored_state.plan.broker_batches == original.plan.broker_batches
+        finally:
+            for manager in managers:
+                await manager.close()
+            journal.close()
+    asyncio.run(exercise())

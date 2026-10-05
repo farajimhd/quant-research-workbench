@@ -117,6 +117,15 @@ total quantity and normalized journal round-trip preserves all three slices.
 They do not prove fee budgeting, partial-fill lifecycle, once-per-session
 admission recovery or selective rotation. Those remain publication gates.
 
+An additional actual OMS unit integration submits all nine three-lot bracket
+orders and recovers their submission boundaries, order identities and lot maps
+after closing the original manager. Its local unit journal is not the native
+app's durability authority; V4/Keeper recovery still needs qualification.
+`strategy_one_intent.py` requests `mandate_fraction=1/3` for the original entry.
+Retain that aggregate request for the first ladder comparison and split only
+the resulting Portfolio-approved quantity. Do not substitute the illustrative
+25% policy ceiling for the actual inherited entry request.
+
 ## Batch, lots and cash
 
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
