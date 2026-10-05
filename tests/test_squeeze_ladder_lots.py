@@ -1,4 +1,4 @@
-from decimal import Decimal as D
+from decimal import Decimal as D, localcontext
 
 import pytest
 
@@ -35,3 +35,18 @@ def test_duplicate_cumulative_order_observation_is_rejected():
     fact = F("p", "a", "entry", D(1))
     with pytest.raises(ValueError, match="duplicate"):
         ladder_lot_exposure(("a", "b"), (fact, fact))
+
+
+def test_quantity_reduction_is_exact_under_low_external_decimal_precision():
+    facts = (F("p", "a", "entry", D("12345678901234567890.123456789012345678")),
+             F("t", "a", "profit_target", D("12345678901234567890.123456789012345677")))
+    with localcontext() as context:
+        context.prec = 4
+        result = ladder_lot_exposure(("a", "b"), facts)
+    assert result[0].remaining == D("0.000000000000000001")
+
+
+@pytest.mark.parametrize("quantity", [D("1e20"), D("1e-19"), D("NaN")])
+def test_quantities_outside_normalized_journal_domain_fail_closed(quantity):
+    with pytest.raises(ValueError):
+        ladder_lot_exposure(("a", "b"), (F("p", "a", "entry", quantity),))
