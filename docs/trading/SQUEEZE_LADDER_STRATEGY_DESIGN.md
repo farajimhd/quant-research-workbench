@@ -464,6 +464,36 @@ labels explicitly as hindsight; those labels never enter executable features.
 
 Registration, historical runs and profitability acceptance remain unfinished.
 
+### Complete development entry-feature diagnostic
+
+The immutable runtime receipt
+`strategy42-development-entry-feature-diagnostic-v1.json` groups all 138
+positions from the 26 development runs using native entry-minute activity and
+the first effective stop. Its input audit SHA256 is
+`60da154c19ad54515f56af6cdce89284e01d20d1a3ab2daad934e7bca13ebc9e`.
+Decimal aggregation reconciles exactly to the baseline net $1,883.9613.
+
+| Entry-minute trades | Positions | Winning positions | Net P&L | Represented runs |
+| --- | ---: | ---: | ---: | ---: |
+| 100–999 | 39 | 15 | -$678.74 | 17 |
+| 1,000–4,999 | 69 | 27 | -$617.85 | 24 |
+| At least 5,000 | 30 | 16 | +$3,180.55 | 14 |
+
+This supports comparing a stronger trade-count gate, not claiming its
+portfolio result. Discarding the lower bands would also discard $8,454.86 of
+winning-trade profit; changed admission changes shared cash and later entries.
+The high-count band covers only 14 runs, so this table cannot establish the
+per-session target. Entry-minute share volume is not monotonic: the
+100,000–999,999 band totals +$2,699.69, whereas at least one million shares
+totals -$208.57. First-effective-stop distances above 20% total +$1,788.48;
+the 5–10% band totals -$2,127.52. A blanket wide-stop exclusion is unsupported.
+
+These are descriptive development groups, not counterfactual backtests or
+executable policy approval. Post-entry activity retention, point-in-time float
+and RVOL are absent from this input and must not be imputed. Prioritize native
+comparisons that separate entry trade count from post-entry activity decay and
+structural breakout quality. Validation records were not read.
+
 Market-source reconstruction now has a separate prepared entry point,
 `reconstruct_ladder_market_decision`. It reconstructs the causal setup and
 breakout from certified plans without reading current account state. It is
