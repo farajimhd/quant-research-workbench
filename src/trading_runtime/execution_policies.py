@@ -79,6 +79,7 @@ class ProfitPocketTransition(StrEnum):
 
 class AddProtectionPolicy(StrEnum):
     INDEPENDENT_SLICE = "independent_slice"
+    INDEPENDENT_FIXED_LOTS = "independent_fixed_lots"
     INHERIT_POSITION_STOP = "inherit_position_stop"
     REBASE_ALL = "rebase_all"
     TIGHTEN_ONLY = "tighten_only"
@@ -282,6 +283,19 @@ class ProtectionProfile:
             raise ValueError("protection slice ids must be unique")
         if self.emergency_repair_deadline_ms < 1:
             raise ValueError("protection repair deadline must be positive")
+        if self.add_policy == AddProtectionPolicy.INDEPENDENT_FIXED_LOTS and (
+            len(self.slices) < 2 or len(self.slices) > 32
+            or any(item.stop.rule_type != StopRuleType.FIXED_PRICE
+                   or item.stop.order_type != StopOrderType.STOP
+                   or item.stop.price is None or not math.isfinite(item.stop.price)
+                   or item.profit_target_price is None
+                   or not math.isfinite(item.profit_target_price)
+                   or item.profit_target_price <= item.stop.price
+                   or item.inherit_profit_target
+                   or item.trailing.rule_type != TrailingRuleType.NONE
+                   for item in self.slices)
+        ):
+            raise ValueError("independent fixed lots require 2–32 explicit fixed stop/target brackets")
 
     @property
     def identity(self) -> str:

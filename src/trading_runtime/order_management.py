@@ -3319,9 +3319,9 @@ class OrderManagementEngine:
                 "status": "delegated_to_managed_exit",
             }
         profile = group.intent.resolved_protection_profile()
-        if profile is not None and profile.identity == "early-squeeze-ladder-prepared@1":
-            from .squeeze_ladder_oms import reconcile_ladder_protection
-            return await reconcile_ladder_protection(self, group)
+        if profile is not None and profile.add_policy == AddProtectionPolicy.INDEPENDENT_FIXED_LOTS:
+            from .independent_lot_protection import reconcile_independent_lot_protection
+            return await reconcile_independent_lot_protection(self, group)
         positions = await self.broker.positions(group.account_id)
         position = next(
             (
@@ -4822,7 +4822,7 @@ def _recovered_order_role(group, client_order_id: str, order_type: str,
                           has_parent: bool, intent_action: str) -> str:
     """Resolve prepared ladder repairs from the persisted command before fills."""
     profile = group.intent.resolved_protection_profile()
-    if profile is not None and profile.identity == "early-squeeze-ladder-prepared@1":
+    if profile is not None and profile.add_policy == AddProtectionPolicy.INDEPENDENT_FIXED_LOTS:
         index = _request_index_for_identity(group, client_order_id)
         if index is not None:
             request = group.orders[index]

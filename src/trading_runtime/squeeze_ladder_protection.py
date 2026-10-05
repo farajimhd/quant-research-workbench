@@ -8,7 +8,7 @@ indicator calculations, cash mutations or broker effects occur here.
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from math import isfinite, log1p
 
-from .execution_policies import ProtectionProfile, ProtectionSlice, StopRule, StopRuleType
+from .execution_policies import AddProtectionPolicy, ProtectionProfile, ProtectionSlice, StopRule, StopRuleType
 
 
 def ladder_weights(count: int, allocation: str) -> tuple[float, ...]:
@@ -100,4 +100,5 @@ def ladder_profile(entry_basis: Decimal, stop: Decimal, targets: tuple[Decimal, 
         ProtectionSlice(f"lot-{index + 1}", fraction,
             StopRule(StopRuleType.FIXED_PRICE, price=float(stop)),
             profit_target_price=float(target), inherit_profit_target=False)
-        for index, (fraction, target) in enumerate(zip(weights, targets, strict=True))))
+        for index, (fraction, target) in enumerate(zip(weights, targets, strict=True))),
+        add_policy=AddProtectionPolicy.INDEPENDENT_FIXED_LOTS)

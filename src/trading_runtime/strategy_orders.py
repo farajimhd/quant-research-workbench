@@ -89,6 +89,11 @@ class IbkrStrategyOrderPlanner:
         strategy_revision: int,
         limit_offset_bps: float = 5.0,
     ) -> StrategyOrderPlan:
+        profile = intent.protection_profile
+        if (profile is not None
+                and profile.add_policy == AddProtectionPolicy.INDEPENDENT_FIXED_LOTS
+                and intent.action != "enter_long"):
+            raise ValueError("Independent fixed lots currently require enter_long")
         quantity = _executable_quantity(instrument, float(intent.quantity))
         if quantity <= 0:
             raise ValueError("Order planning requires at least one executable share")

@@ -16,7 +16,8 @@ from tests.test_trading_runtime import quote
 
 
 @pytest.mark.parametrize("recovery", [None, "matching", "missing", "changed"])
-def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tmp_path, recovery):
+@pytest.mark.parametrize("profile_name", ["early-squeeze-ladder-prepared", "generic-breakout"])
+def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tmp_path, recovery, profile_name):
     async def exercise():
         broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
         await broker.initialize()
@@ -35,7 +36,10 @@ def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tm
             return result
         try:
             first = await manager("before")
-            snapshot = await first.submit_intent(portfolio_approved(journal, request()),
+            original = request()
+            original = replace(original, protection_profile=replace(
+                original.protection_profile, profile_id=profile_name))
+            snapshot = await first.submit_intent(portfolio_approved(journal, original),
                 account_id="DU1", event=None)
             group = first._groups[snapshot.group_id]
             event = replace(quote(bid=9.99, ask=10, ask_size=160), ticker="TEST",

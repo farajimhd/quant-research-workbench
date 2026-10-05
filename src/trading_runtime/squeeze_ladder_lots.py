@@ -40,7 +40,7 @@ def ladder_lot_exposure(lot_ids: tuple[str, ...],
 
 
 def _reduce_exposure(lot_ids, facts):
-    if (not isinstance(lot_ids, tuple) or len(lot_ids) not in (2, 3, 5)
+    if (not isinstance(lot_ids, tuple) or not 2 <= len(lot_ids) <= 32
             or any(not isinstance(x, str) or not x.strip() for x in lot_ids)
             or len(set(lot_ids)) != len(lot_ids) or not isinstance(facts, tuple)
             or len(facts) > 1_000_000):
