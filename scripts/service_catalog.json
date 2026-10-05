@@ -57,6 +57,7 @@
       "environment": {
         "BACKTEST_V3_READ_CREDENTIAL_FILE": "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\backtest_v3_read.env",
         "BACKTEST_V4_RUNNER_CREDENTIAL_FILE": "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\backtest_v4_runner.env",
+        "BACKTEST_V4_ENTRY_COST_RUNNER_CREDENTIAL_FILE": "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\backtest_v4_entry_cost_runner.env",
         "TRADING_JOURNAL_CREDENTIAL_FILE": "\\\\DESKTOP-SAAI85T\\Workstation-D\\TradingML\\secrets\\trading_journal.env",
         "TRADING_KEEPER_LAN_HOST": "192.168.1.218",
         "TRADING_KEEPER_LAN_PORT": "9281",
