@@ -9,7 +9,7 @@ EPISODE_ACTIVITY_SOURCE_AST = {'src/trading_runtime/strategy_episode_activity_ve
  'src/backend/backtest_strategy_episode_activity_source.py': '5c4c5d98d473c08831aa1c28cae7f386459b51bbcb824cc4f518bd8e6ef8b12d',
  'src/trading_runtime/strategy_thirty_seven_release.py': '6966c161682e06421a8a0112980a3a487ac4485ca9d2d86700d6621ef3687892',
  'pipelines/strategy_one/strategy_thirty_seven_configuration.py': 'a4af45a5b3a4caca5de7eeee6f56cde807013fee3ec1f4e462e0a0f9027c29fa',
- 'pipelines/strategy_one/configuration_publisher.py': '212d1bd2cca308ae71c4a4c711747faf5ea3cc34689e5a0f078984cd3339a54d',
+ 'pipelines/strategy_one/configuration_publisher.py': '3c03d2221a858f87e2cdaaf279668e32450a9586c68600121af74b3638fa0c13',
  'scripts/clickhouse/publish_strategy_thirty_seven_configuration.py': 'd7489b4edacd0a96aaf3521f189151398a832e3d60c04c5f402d4652c7ee2825'}
 
 

@@ -139,6 +139,9 @@ class NumberedFixedStrategyContract:
 
 
 def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
+    if type(number) is int and number == 49:
+        from .strategy_forty_nine_contract import strategy_forty_nine_contract
+        return strategy_forty_nine_contract()
     if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48):
         raise ValueError("No installed numbered fixed Backtest contract")
     return NumberedFixedStrategyContract(number)
@@ -151,7 +154,7 @@ def resolve_numbered_fixed_strategy(strategy_id: str, revision: int) -> Numbered
 
 
 def is_numbered_fixed_strategy(strategy_id: str, revision: int) -> bool:
-    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48)
+    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49)
 
 
 _SESSION_EXIT_REASONS = MappingProxyType({
@@ -189,6 +192,7 @@ _SESSION_EXIT_REASONS = MappingProxyType({
     46: "strategy_forty_six_session_exit",
     47: "strategy_forty_seven_session_exit",
     48: "strategy_forty_eight_session_exit",
+    49: "strategy_forty_nine_session_exit",
 })
 
 

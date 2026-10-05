@@ -920,6 +920,18 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
+        from .numbered_fixed_strategy import is_numbered_fixed_strategy, resolve_numbered_fixed_strategy
+        if (self.config.mode == RunMode.BACKTEST
+                and is_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)):
+            contract = resolve_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)
+            declared_automatic = getattr(contract, 'automatic_entry_policy', None)
+            if declared_automatic is not None:
+                from .strategy_one_intent import require_no_replacement_capital
+                require_no_replacement_capital(evaluation.intents)
+                if (automatic_entry is None and numbered_exit_assignment_id is None
+                        or any(intent.action not in {'enter_long', 'exit'} for intent in evaluation.intents)
+                        or automatic_entry is not None and automatic_entry.policy != declared_automatic):
+                    raise ValueError('Declared automatic strategy requires its exclusive native typed source')
         if automatic_entry is not None:
             from .squeeze_ladder_automatic import AutomaticLadderRequest
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -1039,7 +1051,10 @@ class TradingRuntime:
                  for intent in evaluation.intents):
             raise ValueError("Strategy 9 failure exit lacks its normalized witness")
         if numbered_exit_assignment_id is not None:
-            if (self.config.mode != RunMode.BACKTEST or self.config.strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48)
+            from .numbered_fixed_strategy import is_numbered_fixed_strategy, resolve_numbered_fixed_strategy
+            if (self.config.mode != RunMode.BACKTEST
+                    or not is_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)
+                    or not resolve_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision).allows_session_exit
                     or not numbered_exit_assignment_id or event is not None
                     or any(intent.action != "exit" or intent.metadata
                            or intent.reason != numbered_session_exit_reason(self.config.strategy_revision)
@@ -1352,6 +1367,15 @@ class TradingRuntime:
         contract = resolve_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)
         if self.config.mode != RunMode.BACKTEST or not contract.allows_session_exit:
             raise ValueError("Session clock requires Strategy 2 fixed Backtest")
+        if getattr(contract, 'automatic_entry_policy', None) is not None:
+            clocks = getattr(contract, 'session_clocks', ())
+            if boundary_ms in clocks:
+                at = market_day_boundary(self.config.anchor_date, boundary_ms)
+                if self.last_event_time is not None and at < self.last_event_time:
+                    raise ValueError('Declared session clock moved backward')
+                # Advance a declared policy deadline without a liquidity row.
+                # Quotes, broker match operands and fills remain unchanged.
+                self.last_event_time = at
         if contract.acquisition_cutoff(boundary_ms):
             cutoff = 19_500_000 if boundary_ms <= 19_800_000 else 57_000_000
             completed = getattr(self, "_numbered_completed_cutoffs", set())

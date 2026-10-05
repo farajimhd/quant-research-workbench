@@ -259,9 +259,11 @@ class BacktestMemoryJournal:
     def append_numbered_session_exit_intent(self, *, intent, account_id, strategy_id,
                                            strategy_revision):
         from src.trading_runtime.signals import StrategyIntent
+        from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy, resolve_numbered_fixed_strategy
         if (not isinstance(intent, StrategyIntent) or intent.action != "exit"
                 or intent.reason != numbered_session_exit_reason(strategy_revision) or intent.metadata
-                or strategy_id != "early-squeeze-strategy" or strategy_revision not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48)
+                or not is_numbered_fixed_strategy(strategy_id, strategy_revision)
+                or not resolve_numbered_fixed_strategy(strategy_id, strategy_revision).allows_session_exit
                 or not account_id):
             raise ValueError("Session exit requires Strategy 2 normalized scalar source")
         with self._lock:

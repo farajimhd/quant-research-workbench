@@ -19,6 +19,7 @@ EXPECTED = dict(zip(range(2, 18), (
     'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
     'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen')))
 EXPECTED[36] = 'thirty_six'
+EXPECTED[49] = 'forty_nine'
 
 
 def source(number):
@@ -59,7 +60,7 @@ def runtime(number):
     return value
 
 
-@pytest.mark.parametrize('number', (*range(2, 18), 36))
+@pytest.mark.parametrize('number', (*range(2, 18), 36, 49))
 def test_factory_runtime_admission_and_typed_memory_share_exact_reason(number):
     intent = source(number)
     expected = f'strategy_{EXPECTED[number]}_session_exit'
@@ -96,7 +97,7 @@ def test_fourteen_reason_cannot_enter_successor_runtime_or_typed_memory(number):
     assert value.journal.pending_record_count == 0
 
 
-@pytest.mark.parametrize('number', [True, 19.0, '19', 1, 38])
+@pytest.mark.parametrize('number', [True, 19.0, '19', 1, 43, 44, 45, 50])
 def test_reason_helper_retains_installed_typed_contract_guard(number):
     with pytest.raises(ValueError):
         numbered_session_exit_reason(number)

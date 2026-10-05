@@ -74,8 +74,11 @@ def verify_cold_automatic_ladder_families(client, *, related_rows, run_id, batch
     setups, targets = related_rows.get(SETUP.name, ()), related_rows.get(TARGET.name, ())
     if len(setups) != 1 or len(targets) != 3:
         raise ValueError('Cold automatic ladder requires complete one-parent/three-target evidence')
-    matching = [source for source in sources if type(source) is NativeLadderMarketContext
-                and source.run_id == run_id and source.observations.ticker == setups[0]['ticker']]
+    from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+    authority = sources if type(sources) is DeclaredLadderSourceAuthority else None
+    matching = ([authority.context_for(setups[0]['ticker'])] if authority is not None else
+        [source for source in sources if type(source) is NativeLadderMarketContext
+         and source.run_id == run_id and source.observations.ticker == setups[0]['ticker']])
     if len(matching) != 1:
         raise ValueError('Cold automatic ladder lacks one independently bound source scope')
     source, = matching
@@ -106,7 +109,8 @@ def verify_cold_automatic_ladder_families(client, *, related_rows, run_id, batch
     verify_ladder_intent_parent(batch, intent, account_id=intents[0]['account_id'], stored_utc=True)
     request = AutomaticLadderRequest(LadderAdmissionDecision('capital_request_proposed', decision, intent),
         source, setups[0]['assignment_id'], AutomaticLadderPolicy())
-    financial = verify_native_ladder_entry(client, verified_prior_prefix, request, batch)
+    financial = verify_native_ladder_entry(client, verified_prior_prefix, request, batch,
+        **({'source_authority': authority} if authority is not None else {}))
     # Compare scalar contents using native UTC/date encodings. Generic row
     # hash checks already ran, but a valid stored hash grants no source proof.
     from src.backend.backtest_squeeze_ladder_evidence import project_ladder_evidence
@@ -121,6 +125,8 @@ def verify_cold_automatic_ladder_families(client, *, related_rows, run_id, batch
         if (sorted(canonical_json(content(row, True)) for row in stored)
                 != sorted(canonical_json(content(row, False)) for row in proposed)):
             raise ValueError('Cold ladder scalar evidence differs from independently reconstructed source')
+    if authority is not None:
+        authority.record_verified_parent(verified_prior_prefix, batch, intent)
     return financial
 
 
@@ -131,15 +137,20 @@ def publish_automatic_ladder_batch(client, unit, *, read_client):
     from .arte_journal_writer import _sealed_families, typed_row
     if type(unit) is not V4AutomaticLadderBatch:
         raise ValueError('Automatic ladder writer requires its typed envelope')
+    from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+    declared = 'source_through_boundary_rule' in unit.request.market_context.market_policy_payload()
+    sources = (DeclaredLadderSourceAuthority.from_run(read_client, unit.base.run_id) if declared
+               else (unit.request.market_context,))
     prefix = load_verified_v4_prefix(read_client, unit.base.run_id,
-        automatic_ladder_sources=(unit.request.market_context,))
+        automatic_ladder_sources=sources)
     if prefix is not None and unit.base.batch_id in prefix.batch_ids:
         prefix = verified_batch_predecessor(read_client, prefix, unit.base.batch_id)
-    financial = verify_native_ladder_entry(read_client, prefix, unit.request, unit.base)
+    financial = verify_native_ladder_entry(read_client, prefix, unit.request, unit.base,
+        **({'source_authority': sources} if declared else {}))
     companions = unit.prepare_families(verified_prior_prefix=prefix, native_financial=financial)
     base = _sealed_families(unit.base, journal_profile='backtest_v4')
     sealed = tuple((name, tuple(typed_row(name, {k:v for k,v in row.items() if k != 'content_hash'})
         for row in rows)) for name, rows in companions)
     return _publish_sealed_batch_v4(client, unit.base, base, (*base, *sealed),
-        verified_prior_prefix=prefix, automatic_ladder_sources=(unit.request.market_context,),
+        verified_prior_prefix=prefix, automatic_ladder_sources=sources,
         automatic_ladder_read_client=read_client)

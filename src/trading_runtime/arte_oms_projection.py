@@ -509,6 +509,7 @@ def _approved_strategy_one_oms_intent(
     profit_giveback_row: Mapping[str, Any] | None = None,
     confirmed_ah_row: Mapping[str, Any] | None = None,
     liquidity_fade_row: Mapping[str, Any] | None = None,
+    automatic_ladder_sources: Any = None,
 ) -> tuple[StrategyIntent, tuple[Any, ...]]:
     """Restore the approved, amended group intent from normalized facts."""
     if (admission_reservation is None) != (admission_decision is None):
@@ -657,7 +658,7 @@ def _approved_strategy_one_oms_intent(
                 assignment_id=reservation["assignment_id"], ticker=approved_intent.ticker,
                 boundary_ms=boundary_ms, quantity=approved_intent.quantity,
                 bid=approved_intent.reference_price, strategy_number=state.group["strategy_revision"])
-            if state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48) or expected_exit != approved_intent:
+            if (automatic_ladder_sources is None and state.group.get("strategy_revision") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48)) or expected_exit != approved_intent:
                 raise ValueError("Session exit recovery differs from sealed scalar source")
         metadata = {
             "assignment_id": reservation["assignment_id"],
@@ -722,6 +723,7 @@ def reconstruct_strategy_one_oms_lineage(
     profit_giveback_row: Mapping[str, Any] | None = None,
     confirmed_ah_row: Mapping[str, Any] | None = None,
     liquidity_fade_row: Mapping[str, Any] | None = None,
+    automatic_ladder_sources: Any = None,
 ) -> tuple[OrderRequest, ...]:
     """Rebuild exact entry-group raw lineage from completed typed evidence.
 
@@ -738,10 +740,30 @@ def reconstruct_strategy_one_oms_lineage(
             or not isinstance(protection_history, CompleteProtectionHistory)):
         raise ValueError("Strategy 1 OMS lineage needs typed cold evidence")
     group = state.group
+    automatic = automatic_ladder_sources is not None
+    if automatic:
+        from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+        if type(automatic_ladder_sources) is not DeclaredLadderSourceAuthority:
+            raise ValueError('Ladder OMS reconstruction requires declared cold source authority')
+        proved = automatic_ladder_sources._parents.get(source_intent.record_id)
+        from .numbered_fixed_strategy import numbered_session_exit_reason
+        exit_reason = (numbered_session_exit_reason(automatic_ladder_sources.configuration.strategy_number)
+                       if source_intent.intent.action == 'exit' else None)
+        if (proved is None or source_intent.intent != proved[1]
+                or source_intent.source_batch != proved[0]
+                or group.get('strategy_id') != automatic_ladder_sources.native['strategy_id']
+                or group.get('strategy_revision') != automatic_ladder_sources.configuration.strategy_number
+                or (source_intent.intent.action, source_intent.intent.reason) not in
+                    {('enter_long', 'prepared_ladder_entry'), ('exit', exit_reason)}
+                or admission_reservation is None or admission_decision is None):
+            raise ValueError('Ladder OMS reconstruction lacks its exact proved source parent')
+        from src.backend.backtest_ladder_source_authority import verify_fixed_ladder_order_history
+        if source_intent.intent.action == 'enter_long':
+            verify_fixed_ladder_order_history(state, source_intent.intent, protection_history)
     if (
             not isinstance(group, dict)
-            or group.get("strategy_id") != STRATEGY_ID
-            or group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48)
+            or (not automatic and group.get("strategy_id") != STRATEGY_ID)
+            or not automatic and group.get("strategy_revision") not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48)
             or group.get("run_id") != protection_history.run_id
             or group.get("batch_id") not in protection_history.committed_batch_ids
             or source_intent.batch_id not in protection_history.committed_batch_ids
@@ -753,7 +775,7 @@ def reconstruct_strategy_one_oms_lineage(
             # A resistance add is a new, independently admitted OMS group.
             # Its immutable source intent is add_long, not the first entry's
             # enter_long. Both require the same exact typed lineage proof.
-            or source_intent.intent.action not in (
+            or not automatic and source_intent.intent.action not in (
                 {"enter_long", "exit"} if group.get("strategy_revision") in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48) else
                 {"enter_long", "add_long", "exit"} if group.get("strategy_revision") in (2, 3)
                 else {"enter_long", "add_long"})
@@ -775,7 +797,7 @@ def reconstruct_strategy_one_oms_lineage(
     approved_intent, history = _approved_strategy_one_oms_intent(
         state, source_intent, protection_history,
         admission_reservation, admission_decision, followthrough_row, profit_giveback_row,
-        confirmed_ah_row, liquidity_fade_row)
+        confirmed_ah_row, liquidity_fade_row, automatic_ladder_sources)
     view = _ColdLineageView(
         identity, account, approved_intent, state.orders, bindings, terminal)
     rebuilt = []
@@ -802,7 +824,7 @@ def reconstruct_strategy_one_oms_lineage(
         metadata = canonical_oms_order_metadata(view, order, proofs)
         rebuilt.append(replace(order, raw={
             "canonical_run_id": protection_history.run_id,
-            "canonical_strategy_id": STRATEGY_ID,
+            "canonical_strategy_id": group["strategy_id"],
             "canonical_strategy_revision": group["strategy_revision"],
             "canonical_metadata": metadata,
         }))
@@ -817,6 +839,7 @@ def load_recovered_strategy_one_oms_lineage(
     protection_history: CompleteProtectionHistory | None = None,
     strategy_number: int = 1,
     first_price_source: Any = None,
+    automatic_ladder_sources: Any = None,
 ) -> tuple[RecoveredStrategyOneOmsLineage, ...]:
     """Cold-join latest OMS groups to exact intents and complete protection.
 
@@ -824,7 +847,16 @@ def load_recovered_strategy_one_oms_lineage(
     broker state or grant permission to resume an OMS actor or send an order.
     """
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
-    numbered_fixed_strategy(strategy_number)
+    automatic = automatic_ladder_sources is not None
+    if automatic:
+        from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+        if (type(automatic_ladder_sources) is not DeclaredLadderSourceAuthority
+                or automatic_ladder_sources.client is not client
+                or automatic_ladder_sources.run_id != prefix.run_id
+                or automatic_ladder_sources.configuration.strategy_number != strategy_number):
+            raise ValueError('Ladder OMS reader has a foreign declared source authority')
+    else:
+        numbered_fixed_strategy(strategy_number)
     from src.trading_runtime.arte_intent_projection import (
         load_committed_strategy_intent_page,
     )
@@ -860,7 +892,7 @@ def load_recovered_strategy_one_oms_lineage(
     groups = load_latest_committed_oms_groups(
         client, prefix, page_size=page_size,
         max_transitions=max_transitions, allowed_accounts=allowed_accounts,
-        strategy_identity=(STRATEGY_ID, strategy_number), require_tactic=True)
+        strategy_identity=(automatic_ladder_sources.native['strategy_id'] if automatic else STRATEGY_ID, strategy_number), require_tactic=True)
     if len(groups) > max_groups:
         raise RuntimeError("Strategy 1 OMS cold group inventory exceeds bound")
     if not groups:
@@ -876,12 +908,14 @@ def load_recovered_strategy_one_oms_lineage(
         chunk = tuple(identifiers[start:start + page_size])
         page = load_committed_strategy_intent_page(
             client, prefix, limit=len(chunk), record_ids=chunk,
-            include_source_batch=True,
+            include_source_batch=not automatic,
             **({'first_price_source': first_price_source}
                if first_price_source is not None else {}))
         if len(page) != len(chunk):
             raise RuntimeError("Strategy 1 OMS intent join is incomplete")
         for row in page:
+            if automatic:
+                row = automatic_ladder_sources.source_parent(row, prefix)
             if row.record_id in by_id:
                 raise RuntimeError("Strategy 1 OMS intent revision was duplicated")
             by_id[row.record_id] = row
@@ -936,7 +970,8 @@ def load_recovered_strategy_one_oms_lineage(
             followthrough_row=failure_rows.get(group.intent_record_id),
             profit_giveback_row=profit_rows.get(group.intent_record_id),
             confirmed_ah_row=confirmed_ah_rows.get(group.intent_record_id),
-            liquidity_fade_row=liquidity_rows.get(group.intent_record_id)),
+            liquidity_fade_row=liquidity_rows.get(group.intent_record_id),
+            **({'automatic_ladder_sources': automatic_ladder_sources} if automatic else {})),
         history.through_sequence,
         _approved_strategy_one_oms_intent(
             group, by_id[group.intent_record_id], history,
@@ -944,7 +979,7 @@ def load_recovered_strategy_one_oms_lineage(
             failure_rows.get(group.intent_record_id),
             profit_rows.get(group.intent_record_id),
             confirmed_ah_rows.get(group.intent_record_id),
-            liquidity_rows.get(group.intent_record_id))[0],
+            liquidity_rows.get(group.intent_record_id), automatic_ladder_sources)[0],
         dict(admissions[group.sequence]),
     ) for group in groups)
 

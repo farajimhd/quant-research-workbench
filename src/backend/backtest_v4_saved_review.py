@@ -190,7 +190,7 @@ def _terminal_attestation(client, normalized: str,
             or not is_numbered_fixed_strategy(context["strategy_id"], int(context["strategy_revision"]))
             or context["evaluation_interval_ms"] != 100):
         raise ValueError("Saved review accepts only installed immutable numbered strategies at 100 ms")
-    if int(context["strategy_revision"]) in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48):
+    if int(context["strategy_revision"]) != 1:
         from contextlib import closing
         from src.backend.backtest_market_data import readonly_clickhouse_client
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
@@ -207,7 +207,15 @@ def _terminal_attestation(client, normalized: str,
             attestation = candidate
             break
     if attestation is None:
-        if int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48):
+        from src.backend.backtest_ladder_source_authority import (
+            declared_ladder_policy, DeclaredLadderSourceAuthority,
+        )
+        ladder = (declared_ladder_policy(release)
+                  if int(context['strategy_revision']) != 1 else None)
+        if ladder is not None:
+            sources = DeclaredLadderSourceAuthority.from_run(client, normalized)
+            prefix = load_verified_v4_prefix(client, normalized, automatic_ladder_sources=sources)
+        elif int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48):
             source = _saved_twenty_price_source(client, normalized, context, release)
             prefix = load_verified_v4_prefix(
                 client, normalized, first_price_source=source)
@@ -215,6 +223,8 @@ def _terminal_attestation(client, normalized: str,
             prefix = load_verified_v4_prefix(client, normalized)
         if prefix is None or prefix.status not in {"completed", "stopped", "failed"}:
             raise ValueError("Saved review requires a cold-verified terminal V4 run")
+        if ladder is not None:
+            sources.verify_immutable_prefix(prefix)
         accounts = {
             account_id: load_terminal_backtest_snapshot(
                 client, prefix, account_id=account_id)
