@@ -66,6 +66,30 @@ Threshold values must be recorded in an immutable release before execution;
 the independent simulator's $1,000/5-trade thresholds are hypotheses, not
 automatically approved native thresholds.
 
+### Prepared native components and remaining source binding
+
+`squeeze_ladder_cross.py` now supplies a bounded vectorized completed-clock
+predicate with compact rejection reasons. It rejects missing price buckets,
+nonadjacent observations, future/stale references and crosses whose preceding
+observation predates admission. This is a necessary condition only: the
+watchlist, frozen V7 identity, liquidity gates and Portfolio approval remain
+sequential admission responsibilities. It is not registered to any release.
+
+Native fixed Backtest already exposes completed execution VWAP and eligible
+liquidity in `backtest_market_data.py` and `backtest_strategy_one_loader.py`.
+The original columnar gate proves price above VWAP, not a crossing after
+admission. VWAP is Float64 there, whereas the prepared crossing predicate
+requires exact scaled integers; a version-pinned comparison/quantization
+contract must be qualified before binding that producer. Do not silently cast
+VWAP or claim this predicate is already integrated into historical runs.
+
+`squeeze_ladder_protection.py` supplies percentage/structural target geometry
+and normalized allocation weights using existing independent protection
+slices. Real planner tests verify three bracket parents share one approved
+total quantity and normalized journal round-trip preserves all three slices.
+They do not prove fee budgeting, partial-fill lifecycle, once-per-session
+admission recovery or selective rotation. Those remain publication gates.
+
 ## Batch, lots and cash
 
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
