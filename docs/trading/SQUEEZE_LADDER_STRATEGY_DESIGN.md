@@ -287,6 +287,17 @@ readback and evidence tests pass. This is a pre-publication verifier only;
 the native writer envelope, independent verified context binding, Keeper-fenced
 family publication and cold recovery are still required and not enabled.
 
+The ladder table definitions now reside in shared
+`arte_squeeze_ladder_schema.py`, avoiding a backend/journal-writer import cycle.
+The native writer's scalar contract registry recognizes those families for
+encoding only; it does not admit their publication or install their tables.
+Native encoding matches the prepared hashes and round-trips unsigned 64-bit
+bit patterns from stored decimal strings. A shared validator defect was fixed:
+`FixedString(64)` now requires exactly 64 UTF-8 bytes before hashing, preventing
+ClickHouse padding from changing the persisted representation. Existing writer
+and V4 commit regressions plus ladder checks pass 138 tests. Complete ladder
+commit/source authority and cold family readback remain required before runs.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute

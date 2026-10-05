@@ -50,3 +50,30 @@ def test_foreign_session_cannot_be_projected():
         project_ladder_evidence(admission, run_id='prepared-evidence', batch_id=rows.setup['batch_id'],
             parent_record_id=rows.setup['parent_record_id'], assignment_id='assignment-1',
             session_date=date(2026,8,19))
+
+
+def test_shared_native_typed_encoding_matches_hashes_and_rejects_invalid_fields():
+    from src.trading_runtime.arte_journal_writer import typed_row, _canonical_typed_content
+    _, rows = evidence()
+    for table, row in ((SETUP, rows.setup), *((TARGET, row) for row in rows.targets)):
+        content = {name:value for name,value in row.items() if name != 'content_hash'}
+        assert typed_row(table.name, content) == row
+        stored = dict(content)
+        for name, kind in table.columns:
+            if kind.startswith('UInt') and name in stored:
+                stored[name] = str(stored[name])
+        assert _canonical_typed_content(table.name, stored, stored_utc=True) == content
+    content = {name:value for name,value in rows.setup.items() if name != 'content_hash'}
+    with pytest.raises(ValueError):
+        typed_row(SETUP.name, dict(content, target_count=256))
+    with pytest.raises(ValueError):
+        typed_row(SETUP.name, dict(content, scan_content_hash='not-a-hash'))
+
+
+@pytest.mark.parametrize('value', ['a'*63, 'a'*65, 'é'*31, 'é'*33])
+def test_native_fixed_string_checks_byte_width_before_hashing(value):
+    from src.trading_runtime.arte_journal_writer import typed_row
+    _, rows = evidence()
+    content = {name:item for name,item in rows.setup.items() if name != 'content_hash'}
+    with pytest.raises(ValueError, match='64 UTF-8 bytes'):
+        typed_row(SETUP.name, dict(content, scan_content_hash=value))

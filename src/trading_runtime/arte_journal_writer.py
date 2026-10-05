@@ -38,6 +38,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.trading_runtime.arte_strategy_one_entry_schema import (
     ADD_EVIDENCE, ENTRY_EVIDENCE,
 )
+from src.trading_runtime.arte_squeeze_ladder_schema import TABLES as LADDER_EVIDENCE_TABLES
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
@@ -126,6 +127,9 @@ _CONTRACTS[FIRST_PRICE.name] = FIRST_PRICE
 # Scalar encoding only: numbered release, commit admission and operator table
 # installation remain separate authorities. This does not enable Strategy 36.
 _CONTRACTS[ENTRY_ACTIVITY.name] = ENTRY_ACTIVITY
+# Scalar encoding only. Commit/source authority, installation and numbered
+# registration remain closed until the complete ladder path is qualified.
+_CONTRACTS.update({table.name: table for table in LADDER_EVIDENCE_TABLES})
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ADD_EVIDENCE.name] = ADD_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
@@ -1505,6 +1509,8 @@ def _canonical_typed_content(
         elif conversion in {"String", "LowCardinality(String)", "FixedString(64)"}:
             if not isinstance(value, str):
                 raise ValueError(f"{name}.{column} is not a string")
+            if conversion == "FixedString(64)" and len(value.encode("utf-8")) != 64:
+                raise ValueError(f"{name}.{column} must have exactly 64 UTF-8 bytes")
             # A String column is not an escape hatch for an unmodelled JSON
             # object or array. JSONEachRow below is only the wire format.
             candidate = _without_text_prefix(value)
