@@ -25,6 +25,44 @@ def test_public_backtest_resume_uses_verified_typed_path() -> None:
     assert app.backtest_run_service.allow_typed_backtest_resume is True
 
 
+def test_progress_timeout_observes_same_task_without_cancelling(monkeypatch, capsys):
+    async def exercise():
+        task = asyncio.get_running_loop().create_future()
+        controller = SimpleNamespace(run_id="run-observed", status="running",
+                                     processed_events=42, _task=task)
+        calls = []
+        async def observe(tasks, *, timeout):
+            calls.append((tasks, timeout))
+            assert tasks == {task}
+            assert not task.cancelled()
+            if len(calls) == 1:
+                return set(), tasks
+            task.set_result(None)
+            return tasks, set()
+        monkeypatch.setattr(probe.asyncio, "wait", observe)
+        await probe._await_run_with_progress(controller)
+        assert len(calls) == 2
+        assert task.done() and not task.cancelled()
+    asyncio.run(exercise())
+    output = capsys.readouterr().out
+    assert "run_id=run-observed status=running" in output
+    assert "processed_rows=42" in output
+
+
+def test_progress_observer_preserves_original_task_failure():
+    async def exercise():
+        task = asyncio.get_running_loop().create_future()
+        task.set_exception(RuntimeError("original execution failure"))
+        controller = SimpleNamespace(_task=task)
+        try:
+            await probe._await_run_with_progress(controller)
+        except RuntimeError as exc:
+            assert str(exc) == "original execution failure"
+        else:
+            raise AssertionError("Task failure was swallowed")
+    asyncio.run(exercise())
+
+
 def test_app_probe_defaults_to_read_only_preflight(monkeypatch) -> None:
     preflight = Mock(return_value=_ready())
     create = AsyncMock()

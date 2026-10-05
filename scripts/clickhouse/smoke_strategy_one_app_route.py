@@ -31,6 +31,19 @@ from scripts.clickhouse.smoke_strategy_one_backtest import (  # noqa: E402
 )
 
 
+async def _await_run_with_progress(controller, *, interval_s: float = 30) -> None:
+    """Observe the existing task without cancelling it on observation timeout."""
+    began = perf_counter()
+    task = controller._task
+    while not task.done():
+        done, _ = await asyncio.wait({task}, timeout=interval_s)
+        if not done:
+            print(f"App progress: run_id={controller.run_id} status={controller.status} "
+                  f"elapsed_s={perf_counter() - began:.1f} "
+                  f"processed_rows={controller.processed_events}", flush=True)
+    await task
+
+
 def _print_journal_writer_profile(controller: object) -> None:
     """Report bounded worker timings without putting persistence on the engine thread."""
     metrics = getattr(controller, "_journal_writer_final_metrics", None)
@@ -340,7 +353,7 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
         began = perf_counter()
         task_error = None
         try:
-            await controller._task
+            await _await_run_with_progress(controller)
         except Exception as exc:
             task_error = exc
         execution_s = perf_counter() - began
