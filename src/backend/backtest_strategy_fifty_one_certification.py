@@ -84,7 +84,7 @@ STRATEGY51_SOURCE_AST = {'src/trading_runtime/strategy_fifty_one_contract.py': '
  'src/backend/backtest_squeeze_ladder_readback.py': '252df3d135235b4afafcd1b5005f590746485969ed498ee25c8e05752b8aa73e',
  'src/backend/backtest_squeeze_ladder_admission.py': '7126dd2ba2046ea88c3917ed33ee4b7007a309e16aab611f86c323d407565b46',
  'src/backend/backtest_squeeze_ladder_evidence.py': '4f0963b9433262bbbba2fce52a3d361d0cc32ee932cffc282438d1cccfc080ad',
- 'src/backend/backtest_strategy_one_configuration.py': 'b01f2373be42bfad44440e742b8c5476f12512afa1a7834a089f7175238799e9',
+ 'src/backend/backtest_strategy_one_configuration.py': '0f01eb4464b8e85f9f3c8e227e33f7104c42707aee879a995636230fc49a0c82',
  'src/backend/backtest_strategy_one_execution.py': '850e6ab6a644eceff98c66f988485845944d615bfbf1918fc54d6665797f61a9',
  'src/backend/backtest_strategy_one_coordinator.py': '5c2088264162096bbaa2ccef35253a1916cf20c676ed92052664fa253fabebc8',
  'src/backend/backtest_journal_memory.py': '6dc2a02199967979d5b93dc8b2af3ed3d9f2c7c6298dd12dd1c1decf5672f48c',

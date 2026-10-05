@@ -7,7 +7,7 @@ import json
 REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'__module__': '425c546664cdbfc6f01dbd153c90014de1e260c3494033d790621ef81471662c'},
  'pipelines/strategy_one/strategy_thirty_one_configuration.py': {'__module__': 'c17761f3c1bf325c59735b02ded012194a378946a3a50d984044cda6b1582515'},
  'src/backend/backtest_journal_memory.py': {'__module__': '6dc2a02199967979d5b93dc8b2af3ed3d9f2c7c6298dd12dd1c1decf5672f48c'},
- 'src/backend/backtest_strategy_one_configuration.py': {'__module__': 'b01f2373be42bfad44440e742b8c5476f12512afa1a7834a089f7175238799e9'},
+ 'src/backend/backtest_strategy_one_configuration.py': {'__module__': '0f01eb4464b8e85f9f3c8e227e33f7104c42707aee879a995636230fc49a0c82'},
  'src/backend/backtest_strategy_one_coordinator.py': {'__module__': '5c2088264162096bbaa2ccef35253a1916cf20c676ed92052664fa253fabebc8'},
  'src/backend/backtest_strategy_one_execution.py': {'__module__': '850e6ab6a644eceff98c66f988485845944d615bfbf1918fc54d6665797f61a9'},
  'src/backend/backtest_strategy_one_management.py': {'__module__': '81b15b9bb8f3feae00e4439f8edbbde89cfc3e9a445695bca70da1903010a05c'},

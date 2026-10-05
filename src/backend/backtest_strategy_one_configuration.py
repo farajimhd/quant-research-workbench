@@ -186,6 +186,10 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
             from src.trading_runtime.strategy_forty_seven_release import derive_strategy_forty_seven_configuration as derive
         elif strategy_number == 48:
             from src.trading_runtime.strategy_forty_eight_release import derive_strategy_forty_eight_configuration as derive
+        elif strategy_number == 57:
+            from src.trading_runtime.strategy_fifty_seven_release import derive_strategy_fifty_seven_configuration as derive
+        elif strategy_number == 58:
+            from src.trading_runtime.strategy_fifty_eight_release import derive_strategy_fifty_eight_configuration as derive
         elif strategy_number == 55:
             from src.trading_runtime.strategy_fifty_five_release import derive_strategy_fifty_five_configuration as derive
         elif strategy_number == 56:
@@ -200,8 +204,10 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
             from src.trading_runtime.strategy_fifty_release import derive_strategy_fifty_configuration as derive
         elif strategy_number == 49:
             from src.trading_runtime.strategy_forty_nine_release import derive_strategy_forty_nine_configuration as derive
-        else:
+        elif strategy_number == 51:
             from src.trading_runtime.strategy_fifty_one_release import derive_strategy_fifty_one_configuration as derive
+        else:
+            raise ValueError("Unsupported declared numbered strategy derivation")
         manifest = strategy["numbered_release"]
         expected = derive(source,
             approved_code_commit=manifest["approved_code_commit"],
