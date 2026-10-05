@@ -1696,6 +1696,11 @@ ORDER BY (source_date, ticker)
 
 
 def execution_clock_tickers(args: argparse.Namespace) -> list[str]:
+    bounds = getattr(args, "execution_clock_batch_bounds", ())
+    if bounds:
+        # Continuity symbols are canonical identities, including case-sensitive
+        # preferred-share/right suffixes. Do not apply CLI normalization here.
+        return sorted({ticker for ticker, _begin, _end in bounds})
     return sorted(
         {
             value.strip().upper()

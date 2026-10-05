@@ -204,6 +204,19 @@ class EventEncodingTests(unittest.TestCase):
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
+    def test_coverage_batch_sql_preserves_case_sensitive_canonical_symbols(self) -> None:
+        with mock.patch("sys.argv", ["download_update_events.py"]):
+            args = parse_args()
+        args.events_table = "events_2026"
+        args.execution_clock_batch_bounds = (("HPEpC", 10, 12), ("VECAr", 20, 23))
+        args.tickers = "HPEpC,VECAr"
+        sql = insert_execution_clock_coverage_day_sql(args, _day(Path("unused"), "2026-09-21"), 1)
+        self.assertIn("ticker IN ('HPEpC', 'VECAr')", sql)
+        self.assertIn("source.ticker IN ('HPEpC', 'VECAr')", sql)
+        self.assertIn("ticker = 'HPEpC' AND ordinal >= toUInt64(10)", sql)
+        self.assertNotIn("'HPEPC'", sql)
+        self.assertNotIn("'VECAR'", sql)
+
     def test_window_stages_disable_unspillable_parallel_scatter_without_changing_order(self) -> None:
         with mock.patch("sys.argv", ["download_update_events.py"]):
             args = parse_args()
