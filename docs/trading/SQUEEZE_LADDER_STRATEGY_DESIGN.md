@@ -623,3 +623,20 @@ the pivot token is
 `635b74acb226f4d69c799efa1ab2863499e73559c450b9a56c5c9551e5030632`.
 Both probes complete in under eight seconds. No financial result or altered
 profit is established; all validation sources remain untouched.
+
+Producer semantics are now confirmed in `src/market_engine/v7_qmd.py` and
+`streaming_level_book.py`: `confirmed_at_ms` is the latest segment's start.
+`_segment` publishes a new role/fit segment and `_refit` can retain the level
+identity while publishing new bounds and confirmation time. The identity's
+creation clock is a separate field. The current ladder's immutable-segment
+requirement therefore excludes normal producer transitions and refits, rather
+than solely preventing replacement of the selected resistance.
+
+The next prepared behavior revision should distinguish a frozen entry threshold
+from a frozen producer segment. Keep the original qualification bounds and
+stop unchanged, prove selected identity continuity through certified intervals,
+and define an explicit forward resistance/transition/support lifecycle for the
+first observed break. Reject disappearance, replacement, reverse transitions,
+earlier failed breaks and unavailable input clocks. Do not simply accept every
+current role or move the threshold to a refitted band. Source-semantic evidence
+is established; this revised lifecycle is not yet implemented or backtested.
