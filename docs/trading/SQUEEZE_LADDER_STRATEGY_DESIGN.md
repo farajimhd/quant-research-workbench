@@ -234,6 +234,22 @@ not financial authorization: coordinator session locks/permissions, aggregate
 capital request, normalized decision publication, release sealing/preflight and
 full-session financial runs remain required before app publication.
 
+`backtest_squeeze_ladder_admission.py` now supplies prepared financial-state
+admission to a single inherited one-third mandate capital request. It rejects
+held positions, pending entry/exit/capital requests, closed permissions and
+accepted/unresolved ticker-session locks. Future OMS snapshots are source
+errors. The caller must supply the verified current-run as-of snapshot prefix;
+an empty tuple is valid only when that prefix proves no earlier acquisitions.
+The helper reserves no cash and submits no orders. Its deterministic intent
+has zero requested shares, one protection profile and no replacement request
+or opaque evidence metadata. Native intent projection round-trips the request
+and three slices; an example approved total of 101 shares plans as 34/34/33
+with independent OCA pairs. This tests representation/planning, not actual
+Portfolio budgeting or native Keeper execution. Ninety-seven admission,
+source, geometry, OMS and projection regression tests pass. Complete normalized
+market-decision evidence, verified-prefix coordinator binding and full native
+release qualification remain required before publication.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute
