@@ -146,6 +146,30 @@ through sequential frozen V7/pivot setup state. Do not infer a preceding close
 from sparse candidates. Existing signal occurrence certification and native
 source projection can be reused; the old candidate mask cannot be substituted.
 
+`squeeze_ladder_columnar.py` now implements that separate prepared observation
+gate. It accepts explicit frozen liquidity, price, quote-freshness, admission
+TTL and extended-session acquisition thresholds. It emits market survivors
+and completed VWAP-cross survivors, retaining latest certified admission
+clocks. Crosses cannot straddle admissions. Missing completed buckets invalidate
+rolling trade-count history until the gap expires; they are not invented zero
+activity. There is no MACD, prior-close or 30s-stop entry requirement in this
+gate. Frozen V7 selection, pivot stop binding, consumed-session locks and
+Portfolio approval remain subsequent sequential responsibilities.
+
+`backtest_squeeze_ladder_loader.py` binds the gate to full native certified
+Arrow observations in one bounded query for up to eight tickers. It verifies
+the canonical squeeze scan's query and content proof, source scope and prefix,
+and unique native bar/technical/broker attempts. Original VWAP and liquidity
+columns remain in the prepared Arrow table for evidence binding. It exposes no
+writer and does not read the Strategy 1 candidate product. The caller still
+needs the release's complete preflight, checked read-only grants and normalized
+decision persistence; this prepared reader is not registered to the app.
+
+Focused source/entry/OMS regression validation passed 69 tests. A synthetic
+576,000-row full-day typed-column gate took 0.173 seconds locally. This measures
+mask computation only, excluding source I/O, sequential setup, financial
+execution and journal writes; it is not a session-backtest throughput result.
+
 `squeeze_ladder_protection.py` supplies percentage/structural target geometry
 and normalized allocation weights using existing independent protection
 slices. Real planner tests verify three bracket parents share one approved
