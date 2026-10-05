@@ -24,7 +24,7 @@ class EpisodeActivityReadbackAuthority:
     def __post_init__(self):
         if (type(self.run_id) is not str or not self.run_id
                 or type(self.gate) is not EpisodeActivityStaticGate
-                or type(self.strategy_number) is not int or self.strategy_number not in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)):
+                or type(self.strategy_number) is not int or self.strategy_number not in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54)):
             raise ValueError('Episode activity readback requires exact run and certified gate')
         _source_parent_number(self.gate.activity.parent, 35)
 
@@ -75,7 +75,7 @@ def certified_episode_activity_witness(authority, proposal, *, session_date):
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     if (type(authority) is not CertifiedPriceReadbackAuthority
             or type(proposal) is not StrategyOneEntryProposal
-            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)
+            or type(proposal.strategy_number) is not int or proposal.strategy_number not in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54)
             or type(session_date) is not date
             or type(authority.entry_activity_source) is not EpisodeActivityReadbackAuthority
             or proposal.strategy_number != authority.entry_activity_source.strategy_number
@@ -84,6 +84,16 @@ def certified_episode_activity_witness(authority, proposal, *, session_date):
             or authority.entry_activity_source.plan.market.sessions != (session_date.isoformat(),)):
         raise ValueError('Strategy37 requires its exact certified episode activity source')
     source = authority.entry_activity_source
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    policy = numbered_fixed_strategy(proposal.strategy_number).entry_spread_risk_policy
+    if policy is not None:
+        from .backtest_entry_spread_risk import EntrySpreadRiskReadbackAuthority
+        cost = authority.entry_spread_risk_source
+        if type(cost) is not EntrySpreadRiskReadbackAuthority or cost.plan.policy != policy:
+            raise ValueError('Declared entry cost requires independently certified companion quotes')
+        cost.check_proposal(proposal)
+    elif authority.entry_spread_risk_source is not None:
+        raise ValueError('Undeclared entry cost authority cannot alter historical entry rules')
     native, anchor, _ = source.gate.admission_witness(proposal.ticker, proposal.boundary_ms)
     if type(proposal.episode_start_ms) is not int or proposal.episode_start_ms != anchor:
         raise ValueError('Strategy37 proposal differs from original native episode')

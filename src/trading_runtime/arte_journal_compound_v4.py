@@ -38,10 +38,11 @@ from .arte_rising_momentum_entry_v4 import MOMENTUM, seal_rising_momentum_rows
 from .arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM, seal_initial_momentum_rows
 from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
 from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activity_rows
+from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_spread_risk_rows
 
 _CHILD_KEYS = (
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
-    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "add_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "entry_spread_risk_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "reconciliation_actions",
@@ -49,7 +50,7 @@ _CHILD_KEYS = (
 )
 _EVENT_PARENT_KEYS = frozenset({
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
-    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "add_evidence", "allocations", "reservation_reasons",
+    "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "entry_spread_risk_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "oms_tactics",
@@ -101,7 +102,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
                 + tuple(("momentum_evidence", row) for row in unit.momentum_evidence)
                 + tuple(("initial_momentum_evidence", row) for row in unit.initial_momentum_evidence)
                 + tuple(("first_price_evidence", row) for row in unit.first_price_evidence)
-                + tuple(("entry_activity_evidence", row) for row in unit.entry_activity_evidence))
+                + tuple(("entry_activity_evidence", row) for row in unit.entry_activity_evidence)
+                + tuple(("entry_spread_risk_evidence", row) for row in unit.entry_spread_risk_evidence))
     if type(unit) is V4PortfolioAllocationBatch:
         return (("allocations", unit.allocation),)
     if type(unit) is V4ReservationReasonBatch:
@@ -214,7 +216,8 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
                 "initial_momentum_rows": unit.initial_momentum_evidence,
                 "first_price_rows": unit.first_price_evidence,
                 "first_price_authorities": unit.first_price_authorities,
-                "entry_activity_rows": unit.entry_activity_evidence}
+                "entry_activity_rows": unit.entry_activity_evidence,
+                "entry_spread_risk_rows": unit.entry_spread_risk_evidence}
     if type(unit) is V4PortfolioAllocationBatch:
         return {"portfolio_allocation_row": unit.allocation}
     if type(unit) is V4ReservationReasonBatch:
@@ -303,6 +306,7 @@ def prepare_compound_v4_families(
         "initial_momentum_evidence": INITIAL_MOMENTUM.name,
         "first_price_evidence": FIRST_PRICE.name,
         "entry_activity_evidence": ENTRY_ACTIVITY.name,
+        "entry_spread_risk_evidence": ENTRY_SPREAD_RISK.name,
         "add_evidence": ADD_EVIDENCE.name,
         "allocations": V4_ALLOCATION.name,
         "reservation_reasons": RESERVATION_REASON.name,
@@ -397,6 +401,11 @@ def prepare_compound_v4_families(
             dict(base_families)["trading_strategy_intent_v1"],
             dict(base_families)["trading_event_v1"], authorities):
         raise ValueError("V4 compound first price differs from certified authority")
+    if tuple(extra[ENTRY_SPREAD_RISK.name]) != seal_certified_entry_spread_risk_rows(
+            tuple(extra[ENTRY_SPREAD_RISK.name]), tuple(extra[ENTRY_EVIDENCE.name]),
+            dict(base_families)['trading_strategy_intent_v1'], dict(base_families)['trading_event_v1'],
+            run_id=compound.base.run_id, source=getattr(first_price_source, 'entry_spread_risk_source', None)):
+        raise ValueError('Compound entry cost source seal differs')
     if tuple(extra[ENTRY_ACTIVITY.name]) != seal_certified_entry_activity_rows(
             tuple(extra[ENTRY_ACTIVITY.name]), tuple(extra[ENTRY_EVIDENCE.name]),
             dict(base_families)['trading_strategy_intent_v1'],

@@ -106,6 +106,7 @@ from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
 from src.trading_runtime.arte_entry_activity_v4 import ENTRY_ACTIVITY
+from src.trading_runtime.arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK
 
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[FAILURE.name] = FAILURE
@@ -127,6 +128,7 @@ _CONTRACTS[FIRST_PRICE.name] = FIRST_PRICE
 # Scalar encoding only: numbered release, commit admission and operator table
 # installation remain separate authorities. This does not enable Strategy 36.
 _CONTRACTS[ENTRY_ACTIVITY.name] = ENTRY_ACTIVITY
+_CONTRACTS[ENTRY_SPREAD_RISK.name] = ENTRY_SPREAD_RISK
 # Scalar encoding only. Commit/source authority, installation and numbered
 # registration remain closed until the complete ladder path is qualified.
 _CONTRACTS.update({table.name: table for table in LADDER_EVIDENCE_TABLES})
@@ -289,7 +291,7 @@ def journal_client_from_env() -> Any:
 
 
 def backtest_v4_journal_client_from_env(*, keeper_session=None,
-                                        lease=None, automatic_ladder=False) -> Any:
+                                        lease=None, automatic_ladder=False, entry_spread_risk=False) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -300,7 +302,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     from src.trading_runtime.keeper_session import ManagedKeeperSession
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
 
-    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder)
+    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk)
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
@@ -353,6 +355,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     client.manager_keeper_session = keeper_session
     client.v4_batched_detail_readback = True
     client.automatic_ladder_profile = automatic_ladder
+    client.entry_spread_risk_profile = entry_spread_risk
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = _V4RunnerClient(
             url, user, password, timeout_seconds=60, persistent=True,
@@ -369,13 +372,15 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     return client
 
 
-def _v4_runner_credentials(*, automatic_ladder=False) -> tuple[str, str, str]:
+def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False) -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
-    if type(automatic_ladder) is not bool:
+    if type(automatic_ladder) is not bool or type(entry_spread_risk) is not bool or (automatic_ladder and entry_spread_risk):
         raise ValueError('V4 runner profile selection must be explicit')
     stem = 'BACKTEST_V4_LADDER_RUNNER' if automatic_ladder else 'BACKTEST_V4_RUNNER'
     principal = 'backtest_v4_ladder_runner' if automatic_ladder else 'backtest_v4_runner'
+    if entry_spread_risk:
+        stem, principal = 'BACKTEST_V4_ENTRY_COST_RUNNER', 'backtest_v4_entry_cost_runner'
     url, user, password = _dedicated_clickhouse_credentials(
         stem + '_CLICKHOUSE_', stem + '_CREDENTIAL_FILE')
     url = workstation_ipv4_transport(url)
@@ -410,17 +415,18 @@ def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, 
     return inline[0].strip(), inline[1].strip(), inline[2]
 
 
-def backtest_v4_operator_client_from_env(*, automatic_ladder=False) -> Any:
+def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False) -> Any:
     """SELECT-only catalog/grant audit before any Keeper claim or run write."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
-    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder)
+    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk)
     client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"readonly": 1, "max_threads": 2,
                               "max_execution_time": 60})
     client.v4_batched_detail_readback = True
     client.automatic_ladder_profile = automatic_ladder
+    client.entry_spread_risk_profile = entry_spread_risk
     return client
 
 
@@ -595,6 +601,7 @@ class V4StrategyOneEntryBatch:
     first_price_authorities: tuple[FirstPriceEntryAuthority, ...] = ()
     entry_activity_evidence: tuple[Mapping[str, Any], ...] = ()
     first_price_source: Any | None = None
+    entry_spread_risk_evidence: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if (not isinstance(self.base, TypedJournalBatch)
@@ -613,15 +620,24 @@ class V4StrategyOneEntryBatch:
             MappingProxyType(dict(row)) for row in self.first_price_evidence))
         object.__setattr__(self, "entry_activity_evidence", tuple(
             MappingProxyType(dict(row)) for row in self.entry_activity_evidence))
+        object.__setattr__(self, "entry_spread_risk_evidence", tuple(
+            MappingProxyType(dict(row)) for row in self.entry_spread_risk_evidence))
+        from .numbered_fixed_strategy import numbered_fixed_strategy
+        cost_required = any(numbered_fixed_strategy(row['strategy_number']).entry_spread_risk_policy is not None
+                            for row in self.entry_evidence)
+        if bool(self.entry_spread_risk_evidence) != cost_required:
+            raise ValueError('Entry cost envelope must carry exactly its declared evidence')
+        if cost_required and getattr(self.first_price_source, 'entry_spread_risk_source', None) is None:
+            raise ValueError('Entry cost envelope lacks independent source')
         if self.first_price_source is not None:
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
             if (type(self.first_price_source) is not CertifiedPriceReadbackAuthority
                     or self.first_price_source.run_id != self.base.run_id):
                 raise ValueError('Strategy entry envelope has a foreign certified price source')
-        if (self.entry_activity_evidence or any(row['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) for row in self.entry_evidence)):
+        if (self.entry_activity_evidence or any(row['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54) for row in self.entry_evidence)):
             if getattr(self.first_price_source, 'entry_activity_source', None) is None:
                 raise ValueError('Strategy 36 entry envelope requires certified activity source')
-            if any(row['strategy_number'] in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) for row in self.entry_evidence):
+            if any(row['strategy_number'] in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54) for row in self.entry_evidence):
                 from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
                 if (type(self.first_price_source.entry_activity_source) is not EpisodeActivityReadbackAuthority
                         or any(row['strategy_number'] != self.first_price_source.entry_activity_source.strategy_number
@@ -2255,6 +2271,11 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
             raise RuntimeError('Automatic ladder profile requires its dedicated principal')
         storage_preflight(client, tables=ladder_tables)
         writable |= frozenset(table.name for table in ladder_tables)
+    if getattr(client, 'entry_spread_risk_profile', False):
+        if getattr(client, 'automatic_ladder_profile', False) or client.execute('SELECT currentUser()').strip() != 'backtest_v4_entry_cost_runner':
+            raise RuntimeError('Entry cost profile requires its dedicated principal')
+        storage_preflight(client, tables=(ENTRY_SPREAD_RISK,))
+        writable |= frozenset({ENTRY_SPREAD_RISK.name})
     readonly = frozenset(table.name for table in installed) - writable
     # Producer-owned episode context is an optional SELECT-only extension.
     # Its absence must not prevent Strategy 1 from executing; once installed,
@@ -4629,7 +4650,7 @@ class ArteJournalWriter:
         StrategyOneManagementRunner._validate_capture(
             state, max_pending_breaks=256)
         if first_price_source is not None or any(
-                proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) for _, proposal in state.submitted):
+                proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54) for _, proposal in state.submitted):
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
             if (type(first_price_source) is not CertifiedPriceReadbackAuthority
                     or first_price_source.run_id != self._run_id
@@ -5030,6 +5051,7 @@ class ArteJournalWriter:
                         first_price_evidence=unit.first_price_evidence,
                         first_price_authorities=unit.first_price_authorities,
                         entry_activity_evidence=unit.entry_activity_evidence,
+                        entry_spread_risk_evidence=unit.entry_spread_risk_evidence,
                         first_price_source=unit.first_price_source)
                 elif isinstance(group[0][0], V4OmsTacticBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
