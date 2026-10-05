@@ -116,7 +116,7 @@ from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
 def _require_numbered_session_window(strategy: Mapping[str, Any],
                                      start: clock_time, end: clock_time) -> None:
     """Extended-session releases run one flat window, never regular hours."""
-    if strategy.get("strategy_number") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48):
+    if strategy.get("strategy_number") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50):
         return
     if not ((clock_time(4) <= start < end <= clock_time(9, 30))
             or (clock_time(16) <= start < end <= clock_time(20))):
@@ -2619,7 +2619,7 @@ class ReplayRunController:
         keeper = getattr(self, '_fixed_keeper_session', None)
         boundary = dict(self._source_cursor).get('boundary_ms')
         if (self.definition.mode != RunMode.BACKTEST
-                or manager is None or manager.contract.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48)
+                or manager is None or manager.contract.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50)
                 or publisher is None or publisher.writer.journal_profile != 'backtest_v4'
                 or keeper is None or type(requests) is not tuple or not requests
                 or requests != manager.profit_arming_requests(boundary_ms=boundary)):
@@ -2655,7 +2655,7 @@ class ReplayRunController:
         """Fence the completed decision before ordinary Portfolio/OMS submission."""
         manager, publisher = self._strategy_one_manager, self._journal_publisher
         boundary = dict(self._source_cursor).get('boundary_ms')
-        if (self.definition.mode != RunMode.BACKTEST or manager.contract.strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48)
+        if (self.definition.mode != RunMode.BACKTEST or manager.contract.strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50)
                 or publisher is None or publisher.writer.journal_profile != 'backtest_v4'
                 or self._fixed_keeper_session is None or not requests
                 or requests != manager.liquidity_fade_requests(boundary_ms=boundary)):
@@ -3877,11 +3877,11 @@ class ReplayRunController:
             self.processed_events += len(work.broker_rows)
             await self._after_event(at)
             manager = self._strategy_one_manager
-            if manager.contract.strategy_number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48):
+            if manager.contract.strategy_number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50):
                 liquidity_requests = manager.liquidity_fade_requests(boundary_ms=work.boundary_ms)
                 if liquidity_requests:
                     await self._confirm_liquidity_fade_checkpoint(liquidity_requests, event_time=at)
-            if manager.contract.strategy_number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48):
+            if manager.contract.strategy_number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50):
                 requests = manager.profit_arming_requests(boundary_ms=work.boundary_ms)
                 if requests:
                     await self._confirm_profit_arming_checkpoint(requests, event_time=at)
@@ -9768,7 +9768,7 @@ class ReplayRunService:
                     'Declared automatic ladder is fresh-only; interrupted campaign recovery '
                     'requires separate causal actor acceptance; start a new run')
             if dict(definition.configuration_revision.get("payload", {}).get(
-                    "strategy") or {}).get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48):
+                    "strategy") or {}).get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50):
                 raise RuntimeError(
                     "This numbered strategy resume awaits interrupted-run equivalence acceptance; start a new run")
             controller = await self._prepare_typed_v4_resume(

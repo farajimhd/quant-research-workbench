@@ -9,6 +9,7 @@ import pytest
 
 from src.backend.backtest_ladder_source_authority import (
     DeclaredLadderSourceAuthority, declared_ladder_policy, declared_source_end,
+    declared_population_exclusions,
 )
 from src.trading_runtime.arte_intent_projection import RecoveredIntent, strategy_intent_batch
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
@@ -213,6 +214,95 @@ def test_full_population_uses_certified_market_membership_only():
         with pytest.raises(ValueError, match='fenced selection mode'):
             DeclaredLadderSourceAuthority(cold.client, RUN, cold.configuration,
                 cold.native, changed, cold.market)
+
+
+def test_declared_population_exclusions_are_exact_and_context_bound():
+    context, *_ = source()
+    config = declared(context)
+    context = replace(context, source_through_boundary_ms=19800000,
+        observations=replace(context.observations,
+            gate=replace(context.observations.gate, certified_history_through_ms=19800000)))
+    policy = config.payload['strategy']['numbered_release']['automatic_market_policy']
+    assert declared_population_exclusions(policy) == ()
+    assert 'population_exclusions' not in replace(context, configuration=config).market_policy_payload()
+    for invalid in (('LGHL',), ['lghl'], [' LGHL'], ['LGHL', 'LGHL'],
+                    ['ZZZ', 'LGHL'], ['A'] * 101, [None]):
+        with pytest.raises(ValueError, match='population exclusions'):
+            declared_source_end({**policy, 'population_exclusions':invalid},
+                {'start_local_ms':14400000, 'end_local_ms':34200000})
+    policy['population_exclusions'] = ['LGHL']
+    config = replace(config, payload_hash=sha256(canonical_json(config.payload).encode()).hexdigest())
+    selected = replace(context, configuration=config)
+    assert selected.market_policy_payload()['population_exclusions'] == ['LGHL']
+    selected.verify_policy(declared_ladder_policy(config))
+    excluded_market = replace(context.market, tickers=tuple(sorted((*context.market.tickers, 'LGHL'))))
+    with pytest.raises(ValueError, match='declared population exclusion'):
+        replace(selected, market=excluded_market).market_policy_payload()
+
+
+def test_full_population_accepts_6086_without_truncation_and_rejects_over_8192():
+    context, *_ = source()
+    cold = authority(context)
+    saved = {'definition':{'final_session_date':context.session_date.isoformat(),
+        'start_local_ms':14400000, 'end_local_ms':34200000,
+        'ticker_population_mode':'market_plan'}, 'tickers':()}
+    symbols = tuple(f'T{index:04d}' for index in range(6086))
+    market = replace(cold.market, tickers=symbols)
+    full = DeclaredLadderSourceAuthority(cold.client, RUN, cold.configuration,
+        cold.native, saved, market)
+    assert full.tickers == frozenset(symbols) and len(full.tickers) == 6086
+    assert (full.max_contexts, full.max_context_bytes, full.max_parents) == (8, 512*1024*1024, 4096)
+    with pytest.raises(ValueError, match='exact bounded scope'):
+        DeclaredLadderSourceAuthority(cold.client, RUN, cold.configuration, cold.native, saved,
+            replace(market, tickers=tuple(f'T{index:04d}' for index in range(8193))))
+
+
+def test_cold_population_cannot_locally_remove_excluded_certified_members():
+    context, *_ = source()
+    cold = authority(context)
+    policy = cold.configuration.payload['strategy']['numbered_release']['automatic_market_policy']
+    policy['population_exclusions'] = ['LGHL']
+    config = replace(cold.configuration,
+        payload_hash=sha256(canonical_json(cold.configuration.payload).encode()).hexdigest())
+    native = {**cold.native, 'configuration_hash':config.payload_hash}
+    saved = {'definition':{'final_session_date':context.session_date.isoformat(),
+        'start_local_ms':14400000, 'end_local_ms':34200000,
+        'ticker_population_mode':'explicit'}, 'tickers':({'ticker':TICKER},)}
+    with pytest.raises(ValueError, match='declared population exclusion'):
+        DeclaredLadderSourceAuthority(cold.client, RUN, config, native, saved,
+            replace(cold.market, tickers=tuple(sorted((*cold.market.tickers, 'LGHL')))))
+
+
+def test_from_run_reuses_configuration_selected_market_and_exact_native_token(monkeypatch):
+    from src.trading_runtime import arte_journal_writer, arte_backtest_definition
+    from src.backend import backtest_strategy_one_configuration, backtest_market_data
+    context, *_ = source()
+    cold = authority(context)
+    config = cold.configuration
+    config.payload['strategy']['numbered_release']['automatic_market_policy']['population_exclusions'] = ['LGHL']
+    config = replace(config, payload_hash=sha256(canonical_json(config.payload).encode()).hexdigest())
+    native = {**cold.native, 'configuration_hash':config.payload_hash}
+    saved = {'definition':{'final_session_date':context.session_date.isoformat(),
+        'configuration_revision_id':config.revision()['revision_id'],
+        'start_local_ms':14400000, 'end_local_ms':34200000,
+        'ticker_population_mode':'market_plan'}, 'tickers':()}
+    monkeypatch.setattr(arte_journal_writer, 'load_typed_run_context', lambda client, run_id:native)
+    monkeypatch.setattr(backtest_strategy_one_configuration, 'certify_numbered_configuration',
+        lambda client, revision:config)
+    monkeypatch.setattr(arte_backtest_definition, 'load_backtest_definition',
+        lambda client, run_id, **kwargs:saved)
+    def selected(**kwargs):
+        assert kwargs['configuration'] is config.payload
+        assert kwargs['sessions'] == (context.session_date.isoformat(),)
+        assert 'LGHL' not in kwargs['tickers']
+        return cold.market
+    monkeypatch.setattr(backtest_market_data, 'certified_market_plan_from_arte', selected)
+    loaded = DeclaredLadderSourceAuthority.from_run(cold.client, RUN)
+    assert loaded.tickers == frozenset(cold.market.tickers)
+    assert loaded.market.token == native['market_plan_token']
+    native['market_plan_token'] = 'different-token'
+    with pytest.raises(ValueError, match='sealed native run authority'):
+        DeclaredLadderSourceAuthority.from_run(cold.client, RUN)
 
 
 def test_terminal_snapshot_cold_verification_keeps_complete_source_scope(monkeypatch):

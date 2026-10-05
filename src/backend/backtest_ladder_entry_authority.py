@@ -36,10 +36,15 @@ class NativeLadderMarketContext:
             'source_through_boundary_ms': self.source_through_boundary_ms}
         declared = self.configuration.payload['strategy']['numbered_release'].get('automatic_market_policy', {})
         if 'source_through_boundary_rule' in declared:
-            from src.backend.backtest_ladder_source_authority import EXTENDED_ENDS
+            from src.backend.backtest_ladder_source_authority import EXTENDED_ENDS, declared_population_exclusions
             payload.pop('source_through_boundary_ms')
             payload.update(source_through_boundary_rule='extended_session_end',
                 source_through_boundary_ms_by_session=dict(EXTENDED_ENDS))
+            if 'population_exclusions' in declared:
+                exclusions = declared_population_exclusions(declared)
+                if set(exclusions).intersection(self.market.tickers):
+                    raise ValueError('Ladder market contains a declared population exclusion')
+                payload['population_exclusions'] = list(exclusions)
             if self.source_through_boundary_ms not in EXTENDED_ENDS.values():
                 raise ValueError('Ladder declared source extent is outside extended-session ends')
         return payload

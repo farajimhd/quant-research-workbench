@@ -8,11 +8,34 @@ from collections import OrderedDict
 from dataclasses import fields
 from datetime import date
 from hashlib import sha256
+import re
 
 from src.trading_runtime.journal_contract import canonical_json
 
 
 EXTENDED_ENDS = {'premarket': 19_800_000, 'afterhours': 57_600_000}
+
+
+def declared_numbered_session_exit_reasons():
+    """Select cold exit guards from installed automatic strategy contracts."""
+    from src.trading_runtime.strategy_registry import installed_numbered_fixed_strategy_numbers
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy, numbered_session_exit_reason
+    return frozenset(numbered_session_exit_reason(number)
+        for number in installed_numbered_fixed_strategy_numbers()
+        if getattr(numbered_fixed_strategy(number), 'automatic_entry_policy', None) is not None)
+
+
+def declared_population_exclusions(market_policy):
+    """Validate the sealed optional selector without normalizing its identity."""
+    if 'population_exclusions' not in market_policy:
+        return ()
+    values = market_policy['population_exclusions']
+    if (type(values) is not list or len(values) > 100
+            or any(type(value) is not str or re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,15}', value) is None
+                   for value in values)
+            or values != sorted(set(values))):
+        raise ValueError('Ladder population exclusions require sorted unique canonical tickers bounded to 100')
+    return tuple(values)
 
 
 def declared_ladder_policy(configuration):
@@ -32,7 +55,7 @@ def declared_source_end(market_policy, definition):
     from src.trading_runtime.squeeze_ladder_columnar import LadderGatePolicy
     keys = {'gate', 'tick_int', 'stop_buffer_ticks', 'break_buffer_ticks',
             'source_through_boundary_rule', 'source_through_boundary_ms_by_session'}
-    if (type(market_policy) is not dict or set(market_policy) != keys
+    if (type(market_policy) is not dict or set(market_policy) not in (keys, keys | {'population_exclusions'})
             or market_policy['source_through_boundary_rule'] != 'extended_session_end'
             or market_policy['source_through_boundary_ms_by_session'] != EXTENDED_ENDS
             or market_policy['tick_int'] != 100
@@ -40,6 +63,7 @@ def declared_source_end(market_policy, definition):
             or market_policy['break_buffer_ticks'] != 1
             or set(market_policy['gate']) != {field.name for field in fields(LadderGatePolicy)}):
         raise ValueError('Ladder executable source needs its exact declared extended-session policy')
+    declared_population_exclusions(market_policy)
     window = (definition['start_local_ms'], definition['end_local_ms'])
     ends = {(14_400_000, 34_200_000): EXTENDED_ENDS['premarket'],
             (57_600_000, 72_000_000): EXTENDED_ENDS['afterhours']}
@@ -79,7 +103,7 @@ class DeclaredLadderSourceAuthority:
             raise ValueError('Ladder ticker population differs from its fenced selection mode')
         if not set(symbols) <= set(market.tickers):
             raise ValueError('Ladder fenced ticker membership exceeds the certified market plan')
-        if not symbols or len(symbols) > 4096 or len(set(symbols)) != len(symbols):
+        if not symbols or len(symbols) > 8192 or len(set(symbols)) != len(symbols):
             raise ValueError('Ladder saved ticker membership exceeds its exact bounded scope')
         self.client, self.run_id, self.configuration = client, run_id, configuration
         self.native, self.market = context, market
@@ -87,6 +111,8 @@ class DeclaredLadderSourceAuthority:
         self.tickers = frozenset(symbols)
         self.market_policy = configuration.payload['strategy']['numbered_release']['automatic_market_policy']
         self.source_end = declared_source_end(self.market_policy, saved['definition'])
+        if set(declared_population_exclusions(self.market_policy)).intersection(market.tickers):
+            raise ValueError('Ladder certified market membership contains a declared population exclusion')
         gate = dict(self.market_policy['gate'])
         gate['acquisition_windows'] = tuple(tuple(window) for window in gate['acquisition_windows'])
         self.gate_policy = LadderGatePolicy(**gate)
