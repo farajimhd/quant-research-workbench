@@ -31,6 +31,7 @@ class StrategyOneProposalCounts:
     candidate_decisions: int
     entry_proposals: int
     management_evaluations: int
+    declared_entry_rejections: tuple[tuple[str, int], ...] = ()
 
 
 async def run_strategy_one_proposals(
@@ -53,6 +54,7 @@ async def run_strategy_one_proposals(
     strategy_number: int = 1,
     momentum_plan=None,
     initial_momentum_plan=None,
+    entry_spread_risk_source=None,
 ) -> StrategyOneProposalCounts:
     """Dispatch certified entry proposals after broker liquidity at each clock."""
     if (not isinstance(scheduler, StrategyOneBoundaryScheduler)
@@ -68,17 +70,25 @@ async def run_strategy_one_proposals(
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
-    if strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
+    if contract.entry_spread_risk_policy is not None:
+        from .backtest_entry_spread_risk import EntrySpreadRiskReadbackAuthority
+        if (type(entry_spread_risk_source) is not EntrySpreadRiskReadbackAuthority
+                or entry_spread_risk_source.strategy_number != strategy_number
+                or entry_spread_risk_source.plan.parent.activity.parent is not initial_momentum_plan):
+            raise ValueError('Declared entry cost coordinator lacks independent full source')
+    elif entry_spread_risk_source is not None:
+        raise ValueError('Earlier coordinator cannot carry undeclared entry cost')
+    if strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
         from src.backend.backtest_strategy_rising_momentum import CertifiedRisingMomentumPlan
         if (not isinstance(momentum_plan, CertifiedRisingMomentumPlan)
                 or momentum_plan.source_build_id != entry.source_build_id):
             raise ValueError("Strategy 13 coordinator lacks certified momentum source")
-    if strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
+    if strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
         from src.backend.backtest_strategy_initial_momentum import CertifiedInitialMomentumPlan
         from src.backend.backtest_strategy_initial_momentum_growth import CertifiedInitialMomentumGrowthPlan
         from src.backend.backtest_strategy_certified_price_break import CertifiedInitialPriceBreakPlan
         expected_type = (CertifiedInitialPriceBreakPlan
-                         if strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) else
+                         if strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54) else
                          CertifiedInitialMomentumGrowthPlan
                          if strategy_number == 19 else CertifiedInitialMomentumPlan)
         if (type(initial_momentum_plan) is not expected_type
@@ -118,6 +128,8 @@ async def run_strategy_one_proposals(
                 raise ValueError("Strategy 1 ticker lacks distinct typed financial views")
             return {(view.account_id, view.assignment_id): view for view in views}
 
+        if candidate is not None and entry_spread_risk_source is not None:
+            entry_spread_risk_source.witness(ticker, boundary)
         current_by_id = await timed("strategy_one_financial_views", current_views())
         ordered_ids = tuple(sorted(current_by_id))
         if candidate is None:
@@ -166,7 +178,7 @@ async def run_strategy_one_proposals(
                 continue
             reentry = (await timed("strategy_one_reentry", reentry_witness(current, candidate))
                        if current.completed_entries and reentry_witness is not None else None)
-            if strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
+            if strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
                 from src.backend.backtest_strategy_certified_price_break import propose_certified_price_entry
                 decision = propose_certified_price_entry(initial_momentum_plan,
                     candidate, fact, activation, current, reentry=reentry,

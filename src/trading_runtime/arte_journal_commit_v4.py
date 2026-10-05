@@ -61,6 +61,7 @@ from .arte_initial_momentum_entry_v4 import (
 )
 from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
 from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activity_rows
+from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_spread_risk_rows
 
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
@@ -141,6 +142,8 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
                        first_price_source.plan.source.token)
         if first_price_source.entry_activity_source is not None:
             price_scope += (first_price_source.entry_activity_source.plan.token,)
+        if first_price_source.entry_spread_risk_source is not None:
+            price_scope += (first_price_source.entry_spread_risk_source.plan.token,)
 
     lease = getattr(client, "backtest_v4_lease", None)
     if lease is None:
@@ -631,7 +634,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name, ENTRY_SPREAD_RISK.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -666,7 +669,7 @@ def _load_verified_details_v4(
         prior_batch_id=prior_batch_id, verified_prefix=verified_prior_prefix,
         first_price_source=first_price_source)
     from .strategy_profit_giveback_exit import profit_giveback_reason
-    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)}
+    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54)}
     profit_rows = related_rows.get(PROFIT_GIVEBACK.name, ())
     if profit_rows or any(row['reason'] in profit_reasons for row in
                           related_rows.get('trading_strategy_intent_v1', ())):
@@ -678,7 +681,7 @@ def _load_verified_details_v4(
             prefix=verified_prior_prefix, first_price_source=first_price_source)
     from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason
     confirmation_rows = related_rows.get(CONFIRMED_AH_FAILURE.name, ())
-    if confirmation_rows or any(row['reason'] in {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)} for row in
+    if confirmation_rows or any(row['reason'] in {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54)} for row in
                                related_rows.get('trading_strategy_intent_v1', ())):
         if verified_prior_prefix is None:
             raise RuntimeError('AH confirmation readback requires its verified preceding prefix')
@@ -716,6 +719,12 @@ def _load_verified_details_v4(
         children, related_rows.get('trading_strategy_intent_v1', ()),
         related_rows.get('trading_event_v1', ()), run_id=run_id,
         source=entry_activity_source if entry_activity_source is not None else bound_activity)
+    cost_rows = tuple(dict(_canonical_typed_content(ENTRY_SPREAD_RISK.name,
+        {key: value for key, value in row.items() if key != 'content_hash'}, stored_utc=True),
+        content_hash=row['content_hash']) for row in related_rows.get(ENTRY_SPREAD_RISK.name, ()))
+    seal_certified_entry_spread_risk_rows(cost_rows, children,
+        related_rows.get('trading_strategy_intent_v1', ()), related_rows.get('trading_event_v1', ()),
+        run_id=run_id, source=getattr(first_price_source, 'entry_spread_risk_source', None))
     if len(parents) != len(children):
         raise RuntimeError("V4 Strategy 1 entry evidence is missing or extra")
     events = {str(UUID(str(row["record_id"]))): row for row in
@@ -758,7 +767,7 @@ def _load_verified_details_v4(
         # an offset. These rows have already passed canonical stored-UTC hash
         # verification; restore the declared timezone only at this read boundary.
         price_events = related_rows.get("trading_event_v1", ())
-        if any(child['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) for child in children):
+        if any(child['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54) for child in children):
             normalized_events = []
             for event in price_events:
                 clock = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
@@ -1135,7 +1144,7 @@ def publish_reservation_reason_batch_v4(client, batch, *, reasons) -> str:
 def publish_strategy_one_entry_batch_v4(
     client, batch, *, entry_evidence=(), add_evidence=(), momentum_evidence=(), initial_momentum_evidence=(),
     first_price_evidence=(), first_price_authorities=(),
-    entry_activity_evidence=(), first_price_source=None,
+    entry_activity_evidence=(), entry_spread_risk_evidence=(), first_price_source=None,
 ) -> str:
     """Commit one numbered acquisition and its scalar child on the writer lane."""
     if bool(entry_evidence) == bool(add_evidence):
@@ -1145,7 +1154,7 @@ def publish_strategy_one_entry_batch_v4(
         strategy_one_add_rows=add_evidence, rising_momentum_rows=momentum_evidence,
         initial_momentum_rows=initial_momentum_evidence,
         first_price_rows=first_price_evidence, first_price_authorities=first_price_authorities,
-        entry_activity_rows=entry_activity_evidence, first_price_source=first_price_source)
+        entry_activity_rows=entry_activity_evidence, entry_spread_risk_rows=entry_spread_risk_evidence, first_price_source=first_price_source)
 
 
 def publish_oms_tactic_batch_v4(client, batch, *, tactic_state, tactic_steps=()) -> str:
@@ -1349,7 +1358,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or parent["action"] != "enter_long"
             or parent["protection_profile_id"]
                != "early-squeeze-fixed-stop-full-target"
-            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)
+            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54)
             or row["boundary_ms"] != boundary_ms
             or elapsed.microseconds % 1_000
             or Decimal(str(row["frozen_gap"])) <= 0
@@ -1358,7 +1367,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or not row["assignment_id"] or not row["target_level_id"]
             or not row["bos_support_level_id"]):
         raise ValueError("V4 Strategy 1 entry evidence differs from its typed parent")
-    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
+    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
         from .strategy_recent_bos_entry import recent_bos_entry
         if not recent_bos_entry(boundary_ms=row["boundary_ms"],
                                 bos_break_boundary_ms=row["bos_break_boundary_ms"]):
@@ -1430,7 +1439,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                            profit_giveback_rows=(), confirmed_ah_rows=(), liquidity_fade_rows=(), verified_prior_prefix=None, first_price_source=None,
                            rising_momentum_rows=(), initial_momentum_rows=(),
                            first_price_rows=(), first_price_authorities=(),
-                           entry_activity_rows=(),
+                           entry_activity_rows=(), entry_spread_risk_rows=(),
                             strategy_one_add_rows=(),
                             oms_tactic_rows=None,
                             portfolio_allocation_row=None,
@@ -1815,6 +1824,10 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         dict(base_families)['trading_strategy_intent_v1'],
         dict(base_families)['trading_event_v1'], run_id=batch.run_id,
         source=getattr(first_price_source, 'entry_activity_source', None))
+    cost_rows = seal_certified_entry_spread_risk_rows(entry_spread_risk_rows, entry_rows,
+        dict(base_families)['trading_strategy_intent_v1'],
+        dict(base_families)['trading_event_v1'], run_id=batch.run_id,
+        source=getattr(first_price_source, 'entry_spread_risk_source', None))
     add_rows = _sealed_strategy_one_add_rows(
         batch, base_families, strategy_one_add_rows)
     # Compound micro-preparation cannot look up an entry in a sibling unit
@@ -1906,6 +1919,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += ((FIRST_PRICE.name, price_rows),)
     if activity_rows:
         families += ((ENTRY_ACTIVITY.name, activity_rows),)
+    if cost_rows:
+        families += ((ENTRY_SPREAD_RISK.name, cost_rows),)
     if add_rows:
         families += ((ADD_EVIDENCE.name, add_rows),)
     if allocation_rows:
@@ -2113,6 +2128,11 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         dict(base_families).get('trading_strategy_intent_v1', ()),
         dict(base_families).get('trading_event_v1', ()), run_id=batch.run_id,
         source=getattr(first_price_source, 'entry_activity_source', None))
+    seal_certified_entry_spread_risk_rows(dict(families).get(ENTRY_SPREAD_RISK.name, ()),
+        dict(families).get(ENTRY_EVIDENCE.name, ()),
+        dict(base_families).get('trading_strategy_intent_v1', ()),
+        dict(base_families).get('trading_event_v1', ()), run_id=batch.run_id,
+        source=getattr(first_price_source, 'entry_spread_risk_source', None))
     if any(name in (PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name) and rows for name, rows in families):
         if (live_lease is not None or type(verified_prior_prefix) is not V4CommittedPrefix
                 or verified_prior_prefix.run_id != batch.run_id

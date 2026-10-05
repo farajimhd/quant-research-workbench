@@ -121,7 +121,7 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release):
         momentum = load_rising_momentum_plan(
             market, visible, client=source_client,
             candidate_indices=base_gate.eligible_indices)
-        if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
+        if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
             from src.backend.backtest_strategy_initial_ten_percent import compile_initial_ten_percent_plan
             initial = compile_initial_ten_percent_plan(visible, fixed.entry, momentum)
         else:
@@ -129,14 +129,14 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release):
         source = load_first_price_source(market, initial, client=source_client)
     plan = compile_certified_price_break_plan(source)
     activity = None
-    if release.strategy_number in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
+    if release.strategy_number in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
         from src.backend.backtest_strategy_entry_activity_source import (
             load_entry_activity_plan, EntryActivityReadbackAuthority,
         )
         # Rebuild from the sealed native bars, never saved strategy claims.
         with closing(reader()) as source_client:
             activity_plan = load_entry_activity_plan(market, plan, client=source_client)
-        if release.strategy_number in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
+        if release.strategy_number in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
             from src.backend.backtest_strategy_episode_activity_gate import compile_episode_activity_static_gate
             from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
             # Reconstruct the full original prefix from certified native inputs.
@@ -144,7 +144,15 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release):
                 compile_episode_activity_static_gate(activity_plan), release.strategy_number)
         else:
             activity = EntryActivityReadbackAuthority(run_id, activity_plan)
-    return CertifiedPriceReadbackAuthority(run_id, plan, activity)
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    cost_policy = numbered_fixed_strategy(release.strategy_number).entry_spread_risk_policy
+    cost_authority = None
+    if cost_policy is not None:
+        from src.backend.backtest_entry_spread_risk import load_entry_spread_risk_plan, EntrySpreadRiskReadbackAuthority
+        with closing(reader()) as source_client:
+            cost_plan = load_entry_spread_risk_plan(market, activity.gate, cost_policy, client=source_client)
+        cost_authority = EntrySpreadRiskReadbackAuthority(run_id, cost_plan, release.strategy_number)
+    return CertifiedPriceReadbackAuthority(run_id, plan, activity, cost_authority)
 
 
 def _terminal_financial_accounts(client, prefix, account_ids: tuple[str, ...]) -> dict:
@@ -198,6 +206,14 @@ def _terminal_attestation(client, normalized: str,
             release = certify_numbered_configuration(market, int(context["strategy_revision"]))
         if release.payload_hash != context["configuration_hash"]:
             raise ValueError("Saved numbered configuration differs from its sealed release")
+    from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
+    cost_policy = getattr(resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision'])), 'entry_spread_risk_policy', None)
+    if cost_policy is not None and not getattr(client, 'entry_spread_risk_profile', False):
+        from contextlib import closing
+        from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env, _v4_preflight
+        with closing(backtest_v4_operator_client_from_env(entry_spread_risk=True)) as reader:
+            _v4_preflight(reader)
+            return _terminal_attestation(reader, normalized, cache)
     attestation = None
     for key in selected_cache.candidate_keys(_client_scope(client), normalized):
         candidate = selected_cache.get(key)
@@ -215,7 +231,7 @@ def _terminal_attestation(client, normalized: str,
         if ladder is not None:
             sources = DeclaredLadderSourceAuthority.from_run(client, normalized)
             prefix = load_verified_v4_prefix(client, normalized, automatic_ladder_sources=sources)
-        elif int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
+        elif int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
             source = _saved_twenty_price_source(client, normalized, context, release)
             prefix = load_verified_v4_prefix(
                 client, normalized, first_price_source=source)
