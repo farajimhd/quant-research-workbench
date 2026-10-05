@@ -61,6 +61,31 @@ uninspected sessions before final validation. Do not inspect their strategy
 trades, logs, features or charts. Preparation integrity checks are separate
 from inspecting strategy outcomes. Keep regular hours outside trading tests.
 
+### Completed Strategy 42 development baseline
+
+All 26 development PM/AH runs completed with 138 closed positions. The cold
+reports sum to +$1,883.96 net across independently funded $10,000 sessions,
+with $1,639.65 fees. Seven sessions meet +$500; thirteen lose money. This is
+not a continuous bankroll curve or evidence that the campaign goal is met.
+The largest broker-observed drawdown is $1,523.08; asynchronous account marks
+do not establish a continuous exact drawdown curve.
+
+The immutable runtime receipts are
+`strategy42-complete-development-baseline-v1.json` and
+`strategy42-development-trade-audit-v2.json`. The latter records all 138
+positions, sorted by net P&L, with each report's source hash. Forty-two target
+exits contribute +$11,726.46; forty follow-through failure exits contribute
+-$6,538.92; thirty-three stops contribute -$4,755.01. Fifteen profit-giveback
+exits contribute +$354.51, six liquidity-fade failures -$504.18, one confirmed
+AH failure -$201.40, and one session exit +$1,802.50.
+
+Heavy activity also occurs at failures: CDTG Aug 26 PM entered with 3,925
+eligible trades and 1,006,123 shares in its last completed minute, then lost
+$435.85 net; FTFT Aug 28 AH entered with 4,692 trades and 1,241,108 shares,
+then lost $366.48. These observations prioritize causal retention and decay
+tests; they do not justify ticker-specific exclusions or hypothetical profit
+from deleting losing trades. Validation outcomes were not inspected.
+
 ## Activation and entry
 
 1. A certified Signal Stream event admits a ticker to a bounded watchlist.
@@ -109,6 +134,17 @@ closes and integer buffers within the exact Float64 integer domain; this does
 not create a rounded VWAP source product. Tests cover fractional thresholds
 and neighboring Float64 values. Retain original source bits in evidence.
 These prepared predicates are not yet integrated into historical runs.
+
+The existing Strategy 1 candidate product is not the ladder's complete
+observation stream: `prepare_strategy_one_entries` already filters completed
+rows through four bullish MACDs, VWAP, prior-close, liquidity and 30s-stop
+rules. Its sparse entry-evidence gate adds BOS and protection requirements.
+Reusing those survivors would silently impose unrelated rules and omit some
+VWAP crossings. Bind the ladder mask to full certified completed liquidity/bar
+columns after certified squeeze admission, then advance only its survivors
+through sequential frozen V7/pivot setup state. Do not infer a preceding close
+from sparse candidates. Existing signal occurrence certification and native
+source projection can be reused; the old candidate mask cannot be substituted.
 
 `squeeze_ladder_protection.py` supplies percentage/structural target geometry
 and normalized allocation weights using existing independent protection
@@ -220,8 +256,14 @@ their temporary repair pairs. An actual simulated-broker/OMS integration
 qualifies a partial second-lot fill, its own target, complete-parent retirement
 and unit-journal cold recovery. Normalized ARTE projection separately preserves
 lot IDs and two-order repair batch boundaries. Orphan capacity transfer,
-cancellation/fill races, incomplete acknowledgement recovery and full native
+cancellation/fill races and full native
 V4/Keeper cold recovery still require qualification before publication.
+Unit integration now also covers a broker accepting both repair legs while
+returning only one acknowledgement: cold recovery restores planned closing
+roles without another submission. Missing observations keep the outcome
+unknown; changed observed command fields fail closed. Native recovery binds
+the prepared profile's role from its matched persisted command before fill
+accounting, rather than classifying parentless repairs as new entries.
 Older profiles retain their existing reconciliation path.
 
 First qualify the strategy with rotation disabled. Rotation is a Portfolio
