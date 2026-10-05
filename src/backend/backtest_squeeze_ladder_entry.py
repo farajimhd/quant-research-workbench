@@ -64,8 +64,12 @@ def propose_ladder_breakout(observations: PreparedLadderObservations, setup: Bou
     if gate.market_rejection[end] != 0:
         return reject('current_market_gate_failed')
     clocks = gate.boundary_ms[start:end + 1]
-    if np.any(np.diff(clocks) != 100):
+    certified_sparse = (gate.certified_history_through_ms is not None
+                        and gate.certified_history_through_ms >= boundary_ms)
+    if np.any(np.diff(clocks) != 100) and not certified_sparse:
         return reject('setup_observation_continuity_lost')
+    if clocks[-1] - clocks[-2] != 100:
+        return reject('completed_price_crossing_unavailable')
     ticker_index = v7._tickers.index(setup.ticker)
     seconds = v7.valid_seconds[ticker_index][1]
     first = bisect_right(seconds, setup.qualification_boundary_ms) - 1
@@ -85,9 +89,15 @@ def propose_ladder_breakout(observations: PreparedLadderObservations, setup: Bou
     prices = completed['close_int'].to_numpy()
     valid = completed['price_valid'].to_numpy()
     vwaps = completed['execution_vwap'].to_numpy()
-    if np.any(valid != 1) or np.any(~np.isfinite(vwaps)) or np.any(vwaps <= 0):
+    if (np.any(~np.isfinite(vwaps)) or np.any(vwaps <= 0)
+            or (np.any(valid != 1) and not certified_sparse)
+            or valid[0] != 1 or np.any(valid[-2:] != 1)):
         return reject('setup_price_evidence_lost')
-    if np.any(prices <= vwaps * 10000):
+    # Quote-only buckets contain no candle. Compare each persisted VWAP with
+    # the last observed valid completed close for setup retention only; never
+    # manufacture that close as a crossing operand or execution bar.
+    observed_price_indices = np.maximum.accumulate(np.where(valid == 1, np.arange(len(valid)), 0))
+    if np.any(prices[observed_price_indices] <= vwaps * 10000):
         return reject('qualified_vwap_lost')
     previous, current = int(prices[-2]), int(prices[-1])
     reference = setup.resistance.upper_comparison_int

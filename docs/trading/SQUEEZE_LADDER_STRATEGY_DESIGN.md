@@ -574,3 +574,26 @@ Sparse-count tests reject a threshold that the actual persisted counts cannot
 meet, missing crossing candles still reject, and unverified history still
 rejects. This is one-ticker source/gate qualification, not setup completeness,
 full-session financial execution or proof of an improved strategy.
+
+### Connected structural setup probe
+
+`ladder-cdtg-aug26-native-setup-probe-v1.json` also certified the native prior
+seed, V7 interval plan and confirmed-pivot plan. Of 66 VWAP crossings, 54 had
+complete frozen setup geometry; 12 lacked the required swing stop. Forty
+preliminary resistance-break candidates all failed another dense-grid
+assumption in setup retention. The same certified sparse-prefix availability
+now permits absent empty-event intervals in setup history. Quote-only rows
+are not candles: retained VWAP is compared with the last observed valid close,
+while the final crossing still requires two adjacent valid completed closes.
+Unverified history and invalid persisted VWAP remain rejected.
+
+Probe v2 retained the identical native plan tokens and policy. Its 40
+preliminary candidates now reject for V7 continuity (28), unavailable adjacent
+final price crossing (8), or invalidated frozen resistance (4). There are
+still zero market proposals and no financial simulation. The V7 plan token is
+`a0e847fd9ba0e0c8e4f01b9e46d6b3cbfb03a2035162ecb97adf8b987853f2ed`;
+the pivot plan token is
+`b936c45f8c6c5dc04c8cc46a39249771334ac0b26e4d4eaf708d93ebe93fa740`.
+Do not remove these guards merely to force entries. This is development
+source/setup qualification for one ticker; broader candidate coverage and the
+complete native Portfolio/OMS/journal path remain unqualified.

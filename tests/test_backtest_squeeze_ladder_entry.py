@@ -67,3 +67,30 @@ def test_vwap_loss_invalidates_without_changing_the_stop_or_resistance():
     assert decide(observed, setup, v7, boundary=65200).reason == 'qualified_vwap_lost'
     assert setup.stop.stop_int == 97900
     assert setup.resistance.upper == 10.2
+
+
+def test_certified_quote_only_setup_history_never_becomes_a_crossing_candle():
+    observed, setup, v7 = prepared()
+    source = observed.completed_source
+    for name, changes in {
+        'close_int': {650:0, 651:100200, 652:102200},
+        'price_valid': {650:0}, 'ask_int': {652:102300},
+    }.items():
+        values = source[name].to_pylist()
+        for index, value in changes.items():
+            values[index] = value
+        source = source.set_column(source.schema.get_field_index(name), name,
+                                   pa.array(values, type=source[name].type))
+    observed = replace(observed, completed_source=source)
+    assert decide(observed, setup, v7, boundary=65300).reason == 'entry_proposed'
+    assert decide(observed, setup, v7, boundary=65200).reason == 'setup_price_evidence_lost'
+    unavailable = replace(observed, gate=replace(observed.gate, certified_history_through_ms=None))
+    assert decide(unavailable, setup, v7, boundary=65300).reason == 'setup_price_evidence_lost'
+    # A quote-only VWAP update can invalidate retention against the last
+    # observed close, even though it cannot supply a crossing candle.
+    values = source['execution_vwap'].to_pylist()
+    values[650] = 10.03
+    source = source.set_column(source.schema.get_field_index('execution_vwap'),
+                               'execution_vwap', pa.array(values, type=source['execution_vwap'].type))
+    assert decide(replace(observed, completed_source=source), setup, v7,
+                  boundary=65300).reason == 'qualified_vwap_lost'
