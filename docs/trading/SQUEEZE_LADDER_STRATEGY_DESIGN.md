@@ -513,3 +513,12 @@ the proposal is not an approval or an order. A valid rehash cannot authorize a
 changed target, and a foreign assignment fails the source projection comparison.
 Native cold parent-row verification and committed Portfolio/OMS financial
 lineage are still required before publication or full saved-result acceptance.
+
+`verify_ladder_intent_parent` compares the reconstructed original proposal to
+the exact native event, intent and independent protection-slice rows. Its cold
+mode verifies every native row hash and uses the shared typed codec for stored
+UTC DateTime64, decimals and other scalar fields; it does not round timestamps
+or treat hashes as source authority. Writer-side admission reuses this check.
+Only the three proposal families are accepted. Cold callers must independently
+verify commit membership and source context first, then verify financial
+lineage separately. Native cold-reader wiring remains unfinished.

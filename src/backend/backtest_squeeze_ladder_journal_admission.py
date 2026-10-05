@@ -1,11 +1,13 @@
 """Prepared source and parent checks before native ladder family publication."""
-from datetime import datetime
+from datetime import datetime, timezone
+from hashlib import sha256
 
 from src.backend.backtest_squeeze_ladder_evidence import SETUP, TARGET
 from src.backend.backtest_squeeze_ladder_readback import reconstruct_ladder_evidence
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
-from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.arte_journal_writer import TypedJournalBatch, _canonical_typed_content
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+from src.trading_runtime.journal_contract import canonical_json
 
 
 def prepare_ladder_journal_families(batch: TypedJournalBatch, rows, *, verified_prior_prefix,
@@ -45,16 +47,51 @@ def prepare_ladder_journal_families(batch: TypedJournalBatch, rows, *, verified_
         raise ValueError('Ladder journal evidence has a foreign intent/account parent')
     intent = reconstruct_ladder_evidence(rows, run_id=batch.run_id, batch_id=batch.batch_id,
         parent_record_id=event['record_id'], **certified_context)
-    expected = strategy_intent_batch(intent, run_id=batch.run_id, run_month=batch.run_month,
-        account_id=financial.account_id, attempt_id=batch.attempt_id, batch_id=batch.batch_id,
-        prior_batch_id=batch.prior_batch_id, sequence=batch.first_sequence,
-        source_cursor=batch.source_cursor, run_status=batch.status,
-        recorded_at=datetime.fromisoformat(event['recorded_at']), record_id=event['record_id'],
-        correlation_id=event['correlation_id'], causation_id=event['causation_id'])
-    if (batch.first_sequence != batch.last_sequence
-            or tuple(dict(row) for row in batch.events) != tuple(dict(row) for row in expected.events)
-            or tuple(dict(row) for row in batch.intents) != tuple(dict(row) for row in expected.intents)
-            or tuple(dict(row) for row in batch.intent_slices) != tuple(dict(row) for row in expected.intent_slices)):
-        raise ValueError('Ladder parent intent/protection differs from independently reconstructed source')
+    verify_ladder_intent_parent(batch, intent, account_id=financial.account_id)
     return ((SETUP.name, (dict(rows.setup),)),
             (TARGET.name, tuple(dict(row) for row in rows.targets)))
+
+
+def verify_ladder_intent_parent(batch: TypedJournalBatch, intent, *, account_id: str,
+                                stored_utc: bool = False) -> None:
+    """Bind exact parent rows to a source-reconstructed unapproved proposal.
+
+    Cold callers must first verify commit membership and independently
+    reconstruct the market proposal. This check proves neither financial
+    permission nor Portfolio/OMS approval. Stored rows require native hashes;
+    canonical encoding preserves exact decimal and completed-clock semantics.
+    """
+    if (not isinstance(batch, TypedJournalBatch) or batch.status != 'running'
+            or len(batch.events) != 1 or len(batch.intents) != 1
+            or batch.first_sequence != batch.last_sequence or type(stored_utc) is not bool):
+        raise ValueError('Ladder parent intent requires one original proposal batch')
+    allowed = {'trading_event_v1', 'trading_strategy_intent_v1',
+               'trading_intent_protection_slice_v1'}
+    if batch.v4_command_lineages or any(family and name not in allowed for name, family in batch.families()):
+        raise ValueError('Ladder parent intent contains unrelated mutation families')
+    event = batch.events[0]
+    recorded_at = datetime.fromisoformat(event['recorded_at'])
+    if stored_utc and recorded_at.tzinfo is None:
+        recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+    expected = strategy_intent_batch(intent, run_id=batch.run_id, run_month=batch.run_month,
+        account_id=account_id, attempt_id=batch.attempt_id, batch_id=batch.batch_id,
+        prior_batch_id=batch.prior_batch_id, sequence=batch.first_sequence,
+        source_cursor=batch.source_cursor, run_status=batch.status,
+        recorded_at=recorded_at, record_id=event['record_id'],
+        correlation_id=event['correlation_id'], causation_id=event['causation_id'])
+    expected_families = dict(expected.families())
+    for name, family in batch.families():
+        if name not in allowed:
+            continue
+        canonical = []
+        for row in family:
+            content = {key: value for key, value in row.items() if key != 'content_hash'}
+            value = _canonical_typed_content(name, content, stored_utc=stored_utc)
+            if stored_utc or 'content_hash' in row:
+                digest = sha256(canonical_json(value).encode()).hexdigest()
+                if row.get('content_hash') != digest:
+                    raise ValueError('Ladder parent intent has an invalid native row hash')
+            canonical.append(value)
+        expected_content = [_canonical_typed_content(name, row) for row in expected_families[name]]
+        if canonical != expected_content:
+            raise ValueError('Ladder parent intent/protection differs from independently reconstructed source')
