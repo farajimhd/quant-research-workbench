@@ -1,5 +1,6 @@
 """Compose audited immutable publications, admitting development dates only."""
 import argparse
+import ast
 import copy
 import json
 from pathlib import Path
@@ -23,6 +24,21 @@ def write(path, data, hashed=False):
         if path.read_bytes()!=raw:raise ValueError('Immutable output already differs')
     else:path.write_bytes(raw)
     return file_hash(path)
+
+def grouping_parity(output, old, new):
+    """Allow UI adapter edits only after verifying exact producer source bytes."""
+    names=('Config','select','group')
+    trees=[]
+    for suffix,binding in (('original',old),('extension',new)):
+        path=Path(output)/('grouping-source-'+suffix+'.py')
+        if file_hash(path)!=binding['grouping_sha256']:raise ValueError('Producer grouping source bytes changed')
+        tree=ast.parse(path.read_text(encoding='utf-8'))
+        nodes=[n for n in tree.body if isinstance(n,(ast.Import,ast.ImportFrom)) or getattr(n,'name',None) in names
+            or isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='VERSION' for t in n.targets)]
+        trees.append(ast.dump(ast.Module(body=nodes,type_ignores=[]),include_attributes=False))
+    if trees[0]!=trees[1]:raise ValueError('Producer selection/grouping calculation differs')
+    return dict(method='exact_source_hash_and_calculation_ast',functions=list(names),
+        original_sha256=old['grouping_sha256'],extension_sha256=new['grouping_sha256'])
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
@@ -51,8 +67,9 @@ def main(argv=None):
     split=dataset_split(extra,runtime)
     if not split or extra_b['validation_split']!=extra['validation_split']:raise ValueError('Frozen split differs')
     if (any(one[k]!=extra[k] for k in ('version','algorithm','config','ranking','activity_source')) or
-        any(two['binding'][k]!=extra_b['binding'][k] for k in ('version','grouping','config','grouping_sha256'))):
+        any(two['binding'][k]!=extra_b['binding'][k] for k in ('version','grouping','config'))):
         raise ValueError('Extension changes approved feature or label math')
+    parity=grouping_parity(output,two['binding'],extra_b['binding'])
     sources=[];audits=[]
     for stage,dataset,sha in [('1a',one,old_a['sha256']),('1b',two,old_b['sha256']),
                               ('1a',extra,completed['dataset_1a_sha256']),('1b',extra_b,completed['dataset_1b_sha256'])]:
@@ -70,7 +87,8 @@ def main(argv=None):
     for e in merged['days']:
         if e['day'] in admitted:e['split_manifest']=extra['validation_split']['path']
     admission=dict(version=VERSION,split=extra['validation_split'],admitted_days=[e['day'] for e in merged['days']],
-        sealed_days=[d for d in split['days'] if split['roles'][d]=='sealed_test'],sources=sources,source_commit=a.source_commit)
+        sealed_days=[d for d in split['days'] if split['roles'][d]=='sealed_test'],sources=sources,
+        grouping_parity=parity,source_commit=a.source_commit)
     sha=write(output/'admission.json',admission,True)
     merged['development_admission']=dict(path=str(output/'admission.json'),sha256=sha)
     inventory(merged,runtime)

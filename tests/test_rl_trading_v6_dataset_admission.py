@@ -23,3 +23,15 @@ def test_admission_excludes_sealed_and_rejects_role_changes(tmp_path):
     with pytest.raises(ValueError,match='unauthorized'):inventory(data,tmp_path)
     data['days'].pop();data['days'][-1]['role']='train'
     with pytest.raises(ValueError,match='unauthorized'):inventory(data,tmp_path)
+
+def test_composition_requires_exact_producer_bytes_and_calculation_parity(tmp_path):
+    from research.rl_trading.v6.publish_development_extension import grouping_parity
+    old=tmp_path/'grouping-source-original.py';new=tmp_path/'grouping-source-extension.py'
+    source='import math\nVERSION="v7"\nclass Config: pass\ndef select(x): return x\ndef group(x): return x\n'
+    old.write_text(source);new.write_text(source+'def chart(): return "new UI"\n')
+    a={'grouping_sha256':file_hash(old)};b={'grouping_sha256':file_hash(new)}
+    assert grouping_parity(tmp_path,a,b)['functions']==['Config','select','group']
+    new.write_text(source.replace('def group(x): return x','def group(x): return x+1'))
+    with pytest.raises(ValueError,match='bytes changed'):grouping_parity(tmp_path,a,b)
+    b['grouping_sha256']=file_hash(new)
+    with pytest.raises(ValueError,match='calculation differs'):grouping_parity(tmp_path,a,b)
