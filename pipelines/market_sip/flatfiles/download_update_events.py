@@ -183,8 +183,8 @@ def updater_query_settings(args: argparse.Namespace) -> dict[str, str | int]:
         "max_insert_threads": 1,
         "max_block_size": 65536,
         "max_insert_block_size": 65536,
-        "min_insert_block_size_rows": 65536,
-        "min_insert_block_size_bytes": 16777216,
+        "min_insert_block_size_rows": 1048576,
+        "min_insert_block_size_bytes": 67108864,
         "query_plan_join_swap_table": "false",
         "join_algorithm": "hash",
     }
