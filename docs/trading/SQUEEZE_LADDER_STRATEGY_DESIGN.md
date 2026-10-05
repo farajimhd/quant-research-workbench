@@ -196,6 +196,19 @@ candle alone is insufficient. Missing liquidity is not zero liquidity.
 
 ## Optional Portfolio rotation
 
+### Native repair gap found during integration
+
+The existing OMS missing-protection branch aggregates group exposure and picks
+the first available profile target for repair. That is insufficient for three
+distinct target lots. Its inactive attached-child coverage rules also differ
+from the existing mandatory full-target profile. Do not enable the prepared
+ladder by merely marking all targets mandatory: that does not fix attribution.
+`ladder_lot_exposure` now reduces owned cumulative fills separately per lot,
+rejecting duplicate order observations, unknown ownership and exits exceeding
+that lot's acquisitions. It is not yet wired to OMS repair. Per-lot active
+protection, partial-parent repair and excess-OCA retirement remain required
+before native publication; submission/recovery tests alone do not prove them.
+
 First qualify the strategy with rotation disabled. Rotation is a Portfolio
 allocation decision, not permission for Strategy to bypass sizing or submit a
 replacement buy on anticipated sale proceeds.
