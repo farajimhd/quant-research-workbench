@@ -9,9 +9,15 @@ def published():
     data=source.read_json(source.mapped(active['dataset']),active['sha256'])
     audit=source.read_json(source.mapped(data['publication_audit']),data['publication_audit_sha256'])
     original,one=source.published()
+    source_identity=original['sha256']
+    if one.get('development_admission'):
+        from research.rl_trading.v6.dataset_admission import verify_market
+        verified=verify_market(one,source.runtime(),source.mapped)
+        if data!=verified:raise ValueError('UI and training 1b authorities differ')
+        source_identity=digest({e['day']:e['teacher_sha256'] for e in [one['context']]+one['days']})
     if (active['version']!=VERSION or data['version']!=VERSION or data['status']!='audited_1b_labels'
         or data['hash']!=digest({k:v for k,v in data.items() if k!='hash'}) or audit['status']!='passed'
-        or audit['binding']!=data['binding'] or data['binding']['source_sha256']!=original['sha256']
+        or audit['binding']!=data['binding'] or data['binding']['source_sha256']!=source_identity
         or data['sealed_test_accessed'] is not False or data['rows']!=audit['rows']
         or [(e['day'],e['role']) for e in data['days']]!=[(e['day'],e['role']) for e in [one['context']]+one['days']]
         or audit['day_certificates']!={e['day']:e['sha256'] for e in data['days']}):
@@ -22,7 +28,7 @@ def session(day):
     active,data=published();entry=next((e for e in data['days'] if e['day']==day),None)
     if entry is None:raise ValueError('Session outside approved 1b dataset')
     root=source.mapped(entry['root']);proof=source.read_json(root/'complete.json',entry['sha256'])
-    if proof['binding']!=data['binding'] or proof['day']!=day or proof['role']!=entry['role']:
+    if proof['binding']!=entry.get('producer_binding',data['binding']) or proof['day']!=day or proof['role']!=entry['role']:
         raise ValueError('1b session binding changed')
     return active,data,entry,root,proof
 

@@ -90,6 +90,7 @@ class TeacherDecision:
     opportunity_value_bps: float | None = None
     entry_stop_bps: float | None = None
     entry_target_bps: float | None = None
+    allocation_ratio_target: float | None = None  # Saved 1b target, never an observation.
 
 
 @dataclass(frozen=True)

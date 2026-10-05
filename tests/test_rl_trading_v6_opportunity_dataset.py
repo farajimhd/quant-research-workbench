@@ -105,6 +105,35 @@ def test_bounded_audit_uses_authentic_population(tmp_path,monkeypatch):
     assert [(d.close_us,d.token,d.raw_entry_gain,d.raw_exit_gain) for d in actual]==[(d.close_us,d.token,d.raw_entry_gain,d.raw_exit_gain) for d in expected]
 
 
+@pytest.mark.parametrize('selected',[False,True])
+def test_training_reads_saved_1b_suppression_and_size(tmp_path,monkeypatch,selected):
+    from research.rl_trading.v6.market_teacher_dataset import VERSION as MARKET_VERSION,copy_labels
+    _,day,_=fixture_shard(tmp_path,monkeypatch)
+    session=SimpleNamespace(role='train',day='2026-07-31',source_certificate_sha256='bankhash',listings=('identity',))
+    original=pl.read_parquet(day/'shards/00000/labels.parquet')
+    decisions=original.filter(pl.col('pair_id')>0).select('listing_id','pair_id').unique().with_columns(
+        pl.lit(selected).alias('selected'),pl.lit(1).alias('group_id'),pl.lit(.37).alias('allocation_ratio'),
+        pl.lit(1.).alias('active_score_sum'),pl.lit(2).alias('active_count'))
+    copied=copy_labels(original,decisions)
+    root=tmp_path/'market';shard=root/'shards/00000';shard.mkdir(parents=True)
+    copied.write_parquet(shard/'labels.parquet')
+    data.write_json(shard/'complete.json',dict(version=MARKET_VERSION,files={'labels':{'sha256':data.file_hash(shard/'labels.parquet')}}))
+    data.write_json(root/'complete.json',dict(source_teacher_sha256=data.file_hash(day/'complete.json'),day=session.day,role=session.role,
+        shards=[dict(path='shards/00000',sha256=data.file_hash(shard/'complete.json'))]))
+    labels,_=data.load_teacher(day,session,runtime_root=tmp_path,market_root=root)
+    flat=[d for d in labels if not d.held_index.size]
+    assert len(flat)==original.height
+    if not selected:
+        assert all(d.token==0 and d.soft_probabilities==(1.,0.) for d in flat)
+        assert not any(d.held_index.size for d in labels)
+        assert all(d.allocation_ratio_target is None and d.opportunity_value_bps is None for d in labels)
+    else:
+        assert any(d.token==1 and d.allocation_ratio_target==pytest.approx(.37) for d in flat)
+    with (shard/'labels.parquet').open('ab') as stream:stream.write(b'corruption')
+    with pytest.raises(ValueError,match='bytes changed'):
+        data.load_teacher(day,session,runtime_root=tmp_path,market_root=root)
+
+
 def test_atomic_receipt_retry_preserves_old_json(tmp_path,monkeypatch):
     path=tmp_path/'progress.json'; data.write_json(path,{'status':'old'})
     original=Path.replace; attempts=[]

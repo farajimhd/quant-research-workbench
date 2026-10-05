@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--base-url',default='http://127.0.0.1:5173')
     parser.add_argument('--api-url',default='http://127.0.0.1:8000')
     parser.add_argument('--output-dir',required=True)
+    parser.add_argument('--day',default='2026-08-25')
     args=parser.parse_args()
     output=Path(args.output_dir).resolve()
     if not output.is_relative_to(Path('D:/TradingML/runtimes').resolve()): raise ValueError('External runtime required')
@@ -60,8 +61,11 @@ def main():
                         page.get_by_role('button',name='1a labels',exact=True).click()
                         scope=page.locator('.research-path-content:visible')
                         scope.locator('.chart-shell').wait_for(timeout=300000)
+                        with page.expect_response(lambda r:'/saved-labels/chart' in r.url and 'day='+args.day in r.url,timeout=300000):
+                            scope.get_by_label('Saved label session',exact=True).select_option(args.day)
+                        scope.locator('.chart-shell').wait_for(timeout=300000)
                         assert 'NVDA' in scope.inner_text()
-                        assert scope.get_by_label('Saved label session',exact=True).locator('option').count()==19
+                        assert scope.get_by_label('Saved label session',exact=True).locator('option').count()==23
                         assert scope.get_by_label('Opportunity quality threshold',exact=True).count()==0
                         assert scope.get_by_label('Opportunity label view',exact=True).input_value()=='combined'
                         # Liquidity admission can correctly reject the opening
@@ -112,10 +116,10 @@ def main():
                             option=scope.get_by_label('Saved label listing',exact=True).locator('option').filter(has_text='AAPL').first
                             scope.get_by_label('Saved label listing',exact=True).select_option(option.get_attribute('value'))
                             scope.locator('.chart-shell').wait_for(timeout=300000)
-                            scope.get_by_label('Saved label session',exact=True).select_option('2026-08-25')
+                            scope.get_by_label('Saved label session',exact=True).select_option(args.day)
                             scope.locator('.chart-shell').wait_for(timeout=300000)
                             page.wait_for_timeout(200)
-                            assert any('day=2026-08-25' in r for r in requests)
+                            assert any('day='+args.day in r for r in requests)
                         records.append(dict(theme=theme,scale=scale,viewport=size,charts=len(responses),dataset_sha256=responses[0]['dataset_sha256']))
                         context.close()
         finally: browser.close()

@@ -11,9 +11,10 @@ from research.rl_trading.v6.split import DEVELOPMENT
 SELECTION_VERSION = 'rl-v6-development-exact-entry-f1-v1'
 
 
-def teacher_validation_score(summaries):
-    if {r['day'] for r in summaries} != set(map(str, DEVELOPMENT)) or len(summaries)!=len(DEVELOPMENT):
-        raise ValueError('Teacher selection requires exactly the two development days')
+def teacher_validation_score(summaries, *, development_days=None):
+    expected=tuple(map(str,DEVELOPMENT)) if development_days is None else tuple(development_days)
+    if {r['day'] for r in summaries} != set(expected) or len(summaries)!=len(expected):
+        raise ValueError('Teacher selection requires exactly the admitted development days')
     actual = predicted = exact = class_correct = total = 0
     loss_sum = 0.
     for row in summaries:

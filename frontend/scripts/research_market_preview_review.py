@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
 
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--output-dir',required=True);args=parser.parse_args()
+ parser=argparse.ArgumentParser();parser.add_argument('--output-dir',required=True);parser.add_argument('--day',default='2026-07-31');args=parser.parse_args()
  out=Path(args.output_dir).resolve()
  if not out.is_relative_to(Path('D:/TradingML/runtimes').resolve()):raise ValueError('External runtime required')
  out.mkdir(parents=True,exist_ok=True);records=[];errors=[]
@@ -30,7 +30,7 @@ def main():
        route.fulfill(response=response)
       page.route('**/api/research/models**',proxy)
       page.goto('http://127.0.0.1:5173/#research-workspace');page.get_by_role('button',name='1b labels & grouping',exact=True).click()
-      page.get_by_label('1b session',exact=True).select_option('2026-07-31')
+      page.get_by_label('1b session',exact=True).select_option(args.day)
       page.get_by_text('3 · Inspect copied 1b labels',exact=True).wait_for(timeout=300000)
       assert page.locator('[aria-label="Research paths"] > button').count()==2
       assert page.get_by_label('1b return threshold',exact=True).get_attribute('readonly') is not None

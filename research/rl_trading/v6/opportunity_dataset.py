@@ -181,7 +181,9 @@ def require_dataset(path, *, runtime_root, allow_extension=False):
     from research.rl_trading.v6.validation_split import dataset_split
     extension=dataset_split(data,runtime)
     if extension is not None and not allow_extension:raise ValueError('Generation-only extension is unavailable to training or public audit loaders')
-    expected=extension['days'] if extension else list(map(str,TRAIN+DEVELOPMENT))
+    from research.rl_trading.v6.dataset_admission import inventory, verify_market
+    admitted=inventory(data,runtime) if extension is None else None
+    expected=extension['days'] if extension else [d for d,r in admitted]
     expected_status='audited_validation_extension' if extension else 'audited_ready_for_training'
     if extension and (data['context']['day']!=extension['context_day'] or
         any(e['role']!=extension['roles'][e['day']] for e in data['days'])):raise ValueError('Extension roles changed')
@@ -207,10 +209,12 @@ def require_dataset(path, *, runtime_root, allow_extension=False):
         proof = verify_day(entry['teacher_root'], entry['bank_certificate_sha256'])
         if proof['day'] != entry['day'] or proof['role'] != entry['role']:
             raise ValueError('Dataset role/day differs from labels')
+    if data.get('development_admission'):
+        verify_market(data,runtime)
     return data
 
 
-def load_teacher(root, session, *, runtime_root, audit_development=False, audit_listing_ids=None):
+def load_teacher(root, session, *, runtime_root, audit_development=False, audit_listing_ids=None, market_root=None):
     """Conditional flat and unit-held branches; raw gain never quality-as-value.
 
     Targets are aligned to candle CLOSE, never open. Market features must use
@@ -230,13 +234,28 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
     if audit_listing_ids is not None and (not audit_development or not set(audit_listing_ids)<=set(session.listings)):
         raise ValueError('Bounded listing audit requires explicit audit mode and certified identities')
     labels = []; cash0 = 10_000.; threshold = proof['config']['quality_threshold']
+    market_proof=None
+    if market_root is not None:
+        market_root=Path(market_root).resolve()
+        if not market_root.is_relative_to(runtime):raise ValueError('1b targets escaped runtime')
+        market_proof=json.loads((market_root/'complete.json').read_bytes())
+        if (market_proof['source_teacher_sha256']!=file_hash(root/'complete.json') or
+            market_proof['day']!=str(session.day) or market_proof['role']!=session.role):
+            raise ValueError('1b teacher does not copy this 1a session')
     enter_masks={}
     empty_index=np.empty(0,np.int64); empty_features=np.zeros((0,11),np.float32); empty_allowed=np.empty(0,bool)
     flat_account=np.array([cash0,cash0,0,0,0,0,0],np.float32); no_entries=np.zeros(n,bool)
     for shared in (empty_index,empty_features,empty_allowed,flat_account,no_entries): shared.setflags(write=False)
     for shard in proof['shards']:
         folder = root/shard['path']
-        if audit_listing_ids is not None:
+        if market_proof is not None:
+            from research.rl_trading.v6.market_teacher_dataset import read_targets
+            item=next(s for s in market_proof['shards'] if s['path']==shard['path'])
+            copied=market_root/item['path']
+            if file_hash(copied/'complete.json')!=item['sha256']:raise ValueError('1b shard receipt changed')
+            frame=read_targets(copied)
+            if audit_listing_ids is not None:frame=frame.filter(pl.col('listing_id').is_in(audit_listing_ids))
+        elif audit_listing_ids is not None:
             receipt=json.loads((folder/'complete.json').read_text())
             if not set(audit_listing_ids)&set(receipt['identities']): continue
             frame=pl.scan_parquet(folder/'labels.parquet').filter(pl.col('listing_id').is_in(audit_listing_ids)).collect()
@@ -253,30 +272,42 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
                 mask=np.zeros(n,bool); mask[i]=True; mask.setflags(write=False); enter_masks[i]=mask
             enter=enter_masks[i]
             q = float(row['entry_quality']); gain = float(row['entry_gain'])
-            labels.append(TeacherDecision(row['time_us'],0,1+i if gain>0 and q>=threshold else 0,
+            entry_action=gain>0 and q>=threshold
+            if market_proof is not None:
+                entry_action=row['action']=='ENTRY'
+                q=float(row['teacher_probabilities'][0]) if entry_action else 0.
+            labels.append(TeacherDecision(row['time_us'],0,1+i if entry_action else 0,
                 flat_account,empty_index,empty_features,
                 enter,empty_allowed,empty_allowed,empty_allowed,
                 sample_weight=1/counts[(row['listing_id'],row['pair_id'])], soft_tokens=(0,1+i),
-                soft_probabilities=(1-q,q),episode_uid=uid,opportunity_value_bps=gain/row['close']*10000,
+                soft_probabilities=(1-q,q),episode_uid=uid,
+                opportunity_value_bps=gain/row['close']*10000 if market_proof is None or entry_action else None,
                 label_version=ALGORITHM,raw_entry_gain=gain,raw_exit_gain=None,
-                target_close_us=row['entry_target_us'],target_horizon_seconds=row['entry_horizon_seconds']))
+                target_close_us=row['entry_target_us'],target_horizon_seconds=row['entry_horizon_seconds'],
+                allocation_ratio_target=float(row['allocation_ratio']) if market_proof is not None and row['allocation_loss_mask'] else None))
+            # Suppressed episodes are flat WAIT examples. The position-conditional
+            # head cannot represent held WAIT; do not invent a hypothetical holding.
+            if market_proof is not None and row['episode_selected'] is not True:continue
             if row['exit_gain'] is None: continue
             pair = entries[(row['listing_id'],row['pair_id'])]; price = row['entry_basis']
             # Hypothetical held account also excludes the target candle price.
             mark = row['prior_close']
             if mark is None: raise ValueError('Held target lacks strictly prior price context')
             age = (row['time_us']-pair['reference_entry_us'])/1e6; q = float(row['exit_quality'])
+            exit_action=row['exit_gain']>0 and q>=threshold
+            if market_proof is not None:
+                exit_action=row['reference_action']=='EXIT'
             units=min(1.,cash0/price)
             held = np.array([i],np.int64); features = np.array([[units,price,age,(mark-price)/price,0,0,0,0,0,0,0]],np.float32)
             cash = max(0.,cash0-units*price); equity = cash+units*mark
-            labels.append(TeacherDecision(row['time_us'],0,1+n if row['exit_gain']>0 and q>=threshold else 1+n+3,
+            labels.append(TeacherDecision(row['time_us'],0,1+n if exit_action else 1+n+3,
                 np.array([cash,equity,0,units*mark/equity,age,0,0],np.float32),held,features,
                 no_entries,np.ones(1,bool),np.zeros(1,bool),np.zeros(1,bool),
                 sample_weight=1/counts[(row['listing_id'],row['pair_id'])],soft_tokens=(1+n,1+n+3),soft_probabilities=(q,1-q),
                 episode_uid=uid,opportunity_value_bps=row['exit_gain']/price*10000,
                 label_version=ALGORITHM,raw_entry_gain=None,raw_exit_gain=row['exit_gain'],
-                target_close_us=row['time_us'] if row['exit_gain']>0 and q>=threshold else row['hold_target_us'],
-                target_horizon_seconds=0. if row['exit_gain']>0 and q>=threshold else row['hold_horizon_seconds']))
+                target_close_us=row['time_us'] if exit_action else row['hold_target_us'],
+                target_horizon_seconds=0. if exit_action else row['hold_horizon_seconds']))
     labels.sort(key=lambda d:(d.close_us,d.episode_uid,len(d.held_index)))
     result=[]; previous=None; order=0
     for item in labels:

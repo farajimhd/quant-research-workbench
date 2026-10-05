@@ -83,7 +83,7 @@ def _model_causality_audit(policy,device):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--dataset',type=Path,required=True)
+    parser.add_argument('--dataset',type=Path,help='Defaults to the active audited dataset registry')
     parser.add_argument('--run-root',type=Path,required=True)
     parser.add_argument('--early-manifest',type=Path,required=True)
     parser.add_argument('--late-manifest',type=Path,required=True)
@@ -152,6 +152,10 @@ def main(argv=None):
     if min(args.teacher_epochs,args.ppo_epochs,args.ppo_updates,args.clocks_per_chunk,
            args.max_orders_per_second,args.replay_every)<1 or args.learning_rate<=0 or args.log_every_seconds<=0:
         raise ValueError('Positive training/rollout limits required')
+    if args.dataset is None:
+        active=json.loads((runtime/'rl-v6-active-labels.json').read_bytes())
+        args.dataset=Path(active['dataset'])
+        if file_hash(args.dataset)!=active['sha256']:raise ValueError('Active training dataset changed')
     dataset=require_dataset(args.dataset,runtime_root=runtime)
     from research.rl_trading.v6.opportunity_dataset import VERSION as LABEL_DATASET_VERSION
     if args.action_audit is not None or args.ticker_brackets_root is not None:
@@ -232,7 +236,7 @@ def main(argv=None):
         root=args.episode_supervision_root.resolve()
         if not root.is_relative_to(runtime):raise ValueError('Episode labels escaped runtime')
         for entry in dataset['days']:
-            path=root/entry['day']/'complete.json'
+            path=Path(entry['teacher_root'])/'complete.json'
             proof=json.loads(path.read_text())
             if (proof.get('version')!=EPISODE_VERSION or proof.get('status')!='certified_swing_opportunities' or
                 proof.get('bank_certificate_sha256')!=entry['bank_certificate_sha256'] or
@@ -240,9 +244,17 @@ def main(argv=None):
                 proof.get('sealed_test_accessed') is not False):
                 raise ValueError('All18 episode label certificates must bind to audited banks')
             episode_certificates[entry['day']]=file_hash(path)
-            verify_day(root/entry['day'],entry['bank_certificate_sha256'])
+            verify_day(Path(entry['teacher_root']),entry['bank_certificate_sha256'])
+        market_entries={}
+        if dataset.get('market_teacher_dataset'):
+            from research.rl_trading.v6.dataset_admission import verify_market
+            market_entries={e['day']:e for e in verify_market(dataset,runtime)['days']}
         def teacher_loader(ignored,session,**kwargs):
-            return load_episode_teacher(root/str(session.day),session,**kwargs)
+            entry=next(e for e in dataset['days'] if e['day']==str(session.day))
+            market_root=None
+            if market_entries:
+                market_root=Path(market_entries[str(session.day)]['root'])
+            return load_episode_teacher(Path(entry['teacher_root']),session,market_root=market_root,**kwargs)
     policy=RankedBracketActorCritic(config=ranking, wait_hold=wait_hold).to(device)
     ticker_certificates={}
     if args.ticker_heads:
@@ -256,7 +268,7 @@ def main(argv=None):
             base_loader=teacher_loader
             # Audit every target binding before creating the optimizer.
             for entry in dataset['days']:
-                audited=open_session(Path(entry['bank_root']),runtime_root=runtime,previous_root=Path(entry['previous_root']))
+                audited=open_session(Path(entry['bank_root']),runtime_root=runtime,previous_root=Path(entry['previous_root']),split_manifest=Path(entry['split_manifest']) if entry.get('split_manifest') else None)
                 labels,_=base_loader(Path(entry['teacher_root']),audited,runtime_root=runtime,audit_development=True)
                 _,proof=attach_targets(labels,audited,args.ticker_brackets_root)
                 ticker_certificates[entry['day']]=proof
@@ -432,7 +444,7 @@ def main(argv=None):
             if payload['cuda_rng']: torch.cuda.set_rng_state_all([r.cpu() for r in payload['cuda_rng']])
             np.random.set_state(payload['numpy_rng']); random.setstate(payload['python_rng'])
         def open_day(entry):
-            return open_session(Path(entry['bank_root']),runtime_root=runtime,previous_root=Path(entry['previous_root']))
+            return open_session(Path(entry['bank_root']),runtime_root=runtime,previous_root=Path(entry['previous_root']),split_manifest=Path(entry['split_manifest']) if entry.get('split_manifest') else None)
         def evidence(session):
             key=str(session.day)
             reader=arte_source.reader(threads=2)
@@ -596,7 +608,7 @@ def main(argv=None):
                             teacher_summaries.append(result)
                             log('validation/teacher',result)
                             del session,decisions,outcomes
-                        score=teacher_validation_score(teacher_summaries)
+                        score=teacher_validation_score(teacher_summaries,development_days=[e['day'] for e in dataset['days'] if e['role']=='development'])
                         selection=run/'teacher-selection.json'
                         previous=json.loads(selection.read_text()) if selection.is_file() else None
                         if previous is None or selection_key(score)>selection_key(previous['score']):

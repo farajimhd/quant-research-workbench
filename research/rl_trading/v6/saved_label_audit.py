@@ -48,6 +48,10 @@ def published():
     dataset = read_json(mapped(active['dataset']), active['sha256'])
     audit = read_json(mapped(dataset['publication_audit']), active['publication_audit_sha256'])
     entries = [dataset['context']] + dataset['days']
+    from research.rl_trading.v6.dataset_admission import inventory
+    expected=inventory(dataset,runtime(),mapped)
+    if [(e['day'],e['role']) for e in dataset['days']]!=expected:
+        raise ValueError('Public dataset includes unapproved sessions')
     if (dataset.get('hash') != digest({k:v for k,v in dataset.items() if k!='hash'}) or
         dataset.get('status') != 'audited_ready_for_training' or dataset.get('sealed_test_accessed') is not False or
         dataset.get('version') != data.VERSION or dataset.get('algorithm') != algorithm.VERSION or
