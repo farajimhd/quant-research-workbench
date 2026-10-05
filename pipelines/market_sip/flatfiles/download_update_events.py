@@ -190,6 +190,14 @@ def updater_query_settings(args: argparse.Namespace) -> dict[str, str | int]:
     }
 
 
+def window_query_settings(args: argparse.Namespace) -> str:
+    # Parallel window partition scattering buffers the full day before sorting
+    # and cannot spill. One thread removes that stage; the sort can then spill.
+    scoped = argparse.Namespace(**vars(args))
+    scoped.max_threads = 1
+    return query_settings(scoped)
+
+
 @dataclass(frozen=True, slots=True)
 class DayFiles:
     source_date: str
@@ -1527,7 +1535,7 @@ LEFT JOIN
     GROUP BY ticker
 ) AS c ON c.ticker = e.ticker
 ORDER BY e.ticker, ordinal
-{query_settings(args)}
+{window_query_settings(args)}
 """
 
 
@@ -1757,7 +1765,7 @@ FROM
 ) AS ordered
 WHERE bitAnd(ordered.event_meta, 1) = 1
 ORDER BY ordered.ticker, ordered.ordinal
-{query_settings(args)}
+{window_query_settings(args)}
 """
 
 
@@ -2119,7 +2127,7 @@ def day_event_integrity_counts(
             date.fromordinal(source.toordinal() + 1).isoformat(),
         )
     )
-    settings_sql = query_settings(args)
+    settings_sql = window_query_settings(args)
     if settings_sql.strip():
         settings_sql = settings_sql.replace("SETTINGS ", "SETTINGS join_use_nulls = 1, ", 1)
     else:

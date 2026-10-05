@@ -29,11 +29,13 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     format_auto_update_summary,
     insert_execution_clock_day_sql,
     insert_execution_clock_coverage_day_sql,
+    insert_direct_day_sql,
     parse_args,
     query_database_frontier,
     raw_event_union_sql,
     trade_raw_row_to_event,
     updater_query_settings,
+    window_query_settings,
     validate_manual_append_selection,
 )
 
@@ -202,6 +204,18 @@ class EventEncodingTests(unittest.TestCase):
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
+    def test_window_stages_disable_unspillable_parallel_scatter_without_changing_order(self) -> None:
+        with mock.patch("sys.argv", ["download_update_events.py"]):
+            args = parse_args()
+        args.events_table = "events_2026"
+        args.flatfiles_root_win = str(Path("unused").resolve())
+        day = _day(Path("unused"), "2026-09-21")
+        for sql in (insert_direct_day_sql(args, day, 739880), insert_execution_clock_day_sql(args, day, 739880)):
+            self.assertIn("max_threads = 1", sql)
+            self.assertIn("ORDER BY e.sip_timestamp_us, e.sequence_number, bitAnd(e.event_meta, 1)", sql)
+        self.assertIn("max_threads = 1", window_query_settings(args))
+        self.assertEqual(args.max_threads, 4)
+
     def test_updater_bounds_csv_parser_and_insert_buffers_independently_of_threads(self) -> None:
         with mock.patch("sys.argv", ["download_update_events.py"]):
             args = parse_args()
