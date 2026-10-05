@@ -260,3 +260,30 @@ SVG text is not stretched to fit the container. The whole-session selected
 score sum counts each contributing pair once, is independent of display
 filters, and is not cash-weighted P&L or a grouping-quality objective. These
 audit fields do not change selection, grouping, sizing, or approved 1a labels.
+
+### Full phase 1b publication
+
+`run_reporting_repair.py` now runs `run_prepare_market_teacher.py` after successful
+1a publication. To prepare 1b from an already completed 1a dataset, run the
+launcher alone with `--source-dataset`, `--source-commit` (exact pushed commit)
+and `--output D:/TradingML/runtimes/rl-v6-reporting-repair-20261002/labels-market-teacher-v1`.
+No bars, features or 1a labels are recalculated. All 19 approved sessions are
+copied; context-only and development roles remain explicit, sealed tests excluded.
+
+Selection and grouping reuse the approved preview-v7 implementation, across
+the entire session before writing listing shards. Rejected pairs become WAIT
+throughout the copied episode. Original actions/values are retained as
+`action_1a`, `reference_action_1a`, `label_value_1a`; raw gains and all market
+columns remain unchanged. Selected ENTRY rows receive `allocation_ratio` and
+`allocation_loss_mask=true`; every other row has zero sizing target/masked loss.
+`teacher_probabilities` uses `[ENTRY, WAIT, HOLD, EXIT]` order. The separate
+`market_teacher_dataset.read_targets` reader consumes these explicit targets;
+the legacy 1a raw-gain loader must never be used to reconstruct 1b targets.
+This preparation does not invoke training or add a sizing head to the model.
+
+Every copied shard is hash-bound and restartable under an exclusive writer
+lock. Publication follows a full source/output read-back comparison and an
+independent timestamp-event sizing-denominator audit. The separate registry
+`rl-v6-active-market-teacher.json` preserves `rl-v6-active-labels.json` and the
+approved immutable 1a data. Publication status is `audited_1b_labels`, distinct
+from the legacy training contract.

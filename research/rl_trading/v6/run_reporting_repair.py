@@ -245,6 +245,14 @@ def main(argv=None):
                 raise ValueError('Label publication audit failed')
             done.append(stage)
             progress(stage,'complete',dataset=active['dataset'],dataset_sha256=active['sha256'])
+            stage='market_teacher_1b'
+            run(stage,['research/rl_trading/v6/run_prepare_market_teacher.py',
+                '--source-dataset',active['dataset'],'--source-commit',a.source_commit,
+                '--output',str(output/'labels-market-teacher-v1')])
+            market=json.loads((runtime/'rl-v6-active-market-teacher.json').read_text())
+            if Path(market['dataset']).resolve()!=(output/'labels-market-teacher-v1/dataset.json').resolve():
+                raise ValueError('1b registry does not point to repaired publication')
+            progress(stage,'complete',dataset=market['dataset'],dataset_sha256=market['sha256'])
     except Exception as error:
         progress(stage,'failed',reason=str(error))
         raise
