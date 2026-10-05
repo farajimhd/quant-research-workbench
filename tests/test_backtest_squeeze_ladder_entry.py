@@ -59,7 +59,7 @@ def test_missing_target_ladder_and_later_geometry_change_reject():
     observed, setup, v7 = prepared(targets=False)
     assert decide(observed, setup, v7).reason == 'complete_structural_targets_unavailable'
     observed, setup, v7 = prepared()
-    assert decide(observed, setup, v7, boundary=66100).reason == 'frozen_resistance_invalidated'
+    assert decide(observed, setup, v7, boundary=66100).reason == 'earlier_frozen_break_observed'
 
 
 def test_vwap_loss_invalidates_without_changing_the_stop_or_resistance():
@@ -94,3 +94,30 @@ def test_certified_quote_only_setup_history_never_becomes_a_crossing_candle():
                                'execution_vwap', pa.array(values, type=source['execution_vwap'].type))
     assert decide(replace(observed, completed_source=source), setup, v7,
                   boundary=65300).reason == 'qualified_vwap_lost'
+
+
+def test_first_frozen_break_allows_forward_native_transition_without_retargeting():
+    observed, setup, v7 = prepared()
+    source = observed.completed_source
+    for name, changes in {'close_int':{650:100200,660:102200},
+                          'ask_int':{660:102300}}.items():
+        values = source[name].to_pylist()
+        for index, value in changes.items():
+            values[index] = value
+        source = source.set_column(source.schema.get_field_index(name), name,
+                                   pa.array(values, type=source[name].type))
+    observed = replace(observed, completed_source=source)
+    intervals = v7.intervals[0][1]
+    changed = replace(intervals[1], role='transition', transition_from='resistance',
+                      confirmed_at_ms=intervals[0].confirmed_at_ms+66000)
+    forward = replace(v7, intervals=((TICKER,(intervals[0],changed,*intervals[2:])),))
+    result = decide(observed, setup, forward, boundary=66100)
+    assert result.reason == 'entry_proposed'
+    assert result.setup.resistance.upper == 10.2  # updated band ends at 10.4
+    assert result.setup.stop.stop_int == 97900
+    assert result.target_level_ids == ('R2','R3','R4')
+    for invalid in (replace(changed, transition_from='support'),
+                    replace(changed, confirmed_at_ms=changed.confirmed_at_ms+2000),
+                    replace(changed, valid_from_ms=67000)):
+        broken = replace(forward, intervals=((TICKER,(intervals[0],invalid,*intervals[2:])),))
+        assert decide(observed, setup, broken, boundary=66100).reason == 'frozen_resistance_invalidated'

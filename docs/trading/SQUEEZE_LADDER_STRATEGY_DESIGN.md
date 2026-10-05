@@ -640,3 +640,25 @@ first observed break. Reject disappearance, replacement, reverse transitions,
 earlier failed breaks and unavailable input clocks. Do not simply accept every
 current role or move the threshold to a refitted band. Source-semantic evidence
 is established; this revised lifecycle is not yet implemented or backtested.
+
+The prepared forward-lifecycle revision is now implemented in
+`propose_ladder_breakout`, superseding its earlier unchanged-segment test.
+Certified intervals must cover the original level identity continuously from
+qualification through the decision. The initial interval must match the frozen
+resistance; later refits do not move that threshold or stop. Allowed roles move
+forward from resistance to transition-from-resistance to support. Reverse roles,
+identity gaps/overlaps, decreasing or future segment confirmation, and an earlier
+observed close above the buffered original threshold invalidate the proposal.
+Current V7 clocks and the adjacent valid final price-pair guards remain required.
+This changes only an unpublished prepared behavior; no old numbered release was
+edited or admitted to this route.
+
+Native YJ probe `ladder-yj-aug19-native-setup-probe-v3.json` uses the same source
+tokens and parameters. It removes the unchanged-segment rejection but still
+produces zero proposals: 556 checks lack V7 continuity, 102 lack an adjacent
+final price clock, 901 lack valid price evidence, 13 lose VWAP and one follows
+an earlier frozen break. These checks overlap by setup and clock, not trades.
+The probe completes in 6.39 seconds; no financial replay or profit claim follows.
+Focused tests preserve the frozen threshold through a forward transition and
+reject transition-from-support, future confirmation, unavailable identity and
+an earlier break. Native writer integration remains unfinished.

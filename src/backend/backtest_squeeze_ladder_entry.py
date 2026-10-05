@@ -8,9 +8,9 @@ import numpy as np
 from src.backend.backtest_squeeze_ladder_loader import PreparedLadderObservations
 from src.backend.backtest_squeeze_ladder_setup import BoundLadderSetup
 from src.backend.backtest_strategy_one_v7_interval_store import CertifiedV7IntervalPlan
+from src.backend.backtest_market_data import market_day_boundary
 from src.trading_runtime.execution_policies import ProtectionProfile
 from src.trading_runtime.squeeze_ladder_protection import structural_ladder, ladder_profile
-from src.trading_runtime.squeeze_ladder_setup import ladder_resistance_retained
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,14 +77,30 @@ def propose_ladder_breakout(observations: PreparedLadderObservations, setup: Bou
     if (first < 0 or last < first or boundary_ms - seconds[last] > 1000
             or any(right - left != 1000 for left, right in zip(seconds[first:last], seconds[first + 1:last + 1]))):
         return reject('setup_v7_continuity_lost')
-    # One unchanged producer interval must span the whole observed setup.
-    stable = [row for row in v7.intervals[ticker_index][1]
+    # Confirmation clocks describe producer role/fit segments, not identity
+    # creation. Keep the entry threshold frozen while proving a forward path
+    # on that same identity; a refit never moves the entry threshold.
+    path = sorted((row for row in v7.intervals[ticker_index][1]
               if row.level_id == setup.resistance.level_id
-              and row.valid_from_ms <= seconds[first] and row.valid_to_ms > seconds[last]
-              and row.lower == setup.resistance.lower and row.upper == setup.resistance.upper
-              and row.role == 'resistance' and row.confirmed_at_ms == setup.resistance.confirmed_at_ms]
-    if len(stable) != 1:
+              and row.valid_to_ms > seconds[first] and row.valid_from_ms <= seconds[last]),
+              key=lambda row: row.valid_from_ms)
+    if (not path or path[0].valid_from_ms > seconds[first]
+            or path[-1].valid_to_ms <= seconds[last]
+            or path[0].lower != setup.resistance.lower or path[0].upper != setup.resistance.upper
+            or path[0].role != 'resistance'
+            or path[0].confirmed_at_ms != setup.resistance.confirmed_at_ms):
         return reject('frozen_resistance_invalidated')
+    origin_ms = int(market_day_boundary(v7.session_date, 0).timestamp()) * 1000
+    previous_role, previous_confirmation = 0, setup.resistance.confirmed_at_ms
+    for ordinal, row in enumerate(path):
+        role = {'resistance':0, 'transition':1, 'support':2}.get(row.role, -1)
+        if (role < previous_role or role < 0
+                or (row.role == 'transition' and row.transition_from != 'resistance')
+                or row.confirmed_at_ms < previous_confirmation
+                or row.confirmed_at_ms > origin_ms + max(seconds[first], row.valid_from_ms)
+                or (ordinal and path[ordinal-1].valid_to_ms != row.valid_from_ms)):
+            return reject('frozen_resistance_invalidated')
+        previous_role, previous_confirmation = role, row.confirmed_at_ms
     completed = source.slice(start, end - start + 1)
     prices = completed['close_int'].to_numpy()
     valid = completed['price_valid'].to_numpy()
@@ -101,10 +117,12 @@ def propose_ladder_breakout(observations: PreparedLadderObservations, setup: Bou
         return reject('qualified_vwap_lost')
     previous, current = int(prices[-2]), int(prices[-1])
     reference = setup.resistance.upper_comparison_int
+    if np.any(prices[:-1][valid[:-1] == 1] > reference + tick_int * break_buffer_ticks):
+        return reject('earlier_frozen_break_observed')
     if not previous <= reference < current - tick_int * break_buffer_ticks:
         return reject('frozen_resistance_not_broken')
     levels = v7.levels(setup.ticker, boundary_ms=boundary_ms)
-    if not ladder_resistance_retained(setup.resistance, levels):
+    if sum(row['unified_level_id'] == setup.resistance.level_id for row in levels) != 1:
         return reject('frozen_resistance_invalidated')
     entry = int(source['ask_int'][end].as_py())
     if entry % tick_int or setup.stop.stop_int >= entry:
