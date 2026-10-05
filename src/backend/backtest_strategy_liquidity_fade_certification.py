@@ -29,7 +29,7 @@ LIQUIDITY_FADE_SOURCE_AST = {'src/trading_runtime/strategy_half_risk_liquidity_f
  'src/trading_runtime/arte_initial_momentum_entry_v4.py': '53224434ddf6ca059cbbf2114c06291c76946cf0ddfc005993d3107c7a6114fa',
  'src/trading_runtime/arte_first_price_entry_v4.py': '3a2432ea4c7d82efdfb542cbd18f23b6a35439b62211a08e6226c2b70c879269',
  'src/trading_runtime/strategy_liquidity_fade_checkpoint_reference.py': '2bf2d32ba8e66f95d6646c3f364937dd342fe25af9cd3311632e50bf958369d8',
- 'src/backend/replay_run_service.py': 'e868d97892bcdfae8b1c3ef8c5066f4f311458e366a82c30582aa7d976bd6447',
+ 'src/backend/replay_run_service.py': 'b26f537d3d6b03bc0e7ddf6b4218586daf9699c49af56871fdbe753e7b8ad967',
  'src/backend/backtest_strategy_one_execution.py': '850e6ab6a644eceff98c66f988485845944d615bfbf1918fc54d6665797f61a9',
  'src/backend/backtest_strategy_liquidity_fade.py': '41a370888116041396bb10c8a848ef863466134a37457cfd335d820ccdd00fba',
  'src/trading_runtime/strategy_liquidity_fade_failure.py': '25ec4e6e986c8cd684740d9140ac5b659b36f386170d3bad6ce2af2e5569350e',

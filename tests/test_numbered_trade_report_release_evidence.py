@@ -7,7 +7,7 @@ import pytest
 from scripts.clickhouse import report_strategy_one_trades as command
 
 
-@pytest.mark.parametrize('number', [35, 36, 37, 38, 42, 46, 47, 48, 49])
+@pytest.mark.parametrize('number', [35, 36, 37, 38, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58])
 @pytest.mark.parametrize('changed_release', [False, True])
 def test_report_requires_exact_numbered_release_and_preserves_identity(monkeypatch, number, changed_release):
     from src.backend import backtest_strategy_one_configuration as configurations

@@ -40,7 +40,7 @@ ENTRY_ACTIVITY_SOURCE_AST = {'scripts/clickhouse/publish_strategy_thirty_six_con
  'research/mlops/clickhouse.py': '2cf6ccee354c65b24f8ea73198a9ec1c0f033f249b3f57430a8073dcf64470c8',
  'src/trading_runtime/arte_journal_commit_v4.py': 'a94e1d8d06b377aa60106036ba42889e43c3631cea1698b562545576c361fbb8',
  'src/trading_runtime/arte_journal_compound_v4.py': 'c270c28e1fa80d4ff0da67d1b2cd64f8c6b402c7db812caa2fb2d8399010d9e7',
- 'src/backend/replay_run_service.py': 'e868d97892bcdfae8b1c3ef8c5066f4f311458e366a82c30582aa7d976bd6447'}
+ 'src/backend/replay_run_service.py': 'b26f537d3d6b03bc0e7ddf6b4218586daf9699c49af56871fdbe753e7b8ad967'}
 
 
 def certify_entry_activity_source(*, source_overrides=None):

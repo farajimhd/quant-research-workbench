@@ -128,7 +128,10 @@ def test_controller_confirms_after_fence_off_thread_and_closes_reader(monkeypatc
         return receipt
     controller._save_restart_checkpoint_responsive = checkpoint
     reader = SimpleNamespace(close=lambda: calls.append('closed'))
-    monkeypatch.setattr(readers, 'backtest_v4_operator_client_from_env', lambda: reader)
+    def baseline_reader(**options):
+        assert options == {}  # Historical31..42 retain the exact default profile.
+        return reader
+    monkeypatch.setattr(readers, 'backtest_v4_operator_client_from_env', baseline_reader)
     monkeypatch.setattr(snapshots, 'ManagedManagerSnapshotHeadReader', lambda keeper: keeper)
     engine_thread = get_ident()
     def confirm(actual_reader, keeper, candidate, financial, actual_receipt, **kwargs):

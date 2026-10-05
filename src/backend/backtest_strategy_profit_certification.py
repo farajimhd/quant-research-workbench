@@ -13,7 +13,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/backend/backtest_strategy_one_management.py': {'__module__': '81b15b9bb8f3feae00e4439f8edbbde89cfc3e9a445695bca70da1903010a05c'},
  'src/backend/backtest_typed_projection.py': {'__module__': '05081074d0168f9c6952df453f6c054079a220977a96eb70338e5543a7533d0a'},
  'src/backend/backtest_typed_publisher.py': {'__module__': '316ccc51b7a9e93848439fb7eda43158282b2e0d6b59fa45e05c4779494e9233'},
- 'src/backend/replay_run_service.py': {'_confirm_profit_arming_checkpoint': '76d973e9b518060a116f649a3656ecebb9e8d6405ee2a436c62d65d8ce397544',
+ 'src/backend/replay_run_service.py': {'_confirm_profit_arming_checkpoint': '1a39d253453b04c20bc44d97dfed415083f4a5f8b34c0237cafc0ac37c98120d',
                                        '_require_numbered_session_window': '55692e8c46c279acc4575206272b12d1cd0b6fae131ddf8610735fe1337d72a0',
                                        '_save_restart_checkpoint_responsive': '5f54ab88d56dbd588090b9de2e7404da167ae261a82eeb5b53f1830130ee568e'},
  'src/trading_runtime/arte_journal_commit_v4.py': {'__module__': 'a94e1d8d06b377aa60106036ba42889e43c3631cea1698b562545576c361fbb8'},

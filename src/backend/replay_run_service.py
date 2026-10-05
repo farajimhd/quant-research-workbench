@@ -2630,7 +2630,7 @@ class ReplayRunController:
         from src.trading_runtime.strategy_profit_giveback_arm_reference import confirm_profit_arm_reference
 
         def confirm():
-            with closing(backtest_v4_operator_client_from_env()) as reader:
+            with closing(backtest_v4_operator_client_from_env(**({'entry_spread_risk': True} if getattr(manager.contract, 'entry_spread_risk_policy', None) is not None else {}))) as reader:
                 head = ManagedManagerSnapshotHeadReader(keeper)
                 return tuple(confirm_profit_arm_reference(
                     reader, head, candidate, financial, receipt,
@@ -2675,7 +2675,7 @@ class ReplayRunController:
         from src.trading_runtime.strategy_one_broker_match_snapshot import ManagedBrokerMatchHeadReader
         from src.trading_runtime.strategy_liquidity_fade_checkpoint_reference import confirm_liquidity_fade_checkpoint_sources
         def confirm():
-            with closing(backtest_v4_operator_client_from_env()) as reader:
+            with closing(backtest_v4_operator_client_from_env(**({'entry_spread_risk': True} if getattr(manager.contract, 'entry_spread_risk_policy', None) is not None else {}))) as reader:
                 return confirm_liquidity_fade_checkpoint_sources(reader,
                     ManagedManagerSnapshotHeadReader(self._fixed_keeper_session),
                     ManagedBrokerMatchHeadReader(self._fixed_keeper_session), requests, receipt,
@@ -9994,6 +9994,13 @@ class ReplayRunService:
         plan_seconds = time.perf_counter() - plans_started
         configuration = definition.configuration_revision["payload"]
         strategy_number = configuration["strategy"]["strategy_number"]
+        from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
+        declared_contract = resolve_numbered_fixed_strategy(
+            configuration['strategy']['strategy_id'], strategy_number)
+        from .backtest_declared_ladder_plan import automatic_policy
+        runner_options = ({'automatic_ladder': True} if automatic_policy(configuration)
+                          else {'entry_spread_risk': True}
+                          if getattr(declared_contract, 'entry_spread_risk_policy', None) is not None else {})
         projection_certifier = (certify_strategy_one_v4_projection if strategy_number == 1
                                 else lambda: certify_numbered_fixed_v4_projection(strategy_number))
         profiles, _ = historical_strategy_one_portfolio_profiles(configuration)
@@ -10019,12 +10026,12 @@ class ReplayRunService:
                     keeper, run_id=run_id, owner_id=f"backtest-resume-{uuid4()}")
                 with ExitStack() as control_clients:
                     reader = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env()))
+                        backtest_v4_operator_client_from_env(**runner_options)))
                     terminal = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env()))
+                        backtest_v4_operator_client_from_env(**runner_options)))
                     market = control_clients.enter_context(closing(v3_client("read")))
                     writer_client = backtest_v4_journal_client_from_env(
-                        keeper_session=keeper, lease=lease)
+                        keeper_session=keeper, lease=lease, **runner_options)
                     anchor = cold_verify_v4_resume_anchor(
                         reader, dispatch=writer_client.typed_insert_dispatch,
                         lease=lease, run_id=run_id, plan=plans.market,

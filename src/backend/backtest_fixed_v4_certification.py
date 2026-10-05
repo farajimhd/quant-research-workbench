@@ -1277,7 +1277,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                          '_terminal_attestation': 'b7b2ccaa338cdb7c4d00a088292b4df41dfd6dcd7c4c576caa1c92c6a1bd415e'},
  'backend/historical_runtime_versions.py': {'__module__': '96941bdcb6b84439c3ba3f0d1fc0deb9cde238746088d1b284284aa0969857ec'},
  'backend/replay_run_service.py': {'_save_restart_checkpoint_responsive': '5f54ab88d56dbd588090b9de2e7404da167ae261a82eeb5b53f1830130ee568e',
-                                   '_confirm_profit_arming_checkpoint': '76d973e9b518060a116f649a3656ecebb9e8d6405ee2a436c62d65d8ce397544',
+                                   '_confirm_profit_arming_checkpoint': '1a39d253453b04c20bc44d97dfed415083f4a5f8b34c0237cafc0ac37c98120d',
                                    '_run_strategy_one_fixed_days': '32bec1309823c75f7e42432fb0809b10f2d36d48e0f1cfa442a514ebfed37e54',
                                    'backtest_preflight': '5b45429e9144f644dd8a7113b927043563d8359ff7d84872dd45623b60ac995f'},
  'trading_runtime/arte_backtest_definition.py': {'_reconstruct_backtest_definition': '5848ac310bcb92ba03e71eae9dc962f757191951fb77389c46eaa946779e86d0',
