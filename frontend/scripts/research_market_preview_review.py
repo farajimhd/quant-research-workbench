@@ -18,13 +18,15 @@ def main():
       context=browser.new_context(viewport=viewport)
       context.add_init_script(f"localStorage.setItem('quant-research-workbench.theme','{theme}');localStorage.setItem('quant-research-workbench.ui-scale','{scale}');")
       page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
-      charts=[];candidates=[]
+      charts=[];candidates=[];timelines=[]
       def proxy(route):
        u=urlsplit(route.request.url);response=route.fetch(url='http://127.0.0.1:8000'+u.path+('?' + u.query if u.query else ''),timeout=300000)
        if '/market-preview/chart' in u.path and response.ok:
         raw=response.json();charts.append(raw['data'] if response.headers.get('x-response-envelope')=='1' else raw)
        if '/market-preview/rows' in u.path and response.ok:
         raw=response.json();candidates.append(raw['data'] if response.headers.get('x-response-envelope')=='1' else raw)
+       if '/market-preview/timeline' in u.path and response.ok:
+        raw=response.json();timelines.append(raw['data'] if response.headers.get('x-response-envelope')=='1' else raw)
        route.fulfill(response=response)
       page.route('**/api/research/models**',proxy)
       page.goto('http://127.0.0.1:5173/#research-workspace');page.get_by_role('button',name='1b selection & sizing',exact=True).click()
@@ -32,6 +34,16 @@ def main():
       page.get_by_role('button',name='Prepare session preview',exact=True).click()
       page.get_by_text('3 · Inspect copied 1b labels',exact=True).wait_for(timeout=300000)
       scope=page.locator('.research-market-preview');name=f'{theme}-{scale}-{size}'
+      bands=scope.get_by_role('group',name='Group timeline',exact=True)
+      boxes=scope.get_by_role('group',name='Episode score boxes',exact=True)
+      boxes.wait_for(timeout=300000)
+      assert timelines and all(r['entry_target_us']>r['time_us'] for r in timelines[-1]['rows'])
+      with page.expect_response(lambda r:'/market-preview/result' in r.url,timeout=300000):
+       bands.get_by_role('button').first.click()
+      assert page.get_by_label('1b group',exact=True).input_value()
+      page.get_by_label('1b group',exact=True).select_option('')
+      with page.expect_response(lambda r:'/market-preview/chart' in r.url,timeout=300000):
+       boxes.get_by_role('button').first.click()
       page.get_by_role('button',name='Next 1s close',exact=True).wait_for()
       page.wait_for_function("()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Next 1s close')?.disabled")
       with page.expect_response(lambda r:'/market-preview/rows' in r.url,timeout=300000):
@@ -45,8 +57,8 @@ def main():
       assert charts and any(r['allocation_loss_mask'] for r in charts[-1]['labels'])
       page.screenshot(path=str(out/(name+'-selection.png')),full_page=True)
       scope.get_by_text('Exact 1a → 1b candle targets',exact=True).click()
-      scope.locator('.research-preview-compare input').check()
-      scope.locator('.research-preview-compare input').uncheck()
+      scope.get_by_role('checkbox',name='Show original 1a markers',exact=True).check()
+      scope.get_by_role('checkbox',name='Show original 1a markers',exact=True).uncheck()
       page.get_by_label('1b selection',exact=True).select_option('rejected')
       with page.expect_response(lambda r:'/market-preview/result' in r.url and 'search=NVDA' in r.url,timeout=300000):
        page.get_by_label('1b find ticker',exact=True).fill('NVDA')

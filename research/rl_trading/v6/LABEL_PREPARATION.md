@@ -230,3 +230,15 @@ close navigation visits closes containing matching rows; it does not synthesize
 missing seconds. The original action, threshold eligibility, pair group and
 first-qualifying group-contributor flag are separate columns. Positive-score
 rows do not automatically become ENTRY or add repeated group weight.
+
+The grouping timeline precedes this table. Each box spans the chosen ENTRY
+to its saved `entry_target_us` discounted-gain witness, which can differ from
+the reference EXIT. Height represents net discounted selection score, not
+dollar P&L; overlapping boxes use separate lanes. Group bands span contributing
+entry times and share the boxes' colors. Rejected positive-score pairs can be
+shown as outlines using their best original ENTRY candidate. Linear/log height,
+ticker filtering and time-window navigation support inspection. Click a box
+to inspect candles or a band to filter the group table; keyboard activation is
+supported. Missing witnesses and windows exceeding 5,000 boxes are explicitly
+reported; narrow the window or ticker filter for complete display. These audit
+fields do not change selection, grouping, sizing, or approved 1a labels.

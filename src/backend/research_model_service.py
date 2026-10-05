@@ -50,6 +50,12 @@ def preview_rows(job_id: str, time_us: int | None = None, search: str = '',
     return read(market_preview.positive_rows, job_id, time_us, search, selection, minimum_score, offset)
 
 
+@router.get('/v6/market-preview/timeline')
+def preview_timeline(job_id: str, start_us: int | None = None, seconds: int = Query(900,ge=60,le=3600),
+                     search: str = '', include_rejected: bool = False):
+    return read(market_preview.timeline, job_id, start_us, seconds, search, include_rejected)
+
+
 @router.get('/v6/saved-labels')
 def saved_catalog():
     return read(saved_label_audit.catalog)

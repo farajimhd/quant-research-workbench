@@ -20,6 +20,13 @@ def test_default_return_floor_rejects_expensive_low_gain_and_keeps_first_pass():
  assert out.filter(pl.col("selected"))["time_us"].to_list()==[2]
  assert out.filter(pl.col("listing_id")=="cheap")["selected"].item() is False
 
+def test_target_witness_tracks_chosen_entry_and_best_rejected_candidate():
+ rows=pl.DataFrame(dict(listing_id=["a","a","b","b"],pair_id=[1]*4,time_us=[1,2,1,2],entry_target_us=[11,22,33,44],close=[100.]*4,entry_gain=[.05,.2,.04,.05],action=["ENTRY"]*4))
+ pairs=pl.DataFrame(dict(listing_id=["a","b"],pair_id=[1,1],liquidity_accepted=[True,True],liquidity_rejection_reason=["eligible","eligible"]))
+ out=select(rows,pairs,Config())
+ assert out.filter(pl.col("listing_id")=="a")["entry_target_us"].item()==22
+ assert out.filter(pl.col("listing_id")=="b")["entry_target_us"].item()==44
+
 def test_group_matches_bruteforce_and_equal_clock_atom():
  cfg=Config(grouping_seconds=3,maximum_group_seconds=30)
  source=pl.DataFrame(dict(time_us=[0,0,2_000_000,20_000_000],selection_score=[.02,.03,.02,.01],listing_id=["a","b","c","d"],pair_id=[1]*4))

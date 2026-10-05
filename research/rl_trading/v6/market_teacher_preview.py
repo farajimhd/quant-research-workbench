@@ -10,7 +10,7 @@ from research.rl_trading.v6 import saved_label_audit as source
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v6.opportunity_dataset import write_json
 
-VERSION = "rl-v6-market-teacher-preview-v5"
+VERSION = "rl-v6-market-teacher-preview-v6"
 ROOT = Path("D:/TradingML/runtimes/rl-v6-market-teacher-preview")
 POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="teacher-preview")
 LOCK = threading.Lock()
@@ -34,6 +34,7 @@ class Config:
 
 def select(rows, pairs, config):
     config.validate()
+    if "entry_target_us" not in rows.columns:rows=rows.with_columns(pl.lit(None,dtype=pl.Int64).alias("entry_target_us"))
     scored = rows.filter((pl.col("action")=="ENTRY") & (pl.col("pair_id")>0)).with_columns(
         ((pl.col("entry_gain")-2*config.fee_per_share)/(pl.col("close")+config.fee_per_share)).alias("selection_score"))
     cutoff = config.minimum_net_fee_multiple*2*config.fee_per_share/(pl.col("close")+config.fee_per_share)
@@ -44,16 +45,16 @@ def select(rows, pairs, config):
         pairs.filter(pl.col("liquidity_accepted")).select("listing_id","pair_id"),
         on=["listing_id","pair_id"],how="semi").sort(["listing_id","pair_id","time_us"]).unique(["listing_id","pair_id"],keep="first",maintain_order=True)
     best = scored.group_by("listing_id","pair_id").agg(pl.col("selection_score").max().alias("best_score"),pl.len().alias("entry_rows"))
-    auditrows = scored.sort(["listing_id","pair_id","selection_score","time_us"],descending=[False,False,True,False]).unique(["listing_id","pair_id"],keep="first").select("listing_id","pair_id",*[pl.col(k).alias("audit_"+k) for k in ("time_us","close","entry_gain","score_threshold")])
+    auditrows = scored.sort(["listing_id","pair_id","selection_score","time_us"],descending=[False,False,True,False]).unique(["listing_id","pair_id"],keep="first").select("listing_id","pair_id",*[pl.col(k).alias("audit_"+k) for k in ("time_us","close","entry_gain","score_threshold","entry_target_us")])
     result = pairs.join(best,on=["listing_id","pair_id"],how="left",validate="1:1").join(
-        eligible.select("listing_id","pair_id","time_us","close","entry_gain","selection_score","score_threshold"),on=["listing_id","pair_id"],how="left",validate="1:1")
+        eligible.select("listing_id","pair_id","time_us","close","entry_gain","selection_score","score_threshold","entry_target_us"),on=["listing_id","pair_id"],how="left",validate="1:1")
     result = result.join(auditrows,on=["listing_id","pair_id"],how="left",validate="1:1")
     return result.with_columns(pl.col("selection_score").is_not_null().alias("selected"),
         pl.when(~pl.col("liquidity_accepted")).then(pl.col("liquidity_rejection_reason"))
         .when(pl.col("entry_rows").is_null()).then(pl.lit("no_1a_entry"))
         .when(pl.col("selection_score").is_null()).then(pl.lit("below_score_threshold"))
         .otherwise(pl.lit("selected")).alias("selection_reason"),
-        *[pl.coalesce(k,"audit_"+k).alias(k) for k in ("time_us","close","entry_gain","score_threshold")])
+        *[pl.coalesce(k,"audit_"+k).alias(k) for k in ("time_us","close","entry_gain","score_threshold","entry_target_us")])
 
 def group(candidates, config):
     """Exact penalized ordered segmentation within the explicitly bounded span.
@@ -91,7 +92,7 @@ def prepare(day, config, dataset_sha256, job):
         JOBS[job].update(status="running", stage="Checking published 1a bindings")
         active,entry,proof,root,bankroot,_=source.session(day)
         if active["sha256"]!=dataset_sha256:raise ValueError("Published 1a dataset changed")
-        input_key=digest(dict(dataset=dataset_sha256,day=day,certificate=entry["teacher_sha256"],projection="positive-gain-rows-v2"))
+        input_key=digest(dict(dataset=dataset_sha256,day=day,certificate=entry["teacher_sha256"],projection="positive-gain-rows-v3"))
         ROOT.mkdir(parents=True,exist_ok=True); cache=ROOT/input_key;cache.mkdir(exist_ok=True)
         marker=cache/"complete.json"
         if marker.exists():
@@ -109,7 +110,7 @@ def prepare(day, config, dataset_sha256, job):
                 count=frame.select(pl.len()).collect().item();total+=count
                 if count!=receipt["valid_rows"]:raise ValueError("Preview source row coverage mismatch")
                 for row in frame.group_by("action").len().collect().iter_rows():counts[row[0]]=counts.get(row[0],0)+row[1]
-                chunks.append(frame.filter(pl.col("entry_gain")>0).select("listing_id","pair_id","time_us","close","entry_gain","action").collect())
+                chunks.append(frame.filter(pl.col("entry_gain")>0).select("listing_id","pair_id","time_us","close","entry_gain","entry_target_us","action").collect())
                 pairfile=source.verified_local(folder/"pairs.parquet",receipt["files"]["pairs"]["sha256"])
                 pairchunks.append(pl.read_parquet(pairfile).select("listing_id","pair_id","start_us","end_us","liquidity_accepted","liquidity_rejection_reason","reference_entry_us","reference_exit_us"))
             if total!=proof["valid_rows"]:raise ValueError("Full session coverage mismatch")
@@ -166,6 +167,22 @@ def positive_rows(job,time_us=None,search="",selection="all",minimum_score=0.,of
     rows=pl.read_parquet(source.verified_local(cache/"candidates.parquet",receipt["candidates_sha256"]))
     decisions=pl.read_parquet(source.verified_local(ROOT/(job+".parquet"),meta["decisions_sha256"]))
     return candidate_window(rows,decisions,Config(**meta["config"]),time_us,search,selection,minimum_score,offset)
+
+def timeline(job,start_us=None,seconds=900,search="",include_rejected=False):
+    if status(job)["status"]!="complete":raise ValueError("Preview not ready")
+    meta=source.read_json(ROOT/(job+".json"))
+    frame=pl.read_parquet(source.verified_local(ROOT/(job+".parquet"),meta["decisions_sha256"]))
+    positive=frame.filter(pl.coalesce("selection_score","best_score")>0)
+    begin=positive["time_us"].min();finish=positive["entry_target_us"].max()
+    if begin is None:return dict(start_us=None,end_us=None,begin_us=None,finish_us=None,rows=[],groups=[],total=0,unavailable=0,truncated=False)
+    begin=begin//1_000_000//900*900*1_000_000
+    start=begin if start_us is None else start_us;end=start+seconds*1_000_000
+    if not include_rejected:positive=positive.filter(pl.col("selected"))
+    if search:positive=positive.filter(pl.col("ticker").str.to_uppercase().str.contains(search.upper(),literal=True))
+    unavailable=positive.filter(pl.col("entry_target_us").is_null() & pl.col("time_us").is_between(start,end,closed="left")).height
+    visible=positive.filter((pl.col("time_us")<end)&(pl.col("entry_target_us")>start)).sort("time_us","listing_id","pair_id")
+    groups=[g for g in meta["groups"] if g["start_us"]<end and g["end_us"]>=start]
+    return dict(start_us=start,end_us=end,begin_us=begin,finish_us=finish,rows=visible.head(5000).to_dicts(),groups=groups,total=visible.height,unavailable=unavailable,truncated=visible.height>5000)
 
 def candidate_window(rows,decisions,config,time_us=None,search="",selection="all",minimum_score=0.,offset=0):
     fee=config.fee_per_share

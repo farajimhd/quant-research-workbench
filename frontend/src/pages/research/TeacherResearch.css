@@ -59,3 +59,14 @@
 .research-preview-table { overflow: auto; max-height: 420px; margin: 12px 0; }
 .research-preview-compare { display: inline-flex; align-items: center; gap: .4rem; margin-bottom: .5rem; font-size: .8rem; }
 .research-preview-compare input { width: auto; }
+.research-grouping-chart { margin: 1rem 0; }
+.research-grouping-axis, .research-grouping-lanes { overflow: auto; border: 1px solid var(--border); border-radius: .4rem; }
+.research-grouping-lanes { max-height: 420px; }
+.research-grouping-chart svg { display: block; width: 100%; min-width: 900px; }
+.research-grouping-chart svg text { fill: var(--foreground); font-size: 11px; }
+.research-grouping-chart svg line { stroke: var(--muted-foreground); opacity: .3; }
+.research-grouping-chart svg [role="button"] { cursor: pointer; }
+.research-grouping-chart svg [role="button"]:focus { outline: 2px solid var(--primary); }
+.research-grouping-surface { overflow-x: auto; }
+.research-grouping-axis, .research-grouping-lanes { min-width: 900px; }
+.research-grouping-lanes { overflow-x: hidden; overflow-y: auto; }
