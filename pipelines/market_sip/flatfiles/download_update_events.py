@@ -170,6 +170,26 @@ class ResourceAwareClickHouseClient(ClickHouseHttpClient):
             time.sleep(30)
 
 
+def updater_query_settings(args: argparse.Namespace) -> dict[str, str | int]:
+    """Bound CSV parsing separately from execution threads and insert buffers."""
+    return {
+        "max_threads": args.max_threads,
+        "max_memory_usage": parse_size_bytes(args.max_memory_usage),
+        "max_bytes_before_external_sort": parse_size_bytes(args.external_sort_bytes),
+        "max_bytes_before_external_group_by": parse_size_bytes(args.external_group_by_bytes),
+        "priority": 10,
+        "input_format_parallel_parsing": 0,
+        "max_parsing_threads": 1,
+        "max_insert_threads": 1,
+        "max_block_size": 65536,
+        "max_insert_block_size": 65536,
+        "min_insert_block_size_rows": 65536,
+        "min_insert_block_size_bytes": 16777216,
+        "query_plan_join_swap_table": "false",
+        "join_algorithm": "hash",
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class DayFiles:
     source_date: str
@@ -4125,13 +4145,7 @@ def main() -> None:
     client = ResourceAwareClickHouseClient(
         args.clickhouse_url, args.user, args.password,
         server_memory_ceiling=parse_size_bytes(args.max_server_memory_before_query),
-        default_query_params={
-            "max_threads": args.max_threads,
-            "max_memory_usage": parse_size_bytes(args.max_memory_usage),
-            "max_bytes_before_external_sort": parse_size_bytes(args.external_sort_bytes),
-            "max_bytes_before_external_group_by": parse_size_bytes(args.external_group_by_bytes),
-            "priority": 10,
-        },
+        default_query_params=updater_query_settings(args),
     )
     database_frontier = "" if args.test_mode else query_database_frontier(client, args, required=auto_update)
     if auto_update:

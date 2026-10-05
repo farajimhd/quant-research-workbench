@@ -33,6 +33,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     query_database_frontier,
     raw_event_union_sql,
     trade_raw_row_to_event,
+    updater_query_settings,
     validate_manual_append_selection,
 )
 
@@ -201,6 +202,18 @@ class EventEncodingTests(unittest.TestCase):
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
+    def test_updater_bounds_csv_parser_and_insert_buffers_independently_of_threads(self) -> None:
+        with mock.patch("sys.argv", ["download_update_events.py"]):
+            args = parse_args()
+        settings = updater_query_settings(args)
+        self.assertEqual(settings['max_memory_usage'], 16 * 1024**3)
+        self.assertEqual(settings['max_threads'], 4)
+        self.assertEqual(settings['input_format_parallel_parsing'], 0)
+        self.assertEqual(settings['max_parsing_threads'], 1)
+        self.assertEqual(settings['max_insert_block_size'], 65536)
+        self.assertEqual(settings['max_bytes_before_external_sort'], 512 * 1024**2)
+        self.assertEqual(settings['query_plan_join_swap_table'], 'false')
+
     def test_resource_admission_waits_without_cancelling_other_queries(self) -> None:
         client = ResourceAwareClickHouseClient("http://unused", "", "", server_memory_ceiling=100)
         with mock.patch("pipelines.market_sip.flatfiles.download_update_events.ClickHouseHttpClient.execute", side_effect=["101", "50", "ok"]) as execute, \
