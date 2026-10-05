@@ -55,6 +55,7 @@ def project_ladder_evidence(admission: LadderAdmissionDecision, *, run_id: str,
                 event_month=intent.event_time.date().replace(day=1).isoformat(), batch_id=batch_id)
     parent = dict(**keys, record_id=str(uuid5(NAMESPACE_URL, parent_record_id + ':ladder-setup')),
         ticker=setup.ticker, assignment_id=assignment_id, session_date=session_date.isoformat(),
+        qualification_mode=setup.qualification_mode,
         admission_boundary_ms=setup.admission_boundary_ms, qualification_boundary_ms=setup.qualification_boundary_ms,
         boundary_ms=decision.boundary_ms, market_plan_token=setup.market_plan_token,
         scan_content_hash=setup.scan_content_hash, v7_plan_token=setup.v7_plan_token, pivot_plan_token=setup.pivot_plan_token,

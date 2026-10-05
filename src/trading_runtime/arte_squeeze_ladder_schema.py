@@ -5,6 +5,7 @@ _KEYS = (('record_id','UUID'), ('parent_record_id','UUID'), ('run_id','String'),
          ('event_month','Date'), ('batch_id','UUID'))
 SETUP = TableContract('trading_squeeze_ladder_setup_evidence_v1', _KEYS + (
     ('ticker','String'), ('assignment_id','String'), ('session_date','Date'),
+    ('qualification_mode','String'),
     ('admission_boundary_ms','UInt32'), ('qualification_boundary_ms','UInt32'), ('boundary_ms','UInt32'),
     ('market_plan_token','String'), ('scan_content_hash','FixedString(64)'),
     ('v7_plan_token','String'), ('pivot_plan_token','String'),

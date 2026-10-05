@@ -27,6 +27,7 @@ class BoundLadderSetup:
     reason: str
     resistance: FrozenLadderResistance | None
     stop: FrozenLadderStop | None
+    qualification_mode: str = 'vwap_cross'
 
 
 def bind_ladder_setups(observations: PreparedLadderObservations, *,
@@ -63,7 +64,12 @@ def bind_ladder_setups(observations: PreparedLadderObservations, *,
     timeline = pivots.timeline(ticker)
     origin_ms = int(market_day_boundary(market.sessions[0], 0).timestamp()) * 1000
     result = []
-    for raw_index in gate.vwap_cross_indices:
+    if (gate.qualification_mode not in {'vwap_cross', 'first_eligible_above_vwap'}
+            or (gate.qualification_mode != 'vwap_cross' and gate.qualification_indices is None)):
+        raise ValueError('Ladder setup qualification mode is unavailable')
+    qualifications = (gate.qualification_indices if gate.qualification_indices is not None
+                      else gate.vwap_cross_indices)
+    for raw_index in qualifications:
         index = int(raw_index)
         boundary = int(gate.boundary_ms[index])
         if (index < 0 or index >= table.num_rows or gate.market_rejection[index] != 0
@@ -80,5 +86,6 @@ def bind_ladder_setups(observations: PreparedLadderObservations, *,
         reason = ('v7_resistance_unavailable' if resistance is None else
                   'confirmed_swing_stop_unavailable' if stop is None else 'setup_qualified')
         result.append(BoundLadderSetup(ticker, index, int(gate.admission_boundary_ms[index]), boundary,
-            market.token, observations.scan_content_hash, v7.token, pivots.token, reason, resistance, stop))
+            market.token, observations.scan_content_hash, v7.token, pivots.token, reason, resistance, stop,
+            gate.qualification_mode))
     return tuple(result)

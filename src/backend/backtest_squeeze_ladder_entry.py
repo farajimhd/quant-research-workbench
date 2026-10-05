@@ -39,6 +39,7 @@ def propose_ladder_breakout(observations: PreparedLadderObservations, setup: Bou
             or not isinstance(v7, CertifiedV7IntervalPlan) or setup.ticker != observations.ticker
             or setup.market_plan_token != observations.market_plan_token
             or setup.scan_content_hash != observations.scan_content_hash
+            or setup.qualification_mode != observations.gate.qualification_mode
             or setup.v7_plan_token != v7.token or v7.source_build_id != observations.source_build_id
             or type(boundary_ms) is not int or boundary_ms % 100
             or not setup.qualification_boundary_ms < boundary_ms <= 57_600_000

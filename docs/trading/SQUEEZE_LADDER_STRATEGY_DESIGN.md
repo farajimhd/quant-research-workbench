@@ -688,3 +688,22 @@ The probe's V7 token is
 pivot token is
 `6fa2ae4fc16c3a038b48fd88c01f0f341b41f0dd05a1126ff19e2eacf0953a49`.
 These are development diagnostics only; no financial simulation ran.
+
+Two prepared qualification modes are now explicit:
+`vwap_cross` remains the default; `first_eligible_above_vwap` selects the first
+completed, fully market-qualified observation per certified admission whose
+price exceeds native VWAP plus the configured buffer. It never reports that
+observation as a crossing. The bounded mask preserves separate crossing and
+qualification indices, setup binding consumes the selected qualification
+indices, and cold reconstruction truncates both to the causal prefix. Setup
+evidence includes the named scalar qualification mode; a proposal cannot mix
+its setup mode with the observation mode. The ladder schema remains prepared
+and uninstalled; no persisted numbered-release table was changed.
+
+Immutable `ladder-gnpx-aug18-above-vwap-probe-v1.json` changes only this mode
+from the prior GNPX probe. It produces one qualification, rejected because its
+V7 resistance is unavailable, and zero proposals. This alternative is not an
+accepted improvement. A single early qualification can precede complete V7
+geometry, so future watchlist-state work must explicitly distinguish waiting
+for missing geometry from replacing an already frozen setup. Do not silently
+retry or relabel this mode's result. No financial backtest ran.

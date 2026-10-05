@@ -47,6 +47,26 @@ def test_cross_cannot_use_price_before_admission_or_cross_admission_reset():
     assert not compile_ladder_gate(**args).market_indices.size
 
 
+def test_above_vwap_mode_is_explicit_one_qualification_per_admission_not_a_cross():
+    args = columns()
+    args['close_int'][:] = 100200
+    args['admission_boundaries_ms'] = np.array([64000, 67000], dtype=np.int64)
+    crossed = compile_ladder_gate(**args)
+    assert not crossed.qualification_indices.size
+    above = compile_ladder_gate(**{**args, 'policy':replace(args['policy'],
+        qualification_mode='first_eligible_above_vwap')})
+    assert above.qualification_indices.tolist() == [639,669]
+    assert not above.vwap_cross_indices.size
+    assert not above.qualification_indices.flags.writeable
+    assert above.qualification_mode == 'first_eligible_above_vwap'
+    args['quote_timestamp_us'][639] -= 1_000_001
+    delayed = compile_ladder_gate(**{**args, 'policy':replace(args['policy'],
+        qualification_mode='first_eligible_above_vwap')})
+    assert delayed.qualification_indices.tolist() == [640,669]
+    with pytest.raises(ValueError, match='qualification mode'):
+        replace(args['policy'], qualification_mode='unsealed-mode')
+
+
 def test_missing_bucket_is_not_zero_liquidity_and_quote_only_is_not_a_cross():
     args = columns()
     for name, value in tuple(args.items()):

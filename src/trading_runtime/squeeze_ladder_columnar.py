@@ -33,8 +33,11 @@ class LadderGatePolicy:
     admission_ttl_ms: int
     vwap_buffer_int: int
     acquisition_windows: tuple[tuple[int, int], ...]
+    qualification_mode: str = 'vwap_cross'
 
     def __post_init__(self):
+        if self.qualification_mode not in {'vwap_cross', 'first_eligible_above_vwap'}:
+            raise ValueError('Unsupported ladder qualification mode')
         for value in (self.minimum_session_shares, self.minimum_session_dollars,
                       self.minimum_trade_rate_10s, self.minimum_trade_rate_60s,
                       self.maximum_spread_bps):
@@ -67,6 +70,8 @@ class LadderGateBatch:
     market_indices: np.ndarray
     vwap_cross_indices: np.ndarray
     certified_history_through_ms: int | None = None
+    qualification_indices: np.ndarray | None = None
+    qualification_mode: str = 'vwap_cross'
 
 
 def compile_ladder_gate(*, policy: LadderGatePolicy, boundary_ms: np.ndarray,
@@ -177,4 +182,12 @@ def compile_ladder_gate(*, policy: LadderGatePolicy, boundary_ms: np.ndarray,
               np.flatnonzero(crossing & same_admission & (reasons == 0)))
     for value in arrays:
         value.setflags(write=False)
-    return LadderGateBatch(*arrays, certified_history_through_ms)
+    qualification = arrays[-1]
+    if policy.qualification_mode == 'first_eligible_above_vwap':
+        eligible = np.flatnonzero((reasons == 0) &
+                                   (close_int > execution_vwap * 10000 + policy.vwap_buffer_int))
+        first_eligible = np.r_[True, np.diff(admitted[eligible]) != 0] if len(eligible) else np.array([], dtype=bool)
+        qualification = eligible[first_eligible]
+        qualification.setflags(write=False)
+    return LadderGateBatch(*arrays, certified_history_through_ms,
+                           qualification, policy.qualification_mode)
