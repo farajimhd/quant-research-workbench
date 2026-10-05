@@ -81,7 +81,9 @@ def chart(meta,listing_id,start_us):
     for item in proof['shards']:
         receipt=source.read_json(root/item['path']/'complete.json',item['sha256'])
         if listing_id in receipt['identities']:
-            if receipt['binding']['source_sha256']!=meta['source_dataset_sha256']:raise ValueError('1b shard source changed')
+            # Each immutable day belongs to its actual producer publication;
+            # the merged inventory has a separate source-certificate identity.
+            if receipt['binding']['source_sha256']!=proof['binding']['source_sha256']:raise ValueError('1b shard source changed')
             frame=pl.read_parquet(source.verified_local(root/item['path']/'labels.parquet',receipt['files']['labels']['sha256'])).filter(pl.col('listing_id')==listing_id)
             break
     else:raise ValueError('Listing missing from published 1b shards')

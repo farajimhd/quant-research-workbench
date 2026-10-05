@@ -6,6 +6,42 @@ teachers, rolling-15 episode windows, fee-adjusted candidate targets, bracket
 sidecars and checkpoints from their datasets are rejected by current loaders.
 Historical files remain audit evidence, not current supervision.
 
+## Admitted development extension
+
+`rl-v6-active-labels.json` now identifies the combined immutable dataset under
+`rl-v6-development-admission-20261005/dataset.json`. It retains the original
+16 training sessions and adds August 27, August 28, September 1 and September 3
+to the original August 24/25 development sessions. August 26, August 31 and
+September 2 remain sealed and are absent from public and training inventories.
+Prior session feature tails may be used as causal context; sealed labels are
+never loaded for that purpose.
+
+The admission certificate pins the frozen random split and the original full
+publication audits. Dataset manifests reference existing immutable banks and
+1a/1b shards; no bars or labels are recalculated. Each 1b day retains its actual
+producer binding, and its source certificate must match the corresponding 1a
+day. The combined publication is bound to the complete source-day certificate
+map rather than pretending all shards came from one producer run.
+
+`run_train.py` defaults to this active registry unless an explicit dataset is
+supplied. The combined manifest binds training to its saved 1b target dataset:
+rejected episodes remain flat WAIT examples and cannot be reconstructed as
+ENTRY from their original gains. Their hypothetical held branches are omitted
+because the current position-conditional head permits HOLD/EXIT when held,
+and ENTRY/WAIT when flat. Stored copied labels still suppress all rejected
+ENTRY/HOLD/EXIT rows to WAIT. Selected episodes retain their held supervision.
+
+Saved sizing ratios are exposed as `TeacherDecision.allocation_ratio_target`
+for selected ENTRY rows and are null otherwise. They are targets, never input
+features. The existing ticker model has no sizing regression head or sizing
+loss; implementing that model capability is a separate training change.
+This publication does not start training or change the approved label math.
+
+Research exposes the same 23 session entries (including July 30 context) in
+**1a labels** and **1b labels & grouping**. Both pages read final saved shards;
+the 1b overlap chart, rejected episodes and copied target comparison remain
+available. Sealed dates are rejected by both APIs.
+
 ## Target and feature timing (mandatory)
 
 `label_timing.CONTRACT` is the versioned training alignment authority. A label
