@@ -15,8 +15,8 @@ from tests.test_squeeze_ladder_protection import request
 from tests.test_trading_runtime import quote
 
 
-@pytest.mark.parametrize("partial_ack", [False, True])
-def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tmp_path, partial_ack):
+@pytest.mark.parametrize("recovery", [None, "matching", "missing", "changed"])
+def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tmp_path, recovery):
     async def exercise():
         broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
         await broker.initialize()
@@ -46,7 +46,7 @@ def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tm
                 if order_id in group.broker_order_roles:
                     _apply_cumulative_fill(group, order_id, float(order.filledQuantity),
                                            group.broker_order_roles[order_id])
-            if partial_ack:
+            if recovery is not None:
                 actual_place = broker.place_orders
                 async def missing_ack(account_id, orders):
                     rows = await actual_place(account_id, orders)
@@ -57,8 +57,34 @@ def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tm
                 assert group.state == OrderManagementState.OUTCOME_UNKNOWN
                 assert len(group.plan.orders) == 11
                 count = len(await broker.live_orders())
-                assert (await first.reconcile_protection(group))["status"] == "ladder_submission_outcome_unknown"
-                assert len(await broker.live_orders()) == count
+                broker.place_orders = actual_place
+                actual_live = broker.live_orders
+                if recovery != "matching":
+                    async def inconsistent_snapshot():
+                        rows = await actual_live()
+                        if recovery == "missing":
+                            return [row for row in rows if "repair-" not in row.cOID or row.orderType != "STP"]
+                        return [replace(row, auxPrice=row.auxPrice + .01)
+                                if "repair-" in row.cOID and row.orderType == "STP" else row for row in rows]
+                    broker.live_orders = inconsistent_snapshot
+                    if recovery == "missing":
+                        assert (await first.reconcile_protection(group))["status"] == "ladder_submission_outcome_unknown"
+                    else:
+                        with pytest.raises(RuntimeError, match="differs from persisted command"):
+                            await first.reconcile_protection(group)
+                    assert group.state == OrderManagementState.OUTCOME_UNKNOWN
+                    assert len(await actual_live()) == count
+                    return
+                await first.close()
+                second = await manager("after-unknown")
+                recovered = await second.recover()
+                restored = second._groups[recovered[0].group_id]
+                assert restored.broker_order_slices.get("10") == "lot-2", (restored.broker_order_slices, restored.broker_order_request_indexes)
+                assert restored.broker_order_roles.get("10") == "profit_target", restored.broker_order_roles
+                assert (await second.reconcile_protection(restored))["actions"] == []
+                assert len(await actual_live()) == count
+                assert restored.state == OrderManagementState.PARTIALLY_FILLED
+                assert restored.broker_order_slices[restored.broker_order_ids[-1]] == "lot-2"
                 return
             result = await first.reconcile_protection(group)
             repair = [action for action in result["actions"] if action["action"] == "place_ladder_repair_pair"]

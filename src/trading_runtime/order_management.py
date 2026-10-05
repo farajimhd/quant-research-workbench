@@ -1367,7 +1367,8 @@ class OrderManagementEngine:
         if order.orderId and order.orderId not in group.broker_order_ids:
             group.broker_order_ids.append(order.orderId)
             self._group_by_broker_id[order.orderId] = group.group_id
-            group.broker_order_roles[order.orderId] = _infer_order_role(
+            group.broker_order_roles[order.orderId] = _recovered_order_role(
+                group, str(order.cOID or ""),
                 order.orderType,
                 bool(order.parentId),
                 str(group.intent.action),
@@ -3040,7 +3041,8 @@ class OrderManagementEngine:
         if order.broker_order_id and order.broker_order_id not in group.broker_order_ids:
             group.broker_order_ids.append(order.broker_order_id)
             self._group_by_broker_id[order.broker_order_id] = group.group_id
-            group.broker_order_roles[order.broker_order_id] = _infer_order_role(
+            group.broker_order_roles[order.broker_order_id] = _recovered_order_role(
+                group, str(order.client_order_id or ""),
                 order.order_type,
                 bool(order.parent_order_id),
                 str(group.intent.action),
@@ -4814,6 +4816,23 @@ def _order_role(order: OrderRequest, intent_action: str) -> str:
     if normalized_type in {"TRAIL", "TRAILLMT"}:
         return "trailing_stop"
     return "protective_exit"
+
+
+def _recovered_order_role(group, client_order_id: str, order_type: str,
+                          has_parent: bool, intent_action: str) -> str:
+    """Resolve prepared ladder repairs from the persisted command before fills."""
+    profile = group.intent.resolved_protection_profile()
+    if profile is not None and profile.identity == "early-squeeze-ladder-prepared@1":
+        index = _request_index_for_identity(group, client_order_id)
+        if index is not None:
+            request = group.orders[index]
+            if "repair-" in request.cOID:
+                if (intent_action != "enter_long" or request.side != "SELL"
+                        or request.parentId or request.orderType != order_type
+                        or request.orderType not in {"LMT", "STP"}):
+                    raise ValueError("Recovered ladder repair differs from its planned closing leg")
+                return "profit_target" if request.orderType == "LMT" else "protective_stop"
+    return _infer_order_role(order_type, has_parent, intent_action)
 
 
 def _infer_order_role(order_type: str, has_parent: bool, intent_action: str) -> str:

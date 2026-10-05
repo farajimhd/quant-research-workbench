@@ -13,6 +13,53 @@ from .squeeze_ladder_lots import LadderFillFact, ladder_lot_exposure
 from .strategy_orders import canonical_runtime_order_raw
 
 
+async def recover_ladder_repair_outcome(manager, group) -> bool:
+    """Resolve persisted repair commands by exact broker identity, never retry."""
+    from .order_management import OrderManagementState, _apply_cumulative_fill
+
+    pending = [(index, order) for index, order in enumerate(group.orders)
+               if "repair-" in order.cOID]
+    if not pending:
+        return False
+    live = await manager.broker.live_orders()
+    matched = []
+    for index, request in pending:
+        candidates = [order for order in live if order.account == group.account_id and order.cOID == request.cOID]
+        if not candidates:
+            return False
+        if len(candidates) != 1:
+            raise RuntimeError("Ladder repair client identity is ambiguous")
+        order = candidates[0]
+        if any(actual != planned for actual, planned in (
+            (order.conid, request.conid), (order.ticker, request.ticker),
+            (order.side, request.side), (order.orderType, request.orderType),
+            (order.tif, request.tif), (order.totalSize, request.quantity),
+            (order.price, request.price), (order.auxPrice, request.auxPrice),
+            (order.parentId or "", request.parentId or ""), (order.outsideRTH, request.outsideRTH))):
+            raise RuntimeError("Ladder repair broker order differs from persisted command")
+        owner = manager._group_by_broker_id.get(str(order.orderId))
+        if owner is not None and owner != group.group_id:
+            raise RuntimeError("Ladder repair broker identity belongs to another group")
+        matched.append((index, request, order))
+    if len({str(order.orderId) for _, _, order in matched}) != len(matched):
+        raise RuntimeError("Ladder repair broker identities are duplicated")
+    for index, request, order in matched:
+        order_id = str(order.orderId)
+        role = "profit_target" if request.orderType == "LMT" else "protective_stop"
+        if order_id not in group.broker_order_ids:
+            group.broker_order_ids.append(order_id)
+        manager._group_by_broker_id[order_id] = group.group_id
+        group.broker_order_roles[order_id] = role
+        group.broker_order_slices[order_id] = group.plan.order_slice_ids[index]
+        group.broker_order_request_indexes[order_id] = index
+        _apply_cumulative_fill(group, order_id, float(order.filledQuantity), role)
+        manager._record_protection(group, request, phase="effective", broker_order_id=order_id,
+                                   active=order.order_status in OPEN_ORDER_STATUSES)
+    state = OrderManagementState.PARTIALLY_FILLED if group.remaining_quantity > 0 else OrderManagementState.FILLED
+    manager._transition(group, state, {"event": "ladder_repair_outcome_recovered"})
+    return True
+
+
 async def reconcile_ladder_protection(manager, group):
     from .order_management import OrderManagementState, _protection_group_key, _require_modify_acknowledgement
 
@@ -28,8 +75,21 @@ async def reconcile_ladder_protection(manager, group):
         raise ValueError("Prepared ladder repair requires fixed independent brackets")
     if group.intent.action != "enter_long" or group.protection_delegated:
         raise ValueError("Prepared ladder repair requires its own long acquisition")
-    if group.state == OrderManagementState.OUTCOME_UNKNOWN:
-        return {"status": "ladder_submission_outcome_unknown"}
+    bound_indexes = set(group.broker_order_request_indexes.values())
+    has_unbound_repair = any(index not in bound_indexes and "repair-" in order.cOID
+                             for index, order in enumerate(group.orders))
+    if group.state == OrderManagementState.OUTCOME_UNKNOWN or has_unbound_repair:
+        if not await recover_ladder_repair_outcome(manager, group):
+            if group.state != OrderManagementState.OUTCOME_UNKNOWN:
+                manager._transition(group, OrderManagementState.OUTCOME_UNKNOWN,
+                                    {"event": "ladder_repair_outcome_unknown"})
+            return {"status": "ladder_submission_outcome_unknown"}
+    elif group.state == OrderManagementState.WORKING and group.filled_quantity > 0:
+        # Recovery may observe an unfilled child last. Acquisition state is
+        # determined by processed entry fills, not the last protective update.
+        state = (OrderManagementState.PARTIALLY_FILLED if group.remaining_quantity > 0
+                 else OrderManagementState.FILLED)
+        manager._transition(group, state, {"event": "ladder_acquisition_state_recovered"})
     live = {str(order.orderId): order for order in await manager.broker.live_orders()}
     # Defer retirement while broker snapshots are ahead of processed entry
     # callbacks; future shares must not be assigned to another lot or cancelled.
