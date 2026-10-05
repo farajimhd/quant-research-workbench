@@ -37,6 +37,7 @@ from src.trading_runtime.arte_journal_compound_v4 import (
     V4CompoundBatch, coalesce_v4_units,
 )
 from src.trading_runtime.arte_oms_tactic_projection import V4OmsTacticBatch
+from src.trading_runtime.automatic_ladder_transport import V4AutomaticLadderBatch
 
 
 def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
@@ -47,6 +48,21 @@ def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
     Backtest, so the intent and its simulated OMS action share one durability
     boundary without weakening live order admission.
     """
+    if any(type(unit) is V4AutomaticLadderBatch for unit in units):
+        # Its financial authority is the exact immediately preceding prefix.
+        # Keep both the proposal and each neighboring compound isolated.
+        result, pending = [], []
+        for unit in units:
+            if type(unit) is V4AutomaticLadderBatch:
+                if pending:
+                    result.extend(_coalesce_v4_units(tuple(pending), max_events=max_events))
+                    pending.clear()
+                result.append(unit)
+            else:
+                pending.append(unit)
+        if pending:
+            result.extend(_coalesce_v4_units(tuple(pending), max_events=max_events))
+        return tuple(result)
     if len(units) > 1:
         from src.trading_runtime.arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
         if (type(max_events) is not int or not 2 <= max_events <= MAX_V4_COMMIT_EVENTS
@@ -408,7 +424,7 @@ class BacktestTypedJournalPublisher:
                     raise RuntimeError("Typed Backtest projector changed the bounded prefix")
                 for unit in batches:
                     batch = unit.base if isinstance(
-                        unit, (V3SqueezeBatch, V4CompoundBatch,
+                        unit, (V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch,
                                V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
@@ -420,7 +436,9 @@ class BacktestTypedJournalPublisher:
                     if (batch.first_sequence != self._sequence + 1
                             or batch.prior_batch_id != self._batch_id):
                         raise RuntimeError("Typed Backtest batch chain is not contiguous")
-                    receipt = (self.writer.submit_compound_v4(unit,
+                    receipt = (self.writer.submit_automatic_ladder_v4(unit)
+                               if isinstance(unit, V4AutomaticLadderBatch)
+                               else self.writer.submit_compound_v4(unit,
                                     **({'first_price_source': self._first_price_source}
                                        if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures'] else {}))
                                if isinstance(unit, V4CompoundBatch)
@@ -467,7 +485,14 @@ class BacktestTypedJournalPublisher:
                             unit, V4CompoundBatch) else (unit,)):
                         source_batch = (source_unit if isinstance(source_unit,
                             TypedJournalBatch) else source_unit.base)
-                        if isinstance(source_unit, V4StrategyOneEntryBatch):
+                        if isinstance(source_unit, V4AutomaticLadderBatch):
+                            intent = source_unit.request.intent
+                            parent_id = source_unit.base.events[0]['record_id']
+                            if self.journal.automatic_entry_for_record(parent_id) is None:
+                                raise RuntimeError('Committed ladder acquisition lost its typed source')
+                            self._committed_strategy_intents[intent.intent_id] = (
+                                _committed_intent_source(batch, parent_id), intent)
+                        elif isinstance(source_unit, V4StrategyOneEntryBatch):
                             from src.trading_runtime.strategy_one_intent import (
                                 strategy_one_add_intent,
                                 strategy_one_entry_intent,

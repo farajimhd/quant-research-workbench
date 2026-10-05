@@ -4048,6 +4048,34 @@ class ArteJournalWriter:
             self._accepted_writes = True
             return receipt
 
+    def bind_automatic_ladder_read_client(self, client) -> None:
+        """Bind a dedicated SELECT-only source principal before B admission."""
+        if (self._journal_profile != 'backtest_v4' or self._accepted_writes
+                or getattr(self, '_automatic_ladder_read_client', None) is not None
+                or client is self._client
+                or client.execute("SELECT getSetting('readonly')").strip() != '1'):
+            raise ValueError('Automatic ladder needs an unbound SELECT-only Backtest source reader')
+        self._automatic_ladder_read_client = client
+
+    def submit_automatic_ladder_v4(self, unit) -> Future[str]:
+        """Queue its typed source companion; generic submit cannot replace it."""
+        from .automatic_ladder_transport import V4AutomaticLadderBatch
+        if (self._journal_profile != 'backtest_v4' or type(unit) is not V4AutomaticLadderBatch
+                or getattr(self, '_automatic_ladder_read_client', None) is None):
+            raise ValueError('Automatic ladder publication lacks its dedicated native source reader')
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('V4 writer is closed or failed')
+            if unit.base.run_id != self._run_id:
+                raise ValueError('V4 writer cannot mix runs')
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull('V4 journal queue is full; stop admission') from exc
+            self._accepted_writes = True
+            return receipt
+
     def submit_strategy_one_entry_v4(self, unit: V4StrategyOneEntryBatch) -> Future[str]:
         """Queue an entry or add and its typed child without blocking execution."""
         if self._journal_profile not in self._V4_PROFILES or not isinstance(
@@ -4842,9 +4870,10 @@ class ArteJournalWriter:
                     self._live_v4_lease.assert_current()
                 if self._backtest_v4_lease is not None:
                     self._backtest_v4_lease.assert_current()
+                from .automatic_ladder_transport import V4AutomaticLadderBatch
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
-                                           (TypedJournalBatch, V3SqueezeBatch,
+                                           (TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
@@ -4969,6 +4998,10 @@ class ArteJournalWriter:
                     unit = group[0][0]
                     committed_id = _publish_typed_batch_v4(self._client, unit.base,
                         followthrough_rows=(unit.failure,))
+                elif isinstance(group[0][0], V4AutomaticLadderBatch):
+                    from .automatic_ladder_transport import publish_automatic_ladder_batch
+                    committed_id = publish_automatic_ladder_batch(self._client, group[0][0],
+                        read_client=self._automatic_ladder_read_client)
                 elif isinstance(group[0][0], V4StrategyOneEntryBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_strategy_one_entry_batch_v4,

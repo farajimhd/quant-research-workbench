@@ -400,6 +400,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Backtest progress differs from fixed cursor contract")
                 batch = replace(batch, backtest_progress=typed_progress.backtest_progress)
             sidecar = journal.strategy_one_entry_for_record(record.record_id)
+            automatic_source = journal.automatic_entry_for_record(record.record_id)
             add_sidecar = journal.strategy_one_add_for_record(record.record_id)
             protection_source = journal.strategy_one_protection_for_record(
                 record.record_id)
@@ -410,7 +411,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Session exit has conflicting source authorities")
                 protection_source = session_exit_source
             if sum(value is not None for value in (
-                    sidecar, add_sidecar, protection_source, failure_source, profit_source, confirmation_source, liquidity_source)) > 1:
+                    automatic_source, sidecar, add_sidecar, protection_source, failure_source, profit_source, confirmation_source, liquidity_source)) > 1:
                 raise RuntimeError("Strategy 1 intent has two source authorities")
             if (kind == ("strategy", "strategy_intent")
                     and record.payload.get("reason") == "strategy_nine_followthrough_failure"
@@ -434,6 +435,9 @@ def project_pending_backtest_v4_prefix(
                     and liquidity_source is None):
                 raise RuntimeError('Liquidity intent lacks its normalized witness')
             if sidecar is None and add_sidecar is None:
+                if kind == ('strategy', 'strategy_intent') and record.payload.get('reason') == 'prepared_ladder_entry':
+                    if automatic_source is None:
+                        raise RuntimeError('Automatic ladder parent lacks its normalized source companion')
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("reason") in {
                             "strategy_one_entry", "strategy_one_add"}):
@@ -446,6 +450,14 @@ def project_pending_backtest_v4_prefix(
                         and protection_source is None):
                     raise RuntimeError("Strategy 1 protection intent lacks typed source")
                 unit = batch
+                if automatic_source is not None:
+                    from src.trading_runtime.automatic_ladder_transport import V4AutomaticLadderBatch
+                    if (kind != ('strategy', 'strategy_intent')
+                            or record.entity_id != automatic_source.intent.intent_id
+                            or record.account_id == ''):
+                        raise RuntimeError('Automatic ladder companion differs from its exact parent')
+                    unit = V4AutomaticLadderBatch.from_request(batch, automatic_source)
+                    sources[automatic_source.intent.intent_id] = (batch, automatic_source.intent)
                 if protection_source is not None:
                     if (kind != ("strategy", "strategy_intent")
                             or record.entity_id != protection_source.intent_id

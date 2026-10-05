@@ -909,6 +909,7 @@ class TradingRuntime:
         profit_giveback_source: tuple | None = None,
         confirmed_ah_source: tuple | None = None,
         liquidity_fade_source: tuple | None = None,
+        automatic_entry: Any | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -919,6 +920,20 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
+        if automatic_entry is not None:
+            from .squeeze_ladder_automatic import AutomaticLadderRequest
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            if (type(automatic_entry) is not AutomaticLadderRequest
+                    or self.config.mode is not RunMode.BACKTEST
+                    or not isinstance(self.journal, BacktestMemoryJournal)
+                    or evaluation.intents != (automatic_entry.intent,) or event is not None
+                    or any(value is not None for value in (strategy_one_proposal,
+                        strategy_one_add_proposal, strategy_one_assignment_id,
+                        numbered_exit_assignment_id, followthrough_source,
+                        profit_giveback_source, confirmed_ah_source, liquidity_fade_source))):
+                raise ValueError('Automatic entry requires its exclusive typed source')
+            automatic_entry.verify(run_id=self.run_id, account_id=account_id,
+                                   session_date=self.config.anchor_date)
         if self.config.strategy_id == STRATEGY_ID and self.config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47):
             from .strategy_one_intent import require_no_replacement_capital
             require_no_replacement_capital(evaluation.intents)
@@ -1085,7 +1100,10 @@ class TradingRuntime:
             self.portfolio.withdraw_invalidated_requests(account_id, active)
         for intent in evaluation.intents:
             intent = replace(intent, metadata=self.journal.reference_evidence(intent.metadata))
-            if strategy_one_proposal is not None:
+            if automatic_entry is not None:
+                self.journal.append_automatic_entry(request=automatic_entry, account_id=account_id,
+                    strategy_id=self.config.strategy_id, strategy_revision=self.config.strategy_revision)
+            elif strategy_one_proposal is not None:
                 self.journal.append_strategy_one_intent(
                     intent=intent, proposal=strategy_one_proposal,
                     session_date=self.config.anchor_date,
@@ -1191,8 +1209,10 @@ class TradingRuntime:
                 # new exposure-increasing order.
                 await self._refresh_portfolio_from_broker(
                     for_entry_admission=(strategy_one_proposal is not None
-                                         or strategy_one_add_proposal is not None))
-            assignment_id = (strategy_one_proposal.assignment_id
+                                         or strategy_one_add_proposal is not None
+                                         or automatic_entry is not None))
+            assignment_id = (automatic_entry.assignment_id if automatic_entry is not None
+                             else strategy_one_proposal.assignment_id
                              if strategy_one_proposal is not None
                              else strategy_one_add_proposal.assignment_id
                              if strategy_one_add_proposal is not None

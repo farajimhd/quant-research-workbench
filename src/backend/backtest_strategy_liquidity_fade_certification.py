@@ -45,7 +45,7 @@ LIQUIDITY_FADE_SOURCE_AST = {'src/trading_runtime/strategy_half_risk_liquidity_f
  'src/backend/backtest_strategy_liquidity_fade_decision.py': '7aaf49f043a2c30da30ed3a24303e27e80082c7d5b0af510aac06ee1ed68a1b0',
  'src/backend/backtest_strategy_one_financial.py': 'f184a0f434aabb3895b1323d2a22056acb30b4ab9bf301cb8356b1eea2591f0d',
  'src/trading_runtime/arte_liquidity_fade_reader_v4.py': 'de0080bdf30bae6cb32105ee52d369f6769cf472888ccacdf6bba974b4648acf',
- 'src/trading_runtime/arte_journal_writer.py': '9f57286328c1ece2f5a58e0f316f2d761dd616f4bad586d4932604f01d158c1e',
+ 'src/trading_runtime/arte_journal_writer.py': 'f59200246c39103d6f5efe5d07497975a75110965bb49054b8c01dc428e16c8d',
  'src/trading_runtime/arte_journal_rowbinary.py': '7d42c442aa6b43208c6ce6c82ca5a19e7c6e08976a930c9f38d477667b4b7e49',
  'src/trading_runtime/arte_typed_insert_dispatch.py': '3b5a254f6e4a21527ad1d5379e27ee0168a176178b549658cf415be1ae4553b5',
  'research/mlops/clickhouse.py': '2cf6ccee354c65b24f8ea73198a9ec1c0f033f249b3f57430a8073dcf64470c8',
@@ -58,13 +58,13 @@ LIQUIDITY_FADE_SOURCE_AST = {'src/trading_runtime/strategy_half_risk_liquidity_f
  'src/trading_runtime/arte_journal_projection.py': '62b7209c08d972952fa01d7099829471371071a33d3f25806dedce983ecda8ba',
  'src/trading_runtime/arte_intent_projection.py': 'b53b0251cd632d6a314632b59c0c1523fa035cc4e19058a4398287d9020ff082',
  'src/trading_runtime/strategy_liquidity_fade_publication.py': '2674b2274069fc2b4156a56baf125329597d7c10c3e7da975a08d985578ca600',
- 'src/trading_runtime/arte_journal_commit_v4.py': '7916f90293d5493f0ac9dac3532ee616ec82e27f15d81f4d0f086215cc8b890f',
+ 'src/trading_runtime/arte_journal_commit_v4.py': 'f9b75fc7064d357f55dd13a39ab71f7edacd1bd6fdff106c85dc8dec436b17d5',
  'src/trading_runtime/arte_journal_compound_v4.py': '4bf6f9f059a1ea2a8797842e7ab7750385df573c7e10920c0bd6c599d3592067',
  'src/backend/backtest_strategy_certified_price_break.py': '3eef13a9a2baaa85217ccdce64967d1ed4d628573990d524e91a14fd9692eb1c',
- 'src/backend/backtest_journal_memory.py': '38697454c74a76fde23724929cf702f36ca9d55e013e0074b5a832891d4878f4',
- 'src/backend/backtest_typed_projection.py': '9270813823b23a636a362a82938882eb9672a730d263be50b73de44af25d4336',
- 'src/backend/backtest_typed_publisher.py': '254e2c609b79f8e6bd2a6d109b4887a4ca7028c7dc89bfd3380453d6b7c72b9d',
- 'src/trading_runtime/runtime.py': 'f9d753e2590b66b9bdfa55a7d6d083dc617dd790d8732e1030a5e43d4ad72acb'}
+ 'src/backend/backtest_journal_memory.py': '90aa86427d86940e0e9c345900facbd2fd4faba85a522b1a891f0f67430c6444',
+ 'src/backend/backtest_typed_projection.py': '1ac2cd9c86680f5e80e32c51603d259a13bf9b027ffe0aa70370bc003216d81f',
+ 'src/backend/backtest_typed_publisher.py': '021bdc1907deb22d093bcdb44c66ae200e1b5ee1031ad4dbc6eff46340024460',
+ 'src/trading_runtime/runtime.py': '4e9d7efc1f19c85f2adbe3e1882ef2a552772ca68a78508bde1e612098aef251'}
 
 
 def certify_prepared_liquidity_fade_source(*, source_overrides=None):

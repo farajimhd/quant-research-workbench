@@ -1095,8 +1095,8 @@ def certify_recent_bos_entry_source(*, source_path: Path | None = None,
 # routes. Exact canonical AST seals bind the tested implementation; a later
 # behavior change gets a new numbered release. Comments/line endings do not
 # affect these seals. The run separately pins its complete backend fingerprint.
-_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'BacktestMemoryJournal': '19c7e3de8aea3812eb7fb40f154ed73bc5dedc7badad58abc9f62b94a4329d30',
-                                        'mark_fenced': '8cd7c50ca0a615ff9ed75ca54cfbffca41b94e8d74920adcefaa7d5fcca93855',
+_RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'BacktestMemoryJournal': '233eec88b6fdd9f18a3f41b74206ce2eff761baf2bdc698b8682e922afee9bfc',
+                                        'mark_fenced': '4bc8c2ce9b06fee17360b9f4d0596e8596521edff2ebb8bebfcdce9f4681bd4e',
                                         'append_profit_giveback_exit': 'c1bbc451c9d8cad1940ad6aaf92e02fbabe45fce56e67226bb3d35057450cd73',
                                         'profit_giveback_exit_for_record': '961b81e4f28658ccfafcdeae95bac8c0c1aa4951f989a86cd819bab86212ed40',
                                         'append_followthrough_exit': 'e669b0d47b172d2c9113ae60b94cbd835fab5dbe18655f52f48016ee944149b7',
@@ -1124,8 +1124,8 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'backend/backtest_strategy_one_static_gate.py': {'compile_static_entry_gate': 'e6d2f747557dfbe005d492fa4a24ef671f47736961196cd1ca27ec2da438d0e5'},
  'backend/backtest_strategy_one_v7_interval_store.py': {'certify_v7_interval_plan': '3e5a6b0150e9225821f165971f4c2526d41c2d9934c50bdbaa9101c295c219aa'},
  'backend/backtest_strategy_rising_momentum.py': {'__module__': 'c0f4a1084b29088a1df63cdeb5c1b82b3d467fe2a657ee08ab37037bd6a6f245'},
- 'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': '9e619a63ce7b7a9a264afcc83fa39965979d00148534bcd18d646d43fb3f60cf'},
- 'backend/backtest_typed_publisher.py': {'_drain': '8549f9502b317b4af7a92c1b4b2c9e04739922eb411fda6563ec6fd22396a7fe',
+ 'backend/backtest_typed_projection.py': {'project_pending_backtest_v4_prefix': '8ccb23134b0aec227467eea06b454bd58e788263957154482c17eb46adca6362'},
+ 'backend/backtest_typed_publisher.py': {'_drain': 'fe4689a83de2619be0b652b66b570fe2b308d181c9f81154c0bb9bed338a4c31',
                                          '_prepare_batches': '3c062863262b9e3d68c423a31ab27e7fedd1a031db78b7981239a107ef9781d7',
                                          '_publish_terminal_v4': 'f9eabf5aca42abc249a30d7d164fc8689a56b16c284c2a8bb523d823a3932ce4',
                                          'bind_first_price_source': '168dd7d8bbc96099c24f620e972d5a4aaa3a75151752721e4fdc0a0440e58933'},
@@ -1146,12 +1146,12 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                                       'validate_numbered_failure': 'a9936508963acd0ab11e443ace8adbb6e1606e6760a1834dc3c44e71f59318ee'},
  'trading_runtime/arte_initial_momentum_entry_v4.py': {'__module__': 'c4a3be67f0d90b2c72f618ffdc99e0abd51814389ece601d5f5006210cdbb9b1'},
  'trading_runtime/arte_journal_commit_v4.py': {'verified_batch_predecessor': 'e7f52f08e28175674cf663dbde1b17abf7bf53513884f7d2289fbdd4dfe63ecf',
-                                               '_load_verified_details_v4': 'e9218948eddf6f659829cf6220856c1ebef91471c5c7ae82bd941cc2631efb59',
-                                               '_publish_sealed_batch_v4': '6b1f579439ced4cd5f847a5c00b78f08f575363ccd437ce3d4a43e88d9130059',
+                                               '_load_verified_details_v4': '5b91e3ef2d0ffcad278b76e06b178d2a16658e77ad7d804f62219508a8d7defc',
+                                               '_publish_sealed_batch_v4': '86b5119c1f97185fa0cb4862ea53735276002b592cd66520ac416ef5e9073014',
                                                '_publish_typed_batch_v4': 'a54689787598cb904d37ba3ad5e63b39b6e23732da251bdd936b624d9f841522',
                                                '_validate_strategy_one_entry_link': '6ade041b2063172043cedee9af5b3a390b7f1fa1336a0012136867c47f6ee246',
-                                               'load_verified_commit_v4': '71fc21b37fb069157447a10aab38e978ae0c2da383037113437213f7859b080a',
-                                               'load_verified_v4_prefix': '492e028bdedeb79943fa7430bac0e458a864e5061f8ac12feb50174f1298cb41',
+                                               'load_verified_commit_v4': 'bdb5d145cdb9d7d8e04f29d3ce63dbed2b557b7deb7b809ebde9489f9bf2c763',
+                                               'load_verified_v4_prefix': 'f05bce1c29f78b4ec1ce33edc20236e0a8f0a44bec452c8847b0968d46e6b315',
                                                'load_writer_v4_snapshot_prefix': '72620b3f9a3bf95a93ecb5b7105972da2f08f19dda2d7143e26441bd41ddacc1',
                                                'publish_strategy_one_entry_batch_v4': '1d15add02e403d085b2c26432907372600953fd4fa057bef7dab94365167a326',
                                                'publish_terminal_typed_batch_v4': '96dd1d05ed478620bb78d0b2c50f6c6858ed5530b97b533bbf389f1cc1d799cd'},
@@ -1170,7 +1170,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
                                             '_ManagerSnapshotUnit': '0fc3c933a83a2c48e0feb873cf3882e4f9ef89828e9543723469bb8facb7e18f',
                                             '_OmsObservationSnapshotUnit': 'f205cbfa584c3566500f0558ef3b08a44e8f07f56778cba9000a3667d7701001',
                                             '_TerminalBacktestUnit': 'f42ccbf195ea58f40dc4a78fa7494655b47b59558d7546191a21e3f5c0fa9f62',
-                                            '_run': '6e8dcc722fd5644f0978a0b166b3cd558a18fcada4a31afce0e4cfbc966c1169',
+                                            '_run': '7c41f335f6a043651d7ae36b3b6e57d36c8f4d641c7dd26bd1ed547126d0cc78',
                                             '_validate_checkpoint_price_source': '2cdc6c63fdaf1effa48c2e0e467d2582620e796f2ee4a383e297584ed39a6b74',
                                             'submit_broker_match_snapshot': 'ccb2ae1ec6caf555675db0b729e91636d06d35d408acde560f52e7056d7d6324',
                                             'submit_campaign_snapshot': 'fa09a5cf1c45b87aa873185b92267c21965b042ce0a216dfa2f0ec046ffdf85b',
@@ -1193,7 +1193,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'trading_runtime/numbered_fixed_strategy.py': {'__module__': 'f9c42ddd6921012fcf3d761a0fd718a8d207df5601d4440b682b40b0769a0784'},
  'trading_runtime/runtime.py': {'submit_followthrough_failure': '53f1817fbd5b2fb6d4048fb3fc5d0579a0a00c094b85245f3bec03a75a6ad410',
                                 'submit_profit_giveback': 'fcd638576f375df9e6649800c40675f8a71520ce92020441bba3ca268f71df1c',
-                                '_execute_intents': '4bf9e56836c7c3cfed9a8a2da34d204dc301f11462cbfcd09c1af01cfece96aa',
+                                '_execute_intents': '7a352b32f080183c7b4787396276e223c088f02d695494ebcd3ece685456070a',
                                 '_strategy_one_entry_intent': '496b9c5e6a9b3d1fecd53783049fa6d689e7298f9d8b67b43cfd6c5687f432c6',
                                 'bind_strategy_one_price_source': '70556d8d49d8c95ff34712e551415bd03296ce75e5b610beaba12ca1073c3fd6',
                                 'submit_strategy_one_proposal': 'a0ff7be89d638738b2bccc38cf053d1f05ff01bb0cf45d27720cf6f91c3bf609'},
@@ -1269,7 +1269,7 @@ _SESSION_EXIT_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'append_num
  'trading_runtime/numbered_fixed_strategy.py': {'_SESSION_EXIT_REASONS': 'd65c14eb4ed7f13f7c1b19793564bbcb2a7fdce0367f898b55656c63c6f45baf',
                                                 'numbered_session_exit_reason': '210f5211d9f9a3ca40a881298b00de8be3465a21941376ee44885efe952c7565'},
  'trading_runtime/numbered_session_exit.py': {'numbered_session_exit_intent': 'ef9bf3c91d18c5059f3d58ea844397a0d764b7cad9188a865a4d7260e85d0550'},
- 'trading_runtime/runtime.py': {'_execute_intents': '4bf9e56836c7c3cfed9a8a2da34d204dc301f11462cbfcd09c1af01cfece96aa'}}
+ 'trading_runtime/runtime.py': {'_execute_intents': '7a352b32f080183c7b4787396276e223c088f02d695494ebcd3ece685456070a'}}
 
 
 def certify_numbered_session_exit_reason_source(*, source_overrides=None) -> str:

@@ -66,6 +66,9 @@ from src.backend.strategy_one_live_signal_schema import STRATEGY_ONE_SIGNAL_TABL
 
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
+    if profile == "squeeze-ladder-evidence":
+        from src.trading_runtime.arte_squeeze_ladder_schema import TABLES
+        return TABLES
     if profile == "live-strategy-one-signal":
         return STRATEGY_ONE_SIGNAL_TABLES
     if profile == "live-strategy-one-activation":
@@ -143,7 +146,8 @@ def main() -> int:
                                               "live-strategy-one-signal",
                                               "live-strategy-one-v5-ack",
                                               "live-strategy-one-modify-command",
-                                              "oms-execution-tactic"),
+                                              "oms-execution-tactic",
+                                              "squeeze-ladder-evidence"),
                         default="fixed-v2", help="exact journal table layout")
     args = parser.parse_args()
     if not args.env_file.is_file():

@@ -36,6 +36,9 @@ class BacktestMemoryJournal:
         # the execution path. These are provisional until the V4 writer fences.
         self._live_counts = {"signals": 0, "intents": 0, "commands": 0, "fills": 0}
         self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
+        self._automatic_entries: dict[str, Any] = {}
+        self._control_intervened = False
+        self._automatic_fresh_run = initial_sequence == 0
         self._strategy_one_adds: dict[str, tuple[Any, date]] = {}
         self._strategy_one_protection: dict[str, Any] = {}
         self._numbered_session_exits: dict[str, Any] = {}
@@ -135,6 +138,32 @@ class BacktestMemoryJournal:
             self._strategy_one_entries[record.record_id] = (proposal, session_date)
             self._entry_assignments[intent.intent_id] = proposal.assignment_id
             return record
+
+    def append_automatic_entry(self, *, request, account_id, strategy_id, strategy_revision):
+        """Atomically bind an automatic intent to its typed source companion."""
+        from src.trading_runtime.squeeze_ladder_automatic import AutomaticLadderRequest
+        if type(request) is not AutomaticLadderRequest:
+            raise ValueError('Unsupported automatic entry evidence contract')
+        request.verify(run_id=self.run_id, account_id=account_id,
+                       session_date=request.market_context.session_date)
+        with self._lock:
+            if self._control_intervened:
+                raise ValueError('Automatic baseline rejects control intervention')
+            intent = request.intent
+            record = self.append(run_id=self.run_id, category='strategy', entity_type='strategy_intent',
+                entity_id=intent.intent_id, account_id=account_id, event_time=intent.event_time,
+                payload={**intent.payload(), 'strategy_id':strategy_id, 'strategy_revision':strategy_revision})
+            self._automatic_entries[record.record_id] = request
+            self._entry_assignments[intent.intent_id] = request.assignment_id
+            return record
+
+    def automatic_entry_for_record(self, record_id):
+        with self._lock:
+            return self._automatic_entries.get(record_id)
+
+    def has_control_intervention(self):
+        with self._lock:
+            return self._control_intervened
 
     def strategy_one_entry_for_record(self, record_id: str) -> tuple[Any, date] | None:
         """Return only a still-unfenced proposal for the projection worker."""
@@ -603,6 +632,8 @@ class BacktestMemoryJournal:
                 result.append(record)
             creations: dict[tuple[str, str], dict[str, Any]] = {}
             for record in result:
+                if (record.category, record.entity_type) == ('strategy', 'strategy_assignment_command'):
+                    self._control_intervened = True
                 if (record.category == "portfolio_management"
                         and record.entity_type == "portfolio_reservation"
                         and record.payload.get("event") == "reservation_created"):
@@ -682,6 +713,7 @@ class BacktestMemoryJournal:
             discard = sequence - self._base_sequence
             if discard:
                 for record in self._records[:discard]:
+                    self._automatic_entries.pop(record.record_id, None)
                     self._strategy_one_entries.pop(record.record_id, None)
                     self._strategy_one_adds.pop(record.record_id, None)
                     self._strategy_one_protection.pop(record.record_id, None)
@@ -1112,6 +1144,7 @@ class BacktestMemoryJournal:
     def close(self) -> None:
         with self._lock:
             self._closed = True
+            self._automatic_entries.clear()
             self._strategy_one_entries.clear()
             self._strategy_one_adds.clear()
             self._profit_giveback_exits.clear()

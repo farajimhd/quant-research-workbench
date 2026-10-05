@@ -246,7 +246,7 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
 
 def load_verified_v4_prefix(client, run_id: str, *,
                             max_commits: int = 100_000,
-                            first_price_source=None) -> V4CommittedPrefix | None:
+                            first_price_source=None, automatic_ladder_sources=()) -> V4CommittedPrefix | None:
     """Recompute every detail seal and require one complete contiguous chain.
 
     This SELECT-only cold path is intentionally outside the execution loop.
@@ -294,6 +294,7 @@ def load_verified_v4_prefix(client, run_id: str, *,
             status, tuple(batch_ids)) if batch_ids else None)
         verified, _ = load_verified_commit_v4(
             client, run_id=run_id, batch_id=batch_id, first_price_source=first_price_source,
+            automatic_ladder_sources=automatic_ladder_sources,
             **({'verified_prior_prefix': preceding} if preceding is not None else {}))
         if verified != row:
             raise RuntimeError("V4 cold commit differs from ordered run inventory")
@@ -491,6 +492,7 @@ def load_verified_commit_v4(
     entry_activity_source=None,
     first_price_authorities: tuple = (),
     verified_prior_prefix: V4CommittedPrefix | None = None,
+    automatic_ladder_sources=(),
 ) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
@@ -535,7 +537,8 @@ def load_verified_commit_v4(
         prior_batch_id=str(commit["prior_batch_id"]), first_price_source=first_price_source,
         first_price_authorities=first_price_authorities,
         entry_activity_source=entry_activity_source,
-        verified_prior_prefix=verified_prior_prefix)
+        verified_prior_prefix=verified_prior_prefix,
+        automatic_ladder_sources=automatic_ladder_sources, automatic_ladder_batch_metadata=dict(commit))
     try:
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:
@@ -551,6 +554,7 @@ def _load_verified_details_v4(
     first_price_source=None,
     entry_activity_source=None,
     verified_prior_prefix: V4CommittedPrefix | None = None,
+    automatic_ladder_sources=(), automatic_ladder_read_client=None, automatic_ladder_batch_metadata=None,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
@@ -926,6 +930,18 @@ def _load_verified_details_v4(
                            and row["entity_type"] in {"portfolio", "position"}}
         if covered != snapshot_events:
             raise RuntimeError("V4 broker snapshot readback lacks complete coverage")
+    from src.trading_runtime.arte_squeeze_ladder_schema import SETUP as LADDER_SETUP, TARGET as LADDER_TARGET
+    if related_rows.get(LADDER_SETUP.name) or related_rows.get(LADDER_TARGET.name):
+        from .automatic_ladder_transport import verify_cold_automatic_ladder_families
+        if verified_prior_prefix is None:
+            raise RuntimeError('Cold ladder entry lacks its independently verified predecessor')
+        verify_cold_automatic_ladder_families(automatic_ladder_read_client or client,
+            related_rows=related_rows, run_id=run_id, batch_id=batch_id,
+            prior_batch_id=prior_batch_id, verified_prior_prefix=verified_prior_prefix,
+            sources=automatic_ladder_sources, batch_metadata=automatic_ladder_batch_metadata)
+    elif any(row.get('reason') == 'prepared_ladder_entry'
+             for row in related_rows.get('trading_strategy_intent_v1', ())):
+        raise RuntimeError('Cold ladder original parent lacks normalized scalar evidence')
     return details
 
 
@@ -2000,7 +2016,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              timings_ns: dict[str, int] | None = None,
                              first_price_authorities: tuple = (),
                              verified_prior_prefix: V4CommittedPrefix | None = None,
-                             first_price_source=None) -> str:
+                             first_price_source=None, automatic_ladder_sources=(),
+                             automatic_ladder_read_client=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _identity, _insert, _literal, _rows,
@@ -2019,6 +2036,11 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
 
     live_lease = getattr(client, "live_v4_lease", None)
     dispatch = client.typed_insert_dispatch
+    from .arte_squeeze_ladder_schema import SETUP as LADDER_SETUP, TARGET as LADDER_TARGET
+    if any(name in (LADDER_SETUP.name, LADDER_TARGET.name) and rows for name, rows in families):
+        if (live_lease is not None or automatic_ladder_read_client is None
+                or not automatic_ladder_sources or verified_prior_prefix is None):
+            raise ValueError('Automatic ladder cannot bypass its dedicated native source admission')
     if any(name == ENTRY_ACTIVITY.name and rows for name, rows in families):
         if live_lease is not None:
             raise ValueError('Entry activity publication is Backtest only')
@@ -2111,7 +2133,13 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
         prior_batch_id=batch.prior_batch_id,
         first_price_authorities=first_price_authorities,
-        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
+        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
+        automatic_ladder_sources=automatic_ladder_sources,
+        automatic_ladder_read_client=automatic_ladder_read_client,
+        automatic_ladder_batch_metadata={
+            'run_month':batch.run_month.isoformat(), 'attempt_id':batch.attempt_id,
+            'first_sequence':batch.first_sequence, 'last_sequence':batch.last_sequence,
+            'source_cursor':batch.source_cursor, 'status':batch.status})
     verify_commit_v4(commit, family_rows, actual_details)
     mark_stage("detail_readback")
 
