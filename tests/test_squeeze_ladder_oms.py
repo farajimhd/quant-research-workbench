@@ -1,10 +1,11 @@
 import asyncio
+import pytest
 from dataclasses import replace
 from datetime import timedelta
 
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.journal import TradingJournal
-from src.trading_runtime.order_management import OrderManagementEngine, _apply_cumulative_fill
+from src.trading_runtime.order_management import OrderManagementEngine, OrderManagementState, _apply_cumulative_fill
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 from src.trading_runtime.ibkr_schema import OrderStatus
@@ -14,7 +15,8 @@ from tests.test_squeeze_ladder_protection import request
 from tests.test_trading_runtime import quote
 
 
-def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tmp_path):
+@pytest.mark.parametrize("partial_ack", [False, True])
+def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tmp_path, partial_ack):
     async def exercise():
         broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
         await broker.initialize()
@@ -44,6 +46,20 @@ def test_partial_second_lot_gets_own_target_and_repair_batch_survives_restart(tm
                 if order_id in group.broker_order_roles:
                     _apply_cumulative_fill(group, order_id, float(order.filledQuantity),
                                            group.broker_order_roles[order_id])
+            if partial_ack:
+                actual_place = broker.place_orders
+                async def missing_ack(account_id, orders):
+                    rows = await actual_place(account_id, orders)
+                    return rows[:1]
+                broker.place_orders = missing_ack
+                with pytest.raises(RuntimeError, match="unique broker acknowledgements"):
+                    await first.reconcile_protection(group)
+                assert group.state == OrderManagementState.OUTCOME_UNKNOWN
+                assert len(group.plan.orders) == 11
+                count = len(await broker.live_orders())
+                assert (await first.reconcile_protection(group))["status"] == "ladder_submission_outcome_unknown"
+                assert len(await broker.live_orders()) == count
+                return
             result = await first.reconcile_protection(group)
             repair = [action for action in result["actions"] if action["action"] == "place_ladder_repair_pair"]
             assert len(repair) == 1

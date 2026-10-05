@@ -14,7 +14,7 @@ from .strategy_orders import canonical_runtime_order_raw
 
 
 async def reconcile_ladder_protection(manager, group):
-    from .order_management import _protection_group_key, _require_modify_acknowledgement
+    from .order_management import OrderManagementState, _protection_group_key, _require_modify_acknowledgement
 
     profile = group.intent.resolved_protection_profile()
     if profile is None or profile.identity != "early-squeeze-ladder-prepared@1":
@@ -28,6 +28,8 @@ async def reconcile_ladder_protection(manager, group):
         raise ValueError("Prepared ladder repair requires fixed independent brackets")
     if group.intent.action != "enter_long" or group.protection_delegated:
         raise ValueError("Prepared ladder repair requires its own long acquisition")
+    if group.state == OrderManagementState.OUTCOME_UNKNOWN:
+        return {"status": "ladder_submission_outcome_unknown"}
     live = {str(order.orderId): order for order in await manager.broker.live_orders()}
     # Defer retirement while broker snapshots are ahead of processed entry
     # callbacks; future shares must not be assigned to another lot or cancelled.
@@ -111,13 +113,23 @@ async def reconcile_ladder_protection(manager, group):
         for order in pair:
             manager._group_by_client_id[order.cOID] = group.group_id
         manager._transition(group, group.state, {"event": "ladder_repair_planned"})
-        async with manager._command_lane(group.account_id):
-            for order in pair:
-                manager._record_protection(group, order, phase="requested")
-            response = await manager.broker.place_orders(group.account_id, list(pair))
-        _require_modify_acknowledgement(response)
-        if len(response) != 2 or any(not (row.get("order_id") or row.get("orderId")) for row in response):
-            raise RuntimeError("Ladder repair requires both exact broker acknowledgements")
+        try:
+            async with manager._command_lane(group.account_id):
+                for order in pair:
+                    manager._record_protection(group, order, phase="requested")
+                response = await manager.broker.place_orders(group.account_id, list(pair))
+            _require_modify_acknowledgement(response)
+            if (len(response) != 2
+                    or any(not (row.get("order_id") or row.get("orderId")) for row in response)
+                    or len({str(row.get("order_id") or row.get("orderId")) for row in response}) != 2
+                    or any(str(row.get("order_id") or row.get("orderId")) in group.broker_order_ids for row in response)):
+                raise RuntimeError("Ladder repair requires both unique broker acknowledgements")
+        except Exception:
+            # The planned pair and client IDs were persisted before dispatch.
+            # Never issue a replacement while its broker outcome is unresolved.
+            manager._transition(group, OrderManagementState.OUTCOME_UNKNOWN,
+                                {"event": "ladder_repair_outcome_unknown"})
+            raise
         for offset, (row, order, role) in enumerate(zip(response, pair, ("profit_target", "protective_stop"), strict=True)):
             order_id = str(row.get("order_id") or row.get("orderId"))
             if order_id in group.broker_order_ids:
