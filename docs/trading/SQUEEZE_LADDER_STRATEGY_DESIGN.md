@@ -214,6 +214,26 @@ source/setup regression tests pass. Coordinator entry proposals, normalized
 setup fact persistence, complete release preflight and financial execution
 remain unimplemented; this binding does not register or publish a strategy.
 
+`backtest_squeeze_ladder_entry.py` now produces a prepared structural entry
+proposal from that bound setup and a later exact completed observation. It
+requires adjacent price evidence, retained VWAP, unchanged selected V7 interval
+through the setup, continuous completed V7 source clocks, current quote/liquidity
+eligibility and the same unexpired admission. A completed close at/below the
+frozen upper comparison edge must precede a close strictly above that edge plus
+the declared tick buffer. Expired/replaced admissions are rejected before
+reading a setup prefix; the compiled TTL bounds eligible prefixes to 300 seconds.
+No future price or V7 update chooses or replaces the frozen entry band.
+
+The structural variant freezes the nearest complete set of distinct overhead
+targets at proposal time, tick-floored one tick below each lower edge. It rejects
+incomplete or collapsed target geometry. The original qualification stop is
+retained. Tests connect certified Arrow observations, native V7/pivot lookup,
+the breakout witness and three independent fixed-price protection slices;
+68 source/setup/protection/OMS regression tests pass. This is a market proposal,
+not financial authorization: coordinator session locks/permissions, aggregate
+capital request, normalized decision publication, release sealing/preflight and
+full-session financial runs remain required before app publication.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute
