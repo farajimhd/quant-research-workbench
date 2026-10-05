@@ -60,6 +60,31 @@ def test_missing_bucket_is_not_zero_liquidity_and_quote_only_is_not_a_cross():
     assert not compile_ladder_gate(**args).vwap_cross_indices.size
 
 
+def test_complete_certified_sparse_prefix_preserves_counts_without_fabricating_crosses():
+    args = columns()
+    for name, value in tuple(args.items()):
+        if isinstance(value, np.ndarray) and len(value) == 700:
+            args[name] = np.delete(value, 99)
+    sparse = compile_ladder_gate(**args, certified_history_through_ms=70000)
+    assert sparse.vwap_cross_indices.tolist() == [648]
+    assert not np.any(sparse.market_rejection & REJECT_HISTORY)
+    assert len(sparse.boundary_ms) == 699
+    assert sparse.certified_history_through_ms == 70000
+    actual_counts = compile_ladder_gate(**{**args, 'policy': replace(args['policy'],
+        minimum_trade_rate_10s=10., minimum_trade_rate_60s=10.)},
+        certified_history_through_ms=70000)
+    assert actual_counts.market_rejection[648] & REJECT_LIQUIDITY
+    assert not actual_counts.vwap_cross_indices.size
+    # Completeness establishes activity availability, never a missing candle.
+    for name, value in tuple(args.items()):
+        if isinstance(value, np.ndarray) and len(value) == 699:
+            args[name] = np.delete(value, 647)
+    assert not compile_ladder_gate(**args, certified_history_through_ms=70000).vwap_cross_indices.size
+    for invalid in (True, 69900, 70001, 57_600_100):
+        with pytest.raises(ValueError, match='certified history'):
+            compile_ladder_gate(**args, certified_history_through_ms=invalid)
+
+
 def test_future_tail_independence_and_scalar_trade_window_parity():
     args = columns()
     args['volume_trade_count'][::3] = 0

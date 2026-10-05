@@ -36,7 +36,9 @@ def reconstruct_ladder_market_decision(rows, *, observations, market, v7, pivots
         admission_boundary_ms=gate.admission_boundary_ms[:count],
         market_rejection=gate.market_rejection[:count],
         market_indices=gate.market_indices[gate.market_indices < count],
-        vwap_cross_indices=gate.vwap_cross_indices[gate.vwap_cross_indices < count])
+        vwap_cross_indices=gate.vwap_cross_indices[gate.vwap_cross_indices < count],
+        certified_history_through_ms=(min(boundary, gate.certified_history_through_ms)
+                                     if gate.certified_history_through_ms is not None else None))
     prefix = replace(observations, completed_source=observations.completed_source.slice(0, count), gate=prefix_gate)
     setups = bind_ladder_setups(prefix, market=market, v7=v7, pivots=pivots,
                                tick_int=tick_int, stop_buffer_ticks=stop_buffer_ticks)

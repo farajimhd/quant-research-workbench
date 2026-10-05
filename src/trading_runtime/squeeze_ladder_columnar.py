@@ -66,6 +66,7 @@ class LadderGateBatch:
     market_rejection: np.ndarray
     market_indices: np.ndarray
     vwap_cross_indices: np.ndarray
+    certified_history_through_ms: int | None = None
 
 
 def compile_ladder_gate(*, policy: LadderGatePolicy, boundary_ms: np.ndarray,
@@ -75,7 +76,8 @@ def compile_ladder_gate(*, policy: LadderGatePolicy, boundary_ms: np.ndarray,
                         quote_valid: np.ndarray, quote_timestamp_us: np.ndarray,
                         cumulative_volume: np.ndarray, cumulative_notional: np.ndarray,
                         volume_trade_count: np.ndarray,
-                        admission_boundaries_ms: np.ndarray) -> LadderGateBatch:
+                        admission_boundaries_ms: np.ndarray,
+                        certified_history_through_ms: int | None = None) -> LadderGateBatch:
     """Vectorize crossing and liquidity; missing history is not zero activity.
 
     Admission clocks come from the certified Signal Stream, not MACD inference.
@@ -93,6 +95,15 @@ def compile_ladder_gate(*, policy: LadderGatePolicy, boundary_ms: np.ndarray,
     if any(not isinstance(value, np.ndarray) or value.ndim != 1 for value in (*integer, *floating, *flags)):
         raise ValueError("Ladder source requires one-dimensional typed columns")
     n = len(boundary_ms)
+    # Only the certified full-prefix loader may supply this availability bound.
+    # Sparse absence in a completely read event product is not lost history.
+    # Generic/incomplete inputs retain the strict dense-history requirement.
+    if certified_history_through_ms is not None and (
+            type(certified_history_through_ms) is not int
+            or not 0 < certified_history_through_ms <= 57_600_000
+            or certified_history_through_ms % 100
+            or (n and certified_history_through_ms < int(boundary_ms[-1]))):
+        raise ValueError('Ladder certified history does not cover the source prefix')
     if (n > 576_000 or any(len(value) != n for value in (*integer, *floating, *flags))
             or any(value.dtype != np.dtype('int64') for value in integer)
             or any(value.dtype != np.dtype('float64') for value in floating)
@@ -134,6 +145,8 @@ def compile_ladder_gate(*, policy: LadderGatePolicy, boundary_ms: np.ndarray,
         gaps = np.r_[boundary_ms[0] > 100, np.diff(boundary_ms) != 100]
         missing_through = np.maximum.accumulate(np.where(gaps, boundary_ms - 100, 0))
         history_ok = missing_through <= np.maximum(boundary_ms - 60_000, 0)
+        if certified_history_through_ms is not None:
+            history_ok[:] = True
     quote_age = evaluation_epoch_us - np.maximum(quote_timestamp_us, 0)
     quote_ok = ((quote_valid == 1) & (quote_timestamp_us > 0)
                 & (bid_int > 0) & (ask_int >= bid_int) & (ask_int < 2**53)
@@ -164,4 +177,4 @@ def compile_ladder_gate(*, policy: LadderGatePolicy, boundary_ms: np.ndarray,
               np.flatnonzero(crossing & same_admission & (reasons == 0)))
     for value in arrays:
         value.setflags(write=False)
-    return LadderGateBatch(*arrays)
+    return LadderGateBatch(*arrays, certified_history_through_ms)

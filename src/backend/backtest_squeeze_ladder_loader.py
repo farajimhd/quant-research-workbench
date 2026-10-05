@@ -101,7 +101,11 @@ def load_ladder_observations(plan: CertifiedMarketDayPlan, *, session_date: str,
             cumulative_volume=_numpy(table, 'cumulative_volume', fill=np.nan, dtype=np.float64),
             cumulative_notional=_numpy(table, 'cumulative_notional', fill=np.nan, dtype=np.float64),
             volume_trade_count=_numpy(table, 'volume_trade_count', fill=0, dtype=np.int64),
-            admission_boundaries_ms=np.array(episodes.get(ticker, ()), dtype=np.int64))
+            admission_boundaries_ms=np.array(episodes.get(ticker, ()), dtype=np.int64),
+            # The verified native product is grouped by occupied event bucket.
+            # The bounded query starts at session origin and its Arrow stream
+            # was consumed to exhaustion; no missing interval is synthesized.
+            certified_history_through_ms=through_boundary_ms)
         result.append(PreparedLadderObservations(ticker, plan.token, plan.build_id,
                                                 authority['content_hash'], table, gate))
     return tuple(result)

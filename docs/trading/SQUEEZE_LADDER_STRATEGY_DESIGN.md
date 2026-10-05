@@ -552,3 +552,25 @@ window evidence or explicitly prove the sparse prefix's completeness from
 the certified source contract. Retain rejection for genuinely unavailable
 history and retain completed-price crossing requirements. These probes read
 development sources only and made no source, journal or order mutations.
+
+The native producer contract in
+`pipelines/market_sip/events/market_day_sql.py` groups canonical events by
+occupied bucket; it does not generate an empty-grid row. The loader now marks
+activity history available through the explicitly requested completed prefix
+only after consuming the entire bounded, origin-starting Arrow query for the
+certified source plan. `certified_history_through_ms` is that availability
+bound, not an independent certificate: the caller must still independently
+verify the market plan and read-only source authority. Standalone masks without
+this bound continue to reject gaps. Counts are sums of persisted observations
+over elapsed 10s/60s windows; no synthetic row, count or indicator is created.
+VWAP crossing still requires adjacent completed valid price rows. Cold source
+reconstruction truncates the availability bound with the causal prefix.
+
+Connected probe `ladder-cdtg-aug26-native-source-probe-v3.json`, using identical
+source token, scan content hash and policy, retained all 28,884 observations,
+produced 4,771 market survivors and 66 VWAP crossings, and completed in 5.17
+seconds. The original v1/v2 receipts remain immutable evidence of the defect.
+Sparse-count tests reject a threshold that the actual persisted counts cannot
+meet, missing crossing candles still reject, and unverified history still
+rejects. This is one-ticker source/gate qualification, not setup completeness,
+full-session financial execution or proof of an improved strategy.
