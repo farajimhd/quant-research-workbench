@@ -10,8 +10,9 @@ if (!python) {
 const researchReview = process.argv.includes("--research-teacher");
 const priceActionReview = process.argv.includes("--research-price-action");
 const savedLabelsReview = process.argv.includes("--research-saved-labels");
-const reviewScript = fileURLToPath(new URL(savedLabelsReview ? "./research_saved_labels_review.py" : priceActionReview ? "./research_price_action_review.py" : researchReview ? "./research_teacher_review.py" : "./ui_review.py", import.meta.url));
-const result = spawnSync(python, [reviewScript, ...process.argv.slice(2).filter(arg => !["--research-teacher", "--research-price-action", "--research-saved-labels"].includes(arg))], {
+const marketReview = process.argv.includes("--research-market-preview");
+const reviewScript = fileURLToPath(new URL(marketReview ? "./research_market_preview_review.py" : savedLabelsReview ? "./research_saved_labels_review.py" : priceActionReview ? "./research_price_action_review.py" : researchReview ? "./research_teacher_review.py" : "./ui_review.py", import.meta.url));
+const result = spawnSync(python, [reviewScript, ...process.argv.slice(2).filter(arg => !["--research-teacher", "--research-price-action", "--research-saved-labels", "--research-market-preview"].includes(arg))], {
   env: process.env,
   stdio: "inherit",
 });

@@ -1,0 +1,58 @@
+"""Real-data browser audit of the isolated 1b preview."""
+import argparse,json
+from pathlib import Path
+from urllib.parse import urlsplit
+from playwright.sync_api import sync_playwright
+
+def main():
+ parser=argparse.ArgumentParser();parser.add_argument('--output-dir',required=True);args=parser.parse_args()
+ out=Path(args.output_dir).resolve()
+ if not out.is_relative_to(Path('D:/TradingML/runtimes').resolve()):raise ValueError('External runtime required')
+ out.mkdir(parents=True,exist_ok=True);records=[];errors=[]
+ with sync_playwright() as p:
+  browser=p.chromium.launch()
+  try:
+   for theme in ['light','dark']:
+    for scale in [.8,1.,1.25]:
+     for size,viewport in [('normal',dict(width=1600,height=1000)),('compact',dict(width=1280,height=720))]:
+      context=browser.new_context(viewport=viewport)
+      context.add_init_script(f"localStorage.setItem('quant-research-workbench.theme','{theme}');localStorage.setItem('quant-research-workbench.ui-scale','{scale}');")
+      page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+      charts=[]
+      def proxy(route):
+       u=urlsplit(route.request.url);response=route.fetch(url='http://127.0.0.1:8000'+u.path+('?' + u.query if u.query else ''),timeout=300000)
+       if '/market-preview/chart' in u.path and response.ok:
+        raw=response.json();charts.append(raw['data'] if response.headers.get('x-response-envelope')=='1' else raw)
+       route.fulfill(response=response)
+      page.route('**/api/research/models**',proxy)
+      page.goto('http://127.0.0.1:5173/#research-workspace');page.get_by_role('button',name='1b selection & sizing',exact=True).click()
+      page.get_by_label('1b session',exact=True).select_option('2026-07-31')
+      page.get_by_role('button',name='Prepare session preview',exact=True).click()
+      page.get_by_text('3 · Inspect copied 1b labels',exact=True).wait_for(timeout=300000)
+      scope=page.locator('.research-market-preview');name=f'{theme}-{scale}-{size}'
+      scope.locator('.research-preview-table button').first.click()
+      scope.locator('.chart-shell').wait_for(timeout=300000)
+      page.wait_for_timeout(500)
+      assert scope.get_by_text('Chart renderer stopped',exact=True).count()==0
+      assert charts and any(r['allocation_loss_mask'] for r in charts[-1]['labels'])
+      page.screenshot(path=str(out/(name+'-selection.png')),full_page=True)
+      scope.get_by_text('Exact 1a → 1b candle targets',exact=True).click()
+      scope.locator('.research-preview-compare input').check()
+      scope.locator('.research-preview-compare input').uncheck()
+      page.get_by_label('1b selection',exact=True).select_option('rejected')
+      with page.expect_response(lambda r:'/market-preview/result' in r.url and 'search=NVDA' in r.url,timeout=300000):
+       page.get_by_label('1b find ticker',exact=True).fill('NVDA')
+      page.wait_for_timeout(100)
+      with page.expect_response(lambda r:'/market-preview/chart' in r.url,timeout=300000):
+       scope.locator('.research-preview-table button').first.click()
+      assert all(not r['allocation_loss_mask'] for r in charts[-1]['labels'] if r.get('group_id') is None)
+      assert any(r['action_1a'] in ('ENTRY','HOLD','EXIT') and r['action']=='WAIT' for r in charts[-1]['labels'])
+      page.wait_for_timeout(500)
+      assert scope.get_by_text('Chart renderer stopped',exact=True).count()==0
+      page.screenshot(path=str(out/(name+'-rejected.png')),full_page=True)
+      records.append(dict(theme=theme,scale=scale,viewport=size,charts=len(charts)))
+      context.close()
+  finally:browser.close()
+ if errors:raise AssertionError(errors)
+ (out/'report.json').write_text(json.dumps(dict(status='passed',cases=records,page_errors=errors),indent=2));print(json.dumps(dict(status='passed',cases=len(records))))
+if __name__=='__main__':main()

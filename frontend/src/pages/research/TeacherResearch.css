@@ -53,3 +53,9 @@
 .research-chart-toggles, .research-ticker-nav { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; font-size: .75rem; }
 .research-chart-toggles .research-checkbox { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .3rem; }
 .research-canvas .workspace-window-actions.live-window-actions { display: flex; gap: 0; }
+
+.research-market-preview .research-selection { max-width: none; padding: 12px; }
+.research-market-preview input { min-width: 0; }
+.research-preview-table { overflow: auto; max-height: 420px; margin: 12px 0; }
+.research-preview-compare { display: inline-flex; align-items: center; gap: .4rem; margin-bottom: .5rem; font-size: .8rem; }
+.research-preview-compare input { width: auto; }

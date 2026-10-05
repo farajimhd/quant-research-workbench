@@ -1,12 +1,46 @@
-"""Research-only teacher audit endpoints; deliberately no optimizer or writers."""
+"""Research-only teacher audit and isolated 1b preview; no training/publication."""
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from research.rl_trading.v6 import label_audit
 from research.rl_trading.v6 import saved_label_audit
+from research.rl_trading.v6 import market_teacher_preview as market_preview
+from pydantic import BaseModel
 from research.rl_trading.v6 import price_action_opportunities as price_action_labels
 
 router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'])
+
+
+class PreviewRequest(BaseModel):
+    day: str
+    fee_per_share: float = .005
+    threshold_mode: Literal['fee_multiple', 'return'] = 'fee_multiple'
+    minimum_net_fee_multiple: float = 2.
+    minimum_return: float = .01
+    grouping_seconds: float = 30.
+    maximum_group_seconds: int = 300
+
+
+@router.post('/v6/market-preview')
+def preview_start(request: PreviewRequest):
+    fields = request.model_dump()
+    day = fields.pop('day')
+    return read(market_preview.start, day, market_preview.Config(**fields))
+
+
+@router.get('/v6/market-preview/status')
+def preview_status(job_id: str):
+    return read(market_preview.status, job_id)
+
+
+@router.get('/v6/market-preview/result')
+def preview_result(job_id: str, group_id: int | None = None, search: str = '', offset: int = Query(0, ge=0), selection: Literal['all','selected','rejected'] = 'all'):
+    return read(market_preview.result, job_id, group_id, search, offset, selection)
+
+
+@router.get('/v6/market-preview/chart')
+def preview_chart(job_id: str, listing_id: str, start_us: int):
+    return read(market_preview.chart, job_id, listing_id, start_us)
 
 
 @router.get('/v6/saved-labels')

@@ -8,6 +8,7 @@ import { ResearchCanvas } from "./ResearchCanvas";
 import "./TeacherResearch.css";
 import { PriceActionResearch } from "./PriceActionResearch";
 import { SavedLabelResearch } from "./SavedLabelResearch";
+import { MarketTeacherPreview } from "./MarketTeacherPreview";
 import { researchBandColor } from "./researchChart";
 import { useResearchState } from "./researchState";
 
@@ -33,13 +34,16 @@ export function ResearchWorkspacePage() {
   const [teacherVisited, setTeacherVisited] = useState(path === "teacher");
   const [experimentVisited, setExperimentVisited] = useState(path === "price-action");
   const [savedVisited, setSavedVisited] = useState(path === "saved-labels");
+  const [marketVisited, setMarketVisited] = useState(path === "market-preview");
   return <div className="research-path-shell"><nav className="research-path-nav" aria-label="Research paths">
+    <button className={`button ${path === "market-preview" ? "primary" : "secondary"} compact`} aria-pressed={path === "market-preview"} onClick={() => { setMarketVisited(true); setPath("market-preview"); }}>1b selection & sizing</button>
     <button className={`button ${path === "saved-labels" ? "primary" : "secondary"} compact`} aria-pressed={path === "saved-labels"} onClick={() => { setSavedVisited(true); setPath("saved-labels"); }}>Current V6 labels</button>
     <button className={`button ${path === "teacher" ? "primary" : "secondary"} compact`} aria-pressed={path === "teacher"} onClick={() => { setTeacherVisited(true); setPath("teacher"); }}>Historical V6 teacher labels</button>
     <button className={`button ${path === "price-action" ? "primary" : "secondary"} compact`} aria-pressed={path === "price-action"} onClick={() => { setExperimentVisited(true); setPath("price-action"); }}>Price-action experiment</button>
   </nav><div className="research-path-content" hidden={path !== "teacher"}>{teacherVisited && <TeacherResearchPage />}</div>
     <div className="research-path-content" hidden={path !== "price-action"}>{experimentVisited && <PriceActionResearch />}</div>
-    <div className="research-path-content" hidden={path !== "saved-labels"}>{savedVisited && <SavedLabelResearch />}</div></div>;
+    <div className="research-path-content" hidden={path !== "saved-labels"}>{savedVisited && <SavedLabelResearch />}</div>
+    <div className="research-path-content" hidden={path !== "market-preview"}>{marketVisited && <MarketTeacherPreview />}</div></div>;
 }
 
 function TeacherResearchPage() {

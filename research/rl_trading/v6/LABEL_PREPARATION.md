@@ -183,3 +183,40 @@ Minimum position duration defaults to 5 seconds, measured between actual candle 
 Combined chart HOLD markers require in_reference_hold: the retained reference position must actually be active. Outside it, use WAIT unless an ENTRY/selected EXIT opportunity applies. Explicit held view still shows conditional teacher HOLD targets, including hypothetical held states after reference exit. This presentation change does not alter teacher gains, soft probabilities or losses.
 
 Universe policy rl-v6-us-exchange-listed-stocks-v1 independently verifies canonical stock product, USD, US exchange country and shared OTC exclusion across exchange aliases. Historical membership remains pinned to certified pre-open snapshots; current active status or prices are never used for scope. Static canonical metadata evidence is retained in the bank plan, hash-bound, with every rejected identity and reason. Unknown country/product/currency metadata fails closed. Missing MIC alone does not exclude valid US exchange aliases. IBKR overnight venues are explicitly excluded as nonstandard. Label generation/load rejects banks without a valid scope receipt. Old banks remain immutable audit artifacts. Rebuild outputs use banks-us-listed-v1 and labels-us-listed-v1; sealed-test labels remain excluded.
+
+## Isolated supervised 1b preview
+
+Research → **1b selection & sizing** exposes a provisional session preview,
+without publishing training data or changing approved 1a labels. Prepare one
+approved session with frozen settings, then inspect selected/rejected pairs,
+group members, cash ratios and exact original/copied candle targets.
+
+For fee `f` per share per side, score is `(entry_gain - 2*f)/(close + f)`.
+`entry_gain` already discounts actual elapsed time. The adjustable fee rule
+uses `score > m*2*f/(close + f)`; `m=2, f=0.005` means `entry_gain > 0.03`.
+The comparison return rule uses `score >= threshold`, default `0.01` (1%).
+Neither default is approved for full extraction yet. Each listing/S→L pair
+contributes its first qualifying **existing 1a ENTRY**, once, rather than all
+qualifying candle rows. Rejected pairs retain their best ENTRY candidate for
+the decision audit; liquidity rejection and absence of 1a ENTRY are explicit.
+
+Chronologically ordered candidates are partitioned by exact dynamic programming
+to minimize `sum_g sum_i score_i*(time_i-weighted_mean_g)^2 + penalty*group_count`.
+Times are elapsed seconds; `penalty=median(selected_scores)*grouping_seconds^2`.
+Equal timestamps remain atomic. An explicit adjustable maximum group span
+bounds the search. Defaults are 30-second strength and 300-second maximum span.
+This objective is score-weighted temporal clustering, not a session-P&L
+optimizer, and both grouping parameters remain subject to user validation.
+
+Each selected pair receives `allocation_ratio=score/group_score_sum`, summing
+to one per group. It is a target fraction of available cash, not a share count.
+The UI's $10K equivalent is illustrative. Selected pairs preserve 1a actions;
+rejected pair actions ENTRY/HOLD/EXIT become WAIT in the copied preview with
+zero sizing target. Context remains context. Only selected ENTRY rows enable
+sizing loss; HOLD/EXIT rows mask that loss. Raw gains and other 1a audit fields
+are retained for comparison. No PPO cash accounting or training is invoked.
+
+Compact source caches and hash-bound decision receipts live exclusively under
+`D:/TradingML/runtimes/rl-v6-market-teacher-preview`. The chart reads the same
+saved bank indicators as 1a and applies the copy/suppression view on demand.
+No full copied candle dataset is extracted until validation authorizes it.
