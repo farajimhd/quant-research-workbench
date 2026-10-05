@@ -463,3 +463,13 @@ execution costs for comparisons. Development diagnostics may use future move
 labels explicitly as hindsight; those labels never enter executable features.
 
 Registration, historical runs and profitability acceptance remain unfinished.
+
+Market-source reconstruction now has a separate prepared entry point,
+`reconstruct_ladder_market_decision`. It reconstructs the causal setup and
+breakout from certified plans without reading current account state. It is
+not financial authorization or a complete cold verifier: callers must compare
+the evidence and parent intent and verify committed Portfolio/OMS lineage.
+The existing writer-side admission check still requires historical pre-entry
+financial state. The assignment-command table records status changes but
+does not persist permission fields; it cannot alone prove historical entry
+permission. Never manufacture permissions or substitute post-entry state.

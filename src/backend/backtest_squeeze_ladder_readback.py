@@ -9,16 +9,16 @@ from src.backend.backtest_squeeze_ladder_evidence import project_ladder_evidence
 from src.backend.backtest_squeeze_ladder_setup import bind_ladder_setups
 
 
-def reconstruct_ladder_evidence(rows, *, observations, market, v7, pivots, financial,
-                                groups, run_id, batch_id, parent_record_id,
-                                tick_int, stop_buffer_ticks, break_buffer_ticks,
-                                target_count, allocation):
-    """Recompute from independently certified plans, never stored geometry.
+def reconstruct_ladder_market_decision(rows, *, observations, market, v7, pivots,
+                                      tick_int, stop_buffer_ticks, break_buffer_ticks,
+                                      target_count, allocation):
+    """Reconstruct market facts without asserting financial authorization.
 
-    Writer integration must supply its frozen release policy, verified financial
-    prefix and independently validated intent/event parents. Stored tokens and
-    self-hashes do not grant authority. Only requested causal clocks select
-    the source prefix; saved bands, stops and targets are compared afterward.
+    Callers supply independently certified plans and frozen release policy.
+    Only saved causal clocks select source rows. The returned proposal cannot
+    reserve cash, authorize orders or establish historical entry permissions.
+    A cold reader must compare the complete evidence and parent intent, then
+    separately verify the committed Portfolio/OMS decisions and lineage.
     """
     boundary = rows.setup.get('boundary_ms')
     qualification = rows.setup.get('qualification_boundary_ms')
@@ -41,8 +41,24 @@ def reconstruct_ladder_evidence(rows, *, observations, market, v7, pivots, finan
     matching = [setup for setup in setups if setup.qualification_boundary_ms == qualification]
     if len(matching) != 1:
         raise ValueError('Saved ladder qualification is absent from certified source')
-    decision = propose_ladder_breakout(prefix, matching[0], v7=v7, boundary_ms=boundary,
+    return propose_ladder_breakout(prefix, matching[0], v7=v7, boundary_ms=boundary,
         tick_int=tick_int, break_buffer_ticks=break_buffer_ticks, target_count=target_count, allocation=allocation)
+
+
+def reconstruct_ladder_evidence(rows, *, observations, market, v7, pivots, financial,
+                                groups, run_id, batch_id, parent_record_id,
+                                tick_int, stop_buffer_ticks, break_buffer_ticks,
+                                target_count, allocation):
+    """Recheck admission using the verified historical pre-entry state only.
+
+    This writer-side check must never receive current post-entry financial
+    state as a substitute for that historical prefix. Cold market reconstruction
+    is separate and grants no financial authority.
+    """
+    decision = reconstruct_ladder_market_decision(rows, observations=observations,
+        market=market, v7=v7, pivots=pivots, tick_int=tick_int,
+        stop_buffer_ticks=stop_buffer_ticks, break_buffer_ticks=break_buffer_ticks,
+        target_count=target_count, allocation=allocation)
     from datetime import date
     admission = admit_ladder_proposal(decision, financial, session_date=date.fromisoformat(market.sessions[0]), groups=groups)
     expected = project_ladder_evidence(admission, run_id=run_id, batch_id=batch_id,
