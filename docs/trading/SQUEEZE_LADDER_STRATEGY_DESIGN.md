@@ -169,6 +169,18 @@ its right-hand confirmation closes; its product must carry that availability
 boundary. If no certified swing product exists, this variant is unavailable
 until an explicit producer implementation and preflight are qualified.
 
+The repository already defines a producer-owned candidate swing source:
+`arte.strategy_one_pivot_interval_v1` with coverage in
+`arte.strategy_one_pivot_coverage_v1`. `PivotTimeline` exposes active pivots
+only after their confirmation and validity boundaries. This confirms a typed
+contract exists; it does not prove coverage for every campaign session.
+`freeze_ladder_stop` consumes that active tuple at VWAP qualification and
+freezes the latest confirmed low, tick-floored with an explicit buffer.
+Missing lows or wrong-side latest lows reject the setup; a future pivot is a
+source-contract error. Do not substitute an older low, completed-bar low or
+later confirmation to rescue it. Coverage/attempt binding remains a native
+preflight requirement before registration.
+
 Begin with no trail as an attribution baseline. Then compare a price-confirmed
 higher-low ratchet, armed after favorable progress of at least 1R. The new stop
 must increase, remain below a fresh executable bid and retain the declared
