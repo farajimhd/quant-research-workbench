@@ -188,6 +188,19 @@ the resulting Portfolio-approved quantity. Do not substitute the illustrative
 
 ## Batch, lots and cash
 
+The prepared `freeze_ladder_resistance` rule defines the first resistance
+above VWAP as the nearest resistance band with its lower edge strictly above
+the qualified VWAP, ordered by lower edge, upper edge and level ID. This is an
+explicit conservative geometry choice, to be sealed before execution. A band
+containing VWAP does not qualify as wholly above it. The frozen record retains
+both bounds, confirmation epoch, original VWAP bits and the completed-cross
+comparison threshold. A future confirmation is a source error. Missing or
+changed selected geometry invalidates the setup rather than selecting another
+band. A native completed-second V7 lookup and completed-cross integration test
+qualifies the frozen witness against a later geometry change. This prepared
+rule still needs coordinator binding, normalized setup persistence and full
+preflight before it can authorize a numbered strategy's entry proposal.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute

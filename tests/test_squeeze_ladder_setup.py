@@ -3,7 +3,58 @@ from dataclasses import replace
 import pytest
 
 from src.trading_runtime.squeeze_ladder_setup import freeze_ladder_stop
+from src.trading_runtime.squeeze_ladder_setup import freeze_ladder_resistance, ladder_resistance_retained
 from src.trading_runtime.strategy_one_bos import ConfirmedPivot
+from tests.test_strategy_one_v7_intervals import level
+
+
+def test_resistance_freezes_nearest_band_above_vwap_and_never_retargets():
+    levels = (level('far', lower=12., upper=12.2),
+              level('near', lower=10.1, upper=10.2),
+              level('below', lower=9.8, upper=9.9))
+    frozen = freeze_ladder_resistance(active_levels=levels, qualification_boundary_ms=5000,
+        qualification_epoch_ms=1_800_000_001_000, execution_vwap=10.)
+    assert frozen.level_id == 'near'
+    assert frozen.upper_comparison_int == 102000
+    assert ladder_resistance_retained(frozen, levels)
+    assert not ladder_resistance_retained(frozen, (levels[0],))
+    assert not ladder_resistance_retained(frozen, (level('near', lower=10.1, upper=10.3),))
+    assert not ladder_resistance_retained(frozen, (level('near', lower=10.1, upper=10.2, role='support'),))
+
+
+def test_missing_resistance_and_future_confirmation_fail_closed():
+    args = dict(qualification_boundary_ms=5000, qualification_epoch_ms=1_800_000_001_000,
+                execution_vwap=10.)
+    assert freeze_ladder_resistance(active_levels=(), **args) is None
+    assert freeze_ladder_resistance(active_levels=(level(lower=9.8, upper=10.2),), **args) is None
+    with pytest.raises(ValueError):
+        freeze_ladder_resistance(active_levels=(level(confirmed=1_800_000_001_001),), **args)
+
+
+def test_native_completed_v7_lookup_freezes_band_before_break_and_future_change():
+    import numpy as np
+    from src.trading_runtime.strategy_one_v7_intervals import V7IntervalProjector, levels_at
+    from src.trading_runtime.squeeze_ladder_cross import completed_crossings
+    projector = V7IntervalProjector()
+    projector.observe(boundary_ms=0, levels=[level(lower=10.1, upper=10.2)], valid_completed_second=False)
+    projector.observe_unchanged(boundary_ms=1000)
+    projector.observe(boundary_ms=2000, levels=[level(lower=10.1, upper=10.4)], valid_completed_second=True)
+    clocks, intervals = projector.finish()
+    def visible(at):
+        return levels_at(boundary_ms=at, seed_policy='legacy-unfiltered',
+                         valid_seconds=clocks, intervals=intervals)
+    frozen = freeze_ladder_resistance(active_levels=visible(1000), qualification_boundary_ms=1000,
+        qualification_epoch_ms=1_800_000_001_000, execution_vwap=10.)
+    assert frozen.upper == 10.2
+    assert ladder_resistance_retained(frozen, visible(1200))
+    witness = completed_crossings(boundary_ms=np.array([1100,1200], dtype=np.int64),
+        close_int=np.array([102000,102200], dtype=np.int64), price_valid=np.ones(2,dtype=np.uint8),
+        reference_int=np.full(2,frozen.upper_comparison_int,dtype=np.int64),
+        reference_available_ms=np.full(2,1000,dtype=np.int64), reference_valid=np.ones(2,dtype=np.uint8),
+        admitted_at_ms=frozen.qualification_boundary_ms, buffer_int=100, maximum_reference_age_ms=1000)
+    assert witness.crossing.tolist() == [False,True]
+    assert not ladder_resistance_retained(frozen, visible(2000))
+    assert frozen.upper == 10.2
 
 
 def test_latest_confirmed_low_is_frozen_with_downward_tick_buffer():
