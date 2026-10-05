@@ -21,6 +21,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     ResourceAwareClickHouseClient,
     build_auto_update_plan,
     build_updated_bars,
+    day_event_integrity_counts,
     clickhouse_price_int,
     confirm_auto_update,
     execution_clock_existing_source_days,
@@ -205,6 +206,22 @@ class EventEncodingTests(unittest.TestCase):
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
+    def test_integrity_audit_uses_exact_adjacent_duplicate_counts_and_bounded_frame(self) -> None:
+        with mock.patch("sys.argv", ["download_update_events.py"]):
+            args = parse_args()
+        args.events_table = "events_2026"
+        client = mock.Mock()
+        client.query_tsv.return_value = "7\t2\t2\t0\t1\t1\t0\n"
+        counts = day_event_integrity_counts(client, args, _day(Path("unused"), "2026-09-24"), 1, 10, 20)
+        sql = client.query_tsv.call_args.args[0]
+        self.assertIn("ROWS BETWEEN 1 PRECEDING AND CURRENT ROW", sql)
+        self.assertIn("row_in_ticker > 1 AND ordinal = prev_ordinal", sql)
+        self.assertNotIn("count() - uniqExact", sql)
+        self.assertNotIn("UNBOUNDED PRECEDING", sql)
+        self.assertEqual(counts["duplicate_ticker_ordinal_rows"], 2)
+        self.assertEqual(counts["ordinal_gap_transitions"], 1)
+        self.assertEqual(counts["timestamp_backsteps"], 1)
+
     def test_updater_daily_bars_supply_current_builder_contract_and_resource_limits(self) -> None:
         from pipelines.market_sip.events import clickhouse_build_daily_session_bars as builder
         with mock.patch("sys.argv", ["download_update_events.py"]):

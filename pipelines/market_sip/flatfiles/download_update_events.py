@@ -2165,8 +2165,9 @@ ordered AS
         ticker,
         ordinal,
         sip_timestamp_us,
-        lagInFrame(ordinal) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_ordinal,
-        lagInFrame(sip_timestamp_us) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_ts
+        row_number() OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS row_in_ticker,
+        lagInFrame(ordinal) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS prev_ordinal,
+        lagInFrame(sip_timestamp_us) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS prev_ts
     FROM scoped
 ),
 event_by_ticker AS
@@ -2174,11 +2175,13 @@ event_by_ticker AS
     SELECT
         ticker,
         toUInt64(count()) AS event_rows,
-        toUInt64(count() - uniqExact(ordinal)) AS duplicate_ticker_ordinal_rows,
-        toUInt64(countIf(prev_ordinal != 0 AND ordinal = prev_ordinal)) AS repeated_ordinal_transitions,
-        toUInt64(countIf(prev_ordinal != 0 AND ordinal < prev_ordinal)) AS ordinal_backsteps,
-        toUInt64(countIf(prev_ordinal != 0 AND ordinal > prev_ordinal + 1)) AS ordinal_gap_transitions,
-        toUInt64(countIf(prev_ts != 0 AND sip_timestamp_us < prev_ts)) AS timestamp_backsteps
+        -- Sorted equal ordinals are adjacent: each run of n contributes n-1,
+        -- exactly count()-uniqExact(ordinal), without a day-sized hash state.
+        toUInt64(countIf(row_in_ticker > 1 AND ordinal = prev_ordinal)) AS duplicate_ticker_ordinal_rows,
+        toUInt64(countIf(row_in_ticker > 1 AND ordinal = prev_ordinal)) AS repeated_ordinal_transitions,
+        toUInt64(countIf(row_in_ticker > 1 AND ordinal < prev_ordinal)) AS ordinal_backsteps,
+        toUInt64(countIf(row_in_ticker > 1 AND ordinal > prev_ordinal + 1)) AS ordinal_gap_transitions,
+        toUInt64(countIf(row_in_ticker > 1 AND sip_timestamp_us < prev_ts)) AS timestamp_backsteps
     FROM ordered
     GROUP BY ticker
 ),
