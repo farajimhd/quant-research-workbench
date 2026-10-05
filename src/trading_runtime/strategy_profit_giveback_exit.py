@@ -17,18 +17,19 @@ REASON = 'strategy_thirty_one_profit_giveback'
 
 def profit_giveback_reason(strategy_number: int) -> str:
     """One exact numbered identity shared by factory, persistence and recovery."""
-    if type(strategy_number) is not int or strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50):
+    if type(strategy_number) is not int or strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
         raise ValueError('Profit protection requires Strategy 31 through 40')
     return {31: REASON, 32: 'strategy_thirty_two_profit_giveback',
             33: 'strategy_thirty_three_profit_giveback',
             34: 'strategy_thirty_four_profit_giveback',
             35: 'strategy_thirty_five_profit_giveback',
             36: 'strategy_thirty_six_profit_giveback',
-            37: 'strategy_thirty_seven_profit_giveback', 38: 'strategy_thirty_eight_profit_giveback', 39: 'strategy_thirty_nine_profit_giveback', 40: 'strategy_forty_profit_giveback', 41: 'strategy_forty_one_profit_giveback', 42: 'strategy_forty_two_profit_giveback', 46: 'strategy_forty_six_profit_giveback', 47: 'strategy_forty_seven_profit_giveback', 48: 'strategy_forty_eight_profit_giveback', 50: 'strategy_fifty_profit_giveback'}[strategy_number]
+            37: 'strategy_thirty_seven_profit_giveback', 38: 'strategy_thirty_eight_profit_giveback', 39: 'strategy_thirty_nine_profit_giveback', 40: 'strategy_forty_profit_giveback', 41: 'strategy_forty_one_profit_giveback', 42: 'strategy_forty_two_profit_giveback', 46: 'strategy_forty_six_profit_giveback', 47: 'strategy_forty_seven_profit_giveback', 48: 'strategy_forty_eight_profit_giveback', 50: 'strategy_fifty_profit_giveback', 52: 'strategy_fifty_two_profit_giveback'}[strategy_number]
 
 
-def validate_profit_giveback_witness(witness: ProfitGivebackWitness) -> None:
+def validate_profit_giveback_witness(witness: ProfitGivebackWitness, *, strategy_number: int = 31) -> None:
     """Recompute the exact scalar predicate at persistence/factory boundaries."""
+    profit_giveback_reason(strategy_number)
     if type(witness) is not ProfitGivebackWitness:
         raise ValueError('Profit protection requires exact scalar witness')
     completed = FollowThroughFailureInput(
@@ -36,8 +37,16 @@ def validate_profit_giveback_witness(witness: ProfitGivebackWitness) -> None:
         witness.reference_ask, witness.initial_stop, witness.boundary_ms,
         witness.completed_close_int, True, witness.macd_line, witness.macd_signal,
         witness.bid, witness.ask, witness.quote_age_us, 1., False)
-    actual = profit_giveback(ProfitGivebackInput(
-        completed, witness.prior_high_int, witness.prior_high_through_boundary_ms))
+    from .numbered_fixed_strategy import numbered_fixed_strategy
+    value = ProfitGivebackInput(
+        completed, witness.prior_high_int, witness.prior_high_through_boundary_ms)
+    contract = numbered_fixed_strategy(strategy_number)
+    if getattr(contract, 'armed_profit_floor_policy', None) is None:
+        # Historical consumers retain their original pinned scalar predicate.
+        actual = profit_giveback(value)
+    else:
+        from .declared_profit_giveback import declared_profit_giveback
+        actual = declared_profit_giveback(value, strategy_number=strategy_number)
     if actual != witness:
         raise ValueError('Profit protection witness does not satisfy its pinned rule')
 
@@ -47,7 +56,7 @@ def profit_giveback_exit_intent(
     session_date: date, source_entry_intent_id: str, strategy_number: int = 31,
 ) -> StrategyIntent:
     reason = profit_giveback_reason(strategy_number)
-    validate_profit_giveback_witness(witness)
+    validate_profit_giveback_witness(witness, strategy_number=strategy_number)
     UUID(source_entry_intent_id)
     if (type(session_date) is not date
             or type(financial) is not StrategyOneFinancialView
