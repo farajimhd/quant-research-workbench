@@ -215,8 +215,11 @@ def main(argv=None) -> int:
     parser.add_argument('--workers', type=int, default=64)
     parser.add_argument('--ticker', action='append', dest='tickers')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--split-manifest',type=Path,help='Explicit generation-only seven-session split')
     args = parser.parse_args(argv)
-    split_role = role(args.date)
+    from research.rl_trading.v6.validation_split import read_split, generation_role
+    extension=read_split(args.split_manifest) if args.split_manifest else None
+    split_role = generation_role(args.date,extension)
     if (args.context_only != (split_role == 'context_only') or
             (args.previous_date is None) != args.context_only):
         raise ValueError('Context-only split needs --context-only and no prior day')
@@ -267,6 +270,8 @@ def main(argv=None) -> int:
                 'current': current['definition']['trade_eligibility']['verified_coverage'],
                 'previous': prior['definition']['trade_eligibility']['verified_coverage'] if prior else None},
             'census': lengths}
+    if extension is not None:
+        plan['validation_split']=dict(path=str(args.split_manifest.resolve()),sha256=file_hash(args.split_manifest),hash=extension['hash'])
     plan['hash'] = digest(plan)
     output.mkdir(parents=True, exist_ok=True)
     with exclusive(output / 'run.lock'):

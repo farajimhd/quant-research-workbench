@@ -74,7 +74,7 @@ class PackedSession:
 
 
 def open_session(root: Path, *, runtime_root: Path,
-                 previous_root: Path | None = None) -> PackedSession:
+                 previous_root: Path | None = None, split_manifest: Path | None = None) -> PackedSession:
     """Bind the day plan, top-level certificate, feature bank and prior tail.
 
     Hashes are checked once per loaded day, not repeatedly at every epoch or
@@ -93,12 +93,20 @@ def open_session(root: Path, *, runtime_root: Path,
     plan = json.loads(plan_path.read_text(encoding='utf-8'))
     certificate = json.loads(certificate_path.read_text(encoding='utf-8'))
     day = date.fromisoformat(plan['day'])
+    from research.rl_trading.v6.validation_split import read_split, generation_role, dataset_split
+    extension=read_split(split_manifest) if split_manifest else None
+    if plan.get('validation_split') is not None and extension is None:
+        raise ValueError('Extension bank requires explicit generation-only split authorization')
+    if extension is not None:
+        bound=dataset_split(plan,runtime)
+        if bound is None or bound['hash']!=extension['hash']:raise ValueError('Bank extension split binding differs')
+    split_role=generation_role(day,extension)
     if (certificate.get('status') != 'complete' or
             certificate.get('version') != FEATURE_VERSION or
             certificate.get('plan_hash') != plan.get('hash') or
             digest({key: value for key, value in plan.items()
                     if key != 'hash'}) != plan.get('hash') or
-            plan.get('split_role') != role(day)):
+            plan.get('split_role') != split_role):
         raise ValueError('V6 day certificate, plan, or forward split mismatch')
     bank = open_bank(root / 'bank', verify_hashes=True)
     if (bank.manifest['source_hash'] != plan['hash'] or
@@ -109,7 +117,7 @@ def open_session(root: Path, *, runtime_root: Path,
     previous = None
     previous_day = plan.get('previous_day')
     if previous_day is None:
-        if previous_root is not None or role(day) != 'context_only':
+        if previous_root is not None or split_role != 'context_only':
             raise ValueError('Only context-only day may omit previous context')
     else:
         if previous_root is None:
@@ -135,7 +143,7 @@ def open_session(root: Path, *, runtime_root: Path,
                     previous.close_us[prior_end - 1] >=
                     bank.close_us[current_start]):
                 raise ValueError('Prior candle context reaches current decision day')
-    return PackedSession(day, role(day), root, _hash(certificate_path), bank,
+    return PackedSession(day, split_role, root, _hash(certificate_path), bank,
                          previous, tuple(sorted(bank.manifest['offsets'])))
 
 

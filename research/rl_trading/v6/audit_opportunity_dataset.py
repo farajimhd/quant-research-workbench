@@ -18,7 +18,7 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.split import CONTEXT_ONLY, TRAIN, DEVELOPMENT
 
 
-def audit_and_publish(dataset_path, *, runtime_root, ranking_sort_secs=1):
+def audit_and_publish(dataset_path, *, runtime_root, ranking_sort_secs=1, publish=True):
     dataset_path=Path(dataset_path).resolve(); runtime=Path(runtime_root).resolve()
     if not dataset_path.is_relative_to(runtime): raise ValueError('Audit escaped runtime')
     data=json.loads(dataset_path.read_text())
@@ -28,7 +28,10 @@ def audit_and_publish(dataset_path, *, runtime_root, ranking_sort_secs=1):
         data.get('sealed_test_accessed') is not False or
         data.get('hash')!=digest({k:v for k,v in data.items() if k!='hash'})):
         raise ValueError('Audit accepts only a complete current-label generation')
-    entries=[data['context']]+data['days']; expected=list(map(str,CONTEXT_ONLY+TRAIN+DEVELOPMENT))
+    from research.rl_trading.v6.validation_split import dataset_split
+    extension=dataset_split(data,runtime)
+    if extension and publish:raise ValueError('Sealed extension cannot replace the public 1a registry')
+    entries=[data['context']]+data['days']; expected=[extension['context_day']]+extension['days'] if extension else list(map(str,CONTEXT_ONLY+TRAIN+DEVELOPMENT))
     if [e['day'] for e in entries]!=expected: raise ValueError('Every saved bank must be represented')
     records=[]; started=time.time(); before=file_hash(dataset_path)
     for entry in entries:
@@ -98,7 +101,7 @@ def audit_and_publish(dataset_path, *, runtime_root, ranking_sort_secs=1):
                 ((pl.col('entry_gain')!=0)|pl.col('exit_gain').is_not_null()|pl.col('in_reference_hold'))).select(pl.len()).collect().item()
             if bad: raise ValueError('Rejected episode retained opportunity supervision')
         loader_rows=None
-        if entry['day'] in (str(TRAIN[0]),str(DEVELOPMENT[-1])):
+        if not extension and entry['day'] in (str(TRAIN[0]),str(DEVELOPMENT[-1])):
             session=open_session(root,runtime_root=runtime,previous_root=Path(entry['previous_root']))
             labels,outcomes=load_teacher(labels_root,session,runtime_root=runtime,audit_development=True,audit_listing_ids=[samples[0]])
             if outcomes or any(d.label_version!=ALGORITHM for d in labels): raise ValueError('Legacy labels reached teacher adapter')
@@ -106,7 +109,7 @@ def audit_and_publish(dataset_path, *, runtime_root, ranking_sort_secs=1):
         row=dict(day=entry['day'],activity_rows=len(bank.close_us),valid_rows=valid,invalid_price_rows=invalid,
             recomputed_listings=compared,real_teacher_loader_rows=loader_rows,
             accepted_pairs=accepted,rejected_pairs=rejected,rejection_reasons=rejection_counts)
-        records.append(row); print(json.dumps(dict(status='audited_day',**row)),flush=True); del bank
+        records.append(row); print(json.dumps(dict(status='audited_day',day=entry['day'],integrity_only=True) if extension else dict(status='audited_day',**row)),flush=True); del bank
     # Preserve the pre-existing one-second ranking setting; it does not enter
     # label generation. Record this publication setting separately from shards.
     data['ranking']['sort_secs']=ranking_sort_secs
@@ -117,10 +120,10 @@ def audit_and_publish(dataset_path, *, runtime_root, ranking_sort_secs=1):
     audit_path=dataset_path.parent/'publication-audit.json'; write_json(audit_path,audit)
     data['publication_audit']=str(audit_path); data['publication_audit_sha256']=file_hash(audit_path)
     data['hash']=digest({k:v for k,v in data.items() if k!='hash'}); write_json(dataset_path,data)
-    require_dataset(dataset_path,runtime_root=runtime)
-    write_json(runtime/'rl-v6-active-labels.json',dict(version=VERSION,algorithm=ALGORITHM,
+    require_dataset(dataset_path,runtime_root=runtime,allow_extension=bool(extension))
+    if publish:write_json(runtime/'rl-v6-active-labels.json',dict(version=VERSION,algorithm=ALGORITHM,
         dataset=str(dataset_path),sha256=file_hash(dataset_path),publication_audit_sha256=data['publication_audit_sha256']))
-    print(json.dumps(dict(status='publication_audit_passed',totals=audit['totals'],seconds=audit['seconds'])),flush=True)
+    print(json.dumps(dict(status='publication_audit_passed',seconds=audit['seconds'],published=publish)),flush=True)
     return audit
 
 

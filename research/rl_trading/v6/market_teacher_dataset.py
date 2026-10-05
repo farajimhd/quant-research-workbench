@@ -91,6 +91,7 @@ def main(argv=None):
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--runtime-root',type=Path,default=Path('D:/TradingML/runtimes'))
     parser.add_argument('--source-commit',required=True)
+    parser.add_argument('--validation-extension',action='store_true',help='Generation/integrity only; never publish to the audit UI')
     args=parser.parse_args(argv);runtime=args.runtime_root.resolve();output=args.output.resolve()
     if not runtime.is_dir() or not output.is_relative_to(runtime):raise ValueError('Explicit runtime required')
     if len(args.source_commit)!=40 or any(c not in '0123456789abcdef' for c in args.source_commit):raise ValueError('Exact pushed source commit required')
@@ -99,7 +100,8 @@ def main(argv=None):
     from scripts.backfill_trade_reporting_flags import exclusive
     with exclusive(output/'writer'):
         source.write_json(output/'progress.json',dict(status='running',stage='verifying_immutable_1a'))
-        original=source.require_dataset(args.source_dataset,runtime_root=runtime)
+        original=source.require_dataset(args.source_dataset,runtime_root=runtime,allow_extension=args.validation_extension)
+        if bool(original.get('validation_split'))!=args.validation_extension:raise ValueError('Explicit extension mode must match source dataset')
         source_hash=file_hash(args.source_dataset);config=Config()
         binding=dict(version=VERSION,grouping=GROUPING,source_sha256=source_hash,source_commit=args.source_commit,config=vars(config),
             calculation_sha256=file_hash(Path(__file__)),grouping_sha256=file_hash(Path(__file__).with_name('market_teacher_preview.py')))
@@ -161,12 +163,16 @@ def main(argv=None):
             completed.append(dict(day=day,role=entry['role'],root=str(dayroot),sha256=file_hash(dayroot/'complete.json'),rows=rows));total_rows+=rows
         dataset=dict(version=VERSION,status='audited_1b_labels',binding=binding,source_dataset=str(args.source_dataset),action_order=ACTION_ORDER,
             days=completed,rows=total_rows,sealed_test_accessed=False,training_started=False)
+        if args.validation_extension:
+            dataset['validation_split']=original['validation_split']
+            dataset['sealed_labels_generated']=True
+            dataset['sealed_access_policy']=original['sealed_access_policy']
         audit=audit_dataset(dataset,original,progress)
         if file_hash(args.source_dataset)!=source_hash:raise ValueError('1a source dataset changed')
         source.write_json(output/'publication-audit.json',audit)
         dataset['publication_audit']=str(output/'publication-audit.json');dataset['publication_audit_sha256']=file_hash(output/'publication-audit.json')
         dataset['hash']=digest(dataset);source.write_json(output/'dataset.json',dataset)
-        source.write_json(runtime/'rl-v6-active-market-teacher.json',dict(version=VERSION,dataset=str(output/'dataset.json'),sha256=file_hash(output/'dataset.json')))
+        if not args.validation_extension:source.write_json(runtime/'rl-v6-active-market-teacher.json',dict(version=VERSION,dataset=str(output/'dataset.json'),sha256=file_hash(output/'dataset.json')))
         source.write_json(output/'progress.json',dict(status='complete',completed_days=len(entries),total_days=len(entries),rows=total_rows))
     return 0
 
