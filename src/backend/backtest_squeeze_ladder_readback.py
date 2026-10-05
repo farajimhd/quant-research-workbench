@@ -3,7 +3,9 @@ from dataclasses import replace
 
 import numpy as np
 
-from src.backend.backtest_squeeze_ladder_admission import admit_ladder_proposal
+from src.backend.backtest_squeeze_ladder_admission import (
+    LadderAdmissionDecision, admit_ladder_proposal, build_ladder_proposal_intent,
+)
 from src.backend.backtest_squeeze_ladder_entry import propose_ladder_breakout
 from src.backend.backtest_squeeze_ladder_evidence import project_ladder_evidence, verify_ladder_evidence_projection
 from src.backend.backtest_squeeze_ladder_setup import bind_ladder_setups
@@ -66,3 +68,26 @@ def reconstruct_ladder_evidence(rows, *, observations, market, v7, pivots, finan
         session_date=date.fromisoformat(market.sessions[0]))
     verify_ladder_evidence_projection(rows, expected=expected)
     return admission.intent
+
+
+def verify_ladder_market_evidence(rows, *, account_id, assignment_id, run_id,
+                                  batch_id, parent_record_id, **certified_market_context):
+    """Verify saved geometry and recover the unapproved original proposal.
+
+    Parent identity and release policy must come from independently verified
+    run context. No current or invented historical financial view is accepted.
+    This check alone cannot admit a journal batch, approve cash or submit orders.
+    Committed Portfolio/OMS financial decisions require separate verification.
+    """
+    from datetime import date
+    decision = reconstruct_ladder_market_decision(rows, **certified_market_context)
+    session_date = date.fromisoformat(certified_market_context['market'].sessions[0])
+    intent = build_ladder_proposal_intent(decision, session_date=session_date,
+        account_id=account_id, assignment_id=assignment_id)
+    # This wrapper supplies the projection's proposal shape, not evidence that
+    # a financial gate has run. Only the source comparison is authorized here.
+    proposal = LadderAdmissionDecision('capital_request_proposed', decision, intent)
+    expected = project_ladder_evidence(proposal, run_id=run_id, batch_id=batch_id,
+        parent_record_id=parent_record_id, assignment_id=assignment_id, session_date=session_date)
+    verify_ladder_evidence_projection(rows, expected=expected)
+    return intent

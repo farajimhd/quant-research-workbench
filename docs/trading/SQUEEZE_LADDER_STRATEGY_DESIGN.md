@@ -503,3 +503,13 @@ The existing writer-side admission check still requires historical pre-entry
 financial state. The assignment-command table records status changes but
 does not persist permission fields; it cannot alone prove historical entry
 permission. Never manufacture permissions or substitute post-entry state.
+
+`verify_ladder_market_evidence` now recomputes and compares every setup and
+target row from the certified market plans, then returns the original unapproved
+proposal through `build_ladder_proposal_intent`, the same serializer used by
+financial admission. It takes no financial view. Independently verified parent
+account/assignment identities and frozen policy remain caller requirements;
+the proposal is not an approval or an order. A valid rehash cannot authorize a
+changed target, and a foreign assignment fails the source projection comparison.
+Native cold parent-row verification and committed Portfolio/OMS financial
+lineage are still required before publication or full saved-result acceptance.

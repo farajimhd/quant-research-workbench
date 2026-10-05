@@ -72,6 +72,29 @@ def admit_ladder_proposal(decision: LadderBreakoutDecision, financial: StrategyO
                              AssignmentStatus.COMPLETED, AssignmentStatus.ERROR}
             or not financial.permissions.observe or not financial.permissions.enter):
         return reject('entry_permission_closed')
+    intent = build_ladder_proposal_intent(decision, session_date=session_date,
+        assignment_id=financial.assignment_id, account_id=financial.account_id)
+    return LadderAdmissionDecision('capital_request_proposed', decision, intent)
+
+
+def build_ladder_proposal_intent(decision: LadderBreakoutDecision, *, session_date: date,
+                                 assignment_id: str, account_id: str) -> StrategyIntent:
+    """Serialize one market proposal; this is never financial authorization.
+
+    Shared by admission and cold market verification to preserve exact proposal
+    identity and protection. Portfolio/OMS own sizing, cash and order authority.
+    Cold callers must independently validate the persisted parent identities.
+    """
+    if (not isinstance(decision, LadderBreakoutDecision) or decision.reason != 'entry_proposed'
+            or decision.protection is None or type(session_date) is not date
+            or type(assignment_id) is not str or not assignment_id
+            or type(account_id) is not str or not account_id):
+        raise ValueError('Ladder intent serialization requires a complete market proposal and identity')
+    boundary = datetime.combine(session_date, time(4), tzinfo=ZoneInfo('America/New_York')) + timedelta(milliseconds=decision.boundary_ms)
+    minute = boundary.hour * 60 + boundary.minute
+    if boundary.date() != session_date or not (240 <= minute < 570 or 960 <= minute < 1200):
+        raise ValueError('Ladder intent serialization requires an extended-session clock')
+    at = boundary.astimezone(timezone.utc)
     if decision.entry_limit_int is None or decision.setup.stop is None:
         raise ValueError("Prepared ladder proposal lacks complete protection geometry")
     profile = decision.protection
@@ -81,9 +104,9 @@ def admit_ladder_proposal(decision: LadderBreakoutDecision, financial: StrategyO
             or any(item.stop.price != stop or item.profit_target_price is None
                    or item.profit_target_price <= entry for item in profile.slices)):
         raise ValueError("Prepared ladder proposal protection differs from frozen setup")
-    identity = (f'prepared-ladder:{session_date}:{financial.assignment_id}:{financial.account_id}:'
-                f'{financial.ticker}:{decision.boundary_ms}:{decision.setup.admission_boundary_ms}')
-    intent = StrategyIntent(intent_id=str(uuid5(NAMESPACE_URL, identity)), ticker=financial.ticker,
+    identity = (f'prepared-ladder:{session_date}:{assignment_id}:{account_id}:'
+                f'{decision.setup.ticker}:{decision.boundary_ms}:{decision.setup.admission_boundary_ms}')
+    return StrategyIntent(intent_id=str(uuid5(NAMESPACE_URL, identity)), ticker=decision.setup.ticker,
         event_time=at, action='enter_long', quantity=0., reference_price=entry,
         capital_request=CapitalRequest(mode='mandate_fraction', value=1/3),
         invalidation_price=stop, profit_target_price=None,
@@ -93,4 +116,3 @@ def admit_ladder_proposal(decision: LadderBreakoutDecision, financial: StrategyO
             partial_fill_policy=PartialFillPolicy.COMPLETE_REMAINDER, quote_source='qmd'),
         protection_profile=profile, urgency='urgent', time_in_force='', outside_rth=True,
         reason='prepared_ladder_entry', metadata={})
-    return LadderAdmissionDecision('capital_request_proposed', decision, intent)

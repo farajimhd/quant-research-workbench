@@ -8,6 +8,7 @@ from src.backend.backtest_squeeze_ladder_admission import admit_ladder_proposal
 from src.backend.backtest_squeeze_ladder_evidence import project_ladder_evidence
 from src.backend.backtest_squeeze_ladder_readback import (
     reconstruct_ladder_evidence, reconstruct_ladder_market_decision,
+    verify_ladder_market_evidence,
 )
 from src.trading_runtime.journal_contract import canonical_json
 from tests.test_backtest_squeeze_ladder_admission import financial, DAY
@@ -35,8 +36,14 @@ def test_source_reconstruction_matches_intent_and_rehashed_target_is_rejected():
     denied = admit_ladder_proposal(reconstructed, held, session_date=DAY, groups=())
     assert denied.reason == 'position_requires_management'
     assert denied.intent is None
+    cold_context = dict(account_id='DU1', assignment_id='assignment-1', **context, **market_sources)
+    assert verify_ladder_market_evidence(rows, **cold_context) == admission.intent
+    with pytest.raises(ValueError, match='reconstructed'):
+        verify_ladder_market_evidence(rows, **{**cold_context, 'assignment_id':'foreign-assignment'})
     altered = dict(rows.targets[0], level_id='false-target')
     altered['content_hash'] = sha256(canonical_json({key:value for key,value in altered.items()
                                                     if key != 'content_hash'}).encode()).hexdigest()
     with pytest.raises(ValueError, match='reconstructed'):
         reconstruct_ladder_evidence(replace(rows, targets=(altered,*rows.targets[1:])), **sources)
+    with pytest.raises(ValueError, match='reconstructed'):
+        verify_ladder_market_evidence(replace(rows, targets=(altered,*rows.targets[1:])), **cold_context)
