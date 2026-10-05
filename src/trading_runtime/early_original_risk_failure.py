@@ -21,9 +21,11 @@ class EarlyOriginalRiskPolicy:
     premarket_fraction: tuple[int, int] | None
     afterhours_fraction: tuple[int, int] | None
     eligibility_ms: int = 60_000
+    require_negative_regime: bool = False
 
     def __post_init__(self):
-        if (type(self.policy_id) is not str or not self.policy_id.strip()
+        if (type(self.require_negative_regime) is not bool
+                or type(self.policy_id) is not str or not self.policy_id.strip()
                 or self.policy_id != self.policy_id.strip()
                 or type(self.eligibility_ms) is not int
                 or not 5_000 <= self.eligibility_ms <= 60_000
@@ -40,7 +42,7 @@ class EarlyOriginalRiskPolicy:
                 raise ValueError("Original-risk fraction needs exact positive integers")
 
     def payload(self) -> dict:
-        return {
+        result = {
             "policy_id": self.policy_id,
             "premarket_fraction": self.premarket_fraction,
             "afterhours_fraction": self.afterhours_fraction,
@@ -55,6 +57,10 @@ class EarlyOriginalRiskPolicy:
             "missing": "no_synthetic_observations",
             "priority": "inherited_exits_first",
         }
+        if self.require_negative_regime:
+            result['require_negative_regime'] = True
+            result['momentum'] = 'completed_5s_macd_line_strictly_below_signal_strictly_below_zero'
+        return result
 
 
 def early_original_risk_failure(
@@ -85,7 +91,8 @@ def early_original_risk_failure(
             or not 0 < value.bid <= value.ask
             or type(value.quote_age_us) is not int
             or not 0 <= value.quote_age_us <= 1_000_000
-            or value.macd_line >= value.macd_signal):
+            or value.macd_line >= value.macd_signal
+            or (policy.require_negative_regime and value.macd_signal >= 0)):
         return None
     reference = Fraction(str(value.reference_ask))
     risk = reference - Fraction(str(value.initial_stop))
