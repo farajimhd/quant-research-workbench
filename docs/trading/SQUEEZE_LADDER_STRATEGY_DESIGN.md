@@ -13,11 +13,22 @@ structural target ladders. Initial capital remains $10,000 per session. Existing
 approved sizing, exposure, fee and fill contracts remain authoritative; this
 proposal does not authorize spending all account cash on one ticker.
 
+The user clarified that this work targets a new immutable app strategy, not a
+revision of the independent simulator. Continue the Strategy 42 development
+baseline alongside the new design. The campaign target is now at least +$500
+net in every development and validation session, with reduced drawdown. This
+is an acceptance target, not an achieved result or an optimization guarantee.
+
 The related independent Torch v2 experiment is an approximate 1s simulator.
 Its September 3 experiment had 1,046 fully exited configurations, all losing,
 out of 4,320; the rest retained terminal exposure and were ineligible for
 fitness. See TASK-0221's linked narrative. Neither that experiment nor the
 earlier Strategy 38 development profit proves this proposal profitable.
+The user also reported cash concentration, unfinished exits, missing timing,
+structural-break entry and liquidity-threshold defects in those research runs.
+Audit source and order/fill evidence before interpreting their losses as a
+comparison of strategy quality. Do not import their execution assumptions into
+the app or restore withdrawn implementation files to shortcut that audit.
 
 September 1–2 were exposed by the related research. They are exposed test days
 for this idea, not untouched holdouts. Select and freeze two later certified,
