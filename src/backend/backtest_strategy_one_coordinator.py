@@ -71,24 +71,24 @@ async def run_strategy_one_proposals(
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
     if contract.entry_spread_risk_policy is not None:
-        from .backtest_entry_spread_risk import EntrySpreadRiskReadbackAuthority
-        if (type(entry_spread_risk_source) is not EntrySpreadRiskReadbackAuthority
+        from .backtest_declared_entry_quote_source import entry_spread_risk_authority_type
+        if (type(entry_spread_risk_source) is not entry_spread_risk_authority_type(strategy_number)
                 or entry_spread_risk_source.strategy_number != strategy_number
                 or entry_spread_risk_source.plan.parent.activity.parent is not initial_momentum_plan):
             raise ValueError('Declared entry cost coordinator lacks independent full source')
     elif entry_spread_risk_source is not None:
         raise ValueError('Earlier coordinator cannot carry undeclared entry cost')
-    if strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
+    if strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56):
         from src.backend.backtest_strategy_rising_momentum import CertifiedRisingMomentumPlan
         if (not isinstance(momentum_plan, CertifiedRisingMomentumPlan)
                 or momentum_plan.source_build_id != entry.source_build_id):
             raise ValueError("Strategy 13 coordinator lacks certified momentum source")
-    if strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
+    if strategy_number in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56):
         from src.backend.backtest_strategy_initial_momentum import CertifiedInitialMomentumPlan
         from src.backend.backtest_strategy_initial_momentum_growth import CertifiedInitialMomentumGrowthPlan
         from src.backend.backtest_strategy_certified_price_break import CertifiedInitialPriceBreakPlan
         expected_type = (CertifiedInitialPriceBreakPlan
-                         if strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54) else
+                         if strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56) else
                          CertifiedInitialMomentumGrowthPlan
                          if strategy_number == 19 else CertifiedInitialMomentumPlan)
         if (type(initial_momentum_plan) is not expected_type
@@ -178,7 +178,7 @@ async def run_strategy_one_proposals(
                 continue
             reentry = (await timed("strategy_one_reentry", reentry_witness(current, candidate))
                        if current.completed_entries and reentry_witness is not None else None)
-            if strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54):
+            if strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56):
                 from src.backend.backtest_strategy_certified_price_break import propose_certified_price_entry
                 decision = propose_certified_price_entry(initial_momentum_plan,
                     candidate, fact, activation, current, reentry=reentry,

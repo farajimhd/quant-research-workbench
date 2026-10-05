@@ -52,7 +52,7 @@ def project_entry_spread_risk(witness, *, run_id, batch_id, parent_record_id,
 def seal_certified_entry_spread_risk_rows(rows, entries, intents, events, *, run_id, source=None):
     from .numbered_fixed_strategy import numbered_fixed_strategy
     from .arte_journal_writer import typed_row, _datetime_wire
-    from src.backend.backtest_entry_spread_risk import EntrySpreadRiskReadbackAuthority
+    from src.backend.backtest_declared_entry_quote_source import entry_spread_risk_authority_type
     from src.backend.backtest_market_data import market_day_boundary
     from .entry_spread_risk import canonical_price_int
     required = tuple(e for e in entries if numbered_fixed_strategy(e['strategy_number']).entry_spread_risk_policy is not None)
@@ -61,7 +61,7 @@ def seal_certified_entry_spread_risk_rows(rows, entries, intents, events, *, run
             raise ValueError('Entry cost evidence has no declared parent')
         return ()
     if (len({e['strategy_number'] for e in required}) != 1
-            or type(source) is not EntrySpreadRiskReadbackAuthority or source.run_id != run_id
+            or type(source) is not entry_spread_risk_authority_type(required[0]['strategy_number']) or source.run_id != run_id
             or source.strategy_number != required[0]['strategy_number']):
         raise ValueError('Entry cost requires exact independent run source')
     parents = {e['parent_record_id']: e for e in required}
