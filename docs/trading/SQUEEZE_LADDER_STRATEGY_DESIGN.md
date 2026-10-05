@@ -707,3 +707,28 @@ accepted improvement. A single early qualification can precede complete V7
 geometry, so future watchlist-state work must explicitly distinguish waiting
 for missing geometry from replacing an already frozen setup. Do not silently
 retry or relabel this mode's result. No financial backtest ran.
+
+### Pre-entry financial authority integration findings
+
+The existing `strategy_liquidity_fade_financial_checkpoint` is intentionally
+exit-only: native broker roots and committed OMS lineage prove held quantity
+and absence of pending assignment exits. Its contract explicitly does not
+attest entry permissions, pending acquisitions or completed-entry counters.
+It cannot be relabeled as a complete ladder entry proof.
+
+`arte_portfolio_snapshot` preserves pending entry requests, reservations and
+allocations. Its independent snapshot fence proves contents, not association
+with an arbitrary V4 market boundary. `arte_admission_fence` binds recovery
+snapshots to `trading_commit_v1`, so using it unchanged for V4 would introduce
+the wrong commit authority. `arte_backtest_snapshot_anchor` and
+`publish_terminal_typed_batch_v4` establish exact terminal account recovery;
+they cannot establish a running pre-entry decision state.
+
+Reuse the bounded generic committed OMS group reader and native broker
+snapshot codec in the V4 integration. Bind any necessary pre-entry account
+capture to the exact verified V4 cursor/parent and seal permissions from their
+actual release/control authority. Portfolio remains the sole cash, sizing and
+reservation authority, and OMS remains the sole acknowledged-order authority.
+Do not treat terminal state, an exit-only proof, a V1 admission fence or a
+caller-created financial view as interchangeable pre-entry evidence. This
+integration is still unfinished; no native ladder writer route is enabled.
