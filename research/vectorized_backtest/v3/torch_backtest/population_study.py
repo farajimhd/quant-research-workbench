@@ -230,8 +230,11 @@ def run(spec, args, output, panel):
                                                    fingerprints=[space.identity(v) for v in finalists]))
     holder = pool([tape(i) for i in range(len(spec['training']))], 64)
     comparisons = []
+    holder.progress = lambda event: panel.emit(dict(progress=event))
     try:
         for i in range(len(spec['training'])):
+            panel.emit(dict(status='reporting', stage='Assess frozen finalists on training',
+                            focus=f"Training date {i+1}/{len(spec['training'])}: {spec['training'][i]['day']}"))
             path = output / f'finalist_training_{i:03d}.json'
             value = json.loads(path.read_text()) if path.exists() else holder.evaluate(i, finalists)
             write_json(path, value)

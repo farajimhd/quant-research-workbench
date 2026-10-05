@@ -103,6 +103,34 @@ def constraint_ranks(results, scores, minimum):
     return ranks, violation
 
 
+def warm_population(space, origin, count, seed):
+    """Training-only leaders plus local mutations and random exploration.
+
+    Original study is immutable; pin its hash in the campaign identity. Never
+    import an evaluation-selected population or an incomplete study.
+    """
+    origin = Path(origin)
+    report = json.loads((origin / 'study_report.json').read_text())
+    frozen = json.loads((origin / 'frozen_finalists.json').read_text())
+    if report.get('validation_read') is not False:
+        raise ValueError('Warm start must be training only')
+    leaders = space.validate(frozen['genomes'])
+    if [space.identity(v) for v in leaders] != frozen['fingerprints']:
+        raise ValueError('Warm-start finalist hashes differ')
+    if len(leaders) > count or len(report['scores']) != len(leaders):
+        raise ValueError('Warm-start shape differs')
+    feasible = [i for i, value in enumerate(report['scores']) if value is not None]
+    if not feasible:
+        raise ValueError('Warm start requires a feasible all-training finalist')
+    best = max(feasible, key=lambda i: report['scores'][i])
+    rng = np.random.default_rng(seed)
+    rows = space.sample(rng, count)
+    rows[:len(leaders)] = leaders
+    for index in range(len(leaders), count//2):
+        rows[index] = space.offspring(rng, leaders[best], leaders[index % len(leaders)])
+    return space.validate(rows)
+
+
 def phase(
     evaluators, space, args, output, number=1, seed=None, checkpoint=None, panel=None,
     before_selection=None,
@@ -396,6 +424,8 @@ def main(argv=None):
         default="compiled_graph",
     )
     parser.add_argument("--minimum-training-entries", type=int, default=1)
+    parser.add_argument('--warm-start-study', type=Path,
+                        help='Completed training-only population study; seals finalist/report hashes')
     parser.add_argument("--maximum-training-batches", type=int, default=20)
     parser.add_argument("--excess-activity-weight", type=float, default=0.0)
     parser.add_argument("--long-hold-weight", type=float, default=0.0)
@@ -480,7 +510,12 @@ def main(argv=None):
             parser.error(
                 "Historical training requires at least one filled batch per session"
             )
+    initial_rows = warm_population(space, args.warm_start_study, args.population, args.seed) if args.warm_start_study else None
+    from .runtime import file_hash
     identity = dict(
+        warm_start=dict(origin=str(args.warm_start_study),
+                        finalists_sha256=file_hash(args.warm_start_study / 'frozen_finalists.json'),
+                        report_sha256=file_hash(args.warm_start_study / 'study_report.json')) if args.warm_start_study else None,
         version=VERSION,
         code_hash=code_hash(),
         grammar=space.manifest(),
@@ -709,6 +744,7 @@ def main(argv=None):
                         checkpoint=checkpoint, panel=panel,
                         before_selection=seal_sources,
                         pipeline_state=pipeline.state,
+                        initial_rows=initial_rows,
                     )
                 finalists = space.validate([space.default, winner])
                 panel.emit(dict(status="reporting", stage="Compare frozen finalists on training"))

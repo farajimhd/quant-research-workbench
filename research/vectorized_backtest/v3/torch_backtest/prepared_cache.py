@@ -71,7 +71,10 @@ def import_prepared(origin, destination, identity, grammar, *, execution_contrac
 
     origin, destination = Path(origin), Path(destination)
     previous = json.loads((origin / "receipt.json").read_text(encoding="utf-8"))
-    experiment = json.loads((origin.parent.parent / "identity.json").read_text(encoding="utf-8"))
+    creator = origin.parent.parent / "identity.json"
+    if not creator.exists():
+        creator = origin.parent.parent / "study_identity.json"
+    experiment = json.loads(creator.read_text(encoding="utf-8"))
     if experiment["code_hash"] != previous["identity"]["code_hash"]:
         raise ValueError("Dataset creator code identity mismatch")
     old_grammar = json.loads(json.dumps(experiment['grammar']))

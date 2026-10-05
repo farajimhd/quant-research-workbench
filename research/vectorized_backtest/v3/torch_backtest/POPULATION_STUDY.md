@@ -1,5 +1,26 @@
 # Risk and population comparison
 
+## Full campaign configuration
+
+The completed thirty-date training assessment found feasible finalists only at
+B64 and B128. B128 ranked higher: objective -0.029431809, P&L -$3,649.58 and
+worst daily drawdown $1,000.41. B64 returned -$8,682.04. The B192/B256/B512
+leaders failed minimum activity on at least one date. Profitable three-date
+selection results did not generalize to this broader training set; none of these
+strategies establishes profitability.
+
+The authorized next campaign uses B128,32 generations,seed20261005 and all thirty
+training sessions EVERY generation (4,096 candidate evaluations,122,880
+candidate-session replays). Initialization retains all five training-only
+finalists, uses local crossover/mutation around the best feasible leader for
+the remainder of half the population, and samples the other half randomly.
+Finalist/report hashes seal this initialization. All atomic classes and numeric
+genes remain searchable; feasibility and objective weights remain unchanged.
+Resident GPU tapes are bounded at48GiB, host320GiB, preparation workers2,
+lookahead2, graph steps32 and shared25% volume participation. This is a bounded
+multi-day campaign, conditional on fresh same-code workstation qualification.
+Validation is evaluated only after its FINAL winner is frozen.
+
 ## Current shortened experiment
 
 At the user's request, the original study was stopped after twelve completed

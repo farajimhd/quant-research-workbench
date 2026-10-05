@@ -84,6 +84,7 @@ def main(argv=None):
     parser.add_argument("--reuse-prepared", help="Previous experiment with compatible sealed inputs")
     parser.add_argument("--short-study-origin",
                         help="Stopped full population study; reuse measured timing and its frozen B64 checkpoint")
+    parser.add_argument('--warm-start-study', help='Completed training-only study used to initialize full search')
     parser.add_argument("--runtime", type=Path, default=DEFAULT)
     parser.add_argument("--resume", type=Path)
     parser.add_argument(
@@ -276,6 +277,8 @@ def main(argv=None):
         command.append("--plain")
     if args.reuse_prepared:
         command += ["--reuse-prepared", args.reuse_prepared]
+    if args.warm_start_study:
+        command += ['--warm-start-study', args.warm_start_study]
     # One stable directory owns launcher plan and optimization status/checkpoint.
     experiment = job / "experiment"
     if (experiment / "identity.json").exists():
