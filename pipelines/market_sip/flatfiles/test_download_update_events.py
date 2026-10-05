@@ -20,6 +20,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     RemoteDayInventory,
     ResourceAwareClickHouseClient,
     build_auto_update_plan,
+    build_updated_bars,
     clickhouse_price_int,
     confirm_auto_update,
     execution_clock_existing_source_days,
@@ -204,6 +205,30 @@ class EventEncodingTests(unittest.TestCase):
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
+    def test_updater_daily_bars_supply_current_builder_contract_and_resource_limits(self) -> None:
+        from pipelines.market_sip.events import clickhouse_build_daily_session_bars as builder
+        with mock.patch("sys.argv", ["download_update_events.py"]):
+            args = parse_args()
+        args.skip_legacy_macro_bars = True
+        client = mock.Mock()
+
+        def check_builder_contract(client, daily_args, start, end):
+            builder.write_manifest(client, daily_args, start=start, end=end, status="started")
+            sql = builder.insert_session_bars_sql(daily_args, start, end)
+            self.assertIn("max_bytes_before_external_group_by = 536870912", sql)
+            self.assertFalse(daily_args.bar_gpt_condition_eligibility)
+            self.assertEqual(daily_args.storage_policy, "live_market_ssd")
+            self.assertEqual(daily_args.schema_version, builder.SESSION_BAR_SCHEMA_VERSION)
+            self.assertEqual(daily_args.feature_version, builder.SESSION_BAR_FEATURE_VERSION)
+            self.assertNotIn("file(", sql)
+            return builder.ChunkResult(start, end, 1, 2, 1, 0, 0.1)
+
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch("pipelines.market_sip.flatfiles.download_update_events.validate_daily_session_schema"), \
+             mock.patch("pipelines.market_sip.flatfiles.download_update_events.build_daily_session_chunk", side_effect=check_builder_contract), \
+             redirect_stdout(io.StringIO()):
+            build_updated_bars(client, args, [_day(Path("unused"), "2026-09-21")], Path(temp_dir) / "report.jsonl")
+
     def test_coverage_batch_sql_preserves_case_sensitive_canonical_symbols(self) -> None:
         with mock.patch("sys.argv", ["download_update_events.py"]):
             args = parse_args()

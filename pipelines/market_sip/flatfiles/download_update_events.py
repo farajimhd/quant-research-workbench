@@ -77,6 +77,7 @@ from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E
 )
 from pipelines.market_sip.events.clickhouse_build_daily_session_bars import (  # noqa: E402
     BUILD_VERSION as DAILY_SESSION_BUILD_VERSION,
+    DEFAULT_MAX_QUOTE_SPREAD_BPS,
     build_chunk as build_daily_session_chunk,
     create_manifest_table_sql as create_daily_session_manifest_table_sql,
     create_target_table_sql as create_daily_session_target_table_sql,
@@ -86,6 +87,8 @@ from pipelines.market_sip.events.clickhouse_build_daily_session_bars import (  #
 from pipelines.market_sip.events.session_bar_contract import (  # noqa: E402
     DEFAULT_DAILY_SESSION_BARS_TABLE,
     DEFAULT_DAILY_SESSION_MANIFEST_TABLE,
+    SESSION_BAR_FEATURE_VERSION,
+    SESSION_BAR_SCHEMA_VERSION,
 )
 from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import (  # noqa: E402
     DEFAULT_AWS_REGION,
@@ -4007,14 +4010,19 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
         identity_database=args.identity_database,
         symbol_interval_table=args.symbol_interval_table,
         ticker_entity_table=args.ticker_entity_table,
-        storage_policy=args.storage_policy,
+        condition_reference_table=DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE,
+        max_quote_spread_bps=DEFAULT_MAX_QUOTE_SPREAD_BPS,
+        bar_gpt_condition_eligibility=False,
+        schema_version=SESSION_BAR_SCHEMA_VERSION,
+        feature_version=SESSION_BAR_FEATURE_VERSION,
+        storage_policy="live_market_ssd",
         allow_empty_storage_policy=False,
         chunk_days=args.daily_session_bars_chunk_days,
         replace_range=args.bar_replace_range,
         verify_source_count=True,
         max_threads=args.max_threads,
         max_memory_usage=args.max_memory_usage,
-        max_bytes_before_external_group_by="24G",
+        max_bytes_before_external_group_by=args.external_group_by_bytes,
     )
     daily_task = "daily_session_bars:build"
     if reporter is not None:
