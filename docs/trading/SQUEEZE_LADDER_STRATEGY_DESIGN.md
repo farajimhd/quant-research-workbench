@@ -205,9 +205,16 @@ from the existing mandatory full-target profile. Do not enable the prepared
 ladder by merely marking all targets mandatory: that does not fix attribution.
 `ladder_lot_exposure` now reduces owned cumulative fills separately per lot,
 rejecting duplicate order observations, unknown ownership and exits exceeding
-that lot's acquisitions. It is not yet wired to OMS repair. Per-lot active
-protection, partial-parent repair and excess-OCA retirement remain required
-before native publication; submission/recovery tests alone do not prove them.
+that lot's acquisitions. The prepared profile now routes through
+`squeeze_ladder_oms.py`: each partial parent receives its own target/stop pair,
+repeat reconciliation preserves capacity, and active original brackets retire
+their temporary repair pairs. An actual simulated-broker/OMS integration
+qualifies a partial second-lot fill, its own target, complete-parent retirement
+and unit-journal cold recovery. Normalized ARTE projection separately preserves
+lot IDs and two-order repair batch boundaries. Orphan capacity transfer,
+cancellation/fill races, incomplete acknowledgement recovery and full native
+V4/Keeper cold recovery still require qualification before publication.
+Older profiles retain their existing reconciliation path.
 
 First qualify the strategy with rotation disabled. Rotation is a Portfolio
 allocation decision, not permission for Strategy to bypass sizing or submit a

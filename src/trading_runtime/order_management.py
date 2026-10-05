@@ -3316,6 +3316,10 @@ class OrderManagementEngine:
                 "actions": [],
                 "status": "delegated_to_managed_exit",
             }
+        profile = group.intent.resolved_protection_profile()
+        if profile is not None and profile.identity == "early-squeeze-ladder-prepared@1":
+            from .squeeze_ladder_oms import reconcile_ladder_protection
+            return await reconcile_ladder_protection(self, group)
         positions = await self.broker.positions(group.account_id)
         position = next(
             (
