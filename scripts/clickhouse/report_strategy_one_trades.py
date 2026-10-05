@@ -13,6 +13,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from tempfile import NamedTemporaryFile
 from uuid import UUID
@@ -49,7 +50,19 @@ class SelectOnly:
         self.password = client.password
 
     def execute(self, query, *args, **kwargs):
-        return self.client.execute(assert_select_only(query), *args, **kwargs)
+        return self.client.execute(report_select_query(query), *args, **kwargs)
+
+
+def report_select_query(query: str) -> str:
+    """Keep strict SELECT admission for the journal's parenthesized UNION reads."""
+    normalized = query.strip().rstrip(';')
+    if re.match(r'^\(\s*(SELECT|WITH)\b', normalized, flags=re.IGNORECASE):
+        formatted = re.fullmatch(r'(.+)\s+FORMAT\s+JSONEachRow', normalized,
+                                 flags=re.IGNORECASE | re.DOTALL)
+        if formatted is None:
+            raise ValueError('Parenthesized report read requires exact JSONEachRow format')
+        normalized = f'SELECT * FROM ({formatted.group(1)}) FORMAT JSONEachRow'
+    return assert_select_only(normalized)
 
 
 def et(value: str) -> str:
