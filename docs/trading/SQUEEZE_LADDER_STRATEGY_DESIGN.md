@@ -522,3 +522,33 @@ or treat hashes as source authority. Writer-side admission reuses this check.
 Only the three proposal families are accepted. Cold callers must independently
 verify commit membership and source context first, then verify financial
 lineage separately. Native cold-reader wiring remains unfinished.
+
+### Connected native source probe: sparse-history mismatch
+
+Read-only CDTG August 26 premarket probes
+`ladder-cdtg-aug26-native-source-probe-v1.json` and `v2.json` independently
+certified published Strategy42 configuration and a one-ticker native market
+plan, then loaded the exact completed source and Signal Stream admissions.
+The build was `1521ba7702a9ee0783916f706f4885a24a3f32a91630b04ff738a90e65bc9dd5`;
+market plan token was
+`b991bb9fef655c332fa8e3382c3293336b928d41bb112ccc14aaf8a372961f53`.
+There were 28,884 observations and 45 squeeze admissions; both probes completed
+in under six seconds excluding interpreter startup. No financial replay ran.
+
+The explicit diagnostic gate used minimum price $1, session shares 10,000,
+session notional $10,000, completed 10s/60s trade rates 3 per second, maximum
+spread 200 bps, quote age at most one second and a five-minute admission TTL.
+It produced zero market survivors and zero VWAP crossings. The history bit
+rejected 28,883 rows; 4,771 rows passed every other gate. The prepared mask
+expects dense 100ms history, whereas the native observation source is sparse.
+Thus the fixture-qualified loader is not yet usable as an entry source for
+this actual development case. This is a consumer/source contract mismatch,
+not evidence that CDTG had no qualifying activity or that zero-trade profit
+is an optimized result.
+
+Do not remove the history gate or fill missing buckets with invented counts.
+Before native execution, bind rolling activity to producer-owned complete
+window evidence or explicitly prove the sparse prefix's completeness from
+the certified source contract. Retain rejection for genuinely unavailable
+history and retain completed-price crossing requirements. These probes read
+development sources only and made no source, journal or order mutations.
