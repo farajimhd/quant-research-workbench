@@ -289,7 +289,7 @@ def journal_client_from_env() -> Any:
 
 
 def backtest_v4_journal_client_from_env(*, keeper_session=None,
-                                        lease=None) -> Any:
+                                        lease=None, automatic_ladder=False) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -300,7 +300,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     from src.trading_runtime.keeper_session import ManagedKeeperSession
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
 
-    url, user, password = _v4_runner_credentials()
+    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder)
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
@@ -352,6 +352,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     client.backtest_v4_lease = lease
     client.manager_keeper_session = keeper_session
     client.v4_batched_detail_readback = True
+    client.automatic_ladder_profile = automatic_ladder
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = _V4RunnerClient(
             url, user, password, timeout_seconds=60, persistent=True,
@@ -368,13 +369,17 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     return client
 
 
-def _v4_runner_credentials() -> tuple[str, str, str]:
+def _v4_runner_credentials(*, automatic_ladder=False) -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
+    if type(automatic_ladder) is not bool:
+        raise ValueError('V4 runner profile selection must be explicit')
+    stem = 'BACKTEST_V4_LADDER_RUNNER' if automatic_ladder else 'BACKTEST_V4_RUNNER'
+    principal = 'backtest_v4_ladder_runner' if automatic_ladder else 'backtest_v4_runner'
     url, user, password = _dedicated_clickhouse_credentials(
-        "BACKTEST_V4_RUNNER_CLICKHOUSE_", "BACKTEST_V4_RUNNER_CREDENTIAL_FILE")
+        stem + '_CLICKHOUSE_', stem + '_CREDENTIAL_FILE')
     url = workstation_ipv4_transport(url)
-    if not url or user != "backtest_v4_runner" or not password:
+    if not url or user != principal or not password:
         raise ValueError("V4 Backtest requires its dedicated runner credential")
     return url, user, password
 
@@ -405,16 +410,17 @@ def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, 
     return inline[0].strip(), inline[1].strip(), inline[2]
 
 
-def backtest_v4_operator_client_from_env() -> Any:
+def backtest_v4_operator_client_from_env(*, automatic_ladder=False) -> Any:
     """SELECT-only catalog/grant audit before any Keeper claim or run write."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
-    url, user, password = _v4_runner_credentials()
+    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder)
     client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"readonly": 1, "max_threads": 2,
                               "max_execution_time": 60})
     client.v4_batched_detail_readback = True
+    client.automatic_ladder_profile = automatic_ladder
     return client
 
 
@@ -612,10 +618,10 @@ class V4StrategyOneEntryBatch:
             if (type(self.first_price_source) is not CertifiedPriceReadbackAuthority
                     or self.first_price_source.run_id != self.base.run_id):
                 raise ValueError('Strategy entry envelope has a foreign certified price source')
-        if (self.entry_activity_evidence or any(row['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46, 47) for row in self.entry_evidence)):
+        if (self.entry_activity_evidence or any(row['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) for row in self.entry_evidence)):
             if getattr(self.first_price_source, 'entry_activity_source', None) is None:
                 raise ValueError('Strategy 36 entry envelope requires certified activity source')
-            if any(row['strategy_number'] in (37, 38, 39, 40, 41, 42, 46, 47) for row in self.entry_evidence):
+            if any(row['strategy_number'] in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) for row in self.entry_evidence):
                 from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
                 if (type(self.first_price_source.entry_activity_source) is not EpisodeActivityReadbackAuthority
                         or any(row['strategy_number'] != self.first_price_source.entry_activity_source.strategy_number
@@ -2243,6 +2249,12 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
     # Backtest startup on a workstation with large market-part catalogs.
     storage_preflight(client, tables=v4_storage_contracts())
     writable = v4_journal_write_tables()
+    if getattr(client, 'automatic_ladder_profile', False):
+        from src.trading_runtime.arte_squeeze_ladder_schema import TABLES as ladder_tables
+        if client.execute('SELECT currentUser()').strip() != 'backtest_v4_ladder_runner':
+            raise RuntimeError('Automatic ladder profile requires its dedicated principal')
+        storage_preflight(client, tables=ladder_tables)
+        writable |= frozenset(table.name for table in ladder_tables)
     readonly = frozenset(table.name for table in installed) - writable
     # Producer-owned episode context is an optional SELECT-only extension.
     # Its absence must not prevent Strategy 1 from executing; once installed,
@@ -4056,6 +4068,9 @@ class ArteJournalWriter:
                 or client.execute("SELECT getSetting('readonly')").strip() != '1'):
             raise ValueError('Automatic ladder needs an unbound SELECT-only Backtest source reader')
         self._automatic_ladder_read_client = client
+        # Generic snapshot, session-exit and terminal V4 publishers need the
+        # same independent full source authority as the isolated entry lane.
+        self._client.automatic_ladder_read_client = client
 
     def submit_automatic_ladder_v4(self, unit) -> Future[str]:
         """Queue its typed source companion; generic submit cannot replace it."""
@@ -4614,7 +4629,7 @@ class ArteJournalWriter:
         StrategyOneManagementRunner._validate_capture(
             state, max_pending_breaks=256)
         if first_price_source is not None or any(
-                proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47) for _, proposal in state.submitted):
+                proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) for _, proposal in state.submitted):
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
             if (type(first_price_source) is not CertifiedPriceReadbackAuthority
                     or first_price_source.run_id != self._run_id

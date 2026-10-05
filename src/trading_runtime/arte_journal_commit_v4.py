@@ -95,6 +95,17 @@ class V4CommittedPrefix:
     batch_ids: tuple[str, ...]
 
 
+def _declared_writer_ladder_sources(client, run_id):
+    """Opt-in writer binding; sealed configuration supplies the trading rule."""
+    if getattr(client, 'automatic_ladder_profile', False) is not True:
+        return None
+    reader = getattr(client, 'automatic_ladder_read_client', None)
+    if reader is None or reader is client or reader.execute("SELECT getSetting('readonly')").strip() != '1':
+        raise ValueError('Declared ladder writer requires its dedicated SELECT-only reader')
+    from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+    return DeclaredLadderSourceAuthority.from_native(reader, run_id)
+
+
 def load_writer_v4_snapshot_prefix(client, run_id: str, *,
                                    max_commits: int = 100_000,
                                    first_price_source=None,
@@ -110,6 +121,16 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
     from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
+
+    sources = _declared_writer_ladder_sources(client, run_id)
+    if sources is not None:
+        if first_price_source is not None:
+            raise ValueError('Declared ladder writer has conflicting inherited price authority')
+        prefix = load_verified_v4_prefix(sources.client, run_id, max_commits=max_commits,
+            automatic_ladder_sources=sources)
+        if prefix is not None:
+            sources.verify_immutable_prefix(prefix)
+        return prefix
 
     price_scope = None
     if first_price_source is not None:
@@ -645,7 +666,7 @@ def _load_verified_details_v4(
         prior_batch_id=prior_batch_id, verified_prefix=verified_prior_prefix,
         first_price_source=first_price_source)
     from .strategy_profit_giveback_exit import profit_giveback_reason
-    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47)}
+    profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)}
     profit_rows = related_rows.get(PROFIT_GIVEBACK.name, ())
     if profit_rows or any(row['reason'] in profit_reasons for row in
                           related_rows.get('trading_strategy_intent_v1', ())):
@@ -657,7 +678,7 @@ def _load_verified_details_v4(
             prefix=verified_prior_prefix, first_price_source=first_price_source)
     from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason
     confirmation_rows = related_rows.get(CONFIRMED_AH_FAILURE.name, ())
-    if confirmation_rows or any(row['reason'] in {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47)} for row in
+    if confirmation_rows or any(row['reason'] in {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)} for row in
                                related_rows.get('trading_strategy_intent_v1', ())):
         if verified_prior_prefix is None:
             raise RuntimeError('AH confirmation readback requires its verified preceding prefix')
@@ -737,7 +758,7 @@ def _load_verified_details_v4(
         # an offset. These rows have already passed canonical stored-UTC hash
         # verification; restore the declared timezone only at this read boundary.
         price_events = related_rows.get("trading_event_v1", ())
-        if any(child['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47) for child in children):
+        if any(child['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52) for child in children):
             normalized_events = []
             for event in price_events:
                 clock = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
@@ -942,6 +963,24 @@ def _load_verified_details_v4(
     elif any(row.get('reason') == 'prepared_ladder_entry'
              for row in related_rows.get('trading_strategy_intent_v1', ())):
         raise RuntimeError('Cold ladder original parent lacks normalized scalar evidence')
+    from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+    if type(automatic_ladder_sources) is DeclaredLadderSourceAuthority:
+        from .numbered_fixed_strategy import numbered_session_exit_reason
+        reason = numbered_session_exit_reason(automatic_ladder_sources.configuration.strategy_number)
+        if any(row.get('reason') == reason
+               for row in related_rows.get('trading_strategy_intent_v1', ())):
+            if verified_prior_prefix is None:
+                raise RuntimeError('Cold ladder session exit lacks its exact predecessor')
+            automatic_ladder_sources.verify_session_exit_families(related_rows,
+                verified_prior_prefix=verified_prior_prefix,
+                batch_metadata=automatic_ladder_batch_metadata)
+    else:
+        session_exits = tuple(row.get('reason') for row in related_rows.get('trading_strategy_intent_v1', ())
+                              if str(row.get('reason')).endswith('_session_exit'))
+        if session_exits:
+            from src.backend.backtest_ladder_source_authority import declared_numbered_session_exit_reasons
+            if set(session_exits).intersection(declared_numbered_session_exit_reasons()):
+                raise RuntimeError('Cold declared ladder session exit lacks source authority')
     return details
 
 
@@ -1244,9 +1283,14 @@ def publish_terminal_typed_batch_v4(
         raise ValueError("V4 terminal broker evidence differs from run accounts")
     _publish_typed_batch_v4(client, batch,
                             broker_snapshot_rows=broker_snapshots)
-    prefix = (load_verified_v4_prefix(client, batch.run_id)
-              if first_price_source is None else load_verified_v4_prefix(
-                  client, batch.run_id, first_price_source=first_price_source))
+    sources = _declared_writer_ladder_sources(client, batch.run_id)
+    if sources is not None:
+        prefix = load_verified_v4_prefix(sources.client, batch.run_id, automatic_ladder_sources=sources)
+        sources.verify_immutable_prefix(prefix)
+    else:
+        prefix = (load_verified_v4_prefix(client, batch.run_id)
+                  if first_price_source is None else load_verified_v4_prefix(
+                      client, batch.run_id, first_price_source=first_price_source))
     if (prefix is None or prefix.status != batch.status
             or prefix.last_batch_id != batch.batch_id
             or prefix.last_sequence != batch.last_sequence):
@@ -1305,7 +1349,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or parent["action"] != "enter_long"
             or parent["protection_profile_id"]
                != "early-squeeze-fixed-stop-full-target"
-            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47)
+            or row["strategy_number"] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)
             or row["boundary_ms"] != boundary_ms
             or elapsed.microseconds % 1_000
             or Decimal(str(row["frozen_gap"])) <= 0
@@ -1314,7 +1358,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
             or not row["assignment_id"] or not row["target_level_id"]
             or not row["bos_support_level_id"]):
         raise ValueError("V4 Strategy 1 entry evidence differs from its typed parent")
-    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47):
+    if row["strategy_number"] in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
         from .strategy_recent_bos_entry import recent_bos_entry
         if not recent_bos_entry(boundary_ms=row["boundary_ms"],
                                 bos_break_boundary_ms=row["bos_break_boundary_ms"]):
@@ -1732,10 +1776,10 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         v4_snapshot_account_ids=tuple(row["record_id"] for row in snapshot_accounts),
         v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions))
     command_rows = dict(base_families)["trading_order_command_v1"]
+    from .numbered_fixed_strategy import is_numbered_fixed_strategy
     strategy_one_commands = {
         str(UUID(str(row["record_id"]))) for row in command_rows
-        if str(row["strategy_id"]) == "early-squeeze-strategy"
-        and int(row["strategy_revision"]) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47)
+        if is_numbered_fixed_strategy(str(row["strategy_id"]), int(row["strategy_revision"]))
     }
     lineage_rows = tuple(typed_row(V4_ORDER_COMMAND_LINEAGE.name, row)
                          for row in batch.v4_command_lineages)
@@ -2035,6 +2079,24 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         stage_started = finished
 
     live_lease = getattr(client, "live_v4_lease", None)
+    if not automatic_ladder_sources and getattr(client, 'automatic_ladder_profile', False) is True:
+        sources = _declared_writer_ladder_sources(client, batch.run_id)
+        if sources is not None:
+            if first_price_source is not None or live_lease is not None:
+                raise ValueError('Declared ladder writer has conflicting source/live authority')
+            automatic_ladder_sources = sources
+            automatic_ladder_read_client = sources.client
+            head = load_verified_v4_prefix(sources.client, batch.run_id,
+                automatic_ladder_sources=sources)
+            verified_prior_prefix = (verified_batch_predecessor(sources.client, head, batch.batch_id)
+                if head is not None and batch.batch_id in head.batch_ids else head)
+    if automatic_ladder_sources:
+        from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+        if type(automatic_ladder_sources) is DeclaredLadderSourceAuthority:
+            if verified_prior_prefix is not None:
+                automatic_ladder_sources.verify_immutable_prefix(verified_prior_prefix)
+            if dict(families).get('trading_strategy_assignment_command_v1'):
+                raise ValueError('Ladder immutable-permission writer rejects every control intervention')
     dispatch = client.typed_insert_dispatch
     from .arte_squeeze_ladder_schema import SETUP as LADDER_SETUP, TARGET as LADDER_TARGET
     if any(name in (LADDER_SETUP.name, LADDER_TARGET.name) and rows for name, rows in families):
@@ -2060,6 +2122,17 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                 or verified_prior_prefix.last_batch_id != batch.prior_batch_id
                 or verified_prior_prefix.last_sequence + 1 != batch.first_sequence):
             raise ValueError('Profit publication requires the exact verified Backtest predecessor')
+    from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+    if type(automatic_ladder_sources) is DeclaredLadderSourceAuthority:
+        from .numbered_fixed_strategy import numbered_session_exit_reason
+        if any(row.get('reason') == numbered_session_exit_reason(automatic_ladder_sources.configuration.strategy_number)
+               for row in dict(base_families).get('trading_strategy_intent_v1', ())):
+            automatic_ladder_sources.verify_session_exit_families(dict(base_families),
+                verified_prior_prefix=verified_prior_prefix, stored_utc=False, record=False,
+                batch_metadata={'run_month':batch.run_month.isoformat(), 'attempt_id':batch.attempt_id,
+                    'batch_id':batch.batch_id, 'prior_batch_id':batch.prior_batch_id,
+                    'first_sequence':batch.first_sequence, 'last_sequence':batch.last_sequence,
+                    'source_cursor':batch.source_cursor, 'status':batch.status})
     prepare_native_liquidity_fade_rows(client, dict(families).get(LIQUIDITY_FADE_FAILURE.name, ()),
         dict(base_families).get('trading_strategy_intent_v1', ()),
         dict(base_families).get('trading_event_v1', ()), verified_prefix=verified_prior_prefix,
@@ -2080,9 +2153,10 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         f"{filters}LIMIT 2 FORMAT JSONEachRow")
     if existing_commits:
         existing, _ = load_verified_commit_v4(
-            client, run_id=batch.run_id, batch_id=batch.batch_id,
+            automatic_ladder_read_client or client, run_id=batch.run_id, batch_id=batch.batch_id,
             first_price_authorities=first_price_authorities,
-            verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
+            verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
+            automatic_ladder_sources=automatic_ladder_sources)
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
         dispatch.assert_next_batch(

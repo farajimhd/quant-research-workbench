@@ -70,12 +70,13 @@ def load_terminal_backtest_snapshot(
 
 def publish_terminal_backtest_snapshot(
     client: Any, prefix: CommittedPrefix | V4CommittedPrefix,
-    captured: CapturedPortfolioSnapshot,
+    captured: CapturedPortfolioSnapshot, *, automatic_ladder_sources=(),
 ) -> str:
     """Worker-only, idempotent publication; the typed anchor commits last."""
     if not isinstance(captured, CapturedPortfolioSnapshot):
         raise TypeError("Terminal Backtest requires a typed portfolio capture")
-    context = _verify_current_prefix(client, prefix)
+    context = _verify_current_prefix(client, prefix,
+        **({'automatic_ladder_sources': automatic_ladder_sources} if automatic_ladder_sources else {}))
     if captured.account_id not in context["account_ids"]:
         raise ValueError("Backtest snapshot account is not pinned to the run")
     return _publish_verified_snapshot(client, prefix, captured)
@@ -83,10 +84,11 @@ def publish_terminal_backtest_snapshot(
 
 def publish_terminal_backtest_snapshots(
     client: Any, prefix: CommittedPrefix | V4CommittedPrefix,
-    captures: tuple[CapturedPortfolioSnapshot, ...],
+    captures: tuple[CapturedPortfolioSnapshot, ...], *, automatic_ladder_sources=(),
 ) -> tuple[str, ...]:
     """Verify the terminal prefix once, then anchor every pinned account."""
-    context = _verify_current_prefix(client, prefix)
+    context = _verify_current_prefix(client, prefix,
+        **({'automatic_ladder_sources': automatic_ladder_sources} if automatic_ladder_sources else {}))
     return _publish_terminal_snapshots_after_verified_prefix(
         client, prefix, captures, context)
 
@@ -114,16 +116,24 @@ def _publish_terminal_snapshots_after_verified_prefix(
 
 
 def _verify_current_prefix(
-    client: Any, prefix: CommittedPrefix | V4CommittedPrefix,
+    client: Any, prefix: CommittedPrefix | V4CommittedPrefix, *, automatic_ladder_sources=(),
 ) -> dict[str, Any]:
     if not isinstance(prefix, (CommittedPrefix, V4CommittedPrefix)):
         raise ValueError("Backtest snapshot requires a committed prefix")
-    verified = (load_verified_v4_prefix(client, prefix.run_id)
+    reader = client
+    if automatic_ladder_sources:
+        from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+        if type(automatic_ladder_sources) is DeclaredLadderSourceAuthority:
+            reader = automatic_ladder_sources.client
+    verified = (load_verified_v4_prefix(reader, prefix.run_id,
+                    **({'automatic_ladder_sources': automatic_ladder_sources} if automatic_ladder_sources else {}))
                 if isinstance(prefix, V4CommittedPrefix) else
                 load_committed_prefix(client, prefix.run_id))
     if verified != prefix or verified.status not in {"completed", "stopped", "failed"}:
         raise RuntimeError("Backtest snapshot needs the current terminal prefix")
-    context = load_typed_run_context(client, prefix.run_id)
+    context = load_typed_run_context(reader, prefix.run_id)
+    if automatic_ladder_sources and hasattr(automatic_ladder_sources, 'verify_immutable_prefix'):
+        automatic_ladder_sources.verify_immutable_prefix(prefix)
     if context["mode"] != "backtest":
         raise ValueError("Terminal snapshot anchor accepts Backtest runs only")
     return context

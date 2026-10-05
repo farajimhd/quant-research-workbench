@@ -66,7 +66,7 @@ def project_profit_giveback(
     strategy_number: int = 31,
 ) -> dict:
     """Unsealed scalar projection; source verification must precede publication."""
-    validate_profit_giveback_witness(witness)
+    validate_profit_giveback_witness(witness, strategy_number=strategy_number)
     for identity in (source_entry_intent_id, batch_id, parent_record_id, source_manager_snapshot_id):
         UUID(identity)
     if (type(run_id) is not str or not run_id
@@ -94,7 +94,7 @@ def project_profit_giveback(
 
 def restore_profit_giveback(row: dict) -> ProfitGivebackWitness:
     """Revalidate scalars after native row hash/source verification, not instead."""
-    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47):
+    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
         raise ValueError('Profit witness belongs only to Strategy 31 through 36')
     integer_fields = {'boundary_ms', 'first_held_boundary_ms', 'completed_close_int',
                       'quote_age_us', 'prior_high_int', 'prior_high_through_boundary_ms'}
@@ -108,7 +108,7 @@ def restore_profit_giveback(row: dict) -> ProfitGivebackWitness:
         else:
             converted[f.name] = float(value)
     witness = ProfitGivebackWitness(**converted)
-    validate_profit_giveback_witness(witness)
+    validate_profit_giveback_witness(witness, strategy_number=row['strategy_number'])
     return witness
 
 
@@ -123,7 +123,7 @@ def seal_profit_giveback_rows(client, rows, intents, events, *, prefix, first_pr
     from .strategy_one_stateful import StrategyOneFinancialView
     from .strategy_engine import AssignmentStatus, StrategyPermissions
     from .arte_journal_commit_v4 import V4CommittedPrefix
-    reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47)}
+    reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)}
     parents={str(x['record_id']):x for x in intents if x['reason'] in reasons}
     event_map={str(x['record_id']):x for x in events}
     if (len(event_map)!=len(events) or len({str(x['record_id']) for x in intents})!=len(intents)

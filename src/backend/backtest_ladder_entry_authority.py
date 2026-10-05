@@ -30,10 +30,24 @@ class NativeLadderMarketContext:
     source_through_boundary_ms: int
 
     def market_policy_payload(self):
-        return {'gate': asdict(self.gate_policy), 'tick_int': self.tick_int,
+        payload = {'gate': asdict(self.gate_policy), 'tick_int': self.tick_int,
             'stop_buffer_ticks': self.stop_buffer_ticks,
             'break_buffer_ticks': self.break_buffer_ticks,
             'source_through_boundary_ms': self.source_through_boundary_ms}
+        declared = self.configuration.payload['strategy']['numbered_release'].get('automatic_market_policy', {})
+        if 'source_through_boundary_rule' in declared:
+            from src.backend.backtest_ladder_source_authority import EXTENDED_ENDS, declared_population_exclusions
+            payload.pop('source_through_boundary_ms')
+            payload.update(source_through_boundary_rule='extended_session_end',
+                source_through_boundary_ms_by_session=dict(EXTENDED_ENDS))
+            if 'population_exclusions' in declared:
+                exclusions = declared_population_exclusions(declared)
+                if set(exclusions).intersection(self.market.tickers):
+                    raise ValueError('Ladder market contains a declared population exclusion')
+                payload['population_exclusions'] = list(exclusions)
+            if self.source_through_boundary_ms not in EXTENDED_ENDS.values():
+                raise ValueError('Ladder declared source extent is outside extended-session ends')
+        return payload
 
     def verify_policy(self, policy):
         from hashlib import sha256
@@ -101,7 +115,7 @@ def reconstruct_native_ladder_market(context, *, client):
     return replace(context, observations=observations, v7=v7, pivots=pivots)
 
 
-def verify_native_ladder_entry(client, prefix, request, batch):
+def verify_native_ladder_entry(client, prefix, request, batch, *, source_authority=None):
     """Verify a source parent against the exact native pre-entry cursor.
 
     The caller independently verifies the V4 prefix and supplies a SELECT-only
@@ -133,7 +147,19 @@ def verify_native_ladder_entry(client, prefix, request, batch):
     account = batch.intents[0]['account_id']
     decision = request.admission.market_decision
     request.verify(run_id=prefix.run_id, account_id=account, session_date=context.session_date)
-    reconstructed = reconstruct_native_ladder_market(context, client=client)
+    if source_authority is not None:
+        from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+        if type(source_authority) is not DeclaredLadderSourceAuthority or source_authority.client is not client:
+            raise ValueError('Ladder source authority belongs to another cold reader')
+        reconstructed = source_authority.context_for(request.intent.ticker)
+        if (reconstructed.configuration != context.configuration
+                or reconstructed.market != context.market
+                or reconstructed.source_through_boundary_ms != context.source_through_boundary_ms):
+            raise ValueError('Ladder request differs from independently reloaded saved source')
+    else:
+        if 'source_through_boundary_rule' in context.market_policy_payload():
+            raise ValueError('Executable ladder requires independently loaded saved-run source authority')
+        reconstructed = reconstruct_native_ladder_market(context, client=client)
     replace(request, market_context=reconstructed).verify(run_id=prefix.run_id,
         account_id=account, session_date=context.session_date)
     native = load_typed_run_context(client, prefix.run_id)
@@ -184,7 +210,8 @@ def verify_native_ladder_entry(client, prefix, request, batch):
     if any(row['account_id'] == account and row['ticker'] == ticker for row in broker.open_orders):
         raise ValueError('Ladder native broker has unresolved orders for the proposed ticker')
     lineage = load_recovered_strategy_one_oms_lineage(client, prefix,
-        allowed_accounts=frozenset(native['account_ids']), strategy_number=config.strategy_number)
+        allowed_accounts=frozenset(native['account_ids']), strategy_number=config.strategy_number,
+        **({'automatic_ladder_sources': source_authority} if source_authority is not None else {}))
     session = 'premarket' if boundary < 19_800_000 else 'afterhours'
     for item in lineage:
         approved = item.approved_intent

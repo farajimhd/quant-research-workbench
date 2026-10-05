@@ -5,16 +5,16 @@ import json
 from pathlib import Path
 
 # Filled only after reviewing the complete owned native route and its tests.
-STRATEGY46_SOURCE_AST = {'src/trading_runtime/early_original_risk_failure.py': '9cc399e92aef97628870844e2a6516cbf8df8c6de136be055ccf58f7ae022e68',
+STRATEGY46_SOURCE_AST = {'src/trading_runtime/early_original_risk_failure.py': '1df39278ef45fd7392fa570702b836588c21274aa0eb36c3667477dbcef0dc89',
  'src/trading_runtime/declared_followthrough_failure.py': '68c2ed0f236db57cf07b557a331448b77a35de9c0645f5e7ec5adde51e1f9920',
  'src/trading_runtime/strategy_forty_six_release.py': '5d172767cb658cb48eee2d1e5072f07d09163623bc52fc0236fb0f9ed29d66c9',
- 'src/trading_runtime/strategy_followthrough_exit.py': '71716c77e5510472df6bebc06995294dfdfa15686589ce01516c9ea2beacc031',
- 'src/trading_runtime/arte_followthrough_failure_v4.py': '13faaeab9e5d3673ebeae7f6b3359a8561516581d35a3530ad9cfaa1ece97228',
- 'src/trading_runtime/strategy_registry.py': '65220011cea8e502d82fee5bbaf58d856e648ceace15dc48e2d0e9020e81f40d',
- 'src/trading_runtime/numbered_fixed_strategy.py': 'f9c42ddd6921012fcf3d761a0fd718a8d207df5601d4440b682b40b0769a0784',
- 'src/backend/backtest_strategy_one_management.py': '54815ec98ebcc11913e48e2f215261100a14860990908ee2c9fc2467aede867c',
- 'src/backend/backtest_strategy_one_configuration.py': 'e704996f009d645191178125570420d5ff694577eedac9ff731eea0e4f1d8516',
- 'pipelines/strategy_one/configuration_publisher.py': '3d5ad0a8e627ca8f2ebdb64d469e5babbb49fd8fb349a1997a861b27185ddb6d',
+ 'src/trading_runtime/strategy_followthrough_exit.py': '27857445b8c9aefb6b0fa4a32db5026e4ac25625a4d1db6d9acc9b869eaf5cbe',
+ 'src/trading_runtime/arte_followthrough_failure_v4.py': '1b984b97b524ccb198de69e7539fb1b6f7574c4a09e502a24b15869b866e140f',
+ 'src/trading_runtime/strategy_registry.py': '0d20e3a0f38ee2217ae7b0127f862e969620800e47adf3a25d9b92703040f487',
+ 'src/trading_runtime/numbered_fixed_strategy.py': 'c250b9841885e58d3b690feeb8aa9e52415d4cb2b0fa19e8259a8a603b4a59ea',
+ 'src/backend/backtest_strategy_one_management.py': 'd73db9cf82446d850817e02aade2ba84fa3925b7364dd6d550753b40f0579448',
+ 'src/backend/backtest_strategy_one_configuration.py': '930a7b1c497bdf4fe1cda033f46d1857f497697c075dcb6f0925112b398675bd',
+ 'pipelines/strategy_one/configuration_publisher.py': '355d12708d8779dd79cc7a7994a6731512c3c46ff739a728d08072865b0e5083',
  'pipelines/strategy_one/strategy_forty_six_configuration.py': 'f63dbde659b84a357edb967e5fb91ff9643d1367aca3d5f940838826ce7a7a48',
  'scripts/clickhouse/publish_strategy_forty_six_configuration.py': '24f289afc06c434acadf640624f1e0722676daeb50dc26e4e6db5c8712f1972b'}
 

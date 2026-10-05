@@ -1,7 +1,7 @@
 """Backtest setup exposes only the normalized Strategy 1 release."""
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, MagicMock, patch
 
 from src.backend.trading_configuration_service import backtest_configuration_options
 from src.trading_runtime.journal import TradingJournal
@@ -50,14 +50,15 @@ class BacktestConfigurationOptionsTests(unittest.TestCase):
                                             "name": "Strategy 1", "profile_id": "strategy-one-1",
                                             "strategy_id": "early-squeeze-strategy",
                                             "strategy_revision": 1}]}
-        with patch.object(TradingJournal, "trading_configuration_candidate_summaries",
+        with patch("src.backend.backtest_configuration_option_reader.readonly_clickhouse_client",
+                   return_value=MagicMock()), patch.object(TradingJournal, "trading_configuration_candidate_summaries",
                           side_effect=AssertionError("SQLite candidate read")), patch(
             "src.backend.backtest_strategy_one_configuration.selected_numbered_revision",
             return_value=release) as selected, patch(
             "src.backend.backtest_strategy_one_configuration.numbered_configuration_options",
             return_value=[release, {**release, "revision_id": "strategy-one-2:attempt", "revision": 2, "label": "Strategy 2"}]):
             result = backtest_configuration_options()
-        selected.assert_called_once_with(revision_id="")
+        selected.assert_called_once_with(revision_id="", client=ANY)
         self.assertEqual(result["candidate_id"], release["revision_id"])
         self.assertEqual(result["run_plan_id"], "balanced-replay")
         self.assertEqual(len(result["candidates"]), 2)
@@ -66,7 +67,8 @@ class BacktestConfigurationOptionsTests(unittest.TestCase):
         self.assertNotIn("payload", result["candidates"][0])
 
     def test_foreign_revision_fails_closed(self):
-        with patch("src.backend.backtest_strategy_one_configuration.selected_strategy_one_revision",
+        with patch("src.backend.backtest_configuration_option_reader.readonly_clickhouse_client",
+                   return_value=MagicMock()), patch("src.backend.backtest_strategy_one_configuration.selected_strategy_one_revision",
                    side_effect=ValueError("Only the immutable Strategy 1 configuration can Backtest")):
             with self.assertRaisesRegex(ValueError, "immutable numbered"):
                 backtest_configuration_options("old")

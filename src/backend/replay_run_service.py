@@ -116,7 +116,7 @@ from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
 def _require_numbered_session_window(strategy: Mapping[str, Any],
                                      start: clock_time, end: clock_time) -> None:
     """Extended-session releases run one flat window, never regular hours."""
-    if strategy.get("strategy_number") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47):
+    if strategy.get("strategy_number") not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
         return
     if not ((clock_time(4) <= start < end <= clock_time(9, 30))
             or (clock_time(16) <= start < end <= clock_time(20))):
@@ -2388,7 +2388,7 @@ class ReplayRunController:
             total=self._preparation_total_units if preparing else None)
 
     async def _save_restart_checkpoint_responsive(self, event_time, *, checkpoint_status=None,
-                                                  nonblocking_fixed=False):
+                                                  nonblocking_fixed=False, require_fresh_capture=False):
         if self.definition.mode != RunMode.BACKTEST:
             self._save_restart_checkpoint(event_time)
             return
@@ -2400,7 +2400,7 @@ class ReplayRunController:
             prior = getattr(self, '_checkpoint_io_task', None)
             if prior is not None:
                 if not prior.done():
-                    if nonblocking_fixed:
+                    if nonblocking_fixed and not require_fresh_capture:
                         return
                     await asyncio.shield(prior)
                 else:
@@ -2419,7 +2419,18 @@ class ReplayRunController:
             oms_observations = None
             evidence_state = None
             campaign_ownership = None
-            if publisher.writer.journal_profile == 'backtest_v4' and manager is None:
+            from .backtest_declared_ladder_plan import automatic_policy
+            ladder = automatic_policy(getattr(self.definition, 'configuration_revision', {}).get('payload', {}))
+            if ladder is not None:
+                if manager is not None or publisher.writer.journal_profile != 'backtest_v4':
+                    raise RuntimeError('Declared ladder cannot capture historical manager state')
+                boundary = self._source_cursor.get('boundary_ms')
+                if type(boundary) is not int or self._runtime.last_event_time != event_time:
+                    raise RuntimeError('Ladder checkpoint lacks its exact completed runtime boundary')
+                broker_state = (boundary, self._runtime.broker.broker_match_snapshot_state())
+                oms_observations = self._runtime.order_manager.capture_observed_broker_states()
+                campaign_ownership = self._journal.campaign_ownership_snapshot()
+            if publisher.writer.journal_profile == 'backtest_v4' and manager is None and ladder is None:
                 # A V4 checkpoint must include the causal strategy state;
                 # a market cursor alone cannot attest its decision boundary.
                 raise RuntimeError('Strategy 1 checkpoint lacks its manager state')
@@ -2608,7 +2619,7 @@ class ReplayRunController:
         keeper = getattr(self, '_fixed_keeper_session', None)
         boundary = dict(self._source_cursor).get('boundary_ms')
         if (self.definition.mode != RunMode.BACKTEST
-                or manager is None or manager.contract.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47)
+                or manager is None or manager.contract.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)
                 or publisher is None or publisher.writer.journal_profile != 'backtest_v4'
                 or keeper is None or type(requests) is not tuple or not requests
                 or requests != manager.profit_arming_requests(boundary_ms=boundary)):
@@ -2644,7 +2655,7 @@ class ReplayRunController:
         """Fence the completed decision before ordinary Portfolio/OMS submission."""
         manager, publisher = self._strategy_one_manager, self._journal_publisher
         boundary = dict(self._source_cursor).get('boundary_ms')
-        if (self.definition.mode != RunMode.BACKTEST or manager.contract.strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47)
+        if (self.definition.mode != RunMode.BACKTEST or manager.contract.strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)
                 or publisher is None or publisher.writer.journal_profile != 'backtest_v4'
                 or self._fixed_keeper_session is None or not requests
                 or requests != manager.liquidity_fade_requests(boundary_ms=boundary)):
@@ -3417,7 +3428,9 @@ class ReplayRunController:
                                 else lambda: certify_numbered_fixed_v4_projection(strategy_number))
         plans_started = time.perf_counter()
         try:
-            plans = await self._fixed_strategy_one_plans()
+            from .backtest_declared_ladder_plan import automatic_policy
+            plans = (await self._fixed_declared_ladder_plans() if automatic_policy(configuration)
+                     else await self._fixed_strategy_one_plans())
         finally:
             self._record_stage_time("strategy_one_journal_plans", plans_started)
         account_ids = historical_simulated_account_ids(
@@ -3454,11 +3467,12 @@ class ReplayRunController:
                         backtest_v4_context_client_from_env(
                             keeper_session=keeper)))
                     reader = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env()))
+                        backtest_v4_operator_client_from_env(**({'automatic_ladder':True} if automatic_policy(configuration) else {}))))
                     writer = backtest_v4_journal_client_from_env(
-                        keeper_session=keeper, lease=lease)
+                        keeper_session=keeper, lease=lease,
+                        **({'automatic_ladder':True} if automatic_policy(configuration) else {}))
                     terminal = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env()))
+                        backtest_v4_operator_client_from_env(**({'automatic_ladder':True} if automatic_policy(configuration) else {}))))
                     bootstrap_timings["strategy_one_journal_clients"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()
@@ -3472,6 +3486,14 @@ class ReplayRunController:
                         projection_certifier=projection_certifier,
                         writer_factory=ArteJournalWriter,
                         batch_size=4096)
+                    if automatic_policy(configuration) is not None:
+                        ladder_reader = backtest_v4_operator_client_from_env(automatic_ladder=True)
+                        try:
+                            assembly.writer.bind_automatic_ladder_read_client(ladder_reader)
+                        except BaseException:
+                            ladder_reader.close()
+                            raise
+                        self._ladder_writer_read_client = ladder_reader
                     bootstrap_timings["strategy_one_journal_assembly"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()
@@ -3510,6 +3532,10 @@ class ReplayRunController:
                             lease.release()
                     finally:
                         keeper.close()
+                    ladder_reader = getattr(self, "_ladder_writer_read_client", None)
+                    if ladder_reader is not None:
+                        ladder_reader.close()
+                        self._ladder_writer_read_client = None
                 raise
 
         bootstrap_started = time.perf_counter()
@@ -3533,6 +3559,10 @@ class ReplayRunController:
                 await asyncio.to_thread(lease.release)
             finally:
                 await asyncio.to_thread(keeper.close)
+            ladder_reader = getattr(self, '_ladder_writer_read_client', None)
+            self._ladder_writer_read_client = None
+            if ladder_reader is not None:
+                await asyncio.to_thread(ladder_reader.close)
             self._fixed_v4_account_ids = None
             raise
 
@@ -3563,6 +3593,8 @@ class ReplayRunController:
         self._fixed_keeper_session = None
         lease = getattr(self, "_fixed_v4_lease", None)
         self._fixed_v4_lease = None
+        ladder_reader = getattr(self, "_ladder_writer_read_client", None)
+        self._ladder_writer_read_client = None
         try:
             if writer is not None:
                 close_started = time.perf_counter()
@@ -3579,6 +3611,8 @@ class ReplayRunController:
                 if self._journal is not None:
                     self._journal.close()
             finally:
+                if ladder_reader is not None:
+                    await asyncio.to_thread(ladder_reader.close)
                 if keeper is not None:
                     close_started = time.perf_counter()
                     try:
@@ -3633,6 +3667,97 @@ class ReplayRunController:
         return int((
             end_clock - datetime.combine(end_clock.date(), clock_time(4), tzinfo=NEW_YORK)
         ).total_seconds() * 1_000)
+
+    async def _fixed_declared_ladder_plans(self):
+        """Recheck full declared source products before native run publication."""
+        cached = getattr(self, '_automatic_fixed_plans', None)
+        if cached is not None:
+            return cached
+        from .backtest_declared_ladder_plan import certify_declared_ladder_plans
+        from .backtest_market_data import readonly_clickhouse_client
+        market = await self._fixed_certified_market_plan()
+        start, end = self.definition.start_time, self.definition.end_time
+        plans = await asyncio.to_thread(certify_declared_ladder_plans,
+            market, self._fixed_price_plan,
+            configuration=self.definition.configuration_revision['payload'],
+            definition={'start_local_ms':(start.hour*3600+start.minute*60+start.second)*1000,
+                        'end_local_ms':(end.hour*3600+end.minute*60+end.second)*1000},
+            market_pins=self.definition.market_data_plan,
+            v7_pins=self.definition.causal_v7_plan,
+            client_factory=lambda:readonly_clickhouse_client(market_stream=True,v3_read_principal=True))
+        self._automatic_fixed_plans = plans
+        return plans
+
+    async def _run_declared_ladder_fixed_days(self):
+        """Fresh declared-policy native execution, without historical manager state."""
+        from .backtest_declared_ladder_plan import automatic_policy
+        from .backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+        from .backtest_ladder_coordinator import run_ladder_session
+        from .backtest_market_data import market_day_boundary, readonly_clickhouse_client
+        from .backtest_fixed_market_authority import fixed_market_authority_payload
+        from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
+        policy = automatic_policy(self.definition.configuration_revision['payload'])
+        if (policy is None or self._runtime is None or self._resume_state is not None
+                or getattr(self, '_fixed_v4_runtime_image', None) is not None
+                or getattr(self, '_strategy_one_manager', None) is not None
+                or self._strategy.contract.automatic_entry_policy != policy):
+            raise RuntimeError('Declared ladder requires a fresh exact automatic runtime')
+        plans = await self._fixed_declared_ladder_plans()
+        self._record_data_authority('fixed_market_data', {
+            key:value for key,value in fixed_market_authority_payload(
+                plans.market, plans.execution_market).items() if key!='source_key'})
+        day = plans.market.sessions[0]
+        self._runtime_inputs_ready = True
+        self._preparation_stage = 'declared_ladder_boundaries'
+        self.status = 'running'
+        self.current_time = self.definition.requested_start
+        await self._publish(force=True)
+        count = 0
+        class StopRequested(Exception):
+            pass
+        async def before(work):
+            await self._wait_until_active()
+            if self._stop_requested:
+                raise StopRequested()
+            self.current_time = market_day_boundary(day, work.boundary_ms)
+            self._source_cursor = {'session_date':day,'boundary_ms':work.boundary_ms,
+                                   'sequence':count+1}
+        async def before_entry(work):
+            at = market_day_boundary(day, work.boundary_ms)
+            if self._runtime.last_event_time != at:
+                raise RuntimeError('Ladder acquisition lacks current completed broker clock')
+            # This capture is a distinct queued cursor/snapshot predecessor.
+            # The automatic-intent command lane awaits native durability.
+            await self._save_restart_checkpoint_responsive(at, nonblocking_fixed=True,
+                                                          require_fresh_capture=True)
+        async def finish(work):
+            nonlocal count
+            count += 1
+            self.processed_events += len(work.broker_rows)
+            await self._after_event(market_day_boundary(day, work.boundary_ms))
+            if count % 256 == 0:
+                await self._publish()
+        reader = backtest_v4_operator_client_from_env(automatic_ladder=True)
+        try:
+            source = await asyncio.to_thread(DeclaredLadderSourceAuthority.from_run,
+                                             reader, self.run_id)
+            if source.market.token != plans.market.token or source.source_end != plans.source_end:
+                raise ValueError('Declared ladder fenced source differs from full preflight')
+            result = await run_ladder_session(runtime=self._runtime,
+                assignments=self._strategy.assignments(), source_authority=source,
+                prices=plans.prices,
+                client_factory=lambda:readonly_clickhouse_client(market_stream=True,v3_read_principal=True),
+                before_boundary=before,before_entry=before_entry,finish_boundary=finish,
+                stage_time=self._record_stage_time)
+            self._ladder_preparation_counts = result['preparation_counts']
+        except StopRequested:
+            await self._finish('stopped')
+            return
+        finally:
+            await asyncio.to_thread(reader.close)
+        self._source_cursor = {'session_date':day,'boundary_ms':plans.source_end,'sequence':count}
+        self.current_time = self.definition.session_end
+        await self._finish('completed')
 
     async def _fixed_strategy_one_plans(self):
         """Recheck all full-session ARTE seals before any V4 run publication."""
@@ -3752,11 +3877,11 @@ class ReplayRunController:
             self.processed_events += len(work.broker_rows)
             await self._after_event(at)
             manager = self._strategy_one_manager
-            if manager.contract.strategy_number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47):
+            if manager.contract.strategy_number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
                 liquidity_requests = manager.liquidity_fade_requests(boundary_ms=work.boundary_ms)
                 if liquidity_requests:
                     await self._confirm_liquidity_fade_checkpoint(liquidity_requests, event_time=at)
-            if manager.contract.strategy_number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47):
+            if manager.contract.strategy_number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
                 requests = manager.profit_arming_requests(boundary_ms=work.boundary_ms)
                 if requests:
                     await self._confirm_profit_arming_checkpoint(requests, event_time=at)
@@ -4268,6 +4393,10 @@ class ReplayRunController:
         from src.backend.structural_v7_seed import certified_seed_plan
 
         configuration = self.definition.configuration_revision["payload"]
+        from .backtest_declared_ladder_plan import automatic_policy
+        if automatic_policy(configuration) is not None:
+            await self._run_declared_ladder_fixed_days()
+            return
         if is_numbered_fixed_configuration(configuration):
             plans = await self._fixed_strategy_one_plans()
             if (self._runtime is None
@@ -7786,6 +7915,17 @@ class ReplayRunController:
             from src.backend.backtest_strategy_one_preparation import (
                 strategy_one_v7_tickers,
             )
+            from .backtest_declared_ladder_plan import automatic_policy
+            policy = automatic_policy(configuration)
+            if policy is not None:
+                plans = getattr(self, '_automatic_fixed_plans', None)
+                if plans is None or self.definition.assignment_ids or self._v7_excluded_tickers:
+                    raise RuntimeError('Declared ladder lacks its complete certified assignment scope')
+                rows = certified_strategy_one_assignments(configuration, plans.identities,
+                    candidate_tickers=plans.market.tickers, account_keys=account_keys)
+                for row in rows:
+                    row['permissions'] = policy.permissions.payload()
+                return rows
             plans = getattr(self, "_strategy_one_fixed_plans", None)
             if (plans is None or explicit_tickers or self.definition.assignment_ids
                     or self._v7_excluded_tickers):
@@ -9622,8 +9762,13 @@ class ReplayRunService:
                 self._load_typed_backtest_resume_definition, normalized)
             if definition is None:
                 raise KeyError(run_id)
+            from .backtest_declared_ladder_plan import automatic_policy
+            if automatic_policy(definition.configuration_revision.get('payload', {})) is not None:
+                raise RuntimeError(
+                    'Declared automatic ladder is fresh-only; interrupted campaign recovery '
+                    'requires separate causal actor acceptance; start a new run')
             if dict(definition.configuration_revision.get("payload", {}).get(
-                    "strategy") or {}).get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47):
+                    "strategy") or {}).get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52):
                 raise RuntimeError(
                     "This numbered strategy resume awaits interrupted-run equivalence acceptance; start a new run")
             controller = await self._prepare_typed_v4_resume(
@@ -11976,6 +12121,8 @@ def backtest_preflight(
         and selected_strategy.get("revision") == selected_strategy.get("strategy_number")
         and selected_strategy.get("execution_interval") == "100ms"
     )
+    from .backtest_declared_ladder_plan import automatic_policy
+    ladder_policy = automatic_policy(configuration)
     version_future = None
     if (execution_interval.kind == "fixed"
             and is_numbered_fixed_configuration({"strategy": selected_strategy})):
@@ -11999,7 +12146,8 @@ def backtest_preflight(
         from src.backend.fixed_bar_signal import canonical_stream_activation
         stream, _activation = canonical_stream_activation()
         activated_signal_streams = [{
-            **stream, "occurrence_source": "arte.strategy_one_candidate_v1"}]
+            **stream, "occurrence_source": ("arte_completed_early_squeeze" if ladder_policy
+                                           else "arte.strategy_one_candidate_v1")}]
     source_native_activation = bool(activated_signal_streams) and all(
         str(row.get("occurrence_source") or "").strip()
         for row in activated_signal_streams
@@ -12232,7 +12380,7 @@ def backtest_preflight(
             _v4_preflight,
         )
         try:
-            with closing(backtest_v4_operator_client_from_env()
+            with closing(backtest_v4_operator_client_from_env(**({'automatic_ladder':True} if ladder_policy else {}))
                          if strategy_one_fixed else journal_client_from_env()) as journal_client:
                 if strategy_one_fixed:
                     _v4_preflight(journal_client)
@@ -12241,7 +12389,8 @@ def backtest_preflight(
                         "label": "Normalized ClickHouse trading journal",
                         "status": "ready", "required": True,
                         "summary": "V4 typed journal storage and exact runner grants are verified.",
-                        "evidence": "backtest_v4_runner; read-only operator audit",
+                        "evidence": ("backtest_v4_ladder_runner; read-only operator audit"
+                            if ladder_policy else "backtest_v4_runner; read-only operator audit"),
                     }
                 else:
                     journal_check = fixed_journal_operator_check(journal_client)
@@ -12261,10 +12410,14 @@ def backtest_preflight(
             "status": "ready" if strategy_one_fixed else "blocked",
             "required": True,
             "summary": (
+                "Declared automatic ladder uses full-session certified admission, causal frozen geometry, "
+                "eligible liquidity matching, and normalized V4 journal."
+                if ladder_policy else
                 "Immutable Strategy 1 uses certified completed bars, causal V7, "
                 "persisted liquidity-bar broker matching, and normalized V4 journal."
                 if strategy_one_fixed else FIXED_EXECUTION_BLOCKER),
             "evidence": (
+                "declared_automatic_ladder_fixed_100ms_v4" if ladder_policy else
                 "strategy_one_fixed_100ms_v4"
                 if strategy_one_fixed else "native_bar_strategy_and_broker_equivalence_pending"),
         })
@@ -12297,7 +12450,36 @@ def backtest_preflight(
                             "status": "blocked", "required": True, "summary": "No sessions selected"}
     bar_signals = None
     precertified_candidate_plan = None
-    if strategy_one_fixed:
+    if ladder_policy is not None:
+        try:
+            if not market_data_plan or price_future is None:
+                raise ValueError('Declared ladder lacks certified market/price plans')
+            from .backtest_declared_ladder_plan import certify_declared_ladder_plans
+            from .backtest_market_data import readonly_clickhouse_client
+            ladder_plans = certify_declared_ladder_plans(certified, price_future.result(),
+                configuration=configuration,
+                definition={'start_local_ms':(start_time.hour*3600+start_time.minute*60+start_time.second)*1000,
+                            'end_local_ms':(end_time.hour*3600+end_time.minute*60+end_time.second)*1000},
+                client_factory=lambda:readonly_clickhouse_client(market_stream=True,v3_read_principal=True))
+            market_data_plan.update(ladder_plans.pins())
+            causal_v7_plan = ladder_plans.seeds.payload()
+            v7_check = next((row for row in checks if row['id'] == 'causal_v7_seed'), None)
+            if v7_check is not None:
+                v7_check.update(status='ready',
+                    summary='Declared ladder exact prior-session V7 authority is certified.',
+                    evidence=ladder_plans.seeds.token)
+            bar_signals = ladder_plans.scan
+            signal_check = {**signal_check,'status':'ready',
+                'summary':'Declared ladder full-session source products and EarlySqueeze admission certified.',
+                'evidence':ladder_plans.token}
+            checks.append({'id':'automatic_ladder_sources','label':'Declared ladder full-session products',
+                'status':'ready','required':True,'summary':'Identity, prior V7, causal pivots/intervals and full requested prefix certified.',
+                'evidence':ladder_plans.token})
+        except Exception as exc:
+            signal_check = {**signal_check,'status':'blocked','summary':str(exc),'evidence':str(exc)}
+            checks.append({'id':'automatic_ladder_sources','label':'Declared ladder full-session products',
+                'status':'blocked','required':True,'summary':str(exc),'evidence':str(exc)})
+    elif strategy_one_fixed:
         candidate_started = time.perf_counter()
         try:
             if not market_data_plan:
@@ -12392,7 +12574,7 @@ def backtest_preflight(
                 "evidence": "unsupported_fixed_native_stream",
             }
     if (execution_interval.kind == "fixed" and needs_v7 and market_data_plan
-            and activated_signal_streams and signal_check["status"] == "ready"):
+            and ladder_policy is None and activated_signal_streams and signal_check["status"] == "ready"):
         from src.backend.fixed_bar_signal import candidate_projection_tickers
         projection_tickers = candidate_projection_tickers(
             configuration, bar_signals["occurrences"] if bar_signals else [])
@@ -12536,7 +12718,7 @@ def backtest_preflight(
             v7_check["evidence"] = (
                 empty_candidate_token or causal_v7_plan.get("token", "")
                 if seed_ready else causal_v7_error)
-    if (execution_interval.kind == "fixed"
+    if (execution_interval.kind == "fixed" and ladder_policy is None
             and is_numbered_fixed_configuration(configuration)):
         identity_token = str((market_data_plan or {}).get(
             "strategy_one_identity_token") or "")

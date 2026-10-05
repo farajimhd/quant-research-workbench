@@ -21,9 +21,12 @@ class EarlyOriginalRiskPolicy:
     premarket_fraction: tuple[int, int] | None
     afterhours_fraction: tuple[int, int] | None
     eligibility_ms: int = 60_000
+    require_negative_regime: bool = False
+    signal_reference_fraction_bounds: tuple[tuple[int, int], tuple[int, int]] | None = None
 
     def __post_init__(self):
-        if (type(self.policy_id) is not str or not self.policy_id.strip()
+        if (type(self.require_negative_regime) is not bool
+                or type(self.policy_id) is not str or not self.policy_id.strip()
                 or self.policy_id != self.policy_id.strip()
                 or type(self.eligibility_ms) is not int
                 or not 5_000 <= self.eligibility_ms <= 60_000
@@ -38,9 +41,18 @@ class EarlyOriginalRiskPolicy:
                 or not 0 < fraction[0] < fraction[1] <= 10_000
             ):
                 raise ValueError("Original-risk fraction needs exact positive integers")
+        bounds = self.signal_reference_fraction_bounds
+        if bounds is not None:
+            if (type(bounds) is not tuple or len(bounds) != 2
+                    or any(type(bound) is not tuple or len(bound) != 2
+                        or any(type(v) is not int for v in bound)
+                        or not 0 <= bound[0] < bound[1] <= 10_000 for bound in bounds)
+                    or Fraction(*bounds[0]) >= Fraction(*bounds[1])
+                    or self.require_negative_regime):
+                raise ValueError('Signal bounds need ordered exact nonnegative fractions')
 
     def payload(self) -> dict:
-        return {
+        result = {
             "policy_id": self.policy_id,
             "premarket_fraction": self.premarket_fraction,
             "afterhours_fraction": self.afterhours_fraction,
@@ -55,6 +67,14 @@ class EarlyOriginalRiskPolicy:
             "missing": "no_synthetic_observations",
             "priority": "inherited_exits_first",
         }
+        if self.require_negative_regime:
+            result['require_negative_regime'] = True
+            result['momentum'] = 'completed_5s_macd_line_strictly_below_signal_strictly_below_zero'
+        if self.signal_reference_fraction_bounds is not None:
+            result['signal_reference_fraction_bounds'] = self.signal_reference_fraction_bounds
+            result['signal_reference'] = 'original_reference_ask'
+            result['signal_bounds_comparison'] = 'inclusive_exact_rational_cross_multiply'
+        return result
 
 
 def early_original_risk_failure(
@@ -85,9 +105,15 @@ def early_original_risk_failure(
             or not 0 < value.bid <= value.ask
             or type(value.quote_age_us) is not int
             or not 0 <= value.quote_age_us <= 1_000_000
-            or value.macd_line >= value.macd_signal):
+            or value.macd_line >= value.macd_signal
+            or (policy.require_negative_regime and value.macd_signal >= 0)):
         return None
     reference = Fraction(str(value.reference_ask))
+    if policy.signal_reference_fraction_bounds is not None:
+        lower, upper = (Fraction(*bound) for bound in policy.signal_reference_fraction_bounds)
+        signal = Fraction(str(value.macd_signal))
+        if not reference * lower <= signal <= reference * upper:
+            return None
     risk = reference - Fraction(str(value.initial_stop))
     # Cross-multiply integers to avoid division rounding at the exact boundary.
     numerator, denominator = fraction

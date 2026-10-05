@@ -35,7 +35,7 @@ def validate_liquidity_fade_state(witness, state, financial) -> StrategyOneEntry
             raise ValueError("Liquidity fade source lacks its held entry identity")
     source = families["submitted"][key]
     if (type(source) is not StrategyOneEntryProposal or type(source.strategy_number) is not int
-            or source.strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47)
+            or source.strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52)
             or (source.account_id, source.assignment_id, source.ticker) != key
             or source.reference_ask != witness.reference_ask
             or source.initial_stop != witness.initial_stop

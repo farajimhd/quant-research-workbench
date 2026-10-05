@@ -400,9 +400,8 @@ def configuration_candidate(candidate_id: str = "", *, required: bool = False) -
 
 def backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
     """Expose immutable numbered ARTE releases without a candidate-store fallback."""
-    from src.backend.backtest_strategy_one_configuration import selected_numbered_revision, numbered_configuration_options
-    revision = selected_numbered_revision(revision_id=candidate_id)
-    options = numbered_configuration_options()
+    from src.backend.backtest_configuration_option_reader import certified_configuration_options
+    revision, options = certified_configuration_options(candidate_id)
     return {"candidates": [{"candidate_id": row["revision_id"],
                             "candidate_revision": row["revision"], "label": row["label"],
                             "content_hash": row["content_hash"]} for row in options],

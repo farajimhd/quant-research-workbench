@@ -297,6 +297,31 @@ def readonly_clickhouse_client(*, market_stream: bool = False,
 def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                                     tickers: Sequence[str],
                                     configuration: Mapping[str, Any]) -> CertifiedMarketDayPlan:
+    """Select a certified population using explicit immutable consumer rules."""
+    release = dict(configuration.get('strategy') or {}).get('numbered_release') or {}
+    market_policy = release.get('automatic_market_policy') or {}
+    exclusions = ()
+    if 'population_exclusions' in market_policy:
+        from src.trading_runtime.squeeze_ladder_automatic import AutomaticLadderPolicy
+        from .backtest_ladder_source_authority import declared_population_exclusions
+        if release.get('automatic_entry_policy') != AutomaticLadderPolicy().payload():
+            raise ValueError('Population exclusions require a declared automatic strategy')
+        exclusions = declared_population_exclusions(market_policy)
+        if set(tickers) & set(exclusions):
+            raise ValueError('Requested population includes a declared excluded ticker')
+    market = _certified_market_plan_from_arte(
+        sessions=sessions, tickers=tickers, configuration=configuration)
+    if not exclusions:
+        return market
+    selected = tuple(ticker for ticker in market.tickers if ticker not in exclusions)
+    if not selected:
+        raise ValueError('Declared population exclusions removed the complete market scope')
+    return project_market_day_plan(market, selected)
+
+
+def _certified_market_plan_from_arte(*, sessions: Sequence[date | str],
+                                     tickers: Sequence[str],
+                                     configuration: Mapping[str, Any]) -> CertifiedMarketDayPlan:
     """Read a Keeper-attested typed arte certificate, with no SQLite authority.
 
     This is control-plane preflight only. It neither builds missing products nor
