@@ -154,6 +154,14 @@ quantities through OMS. Persist the ticker's consumed admission after accepted
 submission, not after the final fill. No second batch or additions in that
 ticker/session, including after exits, rotation or zero fills.
 
+`ladder_admission_lock` consumes normalized frozen OMS snapshots to distinguish
+an acknowledged acquisition from a filled-trade count. Accepted parents retain
+the lock after cancellation with zero fills; unresolved submissions block a new
+proposal. PM and AH have separate New York session identities. This consumer
+is prepared but not yet wired into native ladder entry admission. Its caller
+must provide the current run's verified, as-of snapshot prefix; a mutable
+sidecar file cannot supply lock authority.
+
 ## Targets, stops and failure exits
 
 The initial three-lot percentage ladder is +2.5%, +5%, +10% from each lot's
