@@ -22,12 +22,14 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     clickhouse_price_int,
     confirm_auto_update,
     execution_clock_existing_source_days,
+    execution_clock_coverage_batches,
     execution_clock_rows_match_archive,
     event_values_match,
     format_auto_update_summary,
     insert_execution_clock_day_sql,
     insert_execution_clock_coverage_day_sql,
     parse_args,
+    query_database_frontier,
     raw_event_union_sql,
     trade_raw_row_to_event,
     validate_manual_append_selection,
@@ -198,6 +200,60 @@ class EventEncodingTests(unittest.TestCase):
 
 
 class AutoUpdatePlanningTests(unittest.TestCase):
+    def test_coverage_batches_preserve_every_ticker_and_exact_day_ordinals(self) -> None:
+        client = mock.Mock()
+        client.query_tsv.return_value = "A\t10\t12\nB\t100\t104\nC\t8\t20\nD\t1\t2\n"
+        args = argparse.Namespace(database="market_sip_compact", continuity_table="events_ordinal_continuity",
+            tickers="", execution_clock_batch_events=6, execution_clock_batch_tickers=2)
+        batches = execution_clock_coverage_batches(client, args, _day(Path("unused"), "2026-09-21"))
+        self.assertEqual([batch.tickers for batch in batches], ["A,B", "C", "D"])
+        self.assertEqual([bound for batch in batches for bound in batch.execution_clock_batch_bounds],
+            [("A", 10, 12), ("B", 100, 104), ("C", 8, 20), ("D", 1, 2)])
+        self.assertEqual(args.tickers, "")
+
+    def test_coverage_batches_fail_closed_on_empty_duplicate_or_invalid_bounds(self) -> None:
+        args = argparse.Namespace(database="market_sip_compact", continuity_table="events_ordinal_continuity", tickers="")
+        for rows in ("", "A\t1\t1\n", "A\t1\t2\nA\t2\t3\n"):
+            with self.subTest(rows=rows), self.assertRaises(RuntimeError):
+                client = mock.Mock()
+                client.query_tsv.return_value = rows
+                execution_clock_coverage_batches(client, args, _day(Path("unused"), "2026-09-21"))
+
+    def test_coverage_query_filters_archive_ordinals_and_keeps_small_join_on_right(self) -> None:
+        with mock.patch("sys.argv", ["download_update_events.py"]):
+            args = parse_args()
+        args.events_table = "events_2026"
+        day = _day(Path("unused"), "2026-09-21")
+        with self.assertRaisesRegex(ValueError, "bounded ticker"):
+            insert_execution_clock_coverage_day_sql(args, day, 739880)
+        args.tickers = "A,B"
+        args.execution_clock_batch_bounds = (("A", 10, 12), ("B", 100, 104))
+        sql = insert_execution_clock_coverage_day_sql(args, day, 739880)
+        self.assertIn("ticker = 'A' AND ordinal >= toUInt64(10) AND ordinal < toUInt64(12)", sql)
+        self.assertLess(sql.index("FROM `market_sip_compact`.`events_2026`"), sql.index("FROM `market_sip_compact`.`events_ordinal_continuity`"))
+        self.assertIn("query_plan_join_swap_table = 'false'", sql)
+        self.assertIn("HAVING trade_count = clock_count", sql)
+
+    def test_failed_frontier_requires_explicit_exact_frontier_recovery(self) -> None:
+        client = mock.Mock()
+        with mock.patch("sys.argv", ["download_update_events.py"]):
+            base = parse_args()
+        base.start_date = "2026-09-21"
+        base.end_date = "2026-10-02"
+        base.retry_failed = True
+        base.force_day_delete = True
+        with mock.patch("pipelines.market_sip.flatfiles.download_update_events.clickhouse_table_exists", return_value=True), \
+             mock.patch("pipelines.market_sip.flatfiles.download_update_events.first_tsv_row", return_value=["13204", "2026-09-21"]), \
+             mock.patch("pipelines.market_sip.flatfiles.download_update_events.latest_day_status", return_value="failed"):
+            self.assertEqual(query_database_frontier(client, base, required=False), "2026-09-21")
+            for required, start, retry, delete in ((True, "2026-09-21", True, True),
+                (False, "2026-09-22", True, True), (False, "2026-09-21", False, True),
+                (False, "2026-09-21", True, False)):
+                args = argparse.Namespace(**vars(base))
+                args.start_date, args.retry_failed, args.force_day_delete = start, retry, delete
+                with self.subTest(required=required, start=start, retry=retry, delete=delete), self.assertRaisesRegex(RuntimeError, "refusing to append"):
+                    query_database_frontier(client, args, required=required)
+
     def test_execution_clock_existing_days_come_from_continuity_without_remote_discovery(self) -> None:
         client = mock.Mock()
         client.query_tsv.return_value = "2026-08-20\n2026-08-21\n"

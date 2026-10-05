@@ -134,7 +134,7 @@ from research.mlops.env import load_env_files, secret_status  # noqa: E402
 
 
 DEFAULT_DOWNLOAD_WORKERS = 8
-DEFAULT_MAX_THREADS = 64
+DEFAULT_MAX_THREADS = 4
 DEFAULT_TEST_TABLE_PREFIX = "test_flatfile_event_update"
 DEFAULT_TEST_SAMPLE_SIZE = 100
 DEFAULT_DAY_RAW_AUDIT_SAMPLE_SIZE = 32
@@ -288,7 +288,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-screen", dest="progress_screen", action="store_true", default=True)
     parser.add_argument("--no-progress-screen", dest="progress_screen", action="store_false")
     parser.add_argument("--max-partitions-per-insert-block", type=int, default=1024)
-    parser.add_argument("--max-memory-usage", default="400G")
+    parser.add_argument("--max-memory-usage", default="16G")
+    parser.add_argument("--external-sort-bytes", default="512M", help="Spill large sorts to disk above this threshold.")
+    parser.add_argument("--external-group-by-bytes", default="512M", help="Spill large aggregations to disk above this threshold.")
+    parser.add_argument("--execution-clock-batch-events", type=int, default=5_000_000)
+    parser.add_argument("--execution-clock-batch-tickers", type=int, default=128)
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN / "flatfile_event_update"))
     parser.add_argument("--discovery", choices=("remote",), default=DEFAULT_DISCOVERY)
     parser.add_argument("--aws-region", default=DEFAULT_AWS_REGION)
@@ -1724,18 +1728,29 @@ def insert_execution_clock_coverage_day_sql(args: argparse.Namespace, day: DayFi
     clock_table = quote_ident(args.execution_clock_table)
     coverage = quote_ident(args.execution_clock_coverage_table)
     tickers = execution_clock_tickers(args)
+    if not tickers:
+        raise ValueError("execution-clock coverage requires a bounded ticker batch")
     ticker_values = ", ".join(sql_string(value) for value in tickers)
+    bounds = getattr(args, "execution_clock_batch_bounds", ())
+    ordinal_clause = ""
+    if bounds:
+        ordinal_clause = " AND (" + " OR ".join(
+            f"(ticker = {sql_string(ticker)} AND ordinal >= toUInt64({begin}) AND ordinal < toUInt64({end}))"
+            for ticker, begin, end in bounds
+        ) + ")"
     event_source = f"""(
-        SELECT *
+        SELECT ticker, ordinal, event_meta, sip_timestamp_us
         FROM {archive_db}.{events}
-        PREWHERE ticker IN ({ticker_values})
-    )""" if tickers else f"{archive_db}.{events}"
+        PREWHERE ticker IN ({ticker_values}){ordinal_clause}
+    )"""
     clock_ticker_clause = f"\n          AND ticker IN ({ticker_values})" if tickers else ""
     clock_source = f"""(
         SELECT ticker, ordinal, execution_timestamp_us, source_date
         FROM {clock_db}.{clock_table} FINAL
         WHERE source_date = toDate({sql_string(day.source_date)}){clock_ticker_clause}
     )"""
+    settings = query_settings(args)
+    settings = (settings + ", " if settings else "\nSETTINGS ") + "join_algorithm = 'hash', query_plan_join_swap_table = 'false'"
     return f"""
 INSERT INTO {clock_db}.{coverage}
 (source_date, ticker, event_count, trade_count, clock_count, delayed_trade_report_count, first_ordinal, next_ordinal, build_step, source_filter_key)
@@ -1754,7 +1769,8 @@ SELECT
     c.ordinal_end,
     toUInt32({int(build_step)}) AS build_step,
     {sql_string(source_filter_key(args) + '|' + EXECUTION_CLOCK_COVERAGE_REVISION)} AS source_filter_key
-FROM
+FROM {event_source} AS e
+INNER JOIN
 (
     SELECT
         source.ticker,
@@ -1765,14 +1781,66 @@ FROM
     WHERE source.source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args, 'source.ticker')}
     GROUP BY source.ticker
 ) AS c
-INNER JOIN {event_source} AS e
     ON e.ticker = c.ticker AND e.ordinal >= c.ordinal_begin AND e.ordinal < c.ordinal_end
 LEFT JOIN {clock_source} AS x
     ON x.source_date = toDate({sql_string(day.source_date)}) AND x.ticker = e.ticker AND x.ordinal = e.ordinal
 GROUP BY c.ticker, c.latest_event_count, c.ordinal_begin, c.ordinal_end
 HAVING trade_count = clock_count
-{query_settings(args)}
+{settings}
 """
+
+
+def execution_clock_coverage_batches(
+    client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles,
+) -> list[argparse.Namespace]:
+    """Plan complete, disjoint batches from the authoritative day ordinal bounds.
+
+    A single large ticker is never truncated: it runs alone under the query
+    memory limit. This metadata plan does not read raw files or event rows.
+    """
+    max_events = int(getattr(args, "execution_clock_batch_events", 5_000_000))
+    max_tickers = int(getattr(args, "execution_clock_batch_tickers", 128))
+    if max_events <= 0 or max_tickers <= 0:
+        raise ValueError("execution-clock batch limits must be positive")
+    rows = client.query_tsv(f"""
+SELECT ticker,
+    argMax(next_ordinal - event_count, tuple(build_step, updated_at)) AS ordinal_begin,
+    argMax(next_ordinal, tuple(build_step, updated_at)) AS ordinal_end
+FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+WHERE source_date = toDate({sql_string(day.source_date)}){execution_clock_ticker_predicate(args)}
+GROUP BY ticker
+ORDER BY ticker
+""").strip()
+    batches: list[argparse.Namespace] = []
+    pending: list[tuple[str, int, int]] = []
+    events = 0
+
+    def flush() -> None:
+        nonlocal pending, events
+        if pending:
+            batch = argparse.Namespace(**vars(args))
+            batch.tickers = ",".join(row[0] for row in pending)
+            batch.execution_clock_batch_bounds = tuple(pending)
+            batches.append(batch)
+            pending = []
+            events = 0
+
+    seen: set[str] = set()
+    for row in rows.splitlines():
+        ticker, begin_text, end_text = row.split("\t")
+        begin, end = int(begin_text), int(end_text)
+        if ticker in seen or end <= begin:
+            raise RuntimeError(f"invalid execution-clock ordinal bounds for {day.source_date}:{ticker}")
+        seen.add(ticker)
+        count = end - begin
+        if pending and (len(pending) >= max_tickers or events + count > max_events):
+            flush()
+        pending.append((ticker, begin, end))
+        events += count
+    flush()
+    if not batches:
+        raise RuntimeError(f"no execution-clock continuity bounds for {day.source_date}")
+    return batches
 
 
 def execution_clock_day_is_complete(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> bool:
@@ -1875,8 +1943,10 @@ def rebuild_execution_clock_day(
             )
         _run_profiled_with_reporter(client, f"delete_execution_clock_{day.source_date}", delete_execution_clock_day_sql(args, day), reporter, day=day.source_date, stage="execution-clock", detail="stale clock rows")
         _run_profiled_with_reporter(client, f"insert_execution_clock_{day.source_date}", insert_execution_clock_day_sql(args, day, build_step), reporter, day=day.source_date, stage="execution-clock", detail="raw participant clock")
+    batches = execution_clock_coverage_batches(client, args, day)
     _run_profiled_with_reporter(client, f"delete_execution_clock_coverage_{day.source_date}", delete_execution_clock_coverage_day_sql(args, day), reporter, day=day.source_date, stage="execution-clock", detail="stale coverage rows")
-    _run_profiled_with_reporter(client, f"insert_execution_clock_coverage_{day.source_date}", insert_execution_clock_coverage_day_sql(args, day, build_step), reporter, day=day.source_date, stage="execution-clock", detail="complete ticker/day coverage")
+    for index, batch in enumerate(batches, 1):
+        _run_profiled_with_reporter(client, f"insert_execution_clock_coverage_{day.source_date}_{index:04d}", insert_execution_clock_coverage_day_sql(batch, day, build_step), reporter, day=day.source_date, stage="execution-clock", detail=f"coverage batch {index}/{len(batches)} tickers={len(batch.execution_clock_batch_bounds)}")
     if not execution_clock_day_is_complete(client, args, day):
         raise RuntimeError(f"execution-clock coverage is incomplete after rebuild for source day {day.source_date}")
 
@@ -2410,6 +2480,20 @@ FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
     scoped_args = event_args_for_day(args, frontier)
     status = latest_day_status(client, scoped_args, DayJob(frontier, build_step_for_date(frontier)))
     if status != "ok":
+        # Manual recovery must begin at the failed frontier and retain run_day's
+        # forced-delete and no-later-days guards. Bare auto-update still fails.
+        recovery_status = (
+            status == "failed" and getattr(args, "retry_failed", False)
+        ) or (
+            status in {"started", "interrupted"} and getattr(args, "retry_started", False)
+        )
+        if (
+            not required and recovery_status
+            and getattr(args, "start_date", None) == frontier
+            and getattr(args, "end_date", "") >= frontier
+            and getattr(args, "force_day_delete", False)
+        ):
+            return frontier
         raise RuntimeError(
             f"Database frontier {frontier} has latest manifest status {status or 'missing'} for "
             f"{args.database}.{scoped_args.events_table}; refusing to append until that day is recovered."
@@ -4009,7 +4093,17 @@ def main() -> None:
         raise ValueError("--day-offset is unsafe in auto-update mode because it would skip the next ordinal-dependent source day.")
 
     config = download_config(args)
-    client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    if args.execution_clock_batch_events <= 0 or args.execution_clock_batch_tickers <= 0:
+        raise ValueError("execution-clock batch limits must be positive")
+    client = ClickHouseHttpClient(
+        args.clickhouse_url, args.user, args.password,
+        default_query_params={
+            "max_threads": args.max_threads,
+            "max_memory_usage": parse_size_bytes(args.max_memory_usage),
+            "max_bytes_before_external_sort": parse_size_bytes(args.external_sort_bytes),
+            "max_bytes_before_external_group_by": parse_size_bytes(args.external_group_by_bytes),
+        },
+    )
     database_frontier = "" if args.test_mode else query_database_frontier(client, args, required=auto_update)
     if auto_update:
         args.start_date = (date.fromisoformat(database_frontier) + timedelta(days=1)).isoformat()
