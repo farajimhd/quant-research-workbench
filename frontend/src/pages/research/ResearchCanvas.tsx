@@ -26,7 +26,7 @@ export function ResearchCanvas({ storageKey, titles, icons, sources, toolbar, ch
       if (element.clientWidth === 0) return; // Keep last visible geometry while its route is hidden.
       setWidth(element.clientWidth);
       const zoom = Number(getComputedStyle(document.documentElement).getPropertyValue("--app-zoom")) || 1;
-      setHeight(Math.max(400, window.innerHeight / zoom - 224));
+      setHeight(Math.max(400, (window.innerHeight - element.getBoundingClientRect().top) / zoom - 16));
     };
     const observer = new ResizeObserver(measure);
     observer.observe(element); window.addEventListener("resize", measure);

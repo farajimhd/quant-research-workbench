@@ -33,12 +33,14 @@ export function SavedLabelResearch() {
   const selected = listings?.listings.find(r => r.listing_id === identity);
   const filtered = listings?.listings.filter(r => `${r.ticker} ${r.venue} ${r.listing_id}`.toUpperCase().includes(search.toUpperCase())) ?? [];
   const options = selected && !filtered.includes(selected) ? [selected, ...filtered] : filtered;
+  const tickerIndex = options.findIndex(r => r.listing_id === identity);
   const session = catalog?.days.find(d => d.day === day);
   return <div className="research-path-shell">
     <div className="research-controls research-saved-selection">
       <label>Saved session<select aria-label="Saved label session" value={day} onChange={e => setDay(e.target.value)}>{catalog?.days.map(d => <option key={d.day} value={d.day}>{d.day} · {d.role}</option>)}</select></label>
       <label>Find ticker<input aria-label="Find saved label ticker" placeholder="Ticker or venue" value={search} onChange={e => setSearch(e.target.value)} /></label>
       <label>Ticker<select aria-label="Saved label listing" value={identity} onChange={e => setIdentity(e.target.value)}>{options.map(r => <option key={r.listing_id} value={r.listing_id}>{r.ticker} · {r.venue}{r.has_price_targets===false ? " · no session price targets" : r.activity_rows===0 ? " · no session candles" : ""}</option>)}</select></label>
+      <div className="research-ticker-nav" role="group" aria-label="Navigate filtered tickers"><button className="button secondary compact" disabled={tickerIndex <= 0} onClick={() => setIdentity(options[tickerIndex-1].listing_id)}>Previous ticker</button><span>{tickerIndex+1} / {options.length}</span><button className="button secondary compact" disabled={tickerIndex < 0 || tickerIndex >= options.length-1} onClick={() => setIdentity(options[tickerIndex+1].listing_id)}>Next ticker</button></div>
       <span>{session?.valid_rows.toLocaleString()} labelled candles · {session?.invalid_price_rows.toLocaleString()} invalid rows excluded</span>
       <button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Reload labels</button>
     </div>

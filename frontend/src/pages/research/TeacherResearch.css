@@ -45,3 +45,11 @@
 .research-label-detail { flex: 0 0 auto; max-height: 30%; overflow: auto; font-size: .75rem; }
 .research-empty { flex: 1; display: grid; place-items: center; color: var(--muted-foreground); }
 .research-page :is(button, select, input, summary):focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* Compact Research controls leave remaining height to the plot. */
+.research-price-action-chart { gap: .25rem; }
+.research-price-action-chart > .chart-shell { flex: 1 1 0; height: auto; min-height: 200px; }
+.research-price-action-chart .research-chart-nav { justify-content: flex-start; gap: .35rem; }
+.research-chart-toggles, .research-ticker-nav { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; font-size: .75rem; }
+.research-chart-toggles .research-checkbox { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .3rem; }
+.research-canvas .workspace-window-actions.live-window-actions { display: flex; gap: 0; }
