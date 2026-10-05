@@ -62,7 +62,7 @@
 .research-grouping-chart { margin: 1rem 0; }
 .research-grouping-axis, .research-grouping-lanes { overflow: auto; border: 1px solid var(--border); border-radius: .4rem; }
 .research-grouping-lanes { max-height: 420px; }
-.research-grouping-chart svg { display: block; width: 100%; min-width: 900px; }
+.research-grouping-chart svg { display: block; min-width: 900px; }
 .research-grouping-chart svg text { fill: var(--foreground); font-size: 11px; }
 .research-grouping-chart svg line { stroke: var(--muted-foreground); opacity: .3; }
 .research-grouping-chart svg [role="button"] { cursor: pointer; }
@@ -70,3 +70,11 @@
 .research-grouping-surface { overflow-x: auto; }
 .research-grouping-axis, .research-grouping-lanes { min-width: 900px; }
 .research-grouping-lanes { overflow-x: hidden; overflow-y: auto; }
+
+.research-grouping-summary { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: baseline; }
+.research-grouping-summary span { color: var(--muted-foreground); font-size: .8rem; }
+.research-grouping-help { margin: .4rem 0; font-size: .8rem; }
+
+.research-grouping-chart { --research-threshold-rejected: var(--destructive); }
+
+.research-grouping-surface { cursor: grab; touch-action: pan-y; user-select: none; }

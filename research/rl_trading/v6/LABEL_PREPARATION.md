@@ -234,11 +234,21 @@ rows do not automatically become ENTRY or add repeated group weight.
 The grouping timeline precedes this table. Each box spans the chosen ENTRY
 to its saved `entry_target_us` discounted-gain witness, which can differ from
 the reference EXIT. Height represents net discounted selection score, not
-dollar P&L; overlapping boxes use separate lanes. Group bands span contributing
-entry times and share the boxes' colors. Rejected positive-score pairs can be
+dollar P&L; overlapping boxes use separate lanes. Group bands span earliest
+contributing ENTRY to latest saved target, use overlap lanes, and share the
+boxes' colors. Rejected positive-score pairs can be
 shown as outlines using their best original ENTRY candidate. Linear/log height,
 ticker filtering and time-window navigation support inspection. Click a box
 to inspect candles or a band to filter the group table; keyboard activation is
 supported. Missing witnesses and windows exceeding 5,000 boxes are explicitly
-reported; narrow the window or ticker filter for complete display. These audit
-fields do not change selection, grouping, sizing, or approved 1a labels.
+reported; narrow the window or ticker filter for complete display. Threshold
+rejections with positive scores appear in red by default; other rejections
+use gray outlines. Drag horizontally to pan and use scroll or zoom buttons
+to zoom around the pointer or center. The chart stays mounted during pan and
+zoom; its time coordinates update immediately and bounded-window data loads
+in the background with stale requests cancelled. Both panels share an elapsed-time
+coordinate system with uniformly spaced ticks and preserved empty gaps;
+SVG text is not stretched to fit the container. The whole-session selected
+score sum counts each contributing pair once, is independent of display
+filters, and is not cash-weighted P&L or a grouping-quality objective. These
+audit fields do not change selection, grouping, sizing, or approved 1a labels.

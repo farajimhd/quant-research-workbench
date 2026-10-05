@@ -181,7 +181,10 @@ def timeline(job,start_us=None,seconds=900,search="",include_rejected=False):
     if search:positive=positive.filter(pl.col("ticker").str.to_uppercase().str.contains(search.upper(),literal=True))
     unavailable=positive.filter(pl.col("entry_target_us").is_null() & pl.col("time_us").is_between(start,end,closed="left")).height
     visible=positive.filter((pl.col("time_us")<end)&(pl.col("entry_target_us")>start)).sort("time_us","listing_id","pair_id")
-    groups=[g for g in meta["groups"] if g["start_us"]<end and g["end_us"]>=start]
+    extents=frame.filter(pl.col("selected")).group_by("group_id").agg(pl.col("entry_target_us").max().alias("target_end_us"))
+    targets=dict(extents.iter_rows())
+    groups=[dict(g,target_end_us=targets[g["group_id"]]) for g in meta["groups"]
+            if g["start_us"]<end and (targets[g["group_id"]] or g["end_us"])>start]
     return dict(start_us=start,end_us=end,begin_us=begin,finish_us=finish,rows=visible.head(5000).to_dicts(),groups=groups,total=visible.height,unavailable=unavailable,truncated=visible.height>5000)
 
 def candidate_window(rows,decisions,config,time_us=None,search="",selection="all",minimum_score=0.,offset=0):

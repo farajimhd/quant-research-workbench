@@ -37,6 +37,34 @@ def main():
       bands=scope.get_by_role('group',name='Group timeline',exact=True)
       boxes=scope.get_by_role('group',name='Episode score boxes',exact=True)
       boxes.wait_for(timeout=300000)
+      assert scope.get_by_text('Session selected score sum:',exact=False).count()==1
+      geometry=boxes.evaluate("svg=>{const axis=document.querySelector('[aria-label=\"Group timeline\"]');const xs=Array.from(axis.querySelectorAll('line')).map(l=>+l.getAttribute('x1'));return {width:svg.width.baseVal.value,view:svg.viewBox.baseVal.width,axis:axis.viewBox.baseVal.width,gaps:xs.slice(1).map((x,i)=>x-xs[i])};}")
+      assert geometry['width']==geometry['view']==geometry['axis']
+      assert max(geometry['gaps'])-min(geometry['gaps'])<0.000001
+      first_start=timelines[-1]['start_us']
+      boxes.evaluate("svg=>window.__groupingSvg=svg")
+      boxes.scroll_into_view_if_needed()
+      bounds=boxes.bounding_box();assert bounds
+      page.mouse.move(bounds['x']+bounds['width']*.7,bounds['y']+bounds['height']-5)
+      page.mouse.down()
+      page.mouse.move(bounds['x']+bounds['width']*.5,bounds['y']+bounds['height']-5,steps=8)
+      with page.expect_response(lambda r:'/market-preview/timeline' in r.url,timeout=300000):page.mouse.up()
+      boxes.wait_for(timeout=300000)
+      assert timelines[-1]['start_us']>first_start
+      assert boxes.evaluate("svg=>svg===window.__groupingSvg")
+      with page.expect_response(lambda r:'/market-preview/timeline' in r.url,timeout=300000):scope.get_by_role('button',name='Zoom in',exact=True).click()
+      boxes.wait_for(timeout=300000)
+      assert timelines[-1]['end_us']-timelines[-1]['start_us']==150_000_000
+      boxes.scroll_into_view_if_needed()
+      bounds=boxes.bounding_box();assert bounds
+      page.mouse.move(bounds['x']+bounds['width']*.5,bounds['y']+bounds['height']*.5)
+      with page.expect_response(lambda r:'/market-preview/timeline' in r.url,timeout=300000):page.mouse.wheel(0,100)
+      boxes.wait_for(timeout=300000)
+      assert timelines[-1]['end_us']-timelines[-1]['start_us']==188_000_000
+      with page.expect_response(lambda r:'/market-preview/timeline' in r.url,timeout=300000):scope.get_by_label('Grouping chart window',exact=True).select_option('300')
+      boxes.wait_for(timeout=300000)
+      with page.expect_response(lambda r:'/market-preview/timeline' in r.url,timeout=300000):scope.get_by_role('button',name='Session start',exact=True).click()
+      boxes.wait_for(timeout=300000)
       assert timelines and all(r['entry_target_us']>r['time_us'] for r in timelines[-1]['rows'])
       with page.expect_response(lambda r:'/market-preview/result' in r.url,timeout=300000):
        bands.get_by_role('button').first.click()
