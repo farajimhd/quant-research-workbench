@@ -277,6 +277,16 @@ verified current-run financial prefix, sealed release policy and validated
 intent/event parent; these caller-provided objects are not a new durability
 authority. No native writer, table installation or financial run is enabled.
 
+`backtest_squeeze_ladder_journal_admission.py` additionally verifies the exact
+native typed intent/event parent and all protection slices against the
+source-reconstructed intent before returning prepared evidence families. It
+requires one running acquisition, matching account/record identity and exact
+native event/intent/slice rows. Tests reject an altered intent price and a
+foreign slice even when market evidence remains valid. Five focused parent,
+readback and evidence tests pass. This is a pre-publication verifier only;
+the native writer envelope, independent verified context binding, Keeper-fenced
+family publication and cold recovery are still required and not enabled.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute
