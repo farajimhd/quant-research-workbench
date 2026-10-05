@@ -201,6 +201,19 @@ qualifies the frozen witness against a later geometry change. This prepared
 rule still needs coordinator binding, normalized setup persistence and full
 preflight before it can authorize a numbered strategy's entry proposal.
 
+`backtest_squeeze_ladder_setup.py` now binds only prepared VWAP-cross survivors
+to the certified native V7 and pivot plans. It requires the same build, session,
+market-plan token and exact bars attempt across dependencies. Each survivor
+returns a typed result with source row/admission/qualification clocks, scan and
+dependency plan identities, frozen resistance, frozen stop and an explicit
+qualification/rejection reason. Missing active geometry is not silently dropped.
+The native pivot cursor advances only to the qualification boundary. A real
+Arrow-mask/native-plan integration test demonstrates that later V7 geometry
+cannot replace the earlier band, and expired pivots reject the setup. Forty-one
+source/setup regression tests pass. Coordinator entry proposals, normalized
+setup fact persistence, complete release preflight and financial execution
+remain unimplemented; this binding does not register or publish a strategy.
+
 Start with n=3 protected lots. Compare n=2 and n=5 only after the three-lot
 route is qualified; additional orders have material minimum fees. The broker
 still owns one net position per ticker. Distinct allocation IDs attribute
