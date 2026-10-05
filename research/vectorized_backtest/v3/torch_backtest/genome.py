@@ -16,6 +16,13 @@ from .rules import ATOMS, CLAUSES, HISTORY, Compare, Temporal, validate_clause
 from .timing import TIMING_CONTRACT, timing_fingerprint
 
 VERSION = "semantic-squeeze-search-v3-5-risk-time"
+MUTATION_CONTRACT = dict(
+    version="seeded-mixed-strength-v1",
+    probabilities=[.60, .30, .10],
+    coordinate_rates=[.04, .12, .30],
+    scales=[.01, .04, .15],
+    wide_positive_steps="log1p when lower>=0 and upper>=1000",
+)
 ENTRY = ("signal", "hold", "retest", "macd")
 ALLOCATION = ("equal", "decreasing", "increasing")
 POLICY_FIELDS = (
@@ -351,31 +358,66 @@ class StrategySpace:
         return self.repair(rows)
 
     def offspring(self, rng, a, b):
-        child = np.where(rng.random(self.size) < 0.5, a, b)
+        """Seeded light/medium/broad mutations; every coordinate is eligible.
+
+        Light children refine one parent. Broader children cross whole semantic
+        clauses, then mutate class IDs, integer counts, numeric values and rule
+        thresholds. The caller's checkpointed RNG owns all randomness.
+        """
+        mode = int(rng.choice(3, p=MUTATION_CONTRACT["probabilities"]))
+        probability = MUTATION_CONTRACT["coordinate_rates"][mode]
+        scale = MUTATION_CONTRACT["scales"][mode]
+        child = (a if rng.random() < .5 else b).copy()
+        if mode:
+            child = np.where(rng.random(self.size) < .5, a, b)
+            for i in range(CLAUSES):
+                start = self.rules_start + i * 6
+                parent = a if rng.random() < .5 else b
+                child[start:start + 6] = parent[start:start + 6]
         proposal = self.sample(rng, 1)[0]
-        # Keep operation/input/history/threshold clauses semantically together.
-        # Numeric policy mutations explore locally instead of replacing every
-        # threshold with an unrelated uniformly random proposal.
-        for i, (_, lower, upper, integer) in enumerate(POLICY_FIELDS):
+        # Class mutations replace IDs, never add fractional offsets to labels.
+        for index in list(range(self.policy_start)) + list(range(self.connectors_start, self.size)):
+            if rng.random() < probability:
+                child[index] = proposal[index]
+        for i, (name, lower, upper, integer) in enumerate(POLICY_FIELDS):
             index = self.policy_start + i
-            if rng.random() < .15:
-                categorical = NAMES[i] in ('remainder_policy_id', 'require_signal_valid')
-                value = proposal[index] if categorical else child[index] + rng.normal(0, .08 * (upper - lower))
-                child[index] = np.clip(round(value) if integer else value, lower, upper)
+            if rng.random() < probability:
+                if name in ('remainder_policy_id', 'require_signal_valid'):
+                    child[index] = proposal[index]
+                else:
+                    # Wide positive ranges need relative steps: a $100 filter
+                    # must not jump by $10,000 in a nominally light mutation.
+                    if lower >= 0 and upper >= 1000:
+                        value = np.expm1(
+                            np.log1p(child[index])
+                            + rng.normal(0, scale * (np.log1p(upper) - np.log1p(lower)))
+                        )
+                        delta = value - child[index]
+                    else:
+                        delta = rng.normal(0, scale * (upper - lower))
+                    if integer:
+                        delta = (1 if delta >= 0 else -1) * max(1, abs(round(delta)))
+                    child[index] = np.clip(child[index] + delta, lower, upper)
         for i in range(CLAUSES):
             start = self.rules_start + i * 6
-            parent = a if rng.random() < .5 else b
-            child[start:start + 6] = parent[start:start + 6]
-            if rng.random() < .15:
-                child[start:start + 6] = proposal[start:start + 6]
-            elif rng.random() < .25:
-                atom = ATOMS[int(child[start + 2])]
-                child[start + 5] = np.clip(child[start + 5] + rng.normal(0, .05 * (atom.upper - atom.lower)), atom.lower, atom.upper)
-        # Other bounded classes/connectors remain searchable.
-        indices = list(range(self.policy_start)) + list(range(self.connectors_start, self.size))
-        for index in indices:
-            if rng.random() < .15:
-                child[index] = proposal[index]
+            old_label = child[start + 2]
+            for offset in range(5):
+                if rng.random() < probability:
+                    child[start + offset] = proposal[start + offset]
+            atom = ATOMS[int(child[start + 2])]
+            # Changing input changes threshold units: reset the literal together.
+            if child[start + 2] != old_label:
+                child[start + 5] = rng.uniform(atom.lower, atom.upper)
+            child[start + 5] = np.clip(child[start + 5], atom.lower, atom.upper)
+            if rng.random() < probability:
+                if atom.lower >= 0 and atom.upper >= 1000:
+                    value = np.expm1(
+                        np.log1p(child[start + 5])
+                        + rng.normal(0, scale * (np.log1p(atom.upper) - np.log1p(atom.lower)))
+                    )
+                else:
+                    value = child[start + 5] + rng.normal(0, scale * (atom.upper - atom.lower))
+                child[start + 5] = np.clip(value, atom.lower, atom.upper)
         return self.repair([child])[0]
 
     def identity(self, row):

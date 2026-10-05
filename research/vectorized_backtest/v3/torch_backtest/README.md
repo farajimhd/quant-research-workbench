@@ -230,3 +230,42 @@ synthetic evaluation. All four generation receipts, objective values, source
 code hash, winner hashes and random-initialization evidence were checked.
 Runtime evidence is under
 `D:/TradingML/runtimes/vectorized_backtest/v3_qualification/gpu-delivery/experiments/6a97e28fac7e400ab6dfa94b6cba14fb`.
+
+### Seeded mutation and source-version continuation
+
+Offspring choose a mutation strength using the checkpointed NumPy RNG:
+60% light (4% per-coordinate mutation, 1% numeric range scale), 30% medium
+(12%, 4%), and 10% broad (30%, 15%). Light offspring refine one selected
+parent; medium/broad offspring cross parents while keeping semantic clauses
+intact. Every searchable class ID, count, policy value, clause input/operator/
+temporal/window/threshold and connector is eligible. Class IDs are replaced
+with legal labels; bounded integers receive integral steps. Wide positive
+ranges use log1p steps to refine small price/activity thresholds without
+jumping by a large fraction of their absolute maximum. Input changes reset
+threshold units to the new atomic input. Repairs remain explicit.
+
+Two elites, three-way tournaments and 20% random immigrants are retained.
+After three stagnant generations random immigration becomes 50%. These are
+probabilities, not guaranteed counts or guarantees of improved fitness.
+
+`--continue-training OLD_EXPERIMENT` starts a NEW immutable experiment when
+mutation implementation changes. It checks protected grammar, objective,
+sessions, cash/financial contracts, seed and total budget; verifies every
+completed session fingerprint and score/rejection calculation; pins identity,
+checkpoint and receipt hashes; and preserves the best result. It regenerates
+the next population with new mutation using the saved RNG state. Incomplete
+session receipts are preserved in the old run and never reused. Ordinary
+`--resume` still requires exactly matching source and identity. Inherited
+results retain their old-source attribution in `continuation_receipt.json`.
+No continuation is allowed after a frozen winner or validation input exists.
+
+The October 5 continuation keeps generations 1–4 and restarts generation 5,
+with B128 and the original total 32-generation ceiling. The objective, causal
+broker, 30 training dates and six sealed validation dates remain unchanged.
+
+The workstation profile launcher accepts `--run-after-profile NEW_JOB`: it
+launches the new campaign in the same visible console only after same-source
+qualification passes full financial and fill-ledger parity. A failed profile
+stops before training. Use `--continue-training OLD_EXPERIMENT` and
+`--reuse-prepared OLD_EXPERIMENT` to retain certified training bytes and
+completed generations while changing mutation implementation.

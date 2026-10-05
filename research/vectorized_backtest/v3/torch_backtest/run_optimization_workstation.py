@@ -57,6 +57,23 @@ def session_spec(source):
     )
 
 
+def qualified_followup_arguments(args, job):
+    """Forward sealed run settings after qualification; exclude profile flags."""
+    command = ['run', '--resume', str(args.run_after_profile),
+               '--qualification', str(job / 'qualification.json')]
+    # Forward the sealed solver/resources, not profile-only flags.
+    omit = {'command', 'resume', 'qualification', 'run_after_profile',
+            'profile_date', 'profile_pipeline', 'profile_all_modes',
+            'short_study_origin'}
+    aliases = {'start_date': 'from', 'end_date': 'to'}
+    for name, value in vars(args).items():
+        if name in omit or value is None or value is False:
+            continue
+        flag = '--' + aliases.get(name, name.replace('_', '-'))
+        command += [flag] if value is True else [flag, str(value)]
+    return command
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -71,6 +88,8 @@ def main(argv=None):
     parser.add_argument("--profile-date", default="2026-09-03")
     parser.add_argument("--profile-pipeline", action="store_true",
                         help="Qualify full cached-input pipeline on two training sessions")
+    parser.add_argument("--run-after-profile",
+                        help="New job to launch only after this same-source qualification passes")
     parser.add_argument(
         "--profile-all-modes",
         action="store_true",
@@ -84,6 +103,7 @@ def main(argv=None):
     parser.add_argument("--reuse-prepared", help="Previous experiment with compatible sealed inputs")
     parser.add_argument("--short-study-origin",
                         help="Stopped full population study; reuse measured timing and its frozen B64 checkpoint")
+    parser.add_argument("--continue-training", help="Stopped training experiment to continue with new mutation identity")
     parser.add_argument('--warm-start-study', help='Completed training-only study used to initialize full search')
     parser.add_argument("--runtime", type=Path, default=DEFAULT)
     parser.add_argument("--resume", type=Path)
@@ -218,6 +238,11 @@ def main(argv=None):
                     message=f"Prepared replay {result['optimized_replay_seconds']:.2f}s; qualification.json saved",
                 )
             )
+            if args.run_after_profile:
+                if not result.get('passed') or not result.get('full_ledger_parity'):
+                    raise ValueError('Automatic continuation requires passed full-ledger qualification')
+                command = qualified_followup_arguments(args, job)
+                return main(command)
             return 0
     # The optimization owns the panel below. Profile and plan never launch GA.
     if not args.qualification:
@@ -277,6 +302,8 @@ def main(argv=None):
         command.append("--plain")
     if args.reuse_prepared:
         command += ["--reuse-prepared", args.reuse_prepared]
+    if args.continue_training:
+        command += ["--continue-training", args.continue_training]
     if args.warm_start_study:
         command += ['--warm-start-study', args.warm_start_study]
     # One stable directory owns launcher plan and optimization status/checkpoint.

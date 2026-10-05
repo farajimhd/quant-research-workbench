@@ -26,7 +26,7 @@ import torch
 
 from .encoding.config import Session
 from .fixtures import synthetic_tape
-from .genome import VERSION, StrategySpace
+from .genome import VERSION, MUTATION_CONTRACT, StrategySpace
 from .grid import Settings
 from .optimization_ui import SearchPanel
 from .prepare import prepare_tape
@@ -101,6 +101,59 @@ def constraint_ranks(results, scores, minimum):
     ranks = np.empty(len(scores), dtype=float)
     ranks[order] = np.arange(len(scores))
     return ranks, violation
+
+
+def import_training_continuation(space, origin, output, identity):
+    """New source identity inherits completed training only; no partial reuse."""
+    import shutil
+    from .runtime import file_hash
+    if file_hash(origin / 'checkpoint.json') != identity['continuation']['checkpoint_sha256'] or file_hash(origin / 'identity.json') != identity['continuation']['identity_sha256']:
+        raise ValueError('Continuation origin changed after identity sealing')
+    previous = json.loads((origin / 'identity.json').read_text())
+    for key in ('grammar', 'sessions', 'population', 'generations', 'seed', 'objective', 'minimum_training_entries'):
+        if previous[key] != identity[key]:
+            raise ValueError('Continuation changed protected contract: ' + key)
+    if (origin / 'winner.json').exists() or (origin / 'inputs' / 'validation_000').exists():
+        raise ValueError('Continuation must precede frozen winner/evaluation')
+    cp = json.loads((origin / 'checkpoint.json').read_text())
+    n = cp['next_generation']
+    if not 1 <= n < identity['generations']:
+        raise ValueError('Continuation requires completed training generations')
+    last = json.loads((origin / f'generation_{n-1:03d}.json').read_text())
+    population = space.validate(last['population'])
+    rng = np.random.default_rng(); rng.bit_generator.state = cp['rng']
+    cp['population'] = evolve(space, rng, population, last['selection_ranks'], cp['stagnant'] >= 3).tolist()
+    cp['rng'] = rng.bit_generator.state
+    receipts = {}
+    verified_candidates = []
+    for index in range(n):
+        receipt = origin / f'generation_{index:03d}.json'
+        record = json.loads(receipt.read_text())
+        fingerprints = [space.identity(row) for row in record['population']]
+        sessions = sorted((origin / f'generation_{index:03d}').glob('session_*.json'))
+        if len(sessions) != len(identity['sessions']['training']):
+            raise ValueError('Incomplete inherited generation coverage')
+        results = []
+        for path in sessions:
+            saved = json.loads(path.read_text())
+            if saved['population_fingerprints'] != fingerprints:
+                raise ValueError('Inherited session population mismatch')
+            results.append(saved['result'])
+            receipts[str(path.relative_to(origin))] = file_hash(path)
+        values, reasons = score(results, **identity['objective'], minimum_training_entries=identity['minimum_training_entries'])
+        if values != record['scores'] or reasons != record['rejection_reasons']:
+            raise ValueError('Inherited objective/rejections differ')
+        receipts[receipt.name] = file_hash(receipt)
+        verified_candidates.extend((row, value) for row, value in zip(record['population'], values) if value is not None)
+    if cp['best_score'] != max(value for _, value in verified_candidates) or not any(row == cp['best'] and value == cp['best_score'] for row, value in verified_candidates):
+        raise ValueError('Inherited checkpoint best differs from verified history')
+    # Partial generation receipts belong to old population and are NOT reused.
+    for index in range(n):
+        shutil.copy2(origin / f'generation_{index:03d}.json', output / f'generation_{index:03d}.json')
+        shutil.copytree(origin / f'generation_{index:03d}', output / f'generation_{index:03d}')
+    shutil.copy2(origin / 'training_archive.json', output / 'training_archive.json')
+    write_json(output / 'checkpoint.json', cp)
+    write_json(output / 'continuation_receipt.json', dict(origin=str(origin), completed_generations=n, inherited_code_hash=previous['code_hash'], new_code_hash=identity['code_hash'], mutation=MUTATION_CONTRACT, inherited_receipts=receipts, checkpoint_sha256=identity['continuation']['checkpoint_sha256']))
 
 
 def warm_population(space, origin, count, seed):
@@ -410,6 +463,7 @@ def main(argv=None):
     parser.add_argument("--runtime", type=Path, default=DEFAULT)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--output", type=Path, help="New explicit experiment directory")
+    parser.add_argument("--continue-training", type=Path, help="Stopped experiment; inherit completed training only into new identity")
     parser.add_argument("--population", type=int, default=32)
     parser.add_argument("--generations", type=int, default=50)
     parser.add_argument("--preparation-workers", type=int, default=2)
@@ -513,6 +567,8 @@ def main(argv=None):
     initial_rows = warm_population(space, args.warm_start_study, args.population, args.seed) if args.warm_start_study else None
     from .runtime import file_hash
     identity = dict(
+        mutation=MUTATION_CONTRACT,
+        continuation=dict(origin=str(args.continue_training), checkpoint_sha256=file_hash(args.continue_training / "checkpoint.json"), identity_sha256=file_hash(args.continue_training / "identity.json")) if args.continue_training else None,
         warm_start=dict(origin=str(args.warm_start_study),
                         finalists_sha256=file_hash(args.warm_start_study / 'frozen_finalists.json'),
                         report_sha256=file_hash(args.warm_start_study / 'study_report.json')) if args.warm_start_study else None,
@@ -572,6 +628,8 @@ def main(argv=None):
             raise RuntimeError("Completed frozen evaluation is immutable")
     else:
         write_json(output / "identity.json", identity)
+    if args.continue_training and not args.resume:
+        import_training_continuation(space, args.continue_training, output, identity)
     print("Optimization output: " + str(output), flush=True)
 
     training_count = 2 if args.synthetic else len(spec["training"])
@@ -597,6 +655,7 @@ def main(argv=None):
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[name] = "1"
     config = dict(
+        mutation=MUTATION_CONTRACT,
         population=args.population,
         generations=args.generations,
         seed=args.seed,
