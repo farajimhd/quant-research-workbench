@@ -78,10 +78,12 @@ sequential admission responsibilities. It is not registered to any release.
 Native fixed Backtest already exposes completed execution VWAP and eligible
 liquidity in `backtest_market_data.py` and `backtest_strategy_one_loader.py`.
 The original columnar gate proves price above VWAP, not a crossing after
-admission. VWAP is Float64 there, whereas the prepared crossing predicate
-requires exact scaled integers; a version-pinned comparison/quantization
-contract must be qualified before binding that producer. Do not silently cast
-VWAP or claim this predicate is already integrated into historical runs.
+admission. `completed_vwap_crossings` preserves its Float64 multiply-by-10000
+comparison contract. Flooring that scaled threshold is equivalent for integer
+closes and integer buffers within the exact Float64 integer domain; this does
+not create a rounded VWAP source product. Tests cover fractional thresholds
+and neighboring Float64 values. Retain original source bits in evidence.
+These prepared predicates are not yet integrated into historical runs.
 
 `squeeze_ladder_protection.py` supplies percentage/structural target geometry
 and normalized allocation weights using existing independent protection

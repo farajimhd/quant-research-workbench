@@ -23,6 +23,35 @@ REJECT_ADMISSION = 8
 REJECT_NO_CROSS = 16
 
 
+def completed_vwap_crossings(*, execution_vwap: np.ndarray,
+                            reference_valid: np.ndarray, **columns) -> CompletedCrossBatch:
+    """Bind native Float64 VWAP using the existing multiply-by-10000 contract.
+
+    For integer closes and an integer buffer, comparison with a scaled real
+    threshold is equivalent to comparison with its floor. This is a comparison
+    boundary, not a rounded VWAP product. Retain original Float64 source bits
+    in causal evidence. Restrict the scale to the exact Float64 integer domain.
+    Missing/nonfinite values reject the corresponding observation.
+    """
+    if (not isinstance(execution_vwap, np.ndarray) or execution_vwap.ndim != 1
+            or execution_vwap.dtype != np.dtype("float64")):
+        raise ValueError("VWAP requires the original Float64 producer column")
+    if (not isinstance(reference_valid, np.ndarray) or reference_valid.ndim != 1
+            or len(reference_valid) != len(execution_vwap)
+            or reference_valid.dtype.kind not in "iu"
+            or np.any((reference_valid != 0) & (reference_valid != 1))):
+        raise ValueError("VWAP validity must be an aligned binary integer column")
+    with np.errstate(over="ignore", invalid="ignore"):
+        scaled = execution_vwap * 10_000
+    finite = np.isfinite(scaled) & (scaled > 0)
+    if np.any(finite & (scaled >= 2**53)):
+        raise ValueError("VWAP exceeds exact scaled Float64 comparison domain")
+    threshold = np.zeros(len(scaled), dtype=np.int64)
+    threshold[finite] = np.floor(scaled[finite]).astype(np.int64)
+    return completed_crossings(reference_int=threshold,
+        reference_valid=((reference_valid == 1) & finite).astype(np.uint8), **columns)
+
+
 def completed_crossings(*, boundary_ms: np.ndarray, close_int: np.ndarray,
                         price_valid: np.ndarray, reference_int: np.ndarray,
                         reference_available_ms: np.ndarray,

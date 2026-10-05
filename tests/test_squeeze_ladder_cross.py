@@ -3,7 +3,7 @@ import pytest
 
 from src.trading_runtime.squeeze_ladder_cross import (
     REJECT_ADMISSION, REJECT_CONTINUITY, REJECT_PRICE, REJECT_REFERENCE,
-    completed_crossings,
+    completed_crossings, completed_vwap_crossings,
 )
 
 
@@ -85,3 +85,28 @@ def test_vectorized_result_matches_scalar_completed_observations():
         and clocks[j - 1] >= 1000 and prices[j - 1] <= refs[j - 1]
         and prices[j] > refs[j] + 100) for j in range(1, n)]
     assert completed_crossings(**args).crossing.tolist() == expected
+
+
+@pytest.mark.parametrize("vwap", [10.0, np.nextafter(10.0, 0), np.nextafter(10.0, 11), 10.00005])
+def test_native_vwap_comparisons_preserve_fractional_and_adjacent_float_values(vwap):
+    args = columns()
+    args.pop("reference_int")
+    prices = np.array([100000, 100101, 100000, 100101], dtype=np.int64)
+    args["close_int"] = prices
+    values = np.full(4, vwap, dtype=np.float64)
+    result = completed_vwap_crossings(execution_vwap=values, **args)
+    threshold = vwap * 10000
+    assert result.crossing.tolist() == [False] + [bool(
+        prices[j - 1] <= threshold and prices[j] > threshold + 100)
+        for j in range(1, 4)]
+
+
+@pytest.mark.parametrize("missing", [np.nan, np.inf, -np.inf, 0.0])
+def test_missing_vwap_cannot_be_replaced_with_zero_for_cross_confirmation(missing):
+    args = columns()
+    args.pop("reference_int")
+    values = np.full(4, 10.0, dtype=np.float64)
+    values[2] = missing
+    result = completed_vwap_crossings(execution_vwap=values, **args)
+    assert not result.crossing.any()
+    assert result.rejection[3] & REJECT_REFERENCE
