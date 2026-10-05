@@ -1,4 +1,4 @@
-"""Prepared immutable AH early-risk alternative; no execution admission."""
+"""Immutable native AH early-risk alternative; Backtest-only admission."""
 from copy import deepcopy
 from hashlib import sha256
 import re
@@ -26,8 +26,8 @@ BEHAVIOR = ('Strategy46 inherits exact pinned Strategy42 activation, entry and r
     'below signal. Fresh quote age is at most 1000000us; no pending exit. PM and later half-risk '
     'negative-regime failure are unchanged. Missing observations never become synthetic prices, '
     'bars or counts. Time alone never exits. Original re-entry remains eligible. AH causal prior-day '
-    'V7 and complete regular-session warmup remain required. Prepared Backtest-only specification; '
-    'no registry publication, live or public resume admission and no profitability claim.')
+    'V7 and complete regular-session warmup remain required. Immutable Backtest-only release; '
+    'no live or public resume admission and no profitability claim.')
 
 
 def release_contract() -> NumberedStrategyRelease:
@@ -114,3 +114,21 @@ def derive_strategy_forty_six_configuration(source, *, approved_code_commit,
         source_candidate_hash=source.payload_hash,
         payload_hash=sha256(canonical_json(payload).encode()).hexdigest(),
         node_hash=node_hash(nodes), node_count=len(nodes), payload=payload)
+
+
+def verify_installed_strategy_forty_six_release(manifest):
+    """Source catalog admission is distinct from normalized publication."""
+    from .strategy_registry import numbered_strategy, fixed_strategy_executor
+    installed = numbered_strategy(46)
+    expected = release_contract()
+    fixed_strategy_executor(installed.executor_strategy_id, 46).verify()
+    if (installed != expected or manifest.get('contract') != expected.canonical_payload()
+            or manifest.get('approved_digest') != expected.approved_digest):
+        raise ValueError('Strategy46 published release differs from installed approval')
+    return installed
+
+
+def verify_strategy_forty_six_manifest(strategy):
+    manifest = verify_prepared_strategy_forty_six_manifest(strategy)
+    verify_installed_strategy_forty_six_release(manifest)
+    return manifest

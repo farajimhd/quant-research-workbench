@@ -25,7 +25,7 @@ def validate_profit_giveback_state(witness, state, financial) -> StrategyOneEntr
         if key not in families[name]:
             raise ValueError('Profit source lacks exact held position identity')
     source = families['submitted'][key]
-    if (type(source) is not StrategyOneEntryProposal or source.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42)
+    if (type(source) is not StrategyOneEntryProposal or source.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46)
             or (source.account_id, source.assignment_id, source.ticker) != key
             or source.reference_ask != witness.reference_ask
             or source.initial_stop != witness.initial_stop

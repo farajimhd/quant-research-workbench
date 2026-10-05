@@ -81,8 +81,15 @@ on the workstation has SHA256
 the laptop copy contains only the first run and must not determine campaign
 completeness.
 
-Next: qualify a fresh native release and its exact witness/journal route,
-execute saved AH comparisons, then complete all 26 development sessions.
+Strategy46 now has an installed native Backtest-only contract, exact numbered
+witness/journal round-trip, normalized publisher and cold-report reader. Its
+additional AH early-risk rule runs after every inherited exit. Strategy42's
+normalized release remains unchanged. The new source certificate requires the
+complete inherited proof plus exact reviewed successor sources; source mutation
+tests reject changed modules. Native financial execution remains required.
+
+Next: publish the fresh immutable release from its clean approved source,
+execute saved PM parity and AH comparisons, then all 26 development sessions.
 Select two genuinely uninspected later certified validation dates from exposure
 metadata and input preflight only. September1–11 includes exposed research;
 the live related split trains through September10 and assigns September11 to

@@ -40,7 +40,7 @@ def seal_certified_entry_activity_rows(rows, entries, intents, events, *, run_id
     Row-contained tokens and producer-supplied witnesses never authorize cold
     readback. Older numbered entries need no activity source or companions.
     """
-    required = tuple(row for row in entries if row['strategy_number'] in (36, 37, 38, 39, 40, 41, 42))
+    required = tuple(row for row in entries if row['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46))
     if not required:
         if rows:
             raise ValueError('Entry activity companions have no supported numbered parent')
@@ -63,7 +63,7 @@ def project_entry_activity(witness, *, run_id, batch_id, parent_record_id, event
                            strategy_number=36):
     """Project independently supplied evidence; row-contained seals grant nothing."""
     validate_entry_activity_witness(witness)
-    if type(strategy_number) is not int or strategy_number not in (36, 37, 38, 39, 40, 41, 42):
+    if type(strategy_number) is not int or strategy_number not in (36, 37, 38, 39, 40, 41, 42, 46):
         raise ValueError('Entry activity projection requires exact supported strategy number')
     if type(run_id) is not str or not run_id:
         raise ValueError('Entry activity requires exact run identity')
@@ -135,10 +135,10 @@ def seal_entry_activity_rows(rows, entries, intents, events, authorities):
     from .arte_journal_writer import typed_row, _datetime_wire, _CONTRACTS
     if _CONTRACTS.get(ENTRY_ACTIVITY.name) != ENTRY_ACTIVITY:
         raise ValueError('Entry activity table contract is not registered by journal integration')
-    required = {r['parent_record_id']: r for r in entries if r['strategy_number'] in (36, 37, 38, 39, 40, 41, 42)}
+    required = {r['parent_record_id']: r for r in entries if r['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46)}
     parents = {r['record_id']: r for r in intents}
     source_events = {r['record_id']: r for r in events}
-    if (len(required) != sum(r['strategy_number'] in (36, 37, 38, 39, 40, 41, 42) for r in entries)
+    if (len(required) != sum(r['strategy_number'] in (36, 37, 38, 39, 40, 41, 42, 46) for r in entries)
             or len(parents) != len(intents) or len(source_events) != len(events)
             or any(type(a) is not EntryActivityAuthority for a in authorities)):
         raise ValueError('Entry activity graph has ambiguous parents or untyped authority')
