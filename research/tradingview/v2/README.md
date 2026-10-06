@@ -2,6 +2,16 @@
 
 Replace the old structural indicator on TradingView with the complete contents of `structural_zones.pine`. Keep using the independent v1 MACD and jump-alert scripts; those are unchanged. This remains a price-bar approximation of v7, not the repo's statistical builder or a calibrated prediction model.
 
+## Low-price / seconds-chart display (v2.5)
+
+At $1.23 the old 0.1% log bucket was only about $0.0012 wide. Separate DAY/HIST books could create coincident levels, and the 3% proximity filter hid major session swings after a large move.
+
+The bucket transform is now `floor(log(1 + price / scale) / log(1 + percent_width))`, with `scale = max(minimum_bucket_price, 2 * symbol_tick) / percent_width`. Its price-space bucket width is approximately the fixed floor plus the percentage component. This is a tick/dollar-aware grouping rule, **not a minimum rendered band width**. Bounds still come solely from eligible reaction prices. The explicit default dollar floor is $0.01; adjust for non-equity instruments or sub-cent analysis.
+
+`Include current-day structure across visible price range` is enabled by default. It admits DAY candidates inside the visible chart's high/low range even when farther than the 3% proximity filter; historical candidates still use proximity. Panning/zooming changes this display filter, not reaction extraction or qualification. Per-side limits and source reservations still apply, so not every visible swing will be drawn.
+
+Duplicate/nearby drawings across source books are suppressed after selection priority. Minimum center separation is `max(minimum_bucket_price, symbol_tick * minimum_display_ticks, visible_price_span / 80)`. Suppression changes display only; it does not merge samples or fabricate shared geometry. The higher-priority selected source survives. Captions are independently suppressed within `max(drawing_gap, visible_price_span / 35)` to reduce overlap; lines without captions remain visible. Captions retain source, provisional flag, main price, and available bounds. Pine lacks pixel collision detection, so extreme zoom/font combinations still need visual checking.
+
 ## Current-day structure (v2.4)
 
 The former combined book required every qualified bucket to span at least two days. Today's newly discovered highs/lows therefore remained gray provisional candidates even when they had several reactions. Historical levels could also consume every display slot.
@@ -30,7 +40,7 @@ Current levels overlaid on earlier candles were not necessarily available then: 
 
 - Every retained reaction has a price, pivot timestamp, confirmation availability time, side, exchange day, and confirmed move-away strength measured in pivot-bar ATR units.
 - Individual pivots expire at the rolling calendar-day cutoff; refreshed zones cannot retain expired geometry or counts. With identical loaded bars, streaming and reload use the same window and deterministic grouping.
-- Fixed logarithmic price buckets replace moving-center clustering. Default width is 0.1%; bucket centers cannot chain-drift across many price ranges. A bucket boundary can split nearby reactions; this is a deliberate bounded approximation rather than a statistical fit.
+- Fixed tick/dollar-aware logarithmic price buckets replace moving-center clustering. Default percentage component is 0.1%; bucket centers cannot chain-drift across many price ranges. A bucket boundary can split nearby reactions; this is a deliberate bounded approximation rather than a statistical fit.
 - Median centers and 10th/90th percentiles replace the expanding full min/max envelope. There is no artificial minimum band width.
 - A pivot is accepted only if the close at confirmation has moved away by the configured ATR multiple. Counts further require same-side reactions in a bucket to be separated by 300 seconds by default. This is a spacing proxy for independence, not proof of independent encounters. Two distinct reaction days and three reactions qualify a zone by default.
 - Evidence sums `min(move_away_ATR, 5) * 0.5^(age_days / half_life_days)`. It has no probabilistic interpretation. There is no out-of-sample evidence yet that these changes improve trading outcomes.
@@ -45,7 +55,7 @@ All valid reactions are stored up to an explicit default limit of 10,000 (maximu
 
 Source review and local invariant checks are distinct from Pine compilation. TradingView compilation, live runtime, and visual validation remain pending.
 
-1. Compile and replace the old structural indicator; ensure it is not still drawing underneath.
+1. Compile and replace the old structural indicator; ensure it is not still drawing underneath. Check a low-price 5s equity chart and 1m QQQ/AAPL. Verify distant DAY swings inside the visible price range can display, coincident DAY/HIST levels do not duplicate, and nearby captions are suppressed.
 2. Defaults show at most 16 main lines, with faint bands only where bounds exist. Provisional and identical-price candidates must have no bands. Toggle optional outlines/text, adjust horizontal text offset, and confirm text sits below the main line. Increase the per-side zone count to show more candidates.
 3. Test a one-day window with minimum distinct days set to one, then return to 30 days/two days. Check provisional captions and an intentionally small retained-pivot limit. There is no status table or insufficient-history warning.
 4. Compare reload versus streaming on the same loaded dataset at the same completed bar. A new reaction must wait for confirmation and pass its move-away threshold.
