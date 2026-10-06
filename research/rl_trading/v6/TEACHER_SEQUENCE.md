@@ -91,3 +91,22 @@ The main launcher defaults to five-candle supervision. Existing dataset, source,
 LULD, normalization and sidecar gates remain intact. Final training is deferred
 until workstation GPU availability is confirmed; this change starts no final
 teacher training or PPO run.
+
+## Laptop development experiment
+
+`python -B -m research.rl_trading.v6.run_laptop_teacher --output D:/TradingML/runtimes/rl-v6-laptop-teacher-20261006`
+runs a separate bounded teacher experiment with mandatory online W&B. Defaults
+freeze July 31 training and August 24 development, five named tickers, the first
+600 elapsed session seconds, ten epochs, seed 17 and Adam at 3e-4. It uses the
+shared chronological trainer, verified full bank/target receipts and unchanged
+1b targets. This subset is not the full-market campaign: competitor features are
+limited to its explicit ticker axis while sizing targets retain the original
+full-market denominator. No PPO or sealed evaluation is allowed.
+
+Current actions retain per-class counts, precision, recall and F1. Forecasts now
+also report those metrics and target-by-prediction confusion matrices at every
+horizon h0 through h4. These hard-label diagnostics use argmax of the saved soft
+targets; the training loss remains soft cross-entropy. Development forecasts run
+without teacher forcing. W&B stores baseline, epoch metrics and source/scope
+manifests; checkpoints remain in the local runtime. A completed small experiment
+does not establish full-market generalization or profitability.

@@ -18,6 +18,7 @@ from research.rl_trading.v6.candle_stream import (SparseCandleState,
                                                    seed_previous_session)
 from research.rl_trading.v6.model import BracketPolicy, HELD_FEATURE_WIDTH
 from research.rl_trading.v6.objective import bracket_loss
+from research.rl_trading.v6.label_metrics import classification_metrics
 from research.rl_trading.v6.session_data import PackedSession
 from research.rl_trading.v6.action_contract import ActionAxes, ACTION_NAMES as SIX_ACTION_NAMES
 
@@ -132,6 +133,7 @@ class TrainingMetrics:
     allocation_targets: int = 0
     forecast_cross_entropy: tuple[float | None, ...] = ()
     forecast_targets: tuple[int, ...] = ()
+    forecast_label_metrics: tuple[dict, ...] = ()
 
 
 def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wait_hold=False):
@@ -335,6 +337,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     forecast_mass = sum(d.sample_weight for d in decisions if d.forecast_probabilities is not None)
     ratio_sum=ratio_weight=0.; ratio_count=0
     forecast_sum=np.zeros(5);forecast_weight=np.zeros(5);forecast_count=np.zeros(5,np.int64)
+    forecast_confusion=np.zeros((5,4,4),np.int64)
     policy.train(not evaluation)
     if not evaluation:
         optimizer.zero_grad(set_to_none=True)
@@ -454,6 +457,9 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                             forecast_sum[:length]+=losses.detach().cpu().numpy()*item.sample_weight
                             forecast_weight[:length]+=item.sample_weight
                             forecast_count[:length]+=1
+                            predicted=forecast.detach().argmax(-1)[0].cpu().numpy()
+                            actual=item.forecast_probabilities.argmax(-1)
+                            forecast_confusion[np.arange(length),actual,predicted]+=1
                     else:
                         objective, metrics = bracket_loss(logits, sizes, stops,
                         targets, token=item.token,
@@ -581,4 +587,6 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                            {name:int(ticker_count[i]) for i,name in enumerate(('value','stop','target'))},
                            ratio_sum/ratio_weight if ratio_weight else None,ratio_count,
                            tuple(float(forecast_sum[i]/forecast_weight[i]) if forecast_weight[i] else None for i in range(5)) if sequence else (),
-                           tuple(map(int,forecast_count)) if sequence else ())
+                           tuple(map(int,forecast_count)) if sequence else (),
+                           tuple(classification_metrics(c)
+                                 for c in forecast_confusion) if sequence else ())
