@@ -6,6 +6,7 @@ leftBars = input.int(10, "Pivot left bars", minval = 1, maxval = 500)
 rightBars = input.int(10, "Pivot confirmation bars", minval = 1, maxval = 500)
 minimumBucket = input.float(0.01, "Minimum reaction bucket spacing (price units)", minval = 0.0001, step = 0.01)
 minimumDrawTicks = input.int(2, "Minimum displayed level separation (ticks)", minval = 1)
+includeVisibleHistory = input.bool(true, "Carry historical structure across visible price range")
 includeVisibleDay = input.bool(true, "Include current-day structure across visible price range")
 bucketPct = input.float(0.1, "Fixed price bucket width (%)", minval = 0.01, maxval = 5, step = 0.01)
 atrLength = input.int(14, "Reaction ATR length", minval = 2, maxval = 500)
@@ -145,14 +146,15 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
             bool enoughCount = array.size(z.prices) >= minimumCount
             bool enoughDays = z.currentDay or z.distinctDays >= minimumDays
             bool visibleDay = includeVisibleDay and z.currentDay and not na(visibleLow) and center >= visibleLow and center <= visibleHigh
-            bool nearby = distance <= maxDistance or visibleDay
+            bool visibleHistory = includeVisibleHistory and not z.currentDay and not na(visibleLow) and center >= visibleLow and center <= visibleHigh
+            bool nearby = distance <= maxDistance or visibleDay or visibleHistory
             bool qualified = enoughCount and enoughDays and nearby
             // Qualified levels first; then nearby provisional candidates fill vacancies.
             bool eligible = qualified or (showProvisional and nearby)
             array.push(distances, qualified ? distance : eligible ? 1000000 + distance : 1e20)
             // Today: strongest accepted reactions first, including explicitly provisional ones.
-            // Historical selection retains qualified-first proximity ranking.
-            array.push(priorities, eligible ? z.currentDay ? 100 / (1 + z.score) : qualified ? distance : 1000000 + distance : 1e20)
+            // Historical selection retains qualified-first evidence ranking and region coverage.
+            array.push(priorities, eligible ? z.currentDay ? 100 / (1 + z.score) : qualified ? 100 / (1 + z.score) : 1000000 + 100 / (1 + z.score) : 1e20)
             if eligible and z.currentDay
                 if na(currentTopPrice) or center > currentTopPrice
                     currentTop := j
@@ -169,15 +171,24 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
         float drawingGap = math.max(math.max(minimumBucket, syminfo.mintick * minimumDrawTicks), visibleSpan / 80)
         float captionGap = math.max(drawingGap, visibleSpan / 35)
         selected = array.new<bool>(array.size(zones), false)
-        for phase = 0 to 2
+        historicalRegions = map.new<int, bool>()
+        int regionsPerSide = math.max(1, perSide - math.min(currentSlots, perSide))
+        for phase = 0 to 3
             for k = 0 to array.size(ranked) - 1
                 int j = array.get(ranked, k)
                 Zone z = array.get(zones, j)
                 bool reservedPass = phase == 1
                 bool extremePass = phase == 0
+                bool historicalPass = phase == 2
+                float candidateCenter = array.median(z.prices)
+                bool candidateAbove = candidateCenter >= referencePrice
+                float regionSpan = candidateAbove ? math.max(nz(visibleHigh, referencePrice) - referencePrice, syminfo.mintick) : math.max(referencePrice - nz(visibleLow, referencePrice), syminfo.mintick)
+                int region = math.min(regionsPerSide - 1, int(math.floor(math.abs(candidateCenter - referencePrice) / regionSpan * regionsPerSide)))
+                int regionKey = region * 2 + (candidateAbove ? 1 : 0)
+                bool historicalEligible = not z.currentDay and not map.contains(historicalRegions, regionKey)
                 bool alreadyDrawn = array.get(selected, j)
                 bool reservedEligible = z.currentDay and ((array.median(z.prices) >= referencePrice and above < math.min(currentSlots, perSide)) or (array.median(z.prices) < referencePrice and below < math.min(currentSlots, perSide)))
-                if not alreadyDrawn and (not extremePass or (currentSlots > 0 and (j == currentTop or j == currentBottom))) and (not reservedPass or reservedEligible) and array.get(distances, j) < 1e20
+                if not alreadyDrawn and (not extremePass or (currentSlots > 0 and (j == currentTop or j == currentBottom))) and (not reservedPass or reservedEligible) and (not historicalPass or historicalEligible) and array.get(distances, j) < 1e20
                     float center = array.median(z.prices)
                     bool overhead = center >= referencePrice
                     bool distinctDrawing = true
@@ -186,6 +197,8 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                             if math.abs(center - array.get(drawnCenters, existing)) < drawingGap
                                 distinctDrawing := false
                     if distinctDrawing and ((overhead and above < perSide) or (not overhead and below < perSide))
+                        if historicalPass
+                            map.put(historicalRegions, regionKey, true)
                         array.push(drawnCenters, center)
                         array.set(selected, j, true)
                         bool provisional = array.get(distances, j) >= 1000000
