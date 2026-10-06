@@ -26,6 +26,24 @@ def passes(report):
     return actions and future and regressions
 
 
+def underfit_rows(actions,future,*,per_class=32):
+    """TRAIN-only stratification covers every evaluated forecast class."""
+    rng=np.random.default_rng(17);required=set()
+    for horizon in range(5):
+        for label in range(4):
+            candidates=np.flatnonzero(future[:,horizon]==label)
+            if len(candidates)<2:raise ValueError('Source lacks two examples of a forecast class')
+            required.update(rng.choice(candidates,2,replace=False).tolist())
+    rows=[]
+    for label in range(4):
+        selected=sorted(i for i in required if actions[i]==label)
+        if len(selected)>per_class:raise ValueError('Forecast coverage exceeds bounded current-class budget')
+        candidates=np.setdiff1d(np.flatnonzero(actions==label),selected)
+        if len(candidates)<per_class-len(selected):raise ValueError('Insufficient bounded current-action examples')
+        rows.extend(selected+rng.choice(candidates,per_class-len(selected),replace=False).tolist())
+    return np.asarray(rows,np.int64)
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--panel',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
@@ -43,7 +61,7 @@ def main(argv=None):
     if targetproof['status']!='prepared' or targetproof['version']!='rl-v6-complete-forecast-targets-v1' or targetproof['panel_sha256']!=proof['panel_sha256'] or targetproof['targets_sha256']!=file_hash(targetroot/'targets.pt') or targetproof['sealed_labels_read'] is not False or targetproof['observation_contract_changed'] is not False:raise ValueError('Forecast sidecar authentication failed')
     targets=torch.load(targetroot/'targets.pt',map_location='cpu',weights_only=False)['train']
     if targets['future'].shape!=(len(data['action']),5) or targets['future_quality'].shape!=targets['future'].shape:raise ValueError('Forecast target shape changed')
-    rows=np.concatenate([rng.choice(np.flatnonzero(data['action']==c),32,replace=False) for c in range(4)])
+    rows=underfit_rows(data['action'],targets['future'])
     train=tensors(data,manifest['normalization'],'cuda');tiny={**train,'actions_numpy':data['action'][rows],'episodes':[data['episode'][i] for i in rows]}
     for key in ('windows','market','held','action','weight','future','quality','ratio'):tiny[key]=train[key][rows]
     tiny['future']=torch.as_tensor(targets['future'][rows],device='cuda');tiny['future_quality']=torch.as_tensor(targets['future_quality'][rows],device='cuda')

@@ -1,5 +1,7 @@
 import copy
-from research.rl_trading.v6.run_full_head_underfit import passes
+from research.rl_trading.v6.run_full_head_underfit import passes,underfit_rows
+import numpy as np
+import pytest
 from research.rl_trading.v6.run_bias_campaign import flatten
 
 
@@ -18,3 +20,13 @@ def test_all_supervised_labels_required_for_underfit_admission():
 
 def test_forecast_metrics_are_logged_per_horizon_per_label():
     assert flatten({'future':[{'ENTRY':{'f1':.9}},{'EXIT':{'f1':.8}}]},'model')=={'model/future/h0/ENTRY/f1':.9,'model/future/h1/EXIT/f1':.8}
+
+
+def test_sampling_keeps_current_balance_and_every_forecast_class():
+    actions=np.tile(np.arange(4),100);future=np.stack([(actions+h)%4 for h in range(5)],axis=1)
+    rows=underfit_rows(actions,future)
+    assert len(rows)==len(np.unique(rows))==128
+    assert np.bincount(actions[rows]).tolist()==[32]*4
+    assert all(set(future[rows,h])==set(range(4)) for h in range(5))
+    np.testing.assert_array_equal(rows,underfit_rows(actions,future))
+    with pytest.raises(ValueError,match='Source lacks'):underfit_rows(actions,np.zeros_like(future))
