@@ -26,6 +26,25 @@ def context(c):
     return DeclaredNativePublicationContext(DeclaredNativeV4Unit(c.packet), **c.args, predecessor=c.predecessor)
 
 
+@pytest.mark.parametrize('mutation', ['none', 'duplicate', 'foreign_run', 'list', 'proxy', 'bound'])
+def test_recovery_context_index_is_exact_and_bounded(case, mutation):
+    from src.trading_runtime.arte_declared_native_publication import declared_contexts_by_batch
+    c = context(case)
+    run_id, contexts, bound = c.unit.base.run_id, (c,), 10
+    if mutation == 'duplicate': contexts = (c, c)
+    elif mutation == 'foreign_run': run_id = 'foreign'
+    elif mutation == 'list': contexts = [c]
+    elif mutation == 'proxy': contexts = (object(),)
+    elif mutation == 'bound': bound = 0
+    if mutation == 'none':
+        result = declared_contexts_by_batch(run_id, contexts, max_commits=bound)
+        assert result == {c.unit.base.batch_id: c}
+        assert result[c.unit.base.batch_id] is c
+    else:
+        with pytest.raises(ValueError):
+            declared_contexts_by_batch(run_id, contexts, max_commits=bound)
+
+
 def test_public_commit_reader_forwards_exact_native_context(case, monkeypatch):
     from test_arte_journal_commit_v4 import source, MemoryClient, prepare_commit_v4
     from src.trading_runtime import arte_journal_commit_v4 as subject

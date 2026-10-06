@@ -270,7 +270,8 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
 
 def load_verified_v4_prefix(client, run_id: str, *,
                             max_commits: int = 100_000,
-                            first_price_source=None, automatic_ladder_sources=()) -> V4CommittedPrefix | None:
+                            first_price_source=None, automatic_ladder_sources=(),
+                            declared_native_contexts=()) -> V4CommittedPrefix | None:
     """Recompute every detail seal and require one complete contiguous chain.
 
     This SELECT-only cold path is intentionally outside the execution loop.
@@ -281,6 +282,9 @@ def load_verified_v4_prefix(client, run_id: str, *,
     if (not isinstance(run_id, str) or not run_id
             or type(max_commits) is not int or not 1 <= max_commits <= 100_000):
         raise ValueError("V4 recovery needs a bounded run identity")
+    from .arte_declared_native_publication import declared_contexts_by_batch
+    declared_context_index = declared_contexts_by_batch(
+        run_id, declared_native_contexts, max_commits=max_commits)
     columns = ",".join(name for name, _ in
                        _CONTRACTS["trading_commit_v4"].columns)
     commits = _rows(client,
@@ -291,6 +295,8 @@ def load_verified_v4_prefix(client, run_id: str, *,
     if len(commits) > max_commits:
         raise RuntimeError("V4 recovery commit count exceeds its memory bound")
     if not commits:
+        if declared_context_index:
+            raise ValueError('Declared recovery contexts lack committed batches')
         return None
     prior_id = str(UUID(int=0))
     last_sequence = 0
@@ -319,6 +325,8 @@ def load_verified_v4_prefix(client, run_id: str, *,
         verified, _ = load_verified_commit_v4(
             client, run_id=run_id, batch_id=batch_id, first_price_source=first_price_source,
             automatic_ladder_sources=automatic_ladder_sources,
+            **({'declared_native_context': declared_context_index[batch_id]}
+               if batch_id in declared_context_index else {}),
             **({'verified_prior_prefix': preceding} if preceding is not None else {}))
         if verified != row:
             raise RuntimeError("V4 cold commit differs from ordered run inventory")
@@ -327,6 +335,8 @@ def load_verified_v4_prefix(client, run_id: str, *,
         status = row["status"]
         batch_ids.append(batch_id)
         seen_ids.add(batch_id)
+    if set(declared_context_index) - seen_ids:
+        raise ValueError('Declared recovery contexts name uncommitted batches')
     return V4CommittedPrefix(
         run_id, last_sequence, prior_id, commits[-1]["source_cursor"],
         status, tuple(batch_ids))

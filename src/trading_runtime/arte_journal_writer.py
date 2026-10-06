@@ -113,6 +113,9 @@ from .arte_declared_native_entry_schema import TABLES as DECLARED_ENTRY_TABLES
 from .arte_declared_native_management_schema import TABLES as DECLARED_MANAGEMENT_TABLES
 _CONTRACTS.update({table.name: table for table in (*DECLARED_ENTRY_TABLES, *DECLARED_MANAGEMENT_TABLES)})
 DECLARED_NATIVE_TABLE_NAMES = frozenset(table.name for table in (*DECLARED_ENTRY_TABLES, *DECLARED_MANAGEMENT_TABLES))
+from .arte_running_financial_checkpoint_schema import TABLES as RUNNING_FINANCIAL_TABLES
+_CONTRACTS.update({table.name: table for table in RUNNING_FINANCIAL_TABLES})
+RUNNING_FINANCIAL_TABLE_NAMES = frozenset(table.name for table in RUNNING_FINANCIAL_TABLES)
 _CONTRACTS[FAILURE.name] = FAILURE
 _CONTRACTS[PROFIT_GIVEBACK.name] = PROFIT_GIVEBACK
 _CONTRACTS[CONFIRMED_AH_FAILURE.name] = CONFIRMED_AH_FAILURE
@@ -1651,6 +1654,8 @@ def _insert(
                      else name)
     if contract_name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
+    if contract_name in RUNNING_FINANCIAL_TABLE_NAMES:
+        raise RuntimeError('Running financial links require their fenced checkpoint publisher')
     if contract_name in DECLARED_NATIVE_TABLE_NAMES and journal_profile != 'backtest_v4':
         raise ValueError('Declared native companions require the explicit Backtest V4 profile')
     if not rows:

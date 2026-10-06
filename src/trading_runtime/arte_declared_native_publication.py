@@ -18,6 +18,22 @@ TABLE_NAMES = frozenset(table.name for table in (*ENTRY_TABLES, *MANAGEMENT_TABL
 ENTITY_TYPES = frozenset(('declared_native_intent', 'declared_native_management_intent'))
 
 
+def declared_contexts_by_batch(run_id, contexts, *, max_commits):
+    """Index exact source contexts without granting source or cash admission."""
+    if type(contexts) is not tuple or len(contexts) > max_commits:
+        raise ValueError('Declared recovery contexts require a bounded tuple')
+    result = {}
+    for context in contexts:
+        if type(context) is not DeclaredNativePublicationContext:
+            raise ValueError('Declared recovery context has a foreign type')
+        context.scope()
+        base = context.unit.base
+        if base.run_id != run_id or base.batch_id in result:
+            raise ValueError('Declared recovery contexts have foreign or repeated batch identity')
+        result[base.batch_id] = context
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class DeclaredNativePublicationContext:
     unit: DeclaredNativeV4Unit

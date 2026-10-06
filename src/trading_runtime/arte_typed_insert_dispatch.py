@@ -139,6 +139,11 @@ def _broker_match_token(run_id: str, sequence: int, digest: str,
     return f"broker-match:{run_id}:{sequence}:{digest}:{table}"
 
 
+def _running_financial_token(run_id: str, sequence: int, digest: str,
+                             table: str) -> str:
+    return f"running-financial:{run_id}:{sequence}:{digest}:{table}"
+
+
 def _evidence_token(run_id: str, sequence: int, digest: str,
                     table: str) -> str:
     return f"evidence-state:{run_id}:{sequence}:{digest}:{table}"
@@ -576,7 +581,8 @@ class TypedInsertDispatch:
                              broker_snapshot_hash: str | None = None,
                              evidence_snapshot_hash: str | None = None,
                              campaign_snapshot_hash: str | None = None,
-                             oms_observation_snapshot_hash: str | None = None) -> None:
+                             oms_observation_snapshot_hash: str | None = None,
+                             running_financial_checkpoint_hash: str | None = None) -> None:
         header = _request_header(sql)
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not header.startswith(f"INSERT INTO arte.{table} (")
@@ -590,6 +596,7 @@ class TypedInsertDispatch:
                     and broker_snapshot_hash is None
                     and evidence_snapshot_hash is None
                     and campaign_snapshot_hash is None
+                    and running_financial_checkpoint_hash is None
                     and oms_observation_snapshot_hash is None and
                     (batch_last_sequence == 0) != (batch_id == _ZERO_BATCH))
                 or (snapshot_account_id is not None and batch_id != _ZERO_BATCH)):
@@ -598,24 +605,27 @@ class TypedInsertDispatch:
                 terminal_account_id, snapshot_account_id,
                 manager_snapshot_hash, broker_snapshot_hash,
                 evidence_snapshot_hash, campaign_snapshot_hash,
-                oms_observation_snapshot_hash)) > 1:
+                oms_observation_snapshot_hash, running_financial_checkpoint_hash)) > 1:
             raise ValueError("Typed INSERT has multiple parent families")
         scalar_hash = next((value for value in (
             manager_snapshot_hash, broker_snapshot_hash,
             evidence_snapshot_hash, campaign_snapshot_hash,
-            oms_observation_snapshot_hash)
+            oms_observation_snapshot_hash, running_financial_checkpoint_hash)
             if value is not None), None)
         if scalar_hash is not None:
             tables = (_MANAGER_TABLES if manager_snapshot_hash is not None
                       else _BROKER_MATCH_TABLES if broker_snapshot_hash is not None
                       else _EVIDENCE_TABLES if evidence_snapshot_hash is not None
                       else _CAMPAIGN_TABLES if campaign_snapshot_hash is not None
-                      else _OMS_OBSERVATION_TABLES)
+                      else _OMS_OBSERVATION_TABLES if oms_observation_snapshot_hash is not None
+                      else frozenset({'trading_running_financial_checkpoint_v1',
+                                      'trading_running_financial_checkpoint_account_v1'}))
             expected_token = (_manager_token if manager_snapshot_hash is not None
                               else _broker_match_token if broker_snapshot_hash is not None
                               else _evidence_token if evidence_snapshot_hash is not None
                               else _campaign_token if campaign_snapshot_hash is not None
-                              else _oms_observation_token)
+                              else _oms_observation_token if oms_observation_snapshot_hash is not None
+                              else _running_financial_token)
             if (table not in tables or batch_last_sequence < 1
                     or re.fullmatch(r"[0-9a-f]{64}", scalar_hash) is None
                     or token != expected_token(
@@ -762,7 +772,8 @@ class TypedInsertDispatch:
                                 broker_snapshot: bool = False,
                                 evidence_snapshot: bool = False,
                                 campaign_snapshot: bool = False,
-                                oms_observation_snapshot: bool = False) -> None:
+                                oms_observation_snapshot: bool = False,
+                                running_financial_checkpoint: bool = False) -> None:
         """Caller must invoke only after exact parent late-fence readback.
 
         Unwired parent publishers leave acknowledged operations in-flight,
@@ -778,6 +789,7 @@ class TypedInsertDispatch:
             if (not terminal and not snapshot and not manager_snapshot
                     and not broker_snapshot and not evidence_snapshot
                     and not campaign_snapshot and not oms_observation_snapshot
+                    and not running_financial_checkpoint
                     and type(batch_last_sequence) is int and batch_last_sequence > 0
                     and batch_last_sequence <= gate.compacted_through):
                 return
@@ -1228,6 +1240,35 @@ class TypedInsertDispatch:
             head_path=_evidence_head_path(run_id), tables=_EVIDENCE_TABLES,
             root_table="trading_strategy_one_evidence_snapshot_v1",
             token_factory=_evidence_token, label="Evidence snapshot")
+
+    def compact_verified_running_financial_checkpoint(
+        self, *, run_id: str, batch_id: str, last_sequence: int,
+        snapshot_hash: str, operations: tuple[tuple[str, str], ...],
+        previous: Any | None,
+    ) -> None:
+        """Select only read-back-verified running root/account rows at V4 cursor."""
+        from src.trading_runtime.running_financial_checkpoint_head import (
+            RunningFinancialCheckpointHead, ManagedRunningFinancialCheckpointHeadReader,
+        )
+        from src.trading_runtime.arte_running_financial_checkpoint_schema import ROOT, TABLES
+        # Validate exact current and prior scalar identities before any Keeper I/O.
+        RunningFinancialCheckpointHead(run_id, last_sequence, batch_id, snapshot_hash, 0)
+        if previous is not None:
+            if type(previous) is not RunningFinancialCheckpointHead:
+                raise ValueError("Running financial previous head is not exact typed receipt")
+            previous.__post_init__()
+        if (type(operations) is not tuple
+                or any(type(op) is not tuple or len(op) != 2
+                       or any(type(value) is not str for value in op) for op in operations)
+                or {table for table, _ in operations} != {table.name for table in TABLES}):
+            raise ValueError("Running financial checkpoint requires both exact table operations")
+        self._compact_verified_checkpoint_family(
+            run_id=run_id, batch_id=batch_id, last_sequence=last_sequence,
+            snapshot_hash=snapshot_hash, operations=operations,
+            previous=previous, head_type=RunningFinancialCheckpointHead,
+            head_path=ManagedRunningFinancialCheckpointHeadReader.path(run_id),
+            tables=frozenset(table.name for table in TABLES), root_table=ROOT.name,
+            token_factory=_running_financial_token, label="Running financial checkpoint")
 
     def compact_verified_broker_match_snapshot(
         self, *, run_id: str, batch_id: str, last_sequence: int,
