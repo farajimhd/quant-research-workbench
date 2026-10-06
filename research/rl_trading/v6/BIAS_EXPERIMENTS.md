@@ -78,3 +78,8 @@ normalization and model source, verifies checkpoint identity and replays its
 calibration metrics exactly. It rejects role drift or empty admitted days. W&B
 records aggregate and per-day rare-action metrics. Previously inspected Aug24
 and Aug25 remain exploratory results, not independent validation.
+The same frozen audit includes a two-expert control: ENTRY and EXIT checkpoints
+are selected independently by their calibration AP, and the known position
+state routes inference. Target actions never route predictions. Expert hashes,
+calibration replay, probability calibration and thresholds are frozen before
+new development evaluation; this adds no training or development-based tuning.

@@ -290,3 +290,16 @@ def test_completed_panel_audit_rejects_byte_or_manifest_drift(tmp_path):
     assert checked_panel(tmp_path)==(proof,manifest)
     (tmp_path/'panel.pt').write_bytes(b'corrupted')
     with pytest.raises(ValueError,match='changed'):checked_panel(tmp_path)
+
+
+def test_branch_experts_choose_calibration_and_route_without_target_labels():
+    from research.rl_trading.v6.audit_bias_campaign import select_branch_experts,route_experts
+    summaries=[dict(trial=dict(name=name),selection=dict(calibration={label:dict(average_precision=score) for label,score in zip(('ENTRY','EXIT'),scores)}))
+        for name,scores in (('entry_expert',(.8,.2)),('exit_expert',(.3,.9)))]
+    selected=select_branch_experts(summaries)
+    assert selected['ENTRY']['trial']['name']=='entry_expert'
+    assert selected['EXIT']['trial']['name']=='exit_expert'
+    held=np.zeros((3,11));held[1,0]=2
+    np.testing.assert_allclose(route_experts(held,np.array([.8,.1,.7]),np.array([.2,.9,.3])),[.8,.9,.7])
+    summaries[0]['selection']['calibration']['ENTRY']['average_precision']=float('nan')
+    with pytest.raises(ValueError,match='finite'):select_branch_experts(summaries)
