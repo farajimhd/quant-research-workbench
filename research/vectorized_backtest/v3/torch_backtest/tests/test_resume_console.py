@@ -9,7 +9,7 @@ from io import StringIO
 import pytest
 
 from research.vectorized_backtest.v3.torch_backtest.optimization_ui import SearchPanel, render_search
-from research.vectorized_backtest.v3.torch_backtest.resume_console import resume_arguments, verify_worker
+from research.vectorized_backtest.v3.torch_backtest.resume_console import resume_arguments, verify_worker, read_snapshot
 
 
 def test_live_handoff_stops_old_renderer_once(tmp_path):
@@ -20,6 +20,23 @@ def test_live_handoff_stops_old_renderer_once(tmp_path):
     panel.__exit__(None, None, None)
     live.stop.assert_called_once()
     assert panel.live is None
+
+
+def test_observer_permission_error_retains_worker_and_can_recover(tmp_path):
+    path = Mock()
+    path.read_text.side_effect = [PermissionError('sharing violation'), '{"status":"training"}']
+    state, error = read_snapshot(path)
+    assert state is None and 'PermissionError' in error
+    assert read_snapshot(path) == ({'status': 'training'}, None)
+
+
+def test_observer_missing_or_incomplete_snapshot_is_retryable(tmp_path):
+    path = tmp_path / 'status.json'
+    assert read_snapshot(path)[0] is None
+    path.write_text('{')
+    assert 'JSONDecodeError' in read_snapshot(path)[1]
+    path.write_text('{"status":"training"}')
+    assert read_snapshot(path) == ({'status': 'training'}, None)
 
 
 def test_exact_resume_changes_only_output_and_plain(tmp_path):

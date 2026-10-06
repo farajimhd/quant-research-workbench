@@ -20,6 +20,7 @@ import argparse
 import json
 import subprocess
 from time import sleep
+import traceback
 
 from research.vectorized_backtest.v3.torch_backtest.optimization_ui import SearchPanel
 from research.vectorized_backtest.v3.torch_backtest.runtime import DEFAULT, file_hash, require_runtime, write_json
@@ -55,6 +56,14 @@ def verify_worker(checkout, job):
     return identity
 
 
+def read_snapshot(path):
+    """A transient observer read failure must not kill the training worker."""
+    try:
+        return json.loads(path.read_text(encoding='utf-8')), None
+    except (OSError, json.JSONDecodeError) as error:
+        return None, f'{type(error).__name__}: {error}'
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -80,19 +89,32 @@ def main(argv=None):
             with SearchPanel(args.worker_job / 'experiment', read_only=True) as panel:
                 while True:
                     snapshot = args.worker_job / 'experiment' / 'status.json'
-                    if snapshot.exists():
-                        panel.state = json.loads(snapshot.read_text())
+                    state, read_error = read_snapshot(snapshot)
+                    if state is not None:
+                        panel.state = state
                         if panel.live:
                             panel.live.update(panel.view())
                         elif panel.state != getattr(panel, 'previous', None):
                             panel.console.print(panel.view())
                         panel.previous = dict(panel.state)
+                    elif read_error != getattr(panel, 'last_read_error', None):
+                        write_json(output / 'observer_read.json', dict(
+                            status='retrying', reason=read_error,
+                            worker_pid=worker.pid, last_good_status=panel.state.get('status')))
+                    panel.last_read_error = read_error
                     code = worker.poll()
                     if code is not None:
                         if code:
                             panel.console.print(f'Worker failed (exit {code}); see {output / "worker.log"}')
                         return code
                     sleep(1)
+        except BaseException as error:
+            # Store the actual supervisor traceback before cleanup. The worker
+            # log alone cannot explain an exception in this separate process.
+            write_json(output / 'supervisor_error.json', dict(
+                type=type(error).__name__, reason=str(error),
+                traceback=traceback.format_exc(), worker_pid=worker.pid))
+            raise
         finally:
             if worker.poll() is None:
                 worker.terminate()
@@ -101,6 +123,8 @@ def main(argv=None):
                 except subprocess.TimeoutExpired:
                     worker.kill()
                     worker.wait()
+            write_json(output / 'worker_exit.json', dict(
+                exit_code=worker.returncode, worker_pid=worker.pid))
 
 
 if __name__ == '__main__':

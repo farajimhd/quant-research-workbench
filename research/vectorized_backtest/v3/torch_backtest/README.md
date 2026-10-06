@@ -289,3 +289,12 @@ regenerate a population or require rerunning an unchanged engine qualification.
 Use `launch_remote.py --command resume-ui` to open this supervisor in the
 workstation's visible console. Its fresh UI source and original immutable
 backtest source are deliberately recorded separately.
+
+Observer snapshot reads retry missing, temporarily inaccessible or incomplete
+snapshots while retaining the last good panel; these failures do not terminate
+the worker. `observer_read.json` records retry diagnostics. Unexpected supervisor
+exceptions are preserved in `supervisor_error.json` before cleanup, and
+`worker_exit.json` records the child's exit separately from the visible launcher.
+The October 6 supervisor exit had no retained traceback, so its initiating cause
+is unconfirmed; these changes address the confirmed diagnostic gap and unsafe
+termination path on transient reads, without changing the backtest engine.
