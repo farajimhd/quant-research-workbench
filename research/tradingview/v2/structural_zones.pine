@@ -14,11 +14,11 @@ halfLife = input.float(10, "Evidence recency half-life (days)", minval = 0.1)
 perSide = input.int(8, "Zones above / below price", minval = 1, maxval = 30)
 showProvisional = input.bool(true, "Show provisional candidates (dashed gray)")
 maxDistance = input.float(3, "Maximum distance from price (%)", minval = 0.1)
-showBands = input.bool(true, "Show lower / upper boundaries and faint bands")
-showText = input.bool(true, "Show zone text below lower boundary")
+showBands = input.bool(true, "Show estimated bands when available")
+showBoundaryLines = input.bool(false, "Outline available lower / upper boundaries")
+showText = input.bool(true, "Show text below main level")
 labelOffset = input.int(15, "Text position: bars to right of latest visible candle", minval = 0, maxval = 200)
 bandTransparency = input.int(95, "Band transparency", minval = 80, maxval = 100)
-minimumWidth = input.float(0.01, "Minimum band half-width (%)", minval = 0, step = 0.01)
 sampleLimit = input.int(10000, "Maximum retained pivots (error if exhausted)", minval = 100, maxval = 20000)
 
 type Reaction
@@ -138,20 +138,32 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                 bool overhead = center >= referencePrice
                 if (overhead and above < perSide) or (not overhead and below < perSide)
                     bool provisional = array.get(distances, j) >= 1000000
-                    float lo = math.min(array.percentile_linear_interpolation(z.prices, 10), center * (1 - minimumWidth / 100))
-                    float hi = math.max(array.percentile_linear_interpolation(z.prices, 90), center * (1 + minimumWidth / 100))
-                    color ink = provisional ? color.gray : referencePrice > hi ? color.green : referencePrice < lo ? color.red : color.orange
+                    int uniquePrices = 1
+                    if array.size(z.prices) > 1
+                        for observation = 1 to array.size(z.prices) - 1
+                            if array.get(z.prices, observation) - array.get(z.prices, observation - 1) >= syminfo.mintick * 0.5
+                                uniquePrices += 1
+                    // No padding or bucket edges are substituted for missing geometry.
+                    bool hasEstimate = not provisional and array.size(z.prices) >= 3 and uniquePrices >= 3
+                    float lo = hasEstimate ? array.percentile_linear_interpolation(z.prices, 10) : na
+                    float hi = hasEstimate ? array.percentile_linear_interpolation(z.prices, 90) : na
+                    bool hasLower = not na(lo) and lo < center
+                    bool hasUpper = not na(hi) and hi > center
+                    bool hasBand = hasLower and hasUpper
+                    color ink = provisional ? color.gray : referencePrice > (hasUpper ? hi : center) ? color.green : referencePrice < (hasLower ? lo : center) ? color.red : color.orange
                     int start = math.min(chart.left_visible_bar_time, time)
                     int finish = math.max(time + 1000, chart.right_visible_bar_time)
-                    array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional ? line.style_dashed : line.style_dotted))
-                    if showBands
+                    array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 2, style = provisional ? line.style_dashed : line.style_solid))
+                    if showBoundaryLines and hasLower
                         array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional ? line.style_dashed : line.style_solid))
+                    if showBoundaryLines and hasUpper
                         array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional ? line.style_dashed : line.style_solid))
+                    if showBands and hasBand
                         array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 100), bgcolor = color.new(ink, bandTransparency)))
                     if showText
                         int textTime = math.max(last_bar_time, chart.right_visible_bar_time) + int(labelOffset * timeframe.in_seconds() * 1000)
-                        float textPrice = lo - math.max(syminfo.mintick * 2, nz(atr) * 0.08)
-                        string caption = (provisional ? "P " : "") + str.tostring(lo, format.mintick) + " / " + str.tostring(center, format.mintick) + " / " + str.tostring(hi, format.mintick) + "  S" + str.tostring(z.supports) + "/R" + str.tostring(z.resistances)
+                        float textPrice = center - math.max(syminfo.mintick * 2, nz(atr) * 0.08)
+                        string caption = (provisional ? "P " : "") + str.tostring(center, format.mintick) + (hasLower ? " L:" + str.tostring(lo, format.mintick) : "") + (hasUpper ? " U:" + str.tostring(hi, format.mintick) : "") + "  S" + str.tostring(z.supports) + "/R" + str.tostring(z.resistances)
                         array.push(drawnLabels, label.new(textTime, textPrice, caption, xloc = xloc.bar_time, style = label.style_label_upper_right, color = color.new(color.white, 100), textcolor = ink, size = size.small, textalign = text.align_right))
                     if overhead
                         above += 1
