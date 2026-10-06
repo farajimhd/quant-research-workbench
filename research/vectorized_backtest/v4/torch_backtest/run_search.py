@@ -107,7 +107,7 @@ def main(argv=None):
     if args.population<4 or args.generations<1 or args.chunk_candles<120:parser.error('Invalid bounded search budget')
     spec=json.loads(args.sessions.read_text(encoding='utf-8'));split=preflight(spec,profile=args.profile)
     output=require_runtime(args.output);objective=Objective().validate();space=StrategySpace()
-    identity=dict(version='v4-variable-rulesets-v1',code_hash=code_hash(),sessions=spec,split=split,objective=asdict(objective),features=[asdict(f) for f in CATALOG],
+    identity=dict(version='v4-variable-rulesets-v1',code_hash=code_hash(),sessions=spec,split=split,objective=asdict(objective),financial_settings=asdict(space.settings),features=[asdict(f) for f in CATALOG],
         policy_coordinates=list(range(4,50)),program_maximum_nodes=32,stages=list(STAGES),arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items() if k not in ('resume','execute','output','qualification')})
     if not args.execute:write_json(output/'plan.json',identity);print(str(output/'plan.json'));return 0
     if args.device=='cuda' and not torch.cuda.is_available():raise RuntimeError('CUDA required; no fallback')

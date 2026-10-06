@@ -67,7 +67,7 @@ def test_sharpe_reporting_only():
     assert torch.isnan(sharpe(torch.ones(3,1))).all()
     assert torch.isnan(sharpe(torch.ones(1,1))).all()
 
-def test_financial_program_path_causal_and_timestamp_duration():
+def test_financial_program_path_causal_and_timestamp_duration(tmp_path):
     from research.vectorized_backtest.v4.torch_backtest.fixtures import synthetic_tape
     from research.vectorized_backtest.v4.torch_backtest.program_runner import ProgramRunner
     from research.vectorized_backtest.v4.torch_backtest.evolution import STAGES,Individual
@@ -83,9 +83,14 @@ def test_financial_program_path_causal_and_timestamp_duration():
     ledger=runner.ledger[0,:int(runner.fill_count[0])]
     assert len(ledger)>1
     # Ledger columns: timestamp, ticker, position, side, quantity, price, fees,
-    # kind, cash. New signal at t=8 cannot consume the signal interval.
+    # kind, replay index. New signal at t=8 cannot consume the signal interval.
     assert ledger[0,0]>8
     assert result['sold_share_seconds'][0]>0
+    from research.vectorized_backtest.v4.torch_backtest.financial_audit import audit_fills
+    path=tmp_path/'actual-fills.pt'
+    torch.save(dict(ledger=ledger[None],counts=runner.fill_count.cpu()),path)
+    metrics={name:value.tolist() for name,value in result.items() if isinstance(value,torch.Tensor)}
+    assert audit_fills(path,metrics)[0]['closed_positions']>0
     shifted=synthetic_tape(seconds=45,listings=1)
     from dataclasses import replace
     shifted=replace(shifted,clocks=shifted.clocks+1000,admission=shifted.admission+1000,level_from=shifted.level_from+1000,level_to=shifted.level_to+1000,provenance={**shifted.provenance,'start_second':1001,'end_second':1045})
@@ -143,8 +148,9 @@ def test_controller_all30_freeze_once_and_audit(tmp_path,monkeypatch):
     def replay(spec,population,space,args,folder,emit,cache=None):
         calls.append(spec['day']);lanes=len(population)
         if len(calls)>30:assert (output/'frozen_winner.json').exists()
-        ledger=folder/'fills.pt';torch.save(dict(ledger=torch.zeros(lanes,2,9),counts=torch.ones(lanes,dtype=torch.int64)*2),ledger)
-        metrics={name:[value]*lanes for name,value in dict(net_pnl=100.,drawdown=20.,stop_risk_dollar_seconds=100.,capital_dollar_seconds=1000.,filled_batches=1,terminal_valid=True,positions_opened=1,fill_count=2,open_positions=0,sold_share_seconds=20.,sold_shares=2).items()}
+        ledger=folder/'fills.pt';rows=torch.tensor([[1000,0,0,1,10,10,0,0,0],[1001,0,0,-1,10,20,0,1,1]],dtype=torch.float64)
+        torch.save(dict(ledger=rows.expand(lanes,-1,-1).clone(),counts=torch.ones(lanes,dtype=torch.int64)*2),ledger)
+        metrics={name:[value]*lanes for name,value in dict(net_pnl=100.,cash=10100.,fees=0.,open_quantity=0,drawdown=20.,stop_risk_dollar_seconds=100.,capital_dollar_seconds=1000.,filled_batches=1,terminal_valid=True,positions_opened=1,fill_count=2,open_positions=0,sold_share_seconds=10.,sold_shares=10).items()}
         return dict(day=spec['day'],metrics=metrics,timing={},ledger_sha256=file_hash(ledger),population_sha256=run_search.fingerprint([run_search.state(v) for v in population]))
     monkeypatch.setattr(run_search,'evaluate_session',replay)
     assert run_search.main(['--sessions',str(path),'--output',str(output),'--execute','--device','cpu','--backend','eager','--population','4','--generations','1','--qualification',str(qualification)])==0

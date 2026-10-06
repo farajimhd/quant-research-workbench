@@ -154,3 +154,8 @@ Before final delivery complete input rehash,receipt/metric audit,task-owned docs
 commit/push and owned-worker/monitor cleanup. Preserve failed receipts and all
 unrelated user edits. Stop V3 only after V4 implementation validation, before
 exclusive workstation GPU profiling; never restart a stopped V3 campaign.
+The receipt audit independently reconstructs cash, fees, position quantities,
+closed-position win counts and share-weighted elapsed holding time from actual
+fills. It rejects overselling, spending unavailable cash, invalid fill order and
+metric disagreements. Position win rate is reporting evidence, not an added
+fitness term. Each experiment identity seals the fixed financial settings.

@@ -6,10 +6,12 @@ from .runtime import file_hash,write_json
 from .run_search import restore,state,fingerprint,clean
 from .stability import Objective,score
 from .feature_bank import CATALOG
+from .financial_audit import audit_fills
 
 def audit(root):
     root=Path(root);identity=json.loads((root/'identity.json').read_text());objective=Objective(**identity['objective'])
-    verified=0
+    initial_cash=identity['financial_settings']['initial_cash']
+    verified=0;financial_verified=0
     for folder in sorted(root.glob('generation_*')):
         if not (folder/'generation.json').exists():continue
         generation=json.loads((folder/'generation.json').read_text());population=[restore(v) for v in generation['population']]
@@ -20,6 +22,8 @@ def audit(root):
             if file_hash(path)!=item['sha256']:raise ValueError('Session receipt hash changed')
             r=json.loads(path.read_text());dates.append(r['day']);results.append(r['metrics'])
             if r['population_sha256']!=expected or file_hash(path.parent/'fills.pt')!=r['ledger_sha256']:raise ValueError('Session population/ledger hash changed')
+            audit_fills(path.parent/'fills.pt',r['metrics'],initial_cash=initial_cash)
+            financial_verified+=1
         if dates!=[s['day'] for s in identity['sessions']['training']]:raise ValueError('Generation does not cover exact all30 training dates')
         def tensor(name):return torch.tensor([r[name] for r in results],dtype=torch.float64)
         complexity=torch.tensor([sum(p.validate(CATALOG)['active_nodes'] for p in v.programs().values()) for v in population],dtype=torch.float64)
@@ -37,8 +41,10 @@ def audit(root):
             if not receipt.exists():continue
             r=json.loads(receipt.read_text())
             if r['freeze_sha256']!=h or r['evaluation_epoch']<=frozen['frozen_epoch'] or file_hash(folder/'fills.pt')!=r['ledger_sha256']:raise ValueError('Freeze/evaluation order or ledger binding invalid')
+            audit_fills(folder/'fills.pt',r['metrics'],initial_cash=initial_cash)
+            financial_verified+=1
             validation+=1
-    report=dict(status='passed',completed_generations_verified=verified,validation_sessions_verified=validation,identity_sha256=file_hash(root/'identity.json'),full_budget_verified=verified==identity['arguments']['generations'])
+    report=dict(status='passed',completed_generations_verified=verified,validation_sessions_verified=validation,financial_receipts_verified=financial_verified,identity_sha256=file_hash(root/'identity.json'),full_budget_verified=verified==identity['arguments']['generations'])
     write_json(root/'audit.json',report);return report
 
 def main(argv=None):
