@@ -52,7 +52,10 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         ('Validation',status.get('validation_status','SEALED'))]
     metrics.extend([('Closed-position win rate %',number(None if best.get('position_win_rate') is None else 100*best['position_win_rate'])),
                     ('Profit factor',number(best.get('profit_factor'))),('Closed / winning / losing',f"{number(best.get('closed_positions'),',.0f')} / {number(best.get('winning_positions'),',.0f')} / {number(best.get('losing_positions'),',.0f')}" )])
-    if height<26:metrics=metrics[:7]+[metrics[-3],metrics[-2],('Validation',status.get('validation_status','SEALED'))]
+    metrics.extend([('Closed hold min / max s',f"{number(best.get('closed_hold_min_seconds'))} / {number(best.get('closed_hold_max_seconds'))}"),
+                    ('Closed hold mean s',number(best.get('closed_hold_mean_seconds'))),
+                    ('Closed hold median / P90 s',f"{number(best.get('closed_hold_median_seconds'))} / {number(best.get('closed_hold_p90_seconds'))}")])
+    if height<26:metrics=metrics[:7]+[('Win rate %',number(None if best.get('position_win_rate') is None else 100*best['position_win_rate'])),('Closed hold mean / P90 s',f"{number(best.get('closed_hold_mean_seconds'))} / {number(best.get('closed_hold_p90_seconds'))}"),('Validation',status.get('validation_status','SEALED'))]
     if profiling:
         active=status.get('active_session') or {}
         metrics=[('Population',str(config.get('population','—'))),
@@ -68,8 +71,22 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         trade_metrics=[('Pooled closed-position win %',number(None if active.get('position_win_rate') is None else 100*active['position_win_rate'])),
                        ('Pooled profit factor',number(active.get('profit_factor'))),
                        ('Closed / winning / losing',f"{active.get('closed_positions','—')} / {active.get('winning_positions','—')} / {active.get('losing_positions','—')}")]
+        position_metrics=[('Closed hold min / max s',f"{number(active.get('closed_hold_min_seconds'))} / {number(active.get('closed_hold_max_seconds'))}"),
+                          ('Closed hold mean s',number(active.get('closed_hold_mean_seconds'))),
+                          ('Closed hold median / P90 s',f"{number(active.get('closed_hold_median_seconds'))} / {number(active.get('closed_hold_p90_seconds'))}"),
+                          ('Share-weighted hold s',number(active.get('weighted_hold_seconds'))),
+                          ('Open age mean / max s',f"{number(active.get('open_age_mean_seconds'))} / {number(active.get('open_age_max_seconds'))}")]
         if height<26:metrics=metrics[:5]+trade_metrics+[metrics[-2],metrics[-1]]
-        else:metrics.extend(trade_metrics)
+        else:metrics.extend(trade_metrics+position_metrics)
+    if view=='positions':
+        source=(status.get('active_session') or {}) if profiling else best
+        active=status.get('active_session') or {}
+        metrics=[('Closed hold '+label+' s',number(source.get('closed_hold_'+field+'_seconds'))) for label,field in (('minimum','min'),('mean','mean'),('median','median'),('P90','p90'),('maximum','max'))]
+        metrics.extend([('Share-weighted hold s',number(source.get('weighted_hold_seconds') if profiling else source.get('mean_hold_seconds'))),
+                        ('Live open age mean s',number(active.get('open_age_mean_seconds'))),
+                        ('Live open age maximum s',number(active.get('open_age_max_seconds'))),
+                        ('Timing basis','First fill → final fill; real seconds')])
+        grid.title='POSITION TIMING · actual elapsed seconds'
     if height>=30:
         import math
         capacity=max(1,height-26)*(2 if width>=100 else 1)
@@ -93,7 +110,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     active=status.get('active_session')
     if active:
         live=Text(f"LIVE session median P&L ${number(active.get('pnl_median'))} | DD ${number(active.get('drawdown_max'))} | open {active.get('open_positions_max','—')} | fills {active.get('fills_max','—')}",style='yellow')
-        if height<26 and view=='financial':footer=live
+        if height<26 and view in ('financial','positions'):footer=live
         else:footer=Group(Text('ACTIVE SESSION POPULATION — provisional marked equity',style='yellow'),live,footer)
     issue=Text(status.get('error') or status.get('waiting_reason') or 'No reported failure',style='red' if status.get('error') else 'dim')
     if active and (active.get('financial_error_candidates') or active.get('overflow_candidates')):
@@ -112,14 +129,14 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
                                   Panel(Text('\n'.join(f"{item['timestamp']}  {item['text']}" for item in events[-max(1,height-24):])),title='Message history · older entries retained in events.jsonl') if view=='messages' else grid)
         layout['ownership'].update(Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')} | provisional metrics until session completes"))
         layout['messages'].update(Panel(messages,title='MESSAGE CENTER · UTC · chronological · retained in events.jsonl'))
-        layout['keys'].update(Text('F financial/pages | P performance | C objective | M messages | Q close · logs stay in panels'))
+        layout['keys'].update(Text('F financial/pages | T position timing | P performance | C objective | M messages | Q close'))
         return layout
     if height<26 and view=='financial':return Group(head,progress,grid,clock,issue,Text('F financial | P performance | C objective; full metrics: status.json'))
     components=Table(title='OBJECTIVE COMPONENTS',expand=True);components.add_column('Component');components.add_column('Contribution',justify='right')
     for key,value in (best.get('objective_components') or {}).items():components.add_row(key.replace('_',' '),number(value,'.6f'))
     if view=='performance':return Group(head,progress,clock,performance,footer,issue,Text('F financial | P performance | C objective'))
     if view=='objective':return Group(head,progress,clock,components,footer,issue,Text('F financial | P performance | C objective'))
-    if height<50:return Group(head,Text(status.get('focus','')),progress,clock,grid,footer,issue,Text('F financial | P performance | C objective'))
+    if height<50:return Group(head,Text(status.get('focus','')),progress,clock,grid,footer,issue,Text('F financial | T timing | P performance | C objective | M messages | Q close'))
     return Group(head,Text(status.get('focus','')),progress,clock,grid,performance,components,footer,issue)
 
 def components_table(best):

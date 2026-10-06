@@ -35,6 +35,7 @@ def test_packed_program_graph_rebinds_different_widths_and_real_timestamps():
             reusable.start_boundary.fill_(1+offset);reusable.end_boundary.fill_(90+offset)
             reusable.set_population(population,gates)
         actual=reusable.run()
+        assert actual['closed_position_duration_samples']==expected['closed_position_duration_samples']
         for name in ('cash','equity','fees','realized','drawdown','fill_count',
                      'sold_share_seconds','capital_dollar_seconds','stop_risk_dollar_seconds',
                      'closed_positions','winning_positions','losing_positions','gross_profit','gross_loss'):

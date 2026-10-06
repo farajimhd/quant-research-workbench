@@ -181,3 +181,11 @@ memory must fit the declared tape budget before device allocation. The value
 is sealed in the experiment identity. Final validation uses its own full width
 after winner freeze; its inputs never inform the training capacity.
 
+The dashboard's `T` view reports closed-position holding time in actual elapsed
+seconds: minimum, mean, median, P90 and maximum, from first buy fill to final
+sell fill. Partial fills remain one position until fully closed; reusing a slot
+starts a new timestamp. Cross-session quantiles pool the actual position
+durations, rather than averaging daily quantiles. Share-weighted holding time
+and current open-position age are separate statistics. Empty samples display
+as undefined. These metrics do not change fitness or financial execution.
+

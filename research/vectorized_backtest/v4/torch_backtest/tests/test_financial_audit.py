@@ -12,6 +12,12 @@ def test_partial_fills_reconcile_cash_fees_and_actual_elapsed_hold(tmp_path):
         open_positions=0,sold_shares=10,sold_share_seconds=106,positions_opened=1,net_pnl=14,terminal_valid=True).items()}
     report=audit_fills(path,metrics)[0]
     assert report['position_win_rate']==1 and report['closed_positions']==1
+    metrics['closed_position_duration_samples']=[[12]]
+    audit_fills(path,metrics)
+    metrics['closed_position_duration_samples']=[[2]]
+    with pytest.raises(ValueError,match='elapsed duration'):
+        audit_fills(path,metrics)
+    metrics['closed_position_duration_samples']=[[12]]
     metrics['sold_share_seconds']=[12]  # Counting observations is not elapsed duration.
     with pytest.raises(ValueError,match='sold_share_seconds'):
         audit_fills(path,metrics)

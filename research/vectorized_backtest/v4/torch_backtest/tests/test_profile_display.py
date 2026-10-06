@@ -10,7 +10,7 @@ def test_profile_has_one_session_and_no_campaign_generation_bar():
                 progress=dict(completed_seconds=100,total_seconds=19800))
     status['active_session']=dict(pnl_median=12.5,drawdown_max=99.,open_positions_max=15,fills_max=99)
     for width,height in ((80,24),(128,42)):
-        for view in ('financial','performance','objective'):
+        for view in ('financial','positions','performance','objective'):
             stream=StringIO()
             Console(file=stream,width=width,height=height,force_terminal=False).print(
                 render(status,width=width,height=height,view=view))

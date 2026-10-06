@@ -12,7 +12,7 @@ def audit_fills(path,metrics,*,initial_cash=10000.):
     for lane,count in enumerate(counts.tolist()):
         if count<0 or count>ledger.shape[1] or count!=metrics['fill_count'][lane]:
             raise ValueError('Financial fill count mismatch')
-        cash=initial_cash;fees=sold=hold=0.;lots={};opened=0;closed=[];previous=-math.inf
+        cash=initial_cash;fees=sold=hold=0.;lots={};opened=0;closed=[];durations=[];previous=-math.inf
         for stamp,ticker,slot,side,quantity,price,fee,kind,index in ledger[lane,:count].tolist():
             if (not all(math.isfinite(v) for v in (stamp,ticker,slot,side,quantity,price,fee,kind,index))
                     or stamp<previous or stamp!=int(stamp) or ticker<0 or ticker!=int(ticker)
@@ -28,7 +28,7 @@ def audit_fills(path,metrics,*,initial_cash=10000.):
                 if quantity>lot[0]:raise ValueError('Sell exceeds actual position quantity')
                 hold+=quantity*(stamp-lot[1]);sold+=quantity;lot[0]-=quantity
             lot[2]+=delta
-            if side==-1 and lot[0]==0:closed.append(lot[2])
+            if side==-1 and lot[0]==0:closed.append(lot[2]);durations.append(int(stamp-lot[1]))
             if cash < -1e-6:raise ValueError('Financial ledger spends unavailable cash')
         quantity=sum(lot[0] for lot in lots.values());positions=sum(lot[0]>0 for lot in lots.values())
         expected=dict(cash=cash,fees=fees,open_quantity=quantity,open_positions=positions,
@@ -45,5 +45,7 @@ def audit_fills(path,metrics,*,initial_cash=10000.):
         for name,value in trade.items():
             if name in metrics and not math.isclose(value,metrics[name][lane],rel_tol=1e-10,abs_tol=1e-6):
                 raise ValueError('Closed-position reporting mismatch: '+name)
+        if 'closed_position_duration_samples' in metrics and durations!=metrics['closed_position_duration_samples'][lane]:
+            raise ValueError('Closed-position elapsed duration disagrees with actual fills')
         reports.append(dict(**expected,**trade,position_win_rate=trade['winning_positions']/len(closed) if closed else None))
     return reports

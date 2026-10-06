@@ -89,7 +89,7 @@ def evaluate_session(spec,population,space,args,output,emit,cache=None):
              replay_rate=done/elapsed if elapsed else None,replay_eta=(total-done)*elapsed/done if done else None)
     result=runner.run(progress=replay_progress)
     emit(active_session=runner.live_metrics(),progress=dict(completed_seconds=len(tape.clocks),total_seconds=len(tape.clocks)),replay_eta=0.)
-    metrics={k:clean(v) for k,v in result.items() if isinstance(v,torch.Tensor)}
+    metrics={k:clean(v) for k,v in result.items() if isinstance(v,torch.Tensor) or k=='closed_position_duration_samples'}
     ledger=runner.ledger[:,:int(runner.fill_count.max().item())].detach().cpu()
     ledger_path=output/'fills.pt'
     ledger_hash=seal_ledger(ledger_path,ledger,runner.fill_count)
