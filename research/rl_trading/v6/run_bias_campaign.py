@@ -52,7 +52,8 @@ def flatten(value,prefix=''):
     result={}
     if isinstance(value,dict):
         for k,v in value.items():result.update(flatten(v,f'{prefix}/{k}' if prefix else k))
-    elif isinstance(value,(list,tuple)):pass
+    elif isinstance(value,(list,tuple)):
+        for index,item in enumerate(value):result.update(flatten(item,f'{prefix}/h{index}'))
     elif value is not None:result[prefix]=value
     return result
 
