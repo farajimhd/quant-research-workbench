@@ -99,13 +99,15 @@ def record_subset(data,mask):
 
 @torch.no_grad()
 def evaluate(model,data,*,batch_size=256,thresholds=(.5,.5),auxiliary=False):
-    model.eval();probabilities=[];ratios=[];qualities=[];future=[]
+    model.eval();probabilities=[];ratios=[];qualities=[];future=[];future_quality=[]
     for start in range(0,len(data['action']),batch_size):
         index=torch.arange(start,min(start+batch_size,len(data['action'])),device=data['action'].device)
         result=forward(model,data,index,future=auxiliary)
         probabilities.append(result['logit'].sigmoid().cpu().numpy())
         ratios.append(result['ratio'].cpu().numpy());qualities.append(result['quality'].cpu().numpy())
-        if auxiliary:future.append(result['future'].exp().cpu().numpy())
+        if auxiliary:
+            future.append(result['future'].exp().cpu().numpy())
+            future_quality.append(result['future_quality'].cpu().numpy())
     probability=np.concatenate(probabilities);actions=data['actions_numpy'];quality=np.concatenate(qualities)
     report=action_report(actions,probability,thresholds)
     report['ratio_mae']=None;report['quality_mae']={};report['auxiliary_supervised']=auxiliary
@@ -127,6 +129,9 @@ def evaluate(model,data,*,batch_size=256,thresholds=(.5,.5),auxiliary=False):
                     average_precision=float(average_precision_score(y==c,p[:,c])) if actual else None)
             forecasts.append(metrics)
         report['future']=forecasts
+        if 'future_quality' in data:
+            predicted=np.concatenate(future_quality);expected=data['future_quality'].cpu().numpy()
+            report['future_quality_mae']=[{name:float(np.abs(predicted[target[:,h]==c,h,b]-expected[target[:,h]==c,h]).mean()) if (target[:,h]==c).any() else None for name,c,b in (('ENTRY',0,0),('EXIT',3,1))} for h in range(5)]
     return report,probability
 
 
@@ -158,6 +163,13 @@ def run_epoch(model,data,optimizer,trial,*,epoch,batch_size=256,rows=None):
             forced_ce=-forced.gather(2,safe[...,None]).squeeze(-1)
             future_loss=((ce+forced_ce)*.5*future_weights[safe]*mask*weight[:,None]).sum()/(mask*weight[:,None]).sum().clamp_min(1e-9)
             loss+=.25*future_loss
+            if 'future_quality' in data:
+                selected=mask & ((targets==0)|(targets==3));branch=(targets==3).long()
+                quality=result['future_quality'].gather(2,branch[...,None]).squeeze(-1)
+                forced_quality=model.forecast.quality_predictions.gather(2,branch[...,None]).squeeze(-1)
+                expected=data['future_quality'][index]
+                error=.5*(F.smooth_l1_loss(quality,expected,beta=.1,reduction='none')+F.smooth_l1_loss(forced_quality,expected,beta=.1,reduction='none'))
+                loss+=.1*(error*selected*weight[:,None]).sum()/(selected*weight[:,None]).sum().clamp_min(1e-9)
         if not torch.isfinite(loss):raise ValueError('Nonfinite bias-campaign objective')
         optimizer.zero_grad(set_to_none=True);loss.backward()
         norms={name:float(torch.linalg.vector_norm(torch.stack([p.grad.norm() for p in module.parameters() if p.grad is not None])))
