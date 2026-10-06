@@ -129,6 +129,9 @@ def test_training_reads_saved_1b_suppression_and_size(tmp_path,monkeypatch,selec
         assert all(d.allocation_ratio_target is None and d.opportunity_value_bps is None for d in labels)
     else:
         assert any(d.token==1 and d.allocation_ratio_target==pytest.approx(.37) for d in flat)
+        held=[d for d in labels if d.held_index.size]
+        assert held and all(d.forecast_actions is not None and d.forecast_actions[0] in (2,3) for d in held)
+        assert all(d.forecast_close_us[0]==d.close_us for d in held)
     with (shard/'labels.parquet').open('ab') as stream:stream.write(b'corruption')
     with pytest.raises(ValueError,match='bytes changed'):
         data.load_teacher(day,session,runtime_root=tmp_path,market_root=root)

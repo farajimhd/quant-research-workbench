@@ -269,10 +269,11 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
         entries = {(r['listing_id'],r['pair_id']):r for r in pairs.iter_rows(named=True)} if pairs.height else {}
         weights = frame.group_by('listing_id','pair_id').len()
         counts = {(r['listing_id'],r['pair_id']):r['len'] for r in weights.iter_rows(named=True)}
-        forecast_windows=None
+        forecast_windows=None;held_forecast_windows=None
         if market_proof is not None:
             from research.rl_trading.v6.teacher_forecast import ForecastWindows
             forecast_windows=ForecastWindows.from_frame(frame)
+            held_forecast_windows=ForecastWindows.from_reference_frame(frame)
         for row_index,row in enumerate(frame.iter_rows(named=True)):
             i = identities[row['listing_id']]; uid = f"{session.day}:{row['listing_id']}:pair:{row['pair_id']}"
             if i not in enter_masks:
@@ -317,7 +318,10 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
                 episode_uid=uid,opportunity_value_bps=row['exit_gain']/price*10000,
                 label_version=ALGORITHM,raw_entry_gain=None,raw_exit_gain=row['exit_gain'],
                 target_close_us=row['time_us'] if exit_action else row['hold_target_us'],
-                target_horizon_seconds=0. if exit_action else row['hold_horizon_seconds']))
+                target_horizon_seconds=0. if exit_action else row['hold_horizon_seconds'],
+                forecast_probabilities=held_forecast_windows.window(row_index)[0] if held_forecast_windows is not None else None,
+                forecast_actions=held_forecast_windows.action_window(row_index) if held_forecast_windows is not None else None,
+                forecast_close_us=held_forecast_windows.window(row_index)[1] if held_forecast_windows is not None else None))
     labels.sort(key=lambda d:(d.close_us,d.episode_uid,len(d.held_index)))
     result=[]; previous=None; order=0
     for item in labels:

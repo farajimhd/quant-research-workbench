@@ -12,7 +12,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-VERSION = 'rl-v6-1b-autoregressive-five-candle-v1'
+VERSION = 'rl-v6-1b-autoregressive-five-candle-v2'
 STEPS = 5
 CONTRACT = dict(version=VERSION, steps=STEPS,
     axis='current_and_next_four_observed_price_candles_same_listing_same_session',
@@ -21,7 +21,8 @@ CONTRACT = dict(version=VERSION, steps=STEPS,
     training='previous_label_teacher_forcing', evaluation='free_running',
     sizing='masked_selected_ENTRY_allocation_ratio_not_session_softmax',
     memory='shared_GRU_label_pretraining_no_synthetic_execution_outcomes',
-    ranking='bounded_attention_full_certified_action_population')
+    ranking='bounded_attention_full_certified_action_population',
+    held_forecast='saved conditional HOLD_EXIT quality; same listing/pair; stop at absent exit coverage')
 
 
 def configure(policy, *, hierarchical=False, shared_heads=True):
@@ -79,6 +80,27 @@ class ForecastWindows:
     def action_window(self, index):
         if self.actions is None:return None
         return self.actions[index:min(index+STEPS,int(self.ends[index]))]
+
+    @classmethod
+    def from_reference_frame(cls, frame):
+        """Conditional held targets from saved fields, without simulated fills."""
+        base=cls.from_frame(frame)
+        gain=frame['exit_gain'].to_numpy()
+        quality=frame['exit_quality'].to_numpy().astype(np.float32)
+        valid=np.isfinite(gain) & np.isfinite(quality)
+        if ((quality[valid]<0)|(quality[valid]>1)).any():raise ValueError('Invalid saved held quality')
+        names=frame['reference_action'].to_numpy()
+        if not frame['reference_action'].is_in(['ENTRY','WAIT','HOLD','EXIT']).all():raise ValueError('Invalid saved held action')
+        actions=np.where(names=='EXIT',3,2).astype(np.int64)
+        probabilities=np.zeros((frame.height,4),np.float32)
+        probabilities[valid,2]=1-quality[valid];probabilities[valid,3]=quality[valid]
+        # Contiguous pair identity and coverage bound every conditional window.
+        pairs=frame['pair_id'].to_numpy();ids=frame['listing_id'].to_numpy();indices=np.arange(frame.height,dtype=np.int64)
+        continuation=valid[:-1]&valid[1:]&(ids[:-1]==ids[1:])&(pairs[:-1]==pairs[1:])
+        boundaries=np.append(np.flatnonzero(~continuation)+1,frame.height)
+        ends=np.where(valid,boundaries[np.searchsorted(boundaries,indices,side='right')],indices)
+        for array in (probabilities,actions,ends):array.setflags(write=False)
+        return cls(probabilities,base.clocks,ends,actions)
 
     def window(self, index):
         end = min(index + STEPS, int(self.ends[index]))

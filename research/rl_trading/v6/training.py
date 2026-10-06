@@ -188,7 +188,7 @@ def _validate(decisions: tuple[TeacherDecision, ...],
             raise ValueError('Forecast probabilities/clocks must be paired')
         if item.forecast_probabilities is not None:
             p, clocks = item.forecast_probabilities, item.forecast_close_us
-            if (held or p.ndim != 2 or not 1 <= len(p) <= 5 or p.shape[1] != 4 or
+            if (p.ndim != 2 or not 1 <= len(p) <= 5 or p.shape[1] != 4 or
                     clocks.shape != (len(p),) or clocks.dtype != np.int64 or
                     clocks[0] != item.close_us or np.any(np.diff(clocks) <= 0) or
                     not np.isfinite(p).all() or (p < 0).any() or

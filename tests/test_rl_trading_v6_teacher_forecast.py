@@ -57,6 +57,19 @@ def test_windows_keep_actual_gaps_identity_and_tail_masks():
         ForecastWindows.from_frame(pl.concat([frame.head(1)]*2))
 
 
+def test_held_forecasts_preserve_saved_quality_clock_and_pair_boundaries():
+    frame=pl.DataFrame(dict(listing_id=['A']*5,time_us=[100,400,900,1100,1400],pair_id=[1,1,1,2,2],
+        teacher_probabilities=[[0.,1,0,0]]*5,action=['WAIT']*5,exit_gain=[.1,.2,None,.3,.1],
+        exit_quality=[.2,.95,None,.8,.1],reference_action=['HOLD','EXIT','WAIT','HOLD','HOLD']))
+    windows=ForecastWindows.from_reference_frame(frame)
+    assert windows.action_window(0).tolist()==[2,3]
+    assert windows.window(0)[1].tolist()==[100,400]
+    np.testing.assert_allclose(windows.window(0)[0],[[0,0,.8,.2],[0,0,.05,.95]],atol=1e-7)
+    assert len(windows.window(2)[0])==0
+    assert windows.action_window(3).tolist()==[2,2]
+    assert not windows.probabilities.flags.writeable
+
+
 def test_autoregression_reads_only_previous_label_and_inference_never_labels():
     torch.manual_seed(3)
     model=LabelForecast(8);gru=torch.nn.GRUCell(19,8)
@@ -71,6 +84,22 @@ def test_autoregression_reads_only_previous_label_and_inference_never_labels():
     torch.testing.assert_close(free,model(x,gru),rtol=0,atol=0)
     loss=forecast_loss(a,p).mean();loss.backward()
     assert gru.weight_hh.grad.abs().sum()>0 and torch.isfinite(gru.weight_ih.grad).all()
+
+
+@pytest.mark.parametrize('device',['cpu']+(['cuda'] if torch.cuda.is_available() else []))
+def test_actual_training_accepts_and_supervises_held_forecast_branch(device):
+    policy,session,labels=fixture(device)
+    held=[]
+    for item in labels[1:]:
+        p=np.tile(np.array([[0,0,.1,.9]],np.float32),(len(item.forecast_close_us),1))
+        held.append(replace(item,token=3,held_index=np.array([0],np.int64),held_features=np.zeros((1,11),np.float32),
+            enter_allowed=np.zeros(2,bool),exit_allowed=np.ones(1,bool),stop_allowed=np.zeros(1,bool),target_allowed=np.zeros(1,bool),
+            soft_tokens=(3,6),soft_probabilities=(.9,.1),allocation_ratio_target=None,
+            forecast_probabilities=p,forecast_actions=np.full(len(p),3,np.int64)))
+    before=policy.action_gru.weight_hh.detach().clone()
+    result=train_session(policy,torch.optim.Adam(policy.parameters(),lr=.001),session,tuple(held),(),device=torch.device(device),teacher_loss='balanced-v2')
+    assert result.forecast_targets==(11,10,9,8,7)
+    assert not torch.equal(before,policy.action_gru.weight_hh)
 
 
 @pytest.mark.parametrize('device',['cpu']+(['cuda'] if torch.cuda.is_available() else []))
