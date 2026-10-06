@@ -57,7 +57,12 @@ def evaluate_session(spec,population,space,args,output,emit,cache=None):
     load=time.perf_counter()-began;emit(stage='Transfer certified inputs',focus=spec['day'],timing=dict(load=load),active_session=None)
     transfer=time.perf_counter()
     from .session_pool import padded_tape,bind_tape
-    capacity=((len(tape.tickers)+63)//64)*64
+    capacity=getattr(args,'ticker_capacity',None) or ((len(tape.tickers)+63)//64)*64
+    if capacity<len(tape.tickers):raise ValueError('Shared ticker capacity cannot truncate a certified session')
+    # Check the shared allocation before creating device tensors. Padding
+    # appends inactive listings only; account arithmetic remains unchanged.
+    padded_bytes=tape.bytes+(capacity-len(tape.tickers))*(tape.bytes-tape.clocks.numel()*tape.clocks.element_size())/len(tape.tickers)
+    if padded_bytes>args.maximum_tape_gib*1024**3:raise MemoryError('Padded broker tape exceeds declared budget')
     tape=padded_tape(tape,capacity,args.device)
     if tape.bytes>args.maximum_tape_gib*1024**3:raise MemoryError('Padded broker tape exceeds declared budget')
     resident=FeatureResident(bank,identities,previous=prior,device=args.device,maximum_gib=args.feature_gib,start_us=int(tape.clocks[0])*1_000_000,end_us=int(tape.clocks[-1])*1_000_000)
@@ -121,9 +126,11 @@ def main(argv=None):
     parser.add_argument('--population',type=int,default=128);parser.add_argument('--generations',type=int,default=32);parser.add_argument('--seed',type=int,default=20261005)
     parser.add_argument('--feature-gib',type=float,default=24);parser.add_argument('--maximum-tape-gib',type=float,default=12);parser.add_argument('--maximum-state-gib',type=float,default=8)
     parser.add_argument('--maximum-fills',type=int,default=65536);parser.add_argument('--graph-steps',type=int,default=32);parser.add_argument('--chunk-candles',type=int,default=4096)
+    parser.add_argument('--ticker-capacity',type=int,help='Fixed inactive-padded training axis; choose from all30 certified session widths for graph reuse')
     parser.add_argument('--qualification',type=Path)
     args=parser.parse_args(argv)
     if args.population<4 or args.generations<1 or args.chunk_candles<120:parser.error('Invalid bounded search budget')
+    if args.ticker_capacity is not None and args.ticker_capacity<1:parser.error('Positive shared ticker capacity required')
     spec=json.loads(args.sessions.read_text(encoding='utf-8'));split=preflight(spec,profile=args.profile)
     output=require_runtime(args.output);objective=Objective().validate();space=StrategySpace()
     identity=dict(version='v4-variable-rulesets-v1',code_hash=code_hash(),sessions=spec,split=split,objective=asdict(objective),financial_settings=asdict(space.settings),features=[asdict(f) for f in CATALOG],
@@ -236,6 +243,9 @@ def main(argv=None):
                  validation_status='FROZEN; evaluation not started',waiting_reason=f'{len(missing)} unpublished input artifacts; prepare with this audited frozen winner, then exact resume')
             return 3
         emit(status='validation',stage='Evaluate frozen default/winner once',validation_status='FROZEN WINNER; evaluation active')
+        # Training capacity is learned from training inputs only. Final sessions
+        # choose their own complete width after freeze, without earlier reads.
+        validation_args=argparse.Namespace(**vars(args));validation_args.ticker_capacity=None
         default=sample(np.random.default_rng(0),space,1)[0]
         # Baseline is a documented fixed valid-price entry and management policy,
         # not a selected/random strategy.
@@ -251,7 +261,7 @@ def main(argv=None):
                 for key in ('execution','feature_certificate','prior_certificate','identity_map_sha256','split_certificate_sha256','previous_split_certificate_sha256'):
                     if fresh[key]!=receipt[key]:raise ValueError('Frozen evaluation input changed')
             else:
-                receipt=evaluate_session(session,[default,restore(winner)],space,args,folder,emit,runner_cache);receipt['freeze_sha256']=freeze_hash;receipt['evaluation_epoch']=time.time();write_json(path,receipt)
+                receipt=evaluate_session(session,[default,restore(winner)],space,validation_args,folder,emit,runner_cache);receipt['freeze_sha256']=freeze_hash;receipt['evaluation_epoch']=time.time();write_json(path,receipt)
             validation.append(receipt)
         write_json(output/'report.json',clean(dict(status='completed',freeze_sha256=freeze_hash,training=best_metrics,validation=validation,metrics=financial_metrics([r['metrics'] for r in validation]),validation_tuning=False)))
         emit(status='completed',stage='Frozen evaluation complete; audit/delivery pending',validation_status='Evaluated once')

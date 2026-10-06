@@ -173,3 +173,11 @@ and exit code 3, with the worker lock released. Prepare those artifacts using
 the audited frozen winner, then use the exact original command with `--resume`.
 Completed training is retained; final evaluation receipts remain immutable.
 
+`--ticker-capacity` fixes the inactive-padded ticker axis across training
+sessions, allowing compatible sessions to reuse a captured financial graph.
+Choose it from the maximum width of all 30 certified training inputs, rounded
+up to 64. A smaller capacity fails rather than dropping tickers, and padded
+memory must fit the declared tape budget before device allocation. The value
+is sealed in the experiment identity. Final validation uses its own full width
+after winner freeze; its inputs never inform the training capacity.
+
