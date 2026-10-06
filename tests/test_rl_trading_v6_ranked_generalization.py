@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 import torch
 from research.rl_trading.v1.common import digest, file_hash
-from research.rl_trading.v6.run_ranked_teacher_generalization import admit_gate, gate_targets, build_policy, evaluate_probabilities
+from research.rl_trading.v6.run_ranked_teacher_generalization import admit_gate, gate_targets, build_policy, evaluate_probabilities, load_prepared
+from research.rl_trading.v6.run_ranked_teacher_underfit import coverage_report
 from research.rl_trading.v6.market_attention import MarketAttentionConfig
 from research.rl_trading.v6.training import train_session
 from test_rl_trading_v6_teacher_forecast import fixture
@@ -91,3 +92,25 @@ def test_real_held_exit_probability_branch_uses_saved_conditional_action():
     assert reports['ENTRY']['count'] == 0 and arrays['held'].all()
     np.testing.assert_array_equal(arrays['action'], np.full(11, 3))
     np.testing.assert_array_equal(arrays['probability'][:, :2], np.zeros((11, 2)))
+
+
+def test_prepared_cache_preserves_verified_axis_and_denies_content_or_window_changes(tmp_path):
+    _, session, targets = fixture()
+    prior = dict(dataset_sha256='labels', market_dataset_sha256='market', bank_certificate_sha256='bank',
+        market_certificate_sha256='certificate', context_split_receipt_sha256=None, input_listings=['A', 'B'],
+        target_listing_ids=['A'], arguments={'day': '2026-07-31', 'seconds': 12})
+    scope = dict(day='2026-07-31', target_ids=['A'], begin_us=0, end_us=12_000_000,
+        coverage=coverage_report(targets, 2))
+    torch.save(dict(session=session, targets=targets, scope=scope), tmp_path/'prepared-train.pt')
+    binding = {k: prior[k] for k in ('dataset_sha256', 'market_dataset_sha256', 'bank_certificate_sha256',
+        'market_certificate_sha256', 'context_split_receipt_sha256', 'input_listings')}
+    binding.update(day='2026-07-31', seconds=12, target_listing_ids=['A'])
+    receipt = dict(version='rl-v6-ranked-verified-train-cache-v1', sha256=file_hash(tmp_path/'prepared-train.pt'), source_binding=binding)
+    (tmp_path/'prepared-train.json').write_text(json.dumps(receipt))
+    restored, labels, actual_scope = load_prepared(tmp_path, prior)
+    assert restored.listings == session.listings and len(labels) == 12 and actual_scope == scope
+    np.testing.assert_array_equal(restored.bank.scalar, session.bank.scalar)
+    changed = copy.deepcopy(prior); changed['arguments']['seconds'] = 13
+    with pytest.raises(ValueError, match='binding changed'): load_prepared(tmp_path, changed)
+    with (tmp_path/'prepared-train.pt').open('ab') as stream: stream.write(b'tampered')
+    with pytest.raises(ValueError, match='binding changed'): load_prepared(tmp_path, prior)

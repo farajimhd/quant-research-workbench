@@ -74,6 +74,24 @@ def build_policy(ranking, device, *, width=128):
     return policy
 
 
+def load_prepared(root, prior):
+    """Only a hash-bound cache produced after full source verification."""
+    receipt = json.loads((root/'prepared-train.json').read_text())
+    expected = dict(dataset_sha256=prior['dataset_sha256'], market_dataset_sha256=prior['market_dataset_sha256'],
+        bank_certificate_sha256=prior['bank_certificate_sha256'], market_certificate_sha256=prior['market_certificate_sha256'],
+        context_split_receipt_sha256=prior['context_split_receipt_sha256'], input_listings=prior['input_listings'],
+        day=prior['arguments']['day'], seconds=prior['arguments']['seconds'], target_listing_ids=prior['target_listing_ids'])
+    if receipt.get('source_binding') != expected or receipt.get('version') != 'rl-v6-ranked-verified-train-cache-v1' or file_hash(root/'prepared-train.pt') != receipt['sha256']:
+        raise ValueError('Prepared TRAIN source/content binding changed')
+    saved = torch.load(root/'prepared-train.pt', map_location='cpu', weights_only=False)
+    if (saved['scope']['day'] != prior['arguments']['day'] or saved['session'].role != 'train' or
+            list(saved['session'].listings) != prior['input_listings'] or saved['scope']['target_ids'] != prior['target_listing_ids'] or
+            saved['scope']['end_us']-saved['scope']['begin_us'] != prior['arguments']['seconds']*1_000_000 or
+            coverage_report(saved['targets'], len(saved['session'].listings)) != saved['scope']['coverage']):
+        raise ValueError('Prepared TRAIN role/population changed')
+    return saved['session'], saved['targets'], saved['scope']
+
+
 def evaluate_probabilities(policy, session, targets, device):
     """Read current logits from the real evaluation; no extra forward/state step."""
     original = policy.decide; rows = []
@@ -108,6 +126,7 @@ def main(argv=None):
     parser.add_argument('--source-runtime', type=Path, default=Path(r'\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes'))
     parser.add_argument('--development-day', default='2026-08-24')
     parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--prepared-train', type=Path, help='Verified bounded TRAIN cache from a previous admission attempt')
     args = parser.parse_args(argv)
     runtime = Path('D:/TradingML/runtimes').resolve(); output = args.output.resolve(); gate = args.underfit.resolve()
     if (not runtime.is_dir() or not output.is_relative_to(runtime) or not gate.is_relative_to(runtime) or
@@ -145,11 +164,23 @@ def main(argv=None):
             coverage=coverage_report(targets, len(packed.listings)))
         write(role+'-scope.json', scope); del full, labels; gc.collect()
         return packed, targets, scope
-    training, targets, scope = prepare(train_day, 'train')
+    if args.prepared_train:
+        prepared = args.prepared_train.resolve()
+        if not prepared.is_relative_to(runtime): raise ValueError('Prepared cache must remain under laptop runtime')
+        training, targets, scope = load_prepared(prepared, prior)
+        write('train-scope.json', scope)
+    else:
+        training, targets, scope = prepare(train_day, 'train')
     if (scope['input_listings'] != prior['input_listings'] or scope['bank_certificate_sha256'] != prior['bank_certificate_sha256'] or
             scope['context_split_receipt_sha256'] != prior['context_split_receipt_sha256'] or
             scope['market_certificate_sha256'] != prior['market_certificate_sha256']):
         raise ValueError('TRAIN input binding changed')
+    if not args.prepared_train:
+        torch.save(dict(session=training, targets=targets, scope=scope), output/'prepared-train.pt')
+        write('prepared-train.json', dict(version='rl-v6-ranked-verified-train-cache-v1', sha256=file_hash(output/'prepared-train.pt'),
+            source_binding=dict({k: prior[k] for k in ('dataset_sha256', 'market_dataset_sha256', 'bank_certificate_sha256',
+                'market_certificate_sha256', 'context_split_receipt_sha256', 'input_listings')}, day=train_day,
+                seconds=seconds, target_listing_ids=prior['target_listing_ids'])))
     ranking = MarketAttentionConfig(**prior['ranking'])
     if asdict(ranking) != asdict(MarketAttentionConfig(**source.published()[1]['ranking'])): raise ValueError('Market ranking contract changed')
     torch.manual_seed(17); torch.set_num_threads(4); device = torch.device('cuda')
@@ -157,8 +188,9 @@ def main(argv=None):
     policy.load_state_dict(torch.load(gate/'last.pt', map_location=device, weights_only=True), strict=True)
     replay = asdict(train_session(policy, None, training, gate_targets(targets, prior['target_keys']), (), device=device,
         evaluation=True, evaluate_train=True, teacher_loss='branch-balanced-v3', regression_weights=(0., 0.)))
+    write('underfit-replay.json', dict(exact=replay == complete['metrics'], checkpoint_sha256=complete['checkpoint_sha256'],
+        metrics=replay, expected_metrics=complete['metrics']))
     if replay != complete['metrics']: raise ValueError('Admitted underfit checkpoint replay changed')
-    write('underfit-replay.json', dict(exact=True, checkpoint_sha256=complete['checkpoint_sha256'], metrics=replay))
     plan = dict(version='rl-v6-ranked-natural-generalization-v1', source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
         epochs=args.epochs, initialization='passed_TRAIN_underfit_weights_optimizer_reset', learning_rate=3e-4, weight_decay=1e-4,
         underfit_manifest_sha256=file_hash(gate/'manifest.json'), underfit_checkpoint_sha256=complete['checkpoint_sha256'],
