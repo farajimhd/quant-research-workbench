@@ -53,6 +53,8 @@ def _flatten(prefix, values):
     for key,value in values.items():
         name=f'{prefix}/{key}'
         if isinstance(value,dict): result.update(_flatten(name,value))
+        elif isinstance(value,(tuple,list)):
+            result.update(_flatten(name,{f'h{i}':item for i,item in enumerate(value)}))
         elif isinstance(value,(int,float,bool)) or value is None: result[name]=value
     return result
 

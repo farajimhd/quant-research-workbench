@@ -15,3 +15,11 @@ def test_confusion_orientation_and_missing_labels():
 
 def test_empty_horizon_is_not_perfect_accuracy():
     assert classification_metrics(np.zeros((4,4),int))['accuracy'] is None
+
+
+def test_main_wandb_logging_preserves_horizons_and_label_metrics():
+    from research.rl_trading.v6.train import _flatten
+    logged = _flatten('development',dict(forecast_cross_entropy=(.2,.4),
+        forecast_label_metrics=({'labels':{'ENTRY':{'f1':.5,'count':2}}},)))
+    assert logged['development/forecast_cross_entropy/h1'] == .4
+    assert logged['development/forecast_label_metrics/h0/labels/ENTRY/f1'] == .5
