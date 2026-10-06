@@ -16,7 +16,7 @@ minimumDays = input.int(2, "Historical: minimum distinct reaction days", minval 
 halfLife = input.float(10, "Evidence recency half-life (days)", minval = 0.1)
 perSide = input.int(8, "Zones above / below price", minval = 1, maxval = 30)
 currentSlots = input.int(3, "Reserve current-day zones per side", minval = 0, maxval = 30)
-showProvisional = input.bool(true, "Show provisional candidates (dashed gray)")
+showProvisional = input.bool(true, "Show provisional candidates (P, reduced opacity)")
 maxDistance = input.float(3, "Maximum distance from price (%)", minval = 0.1)
 showBands = input.bool(true, "Show estimated bands when available")
 showBoundaryLines = input.bool(false, "Outline available lower / upper boundaries")
@@ -131,6 +131,11 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                 float ageDays = math.max(0, (referenceTime - r.availableTime) / 86400000.0)
                 z.score += math.min(r.strength, 5) * math.pow(0.5, ageDays / halfLife)
     distances = array.new<float>()
+    priorities = array.new<float>()
+    int currentTop = -1
+    int currentBottom = -1
+    float currentTopPrice = na
+    float currentBottomPrice = na
     if array.size(zones) > 0
         for j = 0 to array.size(zones) - 1
             Zone z = array.get(zones, j)
@@ -143,8 +148,19 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
             bool nearby = distance <= maxDistance or visibleDay
             bool qualified = enoughCount and enoughDays and nearby
             // Qualified levels first; then nearby provisional candidates fill vacancies.
-            array.push(distances, qualified ? distance : showProvisional and nearby ? 1000000 + distance : 1e20)
-        ranked = array.sort_indices(distances, order.ascending)
+            bool eligible = qualified or (showProvisional and nearby)
+            array.push(distances, qualified ? distance : eligible ? 1000000 + distance : 1e20)
+            // Today: strongest accepted reactions first, including explicitly provisional ones.
+            // Historical selection retains qualified-first proximity ranking.
+            array.push(priorities, eligible ? z.currentDay ? 100 / (1 + z.score) : qualified ? distance : 1000000 + distance : 1e20)
+            if eligible and z.currentDay
+                if na(currentTopPrice) or center > currentTopPrice
+                    currentTop := j
+                    currentTopPrice := center
+                if na(currentBottomPrice) or center < currentBottomPrice
+                    currentBottom := j
+                    currentBottomPrice := center
+        ranked = array.sort_indices(priorities, order.ascending)
         int above = 0
         int below = 0
         drawnCenters = array.new<float>()
@@ -153,14 +169,15 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
         float drawingGap = math.max(math.max(minimumBucket, syminfo.mintick * minimumDrawTicks), visibleSpan / 80)
         float captionGap = math.max(drawingGap, visibleSpan / 35)
         selected = array.new<bool>(array.size(zones), false)
-        for phase = 0 to 1
+        for phase = 0 to 2
             for k = 0 to array.size(ranked) - 1
                 int j = array.get(ranked, k)
                 Zone z = array.get(zones, j)
-                bool reservedPass = phase == 0
+                bool reservedPass = phase == 1
+                bool extremePass = phase == 0
                 bool alreadyDrawn = array.get(selected, j)
                 bool reservedEligible = z.currentDay and ((array.median(z.prices) >= referencePrice and above < math.min(currentSlots, perSide)) or (array.median(z.prices) < referencePrice and below < math.min(currentSlots, perSide)))
-                if not alreadyDrawn and (not reservedPass or reservedEligible) and array.get(distances, j) < 1e20
+                if not alreadyDrawn and (not extremePass or (currentSlots > 0 and (j == currentTop or j == currentBottom))) and (not reservedPass or reservedEligible) and array.get(distances, j) < 1e20
                     float center = array.median(z.prices)
                     bool overhead = center >= referencePrice
                     bool distinctDrawing = true
@@ -188,11 +205,11 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                         color ink = provisional ? color.new(baseInk, 55) : baseInk
                         int start = z.currentDay ? math.max(math.min(chart.left_visible_bar_time, time), referenceDay) : math.min(chart.left_visible_bar_time, time)
                         int finish = math.max(time + 1000, chart.right_visible_bar_time)
-                        array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 2, style = provisional or z.currentDay ? line.style_dashed : line.style_solid))
+                        array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = line.style_solid))
                         if showBoundaryLines and hasLower
-                            array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional or z.currentDay ? line.style_dashed : line.style_solid))
+                            array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = line.style_solid))
                         if showBoundaryLines and hasUpper
-                            array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional or z.currentDay ? line.style_dashed : line.style_solid))
+                            array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = line.style_solid))
                         if showBands and hasBand
                             array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 100), bgcolor = color.new(ink, bandTransparency)))
                         bool captionFits = true

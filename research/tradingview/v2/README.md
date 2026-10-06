@@ -2,6 +2,14 @@
 
 Replace the old structural indicator on TradingView with the complete contents of `structural_zones.pine`. Keep using the independent v1 MACD and jump-alert scripts; those are unchanged. This remains a price-bar approximation of v7, not the repo's statistical builder or a calibrated prediction model.
 
+## Major swing coverage and line style (v2.6)
+
+All main and optional boundary lines are **solid, width 1**, regardless of source or qualification. DAY/HIST/P labels and reduced provisional opacity distinguish evidence status. Bands remain optional and require real available estimates.
+
+Previously, qualified proximity ranking could fill the upper display budget with minor levels while excluding a major one-reaction peak. Selection now has three passes: (1) highest and lowest eligible current-day reaction levels, when current-day reservation is enabled; (2) remaining reserved current-day slots by descending recency-weighted reaction strength; (3) remaining slots from both sources. Historical candidates retain qualified-first proximity priority. Extreme selection consumes the same per-side budget and obeys eligibility, provisional visibility, spacing, and rolling-history constraints. If both extremes are on the same side and that side's budget is one, only one can display.
+
+The selected extremes are extrema of **accepted reaction candidates**, not fabricated lines at raw high/low. A swing must still have its completed-bar pivot confirmation and pass the ATR move-away gate. A single confirmed extreme remains P and receives no band. This improves display coverage; it is not proof that all session swings are detected or that the approximation matches causal v7.
+
 ## Low-price / seconds-chart display (v2.5)
 
 At $1.23 the old 0.1% log bucket was only about $0.0012 wide. Separate DAY/HIST books could create coincident levels, and the 3% proximity filter hid major session swings after a large move.
@@ -18,17 +26,17 @@ The former combined book required every qualified bucket to span at least two da
 
 The update separates current-day and prior-day observations into distinct books. Current-day qualification requires the same minimum spaced-reaction count (three by default), but has no multi-day requirement. Historical qualification retains its count and distinct-day filters. Three slots per side are reserved for current-day candidates by default; a second pass fills remaining space from either source. A source cannot consume more than the overall per-side limit, and unfilled reservations do not suppress historical levels. Disable reservation by setting it to zero.
 
-Captions identify `DAY` or `HIST`, `P` when provisional, and `R` above completed price / `S` below it. Qualified historical main lines are solid; current-day main lines are dashed. Provisional lines use the same price-position colors at reduced opacity, rather than gray: their `P` label still explicitly marks insufficient evidence. Provisional levels have no fitted band. Bands still require a qualified candidate and at least three distinct reaction prices; no boundaries are invented.
+Captions identify `DAY` or `HIST`, `P` when provisional, and `R` above completed price / `S` below it. All main lines are solid with width 1. Provisional lines use the same price-position colors at reduced opacity: their `P` label still explicitly marks insufficient evidence. Provisional levels have no fitted band. Bands still require a qualified candidate and at least three distinct reaction prices; no boundaries are invented.
 
 This is still chart-timeframe detection: the default ten-bar pivot confirmation takes ten minutes on a 1m chart. It does not detect every turning point or imply an immediate confirmed level at the day's high/low. Current-day identity follows the exchange daily-bar boundary, including loaded extended-hours bars. On each new exchange day, previous-day reactions join the historical book and are evaluated against historical qualification. Current-day candidates remain separate even if a historical bucket occupies the same price.
 
 ## Presentation
 
-The v2.1 update keeps the qualification thresholds unchanged and enables provisional candidates by default. Within each selection pass, qualified levels take display priority. Nearby candidates that fail the reaction-count or distinct-day requirements fill remaining per-side slots as **faint dashed lines labeled P**. Disable `Show provisional candidates` for strict qualified-only display. This is an explicit exploratory display mode, not a relaxation of level qualification. No pivots or no nearby candidates can still mean no lines.
+The v2.1 update keeps the qualification thresholds unchanged and enables provisional candidates by default. Historical selection prioritizes qualified levels; current-day selection prioritizes extremes and reaction strength. Nearby candidates that fail the reaction-count or distinct-day requirements fill remaining per-side slots as **faint solid lines labeled P**. Disable `Show provisional candidates` for strict qualified-only display. This is an explicit exploratory display mode, not a relaxation of level qualification. No pivots or no nearby candidates can still mean no lines.
 
 The v2.2 presentation removes the status table. Defaults show up to eight zones above and eight below price, within 3%, prioritizing qualified zones and then nearby provisional candidates. `Zones above / below price` accepts up to 30 per side. The count is a maximum, not a promise that enough candidates exist.
 
-The v2.3 update follows the app renderer's hierarchy (`ReactionBook.tsx`): one prominent main price line and, when geometry exists, a faint fill between lower and upper bounds. It does not draw three equally prominent levels. Qualified historical main lines are solid; current-day and provisional lines are dashed, with provisional opacity reduced. Colors still use the Pine approximation's price-position rule; they do not reproduce the app's evidence-based role state.
+The v2.3 update follows the app renderer's hierarchy (`ReactionBook.tsx`): one prominent main price line and, when geometry exists, a faint fill between lower and upper bounds. It does not draw three equally prominent levels. All main lines are solid with width 1, with provisional opacity reduced. Colors still use the Pine approximation's price-position rule; they do not reproduce the app's evidence-based role state.
 
 Bounds are available only for qualified levels with at least three spaced observations and at least three distinct reaction prices (distinction uses half a symbol tick). They use the 10th/90th reaction-price percentiles without minimum-width padding or substituted bucket edges. A lower bound must be below the main price; an upper bound must be above it. Missing bounds stay missing. Provisional, singleton, repeated-identical-price, or degenerate candidates have only their main line. A filled band requires both bounds. Optional `Outline available lower / upper boundaries` is off by default; enabling it draws thin outlines only for available sides. The app uses a Student-t fit; Pine's percentile estimate remains an explicit approximation.
 
