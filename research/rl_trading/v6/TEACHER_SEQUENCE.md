@@ -1,6 +1,8 @@
 # V6 phase-1b teacher sequence contract
 
-This architecture uses the published copied/suppressed 1b labels. It does not
+Both architectures use the published copied/suppressed 1b labels. The current
+default is hierarchical v2, documented below. The initial sections describe
+the retained soft-v1 architecture. Neither architecture
 recalculate bars, indicators, 1a or 1b labels. The new checkpoint contract is
 `rl-v6-1b-autoregressive-five-candle-v1`. Legacy checkpoints require the explicit
 legacy architecture (`--teacher-forecast-steps 1`); incompatible continuation
