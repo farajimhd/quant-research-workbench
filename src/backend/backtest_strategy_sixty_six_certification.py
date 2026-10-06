@@ -113,7 +113,7 @@ STRATEGY66_SOURCE_AST = {
     'src/backend/backtest_strategy_episode_activity_source.py': '2d4fa40c46a866be83328ce7443a350655620bf9c4b4a82044dc45ee7441c8c0',
     'src/backend/backtest_strategy_liquidity_fade.py': '4870509aaef5af9a6b45d7a9c389dfe737a927f0beb71164b00ef9919d1a7e24',
     'src/backend/backtest_strategy_liquidity_fade_loader.py': 'd6e5660d40bb75df739f8fe862ac7a8ed8441cdd7c58da64184f219d5d8a62b4',
-    'src/backend/backtest_strategy_one_configuration.py': '6514b72bbb4dc542b958d5d59def72f62491a2ce08acf813f010367e8ce776bb',
+    'src/backend/backtest_strategy_one_configuration.py': '7fb2771427ab2bb7e629d8d20b7208c1af7068689fb92eb16fed5a6907bd0ccd',
     'src/backend/backtest_strategy_one_coordinator.py': '7d40c9a3d75872e1ff263729eb578cf9860e913bae3863ec8889ca999e5df334',
     'src/backend/backtest_strategy_one_execution.py': '637da264cea91bcf316473704933e6b8a0932b43509a6d5a3ffb9809451a9a93',
     'src/backend/backtest_strategy_one_management.py': '96c4bc9c6ac5e3041bba14bb382565395d4431549f1e3de98dcb7c8c582c1e1e',
@@ -179,7 +179,7 @@ STRATEGY66_SOURCE_AST = {
     'src/trading_runtime/keeper_ownership.py': '4d50a7acea06377df65ab79c506685c8ce426d1981e867049341c93e3047c2f7',
     'scripts/clickhouse/provision_fixed_backtest_v3_principals.py': '77df1f30c5fb6fb5700f2b8843a2d71a0f801beb27026371678666e5d228a6ee',
     'scripts/clickhouse/provision_trading_journal.py': 'fb0a05f5a3098bcd28482db4b7f34dc3a47e3ac436bca0b0ca747262dd1e507e',
-    'src/backend/backtest_strategy_sixty_six_certification.py': {'certify_strategy_sixty_six_source': '161ed4c55b42dfb43d47c208b6e74782e7c8e38247c8b389240113a5014e633d'},
+    'src/backend/backtest_strategy_sixty_six_certification.py': {'certify_strategy_sixty_six_source': '4cffe970ce4838b22513633f12475c5637238b4d08b89ad707b0b13ca1774a07'},
     'src/trading_runtime/clickhouse_transport.py': '108e4e9a4e757ed792ab01f8d7faefdc035b2da398cfcbdd8dc3917c20cbb5df',
     'research/mlops/clickhouse.py': '2cf6ccee354c65b24f8ea73198a9ec1c0f033f249b3f57430a8073dcf64470c8',
     'research/mlops/env.py': '856dc976500cfd9efc0648b22a28665951f8bdeb81328c45a47f5dc586b5895b',
@@ -193,7 +193,7 @@ def certify_strategy_sixty_six_source(*, source_overrides=None):
         'src/backend/backtest_fixed_v4_certification.py': ('certify_numbered_fixed_v4_projection',),
         'src/backend/backtest_strategy_sixty_six_certification.py': ('certify_strategy_sixty_six_source',),
     }
-    metadata_anchor = 'b6aa93e27f141f860b7b602a8970214adae3be3a0ad5bc60720781bb2e093c9d'
+    metadata_anchor = '50ec942014933981948d60cddb9e53e4dfe9870258917c0e8a9340dde32cd18f'
     overrides = {} if source_overrides is None else source_overrides
     if type(overrides) is not dict or set(overrides) - set(REQUIRED_SOURCE_FILES):
         raise ValueError('Strategy66 source override is outside complete authority')
