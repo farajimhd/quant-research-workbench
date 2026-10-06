@@ -41,12 +41,17 @@ def main(argv=None):
     plan = json.loads((root / 'plan.json').read_text(encoding='utf-8'))
     mapping = json.loads(Path(item['identity_map']).read_text(encoding='utf-8'))
     bank_hash = file_hash(root / 'complete.json')
-    if plan['day'] != str(args.date) or mapping['bank_certificate_sha256'] != bank_hash:
+    bank_certificate=json.loads((root/'complete.json').read_text(encoding='utf-8'))
+    if (plan['day'] != str(args.date) or mapping['bank_certificate_sha256'] != bank_hash
+            or plan.get('hash')!=digest({key:value for key,value in plan.items() if key!='hash'})
+            or bank_certificate.get('status')!='complete' or bank_certificate.get('plan_hash')!=plan['hash']):
         raise ValueError('Split producer bank/day identity mismatch')
     previous_root = Path(item['previous_feature_root']) if item.get('previous_feature_root') else None
     previous_plan = json.loads((previous_root / 'plan.json').read_text(encoding='utf-8')) if previous_root else None
     previous_hash = file_hash(previous_root / 'complete.json') if previous_root else None
     current = arte_source.load_build(Path(item['source_manifest']), Path(item['source_ledger']), [args.date])
+    if current['build_id']!=plan['source_build_id']:
+        raise ValueError('Split producer source differs from feature bank source')
     with exclusive(output.with_suffix('.producer')):
         if output.exists():
             # Do not rewrite an immutable certificate or query a newer snapshot.
@@ -57,7 +62,14 @@ def main(argv=None):
         client = arte_source.reader(threads=1)
         try:
             storage = reference_features.storage_check(client)
-            population, proof = arte_source.population(client, current, args.date)
+            if plan.get('consumer')=='vectorized-backtest-v4':
+                from .source.arte_source import population as research_population
+                from .encoding.config import DEFAULT_EXCLUDED_TICKERS
+                population,proof=research_population(client,current,args.date,
+                    excluded_tickers=DEFAULT_EXCLUDED_TICKERS,regular_us_exchanges_only=True,
+                    diagnostic_directory=output.parent/'population-audit'/str(args.date))
+            else:
+                population, proof = arte_source.population(client, current, args.date)
             listings = {row['listing_id']: row for row in population}
             cutoff = "toDateTime64(" + literal(reference_features.opening(args.date)) + ",9,'UTC')"
             # Reference actions are small metadata; one bounded-column query
