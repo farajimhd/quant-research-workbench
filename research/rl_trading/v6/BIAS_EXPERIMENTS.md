@@ -167,3 +167,7 @@ The complete local-head experiment exposed an intentional v1 limitation: only fl
 ### Complete-head chronological generalization admission
 
 `run_complete_head_generalization` admits only the TCN with a completed, passing all-head TRAIN gate bound to the exact panel/forecast sidecar hashes. It verifies the underfit checkpoint and compares model, objective, encoder and hierarchical-head source to the underfit commit before starting. It trains from seed 17 with fresh AdamW for ten fixed epochs, records natural-frequency TRAIN and chronological calibration metrics for every supervised head, selects by calibration mean ENTRY/EXIT AP, and evaluates previously inspected development dates only after checkpoint selection and exact calibration replay. Failed GRU/Transformer candidates are not run. This remains a local 19-ticker diagnostic; full production market attention is not certified by it.
+
+### Larger TRAIN-only fitting controls
+
+The complete-head underfit runner accepts bounded 32/128/256/512 examples per current action, retains deterministic per-horizon forecast coverage, and can run selected architectures. Architecture, optimizer, loss and pass thresholds remain unchanged. The next TCN control uses 512 total examples rather than 128; it evaluates TRAIN only. Future-quality metrics are mandatory for admission, so an incomplete report cannot pass. A small-sample pass is not proof that the larger TRAIN distribution is fitted or that the model generalizes.
