@@ -21,7 +21,8 @@ from zipfile import ZipFile
 from research.vectorized_backtest.v4.torch_backtest.runtime import DEFAULT, require_runtime
 
 SHARE = Path("//DESKTOP-SAAI85T/Workstation-D/TradingML")
-PAYLOAD = ("src", "pipelines/market_sip/events", "research/mlops", "research/vectorized_backtest/v4", "research/rl_trading/v1", "research/rl_trading/v6")
+PAYLOAD = ("src", "pipelines/market_sip/events", "research/mlops", "research/vectorized_backtest/v4", "research/rl_trading/v1", "research/rl_trading/v6",
+           "services/reference_gateway/__init__.py", "services/reference_gateway/tradability.py")
 
 
 def main(argv=None):
