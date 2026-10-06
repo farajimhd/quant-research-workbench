@@ -44,7 +44,7 @@ def prepare_windows(session, decisions, normalization, *, max_bytes=2_000_000_00
         offsets=np.cumsum([0]+[len(s.close_us) for s in sources])
         for start in range(0,len(rows),64):
             selected=rows[start:start+64]
-            ends=np.searchsorted(clocks,[decisions[i].close_us for i in selected],side='right')
+            ends=np.searchsorted(clocks,[decisions[i].close_us for i in selected],side='left')
             indices=ends[:,None]+np.arange(-120,0)[None,:]
             valid=indices>=0
             raw_scalar=np.zeros((len(selected),120,37),np.float32)

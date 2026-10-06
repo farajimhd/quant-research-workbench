@@ -47,8 +47,9 @@ def test_window_builder_uses_actual_candles_and_never_future_rows():
     labels=(SimpleNamespace(close_us=300,held_index=np.empty(0,int),soft_tokens=(0,1)),)
     normal=dict(version=VERSION,scope='train_only',mean=[0.]*INPUT_WIDTH,std=[1.]*INPUT_WIDTH)
     x,present=prepare_windows(session,labels,normal)
-    assert present.sum()==2 and present[0,-2:].all()
-    assert np.all(x[0,:-2]==0)
+    assert present.sum()==1 and present[0,-1:].all()
+    assert np.all(x[0,:-1]==0)
+    source.scalar[1]=float('nan')  # The target candle is excluded too.
     source.scalar[2]=float('nan')
     changed,_=prepare_windows(session,labels,normal)
     assert np.array_equal(x,changed)

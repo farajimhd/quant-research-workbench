@@ -29,7 +29,7 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.identity_map import certify_identity_map, open_identity_map
 from research.rl_trading.v6.teacher_data import load_teacher, load_wait_hold_teacher
 from research.rl_trading.v6.action_contract import ACTION_VERSION
-from research.rl_trading.v6.teacher_selection import teacher_validation_score, selection_key, SELECTION_VERSION
+from research.rl_trading.v6.teacher_selection import teacher_validation_score, selection_key, SELECTION_VERSION, SEQUENCE_SELECTION_VERSION
 from research.rl_trading.v6.training import train_session
 from research.rl_trading.v6.label_timing import CONTRACT as TEACHER_LABEL_TIMING
 from research.rl_trading.v6.learning_rate import cosine_warmup
@@ -99,7 +99,9 @@ def main(argv=None):
     parser.add_argument('--teacher-loss',choices=('legacy','balanced-v2'),default='legacy',
         help='Versioned action balancing and fixed per-session block normalization')
     parser.add_argument('--ticker-brackets-root',type=Path,help='Audited oracle brackets for four-action ticker supervision')
-    parser.add_argument('--ticker-heads',action='store_true',help='Four local actions, opportunity value and entry-attached brackets; no teacher sizing')
+    parser.add_argument('--ticker-heads',action='store_true',help='Four local actions and opportunity value; five-candle contract also supervises 1b sizing')
+    parser.add_argument('--teacher-forecast-steps',type=int,choices=(1,5),default=5,
+        help='Versioned 1b teacher: current plus next four actual candles with autoregressive GRU and allocation supervision; 1 retains legacy architecture')
     parser.add_argument('--outside-macd-per-minute',type=float,default=0.,help='Explicit exposure-weighted PPO shaping outside completed-candle positive MACD regime')
     parser.add_argument('--action-contract', choices=('legacy','wait-hold'), default='legacy',
         help='Explicit six-class WAIT and held-ticker HOLD contract with weighted causal label migration')
@@ -279,6 +281,12 @@ def main(argv=None):
                 if proof!=ticker_certificates[str(session.day)]:raise ValueError('Ticker targets changed after audit')
                 return labels,outcomes
         policy.decoder=TickerDecoder(policy.encoder.width).to(device)
+        if args.teacher_forecast_steps == 5:
+            if not dataset.get('market_teacher_dataset'):
+                raise ValueError('Five-candle teacher requires published copied 1b labels')
+            from research.rl_trading.v6.teacher_forecast import configure, CONTRACT as FORECAST_CONTRACT
+            configure(policy)
+            TICKER_VERSION=policy.decoder.action_version
     policy.independent_episode_supervision=bool(args.episode_supervision_root)
     feature_contract='legacy'
     execution_certificates={}
@@ -330,6 +338,7 @@ def main(argv=None):
         'feature_normalization_sha256':file_hash(args.feature_normalization) if args.feature_normalization else None,
         'execution_feature_certificates':execution_certificates,
         'ticker_head_contract':TICKER_VERSION if args.ticker_heads else None,
+        'teacher_forecast_contract':FORECAST_CONTRACT if args.ticker_heads and args.teacher_forecast_steps==5 else None,
         'ticker_target_certificates':ticker_certificates,
         'outside_macd_per_minute':args.outside_macd_per_minute,
         'ticker_metrics_scope':'independent_ticker_not_global_selection' if args.ticker_heads else None,
@@ -337,7 +346,7 @@ def main(argv=None):
         'action_version':TICKER_VERSION if args.ticker_heads else (ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1'),
         'teacher_no_order_labels':'all_causal_held_identities_weighted_1_over_H' if wait_hold else 'portfolio_hold',
         'history_cache':'raw_causal_reprojection_after_teacher_optimizer' if wait_hold else 'detached_projected_history',
-        'teacher_selection_version':SELECTION_VERSION,
+        'teacher_selection_version':SEQUENCE_SELECTION_VERSION if args.teacher_forecast_steps==5 else SELECTION_VERSION,
         'episode_label_certificates':episode_certificates,
         'teacher_label_scope':'independent_episode_flat_and_hypothetical_unit_position' if episode_certificates else 'selected_portfolio_trajectory',
         'teacher_metrics_scope':'local_ticker_alternatives_not_portfolio_selection' if episode_certificates else 'portfolio_action_tokens',
@@ -348,7 +357,7 @@ def main(argv=None):
         'label_publication_audit_sha256':dataset['publication_audit_sha256'],
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
-        'teacher_role':'candle_only_actor_initialization',
+        'teacher_role':'candle_market_action_and_GRU_label_initialization' if args.teacher_forecast_steps==5 else 'candle_only_actor_initialization',
         'environment_version':'rl-v6-tensor-participation-100ms-v1' if args.broker_engine=='tensor-100ms' else 'reference-quote-oms',
         'decision_cadence':'one_proposal_per_second' if args.broker_engine=='tensor-100ms' else 'bounded_same_clock_proposals',
         'validation_contract':'development_teacher_labels_trading_validation_pending' if args.teacher_only else 'trading_replay',
@@ -375,6 +384,7 @@ def main(argv=None):
                 parent.get('feature_contract','legacy')!=feature_contract or
                 parent.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256') or
                 parent.get('action_version')!=manifest['action_version'] or
+                parent.get('teacher_forecast_contract')!=manifest['teacher_forecast_contract'] or
                 parent.get('teacher_label_timing')!=manifest['teacher_label_timing'] or
                 parent['dataset_sha256']!=manifest['dataset_sha256'] or
                 parent['luld_certificates']!=manifest['luld_certificates'] or
@@ -405,6 +415,8 @@ def main(argv=None):
                 'explicit validated migration is required before continuation')
         if parent_manifest.get('action_version', 'rl-v6-five-action-v1') != manifest['action_version']:
             raise ValueError('Parent WAIT/HOLD head and label contract differs; start a fresh audited run')
+        if parent_manifest.get('teacher_forecast_contract') != manifest['teacher_forecast_contract']:
+            raise ValueError('Parent forecast or sizing contract differs; start a fresh audited run')
         ignored={'run_root','teacher_lr_schedule','warmup_epochs','minimum_lr_ratio','resume_from','teacher_loss'}
         current=manifest['config']; previous={'broker_engine':'reference','compile_broker':False,
             'broker_participation':.1,'decoder_batch_size':1,'action_contract':'legacy',**parent_manifest['config']}

@@ -10,6 +10,8 @@ and are never live observations. The contract is versioned in `label_timing.py`
 and bound into teacher/checkpoint manifests. Research > Current V6 labels
 audits these saved shards; historical teacher labels remain a separate view.
 
+The current five-candle 1b model contract is [TEACHER_SEQUENCE.md](TEACHER_SEQUENCE.md): sizing supervision and autoregressive label pretraining of the shared GRU, with unchanged causal market features. The numbered portfolio pipeline below is legacy context.
+
 This is a major data and action-contract revision. It replaces the old
 Phase 1/2/3 names with three responsibilities:
 

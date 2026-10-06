@@ -48,7 +48,7 @@ def select_window(current, previous=None, *, offset=0, start_us=None):
     prior_clocks = previous.close_us[-120:] if previous is not None else np.array([], dtype=np.int64)
     for item,i,part in plot:
         history = np.concatenate((prior_clocks,current.close_us[max(0,i-120):i]))[-120:] if part=='session' else np.array([],dtype=np.int64)
-        diagnostic = np.concatenate((prior_clocks,current.close_us[max(0,i-119):i+1]))[-120:] if part=='session' else np.array([],dtype=np.int64)
+        diagnostic = history.copy()
         raw.append(dict(time_us=int(item.close_us[i]),part=part,
             scalar=item.scalar[i].astype(float).tolist(),levels=item.levels[i].astype(float).tolist(),
             input_close_us=history.astype(int).tolist(),input_padding=120-len(history) if part=='session' else None,
@@ -59,7 +59,7 @@ def select_window(current, previous=None, *, offset=0, start_us=None):
         previous_available=offset>0,next_available=offset+120<len(indices),
         scalar_names=list(SCALAR_NAMES),level_names=list(LEVEL_NAMES),
         input_contract='Up to 120 actual bank rows with close_us < target close_us; invalid-price rows retain masks. Display uses valid-price candles.',
-        diagnostic_contract='Existing ticker_resnet_data.prepare_windows includes the target candle (side=right); distinct from the main V6 strict-prior teacher path.',
+        diagnostic_contract='ticker_resnet_data.prepare_windows excludes the target candle (side=left), matching the main V6 strict-prior teacher path.',
         units='Stored float32 bank values before bps conversion and train-only normalization; plotted prices decode those stored values.')
 
 

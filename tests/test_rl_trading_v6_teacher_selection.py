@@ -30,3 +30,13 @@ def test_no_entry_predictions_get_zero_f1_instead_of_high_wait_accuracy_credit()
     rows=[summary(day,10,0,0,0,.01) for day in ('2026-08-24','2026-08-25')]
     score=teacher_validation_score(rows)
     assert score['exact_entry_f1']==score['entry_class_f1']==0.
+
+
+def test_sequence_selection_reports_allocation_and_uses_it_after_entry_f1():
+    rows=[{**summary(day,10,10,8,8,.1), 'forecast_targets':(10,9,8,7,6),
+           'allocation_targets':10,'allocation_ratio_mae':.2} for day in ('2026-08-24','2026-08-25')]
+    score=teacher_validation_score(rows)
+    assert score['allocation_ratio_mae']==.2 and score['version'].endswith('v2')
+    assert selection_key({**score,'allocation_ratio_mae':.1})>selection_key(score)
+    with pytest.raises(ValueError,match='Every development'):
+        teacher_validation_score([rows[0],{**rows[1],'allocation_targets':0}])
