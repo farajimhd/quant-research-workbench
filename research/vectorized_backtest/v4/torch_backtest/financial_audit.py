@@ -40,6 +40,10 @@ def audit_fills(path,metrics,*,initial_cash=10000.):
                 raise ValueError('Financial ledger arithmetic mismatch: '+name)
         if bool(metrics['terminal_valid'][lane])!=(quantity==0):
             raise ValueError('Terminal flatness disagrees with actual fills')
-        reports.append(dict(**expected,closed_positions=len(closed),winning_positions=sum(v>0 for v in closed),
-            losing_positions=sum(v<0 for v in closed),position_win_rate=sum(v>0 for v in closed)/len(closed) if closed else None))
+        trade=dict(closed_positions=len(closed),winning_positions=sum(v>0 for v in closed),losing_positions=sum(v<0 for v in closed),
+                   gross_profit=sum(max(v,0.) for v in closed),gross_loss=sum(max(-v,0.) for v in closed))
+        for name,value in trade.items():
+            if name in metrics and not math.isclose(value,metrics[name][lane],rel_tol=1e-10,abs_tol=1e-6):
+                raise ValueError('Closed-position reporting mismatch: '+name)
+        reports.append(dict(**expected,**trade,position_win_rate=trade['winning_positions']/len(closed) if closed else None))
     return reports

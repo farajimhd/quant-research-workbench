@@ -1,12 +1,19 @@
 """Single-owner operational view. Completed metrics never borrow active values."""
 import time
 from rich.console import Group
-from rich.table import Table
+from rich.table import Table,Column
 from rich.text import Text
+from rich.layout import Layout
+from rich.panel import Panel
 from rich.progress import Progress,BarColumn,TextColumn,TaskProgressColumn
 
 def number(v,fmt=',.2f'):
     return '—' if v is None else format(v,fmt)
+
+def duration(value):
+    if value is None:return '—'
+    seconds=max(0,int(value));hours,seconds=divmod(seconds,3600);minutes,seconds=divmod(seconds,60)
+    return f'{hours:d}:{minutes:02d}:{seconds:02d}'
 
 def render(status,*,width=110,height=38,now=None,view='financial'):
     now=time.time() if now is None else now
@@ -15,7 +22,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     head=Text(f"V4  {state.upper()}  |  {status.get('stage','Preflight')}  |  updated {age:.0f}s ago",style='bold '+severity)
     config=status.get('config',{});cursor=status.get('progress',{})
     profiling=status.get('mode')=='profile'
-    progress=Progress(TextColumn('{task.description:<14}'),BarColumn(bar_width=max(8,min(36,width-45))),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}'),expand=False)
+    progress=Progress(TextColumn('{task.description}',table_column=Column(min_width=15,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}',table_column=Column(no_wrap=True)),expand=True)
     for label,done,total in (
         ('Generations',status.get('completed_generations',0),0 if profiling else config.get('generations',0)),
         ('Profile session' if profiling else 'Session',status.get('completed_sessions',0),1 if profiling else config.get('training_sessions',0)),
@@ -43,7 +50,9 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         ('Sharpe (annualized estimate)',number(best.get('sharpe_annualized_estimate'),'.3f')),
         ('Sharpe ex-best (ann. estimate)',number(best.get('sharpe_ex_best_annualized_estimate'),'.3f')),
         ('Validation',status.get('validation_status','SEALED'))]
-    if height<26:metrics=metrics[:8]+[metrics[12],metrics[-1]]
+    metrics.extend([('Closed-position win rate %',number(None if best.get('position_win_rate') is None else 100*best['position_win_rate'])),
+                    ('Profit factor',number(best.get('profit_factor'))),('Closed / winning / losing',f"{number(best.get('closed_positions'),',.0f')} / {number(best.get('winning_positions'),',.0f')} / {number(best.get('losing_positions'),',.0f')}" )])
+    if height<26:metrics=metrics[:7]+[metrics[-3],metrics[-2],('Validation',status.get('validation_status','SEALED'))]
     if profiling:
         active=status.get('active_session') or {}
         metrics=[('Population',str(config.get('population','—'))),
@@ -56,14 +65,28 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
                  ('Financial error candidates',number(active.get('financial_error_candidates'),',.0f')),
                  ('Ledger overflow candidates',number(active.get('overflow_candidates'),',.0f')),
                  ('Validation',status.get('validation_status','SEALED'))]
+        trade_metrics=[('Pooled closed-position win %',number(None if active.get('position_win_rate') is None else 100*active['position_win_rate'])),
+                       ('Pooled profit factor',number(active.get('profit_factor'))),
+                       ('Closed / winning / losing',f"{active.get('closed_positions','—')} / {active.get('winning_positions','—')} / {active.get('losing_positions','—')}")]
+        if height<26:metrics=metrics[:5]+trade_metrics+[metrics[-2],metrics[-1]]
+        else:metrics.extend(trade_metrics)
+    if height>=30:
+        import math
+        capacity=max(1,height-26)*(2 if width>=100 else 1)
+        pages=max(1,math.ceil(len(metrics)/capacity));page=status.get('_financial_page',0)%pages
+        metrics=metrics[page*capacity:(page+1)*capacity]
+        if pages>1:grid.title=f'{title} | F: page {page+1}/{pages}'
     if width>=100:
         for i in range(0,len(metrics),2):
             other=metrics[i+1] if i+1<len(metrics) else ('','');grid.add_row(*metrics[i],*other)
     else:
         for row in metrics:grid.add_row(*row)
-    performance=Table(title='PERFORMANCE / OWNERSHIP',expand=True,padding=(0,1));performance.add_column('Stage');performance.add_column('Seconds',justify='right')
+    performance=Table(title='PERFORMANCE / OWNERSHIP',expand=True,padding=(0,1));performance.add_column('Stage');performance.add_column('Last s',justify='right');performance.add_column('Average s',justify='right')
     for key in ('load','transfer','rule_prepare','compile','replay','end_to_end'):
-        performance.add_row(key.replace('_',' ').title(),number(timing.get(key)))
+        performance.add_row(key.replace('_',' ').title(),number(timing.get(key)),number(status.get('average_timing',{}).get(key)))
+    clock=Text(f"Elapsed {duration(now-status['started_epoch']) if status.get('started_epoch') else '—'} | replay ETA {duration(status.get('replay_eta'))} | campaign ETA {duration(status.get('campaign_eta'))}")
+    average=status.get('average_timing',{}).get('end_to_end')
+    clock.append(f" | avg session {duration(average)} ({status.get('timed_sessions',0)} measured)")
     footer=Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | host {number(status.get('host_gib'),'.1f')} GiB | prefetched {status.get('prefetched_sessions','—')} | worker {status.get('worker_pid','—')}")
     active=status.get('active_session')
     if active:
@@ -73,10 +96,31 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     issue=Text(status.get('error') or status.get('waiting_reason') or 'No reported failure',style='red' if status.get('error') else 'dim')
     if active and (active.get('financial_error_candidates') or active.get('overflow_candidates')):
         issue=Text(f"FINANCIAL ERRORS {active.get('financial_error_candidates',0)} | LEDGER OVERFLOW {active.get('overflow_candidates',0)} candidates",style='bold red')
-    if height<26 and view=='financial':return Group(head,progress,grid,footer,issue,Text('F financial | P performance | C objective; full metrics: status.json'))
+    events=status.get('messages',[])
+    messages=Text('\n'.join(f"{item['timestamp']}  {item['text']}" for item in events[-4:]) or 'No recorded events yet')
+    if height>=30:
+        # Fixed region sizes keep metrics in place when phases and messages change.
+        layout=Layout()
+        layout.split_column(Layout(name='header',size=3),Layout(name='progress',size=6),
+                            Layout(name='clock',size=2),Layout(name='metrics'),
+                            Layout(name='ownership',size=2),Layout(name='messages',size=6),Layout(name='keys',size=1))
+        layout['header'].update(Group(head,Text(status.get('focus','')),issue))
+        layout['progress'].update(progress);layout['clock'].update(clock)
+        layout['metrics'].update(performance if view=='performance' else components_table(best) if view=='objective' else
+                                  Panel(Text('\n'.join(f"{item['timestamp']}  {item['text']}" for item in events[-max(1,height-24):])),title='Message history · older entries retained in events.jsonl') if view=='messages' else grid)
+        layout['ownership'].update(Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')} | provisional metrics until session completes"))
+        layout['messages'].update(Panel(messages,title='MESSAGE CENTER · UTC · chronological · retained in events.jsonl'))
+        layout['keys'].update(Text('F financial | P performance | C objective | M messages · logs never print outside panels'))
+        return layout
+    if height<26 and view=='financial':return Group(head,progress,grid,clock,issue,Text('F financial | P performance | C objective; full metrics: status.json'))
     components=Table(title='OBJECTIVE COMPONENTS',expand=True);components.add_column('Component');components.add_column('Contribution',justify='right')
     for key,value in (best.get('objective_components') or {}).items():components.add_row(key.replace('_',' '),number(value,'.6f'))
-    if view=='performance':return Group(head,progress,performance,footer,issue,Text('F financial | P performance | C objective'))
-    if view=='objective':return Group(head,progress,components,footer,issue,Text('F financial | P performance | C objective'))
-    if height<50:return Group(head,Text(status.get('focus','')),progress,grid,footer,issue,Text('F financial | P performance | C objective'))
-    return Group(head,Text(status.get('focus','')),progress,grid,performance,components,footer,issue)
+    if view=='performance':return Group(head,progress,clock,performance,footer,issue,Text('F financial | P performance | C objective'))
+    if view=='objective':return Group(head,progress,clock,components,footer,issue,Text('F financial | P performance | C objective'))
+    if height<50:return Group(head,Text(status.get('focus','')),progress,clock,grid,footer,issue,Text('F financial | P performance | C objective'))
+    return Group(head,Text(status.get('focus','')),progress,clock,grid,performance,components,footer,issue)
+
+def components_table(best):
+    table=Table(title='OBJECTIVE COMPONENTS',expand=True);table.add_column('Component');table.add_column('Contribution',justify='right')
+    for key,value in (best.get('objective_components') or {}).items():table.add_row(key.replace('_',' '),number(value,'.6f'))
+    return table

@@ -149,7 +149,7 @@ class TorchPrograms:
                             sums=F.pad(safe.cumsum(-1),(1,0));counts=F.pad(av.to(features.dtype).cumsum(-1),(1,0))
                             starts=(torch.arange(c,device=features.device)+1-k).clamp_min(0)
                             mv=((counts[...,1:]-counts[...,starts])==k)&(axis>=k-1)
-                            if op==Op.MEAN:z=(sums[...,1:]-sums[...,starts])/k
+                            if op==Op.MEAN:z=a if k==1 else (sums[...,1:]-sums[...,starts])/k
                             elif op==Op.MAXIMUM:z=F.max_pool1d(F.pad(safe.reshape(-1,1,c),(k-1,0),value=-float('inf')),k,1).reshape(shape)
                             else:z=-F.max_pool1d(F.pad(-safe.reshape(-1,1,c),(k-1,0),value=-float('inf')),k,1).reshape(shape)
                         v=torch.where(selected,z,v);m=torch.where(selected,mv,m)
@@ -169,6 +169,6 @@ class TorchPrograms:
                     elif op==Op.ABS:v=a.abs()
                     elif op==Op.CROSS_ABOVE:v=(a>d)&(lag(a,1)<=lag(d,1));m=m&lag(av&dv,1)&(axis>=1)
                     elif op==Op.CROSS_BELOW:v=(a<d)&(lag(a,1)>=lag(d,1));m=m&lag(av&dv,1)&(axis>=1)
-                m=m&torch.isfinite(v);out=torch.where(choose,v,out);ok=torch.where(choose,m,ok)
+                m=m&torch.isfinite(v);out=torch.where(choose,torch.where(m,v,0.),out);ok=torch.where(choose,m,ok)
             values.append(out);masks.append(ok)
         return torch.stack(values)[self.outputs,self.batch_axis],torch.stack(masks)[self.outputs,self.batch_axis]

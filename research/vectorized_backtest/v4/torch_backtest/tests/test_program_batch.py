@@ -3,6 +3,13 @@ import torch
 from research.vectorized_backtest.v4.torch_backtest.feature_bank import CATALOG
 from research.vectorized_backtest.v4.torch_backtest.program import Node, Program, Op, TorchPrograms
 
+def test_one_candle_mean_is_exact_identity_and_invalid_outputs_are_zero():
+    features=torch.rand(3,250,len(CATALOG),generator=torch.Generator().manual_seed(9))
+    valid=torch.ones_like(features,dtype=torch.bool);valid[:,17,8]=False
+    program=Program((Node(Op.FEATURE,feature=8),Node(Op.MEAN,a=0,window=1),Node(Op.GREATER,a=0,b=1)),2)
+    values,known=TorchPrograms([program],CATALOG)(features,valid)
+    assert not values.any() and not known[:,:,17].any()
+
 
 @pytest.mark.parametrize('operation', [Op.LAG, Op.DIFFERENCE, Op.MEAN, Op.MINIMUM, Op.MAXIMUM])
 def test_listing_batch_matches_independent_temporal_evaluation(operation):

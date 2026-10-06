@@ -76,8 +76,14 @@ def evaluate_session(spec,population,space,args,output,emit,cache=None):
         runner=ProgramRunner(tape,space,population,gates,backend=args.backend,maximum_fills=args.maximum_fills,maximum_state_gib=args.maximum_state_gib,graph_steps=args.graph_steps)
         emit(stage='Compile financial replay',timing=dict(load=load,transfer=transfer,rule_prepare=rule_seconds));runner.compile();compiled=runner.setup_seconds
         if cache is not None:cache[key]=runner
-    emit(stage='Backtest',focus=spec['day'],timing=dict(load=load,transfer=transfer,rule_prepare=rule_seconds,compile=compiled))
-    result=runner.run(progress=lambda progress:emit(progress=progress,stage='Backtest',active_session=runner.live_metrics()))
+    replay_started=time.perf_counter()
+    emit(stage='Backtest',focus=spec['day'],replay_started_epoch=time.time(),timing=dict(load=load,transfer=transfer,rule_prepare=rule_seconds,compile=compiled))
+    def replay_progress(progress):
+        elapsed=time.perf_counter()-replay_started;done=progress['completed_seconds'];total=progress['total_seconds']
+        emit(progress=progress,stage='Backtest',active_session=runner.live_metrics(),replay_elapsed=elapsed,
+             replay_rate=done/elapsed if elapsed else None,replay_eta=(total-done)*elapsed/done if done else None)
+    result=runner.run(progress=replay_progress)
+    emit(active_session=runner.live_metrics(),progress=dict(completed_seconds=len(tape.clocks),total_seconds=len(tape.clocks)),replay_eta=0.)
     metrics={k:clean(v) for k,v in result.items() if isinstance(v,torch.Tensor)}
     ledger=runner.ledger[:,:int(runner.fill_count.max().item())].detach().cpu()
     ledger_path=output/'fills.pt'
@@ -139,11 +145,18 @@ def main(argv=None):
     # Exclusive live controller. A stale lock is never removed automatically.
     lock=output/'owner.lock';owner=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
     os.write(owner,json.dumps(dict(pid=os.getpid(),started=time.time(),code_hash=code_hash())).encode());os.close(owner)
-    status=dict(status='preflight',mode='profile' if args.profile else 'optimization',
+    status=dict(status='preflight',started_epoch=time.time(),mode='profile' if args.profile else 'optimization',
         config=dict(population=args.population,generations=0 if args.profile else args.generations,
                     training_sessions=1 if args.profile else 30,validation_sessions=6),
         completed_generations=0,completed_sessions=0,validation_status='SEALED',worker_pid=os.getpid())
     def emit(**event):
+        from datetime import datetime,timezone
+        changed=any(key in event and event[key]!=status.get(key) for key in ('stage','status','error','completed_generations','completed_sessions'))
+        if changed:
+            message=dict(timestamp=datetime.now(timezone.utc).strftime('%H:%M:%S UTC'),
+                         text=event.get('error') or event.get('stage') or f"Completed sessions {event.get('completed_sessions',status.get('completed_sessions',0))}; generations {event.get('completed_generations',status.get('completed_generations',0))}")
+            with (output/'events.jsonl').open('a',encoding='utf-8') as stream:stream.write(json.dumps(message)+'\n')
+            status['messages']=(status.get('messages',[])+[message])[-100:]
         status.update(event,updated_epoch=time.time())
         if args.device=='cuda':status['gpu_gib']=torch.cuda.memory_allocated()/1024**3
         write_json(output/'status.json',clean(status))
@@ -152,6 +165,7 @@ def main(argv=None):
     if saved:
         population=[restore(v) for v in saved['population']];rng.bit_generator.state=saved['rng'];start=saved['next_generation'];winner=saved['winner'];best=saved['best_score'];best_metrics=saved['best_metrics']
     else:population=sample(rng,space,args.population);start=0;winner=None;best=None;best_metrics=None
+    timing_totals={};timing_count=0
     try:
         for generation in range(start,1 if args.profile else args.generations):
             emit(status='profiling' if args.profile else 'training',completed_generations=generation,completed_sessions=0,stage='Load certified inputs',best_score=best,best_metrics=best_metrics)
@@ -173,7 +187,13 @@ def main(argv=None):
                             event['focus']=prefix+event['focus']
                         emit(**event)
                     receipt=evaluate_session(session,population,space,args,destination,session_emit,runner_cache);write_json(path,receipt)
-                receipts.append(dict(path=str(path),sha256=file_hash(path)));results.append(receipt['metrics']);emit(completed_sessions=index+1,timing=receipt['timing'])
+                receipts.append(dict(path=str(path),sha256=file_hash(path)));results.append(receipt['metrics'])
+                timing_count+=1
+                for key,value in receipt['timing'].items():timing_totals[key]=timing_totals.get(key,0.)+value
+                averages={key:value/timing_count for key,value in timing_totals.items()}
+                remaining=(args.generations-generation-1)*30+30-index-1
+                emit(completed_sessions=index+1,timing=receipt['timing'],average_timing=averages,timed_sessions=timing_count,
+                     campaign_eta=None if args.profile else remaining*averages.get('end_to_end',0.))
                 if (output/'STOP').exists():
                     write_json(checkpoint,dict(next_generation=generation,population=[state(v) for v in population],rng=rng.bit_generator.state,winner=winner,best_score=best,best_metrics=best_metrics))
                     emit(status='interrupted',stage='Stopped at durable session boundary');return 130

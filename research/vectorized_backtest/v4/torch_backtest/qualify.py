@@ -30,7 +30,7 @@ def main(argv=None):
     gates={s:torch.ones((90,4,3),dtype=torch.bool) if s in ('entry','trail','replacement') else torch.zeros((90,4,3),dtype=torch.bool) for s in STAGES};gates['exit'][30:]=True
     cpu=ProgramRunner(source,space,population,gates,backend='eager',maximum_fills=512).compile();left=cpu.run()
     gpu=ProgramRunner(source.to('cuda'),space,population,{s:v.cuda() for s,v in gates.items()},backend='compiled_graph',maximum_fills=512,graph_steps=32).compile();right=gpu.run()
-    for name in ('cash','equity','realized','fees','drawdown','fill_count','sold_share_seconds','capital_dollar_seconds','stop_risk_dollar_seconds','open_positions'):
+    for name in ('cash','equity','realized','fees','drawdown','fill_count','sold_share_seconds','capital_dollar_seconds','stop_risk_dollar_seconds','open_positions','closed_positions','winning_positions','losing_positions','gross_profit','gross_loss'):
         torch.testing.assert_close(left[name],right[name].cpu(),rtol=1e-10,atol=1e-8)
     for lane in range(4):
         count=int(cpu.fill_count[lane]);assert count>0

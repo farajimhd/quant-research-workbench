@@ -18,7 +18,14 @@ def financial_metrics(results,*,initial_cash=10000.):
     def values(name):return torch.stack([torch.as_tensor(r[name],dtype=torch.float64) for r in results])
     pnl=values('net_pnl');r=pnl/initial_cash
     ordered=r.sort(0).values
-    return dict(sharpe_daily=sharpe(r,annualization=1),sharpe_annualized_estimate=sharpe(r),
+    trades={}
+    if all('closed_positions' in result for result in results):
+        closed=values('closed_positions').sum(0);wins=values('winning_positions').sum(0);losses=values('losing_positions').sum(0)
+        profit=values('gross_profit').sum(0);loss=values('gross_loss').sum(0)
+        trades=dict(closed_positions=closed,winning_positions=wins,losing_positions=losses,
+                    position_win_rate=torch.where(closed>0,wins/closed,float('nan')),
+                    profit_factor=torch.where(loss>0,profit/loss,float('nan')),gross_profit=profit,gross_loss=loss)
+    return dict(**trades,sharpe_daily=sharpe(r,annualization=1),sharpe_annualized_estimate=sharpe(r),
         sharpe_ex_best_annualized_estimate=sharpe(ordered[:-1]),sharpe_sessions=len(r),sharpe_risk_free_per_session=0.,
         total_pnl=pnl.sum(0),worst_pnl=pnl.amin(0),worst_drawdown=values('drawdown').amax(0),
         batches=values('filled_batches').sum(0),positions=values('positions_opened').sum(0),fills=values('fill_count').sum(0),
