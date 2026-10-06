@@ -62,3 +62,26 @@ def test_actual_cpu_training_resets_market_axes_across_sessions_and_replays():
     pooled=pool_gate_metrics(first)
     assert pooled['allocation_targets']==10
     assert not passes(pooled) # Missing held classes never establish success.
+
+
+def test_exporting_regression_evidence_preserves_training_and_weights():
+    torch.set_num_threads(2)
+    policy,session,labels=fixture('cpu')
+    replace_encoder(policy,'tcn',structured=True);configure(policy,hierarchical=True,shared_heads=False)
+    policy.independent_episode_supervision=True
+    labels=tuple(replace(d,sample_weight=.25 if i%2 else .75,
+        forecast_actions=np.zeros(len(d.forecast_close_us),np.int64)) for i,d in enumerate(labels))
+    session,labels=subset(session,labels,session.listings,3_000_000,7_000_000)
+    exported=copy.deepcopy(policy)
+    a=torch.optim.AdamW(policy.parameters(),lr=.001)
+    b=torch.optim.AdamW(exported.parameters(),lr=.001)
+    args=dict(device=torch.device('cpu'),teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))
+    torch.manual_seed(123)
+    baseline=train_session(policy,a,session,labels,(),**args)
+    evidence={};torch.manual_seed(123)
+    actual=train_session(exported,b,session,labels,(),regression_evidence=evidence,**args)
+    assert baseline==actual
+    assert policy.state_dict().keys()==exported.state_dict().keys()
+    assert all(torch.equal(v,exported.state_dict()[k]) for k,v in policy.state_dict().items())
+    assert evidence['allocation_weight']==sum(d.sample_weight for d in labels if d.allocation_ratio_target is not None)
+    assert evidence['allocation_error_sum']/evidence['allocation_weight']==actual.allocation_ratio_mae
