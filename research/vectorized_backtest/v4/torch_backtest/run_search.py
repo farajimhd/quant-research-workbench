@@ -152,7 +152,7 @@ def main(argv=None):
     # Exclusive live controller. A stale lock is never removed automatically.
     lock=output/'owner.lock';owner=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
     os.write(owner,json.dumps(dict(pid=os.getpid(),started=time.time(),code_hash=code_hash())).encode());os.close(owner)
-    status=dict(status='preflight',started_epoch=time.time(),mode='profile' if args.profile else 'optimization',
+    status=dict(status='preflight',started_epoch=time.time(),mode='profile' if args.profile else 'optimization',objective=asdict(objective),
         config=dict(population=args.population,generations=0 if args.profile else args.generations,
                     training_sessions=1 if args.profile else 30,validation_sessions=6),
         completed_generations=0,completed_sessions=0,validation_status='SEALED',worker_pid=os.getpid())

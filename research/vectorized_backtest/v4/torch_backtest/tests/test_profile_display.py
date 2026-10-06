@@ -1,6 +1,8 @@
 from io import StringIO
 from rich.console import Console
 from research.vectorized_backtest.v4.torch_backtest.dashboard import render
+from dataclasses import asdict
+from research.vectorized_backtest.v4.torch_backtest.stability import Objective
 
 
 def test_profile_has_one_session_and_no_campaign_generation_bar():
@@ -9,6 +11,7 @@ def test_profile_has_one_session_and_no_campaign_generation_bar():
                 completed_sessions=0,prepared_sessions=1,
                 progress=dict(completed_seconds=100,total_seconds=19800))
     status['active_session']=dict(pnl_median=12.5,drawdown_max=99.,open_positions_max=15,fills_max=99)
+    status['objective']=asdict(Objective())
     for width,height in ((80,24),(128,42)):
         for view in ('financial','positions','performance','objective'):
             stream=StringIO()
@@ -19,3 +22,17 @@ def test_profile_has_one_session_and_no_campaign_generation_bar():
             assert '0/1' in output and '0/30' not in output
             assert len(output.splitlines())<=height
             assert all(len(line)<=width for line in output.splitlines())
+
+
+def test_objective_rows_show_configured_weights_pending_and_signed_arithmetic():
+    from research.vectorized_backtest.v4.torch_backtest.dashboard import components_table
+    stream=StringIO();console=Console(file=stream,width=128,force_terminal=False)
+    console.print(components_table({},asdict(Objective()),profiling=True))
+    output=stream.getvalue()
+    assert 'Median reward' in output and 'Capital time' in output and 'Total score' in output
+    assert '-0.002' in output and 'full 30-day objective is not computed' in output
+    values=dict(median_reward=.02,ex_best_reward=.01,tail_penalty=.003,drawdown_penalty=.002,
+                stop_risk_penalty=.001,capital_time_penalty=.0002,complexity_penalty=.0001)
+    stream.seek(0);stream.truncate()
+    console.print(components_table(dict(objective_components=values),asdict(Objective())))
+    assert '0.023700' in stream.getvalue() and '-0.003000' in stream.getvalue()

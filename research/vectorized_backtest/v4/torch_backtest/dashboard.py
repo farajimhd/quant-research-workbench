@@ -110,7 +110,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     active=status.get('active_session')
     if active:
         live=Text(f"LIVE session median P&L ${number(active.get('pnl_median'))} | DD ${number(active.get('drawdown_max'))} | open {active.get('open_positions_max','—')} | fills {active.get('fills_max','—')}",style='yellow')
-        if height<26 and view in ('financial','positions'):footer=live
+        if height<26 and view in ('financial','positions','objective'):footer=live
         else:footer=Group(Text('ACTIVE SESSION POPULATION — provisional marked equity',style='yellow'),live,footer)
     issue=Text(status.get('error') or status.get('waiting_reason') or 'No reported failure',style='red' if status.get('error') else 'dim')
     if active and (active.get('financial_error_candidates') or active.get('overflow_candidates')):
@@ -125,21 +125,45 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
                             Layout(name='ownership',size=2),Layout(name='messages',size=6),Layout(name='keys',size=1))
         layout['header'].update(Group(head,Text(status.get('focus','')),issue))
         layout['progress'].update(progress);layout['clock'].update(clock)
-        layout['metrics'].update(performance if view=='performance' else components_table(best) if view=='objective' else
+        layout['metrics'].update(performance if view=='performance' else components_table(best,status.get('objective'),profiling=profiling,wide=width>=100) if view=='objective' else
                                   Panel(Text('\n'.join(f"{item['timestamp']}  {item['text']}" for item in events[-max(1,height-24):])),title='Message history · older entries retained in events.jsonl') if view=='messages' else grid)
         layout['ownership'].update(Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')} | provisional metrics until session completes"))
         layout['messages'].update(Panel(messages,title='MESSAGE CENTER · UTC · chronological · retained in events.jsonl'))
         layout['keys'].update(Text('F financial/pages | T position timing | P performance | C objective | M messages | Q close'))
         return layout
     if height<26 and view=='financial':return Group(head,progress,grid,clock,issue,Text('F financial | P performance | C objective; full metrics: status.json'))
-    components=Table(title='OBJECTIVE COMPONENTS',expand=True);components.add_column('Component');components.add_column('Contribution',justify='right')
-    for key,value in (best.get('objective_components') or {}).items():components.add_row(key.replace('_',' '),number(value,'.6f'))
+    components=components_table(best,status.get('objective'),profiling=profiling,wide=width>=100)
     if view=='performance':return Group(head,progress,clock,performance,footer,issue,Text('F financial | P performance | C objective'))
     if view=='objective':return Group(head,progress,clock,components,footer,issue,Text('F financial | P performance | C objective'))
     if height<50:return Group(head,Text(status.get('focus','')),progress,clock,grid,footer,issue,Text('F financial | T timing | P performance | C objective | M messages | Q close'))
     return Group(head,Text(status.get('focus','')),progress,clock,grid,performance,components,footer,issue)
 
-def components_table(best):
-    table=Table(title='OBJECTIVE COMPONENTS',expand=True);table.add_column('Component');table.add_column('Contribution',justify='right')
-    for key,value in (best.get('objective_components') or {}).items():table.add_row(key.replace('_',' '),number(value,'.6f'))
+def components_table(best,objective=None,*,profiling=False,wide=True):
+    objective=objective or {};values=best.get('objective_components') or {}
+    table=Table(title='OBJECTIVE COMPONENTS',expand=True)
+    table.add_column('Component');table.add_column('Weight',justify='right')
+    if wide:table.add_column('Input / formula')
+    table.add_column('Signed contribution',justify='right')
+    rows=(('median_reward','Median reward','median_weight',1,'Median daily return'),
+          ('ex_best_reward','Ex-best reward','ex_best_weight',1,'Mean daily return excluding best day'),
+          ('tail_penalty','Tail loss','cvar_weight',-1,'Mean loss in worst configured tail'),
+          ('drawdown_penalty','Drawdown','drawdown_weight',-1,'Mean daily drawdown / initial cash'),
+          ('stop_risk_penalty','Stop-risk time','stop_risk_weight',-1,'Mean risk dollar-seconds / cash / 3600'),
+          ('capital_time_penalty','Capital time','capital_time_weight',-1,'Mean capital dollar-seconds / cash / 3600'),
+          ('complexity_penalty','Complexity','complexity_weight',-1,'Active nodes / configured maximum nodes'))
+    for key,label,weight,sign,formula in rows:
+        configured=objective.get(weight)
+        cells=[label,number(None if configured is None else sign*configured,'.3f')]
+        if wide:cells.append(formula)
+        cells.append(number(None if key not in values else sign*values[key],'.6f'))
+        table.add_row(*cells)
+    total=sum(values[key]*sign for key,_,_,sign,_ in rows) if all(key in values for key,_,_,_,_ in rows) else None
+    table.add_row('Total score','',*(['Sum of signed contributions'] if wide else []),number(total,'.6f'))
+    table.caption=('Profile: full 30-day objective is not computed.' if profiling else
+                   'Pending: all 30 training sessions must finish before scoring.' if not values else
+                   'Calculated from a completed all-30-session training leader.')
+    if objective:
+        gates=f"Batches {objective.get('minimum_batches','?')}–{objective.get('maximum_batches','?')}/day; every session flat"
+        if objective.get('require_positive_ex_best'):gates+='; ex-best mean > 0'
+        table.caption+='\nFeasibility: '+gates
     return table

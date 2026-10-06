@@ -11,9 +11,10 @@ def main(argv=None):
     identity_path=args.output/'identity.json'
     # Older immutable workers do not emit mode. Derive display scope from their
     # retained launch identity without editing their status or experiment.
-    profile=False
+    profile=False;objective=None
     if identity_path.exists():
-        profile=bool(json.loads(identity_path.read_text(encoding='utf-8')).get('arguments',{}).get('profile',False))
+        identity=json.loads(identity_path.read_text(encoding='utf-8'))
+        profile=bool(identity.get('arguments',{}).get('profile',False));objective=identity.get('objective')
     def read():
         nonlocal last,error
         try:last=json.loads((args.output/'status.json').read_text(encoding='utf-8'));error=None
@@ -22,7 +23,7 @@ def main(argv=None):
         if profile:
             last={**last,'mode':'profile','focus':'Single training-session profile; validation SEALED'}
             if last.get('status')=='training':last['status']='profiling'
-        return render({**last,'_financial_page':financial_page},width=console.width,height=console.height,view=args.view)
+        return render({**last,'objective':last.get('objective') or objective,'_financial_page':financial_page},width=console.width,height=console.height,view=args.view)
     if args.once or not console.is_terminal:
         console.print(read());return 0
     with Live(read(),console=console,refresh_per_second=1,screen=False,transient=False) as live:
