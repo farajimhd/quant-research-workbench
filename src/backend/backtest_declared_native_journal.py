@@ -1,23 +1,57 @@
 """Own typed command buffer; no installed V4 durability or cold authority."""
 from .backtest_journal_memory import BacktestMemoryJournal
+from types import MappingProxyType
 from src.trading_runtime.declared_native_submission import DeclaredNativeSubmission
 
 
 class DeclaredNativeJournal(BacktestMemoryJournal):
-    def __init__(self, *, binding, **kwargs):
+    def __init__(self, *, binding=None, bindings=None, **kwargs):
         from src.trading_runtime.declared_native_submission import DeclaredSubmissionBinding
-        if type(binding) is not DeclaredSubmissionBinding:
+        if (binding is None) == (bindings is None):
+            raise ValueError('Declared journal requires one binding or an immutable binding cohort')
+        cohort = (binding,) if bindings is None else bindings
+        if type(cohort) is not tuple or not cohort:
+            raise ValueError('Declared journal binding cohort must be a nonempty tuple')
+        if any(type(row) is not DeclaredSubmissionBinding for row in cohort):
             raise ValueError('Declared journal requires exact prepared binding')
-        binding.__post_init__()
-        if kwargs.get('run_id') != binding.preparation.run_id:
-            raise ValueError('Declared journal run differs')
+        anchor = cohort[0]
+        registry = {}
+        for row in cohort:
+            row.__post_init__()
+            if kwargs.get('run_id') != row.preparation.run_id:
+                raise ValueError('Declared journal run differs')
+            if (row.preparation.source is not anchor.preparation.source
+                    or row.session_date != anchor.session_date
+                    or row.configuration_hash != anchor.configuration_hash
+                    or row.execution_spec_token != anchor.execution_spec_token
+                    or row.entry_request != anchor.entry_request):
+                raise ValueError('Declared journal cohort source or configuration differs')
+            key = (row.preparation.account_id, row.preparation.assignment_id)
+            if key in registry:
+                raise ValueError('Declared journal cohort has a duplicate assignment')
+            registry[key] = row
         super().__init__(**kwargs)
-        self.binding = binding
+        self._bindings = cohort
+        self._binding_registry = MappingProxyType(registry)
         self._declared_records, self._declared_intents = {}, {}
         self._declared_management_records, self._declared_management_intents = {}, {}
 
+    @property
+    def binding(self):
+        return self._bindings[0]
+
+    @property
+    def bindings(self):
+        return self._bindings
+
+    def _owns_binding(self, binding):
+        from src.trading_runtime.declared_native_submission import DeclaredSubmissionBinding
+        return (type(binding) is DeclaredSubmissionBinding
+                and self._binding_registry.get((binding.preparation.account_id,
+                    binding.preparation.assignment_id)) is binding)
+
     def append_declared_native_intent(self, *, submission, intent, account_id, strategy_id, strategy_revision):
-        if type(submission) is not DeclaredNativeSubmission or submission.binding is not self.binding:
+        if type(submission) is not DeclaredNativeSubmission or not self._owns_binding(submission.binding):
             raise ValueError('Declared journal source binding differs')
         submission.verify(run_id=self.run_id,strategy_id=strategy_id,strategy_revision=strategy_revision,
             account_id=account_id,session_date=self.binding.session_date)
@@ -45,7 +79,7 @@ class DeclaredNativeJournal(BacktestMemoryJournal):
 
     def append_declared_native_management(self, *, submission, account_id, strategy_id, strategy_revision):
         from src.trading_runtime.declared_native_management_submission import DeclaredNativeManagementSubmission
-        if type(submission) is not DeclaredNativeManagementSubmission or submission.binding is not self.binding:
+        if type(submission) is not DeclaredNativeManagementSubmission or not self._owns_binding(submission.binding):
             raise ValueError('Declared management journal binding differs')
         submission.verify(run_id=self.run_id, strategy_id=strategy_id, strategy_revision=strategy_revision,
             account_id=account_id, session_date=self.binding.session_date)
