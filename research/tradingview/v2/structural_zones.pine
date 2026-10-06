@@ -9,9 +9,10 @@ atrLength = input.int(14, "Reaction ATR length", minval = 2, maxval = 500)
 minimumATR = input.float(0.5, "Minimum confirmed move away (ATR)", minval = 0, step = 0.1)
 separation = input.int(300, "Independent same-side reactions: separation seconds", minval = 0)
 minimumCount = input.int(3, "Minimum independent reactions", minval = 1)
-minimumDays = input.int(2, "Minimum distinct reaction days", minval = 1)
+minimumDays = input.int(2, "Historical: minimum distinct reaction days", minval = 1)
 halfLife = input.float(10, "Evidence recency half-life (days)", minval = 0.1)
 perSide = input.int(8, "Zones above / below price", minval = 1, maxval = 30)
+currentSlots = input.int(3, "Reserve current-day zones per side", minval = 0, maxval = 30)
 showProvisional = input.bool(true, "Show provisional candidates (dashed gray)")
 maxDistance = input.float(3, "Maximum distance from price (%)", minval = 0.1)
 showBands = input.bool(true, "Show estimated bands when available")
@@ -38,6 +39,7 @@ type Zone
     int lastDay = na
     int distinctDays = 0
     float score = 0
+    bool currentDay = false
 
 var samples = array.new<Reaction>()
 var drawnLines = array.new<line>()
@@ -45,6 +47,7 @@ var drawnLabels = array.new<label>()
 var drawnBands = array.new<box>()
 var float referencePrice = na
 var int referenceTime = na
+var int referenceDay = na
 int windowMs = days * 86400000
 int loadCutoff = last_bar_time - windowMs
 float stepLog = math.log(1 + bucketPct / 100)
@@ -69,6 +72,7 @@ if barstate.isfirst and (not timeframe.isintraday or na(timeframe.in_seconds()))
 if barstate.isconfirmed and time >= loadCutoff
     referencePrice := close
     referenceTime := time_close
+    referenceDay := exchangeDay
     // Expire by the reaction's actual time, not by most recent cluster contact.
     while array.size(samples) > 0
         Reaction oldest = array.get(samples, 0)
@@ -95,10 +99,12 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
     if array.size(samples) > 0
         for j = 0 to array.size(samples) - 1
             Reaction r = array.get(samples, j)
-            int key = int(math.floor(math.log(r.price) / stepLog))
+            bool currentDay = r.day == referenceDay
+            // Keep today's reactions separate from the prior-days seed.
+            int key = int(math.floor(math.log(r.price) / stepLog)) * 2 + (currentDay ? 1 : 0)
             if not map.contains(lookup, key)
                 map.put(lookup, key, array.size(zones))
-                array.push(zones, Zone.new(array.new<float>()))
+                array.push(zones, Zone.new(prices = array.new<float>(), currentDay = currentDay))
             Zone z = array.get(zones, map.get(lookup, key))
             int previous = r.side == 1 ? z.lastSupport : z.lastResistance
             if na(previous) or r.pivotTime - previous >= separation * 1000
@@ -122,7 +128,7 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
             float center = array.size(z.prices) > 0 ? array.median(z.prices) : na
             float distance = math.abs(center / referencePrice - 1) * 100
             bool enoughCount = array.size(z.prices) >= minimumCount
-            bool enoughDays = z.distinctDays >= minimumDays
+            bool enoughDays = z.currentDay or z.distinctDays >= minimumDays
             bool nearby = distance <= maxDistance
             bool qualified = enoughCount and enoughDays and nearby
             // Qualified levels first; then nearby provisional candidates fill vacancies.
@@ -130,45 +136,52 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
         ranked = array.sort_indices(distances, order.ascending)
         int above = 0
         int below = 0
-        for k = 0 to array.size(ranked) - 1
-            int j = array.get(ranked, k)
-            Zone z = array.get(zones, j)
-            if array.get(distances, j) < 1e20
-                float center = array.median(z.prices)
-                bool overhead = center >= referencePrice
-                if (overhead and above < perSide) or (not overhead and below < perSide)
-                    bool provisional = array.get(distances, j) >= 1000000
-                    int uniquePrices = 1
-                    if array.size(z.prices) > 1
-                        for observation = 1 to array.size(z.prices) - 1
-                            if array.get(z.prices, observation) - array.get(z.prices, observation - 1) >= syminfo.mintick * 0.5
-                                uniquePrices += 1
-                    // No padding or bucket edges are substituted for missing geometry.
-                    bool hasEstimate = not provisional and array.size(z.prices) >= 3 and uniquePrices >= 3
-                    float lo = hasEstimate ? array.percentile_linear_interpolation(z.prices, 10) : na
-                    float hi = hasEstimate ? array.percentile_linear_interpolation(z.prices, 90) : na
-                    bool hasLower = not na(lo) and lo < center
-                    bool hasUpper = not na(hi) and hi > center
-                    bool hasBand = hasLower and hasUpper
-                    color ink = provisional ? color.gray : referencePrice > (hasUpper ? hi : center) ? color.green : referencePrice < (hasLower ? lo : center) ? color.red : color.orange
-                    int start = math.min(chart.left_visible_bar_time, time)
-                    int finish = math.max(time + 1000, chart.right_visible_bar_time)
-                    array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 2, style = provisional ? line.style_dashed : line.style_solid))
-                    if showBoundaryLines and hasLower
-                        array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional ? line.style_dashed : line.style_solid))
-                    if showBoundaryLines and hasUpper
-                        array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional ? line.style_dashed : line.style_solid))
-                    if showBands and hasBand
-                        array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 100), bgcolor = color.new(ink, bandTransparency)))
-                    if showText
-                        int textTime = math.max(last_bar_time, chart.right_visible_bar_time) + int(labelOffset * timeframe.in_seconds() * 1000)
-                        float textPrice = center - math.max(syminfo.mintick * 2, nz(atr) * 0.08)
-                        string caption = (provisional ? "P " : "") + str.tostring(center, format.mintick) + (hasLower ? " L:" + str.tostring(lo, format.mintick) : "") + (hasUpper ? " U:" + str.tostring(hi, format.mintick) : "") + "  S" + str.tostring(z.supports) + "/R" + str.tostring(z.resistances)
-                        array.push(drawnLabels, label.new(textTime, textPrice, caption, xloc = xloc.bar_time, style = label.style_label_upper_right, color = color.new(color.white, 100), textcolor = ink, size = size.small, textalign = text.align_right))
-                    if overhead
-                        above += 1
-                    else
-                        below += 1
+        selected = array.new<bool>(array.size(zones), false)
+        for phase = 0 to 1
+            for k = 0 to array.size(ranked) - 1
+                int j = array.get(ranked, k)
+                Zone z = array.get(zones, j)
+                bool reservedPass = phase == 0
+                bool alreadyDrawn = array.get(selected, j)
+                bool reservedEligible = z.currentDay and ((array.median(z.prices) >= referencePrice and above < math.min(currentSlots, perSide)) or (array.median(z.prices) < referencePrice and below < math.min(currentSlots, perSide)))
+                if not alreadyDrawn and (not reservedPass or reservedEligible) and array.get(distances, j) < 1e20
+                    float center = array.median(z.prices)
+                    bool overhead = center >= referencePrice
+                    if (overhead and above < perSide) or (not overhead and below < perSide)
+                        array.set(selected, j, true)
+                        bool provisional = array.get(distances, j) >= 1000000
+                        int uniquePrices = 1
+                        if array.size(z.prices) > 1
+                            for observation = 1 to array.size(z.prices) - 1
+                                if array.get(z.prices, observation) - array.get(z.prices, observation - 1) >= syminfo.mintick * 0.5
+                                    uniquePrices += 1
+                        // No padding or bucket edges are substituted for missing geometry.
+                        bool hasEstimate = not provisional and array.size(z.prices) >= 3 and uniquePrices >= 3
+                        float lo = hasEstimate ? array.percentile_linear_interpolation(z.prices, 10) : na
+                        float hi = hasEstimate ? array.percentile_linear_interpolation(z.prices, 90) : na
+                        bool hasLower = not na(lo) and lo < center
+                        bool hasUpper = not na(hi) and hi > center
+                        bool hasBand = hasLower and hasUpper
+                        color baseInk = referencePrice > (hasUpper ? hi : center) ? color.green : referencePrice < (hasLower ? lo : center) ? color.red : color.orange
+                        color ink = provisional ? color.new(baseInk, 55) : baseInk
+                        int start = z.currentDay ? math.max(math.min(chart.left_visible_bar_time, time), referenceDay) : math.min(chart.left_visible_bar_time, time)
+                        int finish = math.max(time + 1000, chart.right_visible_bar_time)
+                        array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 2, style = provisional or z.currentDay ? line.style_dashed : line.style_solid))
+                        if showBoundaryLines and hasLower
+                            array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional or z.currentDay ? line.style_dashed : line.style_solid))
+                        if showBoundaryLines and hasUpper
+                            array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional or z.currentDay ? line.style_dashed : line.style_solid))
+                        if showBands and hasBand
+                            array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 100), bgcolor = color.new(ink, bandTransparency)))
+                        if showText
+                            int textTime = math.max(last_bar_time, chart.right_visible_bar_time) + int(labelOffset * timeframe.in_seconds() * 1000)
+                            float textPrice = center - math.max(syminfo.mintick * 2, nz(atr) * 0.08)
+                            string caption = (z.currentDay ? "DAY " : "HIST ") + (provisional ? "P " : "") + (center > referencePrice ? "R " : "S ") + str.tostring(center, format.mintick) + (hasLower ? " L:" + str.tostring(lo, format.mintick) : "") + (hasUpper ? " U:" + str.tostring(hi, format.mintick) : "") + "  S" + str.tostring(z.supports) + "/R" + str.tostring(z.resistances)
+                            array.push(drawnLabels, label.new(textTime, textPrice, caption, xloc = xloc.bar_time, style = label.style_label_upper_right, color = color.new(color.white, 100), textcolor = ink, size = size.small, textalign = text.align_right))
+                        if overhead
+                            above += 1
+                        else
+                            below += 1
 
 // Keep text near the chart's right margin while the latest candle forms.
 // Pine has no pixel anchor to the price axis; the bars offset is user-adjustable.
