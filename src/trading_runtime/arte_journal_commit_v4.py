@@ -579,11 +579,14 @@ def _load_verified_details_v4(
     entry_activity_source=None,
     verified_prior_prefix: V4CommittedPrefix | None = None,
     automatic_ladder_sources=(), automatic_ladder_read_client=None, automatic_ladder_batch_metadata=None,
+    declared_native_context=None,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
     )
 
+    from .arte_declared_native_publication import verify_declared_cold_inventory
+    verify_declared_cold_inventory(run_id, batch_id, family_rows, declared_native_context)
     filters = (f"WHERE run_id={_literal(run_id)} "
                f"AND batch_id=toUUID({_literal(batch_id)}) ")
     details = {}
@@ -650,6 +653,14 @@ def _load_verified_details_v4(
                     "trading_oms_execution_tactic_v1",
                     "trading_oms_execution_step_v1"}:
             related_rows[name] = rows
+    from .arte_declared_native_publication import verify_declared_cold_graph
+    verify_declared_cold_graph(details, declared_native_context)
+    from .arte_declared_native_publication import ENTITY_TYPES
+    if any(row.get('entity_type') in ENTITY_TYPES for row in related_rows.get('trading_event_v1', ())):
+        from .arte_declared_native_publication import DeclaredNativePublicationContext
+        if type(declared_native_context) is not DeclaredNativePublicationContext:
+            raise ValueError('Declared native event cold recovery lacks its complete companion/source hook')
+        declared_native_context.verify_admission()
     if ("trading_oms_execution_tactic_v1" in related_rows
             or "trading_oms_execution_step_v1" in related_rows):
         from .arte_oms_tactic_projection import seal_oms_tactic_rows
@@ -2076,7 +2087,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              first_price_authorities: tuple = (),
                              verified_prior_prefix: V4CommittedPrefix | None = None,
                              first_price_source=None, automatic_ladder_sources=(),
-                             automatic_ladder_read_client=None) -> str:
+                             automatic_ladder_read_client=None,
+                             declared_native_context=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _identity, _insert, _literal, _rows,
@@ -2084,6 +2096,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         _verify_order_context_links,
     )
 
+    from .arte_declared_native_publication import verify_declared_publication_graph
+    verify_declared_publication_graph(batch, base_families, families, declared_native_context)
     stage_started = perf_counter_ns()
 
     def mark_stage(name: str) -> None:
@@ -2230,6 +2244,7 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
         automatic_ladder_sources=automatic_ladder_sources,
         automatic_ladder_read_client=automatic_ladder_read_client,
+        declared_native_context=declared_native_context,
         automatic_ladder_batch_metadata={
             'run_month':batch.run_month.isoformat(), 'attempt_id':batch.attempt_id,
             'first_sequence':batch.first_sequence, 'last_sequence':batch.last_sequence,
