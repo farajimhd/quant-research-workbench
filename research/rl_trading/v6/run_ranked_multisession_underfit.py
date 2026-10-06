@@ -90,7 +90,7 @@ def main(argv=None):
         arguments={k:str(v.resolve()) if isinstance(v,Path) else v for k,v in vars(args).items()},
         dataset_sha256=prior['dataset_sha256'], market_dataset_sha256=prior['market_dataset_sha256'],
         tickers=prior['arguments']['tickers'], feature_contract=prior['feature_contract'],
-        teacher_forecast_contract=prior.get('teacher_forecast_contract'),
+        forecast_contract=prior['forecast_contract'],
         sessions=bindings, selection_sha256=file_hash(args.selection), normalization_sha256=prior['normalization_sha256'],
         normalization_origin='frozen_verified_single_TRAIN_contract_no_refitting', initialization='fresh_weights',
         epochs=args.epochs, seed=17, learning_rate=3e-4, weight_decay=1e-4,
