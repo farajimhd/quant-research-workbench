@@ -22,6 +22,8 @@ def main(argv=None):
     parser.add_argument('--development-scope-sha256', required=True)
     parser.add_argument('--exclusions', type=Path, required=True)
     parser.add_argument('--canary-ticker', help='Explicit retained ticker; full union parent inventory remains pinned')
+    parser.add_argument('--metadata-parent', type=Path, help='Explicit content-addressed canonical metadata parent')
+    parser.add_argument('--metadata-parent-hash', help='Exact canonical metadata parent plan hash')
     args = parser.parse_args(argv)
     try:
         from src.runtime_paths import runtime_root, WORKSTATION_RUNTIME_ROOT
@@ -36,7 +38,9 @@ def main(argv=None):
         operation = export_manifest if args.command == 'plan' else verify_export
         plan = operation(args.archive_root, args.output, args.development_scope,
                          args.development_scope_sha256, args.exclusions,
-                         canary_ticker=args.canary_ticker)
+                         canary_ticker=args.canary_ticker,
+                         **(dict(metadata_parent_path=args.metadata_parent,metadata_parent_hash=args.metadata_parent_hash)
+                            if args.metadata_parent is not None or args.metadata_parent_hash is not None else {}))
         proof = plan['scoped_authority']
         print(f"{args.command}: verified | {len(proof['retained_parent_inventory'])} retained parents | "
               f"{len(plan['rows'])} queued units | {sum(r['sessions'] for r in plan['rows'])} source sessions")

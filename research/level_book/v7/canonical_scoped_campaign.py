@@ -134,7 +134,9 @@ def prepare_manifest(root, scope, scopes, reader, *, canary_ticker=None, _parent
             raise ValueError('Retained ticker lacks resolved parent: '+ticker)
         row = dict(by_ticker[ticker])
         parent = _parent(root,row,parent_cache)
-        output, selected = successor(Path(root), parent, ticker)
+        from .canonical_metadata_parent import VERSION as METADATA_VERSION
+        output, selected = (filtered.successor_for_parent(Path(root),parent,ticker)
+                            if parent.get('version') == METADATA_VERSION else successor(Path(root),parent,ticker))
         if (selected['plan_hash'] != row['plan_hash'] or str(output.relative_to(root)) != row['output']
                 or selected['input_policy'] != c.POLICY or selected['reporting_revision'] != source.REPORTING_REVISION):
             raise ValueError('Current canonical successor policy differs')
@@ -186,12 +188,21 @@ def prepare_manifest(root, scope, scopes, reader, *, canary_ticker=None, _parent
     return plan
 
 
-def build_manifest(root, scope_path, scope_hash, exclusion_path, *, canary_ticker=None):
+def build_manifest(root, scope_path, scope_hash, exclusion_path, *, canary_ticker=None,
+                   metadata_parent_path=None, metadata_parent_hash=None):
     scope = read_scope(scope_path, scope_hash, exclusion_path)
     from src.backend.backtest_market_data import readonly_clickhouse_client
     with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
         scopes = certified_scopes(reader, scope)
     inventory=filtered.make_plan(Path(root))
+    metadata_parent=None
+    if (metadata_parent_path is None) != (metadata_parent_hash is None):
+        raise ValueError('Paired explicit metadata parent path/hash required')
+    if metadata_parent_path is not None:
+        from .canonical_metadata_parent import load_parent
+        metadata_parent=load_parent(root,metadata_parent_path,metadata_parent_hash,
+                                    inventory=inventory,scope=scope,scopes=scopes)
+        inventory=filtered.make_plan(Path(root),metadata_parent=metadata_parent)
     parents={r['ticker']:r for r in inventory['rows']}
     parent_cache={}
     years=set()
@@ -204,8 +215,20 @@ def build_manifest(root, scope_path, scope_hash, exclusion_path, *, canary_ticke
     from .canonical_source_reader import SourceReadPlan, source_client, POLICY_KEY
     source_plan=SourceReadPlan(tuple(sorted(years)),os.environ.get(POLICY_KEY,''))
     with closing(source_client(source_plan)) as reader:
+        if metadata_parent is not None:
+            from .canonical_metadata_parent import prepare_parent, _same
+            fresh=prepare_parent(root,scope,scopes,reader)
+            if not _same(fresh,metadata_parent):
+                raise ValueError('Fresh canonical metadata parent authority differs')
         plan=prepare_manifest(Path(root),scope,scopes,reader,canary_ticker=canary_ticker,
                               _parent_cache=parent_cache,_inventory=inventory)
+    if metadata_parent is not None:
+        from .canonical_metadata_parent import relative, SOURCE_FILES
+        proof=plan['scoped_authority']
+        proof['metadata_parent_reference']=dict(relative=relative(metadata_parent['plan_hash']),
+            plan_hash=metadata_parent['plan_hash'],base_inventory_hash=metadata_parent['base_inventory_hash'],
+            retained_inventory_hash=c.digest(proof['retained_parent_inventory']))
+        proof['exporter_sources'].update({p:sha256((c.REPO/p).read_bytes()).hexdigest() for p in SOURCE_FILES})
     plan['scoped_authority']['source_read_contract']=source_plan.payload()
     proof=plan['scoped_authority']
     proof['scope_proof_hash']=c.digest({k:v for k,v in proof.items() if k!='scope_proof_hash'})
@@ -213,18 +236,22 @@ def build_manifest(root, scope_path, scope_hash, exclusion_path, *, canary_ticke
     return plan
 
 
-def export_manifest(root, output, scope_path, scope_hash, exclusion_path, *, canary_ticker=None):
-    plan = build_manifest(root, scope_path, scope_hash, exclusion_path, canary_ticker=canary_ticker)
+def export_manifest(root, output, scope_path, scope_hash, exclusion_path, *, canary_ticker=None,
+                    metadata_parent_path=None, metadata_parent_hash=None):
+    plan = build_manifest(root, scope_path, scope_hash, exclusion_path, canary_ticker=canary_ticker,
+                          metadata_parent_path=metadata_parent_path,metadata_parent_hash=metadata_parent_hash)
     # One atomic immutable artifact: no partially visible companion proof.
     with c.exclusive(Path(output)/'scope-export.lock'):
         c.write(Path(output)/'plan.json', plan)
     return plan
 
 
-def verify_export(root, output, scope_path, scope_hash, exclusion_path, *, canary_ticker=None):
+def verify_export(root, output, scope_path, scope_hash, exclusion_path, *, canary_ticker=None,
+                  metadata_parent_path=None, metadata_parent_hash=None):
     """Fresh source proof before the existing producer scheduler is permitted."""
     existing = filtered.checked_plan(Path(output))
-    fresh = build_manifest(root, scope_path, scope_hash, exclusion_path, canary_ticker=canary_ticker)
+    fresh = build_manifest(root, scope_path, scope_hash, exclusion_path, canary_ticker=canary_ticker,
+                           metadata_parent_path=metadata_parent_path,metadata_parent_hash=metadata_parent_hash)
     if existing != fresh:
         raise ValueError('Scoped campaign changed; export a new immutable manifest')
     return fresh

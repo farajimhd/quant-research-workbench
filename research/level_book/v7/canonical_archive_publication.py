@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from src.backend.backtest_declared_ladder_seed import _previous_session
 from src.market_engine.derived_trade_policy import POLICY
-from src.market_engine.filtered_v7_history import successor
+from src.market_engine.filtered_v7_history import successor as _legacy_successor
 from src.market_engine.historical_level_checkpoint import digest
 from src.market_engine.level_book_store import read, verified_book
 from src.market_engine.v7_catalog import CAMPAIGNS
@@ -66,6 +66,13 @@ def _file_hash(path):
     return value.hexdigest()
 
 
+def successor(root, parent, ticker):
+    from .canonical_metadata_parent import VERSION as PARENT_CONTRACT, successor as metadata_successor
+    if parent.get('version') == PARENT_CONTRACT:
+        return metadata_successor(root,parent,ticker)
+    return _legacy_successor(root,parent,ticker)
+
+
 @dataclass(frozen=True)
 class ArchiveRequest:
     """Upstream scope references, not self-issued market certification."""
@@ -77,13 +84,22 @@ class ArchiveRequest:
     original_price_token: str
     scoped_price_token: str
     exclusion_policy_hash: str
+    metadata_parent_hash: str = ''
 
     def __post_init__(self):
         _day(self.target_session)
         if type(self.ticker) is not str or re.fullmatch(r'[A-Z0-9.\- ]{1,30}', self.ticker) is None:
             raise ValueError('Invalid archive ticker identity')
-        if type(self.parent_relative) is not str or self.parent_relative not in CAMPAIGNS:
-            raise ValueError('Archive parent is outside installed catalog authority')
+        from .canonical_metadata_parent import is_relative, relative
+        if self.parent_relative in CAMPAIGNS:
+            if type(self.metadata_parent_hash) is not str or self.metadata_parent_hash != '':
+                raise ValueError('Legacy archive request cannot claim metadata parent authority')
+        elif is_relative(self.parent_relative):
+            _hash(self.metadata_parent_hash)
+            if self.parent_relative != relative(self.metadata_parent_hash):
+                raise ValueError('Canonical archive parent path/hash differs')
+        else:
+            raise ValueError('Archive parent is outside explicit catalog or metadata authority')
         for value in (self.original_market_token, self.scoped_market_token,
                       self.original_price_token, self.scoped_price_token, self.exclusion_policy_hash):
             _hash(value)
@@ -183,10 +199,20 @@ def _verify_archive_member(root: Path, request: ArchiveRequest, snapshot: _Archi
     if parent.get('plan_hash') != digest({k:v for k,v in parent.items() if k != 'plan_hash'}):
         raise ValueError('Parent archive plan hash mismatch')
     from .campaign import VERSION as PARENT_VERSION
+    from .canonical_metadata_parent import VERSION as METADATA_VERSION, load_parent
     from src.market_engine.streaming_level_book import EXTRACTION_VERSION
     from src.market_engine.reaction_band import CONFIG
     from src.backend.swing_book_source import HISTORICAL_POLICY, session_bounds
-    if (parent.get('version') != PARENT_VERSION or parent.get('extraction_version') != EXTRACTION_VERSION
+    if request.metadata_parent_hash:
+        checked=load_parent(root,root/request.parent_relative/'plan.json',request.metadata_parent_hash)
+        if not _equal(parent,checked) or parent.get('version') != METADATA_VERSION:
+            raise ValueError('Canonical archive metadata parent differs')
+        scopes=[s for s in parent['scopes'] if s['target_session']==request.target_session]
+        if (len(scopes)!=1 or request.ticker not in scopes[0]['tickers']
+                or any(getattr(request,k)!=scopes[0][k] for k in SOURCE_SCOPE_KEYS)):
+            raise ValueError('Canonical archive request differs from parent dated source scope')
+    if (parent.get('version') != (METADATA_VERSION if request.metadata_parent_hash else PARENT_VERSION)
+            or parent.get('extraction_version') != EXTRACTION_VERSION
             or not _equal(parent.get('band_config'), CONFIG) or parent.get('source_policy') != HISTORICAL_POLICY):
         raise ValueError('Parent producer contract differs')
     matches = [row for row in parent['rows'] if row['ticker'] == request.ticker]
@@ -293,7 +319,8 @@ def projected_archive_seed(book: dict, *, seed_session: str, available_at: str,
 def projection_source_identity():
     repo=Path(__file__).resolve().parents[3]
     paths=('src/backend/structural_v7_seed.py','research/level_book/v7/clickhouse_persistence.py',
-           'src/market_engine/canonical_v7_archive_contract.py','research/level_book/v7/canonical_archive_publication.py')
+           'src/market_engine/canonical_v7_archive_contract.py','research/level_book/v7/canonical_archive_publication.py',
+           'research/level_book/v7/canonical_metadata_parent.py')
     return tuple((name,_file_hash(repo/name)) for name in paths)
 
 @dataclass(frozen=True)

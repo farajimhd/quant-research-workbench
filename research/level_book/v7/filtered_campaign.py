@@ -42,7 +42,7 @@ def execution_hashes():
     return {name:sha256((c.REPO/name).read_bytes()).hexdigest() for name in EXECUTION_FILES}
 
 
-def make_plan(root):
+def make_plan(root, *, metadata_parent=None):
     catalog = Catalog(root)
     reasons_by_ticker = {}
     for _,parent in catalog.plans:
@@ -68,7 +68,17 @@ def make_plan(root):
     plan = dict(version=1,catalog_hash=catalog.fingerprint,consumer_kernel=kernel(),
                 scheduler_hashes=execution_hashes(),rows=rows)
     plan['manifest_hash'] = c.digest(plan)
+    if metadata_parent is not None:
+        from .canonical_metadata_parent import overlay_inventory
+        return overlay_inventory(root,metadata_parent,inventory=plan)
     return plan
+
+
+def successor_for_parent(root, parent, ticker):
+    from .canonical_metadata_parent import VERSION, successor as metadata_successor
+    if parent.get('version') == VERSION:
+        return metadata_successor(root,parent,ticker)
+    return successor(root,parent,ticker)
 
 
 def checked_plan(folder):
@@ -97,6 +107,10 @@ def declared_source_plan(plan):
            'scripts/prepare_canonical_v7_scoped_campaign.py',
            'research/level_book/v7/canonical_source_reader.py',
            'scripts/clickhouse/provision_canonical_v7_source_reader.py')
+    if proof.get('metadata_parent_reference') is not None:
+        from .canonical_metadata_parent import SOURCE_FILES, verify_manifest_reference
+        verify_manifest_reference(proof)
+        paths=tuple(dict.fromkeys((*paths,*SOURCE_FILES)))
     if proof.get('exporter_sources')!={p:sha256((c.REPO/p).read_bytes()).hexdigest() for p in paths}:
         raise ValueError('Scoped exporter/source-reader source bytes differ')
     selected=parse_source_contract(proof.get('source_read_contract'))
@@ -144,7 +158,15 @@ def execute(root, folder, row):
     parent = c.read(root/row['parent']/'plan.json')
     if parent['plan_hash'] != row['parent_hash'] or c.digest({k:v for k,v in parent.items() if k!='plan_hash'}) != row['parent_hash']:
         raise ValueError('Frozen parent campaign changed')
-    output,plan = successor(root,parent,row['ticker'])
+    from .canonical_metadata_parent import VERSION as METADATA_VERSION, verify_manifest_reference, _same
+    if parent.get('version')==METADATA_VERSION:
+        original=verify_manifest_reference(execution['scoped_authority'],root=root)
+        if not _same(original,parent):
+            raise ValueError('Worker canonical parent differs from complete overlay authority')
+        matching=[r for r in execution['rows'] if r['ticker']==row['ticker']]
+        if len(matching)!=1 or not _same(matching[0],row):
+            raise ValueError('Worker row differs from declared canonical preparation')
+    output,plan = successor_for_parent(root,parent,row['ticker'])
     if plan['plan_hash'] != row['plan_hash'] or output != root/row['output']:
         raise ValueError('Filtered successor identity differs from consumer contract')
     while True:
