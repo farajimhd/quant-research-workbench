@@ -1,0 +1,45 @@
+//@version=6
+indicator("Research: jump / volume squeeze alerts v1", overlay = true, max_bars_back = 5000)
+mode = input.string("Jump OR breakout", "Trigger", options = ["Percentage jump", "Range breakout", "Volume expansion", "Jump OR breakout"])
+windowSeconds = input.int(60, "Jump / breakout window (seconds)", minval = 1)
+jumpPct = input.float(3, "Minimum upward jump (%)", minval = 0.01)
+volumeBars = input.int(60, "Prior volume baseline (bars)", minval = 2, maxval = 2000)
+volumeMultiple = input.float(2, "Volume expansion multiple", minval = 0.1)
+requireVolumeExpansion = input.bool(true, "Require volume expansion for price triggers")
+requireVWAP = input.bool(true, "Require price above session VWAP")
+minDollarVolume = input.float(10000, "Minimum current-bar dollar volume", minval = 0)
+minShares = input.float(0, "Minimum current-bar shares", minval = 0)
+tradeSession = input.session("0400-0930,1600-2000", "Alert session (New York)")
+cooldownSeconds = input.int(60, "Minimum seconds between alerts", minval = 0)
+showVWAP = input.bool(true, "Show VWAP")
+float secondsPerBar = timeframe.in_seconds()
+int n = int(math.ceil(windowSeconds / secondsPerBar))
+if barstate.isfirst and (not timeframe.isintraday or na(secondsPerBar) or n > 4999)
+    runtime.error("Use a time-based intraday chart with window <= 4999 chart bars.")
+bool inside = not na(time(timeframe.period, tradeSession, "America/New_York"))
+bool newDay = timeframe.change("1D")
+float vwap = ta.vwap(hlc3, newDay or barstate.isfirst)
+float baseline = ta.sma(volume, volumeBars)[1]
+float priorHigh = ta.highest(high, n)[1]
+float changePct = (close / close[n] - 1) * 100
+// Avoid treating an overnight or sparse-data gap as a short-window jump.
+bool contiguous = not na(time[n]) and time - time[n] <= (windowSeconds + secondsPerBar) * 1000
+bool jump = contiguous and changePct >= jumpPct
+bool breakout = contiguous and close > priorHigh
+bool volumeExpansion = not na(baseline) and baseline > 0 and volume >= baseline * volumeMultiple
+bool trigger = switch mode
+    "Percentage jump" => jump
+    "Range breakout" => breakout
+    "Volume expansion" => volumeExpansion
+    => jump or breakout
+bool gates = inside and not na(volume) and volume >= minShares and volume * close >= minDollarVolume and (not requireVWAP or close > vwap) and (not requireVolumeExpansion or volumeExpansion)
+bool qualified = trigger and gates
+var int lastAlert = na
+bool cooled = na(lastAlert) or time_close - lastAlert >= cooldownSeconds * 1000
+bool fire = barstate.isconfirmed and qualified and not qualified[1] and cooled
+if fire
+    lastAlert := time_close
+    alert("Research jump/volume v1 | " + syminfo.tickerid + " | close=" + str.tostring(close, format.mintick) + " | jump_pct=" + str.tostring(changePct, "#.##"), alert.freq_once_per_bar_close)
+alertcondition(fire, "Qualified upward signal", "Qualified upward signal on {{ticker}} ({{interval}}), close {{close}}")
+plot(showVWAP ? vwap : na, "Session VWAP", color = color.orange)
+plotshape(fire, title = "Alert", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "JUMP")

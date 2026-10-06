@@ -1,0 +1,32 @@
+//@version=6
+indicator("Research: MACD episode shading v1", overlay = true)
+fastLength = input.int(12, "Fast EMA", minval = 1)
+slowLength = input.int(26, "Slow EMA", minval = 2)
+signalLength = input.int(9, "Signal EMA", minval = 1)
+mode = input.string("MACD vs signal", "Episode definition", options = ["MACD vs signal", "MACD vs zero", "Gap threshold (bps)"])
+threshold = input.float(0.5, "Absolute gap threshold (bps)", minval = 0)
+transparency = input.int(90, "Background transparency", minval = 0, maxval = 100)
+confirmedOnly = input.bool(true, "Hold previous episode until bar closes")
+resetDaily = input.bool(false, "Reset EMAs each exchange day")
+restrictSession = input.bool(false, "Shade only selected session")
+shadeSession = input.session("0400-0930,1600-2000", "Shading session (New York)")
+bool reset = barstate.isfirst or (resetDaily and timeframe.change("1D"))
+var float fast = na
+var float slow = na
+var float signal = na
+fast := reset ? close : fast + 2.0 / (fastLength + 1) * (close - fast)
+slow := reset ? close : slow + 2.0 / (slowLength + 1) * (close - slow)
+float macd = fast - slow
+signal := reset ? 0 : signal + 2.0 / (signalLength + 1) * (macd - signal)
+float gapBps = close > 0 ? (macd - signal) / close * 10000 : na
+float value = mode == "MACD vs zero" ? macd : mode == "Gap threshold (bps)" ? gapBps : macd - signal
+float boundary = mode == "Gap threshold (bps)" ? threshold : 0
+int rawEpisode = value > boundary ? 1 : value < -boundary ? -1 : 0
+var int episode = 0
+if not confirmedOnly or barstate.isconfirmed
+    episode := rawEpisode
+bool visible = not restrictSession or not na(time(timeframe.period, shadeSession, "America/New_York"))
+bgcolor(visible ? episode == 1 ? color.new(color.lime, transparency) : episode == -1 ? color.new(color.red, transparency) : na : na)
+plot(gapBps, "MACD gap bps", display = display.data_window)
+alertcondition(barstate.isconfirmed and episode == 1 and episode[1] != 1, "Green episode starts", "Green MACD episode starts on {{ticker}} ({{interval}})")
+alertcondition(barstate.isconfirmed and episode == -1 and episode[1] != -1, "Red episode starts", "Red MACD episode starts on {{ticker}} ({{interval}})")
