@@ -122,22 +122,25 @@ class TorchPrograms:
             self.dispatch.append(operations)
 
     def __call__(self,features,valid):
-        if features.ndim!=2 or valid.shape!=features.shape:raise ValueError('Expected [candles,features] and validity')
-        b=len(self.programs);c=len(features);values=[];masks=[]
+        if features.ndim not in (2,3) or valid.shape!=features.shape:raise ValueError('Expected [candles,features] or [listings,candles,features] and validity')
+        b=len(self.programs);c=features.shape[-2];values=[];masks=[]
+        shape=(b,*features.shape[:-1]);broadcast=(b,)+(1,)*(features.ndim-1)
         axis=torch.arange(c,device=features.device)[None]
-        def lag(x,k):return F.pad(x[:,:max(0,c-k)],(k,0))[:,:c]
+        def lag(x,k):return F.pad(x[...,:max(0,c-k)],(k,0))[...,:c]
         for i,(nodes,fi,ai,bi) in enumerate(self.rows):
-            out=features.new_zeros((b,c));ok=torch.zeros((b,c),dtype=torch.bool,device=features.device)
+            out=features.new_zeros(shape);ok=torch.zeros(shape,dtype=torch.bool,device=features.device)
             if i:
                 stack=torch.stack(values);mask=torch.stack(masks)
                 a=stack[ai,self.batch_axis];d=stack[bi,self.batch_axis];av=mask[ai,self.batch_axis];dv=mask[bi,self.batch_axis]
             for op,choose,windows,constants in self.dispatch[i]:
-                if op==Op.FEATURE:v=features[:,fi].T;m=valid[:,fi].T
+                choose=choose.reshape(broadcast)
+                if op==Op.FEATURE:v=features[...,fi].movedim(-1,0);m=valid[...,fi].movedim(-1,0)
                 elif op==Op.CONSTANT:
-                    v=constants.to(features.dtype).expand(b,c);m=torch.ones_like(ok)
+                    v=constants.to(features.dtype).reshape(broadcast).expand(shape);m=torch.ones_like(ok)
                 elif op in (Op.LAG,Op.MEAN,Op.MINIMUM,Op.MAXIMUM,Op.DIFFERENCE):
                     v=torch.zeros_like(out);m=torch.zeros_like(ok)
                     for k,selected in windows:
+                        selected=selected.reshape(broadcast)
                         if op in (Op.LAG,Op.DIFFERENCE):
                             z=lag(a,k);mv=lag(av,k)&(axis>=k)
                             if op==Op.DIFFERENCE:z=a-z;mv=mv&av
@@ -145,10 +148,10 @@ class TorchPrograms:
                             safe=torch.where(av,a,0.)
                             sums=F.pad(safe.cumsum(-1),(1,0));counts=F.pad(av.to(features.dtype).cumsum(-1),(1,0))
                             starts=(torch.arange(c,device=features.device)+1-k).clamp_min(0)
-                            mv=((counts[:,1:]-counts[:,starts])==k)&(axis>=k-1)
-                            if op==Op.MEAN:z=(sums[:,1:]-sums[:,starts])/k
-                            elif op==Op.MAXIMUM:z=F.max_pool1d(F.pad(safe[:,None],(k-1,0),value=-float('inf')),k,1).squeeze(1)
-                            else:z=-F.max_pool1d(F.pad(-safe[:,None],(k-1,0),value=-float('inf')),k,1).squeeze(1)
+                            mv=((counts[...,1:]-counts[...,starts])==k)&(axis>=k-1)
+                            if op==Op.MEAN:z=(sums[...,1:]-sums[...,starts])/k
+                            elif op==Op.MAXIMUM:z=F.max_pool1d(F.pad(safe.reshape(-1,1,c),(k-1,0),value=-float('inf')),k,1).reshape(shape)
+                            else:z=-F.max_pool1d(F.pad(-safe.reshape(-1,1,c),(k-1,0),value=-float('inf')),k,1).reshape(shape)
                         v=torch.where(selected,z,v);m=torch.where(selected,mv,m)
                 else:
                     m=av if op in (Op.NOT,Op.ABS) else av&dv
