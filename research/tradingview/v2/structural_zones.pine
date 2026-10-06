@@ -12,6 +12,7 @@ minimumCount = input.int(3, "Minimum independent reactions", minval = 1)
 minimumDays = input.int(2, "Minimum distinct reaction days", minval = 1)
 halfLife = input.float(10, "Evidence recency half-life (days)", minval = 0.1)
 perSide = input.int(3, "Levels above / below price", minval = 1, maxval = 10)
+showProvisional = input.bool(true, "Show provisional candidates (dashed gray)")
 maxDistance = input.float(3, "Maximum distance from price (%)", minval = 0.1)
 showBands = input.bool(false, "Show faint central 80% reaction bands")
 bandTransparency = input.int(95, "Band transparency", minval = 80, maxval = 100)
@@ -40,7 +41,15 @@ var samples = array.new<Reaction>()
 var drawnLines = array.new<line>()
 var drawnLabels = array.new<label>()
 var drawnBands = array.new<box>()
-var status = table.new(position.top_right, 1, 4)
+var status = table.new(position.top_right, 1, 7)
+var int independentCount = 0
+var int bucketCount = 0
+var int qualifiedCount = 0
+var int rejectedCount = 0
+var int rejectedDays = 0
+var int rejectedDistance = 0
+var int shownQualified = 0
+var int shownProvisional = 0
 var int firstLoaded = time
 var int processed = 0
 var int filtered = 0
@@ -125,14 +134,34 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                 float ageDays = math.max(0, (referenceTime - r.availableTime) / 86400000.0)
                 z.score += math.min(r.strength, 5) * math.pow(0.5, ageDays / halfLife)
     distances = array.new<float>()
+    independentCount := independent
+    bucketCount := array.size(zones)
+    qualifiedCount := 0
+    rejectedCount := 0
+    rejectedDays := 0
+    rejectedDistance := 0
+    shownQualified := 0
+    shownProvisional := 0
     if array.size(zones) > 0
         for j = 0 to array.size(zones) - 1
             Zone z = array.get(zones, j)
             array.sort(z.prices)
             float center = array.size(z.prices) > 0 ? array.median(z.prices) : na
             float distance = math.abs(center / referencePrice - 1) * 100
-            bool qualified = array.size(z.prices) >= minimumCount and z.distinctDays >= minimumDays and distance <= maxDistance
-            array.push(distances, qualified ? distance : 1e20)
+            bool enoughCount = array.size(z.prices) >= minimumCount
+            bool enoughDays = z.distinctDays >= minimumDays
+            bool nearby = distance <= maxDistance
+            bool qualified = enoughCount and enoughDays and nearby
+            if not enoughCount
+                rejectedCount += 1
+            if not enoughDays
+                rejectedDays += 1
+            if not nearby
+                rejectedDistance += 1
+            if qualified
+                qualifiedCount += 1
+            // Qualified levels first; then nearby provisional candidates fill vacancies.
+            array.push(distances, qualified ? distance : showProvisional and nearby ? 1000000 + distance : 1e20)
         ranked = array.sort_indices(distances, order.ascending)
         int above = 0
         int below = 0
@@ -143,13 +172,14 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                 float center = array.median(z.prices)
                 bool overhead = center >= referencePrice
                 if (overhead and above < perSide) or (not overhead and below < perSide)
+                    bool provisional = array.get(distances, j) >= 1000000
                     float lo = math.min(array.percentile_linear_interpolation(z.prices, 10), center * (1 - minimumWidth / 100))
                     float hi = math.max(array.percentile_linear_interpolation(z.prices, 90), center * (1 + minimumWidth / 100))
-                    color ink = referencePrice > hi ? color.green : referencePrice < lo ? color.red : color.orange
+                    color ink = provisional ? color.gray : referencePrice > hi ? color.green : referencePrice < lo ? color.red : color.orange
                     int start = math.min(chart.left_visible_bar_time, time)
                     int finish = math.max(time + 1000, chart.right_visible_bar_time)
-                    array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1))
-                    string caption = str.tostring(center, format.mintick) + " | S" + str.tostring(z.supports) + "/R" + str.tostring(z.resistances) + " | " + str.tostring(z.distinctDays) + "d | evidence " + str.tostring(z.score, "#.0")
+                    array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = provisional ? line.style_dashed : line.style_solid))
+                    string caption = (provisional ? "PROVISIONAL " : "") + str.tostring(center, format.mintick) + " | S" + str.tostring(z.supports) + "/R" + str.tostring(z.resistances) + " | " + str.tostring(z.distinctDays) + "d | evidence " + str.tostring(z.score, "#.0")
                     array.push(drawnLabels, label.new(time, center, caption, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = ink, size = size.small))
                     if showBands
                         array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 85), bgcolor = color.new(ink, bandTransparency)))
@@ -157,8 +187,19 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                         above += 1
                     else
                         below += 1
-    float loadedSpan = (lastProcessed - math.max(firstLoaded, loadCutoff)) / 86400000.0
-    table.cell(status, 0, 0, "Approximation v2 | confirmed snapshot | " + timeframe.period)
+                    if provisional
+                        shownProvisional += 1
+                    else
+                        shownQualified += 1
+
+// Always show diagnostics on the latest bar, even before its first live close.
+if barstate.islast
+    float loadedSpan = na(lastProcessed) ? 0 : math.max(0, (lastProcessed - math.max(firstLoaded, loadCutoff)) / 86400000.0)
+    string message = na(lastProcessed) ? "No completed bars in window" : array.size(samples) == 0 ? "No accepted pivots: check history, pivot lengths and ATR gate" : shownQualified + shownProvisional == 0 ? "No displayed levels: check distance or enable provisional candidates" : "Solid = qualified | dashed gray = provisional"
+    table.cell(status, 0, 0, "Approximation v2.1 | confirmed snapshot | " + timeframe.period, bgcolor = color.new(color.white, 15), text_color = color.black)
     table.cell(status, 0, 1, "Loaded span " + str.tostring(loadedSpan, "#.##") + "/" + str.tostring(days) + "d | bars " + str.tostring(processed))
-    table.cell(status, 0, 2, "Retained pivots " + str.tostring(array.size(samples)) + " | independent " + str.tostring(independent) + " | filtered " + str.tostring(filtered))
+    table.cell(status, 0, 2, "Pivots " + str.tostring(array.size(samples)) + " | independent " + str.tostring(independentCount) + " | filtered " + str.tostring(filtered))
     table.cell(status, 0, 3, firstLoaded > loadCutoff ? "History shorter than requested | evidence is not probability" : "History reaches cutoff | evidence is not probability", text_color = firstLoaded > loadCutoff ? color.orange : color.gray)
+    table.cell(status, 0, 4, "Buckets " + str.tostring(bucketCount) + " | qualified " + str.tostring(qualifiedCount) + " | shown " + str.tostring(shownQualified) + " + " + str.tostring(shownProvisional) + " provisional")
+    table.cell(status, 0, 5, "Rejected: count " + str.tostring(rejectedCount) + " | days " + str.tostring(rejectedDays) + " | distance " + str.tostring(rejectedDistance))
+    table.cell(status, 0, 6, message, text_color = shownQualified + shownProvisional == 0 ? color.orange : color.gray)
