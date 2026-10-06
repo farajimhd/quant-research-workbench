@@ -54,6 +54,15 @@ def select_targets(labels, listings, per_class):
     return tuple(ordered), rows.tolist()
 
 
+def coverage_report(candidates, listings):
+    """JSON-native mechanical counts; no target values or scores exported."""
+    return dict(decisions=len(candidates),
+        current_counts={name: int(sum(ActionAxes(listings, len(d.held_index)).action_class(d.token) == index
+                                  for d in candidates)) for index, name in ((0, 'WAIT'), (1, 'ENTRY'), (5, 'HOLD'), (2, 'EXIT'))},
+        future_counts=[{name: int(sum(d.forecast_actions is not None and len(d.forecast_actions) > h and d.forecast_actions[h] == index
+                                 for d in candidates)) for index, name in enumerate(('ENTRY', 'WAIT', 'HOLD', 'EXIT'))} for h in range(5)])
+
+
 def passes(metrics):
     """Same complete-head tolerances as the local gate; absent targets fail."""
     names = ('wait', 'enter_long', 'hold', 'exit_long')
@@ -109,11 +118,7 @@ def main(argv=None):
     # Input population is unchanged; only prefix length and target count are bounded.
     session, candidates = subset(full, labels, full.listings, begin, begin+args.seconds*1_000_000-1)
     if session.listings != full.listings: raise ValueError('Certified input population changed')
-    write('candidate-coverage.json', dict(decisions=len(candidates),
-        current_counts={name: sum(ActionAxes(len(session.listings), len(d.held_index)).action_class(d.token) == index
-                                  for d in candidates) for index, name in ((0, 'WAIT'), (1, 'ENTRY'), (5, 'HOLD'), (2, 'EXIT'))},
-        future_counts=[{name: sum(d.forecast_actions is not None and len(d.forecast_actions) > h and d.forecast_actions[h] == index
-                                 for d in candidates) for index, name in enumerate(('ENTRY', 'WAIT', 'HOLD', 'EXIT'))} for h in range(5)]))
+    write('candidate-coverage.json', coverage_report(candidates, len(session.listings)))
     targets, rows = select_targets(candidates, len(session.listings), args.rows_per_class)
     del full, labels; gc.collect()
     ranking = MarketAttentionConfig(**source.published()[1]['ranking'])

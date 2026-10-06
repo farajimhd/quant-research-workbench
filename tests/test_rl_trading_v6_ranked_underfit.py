@@ -1,9 +1,10 @@
 import copy
+import json
 from dataclasses import asdict, replace
 import numpy as np
 import pytest
 import torch
-from research.rl_trading.v6.run_ranked_teacher_underfit import passes, select_targets
+from research.rl_trading.v6.run_ranked_teacher_underfit import passes, select_targets, coverage_report
 from research.rl_trading.v6.probe_teacher_sequence import subset
 from research.rl_trading.v6.teacher_forecast import configure
 from research.rl_trading.v6.temporal_encoders import replace_encoder
@@ -59,3 +60,12 @@ def test_target_sampler_fails_closed_on_absent_held_forecasts():
     _, session, labels = fixture()
     with pytest.raises(ValueError, match='Source lacks'):
         select_targets(labels, len(session.listings), 16)
+
+
+def test_actual_numpy_forecast_coverage_is_json_native_and_counts_tail_masks():
+    _, session, labels = fixture()
+    labels = tuple(replace(d, forecast_actions=np.zeros(len(d.forecast_close_us), np.int64)) for d in labels)
+    report = json.loads(json.dumps(coverage_report(labels, len(session.listings))))
+    assert report['current_counts'] == {'ENTRY': 12, 'WAIT': 0, 'HOLD': 0, 'EXIT': 0}
+    assert [h['ENTRY'] for h in report['future_counts']] == [12, 11, 10, 9, 8]
+    assert all(h['EXIT'] == h['HOLD'] == h['WAIT'] == 0 for h in report['future_counts'])
