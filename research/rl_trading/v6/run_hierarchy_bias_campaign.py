@@ -108,7 +108,10 @@ def underfit_gate(make,trial,train,folder,logger,price_scale=None):
     for epoch in range(1,201):
         fit=factor_epoch(model,tiny,optimizer,epoch=epoch,batch_size=128,price_scale=price_scale) if trial['factor'] else run_epoch(model,tiny,optimizer,Trial('flat',architecture='tcn',structured=True),epoch=epoch,batch_size=128)
         if epoch%10:continue
-        actions,_=evaluate(model,tiny,batch_size=128)
+        actions,probability=evaluate(model,tiny,batch_size=128)
+        flat=tiny['actions_numpy']<2
+        actions['WAIT']=binary_report(tiny['actions_numpy'][flat]==1,1-probability[flat])
+        actions['HOLD']=binary_report(tiny['actions_numpy'][~flat]==2,1-probability[~flat])
         components=component_report(model,tiny,batch_size=128) if trial['factor'] else None
         passed=underfit_passes(actions,components)
         logger.log(flatten(dict(actions=actions,components=components or {}), 'underfit/'+trial['name']))
