@@ -89,6 +89,9 @@ def main(argv=None):
     saved=torch.load(checkpoint,map_location='cpu',weights_only=False)
     if saved['manifest_hash']!=pm['hash'] or saved['trial']!=selected['trial']:raise ValueError('Selected checkpoint identity changed')
     panel=torch.load(root/'panel.pt',map_location='cpu',weights_only=False);verify_panel(panel,source)
+    for fold,values in panel.items():
+        if not np.array_equal(values['held'][:,0]>0,values['action']>=2):
+            raise ValueError('Known position state disagrees with action branch')
     panel=reserve_calibration(panel,source);norm=normalization(panel['train'])
     if digest(norm)!=pm['normalization_sha256'] or norm!=saved['normalization']:raise ValueError('Frozen normalization changed')
     torch.set_num_threads(4);device=torch.device('cuda');config=selected['trial']
