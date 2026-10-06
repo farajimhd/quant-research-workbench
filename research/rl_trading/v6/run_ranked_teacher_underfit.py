@@ -41,7 +41,10 @@ def select_targets(labels, listings, per_class):
     for i, decision in enumerate(labels):
         if decision.forecast_actions is not None:
             future[i, :len(decision.forecast_actions)] = decision.forecast_actions
-    rows = underfit_rows(actions, future, per_class=per_class)
+    try:
+        rows = underfit_rows(actions, future, per_class=per_class)
+    except ValueError as error:
+        raise ValueError(f'{error}; current ENTRY/WAIT/HOLD/EXIT counts={np.bincount(actions, minlength=4).tolist()}') from error
     selected = sorted((labels[i] for i in rows), key=lambda d: (d.close_us, d.episode_uid, len(d.held_index)))
     ordered = []; last = None; order = 0
     for decision in selected:
@@ -106,6 +109,11 @@ def main(argv=None):
     # Input population is unchanged; only prefix length and target count are bounded.
     session, candidates = subset(full, labels, full.listings, begin, begin+args.seconds*1_000_000-1)
     if session.listings != full.listings: raise ValueError('Certified input population changed')
+    write('candidate-coverage.json', dict(decisions=len(candidates),
+        current_counts={name: sum(ActionAxes(len(session.listings), len(d.held_index)).action_class(d.token) == index
+                                  for d in candidates) for index, name in ((0, 'WAIT'), (1, 'ENTRY'), (5, 'HOLD'), (2, 'EXIT'))},
+        future_counts=[{name: sum(d.forecast_actions is not None and len(d.forecast_actions) > h and d.forecast_actions[h] == index
+                                 for d in candidates) for index, name in enumerate(('ENTRY', 'WAIT', 'HOLD', 'EXIT'))} for h in range(5)]))
     targets, rows = select_targets(candidates, len(session.listings), args.rows_per_class)
     del full, labels; gc.collect()
     ranking = MarketAttentionConfig(**source.published()[1]['ranking'])
