@@ -87,6 +87,10 @@ def main(argv=None):
     normalization = json.loads((args.underfit/'normalization.json').read_text())
     ranking = MarketAttentionConfig(**prior['ranking'])
     plan = dict(version='rl-v6-ranked-six-session-underfit-v1', source_commit=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+        arguments={k:str(v.resolve()) if isinstance(v,Path) else v for k,v in vars(args).items()},
+        dataset_sha256=prior['dataset_sha256'], market_dataset_sha256=prior['market_dataset_sha256'],
+        tickers=prior['arguments']['tickers'], feature_contract=prior['feature_contract'],
+        teacher_forecast_contract=prior.get('teacher_forecast_contract'),
         sessions=bindings, selection_sha256=file_hash(args.selection), normalization_sha256=prior['normalization_sha256'],
         normalization_origin='frozen_verified_single_TRAIN_contract_no_refitting', initialization='fresh_weights',
         epochs=args.epochs, seed=17, learning_rate=3e-4, weight_decay=1e-4,
