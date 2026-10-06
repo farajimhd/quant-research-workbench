@@ -138,6 +138,9 @@ class PreparedDeclaredSourceResolver:
         self._approval = canonical_json(approval)
         self._binding()
 
+    def _verify_configuration(self, envelope, approval):
+        verify_prepared_candidate_configuration(self.client, self.candidate, envelope, approval=approval)
+
     def _binding(self):
         from .arte_journal_writer import load_typed_run_context
         from .arte_backtest_definition import load_backtest_definition
@@ -147,7 +150,7 @@ class PreparedDeclaredSourceResolver:
             raise ValueError("Declared source needs exact explicit source policy")
         self.source_policy.__post_init__()
         envelope, approval = json.loads(self._envelope), json.loads(self._approval)
-        verify_prepared_candidate_configuration(self.client, self.candidate, envelope, approval=approval)
+        self._verify_configuration(envelope, approval)
         native = load_typed_run_context(self.client, self.run_id)
         identity = self.candidate.base.identity
         if (native['run_id'] != self.run_id or native['mode'] != 'backtest'
