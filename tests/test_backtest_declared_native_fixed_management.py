@@ -30,6 +30,7 @@ class Runtime:
     """Explicit prepared callback seam; no fake broker/Portfolio certification."""
     def __init__(self):
         self.entries, self.exits, self.protections, self.sessions = [], [], [], []
+        self.commands = []
         self.approve = True
         self.reject_protection = False
 
@@ -37,19 +38,23 @@ class Runtime:
         self.entries.append(proposal)
         return [{"order_group": object() if self.approve else None, "decision": {"status": "approved" if self.approve else "rejected"}}]
 
-    async def submit_declared_exit(self, kind, view, witness, source, *, reference):
-        self.exits.append((kind, witness, source.intent_id, reference))
-
-    async def submit_declared_session_exit(self, view, rows, boundary, source):
-        self.sessions.append((boundary, source.intent_id))
-
-    async def submit_strategy_one_protection(self, previous, transition, view, **quote):
-        self.protections.append((previous, transition))
-        if self.reject_protection:
-            raise RuntimeError("ACK unavailable")
-        return confirm_protection_transition(previous, transition,
-            target_confirmed=transition.target_amendment is not None,
-            stop_confirmed=transition.stop_amendment is not None)
+    async def submit_declared_management(self, command):
+        from src.trading_runtime.declared_native_management_command import (DeclaredExitCommand, DeclaredSessionCommand, DeclaredProtectionCommand)
+        result=command.replay()
+        self.commands.append(command)
+        if type(command) is DeclaredExitCommand:
+            self.exits.append((command.kind,command.witness,command.context.source.intent_id,command.inputs.prior_arm))
+        elif type(command) is DeclaredSessionCommand:
+            self.sessions.append((result,command.context.source.intent_id))
+        elif type(command) is DeclaredProtectionCommand:
+            previous=command.inputs.previous
+            self.protections.append((previous,result))
+            if self.reject_protection:
+                raise RuntimeError("ACK unavailable")
+            return confirm_protection_transition(previous,result,
+                target_confirmed=result.target_amendment is not None,stop_confirmed=result.stop_amendment is not None)
+        else:
+            raise TypeError('Foreign management command')
 
 
 class Evidence:

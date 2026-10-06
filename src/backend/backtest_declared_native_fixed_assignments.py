@@ -168,12 +168,28 @@ def prepare_declared_assignment_plan(client, *, run_id, spec, envelope, approval
     from src.trading_runtime.declared_native_execution import (
         DeclaredNativeExecutionSpec, verify_declared_execution_configuration,
     )
-    from src.trading_runtime.arte_journal_writer import load_typed_run_context
-    from src.trading_runtime.arte_backtest_definition import load_backtest_definition
-    from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan, RULE_DIGEST
     if type(spec) is not DeclaredNativeExecutionSpec or type(market) is not CertifiedMarketDayPlan:
         raise ValueError("Declared assignment preparation needs exact execution spec and market")
     verify_declared_execution_configuration(client,spec,envelope,approval=approval)
+    return _prepare_verified_assignment_plan(client, run_id=run_id, spec=spec, envelope=envelope, market=market)
+
+
+def prepare_declared_managed_assignment_plan(client, *, run_id, spec, envelope, approval, market):
+    """Complete @4 verification precedes the identical dated source loader."""
+    from src.trading_runtime.declared_native_managed_execution import (
+        DeclaredNativeManagedExecutionSpec, verify_declared_managed_configuration,
+    )
+    if type(spec) is not DeclaredNativeManagedExecutionSpec or type(market) is not CertifiedMarketDayPlan:
+        raise ValueError("Managed assignments need exact managed spec and market")
+    verify_declared_managed_configuration(client, spec, envelope, approval=approval)
+    return _prepare_verified_assignment_plan(client, run_id=run_id, spec=spec.execution,
+                                              envelope=envelope, market=market)
+
+
+def _prepare_verified_assignment_plan(client, *, run_id, spec, envelope, market):
+    from src.trading_runtime.arte_journal_writer import load_typed_run_context
+    from src.trading_runtime.arte_backtest_definition import load_backtest_definition
+    from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan, RULE_DIGEST
     configuration=envelope['payload'];policy=spec.assignments
     if type(policy) is not DeclaredAssignmentPolicy:
         raise ValueError("Declared execution has foreign assignment policy")

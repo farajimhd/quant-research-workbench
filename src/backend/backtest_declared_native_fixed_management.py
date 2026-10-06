@@ -36,6 +36,8 @@ from src.trading_runtime.strategy_liquidity_fade_failure import LiquidityFadeInp
 from src.trading_runtime.strategy_half_risk_liquidity_fade import half_risk_liquidity_fade_failure, half_risk_liquidity_policy_payload
 from src.trading_runtime.early_original_risk_failure import EarlyOriginalRiskPolicy, early_original_risk_failure
 from src.trading_runtime.entry_spread_risk import canonical_price_int, exact_epoch_us
+from src.trading_runtime.declared_native_management_command import (DeclaredManagementContext, DeclaredExitInputs,
+    DeclaredExitCommand, DeclaredProtectionInputs, DeclaredProtectionCommand, DeclaredSessionCommand)
 
 
 def _clock(value, *, zero=False):
@@ -189,10 +191,19 @@ class DeclaredLiquidityCheckpointRequest:
     financial: StrategyOneFinancialView
     source_entry_intent_id: str
     observation_source: Mapping
+    command: DeclaredExitCommand
 
     def __post_init__(self):
         _uuid(self.run_id)
         _uuid(self.source_entry_intent_id)
+        if (type(self.command) is not DeclaredExitCommand or self.command.replay() != (self.kind,self.witness)
+                or self.command.context.source.intent_id != self.source_entry_intent_id
+                or self.command.context.financial != self.financial
+                or self.command.context.run_id != self.run_id or self.command.context.source_token != self.source_token
+                or self.command.inputs.completed != self.completed.five_second
+                or self.command.inputs.candles != self.completed.candles
+                or self.command.context.observation_source != self.observation_source):
+            raise ValueError('Declared liquidity request lacks complete priority-replayable command')
         reducer = {"liquidity_fade": liquidity_fade_failure, "half_risk_liquidity": half_risk_liquidity_fade_failure}.get(self.kind)
         if (reducer is None or reducer(self.completed) != self.witness
                 or type(self.financial) is not StrategyOneFinancialView
@@ -210,7 +221,7 @@ class DeclaredNativeFixedManagementRunner:
         if (type(preparation) is not DeclaredEntryPreparation or not callable(tick_for_ticker)
                 or not callable(getattr(evidence, "management_evidence", None))
                 or any(not callable(getattr(runtime, name, None)) for name in
-                    ("submit_declared_entry_proposal", "submit_declared_exit", "submit_declared_session_exit", "submit_strategy_one_protection"))
+                    ("submit_declared_entry_proposal", "submit_declared_management"))
                 or type(max_pending_breaks) is not int or not 1 <= max_pending_breaks <= 65536):
             raise ValueError("Declared manager lacks bounded own-source/runtime interfaces")
         self.runtime, self.evidence, self.preparation = runtime, evidence, preparation
@@ -399,8 +410,14 @@ class DeclaredNativeFixedManagementRunner:
         source = self._submitted.get(key)
         if source is None:
             raise RuntimeError("Declared held position lacks its own original entry")
+        def context():
+            return DeclaredManagementContext(self.preparation.run_id,self.preparation.source.token,self.preparation,
+                date.fromisoformat(self.preparation.source.parent.market.sessions[0]),source,financial,self.policy,
+                boundary_ms,self._first_held_boundaries.get(key),self._liquidity_sources[financial.ticker])
         if self.policy.liquidation_due(boundary_ms):
-            await self.runtime.submit_declared_session_exit(financial, resolutions, boundary_ms, source)
+            command=DeclaredSessionCommand(context(),resolutions)
+            command.replay()
+            await self.runtime.submit_declared_management(command)
             return
         if key not in self._positions:
             if boundary_ms <= source.boundary_ms:
@@ -441,18 +458,21 @@ class DeclaredNativeFixedManagementRunner:
         reference = self._profit_arm_references.get(key)
         selected = declared_management_exit(completed, policy=self.policy, prior_arm=None if reference is None else reference.candidate,
             ten=resolutions.get(10000), candles=candles)
+        exit_inputs=DeclaredExitInputs(completed,resolutions.get(10000) or {},candles,reference)
         if selected is not None:
             kind, witness = selected
+            command=DeclaredExitCommand(context(),exit_inputs,kind,witness)
+            command.replay()
             if kind in {"liquidity_fade", "half_risk_liquidity"}:
                 request = DeclaredLiquidityCheckpointRequest(self.preparation.run_id, self.preparation.source.token, kind,
-                    LiquidityFadeInput(completed, candles), witness, financial, source.intent_id, self._liquidity_sources[financial.ticker])
+                    LiquidityFadeInput(completed, candles), witness, financial, source.intent_id, self._liquidity_sources[financial.ticker],command)
                 if key in self._liquidity_requests and self._liquidity_requests[key] != request:
                     raise RuntimeError("Declared liquidity retry changed decision")
                 if key not in self._liquidity_requests and len(self._liquidity_requests) >= 65_536:
                     raise RuntimeError("Declared pending liquidity exceeds inherited memory bound")
                 self._liquidity_requests[key] = request
             else:
-                await self.runtime.submit_declared_exit(kind, financial, witness, source, reference=reference)
+                await self.runtime.submit_declared_management(command)
             self._profit_arm_financials.pop(key, None)
             return
         pending = self._pending_breaks.setdefault(key, [])
@@ -464,16 +484,16 @@ class DeclaredNativeFixedManagementRunner:
         if evidence.bid is None or evidence.ask is None or financial.pending_exit:
             return
         tick = self.tick_for_ticker(financial.ticker)
-        transition = advance_protection(previous, now_ms=boundary_ms, bid=evidence.bid, ask=evidence.ask, tick=tick,
-            low_boundary_ms=evidence.low_boundary_ms, low_int=evidence.low_int, low_price_valid=evidence.low_int is not None,
-            low_extremes_valid=evidence.low_int is not None, breaks=tuple(pending), overhead_levels=evidence.overhead_levels,
-            price_bearing_bar=evidence.price_bearing_bar,
-            allows_completed_30s_trailing=self.policy.capabilities.payload()["inherited"]["flags"]["allows_completed_30s_trailing"],
-            allows_target_escalation=self.policy.capabilities.payload()["inherited"]["flags"]["allows_target_escalation"])
+        protection_inputs=DeclaredProtectionInputs(previous,boundary_ms,evidence.bid,evidence.ask,tick,
+            evidence.low_boundary_ms,evidence.low_int,evidence.low_int is not None,evidence.low_int is not None,
+            tuple(pending),tuple(evidence.overhead_levels),evidence.price_bearing_bar)
+        transition=protection_inputs.replay(context(),exit_inputs)
+        command=DeclaredProtectionCommand(context(),exit_inputs,protection_inputs,transition)
+        command.replay()
         if transition.stop_amendment is None and transition.target_amendment is None:
             confirmed = confirm_protection_transition(previous, transition, target_confirmed=False, stop_confirmed=False)
         else:
-            confirmed = await self.runtime.submit_strategy_one_protection(previous, transition, financial, bid=evidence.bid, ask=evidence.ask)
+            confirmed = await self.runtime.submit_declared_management(command)
         if (type(confirmed) is not ProtectionState or confirmed.boundary_ms != boundary_ms
                 or not previous.accepted_ids <= confirmed.accepted_ids or not 0 < confirmed.stop < confirmed.target):
             raise RuntimeError("Declared OMS did not confirm consistent protection")
