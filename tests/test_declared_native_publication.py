@@ -26,6 +26,25 @@ def context(c):
     return DeclaredNativePublicationContext(DeclaredNativeV4Unit(c.packet), **c.args, predecessor=c.predecessor)
 
 
+def test_public_commit_reader_forwards_exact_native_context(case, monkeypatch):
+    from test_arte_journal_commit_v4 import source, MemoryClient, prepare_commit_v4
+    from src.trading_runtime import arte_journal_commit_v4 as subject
+    commit, families = prepare_commit_v4(**source())
+    client = MemoryClient()
+    client.tables = {'trading_commit_v4': [dict(commit)],
+                     'trading_commit_family_v4': [dict(row) for row in families]}
+    c = context(case)
+    observed = []
+    def stop_before_details(*args, **kwargs):
+        observed.append(kwargs['declared_native_context'])
+        raise RuntimeError('test transport boundary')
+    monkeypatch.setattr(subject, '_load_verified_details_v4', stop_before_details)
+    with pytest.raises(RuntimeError, match='test transport boundary'):
+        subject.load_verified_commit_v4(client, run_id=commit['run_id'],
+            batch_id=commit['batch_id'], declared_native_context=c)
+    assert observed == [c] and observed[0] is c
+
+
 @pytest.mark.parametrize('mutation', ['none', 'missing', 'extra', 'hash', 'duplicate'])
 def test_cold_graph_matches_source_unit_transport_only(case, monkeypatch, mutation):
     from src.trading_runtime.arte_declared_native_publication import (

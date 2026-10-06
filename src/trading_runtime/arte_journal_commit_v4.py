@@ -517,6 +517,7 @@ def load_verified_commit_v4(
     first_price_authorities: tuple = (),
     verified_prior_prefix: V4CommittedPrefix | None = None,
     automatic_ladder_sources=(),
+    declared_native_context=None,
 ) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
@@ -562,7 +563,8 @@ def load_verified_commit_v4(
         first_price_authorities=first_price_authorities,
         entry_activity_source=entry_activity_source,
         verified_prior_prefix=verified_prior_prefix,
-        automatic_ladder_sources=automatic_ladder_sources, automatic_ladder_batch_metadata=dict(commit))
+        automatic_ladder_sources=automatic_ladder_sources, automatic_ladder_batch_metadata=dict(commit),
+        declared_native_context=declared_native_context)
     try:
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:
@@ -2190,7 +2192,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
             automatic_ladder_read_client or client, run_id=batch.run_id, batch_id=batch.batch_id,
             first_price_authorities=first_price_authorities,
             verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
-            automatic_ladder_sources=automatic_ladder_sources)
+            automatic_ladder_sources=automatic_ladder_sources,
+            declared_native_context=declared_native_context)
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
         dispatch.assert_next_batch(
