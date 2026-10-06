@@ -244,7 +244,8 @@ def prepare_tape(
                 )
             )
         macd.append(np.stack(lanes, axis=-1))
-    with closing(sql.ArteReader(threads=2)) as reader:
+    from research.rl_trading.v1.arte_source import reader as reference_reader
+    with closing(reference_reader(threads=1)) as reader:
         structure = prepare_offline_structure(
             reader,
             market,

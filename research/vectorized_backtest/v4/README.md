@@ -129,6 +129,9 @@ live trading authority. It replaces the copied app-release requirement only
 for V4's independently certified offline research preparation. Opening-known
 V6 references feed the unchanged causal V7 stream; certified missing prior
 V7 evidence masks structural targets and never creates an artificial seed.
+Broker products use the dedicated broker read principal. Reference preparation
+uses the existing reference-reader configuration with SELECT-only SQL guards
+and readonly=1; it does not grant additional permissions to the broker principal.
 
 Use PYTHONDONTWRITEBYTECODE=1 for all repository Python invocations; artifacts
 belong under D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v4.

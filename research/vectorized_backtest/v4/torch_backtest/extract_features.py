@@ -9,12 +9,27 @@ from pathlib import Path
 from datetime import date
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context
+from collections import deque
 import argparse,json,time
 import numpy as np
 import polars as pl
 from .runtime import require_runtime,write_json,file_hash
 
 CLIENT=None
+def ordered_features(pool,packets,maximum):
+    """Bounded submission of this feature-only worker, never V6 label workers."""
+    if maximum<1:raise ValueError('Positive feature queue bound required')
+    packets=iter(packets);pending=deque()
+    for _ in range(maximum):
+        try:packet=next(packets)
+        except StopIteration:break
+        pending.append(pool.submit(work,packet))
+    while pending:
+        yield pending.popleft().result()
+        try:packet=next(packets)
+        except StopIteration:continue
+        pending.append(pool.submit(work,packet))
+
 def initialize():
     global CLIENT
     from research.rl_trading.v1 import arte_source
@@ -47,7 +62,6 @@ def main(argv=None):
     from research.rl_trading.v6.census import one_second_counts
     from research.rl_trading.v6.config import worker_plan
     from research.rl_trading.v6.bank import write_bank
-    from research.rl_trading.v6.build import _ordered_bounded
     from .source.arte_source import population as research_population
     from .encoding.config import DEFAULT_EXCLUDED_TICKERS
     import psutil
@@ -88,7 +102,7 @@ def main(argv=None):
         with ProcessPoolExecutor(max_workers=budget.listing_workers,mp_context=get_context('spawn'),initializer=initialize) as pool:
             def rows():
                 count=len(done)
-                for identity,features in _ordered_bounded(pool,packets,budget.max_in_flight):
+                for identity,features in ordered_features(pool,packets,budget.max_in_flight):
                     if len(features.close_us)!=lengths[identity]:raise ValueError('Source candle census changed')
                     count+=1
                     if count%25==0:write_json(output/'progress.json',dict(status='extracting_features',day=str(args.date),completed_listings=count,total_listings=len(mapping),elapsed_seconds=time.perf_counter()-began))
