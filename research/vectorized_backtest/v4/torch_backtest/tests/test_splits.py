@@ -40,6 +40,24 @@ def test_effective_date_deduplication_and_compound_actions():
         price_factor([row('2026-08-03', 0, 2)], '2026-07-31', '2026-08-03')
 
 
+@pytest.mark.parametrize('factor',[.5,10.])
+def test_normalized_indicators_reconstruct_on_adjusted_price_basis(factor):
+    # V6 stores MACD/close, ATR/close and EMA/close-1, rather than dollar values.
+    close=20.
+    raw=np.array([.8,.6,60.,1.2,21.,19.])
+    encoded=np.array([raw[0]/close,raw[1]/close,raw[2]/100.,raw[3]/close,
+                      raw[4]/close-1.,raw[5]/close-1.],dtype=np.float32)
+    bank=np.zeros((1,147),dtype=np.float32)
+    bank[0,:4]=np.log(close);bank[0,14:20]=encoded;bank[0,35:37]=1
+    adjusted=history_view(bank,factor)
+    adjusted_close=np.exp(adjusted[0,3])
+    reconstructed=np.array([adjusted[0,14]*adjusted_close,adjusted[0,15]*adjusted_close,
+                            adjusted[0,16]*100,adjusted[0,17]*adjusted_close,
+                            (adjusted[0,18]+1)*adjusted_close,(adjusted[0,19]+1)*adjusted_close])
+    expected=raw.copy();expected[[0,1,3,4,5]]*=factor
+    np.testing.assert_allclose(reconstructed,expected,rtol=1e-6)
+
+
 def test_invalid_prices_remain_invalid_and_no_action_is_identity():
     bank = np.zeros((2, 147), dtype=np.float32)
     np.testing.assert_array_equal(history_view(bank, 1), bank)

@@ -379,6 +379,15 @@ def prepare_session(
                 "rows": watchlist.height,
             }
         selected = sorted(watchlist["ticker"].to_list())
+        # Carry the complete pinned security identity into opening-as-of
+        # reference reads, including when reusing an older private watchlist
+        # cache. Join on both ticker and listing to reject identity substitution.
+        reference_identity=pl.DataFrame(members).select(
+            'ticker',pl.col('listing_id').cast(pl.String),
+            pl.col('symbol_id').cast(pl.String),pl.col('security_id').cast(pl.String))
+        watchlist=watchlist.join(reference_identity,on=['ticker','listing_id'],how='left',validate='1:1')
+        if watchlist.select(pl.any_horizontal(pl.col('symbol_id').is_null(),pl.col('security_id').is_null()).any()).item():
+            raise EncodingError('Watchlist lacks pinned security identity')
         if progress:
             progress(
                 {
