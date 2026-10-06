@@ -3480,6 +3480,7 @@ class ReplayRunController:
                         context, reader, writer, terminal,
                         run=run, config=config, account_ids=account_ids,
                         attempt_id=str(uuid4()), expected_config=config,
+                        configuration_revision=self.definition.configuration_revision,
                         fixed_market_parent_plan=plans.market,
                         fixed_market_execution_plan=plans.execution_market,
                         expected_market_start=self.definition.session_start,
@@ -4998,6 +4999,10 @@ class ReplayRunController:
                 )
                 for row in configuration["portfolio"].get("groups") or ()
             ]
+        from src.trading_runtime.drawdown_measure_authority import resolve_drawdown_policy
+        selected_drawdown = resolve_drawdown_policy(
+            str(strategy_configuration.get("strategy_id") or ""),
+            int(strategy_configuration.get("revision") or 0), strategy_configuration)
         portfolio = PortfolioManagementEngine(
             portfolio_profiles,
             journal=self._journal,
@@ -5007,6 +5012,7 @@ class ReplayRunController:
             groups=groups,
             event_clock=lambda: self.current_time or self.definition.session_start,
             typed_recovery=(fixed_restore.portfolio if fixed_restore is not None else None),
+            drawdown_measure_policy=selected_drawdown,
         )
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),
@@ -5036,6 +5042,7 @@ class ReplayRunController:
             self._journal,
             intent_planner=self._planner,
             portfolio=portfolio,
+            strategy_configuration=strategy_configuration,
             review_only=review_only,
             typed_oms_image=(fixed_restore.oms if fixed_restore is not None else None),
         )
@@ -10071,6 +10078,7 @@ class ReplayRunService:
                     assembly, journal_anchor = assemble_resumed_fixed_v4_journal(
                         reader, writer_client, terminal, token,
                         attempt_id=str(uuid4()), expected_config=journal_config,
+                        configuration_revision=definition.configuration_revision,
                         fixed_market_parent_plan=plans.market,
                         fixed_market_execution_plan=plans.execution_market,
                         expected_market_start=definition.session_start,

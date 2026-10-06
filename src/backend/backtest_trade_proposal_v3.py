@@ -130,13 +130,14 @@ def _canonical(row: Mapping[str, Any], table: TableContract,
 
 def project_trade_proposal_v3(
     record: JournalRecord, *, attempt_id: str, batch_id: str,
+    drawdown_measure_policy=None,
 ) -> ProposalV3Projection:
     UUID(record.record_id)
     UUID(attempt_id)
     UUID(batch_id)
     _timestamp(record.event_time)
     _timestamp(record.recorded_at)
-    base = project_trade_proposal(record)
+    base = project_trade_proposal(record, drawdown_measure_policy=drawdown_measure_policy)
     children = None
     if record.entity_type == "trade_proposal_confirmed" and record.payload["intent"]["metadata"]:
         children = project_market_child(record)
@@ -145,7 +146,7 @@ def project_trade_proposal_v3(
         if (isinstance(decision, Mapping) and
                 (record.payload.get("order_group") is not None or
                  set(decision) - {"status", "reason", "held_quantity"})):
-            children = project_result_children(record)
+            children = project_result_children(record, drawdown_measure_policy=drawdown_measure_policy)
     children_by_kind = {
         "parent": (base.parent,), "intent": (base.intent,) if base.intent else (),
         "result": (base.result,) if base.result else (),

@@ -164,6 +164,7 @@ class BacktestTypedJournalPublisher:
         expected_market_start: datetime | None = None,
         expected_market_plan_token: str | None = None,
         expected_query_sha256: str | None = None,
+        drawdown_authority=None,
     ) -> None:
         attempt = str(UUID(attempt_id))
         prior = str(UUID(prior_batch_id))
@@ -182,6 +183,10 @@ class BacktestTypedJournalPublisher:
             if (re.fullmatch(r"[0-9a-f]{64}", expected_market_plan_token or "") is None
                     or re.fullmatch(r"[0-9a-f]{64}", expected_query_sha256 or "") is None):
                 raise ValueError("V3 publisher needs pinned squeeze authority")
+        from src.trading_runtime.drawdown_measure_authority import projection_drawdown_policy
+        projection_drawdown_policy(drawdown_authority,
+            run_id=journal.run_id, expected_config=expected_config)
+        self.drawdown_authority = drawdown_authority
         self.journal = journal
         self.writer = writer
         self.attempt_id = attempt
@@ -373,6 +378,7 @@ class BacktestTypedJournalPublisher:
                 run_month=self.run_month, prior_sequence=self._sequence,
                 prior_batch_id=self._batch_id, source_cursor=self._source_cursor,
                 expected_config=self.expected_config,
+                drawdown_authority=self.drawdown_authority,
                 fixed_market_parent_plan=self.fixed_market_parent_plan,
                 fixed_market_execution_plan=self.fixed_market_execution_plan,
                 first_price_source=self._first_price_source,
@@ -391,6 +397,7 @@ class BacktestTypedJournalPublisher:
                 run_month=self.run_month, prior_sequence=self._sequence,
                 prior_batch_id=self._batch_id, source_cursor=self._source_cursor,
                 expected_config=self.expected_config,
+                drawdown_authority=self.drawdown_authority,
                 fixed_market_parent_plan=self.fixed_market_parent_plan,
                 fixed_market_execution_plan=self.fixed_market_execution_plan,
                 expected_market_start=self.expected_market_start,

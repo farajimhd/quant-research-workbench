@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 import asyncio
 import copy
 import math
@@ -275,8 +277,8 @@ class PortfolioDecision:
     planned_loss: float
     reservation_id: str
     reasons: tuple[str, ...]
-    metrics_before: Mapping[str, float]
-    metrics_after: Mapping[str, float]
+    metrics_before: Mapping[str, float | Decimal]
+    metrics_after: Mapping[str, float | Decimal]
     decided_at: datetime
 
     def payload(self) -> dict[str, Any]:
@@ -381,9 +383,12 @@ class PortfolioManagementEngine:
         allocation_identity: str = "",
         typed_recovery: PortfolioRecovery | None = None,
         event_clock: Callable[[], datetime] | None = None,
+        drawdown_measure_policy=None,
     ) -> None:
         if not profiles:
             raise ValueError("Portfolio management requires at least one account profile")
+        from .drawdown_measure_policy import validate_drawdown_policy
+        self.drawdown_measure_policy = validate_drawdown_policy(drawdown_measure_policy)
         self.journal = journal
         # Backtest supplies its completed-boundary clock. Live defaults to UTC
         # wall time; journal event time must never be inferred by the writer.
@@ -1399,7 +1404,14 @@ class PortfolioManagementEngine:
         metrics_before = self._metrics(state)
         if float(metrics_before["daily_loss"]) > policy.maximum_daily_loss:
             reasons.append("daily_loss_limit")
-        if float(metrics_before["drawdown"]) > policy.maximum_drawdown:
+        selected_drawdown = getattr(self, "drawdown_measure_policy", None)
+        if selected_drawdown is not None:
+            from .drawdown_measure_policy import drawdown_exceeds
+            drawdown_limit = drawdown_exceeds(metrics_before["drawdown"],
+                policy.maximum_drawdown, policy=selected_drawdown)
+        else:
+            drawdown_limit = float(metrics_before["drawdown"]) > policy.maximum_drawdown
+        if drawdown_limit:
             reasons.append("drawdown_limit")
         if reasons:
             decision = self._decision(
@@ -1711,9 +1723,16 @@ class PortfolioManagementEngine:
             fx = float(intent.metadata.get("portfolio_fx_to_base") or 1.0)
             policy = self._policy(state)
             metrics = self._metrics(state)
+            selected_drawdown = getattr(self, "drawdown_measure_policy", None)
+            if selected_drawdown is not None:
+                from .drawdown_measure_policy import drawdown_exceeds
+                drawdown_limit = drawdown_exceeds(metrics["drawdown"],
+                    policy.maximum_drawdown, policy=selected_drawdown)
+            else:
+                drawdown_limit = metrics["drawdown"] > policy.maximum_drawdown
             if (not math.isfinite(fx) or fx <= 0
                     or metrics["daily_loss"] > policy.maximum_daily_loss
-                    or metrics["drawdown"] > policy.maximum_drawdown):
+                    or drawdown_limit):
                 return False
             repriced = replace(intent, reference_price=price, quantity=remaining,
                                metadata={**intent.metadata, "ask": price, "bid": price})
@@ -2076,8 +2095,8 @@ class PortfolioManagementEngine:
         planned_loss: float,
         reservation_id: str,
         reasons: list[str] | tuple[str, ...],
-        before: Mapping[str, float],
-        after: Mapping[str, float],
+        before: Mapping[str, float | Decimal],
+        after: Mapping[str, float | Decimal],
         now: datetime,
         *,
         decision_id: str = "",
@@ -2151,7 +2170,7 @@ class PortfolioManagementEngine:
                     {"event": "deferred_entry_withdrawn", "reason": "strategy_authorization_ended", **request})
                 self._persist_state(state)
 
-    def _metrics(self, state: PortfolioAccountState) -> dict[str, float]:
+    def _metrics(self, state: PortfolioAccountState) -> dict[str, float | Decimal]:
         summary = state.summary
         net_liquidation = float(summary.netliquidation) if summary else 0.0
         gross = sum(abs(float(row.mktValue)) for row in state.positions.values())
@@ -2175,7 +2194,13 @@ class PortfolioManagementEngine:
         )
         unrealized = sum(float(row.unrealizedPnl) for row in state.positions.values())
         daily_loss = max(0.0, -(state.realized_pnl_today + unrealized))
-        drawdown = max(0.0, state.peak_net_liquidation - net_liquidation)
+        if getattr(self, "drawdown_measure_policy", None) is not None:
+            from .drawdown_measure_policy import canonical_drawdown
+            drawdown = canonical_drawdown(state.peak_net_liquidation,
+                summary.netliquidation if summary else 0.0,
+                policy=self.drawdown_measure_policy)
+        else:
+            drawdown = max(0.0, state.peak_net_liquidation - net_liquidation)
         return {
             "net_liquidation": net_liquidation,
             "available_funds": float(summary.availablefunds) if summary else 0.0,

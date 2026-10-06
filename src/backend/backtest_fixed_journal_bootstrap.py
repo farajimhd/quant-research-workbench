@@ -245,6 +245,7 @@ def assemble_resumed_fixed_v4_journal(
     code_hash: str, recovery_evidence: object,
     writer_factory: Callable[..., ArteJournalWriter],
     batch_size: int = 1024, queue_capacity: int = 8,
+    configuration_revision=None,
 ) -> tuple[FixedJournalAssembly, Any]:
     """Cold-seed a V4 lane from Keeper plus the exact committed market cursor.
 
@@ -275,6 +276,10 @@ def assemble_resumed_fixed_v4_journal(
             or not 1 <= queue_capacity <= 64
             or expected_market_start.tzinfo is None):
         raise ValueError("V4 cold journal lacks exact owner, plan, or bounds")
+    from src.trading_runtime.drawdown_measure_authority import bind_run_drawdown_authority
+    drawdown_authority = bind_run_drawdown_authority(run_id=token.run_id,
+        expected_config=expected_config, configuration_hash=token.configuration_hash,
+        configuration_revision=configuration_revision)
     lease.assert_current()
     UUID(attempt_id)
     anchor = cold_verify_v4_resume_anchor(
@@ -291,11 +296,14 @@ def assemble_resumed_fixed_v4_journal(
             or context.get("market_plan_token") != token.market_plan_token
             or context.get("code_hash") != code_hash):
         raise RuntimeError("V4 resumed journal context differs across principals")
+    if drawdown_authority is not None:
+        drawdown_authority.verify(run_id=token.run_id, expected_config=context,
+                                  configuration_hash=token.configuration_hash)
     if writer_factory is not ArteJournalWriter:
         _v4_preflight(writer_client)
     assembly = _assemble_v4_writer_lane(
         writer_client, token, attempt_id=attempt_id,
-        expected_config=expected_config,
+        expected_config=expected_config, drawdown_authority=drawdown_authority,
         fixed_market_parent_plan=fixed_market_parent_plan,
         fixed_market_execution_plan=fixed_market_execution_plan,
         expected_market_start=expected_market_start,
@@ -334,7 +342,14 @@ def _assemble_v4_writer_lane(
     initial_sequence: int = 0,
     prior_batch_id: str = "00000000-0000-0000-0000-000000000000",
     source_cursor: str = "start",
+    drawdown_authority=None,
 ) -> FixedJournalAssembly:
+    from src.trading_runtime.drawdown_measure_authority import projection_drawdown_policy
+    projection_drawdown_policy(drawdown_authority, run_id=token.run_id,
+                              expected_config=expected_config)
+    if drawdown_authority is not None:
+        drawdown_authority.verify(run_id=token.run_id, expected_config=expected_config,
+                                  configuration_hash=token.configuration_hash)
     journal_type, publisher_type = BacktestMemoryJournal, BacktestTypedJournalPublisher
     journal = journal_type(
         run_id=token.run_id, initial_sequence=initial_sequence)
@@ -348,6 +363,7 @@ def _assemble_v4_writer_lane(
         publisher = publisher_type(
             journal, writer, attempt_id=attempt_id, run_month=token.run_month,
             batch_size=batch_size, expected_config=expected_config,
+            drawdown_authority=drawdown_authority,
             fixed_market_parent_plan=fixed_market_parent_plan,
             fixed_market_execution_plan=fixed_market_execution_plan,
             expected_market_start=expected_market_start,
@@ -413,6 +429,7 @@ def assemble_fixed_v3_journal(
     expected_market_start: datetime,
     writer_factory: Callable[..., ArteJournalWriter],
     batch_size: int = 512, queue_capacity: int = 8,
+    configuration_revision=None,
 ) -> FixedJournalAssembly:
     """Inactive bounded V3 lane; each principal stays on its own client."""
     if (not isinstance(token, FixedV3JournalPreflightToken)
@@ -422,6 +439,10 @@ def assemble_fixed_v3_journal(
             or fixed_market_parent_plan is None
             or fixed_market_execution_plan is None):
         raise ValueError("V3 bootstrap lacks bounded certified inputs")
+    from src.trading_runtime.drawdown_measure_authority import bind_run_drawdown_authority
+    drawdown_authority = bind_run_drawdown_authority(run_id=token.run_id,
+        expected_config=expected_config, configuration_hash=token.configuration_hash,
+        configuration_revision=configuration_revision)
     UUID(attempt_id)
     context = load_typed_run_context(read_client, token.run_id)
     if (context["mode"] != "backtest"
@@ -431,6 +452,9 @@ def assemble_fixed_v3_journal(
             or load_typed_run_context(writer_client, token.run_id) != context
             or load_typed_run_context(terminal_client, token.run_id) != context):
         raise RuntimeError("V3 journal context changed before assembly")
+    if drawdown_authority is not None:
+        drawdown_authority.verify(run_id=token.run_id, expected_config=context,
+                                  configuration_hash=token.configuration_hash)
     read_v3_preflight(read_client)
     running_v3_preflight(writer_client)
     terminal_v3_preflight(terminal_client)
@@ -443,6 +467,7 @@ def assemble_fixed_v3_journal(
         publisher = BacktestTypedJournalPublisher(
             journal, writer, attempt_id=attempt_id, run_month=token.run_month,
             batch_size=batch_size, expected_config=expected_config,
+            drawdown_authority=drawdown_authority,
             fixed_market_parent_plan=fixed_market_parent_plan,
             fixed_market_execution_plan=fixed_market_execution_plan,
             expected_market_start=expected_market_start,
@@ -520,6 +545,7 @@ def assemble_fixed_v4_journal(
     batch_size: int = 1024, queue_capacity: int = 8,
     v4_preflight_seal: _V4PreflightSeal | None = None,
     published_context_seal: _V4PublishedContextSeal | None = None,
+    drawdown_authority=None,
 ) -> FixedJournalAssembly:
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
@@ -558,13 +584,16 @@ def assemble_fixed_v4_journal(
     # The production writer constructor performs this exact V4 storage and
     # grant audit before starting its thread. Keep the explicit audit for
     # injected factories, which may not enforce that constructor contract.
+    if drawdown_authority is not None:
+        drawdown_authority.verify(run_id=token.run_id, expected_config=context,
+                                  configuration_hash=token.configuration_hash)
     if writer_factory is not ArteJournalWriter:
         if v4_preflight_seal is not None:
             raise ValueError("Injected V4 writer cannot consume a production preflight")
         _v4_preflight(writer_client)
     return _assemble_v4_writer_lane(
         writer_client, token, attempt_id=attempt_id,
-        expected_config=expected_config,
+        expected_config=expected_config, drawdown_authority=drawdown_authority,
         fixed_market_parent_plan=fixed_market_parent_plan,
         fixed_market_execution_plan=fixed_market_execution_plan,
         expected_market_start=expected_market_start,
@@ -582,6 +611,7 @@ def publish_and_assemble_fixed_v4_journal(
     projection_certifier: Callable[[], str],
     writer_factory: Callable[..., ArteJournalWriter],
     batch_size: int = 1024, queue_capacity: int = 8,
+    configuration_revision=None,
 ) -> FixedJournalAssembly:
     """Publish a new fenced context and assemble V4 with no local persistence.
 
@@ -613,6 +643,13 @@ def publish_and_assemble_fixed_v4_journal(
             or run["market_plan_token"] != fixed_market_parent_plan.token
             or expected_market_start.tzinfo is None):
         raise ValueError("V4 launch requires pinned Strategy 1 at 100 ms")
+    from src.trading_runtime.drawdown_measure_authority import bind_run_drawdown_authority
+    drawdown_authority = bind_run_drawdown_authority(run_id=run_id,
+        expected_config=expected_config, configuration_hash=run["configuration_hash"],
+        configuration_revision=configuration_revision)
+    if drawdown_authority is not None:
+        drawdown_authority.verify(run_id=run_id, expected_config=config,
+                                  configuration_hash=run['configuration_hash'])
     UUID(attempt_id)
     if not 1 <= batch_size <= MAX_V4_COMMIT_EVENTS or not 1 <= queue_capacity <= 64:
         raise ValueError("V4 launch journal bounds are invalid")
@@ -641,7 +678,7 @@ def publish_and_assemble_fixed_v4_journal(
         market_plan_token=run["market_plan_token"], certificate=certificate)
     return assemble_fixed_v4_journal(
         read_client, writer_client, terminal_client, token,
-        attempt_id=attempt_id, expected_config=expected_config,
+        attempt_id=attempt_id, expected_config=expected_config, drawdown_authority=drawdown_authority,
         fixed_market_parent_plan=fixed_market_parent_plan,
         fixed_market_execution_plan=fixed_market_execution_plan,
         expected_market_start=expected_market_start,

@@ -178,6 +178,7 @@ class TradingRuntime:
         review_only: bool = False,
         typed_portfolio_sync_authority: Any | None = None,
         typed_oms_image: Any | None = None,
+        strategy_configuration: Mapping[str, Any] | None = None,
     ) -> None:
         if strategy is not None and (
             config.strategy_id != strategy.strategy_id
@@ -212,6 +213,11 @@ class TradingRuntime:
         self._persisted_assignment_versions: dict[str, tuple[str, str]] = {}
         self._persisted_assignment_times: dict[str, datetime] = {}
         self._last_wait_decision_signatures: dict[tuple[str, str], tuple[Any, ...]] = {}
+        from .drawdown_measure_authority import resolve_drawdown_policy
+        selected_drawdown = resolve_drawdown_policy(
+            config.strategy_id, config.strategy_revision, strategy_configuration)
+        if portfolio is not None and getattr(portfolio, "drawdown_measure_policy", None) != selected_drawdown:
+            raise ValueError("Injected Portfolio drawdown policy differs from sealed release")
         self.control_plane = control_plane or shared_trading_control_plane(broker)
         if not review_only:
             self.control_plane.campaigns.bind_durable_authority(
@@ -238,8 +244,11 @@ class TradingRuntime:
                 groups=groups,
                 control_plane=self.control_plane,
                 allocation_identity=config.run_plan_id or config.strategy_id,
+                drawdown_measure_policy=selected_drawdown,
             )
         else:
+            if getattr(portfolio, "drawdown_measure_policy", None) != selected_drawdown:
+                raise ValueError("Injected Portfolio drawdown policy differs from sealed release")
             portfolio.allocation_identity = config.run_plan_id or config.strategy_id
             portfolio.bind_control_plane(self.control_plane)
         self.portfolio = portfolio

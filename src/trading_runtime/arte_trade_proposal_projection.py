@@ -77,8 +77,10 @@ def _decimal(value: Any, label: str) -> str:
     return format(scaled, "f")
 
 
-def project_trade_proposal(record: Any) -> TradeProposalRows:
+def project_trade_proposal(record: Any, *, drawdown_measure_policy=None) -> TradeProposalRows:
     """Project only exact, closed producer variants; never discard a field."""
+    from .drawdown_measure_policy import validate_drawdown_policy
+    validate_drawdown_policy(drawdown_measure_policy)
     if record.category != "trade_proposal" or record.entity_type not in {
         "trade_proposal_confirmed", "trade_proposal_result",
     }:
@@ -157,7 +159,7 @@ def project_trade_proposal(record: Any) -> TradeProposalRows:
         if payload["order_group"] is not None or set(decision) - allowed:
             from .arte_trade_proposal_children import project_result_children
 
-            project_result_children(record)
+            project_result_children(record, drawdown_measure_policy=drawdown_measure_policy)
             result = {**common, "error": "", "decision_reason": "",
                       "held_quantity": None}
             return TradeProposalRows(parent, None, result)

@@ -147,6 +147,13 @@ def _number(value: Any, label: str) -> str:
     return format(scaled, "f")
 
 
+
+def _declared_metric(value, name, policy):
+    if name == "drawdown" and policy is not None:
+        from .drawdown_measure_policy import canonical_amount
+        return format(canonical_amount(value), ".18f")
+    return _number(value, name)
+
 def _time(value: Any, label: str) -> datetime:
     try:
         result = (value if isinstance(value, datetime)
@@ -269,8 +276,10 @@ def project_market_child(record: Any) -> ProposalChildren:
     return ProposalChildren(market=row)
 
 
-def project_result_children(record: Any) -> ProposalChildren:
+def project_result_children(record: Any, *, drawdown_measure_policy=None) -> ProposalChildren:
     """Project exact PortfolioDecision and OMS snapshots, rejecting dynamic tasks."""
+    from .drawdown_measure_policy import validate_drawdown_policy
+    selected_drawdown = validate_drawdown_policy(drawdown_measure_policy)
     base = _base(record)
     payload = record.payload
     if set(payload) - {"proposal_id", "authority", "status", "decision",
@@ -294,7 +303,7 @@ def project_result_children(record: Any) -> ProposalChildren:
     for phase in ("before", "after"):
         source = _exact(decision[f"metrics_{phase}"], set(METRICS), f"{phase} metrics")
         metrics.append({**base, "phase": phase,
-                        **{name: _number(source[name], name) for name in METRICS}})
+                        **{name: _declared_metric(source[name], name, selected_drawdown) for name in METRICS}})
         _validate_row(metrics[-1], TABLES[2])
     reasons_source = decision["reasons"]
     if not isinstance(reasons_source, (list, tuple)) or any(not isinstance(x, str) for x in reasons_source):

@@ -84,6 +84,15 @@ class NumberedFixedStrategyContract:
     execution_interval: str = "100ms"
 
     @property
+    def drawdown_measure_policy(self):
+        # The original Strategy1 has no NumberedStrategyRelease manifest.
+        if self.strategy_number == 1:
+            return None
+        from .strategy_registry import numbered_strategy
+        from .drawdown_measure_authority import drawdown_policy_from_release
+        return drawdown_policy_from_release(numbered_strategy(self.strategy_number))
+
+    @property
     def entry_momentum_growth_policy(self):
         # Strategy 1 is the original unnumbered-release baseline.
         if self.strategy_number == 1:

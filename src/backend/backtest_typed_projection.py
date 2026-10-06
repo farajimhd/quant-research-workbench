@@ -116,6 +116,7 @@ def project_pending_backtest_v4_prefix(
     journal: BacktestMemoryJournal, *, attempt_id: str, run_month: date,
     prior_sequence: int, prior_batch_id: str = NIL_BATCH_ID,
     source_cursor: str = "start", expected_config: dict | None = None,
+    drawdown_authority=None,
     fixed_market_parent_plan: object | None = None,
     fixed_market_execution_plan: object | None = None,
     first_price_source: object | None = None,
@@ -154,6 +155,9 @@ def project_pending_backtest_v4_prefix(
     )
     from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 
+    from src.trading_runtime.drawdown_measure_authority import projection_drawdown_policy
+    selected_drawdown = projection_drawdown_policy(drawdown_authority,
+        run_id=journal.run_id, expected_config=expected_config)
     attempt = str(UUID(attempt_id))
     if first_price_source is not None:
         from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
@@ -766,6 +770,7 @@ def project_pending_backtest_v3_prefix(
     journal: BacktestMemoryJournal, *, attempt_id: str, run_month: date,
     prior_sequence: int, prior_batch_id: str = NIL_BATCH_ID,
     source_cursor: str = "start", expected_config: dict | None = None,
+    drawdown_authority=None,
     fixed_market_parent_plan: object | None = None,
     fixed_market_execution_plan: object | None = None,
     expected_market_start: datetime | None = None,
@@ -773,6 +778,9 @@ def project_pending_backtest_v3_prefix(
     through_sequence: int | None = None,
 ) -> tuple[V3SqueezeBatch, ...]:
     """Project a contiguous V3 prefix; every batch names its closed child set."""
+    from src.trading_runtime.drawdown_measure_authority import projection_drawdown_policy
+    selected_drawdown = projection_drawdown_policy(drawdown_authority,
+        run_id=journal.run_id, expected_config=expected_config)
     import re
     from src.backend.backtest_squeeze_episode_v3 import project_squeeze_batch_v3
 
@@ -851,7 +859,8 @@ def project_pending_backtest_v3_prefix(
             from src.backend.backtest_trade_proposal_v3 import project_trade_proposal_v3
 
             proposal = project_trade_proposal_v3(
-                record, attempt_id=attempt, batch_id=batch_id)
+                record, attempt_id=attempt, batch_id=batch_id,
+                drawdown_measure_policy=selected_drawdown)
             base = TypedJournalBatch(
                 record.run_id, run_month, attempt, batch_id, previous,
                 sequence, sequence, cursor, "running", (proposal.event,))

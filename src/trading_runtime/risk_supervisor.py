@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -29,7 +31,7 @@ class RiskEvaluation:
     account_key: str
     state: AccountRiskState
     reasons: tuple[str, ...]
-    metrics: dict[str, float]
+    metrics: dict[str, float | Decimal]
     observed_at: datetime
     protection_required: float = 0.0
     protection_coverage: float = 0.0
@@ -87,7 +89,14 @@ class ContinuousRiskSupervisor:
     ) -> RiskEvaluation:
         observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         account = self.portfolio.account_payload(account_id)
-        metrics = {key: float(value) for key, value in account.get("metrics", {}).items()}
+        selected_drawdown = getattr(self.portfolio, "drawdown_measure_policy", None)
+        if selected_drawdown is not None:
+            from .drawdown_measure_policy import canonical_amount, validate_drawdown_policy
+            validate_drawdown_policy(selected_drawdown)
+            metrics = {key: canonical_amount(value) if key == "drawdown" else float(value)
+                       for key, value in account.get("metrics", {}).items()}
+        else:
+            metrics = {key: float(value) for key, value in account.get("metrics", {}).items()}
         if not self.enabled:
             evaluation = RiskEvaluation(
                 account_id=account_id,
@@ -135,15 +144,21 @@ class ContinuousRiskSupervisor:
             reasons.append("internal_reaction_latency")
         daily_loss = metrics.get("daily_loss", 0.0)
         drawdown = metrics.get("drawdown", 0.0)
+        if selected_drawdown is not None:
+            from .drawdown_measure_policy import drawdown_exceeds
+            drawdown_limit = drawdown_exceeds(drawdown, policy.maximum_drawdown,
+                policy=selected_drawdown, inclusive=True)
+        else:
+            drawdown_limit = drawdown >= policy.maximum_drawdown
         emergency_loss = policy.emergency_loss
         if emergency_loss and daily_loss >= emergency_loss:
             target = max(target, AccountRiskState.EMERGENCY_EXIT, key=_risk_severity)
             reasons.append("emergency_daily_loss")
-        elif daily_loss >= policy.maximum_daily_loss or drawdown >= policy.maximum_drawdown:
+        elif daily_loss >= policy.maximum_daily_loss or drawdown_limit:
             target = max(target, AccountRiskState.REDUCE_ONLY, key=_risk_severity)
             if daily_loss >= policy.maximum_daily_loss:
                 reasons.append("daily_loss_limit")
-            if drawdown >= policy.maximum_drawdown:
+            if drawdown_limit:
                 reasons.append("drawdown_limit")
         elif policy.daily_loss_warning and daily_loss >= policy.daily_loss_warning:
             target = max(target, AccountRiskState.ENTRIES_PAUSED, key=_risk_severity)
