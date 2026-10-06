@@ -156,3 +156,14 @@ def test_probe_rekeys_only_declared_subset_and_preserves_targets():
     assert selected[0].forecast_close_us.tolist()==labels[2].forecast_close_us.tolist()
     assert selected[0].allocation_ratio_target==.25
     assert all(d.enter_allowed.shape==(1,) and d.soft_tokens==(0,1) for d in selected)
+
+
+def test_forecast_label_metrics_count_real_targets_per_horizon():
+    policy,session,labels=fixture()
+    metrics=train_session(policy,None,replace(session,role='development'),labels,(),
+                          device=torch.device('cpu'),evaluation=True)
+    assert len(metrics.forecast_label_metrics)==5
+    for report,count in zip(metrics.forecast_label_metrics,metrics.forecast_targets):
+        assert sum(v['count'] for v in report['labels'].values())==count
+        assert np.asarray(report['confusion']).sum()==count
+        assert set(report['labels'])=={'ENTRY','WAIT','HOLD','EXIT'}
