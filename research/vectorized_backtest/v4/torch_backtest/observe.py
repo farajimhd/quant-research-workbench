@@ -21,6 +21,7 @@ def main(argv=None):
         if error:last={**last,'waiting_reason':error}
         if profile:
             last={**last,'mode':'profile','focus':'Single training-session profile; validation SEALED'}
+            if last.get('status')=='training':last['status']='profiling'
         return render(last,width=console.width,height=console.height,view=args.view)
     if args.once or not console.is_terminal:
         console.print(read());return 0
