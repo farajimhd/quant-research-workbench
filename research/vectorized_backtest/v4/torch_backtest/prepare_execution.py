@@ -23,6 +23,8 @@ def main(argv=None):
     from research.mlops.clickhouse import discover_clickhouse_env_files
     from research.mlops.env import load_env_files
     load_env_files(discover_clickhouse_env_files(),verbose=False)
+    from .availability import configure_reader
+    configure_reader(Path(__file__).resolve().parents[4])
     session=Session(manifest=Path(item['source_manifest']),ledger=Path(item['source_ledger']),runtime=root.parent/'preparation',
         start=datetime.fromisoformat(item['start']),end=datetime.fromisoformat(item['end']))
     certificate=certify_source(session)
