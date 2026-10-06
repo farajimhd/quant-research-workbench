@@ -4,7 +4,8 @@ Legacy layout profiles remain unchanged. Runtime principals never acquire DDL
 authority through this module. Existing incompatible tables are never repaired
 or overwritten implicitly.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import re
 from src.trading_runtime.arte_declared_native_entry_schema import TABLES as ENTRY
 from src.trading_runtime.arte_declared_native_management_schema import TABLES as MANAGEMENT
 from src.trading_runtime.arte_running_financial_checkpoint_schema import TABLES as CHECKPOINT
@@ -13,6 +14,18 @@ from src.trading_runtime.arte_journal_writer import _rows
 
 CONTRACTS = (*ENTRY, *MANAGEMENT, *CHECKPOINT)
 LAYOUT_VERSION = 'declared-native-backtest-layout@1'
+
+
+def declared_native_storage_contracts(contracts=CONTRACTS):
+    """Match ClickHouse's Decimal comma rendering without changing its type.
+
+    Only comma whitespace inside Decimal(P,S) changes. Precision, scale,
+    wrappers, ordered columns and every physical-layout property stay exact.
+    Original schema definitions and DDL identities remain unchanged.
+    """
+    return tuple(replace(t, columns=tuple((name, re.sub(
+        r'Decimal\((\d+),\s*(\d+)\)', r'Decimal(\1, \2)', kind))
+        for name, kind in t.columns)) for t in contracts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,14 +56,14 @@ def install_declared_native_layout(client, *, apply=False):
     existing = {r['name'] for r in inventory}
     installed = tuple(t for t in CONTRACTS if t.name in existing)
     if installed:
-        storage_preflight(client, tables=installed)
+        storage_preflight(client, tables=declared_native_storage_contracts(installed))
     missing = tuple(t for t in CONTRACTS if t.name not in existing)
     created = []
     if apply:
         for table in missing:
             client.execute(table.ddl())
-            storage_preflight(client, tables=(table,))
+            storage_preflight(client, tables=declared_native_storage_contracts((table,)))
             created.append(table.name)
-        storage_preflight(client, tables=CONTRACTS)
+        storage_preflight(client, tables=declared_native_storage_contracts())
     return DeclaredNativeLayoutResult(LAYOUT_VERSION, tuple(t.name for t in installed),
         tuple(t.name for t in missing), tuple(created))

@@ -1,6 +1,19 @@
 """Restart-safe exact installation; no real database or authority fixture."""
 import pytest
+from src.trading_runtime.arte_journal_schema import TableContract
 from src.backend import declared_native_layout_v1 as subject
+
+
+def test_decimal_rendering_preserves_every_semantic_type_and_layout_property():
+    t=TableContract('type_rendering_fixture',(('a','Decimal(38,18)'),
+        ('b','Nullable(Decimal(20,7))'),('c','UInt64'),('d',"DateTime64(6, 'UTC')")),
+        'tuple()', 'a')
+    normalized,=subject.declared_native_storage_contracts((t,))
+    assert normalized.columns==(('a','Decimal(38, 18)'),('b','Nullable(Decimal(20, 7))'),
+        ('c','UInt64'),('d',"DateTime64(6, 'UTC')"))
+    assert (normalized.name,normalized.partition,normalized.order,normalized.allow_nullable_key)==(
+        t.name,t.partition,t.order,t.allow_nullable_key)
+    assert t.columns[0][1]=='Decimal(38,18)'
 
 
 class Client:
