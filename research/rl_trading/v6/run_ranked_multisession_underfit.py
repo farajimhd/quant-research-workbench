@@ -1,0 +1,144 @@
+"""Six-session TRAIN learnability gate on the full ranked-market input path."""
+import os
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+import argparse
+from dataclasses import asdict
+import json
+from pathlib import Path
+import subprocess
+import time
+import torch
+from research.mlops.env import discover_env_files, load_env_files
+from research.rl_trading.v1.common import digest, file_hash
+from research.rl_trading.v6.market_attention import MarketAttentionConfig
+from research.rl_trading.v6.ranked_teacher_data import load_prepared, coverage_report
+from research.rl_trading.v6.ranked_multisession_metrics import pool_gate_metrics
+from research.rl_trading.v6.run_ranked_teacher_generalization import admit_gate, build_policy, gate_targets, exact_metrics
+from research.rl_trading.v6.run_ranked_teacher_underfit import passes
+from research.rl_trading.v6.run_laptop_teacher import flatten
+from research.rl_trading.v6.training import train_session
+
+
+def selected_targets(plan, day, cache_sha, candidates):
+    rows = [r for r in plan['rows'] if r['day'] == day]
+    if not rows or any(r['cache_sha256'] != cache_sha for r in rows):
+        raise ValueError('Selected TRAIN day/cache binding changed')
+    keys = sorted(tuple(r['key']) for r in rows)
+    return gate_targets(candidates, keys)
+
+
+def verify_coverage(selection, sessions):
+    counts = [0]*4; future = [[0]*4 for _ in range(5)]
+    for s,t in sessions:
+        r = coverage_report(t, len(s.listings))
+        for i,n in enumerate(('ENTRY','WAIT','HOLD','EXIT')):
+            counts[i] += r['current_counts'][n]
+            for h in range(5): future[h][i] += r['future_counts'][h][n]
+    if counts != [32]*4 or counts != selection['current_counts'] or future != selection['future_counts'] or any(n < 2 for horizon in future for n in horizon):
+        raise ValueError('Actual pooled current/future label coverage changed')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--underfit', type=Path, required=True, help='Verified single-session normalization/input contract')
+    parser.add_argument('--selection', type=Path, required=True)
+    parser.add_argument('--initial-cache', type=Path, required=True)
+    parser.add_argument('--initial-source', type=Path, required=True)
+    parser.add_argument('--additional-cache', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--epochs', type=int, default=400)
+    args = parser.parse_args(argv)
+    runtime = Path('D:/TradingML/runtimes').resolve()
+    paths = [args.underfit, args.selection, args.initial_cache, args.initial_source, args.additional_cache, args.output]
+    if not runtime.is_dir() or any(not p.resolve().is_relative_to(runtime) for p in paths) or args.output.exists() or not 1 <= args.epochs <= 400 or not torch.cuda.is_available():
+        raise ValueError('Fresh bounded laptop CUDA experiment required')
+    prior, _ = admit_gate(args.underfit)
+    if not prior.get('normalization_sha256'):
+        raise ValueError('Verified frozen TRAIN normalization required')
+    selection = json.loads(args.selection.read_text())
+    if selection.get('version') != 'rl-v6-six-session-underfit-sampling-preflight-v1' or selection.get('hash') != digest({k:v for k,v in selection.items() if k != 'hash'}) or selection.get('sealed_targets_read') is not False or selection.get('development_targets_read') is not False:
+        raise ValueError('Authenticated TRAIN-only pooled selection required')
+    if len(selection['rows']) != 128 or len({(r['day'], tuple(r['key'])) for r in selection['rows']}) != 128:
+        raise ValueError('128 unique TRAIN targets required')
+    roots = [(args.initial_cache, args.initial_source)] + [(p, p/'source.json') for p in sorted(args.additional_cache.glob('2026-*'))]
+    if len(roots) != 6:
+        raise ValueError('Exactly six certified TRAIN sessions required')
+    sessions = []; bindings = []
+    for root, source in roots:
+        proof = json.loads(source.read_text())
+        if proof.get('hash') != digest({k:v for k,v in proof.items() if k != 'hash'}):
+            raise ValueError('TRAIN source receipt changed')
+        if proof['dataset_sha256'] != prior['dataset_sha256'] or proof['market_dataset_sha256'] != prior['market_dataset_sha256']:
+            raise ValueError('TRAIN dataset authority changed')
+        s, all_targets, _ = load_prepared(root, proof)
+        day = s.day.isoformat(); cache_sha = file_hash(root/'prepared-train.pt')
+        targets = selected_targets(selection, day, cache_sha, all_targets)
+        sessions.append((s, targets))
+        bindings.append(dict(day=day, cache=str(root.resolve()), cache_sha256=cache_sha,
+            source_sha256=file_hash(source), input_listings=list(s.listings), targets=len(targets),
+            bank_certificate_sha256=s.source_certificate_sha256,
+            context_split_receipt_sha256=s.context_split_receipt_sha256))
+    if sorted(b['day'] for b in bindings) != sorted(selection['day_counts']) or len({b['day'] for b in bindings}) != 6:
+        raise ValueError('TRAIN day coverage changed')
+    verify_coverage(selection, sessions)
+    args.output.mkdir(); started = time.perf_counter()
+    def write(name, value): (args.output/name).write_text(json.dumps(value, indent=2), encoding='utf-8')
+    normalization = json.loads((args.underfit/'normalization.json').read_text())
+    ranking = MarketAttentionConfig(**prior['ranking'])
+    plan = dict(version='rl-v6-ranked-six-session-underfit-v1', source_commit=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+        sessions=bindings, selection_sha256=file_hash(args.selection), normalization_sha256=prior['normalization_sha256'],
+        normalization_origin='frozen_verified_single_TRAIN_contract_no_refitting', initialization='fresh_weights',
+        epochs=args.epochs, seed=17, learning_rate=3e-4, weight_decay=1e-4,
+        ranking=prior['ranking'], teacher_loss='branch-balanced-v3', regression_weights=[0.,0.],
+        auxiliary_weights=dict(ratio=1., forecast=1., quality=1., future_quality=1.),
+        input_population_preserved=True, sealed_labels_read=False, development_labels_read=False,
+        generalization_evaluated=False, workstation_gpu_used=False,
+        criterion='same-checkpoint pooled full-head gate; current and future F1>=.95; all quality/sizing MAE<=.02; complete coverage',
+        source_files_sha256={p.name:file_hash(p) for p in Path(__file__).parent.glob('*.py')})
+    plan['hash'] = digest(plan); write('manifest.json', plan); write('normalization.json', normalization)
+    torch.manual_seed(17); torch.set_num_threads(4); device = torch.device('cuda')
+    def model(): return build_policy(ranking, device, normalization=normalization)
+    policy = model(); optimizer = torch.optim.AdamW(policy.parameters(), lr=3e-4, weight_decay=1e-4)
+    load_env_files(discover_env_files(Path.cwd()), verbose=False)
+    import wandb
+    logger = wandb.init(project='rl-trading-v6', name=args.output.name, dir=str(args.output), mode='online', config=plan)
+    if logger is None or logger.settings.mode != 'online': raise ValueError('Online W&B required')
+    write('wandb.json', dict(id=logger.id, url=logger.url))
+    def evaluate(p):
+        reports = [asdict(train_session(p, None, s, t, (), device=device, evaluation=True,
+            evaluate_train=True, teacher_loss='branch-balanced-v3', regression_weights=(0.,0.))) for s,t in sessions]
+        return pool_gate_metrics(reports), reports
+    passed = False
+    try:
+        for epoch in range(1,args.epochs+1):
+            for s,t in sessions:
+                write('progress.json', dict(phase='training', epoch=epoch, day=s.day.isoformat()))
+                train_session(policy, optimizer, s, t, (), device=device,
+                    teacher_loss='branch-balanced-v3', regression_weights=(0.,0.))
+            if epoch != 1 and epoch % 5 and epoch != args.epochs: continue
+            metrics, reports = evaluate(policy); passed = passes(metrics)
+            record = dict(epoch=epoch, passed=passed, metrics=metrics, sessions=reports)
+            write('result.json', record)
+            with (args.output/'metrics.jsonl').open('a', encoding='utf-8') as stream: stream.write(json.dumps(record)+'\n')
+            logger.log(flatten(record), step=epoch)
+            torch.save(dict(model=policy.state_dict(), optimizer=optimizer.state_dict(), epoch=epoch), args.output/f'epoch-{epoch:03d}.pt')
+            print(json.dumps(dict(epoch=epoch, passed=passed, f1=metrics['action_class_f1'], ratio=metrics['allocation_ratio_mae'])), flush=True)
+            if passed: break
+        torch.save(policy.state_dict(), args.output/'last.pt')
+        restored = model(); restored.load_state_dict(torch.load(args.output/'last.pt', weights_only=True))
+        repeated, repeated_reports = evaluate(restored)
+        if not exact_metrics(repeated, metrics) or not exact_metrics(repeated_reports, reports):
+            raise ValueError('Exact six-session checkpoint replay failed')
+        write('complete.json', dict(status='completed', epoch=epoch, passed=passed, metrics=metrics,
+            checkpoint_sha256=file_hash(args.output/'last.pt'), reload_exact=True,
+            generalization_evaluated=False, production_teacher_certified=False,
+            elapsed_seconds=time.perf_counter()-started, wandb_url=logger.url))
+        logger.summary['completion_status']='completed'; logger.summary['underfit_passed']=passed
+        for name in ('manifest.json','metrics.jsonl','complete.json','normalization.json'):
+            logger.save(str(args.output/name), base_path=str(args.output), policy='now')
+    finally: logger.finish()
+    return 0
+
+
+if __name__ == '__main__': raise SystemExit(main())
