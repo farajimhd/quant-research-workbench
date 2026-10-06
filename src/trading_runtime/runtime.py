@@ -919,6 +919,7 @@ class TradingRuntime:
         confirmed_ah_source: tuple | None = None,
         liquidity_fade_source: tuple | None = None,
         automatic_entry: Any | None = None,
+        declared_submission: Any | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -929,6 +930,21 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
+        if declared_submission is not None:
+            from .declared_native_submission import DeclaredNativeSubmission, require_installed_submission_binding
+            from src.backend.backtest_declared_native_journal import DeclaredNativeJournal
+            if (type(declared_submission) is not DeclaredNativeSubmission or type(self.journal) is not DeclaredNativeJournal
+                    or self.config.mode is not RunMode.BACKTEST or event is not None
+                    or evaluation.intents != (declared_submission.intent,)
+                    or any(value is not None for value in (strategy_one_proposal, strategy_one_add_proposal,
+                        strategy_one_assignment_id, numbered_exit_assignment_id, followthrough_source,
+                        profit_giveback_source, confirmed_ah_source, liquidity_fade_source, automatic_entry))):
+                raise ValueError('Declared submission requires its exclusive own typed journal channel')
+            declared_submission.verify(run_id=self.run_id,strategy_id=self.config.strategy_id,
+                strategy_revision=self.config.strategy_revision,account_id=account_id,session_date=self.config.anchor_date)
+            if self.last_event_time != declared_submission.intent.event_time:
+                raise ValueError('Declared submission must match exact completed broker boundary')
+            require_installed_submission_binding(declared_submission.binding)
         from .numbered_fixed_strategy import is_numbered_fixed_strategy, resolve_numbered_fixed_strategy
         if (self.config.mode == RunMode.BACKTEST
                 and is_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)):
@@ -1124,7 +1140,10 @@ class TradingRuntime:
             self.portfolio.withdraw_invalidated_requests(account_id, active)
         for intent in evaluation.intents:
             intent = replace(intent, metadata=self.journal.reference_evidence(intent.metadata))
-            if automatic_entry is not None:
+            if declared_submission is not None:
+                self.journal.append_declared_native_intent(submission=declared_submission,intent=intent,
+                    account_id=account_id,strategy_id=self.config.strategy_id,strategy_revision=self.config.strategy_revision)
+            elif automatic_entry is not None:
                 self.journal.append_automatic_entry(request=automatic_entry, account_id=account_id,
                     strategy_id=self.config.strategy_id, strategy_revision=self.config.strategy_revision)
             elif strategy_one_proposal is not None:
@@ -1232,10 +1251,12 @@ class TradingRuntime:
                 # health/reconciliation mechanism, not sizing authority for a
                 # new exposure-increasing order.
                 await self._refresh_portfolio_from_broker(
-                    for_entry_admission=(strategy_one_proposal is not None
+                    for_entry_admission=(declared_submission is not None
+                                         or strategy_one_proposal is not None
                                          or strategy_one_add_proposal is not None
                                          or automatic_entry is not None))
-            assignment_id = (automatic_entry.assignment_id if automatic_entry is not None
+            assignment_id = (declared_submission.assignment_id if declared_submission is not None
+                             else automatic_entry.assignment_id if automatic_entry is not None
                              else strategy_one_proposal.assignment_id
                              if strategy_one_proposal is not None
                              else strategy_one_add_proposal.assignment_id
@@ -1525,6 +1546,15 @@ class TradingRuntime:
                 session_date=self.config.anchor_date)
         from .strategy_one_intent import strategy_one_entry_intent
         return strategy_one_entry_intent(proposal, session_date=self.config.anchor_date)
+
+    async def submit_declared_submission(self, submission: Any) -> list[dict[str, Any]]:
+        """Own typed source through the common actor; installed approval is closed."""
+        from .declared_native_submission import DeclaredNativeSubmission
+        if type(submission) is not DeclaredNativeSubmission:
+            raise ValueError('Declared submission requires exact own typed command')
+        return await self._execute_intents(
+            StrategyEvaluation(intents=(submission.intent,)),submission.account_id,None,
+            declared_submission=submission)
 
     async def submit_strategy_one_proposal(self, proposal: Any) -> list[dict[str, Any]]:
         """Route numbered entry evidence through the shared Portfolio/OMS path.
