@@ -36,7 +36,7 @@ def resource_settings_sql():
 
 def verify_resource_settings(client):
     rows=_rows(client, 'SELECT '+','.join(f"getSetting('{key}') AS {key}"
-        for key in QUERY_SETTINGS)+' FORMAT JSONEachRow')
+        for key in QUERY_SETTINGS))
     if len(rows)!=1 or set(rows[0])!=set(QUERY_SETTINGS):
         raise ValueError('Canonical source resource settings shape differs')
     for key,expected in QUERY_SETTINGS.items():

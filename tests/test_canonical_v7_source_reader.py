@@ -182,6 +182,14 @@ def test_versioned_profile_preserves_legacy_principal():
     assert sql.count('CHANGEABLE_IN_READONLY')==5
 
 
+def test_resource_probe_uses_single_complete_format_clause(plan):
+    client=Client(plan)
+    m.verify_resource_settings(client)
+    assert len(client.queries)==1
+    assert client.queries[0].endswith(' FORMAT JSONEachRow')
+    assert client.queries[0].count(' FORMAT ')==1
+
+
 def test_existing_unbounded_profile_stops_before_grants(plan):
     reader=Client(plan);admin=Client(plan)
     original=reader.execute
