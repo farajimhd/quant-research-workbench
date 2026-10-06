@@ -142,7 +142,7 @@ def prepare_tape(
     )
     receipt = certify_source(session)
     prepared = prepare_session(
-        session, Funnel(), dependencies(), source_receipt=receipt, progress=progress
+        session, Funnel(admission='price_envelope'), dependencies(), source_receipt=receipt, progress=progress
     )
     watch = prepared.watchlist.sort("ticker")
     tickers = tuple(watch["ticker"].to_list())
@@ -302,7 +302,7 @@ def prepare_tape(
     # Each bar query assigns bucket END, not bucket start, to time_us.
     # Thus completed OHLC at boundary t is open-indexed candle t-1.
     provenance = {
-        "version": "squeeze-union-tape-v3",
+        "version": "v4-generic-price-envelope-tape-v1",
         "synthetic": False,
         "timing_contract": dict(TIMING_CONTRACT),
         "timing_fingerprint": timing_fingerprint(),
@@ -315,7 +315,7 @@ def prepare_tape(
         "session": str(day),
         "start_second": start // 1_000_000,
         "end_second": end // 1_000_000,
-        "funnel": "released-100ms-squeeze-price-envelope-1-to-50",
+        "funnel": "completed-1s-price-envelope-1-to-50;searched-entry-rules",
         "structural_preparation": structure.metrics,
         "structural_authority": "prior-session-seed-plus-causal-completed-1s-stream",
         "preparation": prepared.metrics,

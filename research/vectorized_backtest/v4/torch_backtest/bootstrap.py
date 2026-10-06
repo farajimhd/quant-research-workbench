@@ -18,7 +18,8 @@ def identity_projection(root,output):
     write_json(path,value);return path
 
 def main(argv=None):
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--v3-job',type=Path,required=True);p.add_argument('--output',type=Path,required=True);args=p.parse_args(argv)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--v3-job',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--market-manifest',type=Path,required=True);p.add_argument('--market-ledger',type=Path,required=True);args=p.parse_args(argv)
     output=require_runtime(args.output);runtime=Path('D:/TradingML/runtimes')
     original=json.loads((args.v3_job/'sessions.json').read_text());spec=dict(version='v4-offline-inputs-v1',training=[],validation=[],origin_sessions_sha256=file_hash(args.v3_job/'sessions.json'),feature_schema='rl-trading-actual-candles-features-v6',v6_labels_or_models_used=False)
     producer=runtime/'rl-v6-reporting-repair-20261002'/'banks-us-listed-v1';extension=runtime/'rl-v6-validation-extension-20261005'/'banks';missing=[];previous=None;previous_split=None
@@ -30,7 +31,7 @@ def main(argv=None):
             entry=dict(day=day,feature_root=str(root),identity_map=str(mapping),previous_feature_root=str(previous) if previous else None,
                 split_certificate=str(output/'split_evidence'/f'{day}.json'),
                 previous_split_certificate=previous_split,
-                execution_root=str(args.v3_job/'experiment'/'inputs'/f'{role}_{i:03d}'),source_manifest=s['manifest'],source_ledger=s['ledger'])
+                execution_root=str(output/'execution'/day),source_manifest=str(args.market_manifest),source_ledger=str(args.market_ledger),start=s['start'],end=s['end'])
             spec[role].append(entry)
             if role=='training' and not (root/'complete.json').exists():missing.append(dict(day=day,feature_root=str(root)))
             previous=root

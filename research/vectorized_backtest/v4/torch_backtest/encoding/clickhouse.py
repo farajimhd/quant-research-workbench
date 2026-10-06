@@ -176,6 +176,7 @@ def _validate_funnel(funnel):
     """Validate even an empty population before issuing any database query."""
     if (
         funnel.signal_ms != 100
+        or funnel.admission not in ('squeeze','price_envelope')
         or not all(
             math.isfinite(x)
             for x in (funnel.min_price, funnel.max_price, funnel.impulse_bps)
@@ -198,6 +199,14 @@ def admission_sql(source, day, names, funnel, end_offset_us, start_offset_us=144
     """
     _validate_funnel(funnel)
     scope = _scope(source, day, names, "bars")
+    if funnel.admission=='price_envelope':
+        # Generic V4 admission: a completed actual 1s price, no fixed strategy
+        # impulse/volume/trade predicate. Trading rules supply the signal.
+        return ('SELECT ticker,min((toInt64(bucket_index)+1)*1000000) AS admitted_offset_us '
+            f'FROM arte.bars_v1 WHERE {scope} AND resolution_ms=1000 AND price_valid=1 '
+            f'AND (toInt64(bucket_index)+1)*1000000>={start_offset_us} '
+            f'AND (toInt64(bucket_index)+1)*1000000<={end_offset_us} '
+            f'AND close_int/10000. BETWEEN {funnel.min_price} AND {funnel.max_price} GROUP BY ticker')
     return (
         "SELECT ticker,tupleElement(episodes,2) AS admitted_offset_us FROM (SELECT ticker,"
         "arrayFold((acc,x)->if(x.1>=acc.1,tuple(x.1+3000,"
@@ -320,8 +329,8 @@ def prepare_session(
                 candidate_rows = sql.query(
                     reader,
                     "SELECT DISTINCT ticker FROM arte.bars_v1 "
-                    f"WHERE {_scope(source, day, group, 'bars')} AND resolution_ms=100 AND price_valid=1 "
-                    f"AND bucket_index>=144000 AND bucket_index<{(end_us - origin_us) // 100000} "
+                    f"WHERE {_scope(source, day, group, 'bars')} AND resolution_ms={1000 if funnel.admission=='price_envelope' else 100} AND price_valid=1 "
+                    f"AND bucket_index>={14400 if funnel.admission=='price_envelope' else 144000} AND bucket_index<{(end_us - origin_us) // (1000000 if funnel.admission=='price_envelope' else 100000)} "
                     f"AND close_int/10000. BETWEEN {funnel.min_price} AND {funnel.max_price}",
                 )
                 candidates.extend(row["ticker"] for row in candidate_rows)

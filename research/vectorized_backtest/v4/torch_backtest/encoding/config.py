@@ -36,6 +36,7 @@ class Funnel:
     max_price: float = 50.0
     impulse_bps: float = 5.0
     signal_ms: int = 100
+    admission: str = 'squeeze'
 
 
 @dataclass(frozen=True)

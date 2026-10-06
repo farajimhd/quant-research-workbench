@@ -18,6 +18,17 @@ def test_full_catalog():
     mask=validity(x)
     assert not mask[:,14:20].any() and mask[:,20].all()
 
+def test_generic_admission_uses_completed_prices_without_fixed_signal():
+    from research.vectorized_backtest.v4.torch_backtest.encoding.clickhouse import admission_sql
+    from research.vectorized_backtest.v4.torch_backtest.encoding.config import Funnel
+    source={'build_id':'producer','units':{'2026-08-03':{'ABC':{'bars':{'attempt_id':'attempt'}}}}}
+    sql=admission_sql(source,'2026-08-03',['ABC'],Funnel(admission='price_envelope'),72000000000,57600000000)
+    assert 'resolution_ms=1000' in sql and 'price_valid=1' in sql
+    assert '(toInt64(bucket_index)+1)*1000000>=57600000000' in sql
+    assert '(toInt64(bucket_index)+1)*1000000<=72000000000' in sql
+    assert 'min((toInt64(bucket_index)+1)*1000000)' in sql
+    assert 'lagInFrame' not in sql and 'arrayFold' not in sql and 'volume>' not in sql
+
 def test_feature_compare_and_completed_mean():
     x=torch.zeros(6,147);x[:,8]=torch.arange(6.)
     nodes=[Node(Op.FEATURE,feature=8),Node(Op.MEAN,a=0,window=3),Node(Op.GREATER,a=0,b=1)]

@@ -84,6 +84,15 @@ profiling; no speedup is claimed in advance.
 
 ## Launch gates and current status
 
+V4 broker snapshots must be built from the same certified market-build revision
+as the feature bank; the old V3 snapshots are incompatible with the corrected
+V6 producer. `bootstrap` requires explicit market manifest/ledger arguments and
+allocates V4-owned execution roots. `prepare_execution` is a SELECT-only training
+snapshot producer. It retains the price envelope and admits at a completed 1s
+price; it does not require the fixed V3 squeeze signal. The searched entry program
+decides when to trade. Final validation preparation requires the frozen-winner
+path and is not available through this training-only command yet.
+
 V4 requires an immutable opening-as-of split certificate for every consumed
 feature bank. `certify_splits` reads the existing canonical reference authority
 with execution_date<=session and inserted_at<=04:00 ET; it writes only a runtime
