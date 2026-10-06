@@ -19,10 +19,10 @@ def read_split(path):
         raise ValueError('Random draw or sealed generation policy changed')
     return data
 
-def dataset_split(data, runtime):
+def dataset_split(data, runtime, mapper=Path):
     binding=data.get('validation_split')
     if binding is None:return None
-    path=Path(binding['path']).resolve()
+    path=mapper(binding['path']).resolve()
     if not path.is_relative_to(Path(runtime).resolve()) or file_hash(path)!=binding['sha256']:
         raise ValueError('Extension split receipt changed or escaped runtime')
     split=read_split(path)

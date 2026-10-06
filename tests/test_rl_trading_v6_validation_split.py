@@ -49,6 +49,19 @@ def test_extension_manifest_cannot_escape_runtime(tmp_path):
         dataset_split(dict(validation_split=dict(path=str(path),sha256=file_hash(path),hash=data['hash'])),tmp_path/'other')
 
 
+def test_remote_split_path_mapping_keeps_exact_hash_and_runtime_fence(tmp_path):
+    path,data=frozen(tmp_path)
+    remote='D:/TradingML/runtimes/extension/split.json'
+    binding=dict(path=remote,sha256=file_hash(path),hash=data['hash'])
+    mapper=lambda value:path if value==remote else Path(value)
+    assert dataset_split(dict(validation_split=binding),tmp_path,mapper)==data
+    with pytest.raises(ValueError,match='escaped runtime'):
+        dataset_split(dict(validation_split=binding),tmp_path/'outside',mapper)
+    path.write_text(path.read_text()+' ')
+    with pytest.raises(ValueError,match='receipt changed'):
+        dataset_split(dict(validation_split=binding),tmp_path,mapper)
+
+
 def test_extension_bank_denied_without_explicit_generation_split(tmp_path):
     from research.rl_trading.v6.session_data import open_session
     root=tmp_path/'bankday';root.mkdir()

@@ -8,7 +8,8 @@ Predicting more rare actions alone is not a success criterion.
 GRU and causal Transformer encoders on authenticated local panels. It checks
 balanced TRAIN memorization first, then selects checkpoints using chronological
 training-role calibration only. Development is evaluated after selection;
-sealed sources are excluded. W&B records natural-frequency ENTRY/EXIT
+sealed target sessions are excluded; prior feature context remains input-only.
+W&B records natural-frequency ENTRY/EXIT
 precision, recall, F1, average precision, probability diagnostics, gradient
 norms and supervised auxiliary metrics. Accuracy alone is not a success gate.
 
@@ -20,6 +21,13 @@ contract is not enabled by the main trainer. Stored-row controls retain the
 original history semantics. Panel manifests bind the full bank and label
 receipts before the declared ticker/time slice; completed session exports are
 hash checked on an exact-source `--resume`.
+
+For the explicit remote-path reader fix, `--plan-only` freezes a new output
+binding. `reuse_bias_exports` authenticates original producer bytes and exact
+calculation ASTs, then links cached tensors with new receipts and an equivalence
+proof. Original exports remain untouched. Unexpected algorithm changes fail
+closed. Remote split paths are mapped under the same runtime fence and their
+exact split hashes and public role admission remain mandatory.
 
 Main trainer candidates are explicit:
 

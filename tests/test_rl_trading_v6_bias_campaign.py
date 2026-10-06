@@ -178,6 +178,26 @@ def test_actual_classification_only_updates_no_regression_or_forecast_heads(devi
             torch.testing.assert_close(before[name],p,rtol=0,atol=0)
 
 
+def test_export_reuse_rejects_changed_calculations_and_extra_source_drift():
+    from research.rl_trading.v6.reuse_bias_exports import verify_calculations
+    original={'bias_panel.py':b'VERSION="v1"\ndef indexed_panel(end): return end-120\ndef main(): return 0\n',
+        'session_data.py':b'def open_session(root, runtime): return dataset_split(root,runtime)\n',
+        'validation_split.py':b'def dataset_split(data,runtime): return Path(data["path"]).resolve()\n',
+        'training.py':b'class TeacherDecision: pass\ndef _validate(x): return x\n',
+        'probe_teacher_sequence.py':b'UNCHANGED=1\n'}
+    current=dict(original)
+    current['bias_panel.py']=original['bias_panel.py'].replace(b'main(): return 0',b'main(): return 1')
+    current['session_data.py']=b'def open_session(root,runtime,split_mapper=Path): return dataset_split(root,runtime,mapper=split_mapper)\n'
+    current['validation_split.py']=b'def dataset_split(data,runtime,mapper=Path): return mapper(data["path"]).resolve()\n'
+    assert 'bias_panel.py' in verify_calculations(original,current)
+    changed=dict(current);changed['bias_panel.py']=changed['bias_panel.py'].replace(b'end-120',b'end-119')
+    with pytest.raises(ValueError,match='calculation'):
+        verify_calculations(original,changed)
+    changed=dict(current);changed['probe_teacher_sequence.py']+=b'\n# altered source\n'
+    with pytest.raises(ValueError,match='Unexpected producer source drift'):
+        verify_calculations(original,changed)
+
+
 @pytest.mark.parametrize('architecture',['lag','tcn','gru','transformer','mlp'])
 def test_real_ranked_training_core_accepts_encoder_and_separate_heads(architecture):
     from dataclasses import replace

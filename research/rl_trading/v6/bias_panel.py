@@ -126,6 +126,7 @@ def main(argv=None):
     parser.add_argument('--extended-public-development',action='store_true')
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--valid-price-history',action='store_true',help='Versioned diagnostic: last 120 priced candles, elapsed clock gaps; source labels/indicators unchanged')
+    parser.add_argument('--plan-only',action='store_true',help='Freeze fresh scope/source binding before explicitly verified reuse of exports')
     args=parser.parse_args(argv)
     root=Path('D:/TradingML/runtimes').resolve();output=args.output.resolve()
     if not root.is_dir() or not output.is_relative_to(root) or (output.exists() and not args.resume):raise ValueError('Fresh laptop runtime or explicit resume required')
@@ -150,6 +151,7 @@ def main(argv=None):
         manifest=old
     else:planned.write_text(json.dumps(manifest,indent=2))
     scope_hash=file_hash(planned)
+    if args.plan_only:return 0
     prepared={}
     for fold,days in folds.items():
         items=[]
@@ -167,7 +169,8 @@ def main(argv=None):
             if entry['role']!=expected:raise ValueError('Panel role admission mismatch')
             ids=sorted(i for i,t in source.saved_symbols(str(bankroot),entry['bank_certificate_sha256']).items() if t in args.tickers)
             if len(ids)!=len(args.tickers):raise ValueError('Diagnostic ticker identity is ambiguous/missing')
-            full=open_session(bankroot,runtime_root=source.runtime(),previous_root=source.mapped(entry['previous_root']))
+            full=open_session(bankroot,runtime_root=source.runtime(),previous_root=source.mapped(entry['previous_root']),
+                split_manifest=source.mapped(entry['split_manifest']) if entry.get('split_manifest') else None,split_mapper=source.mapped)
             ma,_,me,mroot,_=market.session(day)
             labels,_=load_teacher(teacher,full,runtime_root=source.runtime(),audit_development=True,audit_listing_ids=ids,market_root=mroot)
             begin=int(datetime.fromisoformat(day+'T04:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()*1_000_000)

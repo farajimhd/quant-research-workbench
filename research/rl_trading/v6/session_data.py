@@ -85,7 +85,8 @@ def validate_previous_context(plan, prior_plan, prior_certificate):
 
 
 def open_session(root: Path, *, runtime_root: Path,
-                 previous_root: Path | None = None, split_manifest: Path | None = None) -> PackedSession:
+                 previous_root: Path | None = None, split_manifest: Path | None = None,
+                 split_mapper=Path) -> PackedSession:
     """Bind the day plan, top-level certificate, feature bank and prior tail.
 
     Hashes are checked once per loaded day, not repeatedly at every epoch or
@@ -109,7 +110,7 @@ def open_session(root: Path, *, runtime_root: Path,
     if plan.get('validation_split') is not None and extension is None:
         raise ValueError('Extension bank requires explicit generation-only split authorization')
     if extension is not None:
-        bound=dataset_split(plan,runtime)
+        bound=dataset_split(plan,runtime,mapper=split_mapper)
         if bound is None or bound['hash']!=extension['hash']:raise ValueError('Bank extension split binding differs')
     split_role=generation_role(day,extension)
     if (certificate.get('status') != 'complete' or
