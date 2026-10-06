@@ -4,6 +4,19 @@ from .search_runner import SearchRunner
 from .evolution import STAGES
 
 class ProgramRunner(SearchRunner):
+    def live_metrics(self):
+        """One bounded population transfer at the existing progress barrier.
+
+        Provisional marked equity is monitoring evidence, never fitness.
+        """
+        values=torch.stack((self.equity-self.settings.initial_cash,self.drawdown,
+            (self.quantity>0).sum((1,2)),self.fill_count,self.financial_error,self.overflow)).detach().cpu()
+        pnl,drawdown,opened,fills,errors,overflow=values
+        return dict(pnl_min=float(pnl.min()),pnl_median=float(pnl.median()),pnl_max=float(pnl.max()),
+            drawdown_max=float(drawdown.max()),open_positions_max=int(opened.max()),
+            fills_max=int(fills.max()),financial_error_candidates=int(errors.count_nonzero()),
+            overflow_candidates=int(overflow.count_nonzero()),scope='active session population; marked equity, provisional')
+
     def __init__(self,tape,space,individuals,gates,**kwargs):
         self.native_programs=True
         self.program_gates=gates

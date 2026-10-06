@@ -8,6 +8,7 @@ def test_profile_has_one_session_and_no_campaign_generation_bar():
                 config=dict(population=128,generations=32,training_sessions=30),
                 completed_sessions=0,prepared_sessions=1,
                 progress=dict(completed_seconds=100,total_seconds=19800))
+    status['active_session']=dict(pnl_median=12.5,drawdown_max=99.,open_positions_max=15,fills_max=99)
     for width,height in ((80,24),(128,42)):
         for view in ('financial','performance','objective'):
             stream=StringIO()

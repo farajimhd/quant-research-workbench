@@ -54,7 +54,7 @@ def clean(value):
 
 def evaluate_session(spec,population,space,args,output,emit,cache=None):
     began=time.perf_counter();tape,bank,prior,identities,receipt=load_session(spec)
-    load=time.perf_counter()-began;emit(stage='Transfer certified inputs',focus=spec['day'])
+    load=time.perf_counter()-began;emit(stage='Transfer certified inputs',focus=spec['day'],timing=dict(load=load),active_session=None)
     transfer=time.perf_counter()
     from .session_pool import padded_tape,bind_tape
     capacity=((len(tape.tickers)+63)//64)*64
@@ -62,6 +62,7 @@ def evaluate_session(spec,population,space,args,output,emit,cache=None):
     if tape.bytes>args.maximum_tape_gib*1024**3:raise MemoryError('Padded broker tape exceeds declared budget')
     resident=FeatureResident(bank,identities,previous=prior,device=args.device,maximum_gib=args.feature_gib,start_us=int(tape.clocks[0])*1_000_000,end_us=int(tape.clocks[-1])*1_000_000)
     transfer=time.perf_counter()-transfer
+    emit(timing=dict(load=load,transfer=transfer))
     gates,rule_seconds=resident.compile(population,tape,chunk_candles=args.chunk_candles,emit=lambda e:emit(**e))
     del resident;gc.collect()
     key=(len(tape.clocks),capacity,len(population),tuple(tape.level_lower.shape),tape.structural_targets is not None)
@@ -73,10 +74,10 @@ def evaluate_session(spec,population,space,args,output,emit,cache=None):
     else:
         if cache is not None:cache.clear();gc.collect()
         runner=ProgramRunner(tape,space,population,gates,backend=args.backend,maximum_fills=args.maximum_fills,maximum_state_gib=args.maximum_state_gib,graph_steps=args.graph_steps)
-        emit(stage='Compile financial replay');runner.compile();compiled=runner.setup_seconds
+        emit(stage='Compile financial replay',timing=dict(load=load,transfer=transfer,rule_prepare=rule_seconds));runner.compile();compiled=runner.setup_seconds
         if cache is not None:cache[key]=runner
-    emit(stage='Backtest',focus=spec['day'])
-    result=runner.run(progress=lambda progress:emit(progress=progress,stage='Backtest'))
+    emit(stage='Backtest',focus=spec['day'],timing=dict(load=load,transfer=transfer,rule_prepare=rule_seconds,compile=compiled))
+    result=runner.run(progress=lambda progress:emit(progress=progress,stage='Backtest',active_session=runner.live_metrics()))
     metrics={k:clean(v) for k,v in result.items() if isinstance(v,torch.Tensor)}
     ledger=runner.ledger[:,:int(runner.fill_count.max().item())].detach().cpu()
     ledger_path=output/'fills.pt'

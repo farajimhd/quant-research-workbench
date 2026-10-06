@@ -79,6 +79,10 @@ def test_financial_program_path_causal_and_timestamp_duration(tmp_path):
     gates['exit'][15:]=True
     runner=ProgramRunner(tape,space,[candidate],gates,backend='eager',maximum_fills=128).compile()
     result=runner.run()
+    live=runner.live_metrics()
+    assert live['pnl_median']==float(result['net_pnl'][0])
+    assert live['fills_max']==int(result['fill_count'][0])
+    assert live['financial_error_candidates']==live['overflow_candidates']==0
     assert result['filled_batches'][0]>0 and result['terminal_valid'][0]
     ledger=runner.ledger[0,:int(runner.fill_count[0])]
     assert len(ledger)>1

@@ -53,7 +53,14 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     for key in ('load','transfer','rule_prepare','compile','replay','end_to_end'):
         performance.add_row(key.replace('_',' ').title(),number(timing.get(key)))
     footer=Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | host {number(status.get('host_gib'),'.1f')} GiB | prefetched {status.get('prefetched_sessions','—')} | worker {status.get('worker_pid','—')}")
+    active=status.get('active_session')
+    if active:
+        live=Text(f"LIVE session median P&L ${number(active.get('pnl_median'))} | DD ${number(active.get('drawdown_max'))} | open {active.get('open_positions_max','—')} | fills {active.get('fills_max','—')}",style='yellow')
+        if height<26 and view=='financial':footer=live
+        else:footer=Group(Text('ACTIVE SESSION POPULATION — provisional marked equity',style='yellow'),live,footer)
     issue=Text(status.get('error') or status.get('waiting_reason') or 'No reported failure',style='red' if status.get('error') else 'dim')
+    if active and (active.get('financial_error_candidates') or active.get('overflow_candidates')):
+        issue=Text(f"FINANCIAL ERRORS {active.get('financial_error_candidates',0)} | LEDGER OVERFLOW {active.get('overflow_candidates',0)} candidates",style='bold red')
     if height<26 and view=='financial':return Group(head,progress,grid,footer,issue,Text('F financial | P performance | C objective; full metrics: status.json'))
     components=Table(title='OBJECTIVE COMPONENTS',expand=True);components.add_column('Component');components.add_column('Contribution',justify='right')
     for key,value in (best.get('objective_components') or {}).items():components.add_row(key.replace('_',' '),number(value,'.6f'))
