@@ -70,11 +70,11 @@ def main(argv=None):
         h.update(path.relative_to(base).as_posix().encode())
         h.update(path.read_bytes())
     report = {"commit": commit, "source": "git archive of pushed commit", "files": hashes,
-              "verified_files": len(hashes), "v3_code_hash": h.hexdigest(), "target": str(target)}
+              "verified_files": len(hashes), "v4_code_hash": h.hexdigest(), "target": str(target)}
     evidence.mkdir(parents=True, exist_ok=True)
     (evidence / "deployment.json").write_text(json.dumps(report, sort_keys=True, indent=2), encoding="utf-8")
     print(json.dumps({"commit": commit, "verified_files": len(hashes), "target": str(target),
-                      "workstation_launcher": "D:/TradingML/codes/" + name + "/research/vectorized_backtest/v3/torch_backtest/run_workstation.py"}, indent=2))
+                      "workstation_entrypoint": "research.vectorized_backtest.v4.torch_backtest.optimize"}, indent=2))
     return 0
 
 

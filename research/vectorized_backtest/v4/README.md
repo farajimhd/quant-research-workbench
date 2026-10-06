@@ -84,6 +84,19 @@ profiling; no speedup is claimed in advance.
 
 ## Launch gates and current status
 
+V4 requires an immutable opening-as-of split certificate for every consumed
+feature bank. `certify_splits` reads the existing canonical reference authority
+with execution_date<=session and inserted_at<=04:00 ET; it writes only a runtime
+sidecar. Prior OHLC is restated by split_from/split_to, prior volume by its
+inverse, and same-clock RVOL uses a denominator on the current share basis.
+Ratio indicators and V7 distances stay invariant; historical fundamentals retain
+their original point-in-time semantics. Raw banks and broker prices are unchanged.
+Missing/conflicting certificates fail closed. Standard session-opening actions
+are supported; date-only reference evidence does not establish support for an
+intraday corporate-action event. Accounts begin flat and finish flat each day.
+Forward/reverse split conversion and loader binding have focused CPU coverage;
+historical split evidence and GPU qualification remain launch gates.
+
 Implementation is under qualification. Do not start a full campaign until all30
 training banks/identity maps/execution snapshots are certified and the same-source
 B128 workstation qualification passes. Full optimization budget defaultsB128,

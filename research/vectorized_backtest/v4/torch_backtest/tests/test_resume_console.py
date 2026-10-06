@@ -60,7 +60,7 @@ def test_resume_rejects_changed_immutable_worker(tmp_path, monkeypatch):
     marker = tmp_path / 'deployments' / 'worker'
     marker.mkdir(parents=True)
     (marker / 'deployment.json').write_text(json.dumps(dict(
-        v3_code_hash='sealed', files={'runner.py': file_hash(source)})))
+        v4_code_hash='sealed', files={'runner.py': file_hash(source)})))
     experiment = tmp_path / 'job' / 'experiment'
     experiment.mkdir(parents=True)
     (experiment / 'identity.json').write_text('{"code_hash":"sealed"}')

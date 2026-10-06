@@ -55,6 +55,16 @@ def load_session(spec):
     absent=set(tape.tickers)-set(inverse)
     if absent:raise ValueError(f'{len(absent)} execution tickers absent from V6-schema bank')
     identities=[inverse[t] for t in tape.tickers]
+    # An empty action list is accepted only from a certified opening-as-of
+    # reference query, never inferred from a missing sidecar.
+    from .splits import load_basis
+    bank.split_basis,split_hash=load_basis(spec['split_certificate'],bank,prior,rows)
+    previous_split_hash=None
+    if prior is not None:
+        previous_certificate=json.loads(Path(spec['previous_split_certificate']).read_text(encoding='utf-8'))
+        prior_mapping={key:value['ticker'] for key,value in previous_certificate['listings'].items()}
+        if set(prior_mapping)!=set(prior.manifest['offsets']):raise ValueError('Incomplete previous split coverage')
+        prior.split_basis,previous_split_hash=load_basis(spec['previous_split_certificate'],prior,None,prior_mapping,rvol_only=True)
     # No nearest-time matching or silent source substitution. Actual bank
     # closes must reconcile against observed execution marks in the session.
     import numpy as np
@@ -73,7 +83,7 @@ def load_session(spec):
         prices=np.exp(bank.scalar[a+safe[selected],3].astype(np.float64))
         expected=tape.close[selected,ticker].numpy()
         if not valid.all() or not np.allclose(prices,expected,rtol=2e-6,atol=1e-4):raise ValueError('Feature/financial prices or validity disagree')
-    return tape,bank,prior,identities,dict(day=spec['day'],execution=receipt,feature_certificate=bank.certificate_hash,prior_certificate=prior.certificate_hash if prior else None,identity_map_sha256=file_hash(mapping_path))
+    return tape,bank,prior,identities,dict(day=spec['day'],execution=receipt,feature_certificate=bank.certificate_hash,prior_certificate=prior.certificate_hash if prior else None,identity_map_sha256=file_hash(mapping_path),split_certificate_sha256=split_hash,previous_split_certificate_sha256=previous_split_hash)
 
 def preflight(spec,*,require_full=True,profile=False):
     training=spec.get('training',[]);validation=spec.get('validation',[])
@@ -84,7 +94,8 @@ def preflight(spec,*,require_full=True,profile=False):
     missing=[]
     # Validation data is NOT opened; final schema/metric audits follow freeze.
     for s in training[:1] if profile else training:
-        for key in ('execution_root','feature_root','identity_map'):
+        for key in ('execution_root','feature_root','identity_map','split_certificate'):
             if key not in s or not Path(s[key]).exists():missing.append(dict(day=s['day'],input=key))
+        if s.get('previous_feature_root') and (not s.get('previous_split_certificate') or not Path(s['previous_split_certificate']).exists()):missing.append(dict(day=s['day'],input='previous_split_certificate'))
     if missing:raise ValueError('Missing certified V4 inputs: '+json.dumps(missing))
     return dict(training_dates=train_dates,validation_dates=test_dates,validation_opened=False,input_scope='first_training_session_profile' if profile else 'all_training_sessions')

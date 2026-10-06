@@ -111,7 +111,7 @@ def source_revision(repo):
     marker = DEFAULT / "deployments" / Path(repo).name / "deployment.json"
     if marker.exists():
         value = json.loads(marker.read_text())
-        if value["v3_code_hash"] != code_hash():
+        if value["v4_code_hash"] != code_hash():
             raise ValueError("Workstation payload differs from its verified deployment")
         return value["commit"]
     return subprocess.check_output(

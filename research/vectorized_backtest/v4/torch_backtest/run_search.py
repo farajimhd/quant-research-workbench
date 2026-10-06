@@ -129,7 +129,7 @@ def main(argv=None):
                     if receipt['population_sha256']!=pop_hash or receipt['day']!=session['day'] or file_hash(destination/'fills.pt')!=receipt['ledger_sha256']:raise ValueError('Session receipt/population/ledger mismatch')
                     # Revalidate current immutable inputs before reusing replay.
                     *_,fresh=load_session(session)
-                    for key in ('execution','feature_certificate','prior_certificate','identity_map_sha256'):
+                    for key in ('execution','feature_certificate','prior_certificate','identity_map_sha256','split_certificate_sha256','previous_split_certificate_sha256'):
                         if fresh[key]!=receipt[key]:raise ValueError('Resumed session source changed')
                 else:
                     def session_emit(**event):

@@ -83,9 +83,17 @@ class CertifiedBank:
         left,right=self.manifest['offsets'][identity]
         clocks=np.array(self.clocks[left:right],copy=True)
         x=np.concatenate((self.scalar[left:right],self.levels[left:right].reshape(-1,110)),axis=1)
+        basis=getattr(self,'split_basis',None)
+        if basis is not None:
+            from .splits import rvol_view
+            x=rvol_view(x,basis[identity]['rvol_price_factor'])
         if previous is not None and identity in previous.manifest['offsets']:
             a,b=previous.manifest['offsets'][identity];a=max(a,b-119)
             old=np.concatenate((previous.scalar[a:b],previous.levels[a:b].reshape(-1,110)),axis=1)
+            if basis is not None:
+                from .splits import history_view,rvol_view
+                old=rvol_view(old,previous.split_basis[identity]['rvol_price_factor'])
+                old=history_view(old,basis[identity]['history_price_factor'])
             if len(clocks) and b>a and previous.clocks[b-1]>=clocks[0]:raise ValueError('Previous context reaches future')
             x=np.concatenate((old,x));clocks=np.concatenate((previous.clocks[a:b],clocks))
         if end_us is not None:

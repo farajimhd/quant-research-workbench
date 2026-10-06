@@ -44,7 +44,7 @@ def verify_worker(checkout, job):
     identity = json.loads((job / 'experiment' / 'identity.json').read_text())
     marker = DEFAULT / 'deployments' / checkout.name / 'deployment.json'
     deployment = json.loads(marker.read_text())
-    if deployment['v3_code_hash'] != identity['code_hash']:
+    if deployment['v4_code_hash'] != identity['code_hash']:
         raise ValueError('Worker deployment does not own the experiment source seal')
     for name, expected in deployment['files'].items():
         if file_hash(checkout / name) != expected:

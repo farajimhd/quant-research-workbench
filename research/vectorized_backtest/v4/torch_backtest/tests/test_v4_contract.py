@@ -124,7 +124,7 @@ def test_controller_all30_freeze_once_and_audit(tmp_path,monkeypatch):
     from research.vectorized_backtest.v4.torch_backtest.runtime import code_hash,file_hash
     from research.vectorized_backtest.v4.torch_backtest.audit import audit
     inputs=tmp_path/'inputs';inputs.mkdir();mapping=inputs/'map.json';mapping.write_text('{}')
-    sessions={role:[dict(day=str(date(2026,1,1)+timedelta(days=offset+i)),execution_root=str(inputs),feature_root=str(inputs),identity_map=str(mapping)) for i in range(count)] for role,offset,count in [('training',0,30),('validation',30,6)]}
+    sessions={role:[dict(day=str(date(2026,1,1)+timedelta(days=offset+i)),execution_root=str(inputs),feature_root=str(inputs),identity_map=str(mapping),split_certificate=str(mapping)) for i in range(count)] for role,offset,count in [('training',0,30),('validation',30,6)]}
     path=tmp_path/'sessions.json';path.write_text(json.dumps(sessions));qualification=tmp_path/'unit-only-qualification.json'
     qualification.write_text(json.dumps(dict(status='passed',code_hash=code_hash(),population=4,sessions_sha256=file_hash(path))))
     calls=[];output=tmp_path/'experiment'
