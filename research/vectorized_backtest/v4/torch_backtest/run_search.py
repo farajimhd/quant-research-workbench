@@ -128,13 +128,16 @@ def main(argv=None):
     parser.add_argument('--maximum-fills',type=int,default=65536);parser.add_argument('--graph-steps',type=int,default=32);parser.add_argument('--chunk-candles',type=int,default=4096)
     parser.add_argument('--ticker-capacity',type=int,help='Fixed inactive-padded training axis; choose from all30 certified session widths for graph reuse')
     parser.add_argument('--qualification',type=Path)
+    parser.add_argument('--operand-session',choices=('all','premarket'),default='all',help='Premarket removes session-regime flags from searchable operands; banks remain intact')
     args=parser.parse_args(argv)
     if args.population<4 or args.generations<1 or args.chunk_candles<120:parser.error('Invalid bounded search budget')
     if args.ticker_capacity is not None and args.ticker_capacity<1:parser.error('Positive shared ticker capacity required')
     spec=json.loads(args.sessions.read_text(encoding='utf-8'));split=preflight(spec,profile=args.profile)
+    from .search_operands import searchable_features
+    features=searchable_features(spec['training'],args.operand_session)
     output=require_runtime(args.output);objective=Objective().validate();space=StrategySpace()
     identity=dict(version='v4-variable-rulesets-v1',code_hash=code_hash(),sessions=spec,split=split,objective=asdict(objective),financial_settings=asdict(space.settings),features=[asdict(f) for f in CATALOG],
-        policy_coordinates=list(range(4,50)),program_maximum_nodes=32,stages=list(STAGES),arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items() if k not in ('resume','execute','output','qualification')})
+        searchable_feature_indices=list(features),policy_coordinates=list(range(4,50)),program_maximum_nodes=32,stages=list(STAGES),arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items() if k not in ('resume','execute','output','qualification')})
     if not args.execute:write_json(output/'plan.json',identity);print(str(output/'plan.json'));return 0
     if args.device=='cuda' and not torch.cuda.is_available():raise RuntimeError('CUDA required; no fallback')
     if not args.profile:
@@ -171,7 +174,7 @@ def main(argv=None):
     saved=json.loads(checkpoint.read_text()) if checkpoint.exists() else None
     if saved:
         population=[restore(v) for v in saved['population']];rng.bit_generator.state=saved['rng'];start=saved['next_generation'];winner=saved['winner'];best=saved['best_score'];best_metrics=saved['best_metrics']
-    else:population=sample(rng,space,args.population);start=0;winner=None;best=None;best_metrics=None
+    else:population=sample(rng,space,args.population,features);start=0;winner=None;best=None;best_metrics=None
     timing_totals={};timing_count=0
     try:
         for generation in range(start,1 if args.profile else args.generations):
@@ -221,7 +224,7 @@ def main(argv=None):
             while len(next_population)<args.population:
                 if rng.random()<.2:next_population.extend(sample(rng,space,1))
                 else:
-                    rivals=rng.choice(args.population,3,replace=False);parent=max(rivals,key=lambda i:(feasible[i],-violations[i],values[i]));next_population.append(mutate(rng,population[int(parent)],space))
+                    rivals=rng.choice(args.population,3,replace=False);parent=max(rivals,key=lambda i:(feasible[i],-violations[i],values[i]));next_population.append(mutate(rng,population[int(parent)],space,features))
             population=next_population
             write_json(checkpoint,dict(next_generation=generation+1,population=[state(v) for v in population],rng=rng.bit_generator.state,winner=winner,best_score=best,best_metrics=best_metrics))
             emit(completed_generations=generation+1,feasible_candidates=sum(feasible),best_score=best,best_metrics=best_metrics,closest_score=values[top],closest_metrics=closest_metrics,closest_violation=violations[top],rejection_counts={k:clean(v) for k,v in scored['violations'].items()})
@@ -274,3 +277,4 @@ def main(argv=None):
         lock.unlink(missing_ok=True)
 
 if __name__=='__main__':raise SystemExit(main())
+
