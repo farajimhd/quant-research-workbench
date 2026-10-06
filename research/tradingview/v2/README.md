@@ -1,80 +1,44 @@
-# Structural reaction levels v2
+# Structural reaction levels v2 (v2.8 display)
 
-Replace the old structural indicator on TradingView with the complete contents of `structural_zones.pine`. Keep using the independent v1 MACD and jump-alert scripts; those are unchanged. This remains a price-bar approximation of v7, not the repo's statistical builder or a calibrated prediction model.
+Copy the complete `structural_zones.pine` into TradingView's Pine Editor, replacing the old structural indicator. The independent v1 MACD/jump-alert scripts are unchanged. This is a chart-bar approximation, not the repo's causal v7 statistical builder.
 
-## Historical carry-forward while panning (v2.7)
+## Stable level selection
 
-The old visible-range exception applied only to DAY candidates. A prior-day level around $1.60 could be hidden by the 3% proximity filter when current price was near $1.19, even though both sessions and that price were visible. `Carry historical structure across visible price range` is now on by default: eligible historical reaction levels inside the visible high/low range can display beyond the proximity limit. Historical lines already span the visible chart and extend into the current session.
+Panning/zooming no longer changes eligibility, price-region selection, or level/caption spacing. The earlier visible-price-range filters and viewport-derived spacing were the cause of disappearing levels. The viewport is now used only for drawing endpoints and horizontal caption placement.
 
-Selection now runs current-day extremes, reserved current-day levels, historical price-region coverage, then remaining candidates. The historical pass divides the visible price span on each side of current price into `max(1, per_side_limit - current_reservation)` regions and selects at most one historical level per region before filling remaining slots. Within historical selection, qualified candidates precede provisional ones, then recency-weighted reaction strength determines priority. This avoids allocating all historical slots to nearby levels. Limits, spacing, rolling expiry, and provisional visibility still apply; a particular $1.60 line is not guaranteed unless its reaction candidate exists and wins selection.
+The selected book is based on the latest completed bar, accepted reactions in the requested rolling calendar-day window, and explicit inputs. Distance restriction is **off by default**, so distant historical levels can carry into current sessions. Enable `Restrict levels to maximum distance from latest price` to use the percentage-distance input.
 
-This remains an **as-of-now book** while panning: historical lines carried across the visible chart do not reconstruct what was known at each earlier candle. Viewport changes affect display selection only. Lines remain solid with width 1; absent bounds remain absent. Turning off historical visible-range carry restores the strict proximity filter for historical candidates.
+Historical price-region coverage uses the retained reaction book's high/low, not the visible candles. Display separation uses `max(minimum_bucket_price, symbol_tick * minimum_display_ticks)`. Caption separation is twice that gap. Level suppression affects drawings only, never the retained observations. Panning over the same loaded source data at the same completed bar leaves the selected prices, geometry, status, and caption inclusion unchanged.
 
-## Major swing coverage and line style (v2.6)
+New completed candles, rolling expiry, input changes, or newly loaded history can still change the book. Panning may cause TradingView to load previously unavailable bars; that is a data change, not a viewport-only change. The script cannot manufacture missing history or certify uninterrupted coverage. This is an as-of-now overlay, not a reconstruction of levels known at each historical candle.
 
-All main and optional boundary lines are **solid, width 1**, regardless of source or qualification. DAY/HIST/P labels and reduced provisional opacity distinguish evidence status. Bands remain optional and require real available estimates.
+## Reactions and geometry
 
-Previously, qualified proximity ranking could fill the upper display budget with minor levels while excluding a major one-reaction peak. Selection now has three passes: (1) highest and lowest eligible current-day reaction levels, when current-day reservation is enabled; (2) remaining reserved current-day slots by descending recency-weighted reaction strength; (3) remaining slots from both sources. Historical candidates retain qualified-first priority, then reaction strength and price-region coverage. Extreme selection consumes the same per-side budget and obeys eligibility, provisional visibility, spacing, and rolling-history constraints. If both extremes are on the same side and that side's budget is one, only one can display.
+Detection uses the chart timeframe: ten confirmation bars means 50 seconds on 5s, ten minutes on 1m. Completed high/low pivots must pass the configured ATR move-away gate. Same-side reactions within a price bucket must be spaced by the configured seconds.
 
-The selected extremes are extrema of **accepted reaction candidates**, not fabricated lines at raw high/low. A swing must still have its completed-bar pivot confirmation and pass the ATR move-away gate. A single confirmed extreme remains P and receives no band. This improves display coverage; it is not proof that all session swings are detected or that the approximation matches causal v7.
+Fixed buckets use `floor(log(1 + price / scale) / log(1 + percentage))`, where `scale = max(minimum_bucket_price, 2 * symbol_tick) / percentage`. This provides a tick/dollar floor plus percentage spacing. The default dollar floor is $0.01; adjust it for other instruments. It is a grouping scale, not a fabricated band width.
 
-## Low-price / seconds-chart display (v2.5)
+DAY and HIST observations are separate. Both require three spaced reactions by default for qualification; HIST additionally requires two distinct exchange days. The exchange daily boundary defines DAY, including loaded extended-hours bars. A new day moves previous-day reactions into HIST qualification.
 
-At $1.23 the old 0.1% log bucket was only about $0.0012 wide. Separate DAY/HIST books could create coincident levels, and the 3% proximity filter hid major session swings after a large move.
+Each level has one main median-price line. Available bounds use the 10th/90th reaction-price percentiles only when the candidate qualifies and has at least three distinct prices. Lower must be below the main price; upper must be above. Missing sides stay missing, and a fill requires both sides. No padding or bucket edges substitute for missing bounds. Provisional candidates never receive bands. This is a percentile approximation; the app uses a Student-t fit.
 
-The bucket transform is now `floor(log(1 + price / scale) / log(1 + percent_width))`, with `scale = max(minimum_bucket_price, 2 * symbol_tick) / percent_width`. Its price-space bucket width is approximately the fixed floor plus the percentage component. This is a tick/dollar-aware grouping rule, **not a minimum rendered band width**. Bounds still come solely from eligible reaction prices. The explicit default dollar floor is $0.01; adjust for non-equity instruments or sub-cent analysis.
+## Display
 
-`Include current-day structure across visible price range` is enabled by default. It admits DAY candidates inside the visible chart's high/low range even when farther than the 3% proximity filter; historical candidates have a separate enabled visible-range carry option. Panning/zooming changes this display filter, not reaction extraction or qualification. Per-side limits and source reservations still apply, so not every visible swing will be drawn.
+All main and optional boundary lines are **solid, width 1**. Faint bands are enabled, optional boundary outlines disabled. Captions identify DAY/HIST, P for provisional, and price-relative S/R, then main price and available L/U bounds. Qualified colors are green above the level/band, red below, orange inside; provisional colors use reduced opacity. These colors are not the app's evidence-based role transitions.
 
-Duplicate/nearby drawings across source books are suppressed after selection priority. Minimum center separation is `max(minimum_bucket_price, symbol_tick * minimum_display_ticks, visible_price_span / 80)`. Suppression changes display only; it does not merge samples or fabricate shared geometry. The higher-priority selected source survives. Captions are independently suppressed within `max(drawing_gap, visible_price_span / 35)` to reduce overlap; lines without captions remain visible. Captions retain source, provisional flag, main price, and available bounds. Pine lacks pixel collision detection, so extreme zoom/font combinations still need visual checking.
+Selection reserves current-day slots (three per side by default), first prioritizing eligible current-day extremes, then reaction strength. Historical selection takes one level per book-price region before filling remaining slots. Historical qualification precedes recency-weighted reaction strength. The overall limit defaults to eight per side and accepts up to 30. Extrema are accepted reaction candidates, not raw session high/low. No particular price is guaranteed to qualify or win bounded display selection.
 
-## Current-day structure (v2.4)
+Evidence strength is `sum(min(move_away_ATR, 5) * 0.5^(age_days / half_life))`; it is not a hold probability. Captions sit below their main line near the right margin; Pine has no pixel anchor to the price axis. Adjust the bars offset to match your chart margin. Nearby captions may be suppressed to avoid overlap, but their lines remain. There is no table.
 
-The former combined book required every qualified bucket to span at least two days. Today's newly discovered highs/lows therefore remained gray provisional candidates even when they had several reactions. Historical levels could also consume every display slot.
+## Validation
 
-The update separates current-day and prior-day observations into distinct books. Current-day qualification requires the same minimum spaced-reaction count (three by default), but has no multi-day requirement. Historical qualification retains its count and distinct-day filters. Three slots per side are reserved for current-day candidates by default; a second pass fills remaining space from either source. A source cannot consume more than the overall per-side limit, and unfilled reservations do not suppress historical levels. Disable reservation by setting it to zero.
+Source review and local design/static checks do not prove Pine compilation or rendered behavior. TradingView compilation, real-feed performance, and visual verification remain pending. No measured predictive improvement is claimed.
 
-Captions identify `DAY` or `HIST`, `P` when provisional, and `R` above completed price / `S` below it. All main lines are solid with width 1. Provisional lines use the same price-position colors at reduced opacity: their `P` label still explicitly marks insufficient evidence. Provisional levels have no fitted band. Bands still require a qualified candidate and at least three distinct reaction prices; no boundaries are invented.
+1. Replace the old indicator and reset inputs. Check low-price 5s and QQQ/AAPL 1m charts.
+2. At the same completed bar and loaded history, pan/zoom repeatedly: line prices, bounds, status, and caption inclusion must remain stable; endpoints/text positions may move.
+3. Enable the distance restriction and verify the explicit filtering. Return it to off for full-book carry.
+4. Single/identical-price/provisional candidates must have no fabricated bounds. Toggle fills/outlines/text independently.
+5. Check new-day reclassification, rolling expiry, short history, and the explicit retained-pivot capacity error. The default limit is 10,000 pivots (maximum 20,000); shorten history or adjust detection inputs if exhausted.
+6. Compare future hold/break behavior on untouched sessions before making predictive claims. Do not tune on evaluation sessions.
 
-This is still chart-timeframe detection: the default ten-bar pivot confirmation takes ten minutes on a 1m chart. It does not detect every turning point or imply an immediate confirmed level at the day's high/low. Current-day identity follows the exchange daily-bar boundary, including loaded extended-hours bars. On each new exchange day, previous-day reactions join the historical book and are evaluated against historical qualification. Current-day candidates remain separate even if a historical bucket occupies the same price.
-
-## Presentation
-
-The v2.1 update keeps the qualification thresholds unchanged and enables provisional candidates by default. Historical selection prioritizes qualified levels; current-day selection prioritizes extremes and reaction strength. Nearby candidates that fail the reaction-count or distinct-day requirements fill remaining per-side slots as **faint solid lines labeled P**. Disable `Show provisional candidates` for strict qualified-only display. This is an explicit exploratory display mode, not a relaxation of level qualification. No pivots or no nearby candidates can still mean no lines.
-
-The v2.2 presentation removes the status table. Defaults show up to eight zones above and eight below price, within 3%, prioritizing qualified zones and then nearby provisional candidates. `Zones above / below price` accepts up to 30 per side. The count is a maximum, not a promise that enough candidates exist.
-
-The v2.3 update follows the app renderer's hierarchy (`ReactionBook.tsx`): one prominent main price line and, when geometry exists, a faint fill between lower and upper bounds. It does not draw three equally prominent levels. All main lines are solid with width 1, with provisional opacity reduced. Colors still use the Pine approximation's price-position rule; they do not reproduce the app's evidence-based role state.
-
-Bounds are available only for qualified levels with at least three spaced observations and at least three distinct reaction prices (distinction uses half a symbol tick). They use the 10th/90th reaction-price percentiles without minimum-width padding or substituted bucket edges. A lower bound must be below the main price; an upper bound must be above it. Missing bounds stay missing. Provisional, singleton, repeated-identical-price, or degenerate candidates have only their main line. A filled band requires both bounds. Optional `Outline available lower / upper boundaries` is off by default; enabling it draws thin outlines only for available sides. The app uses a Student-t fit; Pine's percentile estimate remains an explicit approximation.
-
-Text sits below the main level near the price axis. `333.20 L:333.10 U:333.30 S8/R3` reports the main price, available lower/upper bounds, and low/high pivot counts. Missing L/U values are omitted. `P` marks provisional. Counts are not hold probabilities. Pine cannot anchor labels to an axis in pixels; adjust `Text position` to match the chart's right margin.
-
-Current levels overlaid on earlier candles were not necessarily available then: this is an as-of-now snapshot, not a historical backtest overlay. Geometry refreshes on bar close; panning/zooming triggers Pine recalculation.
-
-## Estimator changes
-
-- Every retained reaction has a price, pivot timestamp, confirmation availability time, side, exchange day, and confirmed move-away strength measured in pivot-bar ATR units.
-- Individual pivots expire at the rolling calendar-day cutoff; refreshed zones cannot retain expired geometry or counts. With identical loaded bars, streaming and reload use the same window and deterministic grouping.
-- Fixed tick/dollar-aware logarithmic price buckets replace moving-center clustering. Default percentage component is 0.1%; bucket centers cannot chain-drift across many price ranges. A bucket boundary can split nearby reactions; this is a deliberate bounded approximation rather than a statistical fit.
-- Median centers and 10th/90th percentiles replace the expanding full min/max envelope. There is no artificial minimum band width.
-- A pivot is accepted only if the close at confirmation has moved away by the configured ATR multiple. Counts further require same-side reactions in a bucket to be separated by 300 seconds by default. This is a spacing proxy for independence, not proof of independent encounters. Two distinct reaction days and three reactions qualify a zone by default.
-- Evidence sums `min(move_away_ATR, 5) * 0.5^(age_days / half_life_days)`. It has no probabilistic interpretation. There is no out-of-sample evidence yet that these changes improve trading outcomes.
-
-## Inputs and coverage
-
-Start with defaults on your 1m AAPL chart. On 1s charts, raise pivot lengths if microstructure noise produces too many pivots. Left/confirmation lengths are chart bars; default confirmation takes ten minutes on 1m, ten seconds on 1s. Enable the chart's extended-hours data to include those observations. Requested history defaults to 30 calendar days; the script cannot fetch unavailable history. The removed status table no longer reports coverage; the requested history still does not certify loaded coverage or continuity. ATR warmup and pivot confirmation require additional preceding bars.
-
-All valid reactions are stored up to an explicit default limit of 10,000 (maximum 20,000). Exhaustion raises an error rather than silently dropping data. Increase pivot lengths/reaction threshold, shorten the window, or increase the explicit limit. Historical ingestion is incremental; zone grouping/sorting is done at the historical/live boundary and completed live bars, rather than on every historical bar or realtime tick. Expiration uses array shifts only when old observations leave. TradingView execution limits still apply; 30 days of 1s history has not been benchmarked.
-
-## Validation status and manual checks
-
-Source review and local invariant checks are distinct from Pine compilation. TradingView compilation, live runtime, and visual validation remain pending.
-
-1. Compile and replace the old structural indicator; ensure it is not still drawing underneath. Check a low-price 5s equity chart and 1m QQQ/AAPL. Verify distant DAY swings inside the visible price range can display, coincident DAY/HIST levels do not duplicate, and nearby captions are suppressed.
-2. Defaults show at most 16 main lines, with faint bands only where bounds exist. Provisional and identical-price candidates must have no bands. Toggle optional outlines/text, adjust horizontal text offset, and confirm text sits below the main line. Increase the per-side zone count to show more candidates.
-3. Test a one-day window with minimum distinct days set to one, then return to 30 days/two days. Check provisional captions and an intentionally small retained-pivot limit. There is no status table or insufficient-history warning.
-4. Compare reload versus streaming on the same loaded dataset at the same completed bar. A new reaction must wait for confirmation and pass its move-away threshold.
-5. Compare measured future holds/breaks against v1 over untouched sessions before making predictive claims. Do not select settings from the evaluation sessions.
-
-Pine references: [arrays](https://www.tradingview.com/pine-script-docs/language/arrays/), [maps](https://www.tradingview.com/pine-script-docs/language/maps/), [visible chart timestamps](https://www.tradingview.com/pine-script-docs/concepts/time/).
+References: [Pine arrays](https://www.tradingview.com/pine-script-docs/language/arrays/), [bar states](https://www.tradingview.com/pine-script-docs/concepts/bar-states/), [limits](https://www.tradingview.com/pine-script-docs/writing/limitations/).
