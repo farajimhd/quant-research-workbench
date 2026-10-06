@@ -32,6 +32,59 @@ def declared_fixed_rule(number: int, rule_id: str | None = None) -> bool:
     return rule_id is None or rule_id in release.rule_set_contracts
 
 
+def declared_automatic_ladder_release(number):
+    """Recognize only the sealed waiting adapter's exact semantic contract."""
+    if type(number) is not int:
+        return False
+    from .strategy_registry import numbered_strategy
+    try:
+        release = numbered_strategy(number)
+    except ValueError as exc:
+        if str(exc) == f'Strategy {number} is not published':
+            return False
+        raise
+    marker = 'declared-automatic-ladder-native-adapter@1'
+    count = release.input_contracts.count(marker)
+    if count == 0:
+        return False
+    release.verify()
+    required_inputs = (marker, 'ladder-wait-first-complete-geometry-v1',
+        'arte.trading_squeeze_ladder_geometry_binding_v1@exact-parent:earliest-causal-pair')
+    required_rules = (
+        'ladder-wait-first-complete-geometry-v1', 'certified-early-squeeze-admission@1',
+        'completed-vwap-below-above-cross@1', 'prepared-ladder-strict-liquidity@1',
+        'later-frozen-v7-upper-break@1', 'confirmed-swing-low-fixed-stop@1',
+        'three-nearest-complete-overhead-targets-equal@1',
+        'fixed-swing-three-equal-once-session@1', 'native-portfolio-mandate-third@1',
+        'causal-cumulative-eligible-notional-desc-conid-ticker@1',
+        'extended-session-cutoff-liquidation@1', 'exact42-economic-configuration@1')
+    if (any(release.input_contracts.count(value) != 1 for value in required_inputs)
+            or set(release.rule_set_contracts) != set(required_rules)
+            or any(release.rule_set_contracts.count(rule) != 1 for rule in required_rules)):
+        raise ValueError('Automatic ladder adapter lacks exact supported waiting semantics')
+    _declared_automatic_ladder_contract(release)
+    return True
+
+
+def _declared_automatic_ladder_contract(release):
+    from .strategy_registry import fixed_strategy_executor
+    from .squeeze_ladder_automatic import AutomaticLadderPolicy
+    from .squeeze_ladder_geometry import declared_geometry_binding_policy, LadderGeometryBindingPolicy
+    registration = fixed_strategy_executor(release.executor_strategy_id, release.number)
+    registration.verify()
+    contract = registration.contract_factory()
+    if (type(contract.strategy_number) is not int
+            or contract.strategy_number != release.number
+            or contract.strategy_id != release.executor_strategy_id
+            or contract.execution_interval != release.evaluation_interval
+            or type(contract.automatic_entry_policy) is not AutomaticLadderPolicy
+            or contract.automatic_entry_policy != AutomaticLadderPolicy()
+            or declared_geometry_binding_policy(contract.automatic_market_policy) != LadderGeometryBindingPolicy()
+            or contract.automatic_market_policy['gate']['qualification_mode'] != 'vwap_cross'):
+        raise ValueError('Automatic ladder typed factory differs from declared waiting policy')
+    return contract
+
+
 def declared_fixed_exit_reason(reason: str, rule_id: str) -> bool:
     """Recognize only an exact factory reason backed by a sealed semantic rule.
 
@@ -413,6 +466,9 @@ def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
         from .strategy_forty_nine_contract import strategy_forty_nine_contract
         return strategy_forty_nine_contract()
     if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        if declared_automatic_ladder_release(number):
+            from .strategy_registry import numbered_strategy
+            return _declared_automatic_ladder_contract(numbered_strategy(number))
         if declared_fixed_rule(number):
             from .strategy_registry import numbered_strategy, fixed_strategy_executor
             release = numbered_strategy(number)
@@ -431,7 +487,7 @@ def resolve_numbered_fixed_strategy(strategy_id: str, revision: int) -> Numbered
 
 
 def is_numbered_fixed_strategy(strategy_id: str, revision: int) -> bool:
-    return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(revision, 'strategy-fourteen-numbered-admission-v1'))
+    return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(revision, 'strategy-fourteen-numbered-admission-v1') or declared_automatic_ladder_release(revision))
 
 
 _SESSION_EXIT_REASONS = MappingProxyType({
@@ -470,6 +526,7 @@ _SESSION_EXIT_REASONS = MappingProxyType({
     47: "strategy_forty_seven_session_exit",
     48: "strategy_forty_eight_session_exit",
     49: "strategy_forty_nine_session_exit",
+    65: "strategy_sixty_five_session_exit",
  50: "strategy_fifty_session_exit", 51: "strategy_fifty_one_session_exit", 52: 'strategy_fifty_two_session_exit', 53: "strategy_fifty_three_session_exit", 54: "strategy_fifty_four_session_exit", 55: 'strategy_fifty_five_session_exit', 56: 'strategy_fifty_six_session_exit', 57: 'strategy_fifty_seven_session_exit', 58: 'strategy_fifty_eight_session_exit', 59: 'strategy_fifty_nine_session_exit', 60: 'strategy_sixty_session_exit', 61: 'strategy_sixty_one_session_exit'})
 
 
