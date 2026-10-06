@@ -35,7 +35,7 @@ def main(argv=None):
     for lane in range(4):
         count=int(cpu.fill_count[lane]);assert count>0
         torch.testing.assert_close(cpu.ledger[lane,:count],gpu.ledger[lane,:count].cpu(),rtol=1e-10,atol=1e-8)
-    x=torch.rand(250,147);valid=torch.rand(250,147)>.1
+    x=torch.rand(250,len(CATALOG));valid=torch.rand(250,len(CATALOG))>.1
     for stage in STAGES:
         programs=[v.programs()[stage] for v in population]
         a,b=TorchPrograms(programs,CATALOG)(x,valid);c,d=TorchPrograms(programs,CATALOG,'cuda')(x.cuda(),valid.cuda())
