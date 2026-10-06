@@ -1,5 +1,5 @@
 //@version=6
-indicator("Research: structural reaction levels v2", overlay = true, max_lines_count = 180, max_labels_count = 60, max_boxes_count = 60, max_bars_back = 1200)
+indicator("Research: structural reaction levels v2.10", overlay = true, max_lines_count = 180, max_labels_count = 60, max_boxes_count = 60, max_bars_back = 1200)
 
 days = input.int(30, "Rolling history (calendar days)", minval = 1, maxval = 365)
 leftBars = input.int(10, "Pivot left bars", minval = 1, maxval = 500)
@@ -21,8 +21,8 @@ maxDistance = input.float(3, "Maximum distance from price (%)", minval = 0.1)
 showBands = input.bool(true, "Show estimated bands when available")
 showBoundaryLines = input.bool(false, "Outline available lower / upper boundaries")
 showText = input.bool(true, "Show text below main level")
-labelOffset = input.int(0, "Axis text offset from rightmost visible candle (bars)", minval = -200, maxval = 200)
-lineOpacity = input.int(65, "Line opacity (%)", minval = 0, maxval = 100)
+textMarginBars = input.int(10, "Text gap beyond rightmost visible candle (bars)", minval = 1, maxval = 200)
+lineTransparency = input.int(75, "Line transparency (%): 0 solid, 100 invisible", minval = 0, maxval = 100)
 textOpacity = input.int(90, "Text opacity (%)", minval = 0, maxval = 100)
 bandTransparency = input.int(95, "Band transparency", minval = 80, maxval = 100)
 sampleLimit = input.int(10000, "Maximum retained pivots (error if exhausted)", minval = 100, maxval = 20000)
@@ -53,6 +53,7 @@ var drawnBands = array.new<box>()
 var float referencePrice = na
 var int referenceTime = na
 var int referenceDay = na
+var int rightVisibleIndex = na
 int windowMs = days * 86400000
 int loadCutoff = last_bar_time - windowMs
 float stepLog = math.log(1 + bucketPct / 100)
@@ -61,6 +62,9 @@ float ph = ta.pivothigh(high, leftBars, rightBars)
 float pl = ta.pivotlow(low, leftBars, rightBars)
 float atr = ta.atr(atrLength)
 int exchangeDay = time("1D")
+
+if time == chart.right_visible_bar_time
+    rightVisibleIndex := bar_index
 
 record(float price, int side) =>
     float movement = side == 1 ? close - price : price - close
@@ -212,7 +216,7 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                         bool hasUpper = not na(hi) and hi > center
                         bool hasBand = hasLower and hasUpper
                         color baseInk = referencePrice > (hasUpper ? hi : center) ? color.green : referencePrice < (hasLower ? lo : center) ? color.red : color.orange
-                        color ink = color.new(baseInk, 100 - int(math.round(lineOpacity * (provisional ? 0.65 : 1.0))))
+                        color ink = color.new(baseInk, provisional ? math.min(100, lineTransparency + 10) : lineTransparency)
                         color textInk = color.new(baseInk, 100 - textOpacity)
                         int start = z.currentDay ? math.max(math.min(chart.left_visible_bar_time, time), referenceDay) : math.min(chart.left_visible_bar_time, time)
                         int finish = math.max(time + 1000, chart.right_visible_bar_time)
@@ -230,18 +234,18 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                                     captionFits := false
                         if showText and captionFits
                             array.push(captionPrices, center)
-                            int textTime = chart.right_visible_bar_time + int(labelOffset * timeframe.in_seconds() * 1000)
+                            int textIndex = nz(rightVisibleIndex, bar_index) + textMarginBars
                             float textPrice = center - math.max(syminfo.mintick * 2, nz(atr) * 0.08)
                             string caption = (z.currentDay ? "DAY " : "HIST ") + (provisional ? "P " : "") + (center > referencePrice ? "R " : "S ") + str.tostring(center, format.mintick) + (hasLower ? " L:" + str.tostring(lo, format.mintick) : "") + (hasUpper ? " U:" + str.tostring(hi, format.mintick) : "")
-                            array.push(drawnLabels, label.new(textTime, textPrice, caption, xloc = xloc.bar_time, style = label.style_label_upper_right, color = color.new(color.white, 100), textcolor = textInk, size = size.small, textalign = text.align_right))
+                            array.push(drawnLabels, label.new(textIndex, textPrice, caption, xloc = xloc.bar_index, style = label.style_label_upper_left, color = color.new(color.white, 100), textcolor = textInk, size = size.small, textalign = text.align_left))
                         if overhead
                             above += 1
                         else
                             below += 1
 
-// Keep right-aligned text beside the rightmost visible candle, including when panned.
+// Start text beyond the visible candles; left alignment keeps the glyphs out of candles.
 // Pine has no pixel anchor to the price axis; the bars offset is user-adjustable.
 if barstate.islast and array.size(drawnLabels) > 0
-    int textTime = chart.right_visible_bar_time + int(labelOffset * timeframe.in_seconds() * 1000)
+    int textIndex = nz(rightVisibleIndex, bar_index) + textMarginBars
     for j = 0 to array.size(drawnLabels) - 1
-        label.set_x(array.get(drawnLabels, j), textTime)
+        label.set_x(array.get(drawnLabels, j), textIndex)

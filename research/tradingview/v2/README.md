@@ -2,11 +2,13 @@
 
 Copy the complete `structural_zones.pine` into TradingView's Pine Editor, replacing the old structural indicator. The independent v1 MACD/jump-alert scripts are unchanged. This is a chart-bar approximation, not the repo's causal v7 statistical builder.
 
-## Axis-side text and opacity (v2.9)
+## Margin text and explicit transparency (v2.10)
 
-Captions are right-aligned at `chart.right_visible_bar_time`, below their main line, so they stay at the visible right edge when panning instead of following an offscreen latest candle. `Axis text offset from rightmost visible candle (bars)` defaults to zero; increase it to position text inside an empty chart right margin, or decrease it to move left. Pine provides no pixel anchor for arbitrary captions on the actual price axis.
+Remove the previous structural indicator and add the updated script, identified as **Research: structural reaction levels v2.10**, to avoid retained old input settings or duplicate drawings.
 
-`Line opacity (%)` defaults to 65 (0 invisible, 100 fully opaque) and applies to main and optional boundary lines. Provisional lines use 65% of that opacity. `Text opacity (%)` defaults to 90 and is independent of line opacity. All lines remain solid, width 1. Band transparency remains a separate input. Caption suppression remains based on stable price spacing rather than the viewport.
+The prior zero-offset right-aligned label ended at the latest visible candle and extended its text left across candles. Captions now **start** ten bar positions beyond the rightmost visible candle and extend right, below their main line. They use bar-index positioning, so overnight/session gaps do not distort the offset. `Text gap beyond rightmost visible candle (bars)` controls that gap and cannot be zero or negative. Pine cannot anchor custom captions to the axis in pixels; provide enough chart right margin to display the text. If clipped, increase the chart's right margin or reduce the positive gap. There is no table.
+
+`Line transparency (%): 0 solid, 100 invisible` defaults to **75% transparent** and is applied directly to every main/boundary line's color. Provisional lines add ten percentage points of transparency. `Text opacity (%)` remains independent. All lines remain solid, width 1; band transparency remains separate. Set line transparency to 100 as a diagnostic: structural main/boundary lines must disappear, while text, bands, and other indicators can remain.
 
 ## Stable level selection
 
@@ -34,7 +36,7 @@ All main and optional boundary lines are **solid, width 1**. Faint bands are ena
 
 Selection reserves current-day slots (three per side by default), first prioritizing eligible current-day extremes, then reaction strength. Historical selection takes one level per book-price region before filling remaining slots. Historical qualification precedes recency-weighted reaction strength. The overall limit defaults to eight per side and accepts up to 30. Extrema are accepted reaction candidates, not raw session high/low. No particular price is guaranteed to qualify or win bounded display selection.
 
-Evidence strength is `sum(min(move_away_ATR, 5) * 0.5^(age_days / half_life))`; it is not a hold probability. Captions sit below their main line at the rightmost visible candle; Pine has no pixel anchor to the price axis. Adjust the bars offset to match your chart margin. Nearby captions may be suppressed to avoid overlap, but their lines remain. There is no table.
+Evidence strength is `sum(min(move_away_ATR, 5) * 0.5^(age_days / half_life))`; it is not a hold probability. Captions sit below their main line beyond the rightmost visible candle; Pine has no pixel anchor to the price axis. Adjust the bars offset to match your chart margin. Nearby captions may be suppressed to avoid overlap, but their lines remain. There is no table.
 
 ## Validation
 
