@@ -44,6 +44,18 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         ('Sharpe ex-best (ann. estimate)',number(best.get('sharpe_ex_best_annualized_estimate'),'.3f')),
         ('Validation',status.get('validation_status','SEALED'))]
     if height<26:metrics=metrics[:8]+[metrics[12],metrics[-1]]
+    if profiling:
+        active=status.get('active_session') or {}
+        metrics=[('Population',str(config.get('population','—'))),
+                 ('Provisional P&L median $',number(active.get('pnl_median'))),
+                 ('Provisional P&L minimum $',number(active.get('pnl_min'))),
+                 ('Provisional P&L maximum $',number(active.get('pnl_max'))),
+                 ('Largest drawdown $',number(active.get('drawdown_max'))),
+                 ('Most open positions',number(active.get('open_positions_max'),',.0f')),
+                 ('Most fills',number(active.get('fills_max'),',.0f')),
+                 ('Financial error candidates',number(active.get('financial_error_candidates'),',.0f')),
+                 ('Ledger overflow candidates',number(active.get('overflow_candidates'),',.0f')),
+                 ('Validation',status.get('validation_status','SEALED'))]
     if width>=100:
         for i in range(0,len(metrics),2):
             other=metrics[i+1] if i+1<len(metrics) else ('','');grid.add_row(*metrics[i],*other)
