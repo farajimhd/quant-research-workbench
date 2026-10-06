@@ -119,6 +119,17 @@ Validation input data stays unopened until a feasible final winner is frozen,
 then default/winner are evaluated once per session with receipt reuse on resume.
 No feasible winner leaves validation sealed.
 
+V4's private offline execution certificate binds the core-complete producer
+manifest and read-only ledger to each selected broker attempt. It checks the
+broker/bar canonical source fingerprint, complete physical row counts, unique
+keys and full content hashes, including data outside the replay window. Storage
+policy and actual active-part placement must pass the existing SSD checks.
+This research certificate creates no app-release fence and grants no app or
+live trading authority. It replaces the copied app-release requirement only
+for V4's independently certified offline research preparation. Opening-known
+V6 references feed the unchanged causal V7 stream; certified missing prior
+V7 evidence masks structural targets and never creates an artificial seed.
+
 Use PYTHONDONTWRITEBYTECODE=1 for all repository Python invocations; artifacts
 belong under D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v4.
 The installed pinned Torch/Triton toolchain may be read from the existing v3

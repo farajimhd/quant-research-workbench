@@ -56,6 +56,9 @@ class ArteReader:
     def execute(self, statement):
         return self._client.execute(_approved(statement))
 
+    def iter_arrow_record_batches(self,statement):
+        return self._client.iter_arrow_record_batches(_approved(statement))
+
     def close(self):
         self._client.close()
 

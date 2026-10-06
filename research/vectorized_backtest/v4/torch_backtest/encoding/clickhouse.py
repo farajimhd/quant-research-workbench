@@ -322,7 +322,8 @@ def prepare_session(
             # episode context, even outside the price band.
             if progress:
                 progress({"stage": "Price candidate scan", "completed": 0, "total": len(names),
-                          "message": "Scanning certified 100ms prices before squeeze admission"})
+                          "message": ("Scanning certified completed 1s prices" if funnel.admission=='price_envelope'
+                                      else "Scanning certified 100ms prices before squeeze admission")})
             candidates = []
             for offset in range(0, len(names), 512):
                 group = names[offset : offset + 512]
@@ -339,8 +340,10 @@ def prepare_session(
             candidate_count = len(candidates)
             admission = []
             if progress:
-                progress({"stage": "Detect squeeze admission", "completed": 0, "total": len(candidates),
-                          "message": "Evaluating causal squeeze episodes within the selected window"})
+                progress({"stage": "Price-envelope admission" if funnel.admission=='price_envelope' else "Detect squeeze admission",
+                          "completed": 0, "total": len(candidates),
+                          "message": ("Finding first eligible completed candle in the selected window" if funnel.admission=='price_envelope'
+                                      else "Evaluating causal squeeze episodes within the selected window")})
             for offset in range(0, len(candidates), 512):
                 admission.extend(
                     sql.query(
@@ -356,7 +359,8 @@ def prepare_session(
                     )
                 )
                 if progress:
-                    progress({"stage": "Detect squeeze admission", "completed": min(offset+512, len(candidates)), "total": len(candidates)})
+                    progress({"stage": "Price-envelope admission" if funnel.admission=='price_envelope' else "Detect squeeze admission",
+                              "completed": min(offset+512, len(candidates)), "total": len(candidates)})
             watchlist = pl.DataFrame(
                 admission, schema={"ticker": pl.String, "admitted_offset_us": pl.Int64}
             )

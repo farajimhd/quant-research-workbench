@@ -1,4 +1,4 @@
-"""Squeeze-only population, full causal fields, causal streaming structural levels.
+"""Generic price-envelope population and causal research execution products.
 
 No Strategy 1 candidate or entry gate is used. The local copied loader owns
 price-envelope/squeeze admission. Shared backend readers only certify and SELECT
@@ -119,17 +119,12 @@ def prepare_tape(
     session, settings, *, progress=print, maximum_gib=4.0, structural_workers=0
 ):
     """Prepare causal research tensors once per session; never write ARTE products."""
-    from src.backend.backtest_market_data import (
-        certified_market_plan_from_arte,
-        readonly_clickhouse_client,
-        verify_market_day_plan,
-    )
-    from src.backend.structural_v7_seed import certified_seed_plan
-    from .structural import prepare_structure
+    from .broker_certificate import certify_broker_units
+    from .offline_structure import prepare_offline_structure
 
     settings.validate()
     if session.strategy_ms != 1000 or session.broker_ms != 1000:
-        raise ValueError("V3 uses a declared completed one-second research clock")
+        raise ValueError("V4 uses a declared completed one-second research clock")
     # Enforce the repository runtime authority even for a custom cache argument.
     from .runtime import require_runtime
 
@@ -147,7 +142,7 @@ def prepare_tape(
     watch = prepared.watchlist.sort("ticker")
     tickers = tuple(watch["ticker"].to_list())
     if not tickers:
-        raise ValueError("Certified empty squeeze population: no experiment tape")
+        raise ValueError("Certified empty price-envelope population: no experiment tape")
     day, origin, start, end = _clocks(session)
     # Preserve the full current-session prefix for swing confirmation and entry
     # crossings, but gate trading at the requested start in the provenance.
@@ -156,30 +151,15 @@ def prepare_tape(
     estimate = len(clocks) * len(tickers) * (33 * 8 + 3)
     if estimate > maximum_gib * 1024**3:
         raise MemoryError("Declared union tape exceeds memory guard before allocation")
-    configuration = {
-        "market_day_build_id": receipt.source["build_id"],
-        "strategy": {"execution_interval": "100ms"},
-        "features": [{"timeframe": f"{r}s"} for r in (1, 5, 10, 30)],
-    }
-    market = certified_market_plan_from_arte(
-        sessions=(str(day),), tickers=tickers, configuration=configuration
-    )
-    if market.build_id != receipt.source["build_id"]:
-        raise ValueError(
-            "Signal and execution certificates bind different source builds"
-        )
     frames = []
-    with closing(
-        readonly_clickhouse_client(market_stream=True, v3_read_principal=True)
-    ) as reader:
+    with closing(sql.ArteReader(threads=2)) as reader:
         progress(
             {
                 "stage": "Certify execution products",
-                "message": "Checking market attempts, Keeper proofs and structural coverage",
+                "message": "Verifying complete producer attempts and full broker content hashes",
             }
         )
-        verify_market_day_plan(market, reader)
-        seeds = certified_seed_plan(market, reader)
+        market=certify_broker_units(reader,receipt.source,session.ledger,day,tickers,progress)
         for offset in range(0, len(tickers), session.fetch_tickers):
             names = tickers[offset : offset + session.fetch_tickers]
             for lo in range(first - 1_000_000, end, session.fetch_seconds * 1_000_000):
@@ -197,7 +177,7 @@ def prepare_tape(
                 }
             )
     if not frames:
-        raise ValueError("Certified squeeze population has no liquidity evidence")
+        raise ValueError("Certified price-envelope population has no liquidity evidence")
     liquid = pl.concat(frames).sort("ticker", "time_us")
     liquid = liquid.with_columns(
         pl.when(pl.col("volume") > 0)
@@ -264,15 +244,12 @@ def prepare_tape(
                 )
             )
         macd.append(np.stack(lanes, axis=-1))
-    with closing(
-        readonly_clickhouse_client(market_stream=True, v3_read_principal=True)
-    ) as reader:
-        structure = prepare_structure(
+    with closing(sql.ArteReader(threads=2)) as reader:
+        structure = prepare_offline_structure(
             reader,
             market,
-            seeds,
+            watch,
             bars,
-            tickers,
             arrays["ask"],
             clocks // 1_000_000,
             session.runtime,
@@ -310,7 +287,8 @@ def prepare_tape(
         "market_token": market.token,
         "preparation_algorithm": sha256(Path(__file__).read_bytes()).hexdigest(),
         "structural_token": structure.token,
-        "seed_token": seeds.token,
+        "seed_token": structure.token,
+        "broker_certificate": market.evidence,
         "source_build": market.build_id,
         "session": str(day),
         "start_second": start // 1_000_000,
