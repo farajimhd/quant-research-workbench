@@ -1394,6 +1394,38 @@ def intent_decision_batch(
     )
 
 
+def _decimal_failure_diagnostic(value: Any, scale: Any) -> str:
+    """Bounded builtin scalar evidence; never invoke an unknown object's repr."""
+    def scalar(item: Any) -> str:
+        kind = type(item)
+        if kind is int:
+            if item.bit_length() > 512:
+                return f"<int bits={item.bit_length()}>"
+            return repr(item)
+        if kind is float:
+            return repr(item)
+        if kind is Decimal:
+            parts = item.as_tuple()
+            if len(parts.digits) > 128:
+                return f"<Decimal digits={len(parts.digits)} exponent={parts.exponent}>"
+            return repr(item)[:160]
+        return "<not a builtin numeric scalar>"
+
+    try:
+        kind = type(value)
+        name = type.__getattribute__(kind, "__name__")
+        name = "".join(c if c.isascii() and (c.isalnum() or c == "_")
+                       else "_" for c in name[:48])
+        evidence = (f" [value_type={name}; value_repr={scalar(value)}; "
+                    f"scale_repr={scalar(scale)}")
+        if kind is float and math.isfinite(value):
+            evidence += f"; float_hex={float.hex(value)}"
+        return evidence + "]"
+    except Exception:
+        # A diagnostic must never replace the original numeric rejection.
+        return " [numeric diagnostic unavailable]"
+
+
 def _exact_decimal(value: float | Decimal, scale: Decimal = _SCALE,
                    *, field: str = "") -> str:
     label = f" for {field}" if field else ""
@@ -1403,11 +1435,11 @@ def _exact_decimal(value: float | Decimal, scale: Decimal = _SCALE,
             decimal = Decimal(str(value))
             quantized = decimal.quantize(scale)
     except (InvalidOperation, ValueError) as exc:
-        raise ValueError(f"Number cannot fit typed Decimal(38) precision{label}") from exc
+        raise ValueError(f"Number cannot fit typed Decimal(38) precision{label}" + _decimal_failure_diagnostic(value, scale)) from exc
     if not decimal.is_finite() or decimal != quantized:
-        raise ValueError(f"Number cannot fit typed Decimal(38) losslessly{label}")
+        raise ValueError(f"Number cannot fit typed Decimal(38) losslessly{label}" + _decimal_failure_diagnostic(value, scale))
     if quantized.copy_abs() >= Decimal(10) ** (38 + scale.as_tuple().exponent):
-        raise ValueError(f"Number exceeds typed Decimal(38) width{label}")
+        raise ValueError(f"Number exceeds typed Decimal(38) width{label}" + _decimal_failure_diagnostic(value, scale))
     return format(quantized, "f")
 
 
