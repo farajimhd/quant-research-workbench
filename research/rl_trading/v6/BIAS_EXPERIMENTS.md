@@ -128,3 +128,22 @@ positives. This control does not supervise sizing, quality or future heads.
 $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -m research.rl_trading.v6.run_tree_bias_control --panel D:/TradingML/runtimes/rl-v6-bias-panel-diverse-v3-20261006 --output D:/TradingML/runtimes/rl-v6-bias-tree-control-20261006 --dependencies D:/TradingML/runtimes/rl-v6-bias-xgboost-deps-20261006
 ```
+
+## Original-target hierarchy diagnostic
+
+`prepare_hierarchical_bias_targets` authenticates the existing public 1b target
+shards and aligns `action_1a`, `reference_action_1a`, and `episode_selected` with
+exact panel episode/clock keys. It verifies final copied/suppressed ENTRY and
+held EXIT parity. Eligibility is read from full published decisions, never inferred
+from a truncated four-hour panel. Inputs and source labels remain unchanged.
+
+`run_hierarchy_bias_campaign` compares a flat structured-TCN control with structured
+TCN and GRU hierarchy controls. The flat ENTRY score combines an eligibility head
+with a timing head conditional on eligible episodes. The timing auxiliary loss is
+masked to selected flat episodes; eligibility uses all flat rows. This is conditional
+factorization, not an independence assumption. Known held-state EXIT is unchanged.
+Fixed TRAIN class masses balance the joint action loss and each component loss;
+component losses have weight0.5 each. Ten epochs, seed17, chronological calibration
+AP selection, exact checkpoint replay, and exploratory development evaluation are
+fixed. Size, quality and future heads remain untrained in this diagnostic. No
+production policy replacement or full workstation training occurs.
