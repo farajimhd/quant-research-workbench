@@ -21,6 +21,7 @@ import torch
 from research.mlops.env import discover_env_files, load_env_files
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v6.action_contract import ActionAxes
+from research.rl_trading.v6.ranked_teacher_data import coverage_report, load_prepared
 from research.rl_trading.v6.market_attention import MarketAttentionConfig
 from research.rl_trading.v6.opportunity_dataset import load_teacher
 from research.rl_trading.v6.probe_teacher_sequence import subset
@@ -31,6 +32,7 @@ from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.teacher_forecast import configure, CONTRACT
 from research.rl_trading.v6.temporal_encoders import replace_encoder
 from research.rl_trading.v6.training import train_session
+from research.rl_trading.v6.execution_features import CANDLE_NORMALIZATION_VERSION
 
 
 def select_targets(labels, listings, per_class):
@@ -52,15 +54,6 @@ def select_targets(labels, listings, per_class):
             last = decision.close_us; order = 0
         ordered.append(replace(decision, order_index=order)); order += 1
     return tuple(ordered), rows.tolist()
-
-
-def coverage_report(candidates, listings):
-    """JSON-native mechanical counts; no target values or scores exported."""
-    return dict(decisions=len(candidates),
-        current_counts={name: int(sum(ActionAxes(listings, len(d.held_index)).action_class(d.token) == index
-                                  for d in candidates)) for index, name in ((0, 'WAIT'), (1, 'ENTRY'), (5, 'HOLD'), (2, 'EXIT'))},
-        future_counts=[{name: int(sum(d.forecast_actions is not None and len(d.forecast_actions) > h and d.forecast_actions[h] == index
-                                 for d in candidates)) for index, name in enumerate(('ENTRY', 'WAIT', 'HOLD', 'EXIT'))} for h in range(5)])
 
 
 def passes(metrics):
@@ -91,6 +84,9 @@ def main(argv=None):
     parser.add_argument('--seconds', type=int, default=600)
     parser.add_argument('--rows-per-class', type=int, choices=(16, 32, 64), default=32)
     parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--normalize-candles', action='store_true')
+    parser.add_argument('--prepared-train', type=Path)
+    parser.add_argument('--prepared-source-manifest', type=Path)
     args = parser.parse_args(argv)
     runtime = Path('D:/TradingML/runtimes').resolve(); output = args.output.resolve()
     if not runtime.is_dir() or not output.is_relative_to(runtime) or output.exists():
@@ -98,6 +94,8 @@ def main(argv=None):
     if not 1 <= args.seconds <= 600 or not 1 <= args.epochs <= 400 or not 1 <= len(set(args.tickers)) == len(args.tickers) <= 19:
         raise ValueError('Bounded TRAIN probe requires <=600 seconds, <=400 epochs, unique <=19 target tickers')
     if not torch.cuda.is_available(): raise ValueError('Laptop CUDA required')
+    if bool(args.prepared_train) != bool(args.prepared_source_manifest):
+        raise ValueError('Prepared TRAIN requires its source manifest')
     from research.rl_trading.v6 import saved_label_audit as source, published_market_audit as market
     os.environ['RL_V6_LABEL_AUDIT_RUNTIME'] = str(args.source_runtime.resolve())
     active, entry, _, teacher, bankroot, _ = source.session(args.day)
@@ -109,18 +107,36 @@ def main(argv=None):
     names = source.saved_symbols(str(bankroot), entry['bank_certificate_sha256'])
     ids = sorted(i for i, name in names.items() if name in args.tickers)
     if len(ids) != len(args.tickers): raise ValueError('Target tickers must resolve uniquely')
-    full = open_session(bankroot, runtime_root=source.runtime(), previous_root=source.mapped(entry['previous_root']))
     ma, _, me, mroot, _ = market.session(args.day)
-    write('progress.json', dict(phase='verifying_target_shards', day=args.day, input_listings=len(full.listings)))
-    labels, _ = load_teacher(teacher, full, runtime_root=source.runtime(), audit_development=True,
-                            audit_listing_ids=ids, market_root=mroot)
-    begin = int(datetime.fromisoformat(args.day+'T04:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()*1_000_000)
-    # Input population is unchanged; only prefix length and target count are bounded.
-    session, candidates = subset(full, labels, full.listings, begin, begin+args.seconds*1_000_000-1)
-    if session.listings != full.listings: raise ValueError('Certified input population changed')
+    if args.prepared_train:
+        if any(not p.resolve().is_relative_to(runtime) for p in (args.prepared_train, args.prepared_source_manifest)):
+            raise ValueError('Prepared TRAIN must remain under laptop runtime')
+        prior = json.loads(args.prepared_source_manifest.read_text())
+        if (prior.get('hash') != digest({k:v for k,v in prior.items() if k!='hash'}) or
+                prior.get('version') != 'rl-v6-ranked-complete-head-underfit-v1' or
+                prior['arguments']['day'] != args.day or prior['arguments']['seconds'] != args.seconds or
+                prior['target_listing_ids'] != ids or prior['dataset_sha256'] != active['sha256'] or
+                prior['market_dataset_sha256'] != ma['sha256'] or
+                prior['bank_certificate_sha256'] != entry['bank_certificate_sha256'] or
+                prior['market_certificate_sha256'] != me['sha256']):
+            raise ValueError('Prepared TRAIN authority/window binding changed')
+        session, candidates, _ = load_prepared(args.prepared_train, prior)
+    else:
+        full = open_session(bankroot, runtime_root=source.runtime(), previous_root=source.mapped(entry['previous_root']))
+        write('progress.json', dict(phase='verifying_target_shards', day=args.day, input_listings=len(full.listings)))
+        labels, _ = load_teacher(teacher, full, runtime_root=source.runtime(), audit_development=True,
+                                audit_listing_ids=ids, market_root=mroot)
+        begin = int(datetime.fromisoformat(args.day+'T04:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()*1_000_000)
+        session, candidates = subset(full, labels, full.listings, begin, begin+args.seconds*1_000_000-1)
+        if session.listings != full.listings: raise ValueError('Certified input population changed')
+        del full, labels; gc.collect()
     write('candidate-coverage.json', coverage_report(candidates, len(session.listings)))
     targets, rows = select_targets(candidates, len(session.listings), args.rows_per_class)
-    del full, labels; gc.collect()
+    normalization = None
+    if args.normalize_candles:
+        from research.rl_trading.v6.ranked_normalization import fit_normalization
+        normalization = fit_normalization(session, candidates)
+        write('normalization.json', normalization)
     ranking = MarketAttentionConfig(**source.published()[1]['ranking'])
     manifest = dict(version='rl-v6-ranked-complete-head-underfit-v1',
         source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
@@ -135,12 +151,16 @@ def main(argv=None):
         workstation_gpu_used=False, teacher_loss='branch-balanced-v3',
         criterion='each current/future class F1 >= .95; sizing and current/future ENTRY/EXIT quality MAE <= .02; complete class coverage required',
         auxiliary_weights=dict(ratio=1., forecast=1., quality=1., future_quality=1.), regression_weights=[0., 0.],
+        normalization_sha256=file_hash(output/'normalization.json') if normalization else None,
+        feature_contract=CANDLE_NORMALIZATION_VERSION if normalization else 'legacy',
+        prepared_cache_sha256=file_hash(args.prepared_train/'prepared-train.pt') if args.prepared_train else None,
         source_files_sha256={p.name: file_hash(p) for p in Path(__file__).parent.glob('*.py')})
     manifest['hash'] = digest(manifest); write('manifest.json', manifest)
     torch.manual_seed(17); torch.set_num_threads(4)
     def model():
         policy = RankedBracketActorCritic(config=ranking, wait_hold=True).cuda()
         replace_encoder(policy, 'tcn', structured=True)
+        if normalization: policy.configure_candle_features(normalization)
         configure(policy, hierarchical=True, shared_heads=False)
         policy.independent_episode_supervision = True
         return policy

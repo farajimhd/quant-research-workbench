@@ -27,7 +27,8 @@ from research.rl_trading.v6.opportunity_dataset import load_teacher
 from research.rl_trading.v6.probe_teacher_sequence import subset
 from research.rl_trading.v6.ranked_policy import RankedBracketActorCritic
 from research.rl_trading.v6.run_laptop_teacher import flatten
-from research.rl_trading.v6.run_ranked_teacher_underfit import passes, coverage_report
+from research.rl_trading.v6.run_ranked_teacher_underfit import passes
+from research.rl_trading.v6.ranked_teacher_data import coverage_report, load_prepared
 from research.rl_trading.v6.session_data import open_session
 from research.rl_trading.v6.teacher_forecast import configure
 from research.rl_trading.v6.temporal_encoders import replace_encoder
@@ -47,6 +48,18 @@ def admit_gate(root, *, source_dir=None):
         raise ValueError('Exact complete-head TRAIN underfit gate required')
     if file_hash(root/'last.pt') != complete['checkpoint_sha256']:
         raise ValueError('Underfit checkpoint changed')
+    if plan.get('feature_contract','legacy') != 'legacy' and not plan.get('normalization_sha256'):
+        raise ValueError('Underfit normalization binding changed')
+    if plan.get('normalization_sha256'):
+        from research.rl_trading.v6.ranked_normalization import VERSION
+        from research.rl_trading.v6.execution_features import CANDLE_NORMALIZATION_VERSION
+        normalization = json.loads((root/'normalization.json').read_text())
+        if (file_hash(root/'normalization.json') != plan['normalization_sha256'] or
+                plan.get('feature_contract') != CANDLE_NORMALIZATION_VERSION or normalization.get('version') != VERSION or
+                normalization.get('scope') != 'train_only' or
+                normalization.get('source_certificate_sha256') != plan['bank_certificate_sha256'] or
+                normalization.get('context_split_receipt_sha256') != plan['context_split_receipt_sha256']):
+            raise ValueError('Underfit normalization binding changed')
     source_dir = Path(__file__).parent if source_dir is None else source_dir
     if not plan.get('source_files_sha256') or any(file_hash(source_dir/n) != h for n, h in plan['source_files_sha256'].items()):
         raise ValueError('Model/objective source changed since underfit')
@@ -71,30 +84,13 @@ def gate_targets(candidates, keys):
     return tuple(selected)
 
 
-def build_policy(ranking, device, *, width=128):
+def build_policy(ranking, device, *, width=128, normalization=None):
     policy = RankedBracketActorCritic(config=ranking, width=width, wait_hold=True).to(device)
     replace_encoder(policy, 'tcn', structured=True)
+    if normalization is not None: policy.configure_candle_features(normalization)
     configure(policy, hierarchical=True, shared_heads=False)
     policy.independent_episode_supervision = True
     return policy
-
-
-def load_prepared(root, prior):
-    """Only a hash-bound cache produced after full source verification."""
-    receipt = json.loads((root/'prepared-train.json').read_text())
-    expected = dict(dataset_sha256=prior['dataset_sha256'], market_dataset_sha256=prior['market_dataset_sha256'],
-        bank_certificate_sha256=prior['bank_certificate_sha256'], market_certificate_sha256=prior['market_certificate_sha256'],
-        context_split_receipt_sha256=prior['context_split_receipt_sha256'], input_listings=prior['input_listings'],
-        day=prior['arguments']['day'], seconds=prior['arguments']['seconds'], target_listing_ids=prior['target_listing_ids'])
-    if receipt.get('source_binding') != expected or receipt.get('version') != 'rl-v6-ranked-verified-train-cache-v1' or file_hash(root/'prepared-train.pt') != receipt['sha256']:
-        raise ValueError('Prepared TRAIN source/content binding changed')
-    saved = torch.load(root/'prepared-train.pt', map_location='cpu', weights_only=False)
-    if (saved['scope']['day'] != prior['arguments']['day'] or saved['session'].role != 'train' or
-            list(saved['session'].listings) != prior['input_listings'] or saved['scope']['target_ids'] != prior['target_listing_ids'] or
-            saved['scope']['end_us']-saved['scope']['begin_us'] != prior['arguments']['seconds']*1_000_000 or
-            coverage_report(saved['targets'], len(saved['session'].listings)) != saved['scope']['coverage']):
-        raise ValueError('Prepared TRAIN role/population changed')
-    return saved['session'], saved['targets'], saved['scope']
 
 
 def evaluate_probabilities(policy, session, targets, device):
@@ -189,7 +185,8 @@ def main(argv=None):
     ranking = MarketAttentionConfig(**prior['ranking'])
     if asdict(ranking) != asdict(MarketAttentionConfig(**source.published()[1]['ranking'])): raise ValueError('Market ranking contract changed')
     torch.manual_seed(17); torch.set_num_threads(4); device = torch.device('cuda')
-    policy = build_policy(ranking, device)
+    normalization = json.loads((gate/'normalization.json').read_text()) if prior.get('normalization_sha256') else None
+    policy = build_policy(ranking, device, normalization=normalization)
     policy.load_state_dict(torch.load(gate/'last.pt', map_location=device, weights_only=True), strict=True)
     replay = asdict(train_session(policy, None, training, gate_targets(targets, prior['target_keys']), (), device=device,
         evaluation=True, evaluate_train=True, teacher_loss='branch-balanced-v3', regression_weights=(0., 0.)))
@@ -201,6 +198,7 @@ def main(argv=None):
         underfit_manifest_sha256=file_hash(gate/'manifest.json'), underfit_checkpoint_sha256=complete['checkpoint_sha256'],
         train_day=train_day, development_day=args.development_day, seconds=seconds, tickers=tickers,
         checkpoint_selection='fixed_final_epoch_before_development_target_load', input_population_preserved=True,
+        normalization_sha256=prior.get('normalization_sha256'), feature_contract=prior.get('feature_contract','legacy'),
         calibration='none_no_development_tuning', sealed_labels_read=False, workstation_gpu_used=False,
         scope='bounded_19_target_ticker_600second_pilot_not_final_full_market_training',
         source_files_sha256={p.name: file_hash(p) for p in Path(__file__).parent.glob('*.py')})
@@ -226,7 +224,7 @@ def main(argv=None):
         torch.save(policy.state_dict(), output/'selected.pt')
         selection = dict(epoch=args.epochs, checkpoint_sha256=file_hash(output/'selected.pt'), frozen_before_development_targets=True)
         write('selection.json', selection); np.savez_compressed(output/'train-probabilities.npz', **probabilities)
-        restored = build_policy(ranking, device)
+        restored = build_policy(ranking, device, normalization=normalization)
         restored.load_state_dict(torch.load(output/'selected.pt', map_location=device, weights_only=True))
         repeated, _, _ = evaluate_probabilities(restored, training, targets, device)
         if repeated != metrics: raise ValueError('Natural TRAIN checkpoint replay changed')

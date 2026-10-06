@@ -61,6 +61,26 @@ def test_source_change_and_manifest_tamper_deny_generalization(tmp_path):
     with pytest.raises(ValueError, match='underfit gate'): admit_gate(root, source_dir=source)
 
 
+def test_normalized_model_admission_binds_exact_train_statistics(tmp_path):
+    from research.rl_trading.v6.ranked_normalization import VERSION
+    from research.rl_trading.v6.execution_features import CANDLE_NORMALIZATION_VERSION
+    root,source=make_gate(tmp_path)
+    normalization=dict(version=VERSION,scope='train_only',units='bps-v1',source_certificate_sha256='bank',
+        context_split_receipt_sha256=None,mean=[0.]*147,std=[1.]*147)
+    path=root/'normalization.json';path.write_text(json.dumps(normalization))
+    plan=json.loads((root/'manifest.json').read_text())
+    plan.update(feature_contract=CANDLE_NORMALIZATION_VERSION,normalization_sha256=file_hash(path),
+        bank_certificate_sha256='bank',context_split_receipt_sha256=None)
+    plan['hash']=digest({k:v for k,v in plan.items() if k!='hash'})
+    (root/'manifest.json').write_text(json.dumps(plan))
+    assert admit_gate(root,source_dir=source)[0]['normalization_sha256']==file_hash(path)
+    normalization['mean'][3]=.01;path.write_text(json.dumps(normalization))
+    with pytest.raises(ValueError,match='normalization binding'):admit_gate(root,source_dir=source)
+    plan['normalization_sha256']=None;plan['hash']=digest({k:v for k,v in plan.items() if k!='hash'})
+    (root/'manifest.json').write_text(json.dumps(plan))
+    with pytest.raises(ValueError,match='normalization binding'):admit_gate(root,source_dir=source)
+
+
 def test_replay_targets_bind_exact_identity_clock_position_and_order():
     _, _, labels = fixture(); keys = [(d.close_us, d.episode_uid, False) for d in labels[::2]]
     selected = gate_targets(labels, keys)
