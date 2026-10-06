@@ -27,6 +27,24 @@ def fingerprint(value):
     from hashlib import sha256
     return sha256(json.dumps(value,sort_keys=True,allow_nan=False,separators=(',',':')).encode()).hexdigest()
 
+def seal_ledger(path,ledger,counts):
+    """Crash recovery must reconcile valid fills before reusing their hash."""
+    counts=counts.detach().cpu();ledger=ledger.detach().cpu()
+    if path.exists():
+        saved=torch.load(path,map_location='cpu',weights_only=True)
+        if (set(saved)!= {'ledger','counts'} or saved['ledger'].shape!=ledger.shape
+                or saved['ledger'].dtype!=ledger.dtype or not torch.equal(saved['counts'],counts)):
+            raise ValueError('Existing financial ledger identity/count mismatch')
+        for lane,count in enumerate(counts.tolist()):
+            if not torch.equal(saved['ledger'][lane,:count],ledger[lane,:count]):
+                raise ValueError('Existing financial ledger fill mismatch')
+    else:
+        from uuid import uuid4
+        temporary=path.with_name(path.name+'.'+uuid4().hex+'.tmp')
+        torch.save(dict(ledger=ledger,counts=counts),temporary)
+        temporary.replace(path)
+    return file_hash(path)
+
 def clean(value):
     if isinstance(value,torch.Tensor):return clean(value.detach().cpu().tolist())
     if isinstance(value,float) and not math.isfinite(value):return None
@@ -62,9 +80,9 @@ def evaluate_session(spec,population,space,args,output,emit,cache=None):
     metrics={k:clean(v) for k,v in result.items() if isinstance(v,torch.Tensor)}
     ledger=runner.ledger[:,:int(runner.fill_count.max().item())].detach().cpu()
     ledger_path=output/'fills.pt'
-    if not ledger_path.exists():torch.save(dict(ledger=ledger,counts=runner.fill_count.cpu()),ledger_path)
+    ledger_hash=seal_ledger(ledger_path,ledger,runner.fill_count)
     timing=dict(load=load,transfer=transfer,rule_prepare=rule_seconds,compile=compiled,replay=result['replay_seconds'],end_to_end=time.perf_counter()-began)
-    receipt.update(metrics=metrics,timing=timing,ledger_sha256=file_hash(ledger_path),population_sha256=fingerprint([state(v) for v in population]))
+    receipt.update(metrics=metrics,timing=timing,ledger_sha256=ledger_hash,population_sha256=fingerprint([state(v) for v in population]))
     del runner,gates,tape
     if args.device=='cuda':torch.cuda.empty_cache()
     return receipt
