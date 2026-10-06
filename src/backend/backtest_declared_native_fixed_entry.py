@@ -22,6 +22,15 @@ from src.trading_runtime.strategy_one_stateful import (
 ENTRY_FAMILY = "declared-native-fixed-entry-preparation@1"
 
 
+def declared_entry_intent_identity(run_id, strategy_number, strategy_id, revision,
+        source_token, assignment_id, account_id, ticker, boundary_ms, episode_start_ms):
+    """One deterministic identity recipe; callers validate their own sources."""
+    return str(uuid5(NAMESPACE_URL, json.dumps((ENTRY_FAMILY, run_id,
+        str(strategy_number), strategy_id, str(revision), source_token,
+        assignment_id, account_id, ticker, str(boundary_ms), str(episode_start_ms)),
+        separators=(",", ":"))))
+
+
 @dataclass(frozen=True, slots=True)
 class DeclaredNativeFixedEntryProposal:
     run_id: str
@@ -117,10 +126,9 @@ class DeclaredEntryPreparation:
             return DeclaredEntryDecision(result.reason)
         values = result.proposal
         identity = parent.capabilities.identity
-        intent = str(uuid5(NAMESPACE_URL, json.dumps((ENTRY_FAMILY, self.run_id,
-            str(identity.strategy_number), identity.strategy_id, str(identity.revision),
-            self.source.token, self.assignment_id, self.account_id, ticker,
-            str(boundary_ms), str(fact.episode_start_ms)), separators=(",", ":"))))
+        intent = declared_entry_intent_identity(self.run_id, identity.strategy_number,
+            identity.strategy_id, identity.revision, self.source.token,
+            self.assignment_id, self.account_id, ticker, boundary_ms, fact.episode_start_ms)
         proposal = DeclaredNativeFixedEntryProposal(self.run_id, identity.strategy_number,
             identity.strategy_id, identity.revision, self.source.token, intent,
             values.assignment_id, values.account_id, values.ticker, values.boundary_ms,

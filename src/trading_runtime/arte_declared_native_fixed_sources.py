@@ -11,7 +11,7 @@ from datetime import date
 from hashlib import sha256
 import json
 from math import isfinite
-from uuid import UUID, uuid5, NAMESPACE_URL
+from uuid import UUID
 
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS, market_day_boundary,
@@ -21,7 +21,7 @@ from src.backend.backtest_declared_native_fixed_plan import (
     compile_declared_momentum_plan, load_declared_entry_source_plan, _attempts, _arrow,
 )
 from src.backend.backtest_declared_native_fixed_entry import (
-    DeclaredNativeFixedEntryProposal, ENTRY_FAMILY,
+    DeclaredNativeFixedEntryProposal, declared_entry_intent_identity,
 )
 from .declared_native_fixed_candidate import NativeFixedCandidateSpec, verify_prepared_candidate_configuration
 from .strategy_initial_price_break import FirstSetupPriceBreakWitness, first_setup_price_break
@@ -242,10 +242,9 @@ class PreparedDeclaredSourceResolver:
         activation, = (a for a in parent.entry.activations
             if (a.ticker, a.episode_start_ms) == (fact.ticker, fact.episode_start_ms))
         quote = tuple(int(a[index]) for a in source.quote_columns)
-        intent = str(uuid5(NAMESPACE_URL, json.dumps((ENTRY_FAMILY, self.run_id,
-            str(identity.strategy_number), identity.strategy_id, str(identity.revision), source.token,
-            proposal.assignment_id, proposal.account_id, fact.ticker, str(fact.boundary_ms),
-            str(fact.episode_start_ms)), separators=(',', ':'))))
+        intent = declared_entry_intent_identity(self.run_id, identity.strategy_number,
+            identity.strategy_id, identity.revision, source.token, proposal.assignment_id,
+            proposal.account_id, fact.ticker, fact.boundary_ms, fact.episode_start_ms)
         expected = DeclaredNativeFixedEntryProposal(self.run_id, identity.strategy_number, identity.strategy_id,
             identity.revision, source.token, intent, proposal.assignment_id, proposal.account_id, fact.ticker,
             fact.boundary_ms, fact.episode_start_ms, quote[1]/10_000, fact.stop_price, fact.target_price,

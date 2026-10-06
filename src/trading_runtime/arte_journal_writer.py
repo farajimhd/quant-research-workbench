@@ -776,8 +776,14 @@ def _sealed_families(
     v4_reconciliation_ids: tuple[str, ...] = (),
     v4_snapshot_account_ids: tuple[str, ...] = (),
     v4_snapshot_position_ids: tuple[str, ...] = (),
+    declared_unit=None,
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
+    if declared_unit is not None:
+        from .arte_declared_native_v4_unit import DeclaredNativeV4Unit
+        if type(declared_unit) is not DeclaredNativeV4Unit or declared_unit.base is not batch:
+            raise ValueError('Declared sealing requires its complete exact native unit')
+        declared_unit.__post_init__()
     if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
         raise ValueError("Journal batch must cover a contiguous event sequence")
     sequences = [int(row["sequence"]) for row in batch.events]
@@ -1028,6 +1034,10 @@ def _sealed_families(
                 if identity in details_by_record:
                     raise ValueError("Journal event has multiple typed detail families")
                 details_by_record[identity] = table
+    if declared_unit is not None:
+        expected_details = {**expected_details,
+            ('strategy', 'declared_native_intent'): 'trading_strategy_intent_v1',
+            ('strategy', 'declared_native_management_intent'): 'trading_strategy_intent_v1'}
     for event in by_family["trading_event_v1"]:
         key = (str(event["category"]), str(event["entity_type"]))
         if key not in expected_details:
