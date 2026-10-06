@@ -104,3 +104,27 @@ the full bank, split and label audits. Mixed published dataset identities are
 rejected. A bounded follow-up compares natural lag, structured TCN and focal
 structured TCN for ten epochs; it remains a 19-ticker experiment, not final
 full-market training or sealed validation.
+# CUDA tree signal control
+
+`run_tree_bias_control` is a bounded alternative-learner diagnostic, not a
+replacement for the autoregressive market policy. It admits only the authenticated
+six-TRAIN/two-later-calibration valid-price diversity panel. Inputs are strictly
+prior last/delta/mean/std summaries over 5/20/120 actual candles, supplied causal
+market snapshots, and known held state. Absolute log-price is causally recentered;
+relative OHLC bps are not adjusted again. No future target, episode identity, or
+listing identity is an input. All development dates are previously inspected and
+remain exploratory.
+
+XGBoost 3.1.3 is loaded from an explicitly supplied isolated runtime dependency
+directory. The launcher requires a CUDA build and verifies CUDA device configuration
+after fitting; CPU fallback fails closed. Three predeclared controls use natural
+weights/depth4, equal class mass/depth4, and equal class mass/depth6. Separate ENTRY
+and EXIT binary experts use known state routing, chronological calibration-only
+aucpr early stopping, 400 maximum rounds, and exact checkpoint prediction replay.
+W&B records natural-frequency action metrics, probability calibration and false
+positives. This control does not supervise sizing, quality or future heads.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.rl_trading.v6.run_tree_bias_control --panel D:/TradingML/runtimes/rl-v6-bias-panel-diverse-v3-20261006 --output D:/TradingML/runtimes/rl-v6-bias-tree-control-20261006 --dependencies D:/TradingML/runtimes/rl-v6-bias-xgboost-deps-20261006
+```
