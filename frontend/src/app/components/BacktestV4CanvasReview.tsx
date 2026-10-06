@@ -40,7 +40,8 @@ type ContextPair = { schema_version: "strategy-one-v4-chart-context-pair-v1";
 
 async function savedReviewPage<T>(path: string, signal: AbortSignal): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    try { return await api<T>(path, { signal, timeoutMs: 60_000 }); }
+    // Certified cold saved reads measured 81.479s; allow completion without changing cancellation.
+    try { return await api<T>(path, { signal, timeoutMs: 120_000 }); }
     catch (error) {
       const response = error as ApiError;
       if (signal.aborted || response.status !== 429 || response.retryable !== true || attempt >= 3) throw error;
