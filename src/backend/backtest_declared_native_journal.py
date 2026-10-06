@@ -41,3 +41,23 @@ class DeclaredNativeJournal(BacktestMemoryJournal):
     def declared_submission_for_record(self, record_id):
         with self._lock:
             return self._declared_records.get(record_id)
+
+    def mark_fenced(self, sequence):
+        """Retire pending companions only after the common fence succeeds.
+
+        Original intent retries keep their immutable command/record cache;
+        publishers no longer need a companion for an already fenced record.
+        """
+        if type(sequence) is not int:
+            raise ValueError('Declared journal fence requires an exact integer sequence')
+        with self._lock:
+            retired = tuple(record.record_id for record in self._records[:sequence - self._base_sequence])
+            super().mark_fenced(sequence)
+            for record_id in retired:
+                self._declared_records.pop(record_id, None)
+
+    def close(self):
+        with self._lock:
+            super().close()
+            self._declared_records.clear()
+            self._declared_intents.clear()

@@ -158,6 +158,31 @@ def test_actor_source_buffer_failure_precedes_broker_refresh_and_admission(comma
 class _StringAlias(str):
  pass
 
+
+def test_fenced_companion_retires_without_duplicate_retry_or_changed_source(command):
+ journal=DeclaredNativeJournal(binding=command.binding,run_id=RUN,max_pending_records=2)
+ def append(value):
+  return journal.append_declared_native_intent(submission=value,intent=value.intent,
+   account_id=value.account_id,strategy_id=value.binding.identity.strategy_id,
+   strategy_revision=value.binding.identity.revision)
+ first=append(command)
+ tail=journal.append(run_id=RUN,category='fixture',entity_type='tail',entity_id='tail',payload={})
+ for invalid in (True,float(first.sequence),tail.sequence+1):
+  with pytest.raises(ValueError):journal.mark_fenced(invalid)
+  assert journal.declared_submission_for_record(first.record_id)==command
+  assert journal.pending_record_count==2
+ journal.mark_fenced(first.sequence)
+ assert journal.declared_submission_for_record(first.record_id) is None
+ assert journal.unfenced_records()==[tail]
+ assert append(command)==first
+ assert journal.pending_record_count==1
+ assert journal.assignment_for_intent(command.intent.intent_id)==command.assignment_id
+ with pytest.raises(ValueError,match='retry changed'):
+  append(replace(command,financial=replace(command.financial,current_purchase_groups=command.financial.current_purchase_groups+1)))
+ journal.close()
+ assert not journal._declared_records and not journal._declared_intents
+ with pytest.raises(RuntimeError,match='closed'):append(command)
+
 @pytest.mark.parametrize('field,alias',[
  ('strategy_revision','float'),('strategy_revision','bool'),('strategy_revision','string'),
  ('strategy_id','subclass'),('account_id','subclass'),('run_id','subclass'),
