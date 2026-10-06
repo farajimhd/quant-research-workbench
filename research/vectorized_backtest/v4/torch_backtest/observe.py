@@ -8,11 +8,19 @@ from .dashboard import render
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--view',choices=('financial','performance','objective'),default='financial');args=p.parse_args(argv)
     console=Console(no_color=bool(os.environ.get('NO_COLOR')));last={};error=None
+    identity_path=args.output/'identity.json'
+    # Older immutable workers do not emit mode. Derive display scope from their
+    # retained launch identity without editing their status or experiment.
+    profile=False
+    if identity_path.exists():
+        profile=bool(json.loads(identity_path.read_text(encoding='utf-8')).get('arguments',{}).get('profile',False))
     def read():
         nonlocal last,error
         try:last=json.loads((args.output/'status.json').read_text(encoding='utf-8'));error=None
         except (FileNotFoundError,PermissionError,json.JSONDecodeError) as e:error=f'Snapshot unavailable: {type(e).__name__}; retaining last good view'
         if error:last={**last,'waiting_reason':error}
+        if profile:
+            last={**last,'mode':'profile','focus':'Single training-session profile; validation SEALED'}
         return render(last,width=console.width,height=console.height,view=args.view)
     if args.once or not console.is_terminal:
         console.print(read());return 0

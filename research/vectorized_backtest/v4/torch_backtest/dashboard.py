@@ -14,17 +14,19 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     severity='red' if state in ('failed','interrupted') else 'yellow' if age>30 else 'cyan'
     head=Text(f"V4  {state.upper()}  |  {status.get('stage','Preflight')}  |  updated {age:.0f}s ago",style='bold '+severity)
     config=status.get('config',{});cursor=status.get('progress',{})
+    profiling=status.get('mode')=='profile'
     progress=Progress(TextColumn('{task.description:<14}'),BarColumn(bar_width=max(8,min(36,width-45))),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}'),expand=False)
     for label,done,total in (
-        ('Generations',status.get('completed_generations',0),config.get('generations',0)),
-        ('Session',status.get('completed_sessions',0),config.get('training_sessions',0)),
+        ('Generations',status.get('completed_generations',0),0 if profiling else config.get('generations',0)),
+        ('Profile session' if profiling else 'Session',status.get('completed_sessions',0),1 if profiling else config.get('training_sessions',0)),
         ('Backtest s',cursor.get('completed_seconds',0),cursor.get('total_seconds',0)),
-        ('Preparation',status.get('prepared_sessions',0),config.get('training_sessions',0))):
+        ('Preparation',status.get('prepared_sessions',0),1 if profiling else config.get('training_sessions',0))):
         if total:progress.add_task(label,total=total,completed=done)
     if status.get('stage')=='Compile lifecycle rules' and status.get('total_tickers'):
         progress.add_task('Rule compile',total=status['total_tickers'],completed=status.get('completed_tickers',0))
     best=status.get('best_metrics') or status.get('closest_metrics') or {};timing=status.get('timing',{})
     title='COMPLETED TRAINING LEADER — not holdout evidence' if status.get('best_metrics') else 'CLOSEST COMPLETED CANDIDATE — INFEASIBLE' if status.get('closest_metrics') else 'COMPLETED TRAINING METRICS — no completed leader yet'
+    if profiling:title='SESSION PROFILE — no generation selection or validation'
     grid=Table(title=title,expand=True,padding=(0,1))
     grid.add_column('Metric');grid.add_column('Value',justify='right')
     if width>=100:grid.add_column('Metric');grid.add_column('Value',justify='right')

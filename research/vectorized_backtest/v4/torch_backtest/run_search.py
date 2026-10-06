@@ -126,7 +126,10 @@ def main(argv=None):
     # Exclusive live controller. A stale lock is never removed automatically.
     lock=output/'owner.lock';owner=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
     os.write(owner,json.dumps(dict(pid=os.getpid(),started=time.time(),code_hash=code_hash())).encode());os.close(owner)
-    status=dict(status='preflight',config=dict(population=args.population,generations=args.generations,training_sessions=30,validation_sessions=6),completed_generations=0,completed_sessions=0,validation_status='SEALED',worker_pid=os.getpid())
+    status=dict(status='preflight',mode='profile' if args.profile else 'optimization',
+        config=dict(population=args.population,generations=0 if args.profile else args.generations,
+                    training_sessions=1 if args.profile else 30,validation_sessions=6),
+        completed_generations=0,completed_sessions=0,validation_status='SEALED',worker_pid=os.getpid())
     def emit(**event):
         status.update(event,updated_epoch=time.time())
         if args.device=='cuda':status['gpu_gib']=torch.cuda.memory_allocated()/1024**3
@@ -138,7 +141,7 @@ def main(argv=None):
     else:population=sample(rng,space,args.population);start=0;winner=None;best=None;best_metrics=None
     try:
         for generation in range(start,1 if args.profile else args.generations):
-            emit(status='training',completed_generations=generation,completed_sessions=0,stage='Load certified inputs',best_score=best,best_metrics=best_metrics)
+            emit(status='profiling' if args.profile else 'training',completed_generations=generation,completed_sessions=0,stage='Load certified inputs',best_score=best,best_metrics=best_metrics)
             folder=require_runtime(output/f'generation_{generation:03d}');pop_hash=fingerprint([state(v) for v in population]);results=[];receipts=[]
             for index,session in enumerate(spec['training'][:1] if args.profile else spec['training']):
                 destination=require_runtime(folder/f'session_{index:03d}');path=destination/'receipt.json'
@@ -152,7 +155,9 @@ def main(argv=None):
                 else:
                     def session_emit(**event):
                         if event.get('stage')=='Transfer certified inputs':event['prepared_sessions']=index+1
-                        if 'focus' in event:event['focus']=f'Generation {generation+1}/{args.generations} | session {index+1}/30 | '+event['focus']
+                        if 'focus' in event:
+                            prefix=f'B{args.population} session profile | ' if args.profile else f'Generation {generation+1}/{args.generations} | session {index+1}/30 | '
+                            event['focus']=prefix+event['focus']
                         emit(**event)
                     receipt=evaluate_session(session,population,space,args,destination,session_emit,runner_cache);write_json(path,receipt)
                 receipts.append(dict(path=str(path),sha256=file_hash(path)));results.append(receipt['metrics']);emit(completed_sessions=index+1,timing=receipt['timing'])
