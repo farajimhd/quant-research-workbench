@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-10-06 - Atomic strategy tensors and causal GPU v3 optimization](docs/codex/chat-summaries/2026/CHAT-20260930-UNKNOWN-atomic-gpu-strategy-v3.md)
+
+TASK-0223. Preserves the Polars-to-Torch design, independent v3 atomic77-coordinate search, causal completed-interval decisions, shared25% approximate liquidity, risk/capital-time objective, shortened population study and all30-session B128/32-generation campaign. Seeded all-coordinate mutation and exact immutable resume preserve receipts/RNG. UI supervisor recovery delivered through62cac1740; initiating old failure cause unconfirmed. Latest snapshot:8generations complete, generation9 session13/30, training+$16,801.61, objective.02822, zero open. Gains are concentrated in one+$28,152.98 day; other29 lose$11,351.37. Six validation dates remain sealed. Worker and monitor continue; exact ownership, runtime paths, final-audit/evaluation gates and cleanup are documented. Early source details partial; related chats inventoried, not reviewed.
+
 ### [2026-10-05 - Strategy42 optimization and generic squeeze-ladder handoff](docs/codex/chat-summaries/2026/CHAT-20260930-UNKNOWN-strategy42-optimization-ladder-handoff.md)
 
 TASK-0222. Strategy42 development baseline: 26 PM/AH sessions, $10,000 each, 138 positions, +$1,883.96 summed net; only 7 sessions reached +$500. Preserves causal trade diagnostics, frozen harness and reports, LGHL exclusion, exposed-date/holdout boundaries and the unpublished ladder's source-probe failures. Latest requirement is generic strategy-declared execution. Commit 768949363 delivers 2–32 independent fixed long lots through the existing typed policy, shared OMS partial-fill repair and restart recovery; regression and ladder suites passed. Planning microbenchmark showed existing profiles unchanged, but full-session throughput is unqualified. Native ladder publication, session locks, portfolio rotation and untouched validation remain open. Records the premature blocked-goal decision and prioritizes runnable financial comparisons. Partial source completeness; unrelated chats were inventoried, not reviewed.
