@@ -84,7 +84,9 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     performance=Table(title='PERFORMANCE / OWNERSHIP',expand=True,padding=(0,1));performance.add_column('Stage');performance.add_column('Last s',justify='right');performance.add_column('Average s',justify='right')
     for key in ('load','transfer','rule_prepare','compile','replay','end_to_end'):
         performance.add_row(key.replace('_',' ').title(),number(timing.get(key)),number(status.get('average_timing',{}).get(key)))
-    clock=Text(f"Elapsed {duration(now-status['started_epoch']) if status.get('started_epoch') else '—'} | replay ETA {duration(status.get('replay_eta'))} | campaign ETA {duration(status.get('campaign_eta'))}")
+    terminal=state in ('completed','failed','interrupted','no_feasible_winner','profile_complete','awaiting_validation_inputs')
+    elapsed_end=status.get('updated_epoch',now) if terminal else now
+    clock=Text(f"Elapsed {duration(elapsed_end-status['started_epoch']) if status.get('started_epoch') else '—'} | replay ETA {duration(status.get('replay_eta'))} | campaign ETA {duration(status.get('campaign_eta'))}")
     average=status.get('average_timing',{}).get('end_to_end')
     clock.append(f" | avg session {duration(average)} ({status.get('timed_sessions',0)} measured)")
     footer=Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | host {number(status.get('host_gib'),'.1f')} GiB | prefetched {status.get('prefetched_sessions','—')} | worker {status.get('worker_pid','—')}")
@@ -110,7 +112,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
                                   Panel(Text('\n'.join(f"{item['timestamp']}  {item['text']}" for item in events[-max(1,height-24):])),title='Message history · older entries retained in events.jsonl') if view=='messages' else grid)
         layout['ownership'].update(Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')} | provisional metrics until session completes"))
         layout['messages'].update(Panel(messages,title='MESSAGE CENTER · UTC · chronological · retained in events.jsonl'))
-        layout['keys'].update(Text('F financial | P performance | C objective | M messages · logs never print outside panels'))
+        layout['keys'].update(Text('F financial/pages | P performance | C objective | M messages | Q close · logs stay in panels'))
         return layout
     if height<26 and view=='financial':return Group(head,progress,grid,clock,issue,Text('F financial | P performance | C objective; full metrics: status.json'))
     components=Table(title='OBJECTIVE COMPONENTS',expand=True);components.add_column('Component');components.add_column('Contribution',justify='right')

@@ -32,10 +32,12 @@ def main(argv=None):
                     import msvcrt
                     if msvcrt.kbhit():
                         key=msvcrt.getwch().lower()
+                        if key=='q':break
                         if key=='f':financial_page=financial_page+1 if args.view=='financial' else 0
                         args.view={'f':'financial','p':'performance','c':'objective','m':'messages'}.get(key,args.view)
                 live.update(read());time.sleep(1)
-                if last.get('status') in ('completed','failed','interrupted','no_feasible_winner','profile_complete','awaiting_validation_inputs'):break
+                # Retain the final panel and its navigation until Q/Ctrl-C.
+                # The renderer is read-only and keeps no GPU allocations.
         except KeyboardInterrupt:pass
     return 0
 
