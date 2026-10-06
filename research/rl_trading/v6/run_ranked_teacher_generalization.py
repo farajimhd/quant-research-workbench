@@ -53,6 +53,11 @@ def admit_gate(root, *, source_dir=None):
     return plan, complete
 
 
+def exact_metrics(actual, expected):
+    """Compare the persisted JSON contract, retaining exact numeric equality."""
+    return json.loads(json.dumps(actual, allow_nan=False)) == json.loads(json.dumps(expected, allow_nan=False))
+
+
 def gate_targets(candidates, keys):
     by_key = {(d.close_us, d.episode_uid, bool(len(d.held_index))): d for d in candidates}
     wanted = [tuple(k) for k in keys]
@@ -188,9 +193,9 @@ def main(argv=None):
     policy.load_state_dict(torch.load(gate/'last.pt', map_location=device, weights_only=True), strict=True)
     replay = asdict(train_session(policy, None, training, gate_targets(targets, prior['target_keys']), (), device=device,
         evaluation=True, evaluate_train=True, teacher_loss='branch-balanced-v3', regression_weights=(0., 0.)))
-    write('underfit-replay.json', dict(exact=replay == complete['metrics'], checkpoint_sha256=complete['checkpoint_sha256'],
+    write('underfit-replay.json', dict(exact=exact_metrics(replay, complete['metrics']), checkpoint_sha256=complete['checkpoint_sha256'],
         metrics=replay, expected_metrics=complete['metrics']))
-    if replay != complete['metrics']: raise ValueError('Admitted underfit checkpoint replay changed')
+    if not exact_metrics(replay, complete['metrics']): raise ValueError('Admitted underfit checkpoint replay changed')
     plan = dict(version='rl-v6-ranked-natural-generalization-v1', source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
         epochs=args.epochs, initialization='passed_TRAIN_underfit_weights_optimizer_reset', learning_rate=3e-4, weight_decay=1e-4,
         underfit_manifest_sha256=file_hash(gate/'manifest.json'), underfit_checkpoint_sha256=complete['checkpoint_sha256'],

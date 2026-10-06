@@ -5,11 +5,22 @@ import numpy as np
 import pytest
 import torch
 from research.rl_trading.v1.common import digest, file_hash
-from research.rl_trading.v6.run_ranked_teacher_generalization import admit_gate, gate_targets, build_policy, evaluate_probabilities, load_prepared
+from research.rl_trading.v6.run_ranked_teacher_generalization import admit_gate, gate_targets, build_policy, evaluate_probabilities, load_prepared, exact_metrics
 from research.rl_trading.v6.run_ranked_teacher_underfit import coverage_report
 from research.rl_trading.v6.market_attention import MarketAttentionConfig
 from research.rl_trading.v6.training import train_session
 from test_rl_trading_v6_teacher_forecast import fixture
+
+
+def test_exact_metrics_uses_json_sequence_contract_without_numeric_tolerance():
+    actual = {'forecast_targets': (128, 124), 'quality': ({'ENTRY': .01},)}
+    saved = json.loads(json.dumps(actual))
+    assert exact_metrics(actual, saved)
+    changed = copy.deepcopy(saved); changed['quality'][0]['ENTRY'] = np.nextafter(.01, 1.)
+    assert not exact_metrics(actual, changed)
+    changed = copy.deepcopy(saved); changed['forecast_targets'].reverse()
+    assert not exact_metrics(actual, changed)
+    with pytest.raises(ValueError): exact_metrics({'loss': float('nan')}, {'loss': float('nan')})
 
 
 def make_gate(tmp_path):
