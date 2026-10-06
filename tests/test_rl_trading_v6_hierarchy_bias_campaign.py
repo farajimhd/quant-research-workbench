@@ -5,6 +5,16 @@ from research.rl_trading.v6.run_hierarchy_bias_campaign import product_logit,Hie
 from research.rl_trading.v6.run_bias_campaign import tensors
 
 
+def test_underfit_gate_rejects_any_collapsed_action_or_hierarchy_head():
+    from research.rl_trading.v6.run_hierarchy_bias_campaign import underfit_passes
+    actions={name:{'f1':.96} for name in ('ENTRY','WAIT','HOLD','EXIT')}
+    assert underfit_passes(actions,{'timing':{'f1':.95}})
+    actions['ENTRY']['f1']=0
+    assert not underfit_passes(actions)
+    actions['ENTRY']['f1']=.96
+    assert not underfit_passes(actions,{'timing':{'f1':.94}})
+
+
 def test_joint_entry_probability_is_product_with_finite_extreme_gradients():
     timing=torch.tensor([-1000.,-2.,0.,2.,1000.],requires_grad=True)
     gate=torch.tensor([0.,2.,0.,-2.,1000.],requires_grad=True)

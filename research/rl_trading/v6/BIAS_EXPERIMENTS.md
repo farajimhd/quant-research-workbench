@@ -147,3 +147,9 @@ component losses have weight0.5 each. Ten epochs, seed17, chronological calibrat
 AP selection, exact checkpoint replay, and exploratory development evaluation are
 fixed. Size, quality and future heads remain untrained in this diagnostic. No
 production policy replacement or full workstation training occurs.
+
+### Candidate-specific underfit gate and price autoregression
+
+Every hierarchy diagnostic candidate now runs a TRAIN-only 128-row control (32 per action) with its actual architecture and objective before calibration or development evaluation. All four action F1 scores and supervised hierarchy component F1 scores must reach 0.95 within 200 epochs. A failed candidate stops the campaign; prior base-encoder memorization is not a substitute. This bounded memorization criterion is an engineering diagnostic, not a claim of generalization or absence of all bias.
+
+The optional authenticated exact-clock price sidecar supervises current and next four observed-price returns through a separate GRU decoder. Equal free-running and teacher-forced SmoothL1 losses have weight 0.1; scale is the TRAIN-only 90th absolute-return percentile. Missing boundary targets are explicitly masked. Future prices never enter the current action head. Price MAE and the zero-return persistence baseline are reported separately; source observations, approved labels and production defaults remain unchanged. These are laptop diagnostics, not final teacher training.
