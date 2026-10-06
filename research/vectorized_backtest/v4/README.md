@@ -159,3 +159,13 @@ closed-position win counts and share-weighted elapsed holding time from actual
 fills. It rejects overselling, spending unavailable cash, invalid fill order and
 metric disagreements. Position win rate is reporting evidence, not an added
 fitness term. Each experiment identity seals the fixed financial settings.
+# Sealed input preparation
+
+V4 feature extraction requires `--sessions` and checks the requested day,
+output bank, manifest and ledger against that owned plan before market reads.
+Training days are available for preparation. Final validation preparation
+(feature extraction, broker snapshot and split certification) also requires
+`--frozen-winner`: an exact full-budget winner with a passed training audit
+bound to the experiment identity, checkpoint and generation receipts.
+An arbitrary winner JSON does not authorize final-session inputs.
+

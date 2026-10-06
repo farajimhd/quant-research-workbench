@@ -14,11 +14,11 @@ from .runtime import DEFAULT,code_hash,file_hash,require_runtime
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sessions',type=Path,required=True);p.add_argument('--date',required=True)
+    p.add_argument('--frozen-winner',type=Path)
     p.add_argument('--maximum-tape-gib',type=float,default=12.)
-    args=p.parse_args(argv);spec=json.loads(args.sessions.read_text())
-    rows=[s for s in spec['training'] if s['day']==args.date]
-    if len(rows)!=1:raise ValueError('Prepare training only; final validation remains sealed')
-    item=rows[0];root=Path(item['execution_root'])
+    args=p.parse_args(argv)
+    from .input_authority import authorize_day
+    item=authorize_day(args.sessions,args.date,args.frozen_winner);root=Path(item['execution_root'])
     require_runtime(root.parent)
     from research.mlops.clickhouse import discover_clickhouse_env_files
     from research.mlops.env import load_env_files

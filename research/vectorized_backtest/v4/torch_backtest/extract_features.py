@@ -49,10 +49,17 @@ def work(packet):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--sessions',type=Path,required=True);parser.add_argument('--frozen-winner',type=Path)
     parser.add_argument('--manifest',type=Path,required=True);parser.add_argument('--previous-manifest',type=Path)
     parser.add_argument('--ledger',type=Path,required=True);parser.add_argument('--date',type=date.fromisoformat,required=True)
     parser.add_argument('--previous-date',type=date.fromisoformat);parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--workers',type=int,default=32);args=parser.parse_args(argv)
+    from .input_authority import authorize_day
+    item=authorize_day(args.sessions,args.date,args.frozen_winner)
+    if (Path(item['feature_root']).resolve()!=args.output.resolve()
+            or Path(item['source_manifest']).resolve()!=args.manifest.resolve()
+            or Path(item['source_ledger']).resolve()!=args.ledger.resolve()):
+        raise ValueError('Feature producer arguments differ from authorized session plan')
     from research.mlops.clickhouse import discover_clickhouse_env_files
     from research.mlops.env import load_env_files
     from research.rl_trading.v1 import arte_source,reference_features

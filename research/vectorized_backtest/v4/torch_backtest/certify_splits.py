@@ -19,17 +19,8 @@ def main(argv=None):
     parser.add_argument('--date', type=date.fromisoformat, required=True)
     parser.add_argument('--frozen-winner', type=Path)
     args = parser.parse_args(argv)
-    spec = json.loads(args.sessions.read_text(encoding='utf-8'))
-    matching = [(role, item) for role in ('training', 'validation') for item in spec[role] if item['day'] == str(args.date)]
-    if len(matching) != 1:
-        raise ValueError('Day absent or ambiguous in split plan')
-    role, item = matching[0]
-    if role == 'validation':
-        if not args.frozen_winner or not args.frozen_winner.is_file():
-            raise ValueError('Final validation remains sealed until winner freeze')
-        freeze = json.loads(args.frozen_winner.read_text(encoding='utf-8'))
-        if not freeze.get('winner'):
-            raise ValueError('Missing frozen winner')
+    from .input_authority import authorize_day
+    item=authorize_day(args.sessions,args.date,args.frozen_winner)
     output = require_runtime(Path(item['split_certificate']).parent) / Path(item['split_certificate']).name
     from research.mlops.clickhouse import discover_clickhouse_env_files
     from research.mlops.env import load_env_files
