@@ -110,6 +110,7 @@ def main(argv=None):
     parser.add_argument('--teacher-encoder',choices=('lag','mlp','tcn','gru','transformer'),default='lag')
     parser.add_argument('--structured-candle-projection',action='store_true',help='Shared masked V7 slot projection; explicit new checkpoint architecture')
     parser.add_argument('--auxiliary-loss-weights',nargs=4,type=float,default=[1.,1.,1.,1.],metavar=('RATIO','FORECAST','QUALITY','FUTURE_QUALITY'))
+    parser.add_argument('--ticker-regression-loss-weights',nargs=2,type=float,default=[1.,1.],metavar=('VALUE','BRACKET'))
     parser.add_argument('--outside-macd-per-minute',type=float,default=0.,help='Explicit exposure-weighted PPO shaping outside completed-candle positive MACD regime')
     parser.add_argument('--action-contract', choices=('legacy','wait-hold'), default='legacy',
         help='Explicit six-class WAIT and held-ticker HOLD contract with weighted causal label migration')
@@ -622,6 +623,7 @@ def main(argv=None):
                                 device=device,clocks_per_chunk=args.clocks_per_chunk,
                                 teacher_loss=args.teacher_loss,
                                 auxiliary_weights=dict(zip(('ratio','forecast','quality','future_quality'),args.auxiliary_loss_weights)),
+                                regression_weights=args.ticker_regression_loss_weights,
                                 learning_rate_for_clock=teacher_rate if args.teacher_lr_schedule=='cosine' else None,
                                 progress_callback=pulse('progress/teacher',session.day,epoch)))
                             result['learning_rate']=optimizer.param_groups[0]['lr']

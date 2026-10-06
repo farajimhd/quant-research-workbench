@@ -52,7 +52,7 @@ class TickerHeads(nn.Module):
 
 def supervised_loss(outputs, probabilities, *, value_bps, value_valid,
                     stop_bps, target_bps, bracket_valid, weight=None,
-                    action_weight=1.):
+                    action_weight=1., value_weight=1., bracket_weight=1.):
     """Soft CE from logits plus independently masked bps regressions.
 
     Every regression target has an explicit availability bit. WAIT examples
@@ -98,7 +98,9 @@ def supervised_loss(outputs, probabilities, *, value_bps, value_valid,
     target_loss, target_mae = regression(outputs.target_bps, target_bps, bracket_valid, True)
     if not isinstance(action_weight, (int, float)) or not 0 < action_weight < float('inf'):
         raise ValueError('Invalid classification balance weight')
-    return action_weight*action_loss+value_loss+stop_loss+target_loss, dict(action_loss=action_loss.detach(),
+    if any(not isinstance(w,(int,float)) or not 0<=w<float('inf') for w in (value_weight,bracket_weight)):
+        raise ValueError('Invalid regression objective weight')
+    return action_weight*action_loss+value_weight*value_loss+bracket_weight*(stop_loss+target_loss), dict(action_loss=action_loss.detach(),
         value_loss=value_loss.detach(), stop_loss=stop_loss.detach(), target_loss=target_loss.detach(),
         value_mae_bps=value_mae.detach(), stop_mae_bps=stop_mae.detach(), target_mae_bps=target_mae.detach())
 

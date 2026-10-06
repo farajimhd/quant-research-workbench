@@ -158,6 +158,26 @@ def test_training_normalization_includes_adjusted_context_and_rejects_future_con
         fit_normalization([replace(session,role='development')],dataset_sha256='dataset',include_context=True)
 
 
+@pytest.mark.parametrize('device',['cpu']+(['cuda'] if torch.cuda.is_available() else []))
+def test_actual_classification_only_updates_no_regression_or_forecast_heads(device):
+    from dataclasses import replace
+    from test_rl_trading_v6_teacher_forecast import fixture
+    from research.rl_trading.v6.teacher_forecast import configure
+    from research.rl_trading.v6.training import train_session
+    policy,session,labels=fixture(device,count=4)
+    configure(policy,hierarchical=True,shared_heads=False)
+    labels=tuple(replace(d,opportunity_value_bps=100.,forecast_actions=np.ones(len(d.forecast_probabilities),np.int64)) for d in labels)
+    before={name:p.detach().clone() for name,p in policy.named_parameters()}
+    optimizer=torch.optim.Adam(policy.parameters(),lr=.001)
+    result=train_session(policy,optimizer,session,labels,(),device=torch.device(device),clocks_per_chunk=2,
+        teacher_loss='branch-balanced-v3',auxiliary_weights=dict(ratio=0.,forecast=0.,quality=0.,future_quality=0.),regression_weights=(0.,0.))
+    assert result.optimizer_steps==2
+    assert not torch.equal(before['decoder.heads.entry.weight'],policy.decoder.heads.entry.weight)
+    for name,p in policy.named_parameters():
+        if name.startswith(('decoder.heads.value.','decoder.heads.stop.','decoder.heads.target.','decoder.heads.quality.','decoder.size_head.','teacher_forecast.','action_gru.')):
+            torch.testing.assert_close(before[name],p,rtol=0,atol=0)
+
+
 @pytest.mark.parametrize('architecture',['lag','tcn','gru','transformer','mlp'])
 def test_real_ranked_training_core_accepts_encoder_and_separate_heads(architecture):
     from dataclasses import replace

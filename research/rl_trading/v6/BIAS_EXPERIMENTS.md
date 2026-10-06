@@ -33,6 +33,8 @@ Main trainer candidates are explicit:
   projections. History remains bounded at 120 candles.
 - `--auxiliary-loss-weights RATIO FORECAST QUALITY FUTURE_QUALITY`: ablate tasks
   without changing defaults. Zero weights leave those heads untrained.
+- `--ticker-regression-loss-weights VALUE BRACKET`: independently weight the
+  remaining regressions. A pure action ablation sets all six weights to zero.
 - `prepare_candle_normalization`: fit full TRAIN banks and split-adjusted prior
   tails. `--candle-feature-normalization` authenticates every training
   certificate and split receipt and adds no execution-cost inputs.

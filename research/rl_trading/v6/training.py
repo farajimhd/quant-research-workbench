@@ -284,7 +284,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   evaluation: bool = False, learning_rate_for_clock=None,
                   teacher_loss: str = 'legacy',
                   learning_start_us: int | None = None,
-                  evaluate_train: bool = False, auxiliary_weights=None) -> TrainingMetrics:
+                  evaluate_train: bool = False, auxiliary_weights=None, regression_weights=(1.,1.)) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Current opportunity targets are stamped at candle close. Their features
@@ -299,6 +299,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     callers must supply only labels at or after that completed-clock fence.
     """
     auxiliary=dict(ratio=1.,forecast=1.,quality=1.,future_quality=1.)
+    if len(regression_weights)!=2 or not all(isinstance(w,(int,float)) and math.isfinite(w) and 0<=w<=10 for w in regression_weights):
+        raise ValueError('Finite value/bracket regression coefficients required')
     if auxiliary_weights is not None:
         if set(auxiliary_weights)!=set(auxiliary) or not all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=10 for v in auxiliary_weights.values()):
             raise ValueError('Explicit finite four-task auxiliary coefficients required')
@@ -477,6 +479,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         objective,aux=supervised_loss(local,p,value_bps=target(item.opportunity_value_bps),
                             value_valid=value_valid,stop_bps=target(item.entry_stop_bps),target_bps=target(item.entry_target_bps),
                             bracket_valid=bracket_valid,
+                            value_weight=regression_weights[0],bracket_weight=regression_weights[1],
                             action_weight=float(balance[target_class]) if balance is not None else 1.)
                         for slot,name in enumerate(('value','stop','target')):
                             if torch.isfinite(aux[name+'_mae_bps']):pending_ticker[slot].append(aux[name+'_mae_bps'])

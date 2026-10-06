@@ -175,10 +175,11 @@ def main(argv=None):
             def progress(value):
                 write('progress.json',dict(phase='training',epoch=epoch,**value))
             trained=asdict(train_session(policy,optimizer,training,targets,(),device=device,
-                clocks_per_chunk=32,teacher_loss=args.teacher_loss,progress_callback=progress,auxiliary_weights=auxiliary_weights))
+                clocks_per_chunk=32,teacher_loss=args.teacher_loss,progress_callback=progress,auxiliary_weights=auxiliary_weights,
+                regression_weights=(0.,0.) if args.classification_only else (1.,1.)))
             evaluated=evaluate()
             training_evaluation=asdict(train_session(policy,None,training,targets,(),device=device,evaluation=True,evaluate_train=True))
-            record=dict(epoch=epoch,training=trained,training_evaluation=training_evaluation,development=evaluated)
+            record=dict(epoch=epoch,training=trained,training_evaluation=training_evaluation,development=evaluated,auxiliary_supervised=not args.classification_only)
             records.append(record)
             with (output/'metrics.jsonl').open('a',encoding='utf-8') as stream: stream.write(json.dumps(record)+'\n')
             logger.log({**flatten(trained,'training'),**flatten(training_evaluation,'training_evaluation'),**flatten(evaluated,'development'), 'epoch':epoch},step=epoch)
