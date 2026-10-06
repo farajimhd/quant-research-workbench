@@ -99,14 +99,17 @@ def main(argv=None):
         help='Train PPO from an explicitly selected teacher checkpoint; do not repeat teacher initialization')
     parser.add_argument('--initialize-from',type=Path,
         help='Selected teacher checkpoint for a new PPO run with fresh Adam and explicit source binding')
-    parser.add_argument('--teacher-loss',choices=('legacy','balanced-v2'),default='legacy',
+    parser.add_argument('--teacher-loss',choices=('legacy','balanced-v2','branch-balanced-v3'),default='legacy',
         help='Versioned action balancing and fixed per-session block normalization')
     parser.add_argument('--ticker-brackets-root',type=Path,help='Audited oracle brackets for four-action ticker supervision')
     parser.add_argument('--ticker-heads',action='store_true',help='Four local actions and opportunity value; five-candle contract also supervises 1b sizing')
     parser.add_argument('--teacher-forecast-steps',type=int,choices=(1,5),default=5,
         help='Versioned 1b teacher: current plus next four actual candles with autoregressive GRU and allocation supervision; 1 retains legacy architecture')
-    parser.add_argument('--teacher-heads',choices=('hierarchical-v2','soft-v1'),default='hierarchical-v2',
+    parser.add_argument('--teacher-heads',choices=('hierarchical-v2','hierarchical-v3','soft-v1'),default='hierarchical-v2',
         help='Five-candle head/loss contract; soft-v1 explicitly retains the previous architecture')
+    parser.add_argument('--teacher-encoder',choices=('lag','mlp','tcn','gru','transformer'),default='lag')
+    parser.add_argument('--structured-candle-projection',action='store_true',help='Shared masked V7 slot projection; explicit new checkpoint architecture')
+    parser.add_argument('--auxiliary-loss-weights',nargs=4,type=float,default=[1.,1.,1.,1.],metavar=('RATIO','FORECAST','QUALITY','FUTURE_QUALITY'))
     parser.add_argument('--outside-macd-per-minute',type=float,default=0.,help='Explicit exposure-weighted PPO shaping outside completed-candle positive MACD regime')
     parser.add_argument('--action-contract', choices=('legacy','wait-hold'), default='legacy',
         help='Explicit six-class WAIT and held-ticker HOLD contract with weighted causal label migration')
@@ -115,6 +118,7 @@ def main(argv=None):
     parser.add_argument('--episode-supervision-root',type=Path,
         help='Versioned independent episode window sidecars; fresh teacher-only run, never PPO replay')
     parser.add_argument('--feature-normalization',type=Path,help='Training-only bps/execution feature contract JSON')
+    parser.add_argument('--candle-feature-normalization',type=Path,help='Training-only bps candle normalization; adds no execution-cost fields')
     parser.add_argument('--execution-feature-root',type=Path,help='Sparse causal execution features and separate netbps labels')
     parser.add_argument('--ppo-epochs',type=int,default=40)
     parser.add_argument('--ppo-updates',type=int,default=4)
@@ -263,6 +267,9 @@ def main(argv=None):
                 market_root=Path(market_entries[str(session.day)]['root'])
             return load_episode_teacher(Path(entry['teacher_root']),session,market_root=market_root,**kwargs)
     policy=RankedBracketActorCritic(config=ranking, wait_hold=wait_hold).to(device)
+    if args.teacher_encoder!='lag' or args.structured_candle_projection:
+        from research.rl_trading.v6.temporal_encoders import replace_encoder
+        replace_encoder(policy,args.teacher_encoder,structured=args.structured_candle_projection)
     ticker_certificates={}
     if args.ticker_heads:
         from research.rl_trading.v6.ticker_heads import TickerDecoder,VERSION as TICKER_VERSION
@@ -290,14 +297,28 @@ def main(argv=None):
             if not dataset.get('market_teacher_dataset'):
                 raise ValueError('Five-candle teacher requires published copied 1b labels')
             from research.rl_trading.v6.teacher_forecast import configure, CONTRACT as FORECAST_CONTRACT
-            hierarchical=args.teacher_heads=='hierarchical-v2'
-            configure(policy,hierarchical=hierarchical)
+            hierarchical=args.teacher_heads in ('hierarchical-v2','hierarchical-v3')
+            configure(policy,hierarchical=hierarchical,shared_heads=args.teacher_heads!='hierarchical-v3')
             if hierarchical:
                 from research.rl_trading.v6.hierarchical_heads import CONTRACT as FORECAST_CONTRACT
+                if args.teacher_heads=='hierarchical-v3':
+                    from research.rl_trading.v6.hierarchical_heads import SEPARATE_CONTRACT as FORECAST_CONTRACT
             TICKER_VERSION=policy.decoder.action_version
     policy.independent_episode_supervision=bool(args.episode_supervision_root)
     feature_contract='legacy'
     execution_certificates={}
+    if args.candle_feature_normalization:
+        from research.rl_trading.v6.execution_features import CANDLE_NORMALIZATION_VERSION
+        if args.feature_normalization or args.execution_feature_root:raise ValueError('Choose one candle or execution feature authority')
+        if not args.candle_feature_normalization.resolve().is_relative_to(runtime):raise ValueError('Candle normalization escaped runtime')
+        normalization=json.loads(args.candle_feature_normalization.read_text())
+        expected={e['day']:e['bank_certificate_sha256'] for e in dataset['days'] if e['role']=='train'}
+        from research.rl_trading.v6.context_splits import receipt as split_receipt
+        expected_splits={e['day']:split_receipt(runtime,json.loads((Path(e['bank_root'])/'plan.json').read_text()))[1] for e in dataset['days'] if e['role']=='train'}
+        if (normalization.get('version')!=CANDLE_NORMALIZATION_VERSION or normalization.get('dataset_sha256')!=file_hash(args.dataset) or
+            normalization.get('training_bank_certificates')!=expected or normalization.get('context_split_receipts')!=expected_splits):
+            raise ValueError('Candle normalization must bind all training banks and split-adjusted contexts')
+        policy.configure_candle_features(normalization);feature_contract=CANDLE_NORMALIZATION_VERSION
     if args.feature_normalization:
         from research.rl_trading.v6.execution_features import VERSION as FEATURE_CONTRACT
         if not args.feature_normalization.resolve().is_relative_to(runtime):raise ValueError('Normalization escaped runtime')
@@ -341,16 +362,19 @@ def main(argv=None):
     optimizer=torch.optim.Adam(policy.parameters(),lr=args.learning_rate)
     from research.rl_trading.v6.model import DECODER_VERSION
     manifest={'version':'rl-trading-v6-attention-ppo-run-1','dataset_sha256':file_hash(args.dataset),
+        'candle_encoder_contract':{'architecture':args.teacher_encoder,'structured':args.structured_candle_projection,
+            'version':'rl-v6-structured-temporal-encoder-v1' if args.teacher_encoder!='lag' or args.structured_candle_projection else 'legacy-actual-candle-lag-v6'},
         'decoder_version':DECODER_VERSION,
         'feature_contract':feature_contract,
         'feature_normalization_sha256':file_hash(args.feature_normalization) if args.feature_normalization else None,
+        'candle_feature_normalization_sha256':file_hash(args.candle_feature_normalization) if args.candle_feature_normalization else None,
         'execution_feature_certificates':execution_certificates,
         'ticker_head_contract':TICKER_VERSION if args.ticker_heads else None,
         'teacher_forecast_contract':FORECAST_CONTRACT if args.ticker_heads and args.teacher_forecast_steps==5 else None,
         'ticker_target_certificates':ticker_certificates,
         'outside_macd_per_minute':args.outside_macd_per_minute,
         'ticker_metrics_scope':'independent_ticker_not_global_selection' if args.ticker_heads else None,
-        'execution_evidence_version':('rl-v6-certified-event-sparse-liquidity-v1' if feature_contract!='legacy' else None),
+        'execution_evidence_version':('rl-v6-certified-event-sparse-liquidity-v1' if args.feature_normalization else None),
         'action_version':TICKER_VERSION if args.ticker_heads else (ACTION_VERSION if wait_hold else 'rl-v6-five-action-v1'),
         'teacher_no_order_labels':'all_causal_held_identities_weighted_1_over_H' if wait_hold else 'portfolio_hold',
         'history_cache':'raw_causal_reprojection_after_teacher_optimizer' if wait_hold else 'detached_projected_history',
@@ -392,9 +416,11 @@ def main(argv=None):
                 completed.get('status')!='teacher_trained_label_evaluated_trading_validation_pending' or
                 completed.get('manifest_hash')!=parent['hash'] or
                 parent.get('decoder_version')!=DECODER_VERSION or
+                parent.get('candle_encoder_contract',{'architecture':'lag','structured':False,'version':'legacy-actual-candle-lag-v6'})!=manifest['candle_encoder_contract'] or
                 parent.get('execution_evidence_version')!=manifest['execution_evidence_version'] or
                 parent.get('feature_contract','legacy')!=feature_contract or
                 parent.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256') or
+                parent.get('candle_feature_normalization_sha256')!=manifest.get('candle_feature_normalization_sha256') or
                 parent.get('action_version')!=manifest['action_version'] or
                 parent.get('teacher_forecast_contract')!=manifest['teacher_forecast_contract'] or
                 parent.get('teacher_label_timing')!=manifest['teacher_label_timing'] or
@@ -595,6 +621,7 @@ def main(argv=None):
                             result=asdict(train_session(policy,optimizer,session,decisions,outcomes,
                                 device=device,clocks_per_chunk=args.clocks_per_chunk,
                                 teacher_loss=args.teacher_loss,
+                                auxiliary_weights=dict(zip(('ratio','forecast','quality','future_quality'),args.auxiliary_loss_weights)),
                                 learning_rate_for_clock=teacher_rate if args.teacher_lr_schedule=='cosine' else None,
                                 progress_callback=pulse('progress/teacher',session.day,epoch)))
                             result['learning_rate']=optimizer.param_groups[0]['lr']

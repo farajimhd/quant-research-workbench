@@ -66,6 +66,21 @@ class RankedBracketActorCritic(BracketActorCritic):
         self.execution_projection=torch.nn.Linear(len(EXECUTION_NAMES),self.encoder.width,bias=False)
         self.execution_context=None
 
+    def configure_candle_features(self,normalization):
+        """Normalize candle units without adding execution-cost observations."""
+        from research.rl_trading.v6.execution_features import CANDLE_NORMALIZATION_VERSION
+        from research.rl_trading.v6.model import INPUT_WIDTH
+        parameter=next(self.encoder.parameters())
+        mean=torch.as_tensor(normalization['mean'],dtype=torch.float32,device=parameter.device)
+        std=torch.as_tensor(normalization['std'],dtype=torch.float32,device=parameter.device)
+        if (normalization.get('scope')!='train_only' or normalization.get('units')!='bps-v1' or
+            mean.shape!=(INPUT_WIDTH,) or std.shape!=mean.shape or not torch.isfinite(mean).all() or
+            not torch.isfinite(std).all() or (std<=0).any() or hasattr(self.encoder,'feature_mean')):
+            raise ValueError('One finite training-only candle normalization required')
+        self.encoder.register_buffer('feature_mean',mean);self.encoder.register_buffer('feature_std',std)
+        self.encoder.feature_contract=CANDLE_NORMALIZATION_VERSION
+        self.decoder.feature_contract=CANDLE_NORMALIZATION_VERSION
+
     def set_execution_features(self, indices, values):
         """Immutable causal sparse [K] identities/[K,11] physical-unit features."""
         if not hasattr(self,'execution_projection'):return

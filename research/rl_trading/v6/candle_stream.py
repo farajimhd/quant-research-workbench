@@ -91,8 +91,7 @@ class SparseCandleState:
             projected = encoder.project(self.raw_history[start:end])
             projected *= self.raw_present[start:end, :, None]
             self.history[start:end] = projected
-            weighted = (projected*encoder.lag[:, 0, :].T[None]).sum(1)
-            encoded = encoder.norm(F.gelu(weighted))
+            encoded = encoder.encode_history(projected,self.raw_present[start:end])
             self.encoded[start:end] = torch.where(self.seen[start:end, None]>0,
                                                    encoded, torch.zeros_like(encoded))
 
@@ -133,8 +132,12 @@ class SparseCandleState:
         if projected is None:
             projected = encoder.project(encoder._input(scalar, levels))
         updated = torch.cat((previous[:, 1:], projected[:, None]), dim=1)
-        weighted = (updated * encoder.lag[:, 0, :].T[None]).sum(dim=1)
-        encoded = encoder.norm(F.gelu(weighted))
+        present=torch.arange(encoder.history_candles,device=updated.device)[None]>= (
+            encoder.history_candles-(self.seen[listing_index]+1).clamp_max(encoder.history_candles))[:,None]
+        if torch.is_grad_enabled() and getattr(encoder,'reproject_history_for_gradient',False):
+            if self.raw_history is None:raise ValueError('Temporal training requires refreshable raw history')
+            updated=encoder.project(self.raw_history[listing_index])*present[...,None]
+        encoded = encoder.encode_history(updated,present)
         if torch.is_grad_enabled():
             for offset, key in enumerate(keys):
                 self._updates[key] = (updated, offset)
@@ -212,7 +215,5 @@ def seed_previous_session(state: SparseCandleState,
                     len(identities), length, encoder.project.in_features)
             state.raw_present[start:start+len(identities)] = torch.from_numpy(present).to(
                 device=state.history.device, dtype=torch.bool)
-        weighted = (state.history[start:start+len(identities)] *
-                    encoder.lag[:, 0, :].T[None]).sum(dim=1)
-        state.encoded[start:start+len(identities)] = encoder.norm(
-            F.gelu(weighted))
+        state.encoded[start:start+len(identities)] = encoder.encode_history(projected,
+            torch.from_numpy(present.astype(bool)).to(state.history.device))

@@ -141,7 +141,7 @@ class TrainingMetrics:
     forecast_quality_counts: tuple[dict, ...] = ()
 
 
-def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wait_hold=False):
+def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wait_hold=False, mode='balanced-v2'):
     """Fixed per-session normalization; no per-block density reweighting.
 
     Inverse-square-root class weights have empirical mean one. Only the
@@ -154,9 +154,18 @@ def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wai
     sample_weights = np.asarray([getattr(d, 'sample_weight', 1.) for d in decisions])
     counts = np.bincount(classes, weights=sample_weights, minlength=6 if wait_hold else 5)
     weights = np.zeros(len(counts), dtype=np.float64)
-    present = counts > 0
-    weights[present] = 1 / np.sqrt(counts[present])
-    weights /= np.dot(weights, counts) / sample_weights.sum()
+    if mode=='branch-balanced-v3':
+        if not wait_hold or not np.isin(classes,[0,1,2,5]).all():
+            raise ValueError('Conditional branch balance requires WAIT/ENTRY/HOLD/EXIT teacher actions')
+        from research.rl_trading.v6.bias_models import balance_weights
+        mapping=np.array([1,0,3,-1,-1,2]);local=mapping[classes]
+        conditional=balance_weights(local,sample_weights,mode='branch')
+        weights[[0,1,2,5]]=conditional[[1,0,3,2]]
+    elif mode=='balanced-v2':
+        present = counts > 0
+        weights[present] = 1 / np.sqrt(counts[present])
+        weights /= np.dot(weights, counts) / sample_weights.sum()
+    else:raise ValueError('Unknown teacher class balance')
     span = (int(np.max(close_us)) - int(np.min(close_us))) // 1_000_000 + 1
     blocks = max(1, math.ceil(span / clocks_per_chunk))
     return weights, max(1., sample_weights.sum() / blocks)
@@ -275,7 +284,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   evaluation: bool = False, learning_rate_for_clock=None,
                   teacher_loss: str = 'legacy',
                   learning_start_us: int | None = None,
-                  evaluate_train: bool = False) -> TrainingMetrics:
+                  evaluate_train: bool = False, auxiliary_weights=None) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Current opportunity targets are stamped at candle close. Their features
@@ -289,11 +298,16 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     An optional learning start retains all earlier candle events as warmup;
     callers must supply only labels at or after that completed-clock fence.
     """
+    auxiliary=dict(ratio=1.,forecast=1.,quality=1.,future_quality=1.)
+    if auxiliary_weights is not None:
+        if set(auxiliary_weights)!=set(auxiliary) or not all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=10 for v in auxiliary_weights.values()):
+            raise ValueError('Explicit finite four-task auxiliary coefficients required')
+        auxiliary.update(auxiliary_weights)
     if evaluate_train and not evaluation:
         raise ValueError('Training-set evaluation requires evaluation mode')
     evaluation_roles = ('development', 'train') if evaluate_train else ('development',)
     if (session.role not in (evaluation_roles if evaluation else ('train',)) or clocks_per_chunk < 1 or grad_clip <= 0 or
-            not decisions or teacher_loss not in ('legacy', 'balanced-v2')):
+            not decisions or teacher_loss not in ('legacy', 'balanced-v2','branch-balanced-v3')):
         raise ValueError('V6 trainer requires a train session and labels')
     listings = len(session.listings)
     from research.rl_trading.v6.price_action_opportunities import VERSION as OPPORTUNITY_VERSION
@@ -308,13 +322,15 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         policy.reset_market(listings)
     pending_entries = {}
     wait_hold = policy.decoder.wait_hold
+    if teacher_loss=='branch-balanced-v3' and not (wait_hold and getattr(policy,'hierarchical_teacher',False)):
+        raise ValueError('Branch-balanced-v3 requires hierarchical WAIT/ENTRY/HOLD/EXIT heads')
     action_names = SIX_ACTION_NAMES if wait_hold else ACTION_NAMES
     _validate(decisions, outcomes, listings, wait_hold=wait_hold,ticker_heads=hasattr(policy.decoder,'ticker_outputs'))
     balance, loss_denominator = (teacher_loss_balance(decisions, listings,
         session.bank.close_us if learning_start_us is None else
         session.bank.close_us[session.bank.close_us >= learning_start_us],
-        clocks_per_chunk, wait_hold=wait_hold)
-        if teacher_loss == 'balanced-v2' and not evaluation else (None, None))
+        clocks_per_chunk, wait_hold=wait_hold,mode=teacher_loss)
+        if teacher_loss != 'legacy' and not evaluation else (None, None))
     state = SparseCandleState.empty(policy.encoder, listings, device=device,
                                     dtype=torch.float32, refreshable=wait_hold)
     seed_previous_session(state, policy.encoder, session.listings,
@@ -561,13 +577,13 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
             mean = (torch.stack(pending_objectives).sum() / loss_denominator
                     if balance is not None else torch.stack(pending_objectives).sum()/sum(pending_weights))
             if pending_ratio:
-                mean=mean+torch.stack(pending_ratio).sum()/(ratio_mass/blocks)
+                mean=mean+auxiliary['ratio']*torch.stack(pending_ratio).sum()/(ratio_mass/blocks)
             if pending_forecast:
-                mean=mean+torch.stack(pending_forecast).sum()/(forecast_mass/blocks)
+                mean=mean+auxiliary['forecast']*torch.stack(pending_forecast).sum()/(forecast_mass/blocks)
             if pending_quality:
-                mean=mean+torch.stack(pending_quality).sum()/(quality_mass/blocks)
+                mean=mean+auxiliary['quality']*torch.stack(pending_quality).sum()/(quality_mass/blocks)
             if pending_future_quality:
-                mean=mean+torch.stack(pending_future_quality).sum()/(future_quality_mass/blocks)
+                mean=mean+auxiliary['future_quality']*torch.stack(pending_future_quality).sum()/(future_quality_mass/blocks)
             if not torch.isfinite(mean):
                 raise ValueError('Nonfinite teacher objective')
             if not evaluation:

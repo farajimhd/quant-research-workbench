@@ -68,6 +68,10 @@ class ActualCandleEncoder(nn.Module):
         convolved = F.conv1d(padded, self.lag, groups=self.width)
         return self.norm(F.gelu(convolved.squeeze(0).T))
 
+    def encode_history(self, history, present=None):
+        if present is not None:history=history*present[...,None]
+        return self.norm(F.gelu((history*self.lag[:,0,:].T[None]).sum(1)))
+
     def initial_state(self, listings: int, *, device: torch.device,
                       dtype: torch.dtype) -> CandleState:
         if listings < 1:
@@ -108,8 +112,9 @@ class ActualCandleEncoder(nn.Module):
                               device=next_cursor.device)[None, :]) % self.history_candles
         rows = state.temporal[listing_index]
         ordered = rows.gather(1, order[..., None].expand(-1, -1, self.width))
-        weighted = (ordered * self.lag[:, 0, :].T[None]).sum(dim=1)
-        state.encoded[listing_index] = self.norm(F.gelu(weighted))
+        present=torch.arange(self.history_candles,device=ordered.device)[None]>= (
+            self.history_candles-state.seen[listing_index].clamp_max(self.history_candles))[:,None]
+        state.encoded[listing_index] = self.encode_history(ordered,present)
         return state
 
 

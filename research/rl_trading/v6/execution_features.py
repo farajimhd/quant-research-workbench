@@ -10,6 +10,7 @@ from research.rl_trading.v6.features import SCALAR_NAMES, LEVEL_NAMES
 from research.rl_trading.v6.tensor_broker import order_fee
 
 VERSION = 'rl-v6-bps-execution-features-v1'
+CANDLE_NORMALIZATION_VERSION='rl-v6-bps-candle-normalization-v1'
 PROBE_BUDGETS = (100., 1000., 10000.)
 EXECUTION_NAMES = ('spread_bps','buy_slippage_bps','quote_age_seconds',
     'quote_valid','volume_valid', 'fill_fraction_100','fill_fraction_1000','fill_fraction_10000',

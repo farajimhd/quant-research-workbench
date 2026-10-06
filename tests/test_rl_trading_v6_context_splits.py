@@ -98,7 +98,9 @@ def test_cached_receipt_rechecks_binding_hash_and_never_queries(tmp_path,monkeyp
     root=tmp_path/'rl-v6-context-splits'/VERSION;root.mkdir(parents=True)
     path=root/'plan.json';path.write_text(json.dumps(saved))
     monkeypatch.setattr(arte_source,'reader',lambda **_:pytest.fail('Cached receipt queried metadata again'))
-    assert receipt(tmp_path,plan)==({'A':1.},saved['hash'])
+    from research.rl_trading.v1.common import exclusive
+    with exclusive(path.with_suffix('.lock')):
+        assert receipt(tmp_path,plan)==({'A':1.},saved['hash'])
     saved['rows']=[dict(listing_id='A',execution_date='2026-08-24',split_from=1,split_to=2)]
     path.write_text(json.dumps(saved))
     with pytest.raises(ValueError,match='binding/hash'):

@@ -24,17 +24,19 @@ CONTRACT = dict(version=VERSION, steps=STEPS,
     ranking='bounded_attention_full_certified_action_population')
 
 
-def configure(policy, *, hierarchical=False):
+def configure(policy, *, hierarchical=False, shared_heads=True):
     """One architecture factory shared by the launcher and laptop probe."""
     from research.rl_trading.v6.ticker_heads import TickerDecoder
     parameter=next(policy.parameters())
     policy.decoder=TickerDecoder(policy.encoder.width,teacher_sequence=True).to(parameter.device)
     if hierarchical:
-        from research.rl_trading.v6.hierarchical_heads import HierarchicalTickerHeads, HierarchicalForecast, VERSION as HIERARCHICAL_VERSION
+        from research.rl_trading.v6.hierarchical_heads import HierarchicalTickerHeads, HierarchicalForecast, VERSION as HIERARCHICAL_VERSION,SEPARATE_VERSION
         policy.decoder.heads=HierarchicalTickerHeads(policy.encoder.width).to(parameter.device)
-        policy.teacher_forecast=HierarchicalForecast(policy.encoder.width,policy.decoder.heads).to(parameter.device)
-        policy.decoder.action_version=HIERARCHICAL_VERSION
+        future_heads=policy.decoder.heads if shared_heads else HierarchicalTickerHeads(policy.encoder.width).to(parameter.device)
+        policy.teacher_forecast=HierarchicalForecast(policy.encoder.width,future_heads).to(parameter.device)
+        policy.decoder.action_version=HIERARCHICAL_VERSION if shared_heads else SEPARATE_VERSION
     else:
+        if not shared_heads:raise ValueError('Independent forecast branches require hierarchical heads')
         policy.teacher_forecast=LabelForecast(policy.encoder.width).to(parameter.device)
     policy.hierarchical_teacher=hierarchical
     policy.full_market_actions=True

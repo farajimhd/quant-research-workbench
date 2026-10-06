@@ -65,6 +65,13 @@ def receipt(runtime, plan):
     root = Path(runtime) / 'rl-v6-context-splits' / VERSION
     root.mkdir(parents=True, exist_ok=True)
     path = root / (plan['hash'] + '.json')
+    if path.exists():
+        # Published receipts are immutable and atomically renamed. Concurrent
+        # readers authenticate the complete file; only first writers lock.
+        saved=json.loads(path.read_text())
+        if saved.get('binding')!=binding or saved.get('hash')!=digest({k:v for k,v in saved.items() if k!='hash'}):
+            raise ValueError('Split context receipt binding/hash changed')
+        return factors(saved['rows'],identities,prior,day),saved['hash']
     with exclusive(path.with_suffix('.lock')):
         if path.exists():
             saved = json.loads(path.read_text())

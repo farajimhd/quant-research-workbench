@@ -18,6 +18,8 @@ CONTRACT = dict(BASE_CONTRACT, version=VERSION,
     training='equal_teacher_forced_and_free_running_losses',
     head_sharing='current_and_all_future_ENTRY_EXIT_quality_branches',
     forecast_balance='training_only_inverse_sqrt_weighted_class_mass')
+SEPARATE_VERSION='rl-v6-1b-hierarchical-separate-forecast-v3'
+SEPARATE_CONTRACT=dict(CONTRACT,version=SEPARATE_VERSION,head_sharing='independent_current_and_future_ENTRY_EXIT_quality_branches')
 
 
 class HierarchicalTickerHeads(TickerHeads):

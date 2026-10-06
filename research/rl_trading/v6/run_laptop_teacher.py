@@ -50,12 +50,19 @@ def main(argv=None):
     parser.add_argument('--seconds', type=int, default=600)
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--wandb-project', default='rl-trading-v6')
-    parser.add_argument('--heads', choices=('hierarchical-v2','soft-v1'),default='hierarchical-v2')
+    parser.add_argument('--heads', choices=('hierarchical-v2','hierarchical-v3','soft-v1'),default='hierarchical-v2')
+    parser.add_argument('--teacher-loss',choices=('balanced-v2','branch-balanced-v3'),default='balanced-v2')
+    parser.add_argument('--encoder',choices=('lag','mlp','tcn','gru','transformer'),default='lag')
+    parser.add_argument('--structured-candle-projection',action='store_true')
+    parser.add_argument('--normalize-candles',action='store_true')
+    parser.add_argument('--classification-only',action='store_true',help='Diagnostic zero auxiliary weights; forecast/sizing are not trained')
     parser.add_argument('--compare-with',type=Path,help='Re-evaluate the immutable prior pilot checkpoint on identical scope')
     args = parser.parse_args(argv)
-    hierarchical=args.heads=='hierarchical-v2'
+    hierarchical=args.heads in ('hierarchical-v2','hierarchical-v3')
     if hierarchical:
         from research.rl_trading.v6.hierarchical_heads import CONTRACT as experiment_contract
+        if args.heads=='hierarchical-v3':
+            from research.rl_trading.v6.hierarchical_heads import SEPARATE_CONTRACT as experiment_contract
     else:experiment_contract=CONTRACT
     root=Path('D:/TradingML/runtimes').resolve(); output=args.output.resolve()
     if not root.is_dir() or not output.is_relative_to(root): raise ValueError('Laptop runtime root required')
@@ -118,8 +125,26 @@ def main(argv=None):
         development,dev_targets=prepare(args.development_day,'development')
         device=torch.device('cuda')
         ranking=MarketAttentionConfig(**source.published()[1]['ranking'])
+        normalization=None
+        if args.normalize_candles:
+            from research.rl_trading.v6.bias_panel import indexed_panel,normalization as fit_normalization
+            normalization=fit_normalization(indexed_panel(training,targets))
+            write('normalization.json',normalization)
+        manifest['normalization_sha256']=file_hash(output/'normalization.json') if normalization else None
+        manifest['hash']=digest({k:v for k,v in manifest.items() if k!='hash'});write('manifest.json',manifest)
+        logger.config.update(manifest,allow_val_change=True)
+        def new_policy():
+            policy=RankedBracketActorCritic(config=ranking,wait_hold=True).to(device)
+            if args.encoder!='lag' or args.structured_candle_projection:
+                from research.rl_trading.v6.temporal_encoders import replace_encoder
+                replace_encoder(policy,args.encoder,structured=args.structured_candle_projection)
+            configure(policy,hierarchical=hierarchical,shared_heads=args.heads!='hierarchical-v3')
+            if normalization:policy.configure_candle_features(normalization)
+            policy.independent_episode_supervision=True
+            return policy
         previous_evaluation=None
         if args.compare_with:
+            if normalization or args.encoder!='lag' or args.structured_candle_projection:raise ValueError('Legacy comparison requires original input/encoder contract')
             prior=args.compare_with.resolve()
             if not prior.is_relative_to(root):raise ValueError('Comparison must be an existing laptop runtime')
             old_complete=json.loads((prior/'complete.json').read_text())
@@ -138,8 +163,8 @@ def main(argv=None):
                 target_contract='saved_hard_action_metrics_soft_v1_loss',source=str(prior)))
             del previous,saved;gc.collect();torch.cuda.empty_cache()
         torch.manual_seed(17)
-        policy=configure(RankedBracketActorCritic(config=ranking,wait_hold=True).to(device),hierarchical=hierarchical)
-        policy.independent_episode_supervision=True
+        policy=new_policy()
+        auxiliary_weights=dict(ratio=0.,forecast=0.,quality=0.,future_quality=0.) if args.classification_only else None
         optimizer=torch.optim.Adam(policy.parameters(),lr=3e-4)
         def evaluate(): return asdict(train_session(policy,None,development,dev_targets,(),device=device,evaluation=True))
         baseline=evaluate();records=[]
@@ -150,16 +175,16 @@ def main(argv=None):
             def progress(value):
                 write('progress.json',dict(phase='training',epoch=epoch,**value))
             trained=asdict(train_session(policy,optimizer,training,targets,(),device=device,
-                clocks_per_chunk=32,teacher_loss='balanced-v2',progress_callback=progress))
+                clocks_per_chunk=32,teacher_loss=args.teacher_loss,progress_callback=progress,auxiliary_weights=auxiliary_weights))
             evaluated=evaluate()
-            record=dict(epoch=epoch,training=trained,development=evaluated)
+            training_evaluation=asdict(train_session(policy,None,training,targets,(),device=device,evaluation=True,evaluate_train=True))
+            record=dict(epoch=epoch,training=trained,training_evaluation=training_evaluation,development=evaluated)
             records.append(record)
             with (output/'metrics.jsonl').open('a',encoding='utf-8') as stream: stream.write(json.dumps(record)+'\n')
-            logger.log({**flatten(trained,'training'),**flatten(evaluated,'development'), 'epoch':epoch},step=epoch)
+            logger.log({**flatten(trained,'training'),**flatten(training_evaluation,'training_evaluation'),**flatten(evaluated,'development'), 'epoch':epoch},step=epoch)
             torch.save(dict(model=policy.state_dict(),optimizer=optimizer.state_dict(),contract=experiment_contract,epoch=epoch),output/'last.pt')
             print(json.dumps(dict(epoch=epoch,development_f1=evaluated['action_class_f1'],allocation_mae=evaluated['allocation_ratio_mae'])),flush=True)
-        restored=configure(RankedBracketActorCritic(config=ranking,wait_hold=True).to(device),hierarchical=hierarchical)
-        restored.independent_episode_supervision=True
+        restored=new_policy()
         restored.load_state_dict(torch.load(output/'last.pt',map_location=device,weights_only=True)['model'],strict=True)
         replay=asdict(train_session(restored,None,development,dev_targets,(),device=device,evaluation=True))
         if replay!=records[-1]['development']:raise ValueError('Checkpoint reload changed development evaluation')

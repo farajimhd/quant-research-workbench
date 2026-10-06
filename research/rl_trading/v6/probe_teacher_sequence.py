@@ -28,7 +28,7 @@ from research.rl_trading.v6.teacher_forecast import configure, CONTRACT
 from research.rl_trading.v6.training import train_session
 
 
-def subset(session, labels, identities, begin, end):
+def subset(session, labels, identities, begin, end, *, valid_price_context=False):
     """Preserve original features; rekey only this declared diagnostic axis."""
     identities=tuple(sorted(identities));original={s:i for i,s in enumerate(session.listings)}
     local={original[s]:i for i,s in enumerate(identities)}
@@ -39,6 +39,10 @@ def subset(session, labels, identities, begin, end):
             values=bank.listing(identity)
             high=int(np.searchsorted(values.close_us,begin)) if previous else int(np.searchsorted(values.close_us,end,side='right'))
             low=max(0,high-120) if previous else 0
+            if previous and valid_price_context:
+                valid=np.flatnonzero(np.asarray(values.scalar[:high])[:,35]>.5)
+                # Retain one predecessor to reconstruct the first elapsed gap.
+                low=int(valid[-121]) if len(valid)>=121 else 0
             offsets[identity]=[cursor,cursor+high-low];cursor+=high-low
             for target,source in zip(arrays,(values.close_us,values.scalar,values.levels)):
                 target.append(np.array(source[low:high],copy=True))
