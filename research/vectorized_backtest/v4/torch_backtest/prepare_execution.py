@@ -9,7 +9,7 @@ from .encoding.clickhouse import certify_source
 from .prepare import prepare_tape
 from .prepared_cache import save_prepared,load_prepared
 from .genome import StrategySpace
-from .runtime import code_hash,file_hash,require_runtime
+from .runtime import DEFAULT,code_hash,file_hash,require_runtime
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
@@ -25,7 +25,9 @@ def main(argv=None):
     load_env_files(discover_clickhouse_env_files(),verbose=False)
     from .availability import configure_reader
     configure_reader(Path(__file__).resolve().parents[4])
-    session=Session(manifest=Path(item['source_manifest']),ledger=Path(item['source_ledger']),runtime=root.parent/'preparation',
+    # Deep campaign paths plus SHA256 directories and atomic-write suffixes
+    # exceed Windows MAX_PATH. Session/source keys seal this shared private cache.
+    session=Session(manifest=Path(item['source_manifest']),ledger=Path(item['source_ledger']),runtime=DEFAULT/'preparation',
         start=datetime.fromisoformat(item['start']),end=datetime.fromisoformat(item['end']))
     certificate=certify_source(session)
     plan=json.loads((Path(item['feature_root'])/'plan.json').read_text())
