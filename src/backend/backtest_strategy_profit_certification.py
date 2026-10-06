@@ -1,5 +1,6 @@
 """Exact reviewed profit-route sources; native installation is a separate gate."""
 import ast
+from src.backend.source_ast_summary import canonical_symbol_ast_summary
 from hashlib import sha256
 from pathlib import Path
 import json
@@ -9,7 +10,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/backend/backtest_journal_memory.py': {'__module__': '13c94e0045a47141e5b9bd708ee851a267e104c78ae0618cdadfc469bda44eaa'},
  'src/backend/backtest_strategy_one_configuration.py': {'__module__': 'e7ac8ac056735d57086db293f47d915a7a987cf0e0e91d428e7117e494399f3f'},
  'src/backend/backtest_strategy_one_coordinator.py': {'__module__': '188d9b1853e0ffc7b7fe913728d96c60cb27d800a7cfd6e9b61cca97567c52b4'},
- 'src/backend/backtest_strategy_one_execution.py': {'__module__': '84926bc215d7e2d9aed4c46af1414bd2b9ff013475c23005bc9d46e1ac36041a'},
+ 'src/backend/backtest_strategy_one_execution.py': {'__module__': '1e3731185f9c0d59cb7d13cb15d58501eb446ffffed7ffcb9da013145141309e'},
  'src/backend/backtest_strategy_one_management.py': {'__module__': '8001c4c43ca9775c3b3b45087c55fc36f9786844f6a19b698cc445393e6cc7db'},
  'src/backend/backtest_typed_projection.py': {'__module__': '6c0367a9a96836c595fd7e2dda9654b163ac82e072bd370d579da699533cc9e9'},
  'src/backend/backtest_typed_publisher.py': {'__module__': 'dc3b8c9c091c7d4bdee9c75c5df875d9110df643a5c7b85037c7f3287a960724'},
@@ -41,7 +42,8 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/trading_runtime/strategy_thirty_three_release.py': {'__module__': 'cc0afd9027402150723a87f1e66526c7acf35aa78f113d1d5ec57b5675cd386e'},
  'pipelines/strategy_one/strategy_thirty_three_configuration.py': {'__module__': '20dbac5cf28f3f61409c187a9dfcc34b43da02eb81a161ce45ad70f53a4d060c'},
  'src/trading_runtime/entry_momentum_growth.py': {'__module__': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c'},
- 'src/backend/backtest_declared_initial_momentum.py': {'__module__': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'}}
+ 'src/backend/backtest_declared_initial_momentum.py': {'__module__': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'},
+ 'src/backend/source_ast_summary.py': {'__module__': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995'}}
 
 def certify_profit_giveback_route_source(*, source_overrides=None):
     """Fail closed if any reviewed arming, order or persistence route changes."""
@@ -52,11 +54,12 @@ def certify_profit_giveback_route_source(*, source_overrides=None):
     observed = []
     for relative, expected in REVIEWED_PROFIT_ROUTE.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
-        tree = ast.parse(source)
-        for name, digest in expected.items():
-            nodes = [tree] if name == '__module__' else [n for n in ast.walk(tree)
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
-            if len(nodes) != 1 or sha256(ast.unparse(nodes[0]).encode()).hexdigest() != digest:
+        summaries = canonical_symbol_ast_summary(
+            source, tuple(expected), kinds=("FunctionDef", "AsyncFunctionDef"))
+        if len(summaries) != len(expected):
+            raise ValueError('Strategy 31 source summary shape changed: ' + relative)
+        for (name, digest), summary in zip(expected.items(), summaries):
+            if summary.name != name or len(summary.digests) != 1 or summary.digests[0] != digest:
                 raise ValueError('Strategy 31 reviewed profit-route authority changed: ' + relative + ':' + name)
         observed.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observed, separators=(',', ':')).encode()).hexdigest()

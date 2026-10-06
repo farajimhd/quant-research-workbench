@@ -18,7 +18,8 @@ STRATEGY48_SOURCE_AST = {'src/trading_runtime/early_original_risk_failure.py': '
  'pipelines/strategy_one/strategy_forty_eight_configuration.py': '3dcee2e3adb752fc6be0e36edd2f5390659a9a4b29d30d588393863edaff1490',
  'scripts/clickhouse/publish_strategy_forty_eight_configuration.py': '418e0090dd2007b36fcf4f439fce453b5dd299855fa7a11a5bb2fa0d2bfb50b9',
  'src/trading_runtime/arte_entry_activity_v4.py': 'd1925f80bf6309e040d257604a7dcaf890e00e471fb822218cfa1418bb1b52d3',
- 'src/trading_runtime/arte_oms_projection.py': '2320e8877a34c57a4d3dec38a45a48b540bf0577d995b1837e1246db6a66eed6'}
+ 'src/trading_runtime/arte_oms_projection.py': '2320e8877a34c57a4d3dec38a45a48b540bf0577d995b1837e1246db6a66eed6',
+ 'src/backend/source_ast_summary.py': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995'}
 
 
 def certify_strategy_forty_eight_source(*, source_overrides=None):

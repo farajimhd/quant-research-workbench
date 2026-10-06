@@ -1,5 +1,6 @@
 """Full inherited50 declared entry spread risk proof; closed until source review."""
 import ast
+from src.backend.source_ast_summary import canonical_module_ast_digest
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -30,6 +31,7 @@ REQUIRED_SOURCE_FILES = ('pipelines/strategy_one/configuration_publisher.py',
  'src/backend/backtest_typed_publisher.py',
  'src/backend/backtest_v4_saved_review.py',
  'src/backend/replay_run_service.py',
+ 'src/backend/source_ast_summary.py',
  'src/trading_runtime/arte_confirmed_ah_failure_v4.py',
  'src/trading_runtime/arte_entry_activity_v4.py',
  'src/trading_runtime/arte_entry_spread_risk_v4.py',
@@ -80,7 +82,7 @@ STRATEGY58_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'b
  'src/backend/backtest_entry_spread_risk_v2.py': '0287cbbb1d9795121b23f1fa666e128135001cb1129c9b5b16cc0ac951e13cb9',
  'src/backend/backtest_declared_entry_quote_source.py': '7a812908fd044f2573d525ac54b59383ab241ca673dbe8194ef30b12c79259e7',
  'src/backend/backtest_fixed_journal_bootstrap.py': '1a180e82a1d8505fa49cf08106ad44b39952f9e3225e84d2449b7366c73e1907',
- 'src/backend/backtest_fixed_v4_certification.py': '37695fa61ee8bcadd7687932ecff72a2fb034db8dceee6a60418e9953702835b',
+ 'src/backend/backtest_fixed_v4_certification.py': '8404b3f0c830bc6e60e6b8665d46f2b29ce3da83f53b1aa0d8e056649a0cb6e2',
  'src/backend/backtest_journal_memory.py': '13c94e0045a47141e5b9bd708ee851a267e104c78ae0618cdadfc469bda44eaa',
  'src/backend/backtest_strategy_certified_price_break.py': '8d6a7a26fc783252033f882544312eef55a5407b95e60259640452f9f42891ac',
  'src/backend/backtest_strategy_episode_activity_source.py': '0a1bb6874e6e36d377909dfad350b700095637e90cedc4bd4ac426ec9d891444',
@@ -88,7 +90,7 @@ STRATEGY58_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'b
  'src/backend/backtest_strategy_liquidity_fade_loader.py': 'ad9176e7c167a2a20adc6f95e3d2bc67dd64d53d419301b347dd8ead49721172',
  'src/backend/backtest_strategy_one_configuration.py': 'e7ac8ac056735d57086db293f47d915a7a987cf0e0e91d428e7117e494399f3f',
  'src/backend/backtest_strategy_one_coordinator.py': '188d9b1853e0ffc7b7fe913728d96c60cb27d800a7cfd6e9b61cca97567c52b4',
- 'src/backend/backtest_strategy_one_execution.py': '84926bc215d7e2d9aed4c46af1414bd2b9ff013475c23005bc9d46e1ac36041a',
+ 'src/backend/backtest_strategy_one_execution.py': '1e3731185f9c0d59cb7d13cb15d58501eb446ffffed7ffcb9da013145141309e',
  'src/backend/backtest_strategy_one_management.py': '8001c4c43ca9775c3b3b45087c55fc36f9786844f6a19b698cc445393e6cc7db',
  'src/backend/backtest_typed_projection.py': '6c0367a9a96836c595fd7e2dda9654b163ac82e072bd370d579da699533cc9e9',
  'src/backend/backtest_typed_publisher.py': 'dc3b8c9c091c7d4bdee9c75c5df875d9110df643a5c7b85037c7f3287a960724',
@@ -132,7 +134,8 @@ STRATEGY58_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'b
  'src/trading_runtime/strategy_registry.py': 'a93f5cde8cbf06e0c1af27ff3d8d097f3eb7e869644025dba4fa187f74ebcad4',
  'src/trading_runtime/strategy_rising_momentum_witness.py': '6d5bd7f4a11ae8f2e05e4138a29d7cde0c53efb8945b38cfe117f82d1d05c4ee',
  'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c',
- 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'}
+ 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81',
+ 'src/backend/source_ast_summary.py': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995'}
 
 
 def certify_strategy_fifty_eight_source(*, source_overrides=None):
@@ -146,10 +149,10 @@ def certify_strategy_fifty_eight_source(*, source_overrides=None):
     for relative, expected in STRATEGY58_SOURCE_AST.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
         try:
-            tree = ast.parse(source)
+            actual = canonical_module_ast_digest(source)
         except SyntaxError as exc:
             raise ValueError('Strategy58 source cannot be parsed: ' + relative) from exc
-        if sha256(ast.unparse(tree).encode()).hexdigest() != expected:
+        if actual != expected:
             raise ValueError('Strategy58 pinned source changed: ' + relative)
         observed.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observed, separators=(',', ':')).encode()).hexdigest()

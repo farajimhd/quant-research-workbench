@@ -1,5 +1,6 @@
 """Prepared liquidity-candidate source seal, separate from runtime admission."""
 import ast
+from src.backend.source_ast_summary import canonical_module_ast_digest
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -30,7 +31,7 @@ LIQUIDITY_FADE_SOURCE_AST = {'src/trading_runtime/strategy_half_risk_liquidity_f
  'src/trading_runtime/arte_first_price_entry_v4.py': '13934841d1f1a36c7eaa3df3a5a95f130c29e433d2f5eb56b6941f60fe89526a',
  'src/trading_runtime/strategy_liquidity_fade_checkpoint_reference.py': '2bf2d32ba8e66f95d6646c3f364937dd342fe25af9cd3311632e50bf958369d8',
  'src/backend/replay_run_service.py': 'e7eb5b359f9126316ed99721ade0fa50f8a1b8f8eccd99b96b1225ac387b9b86',
- 'src/backend/backtest_strategy_one_execution.py': '84926bc215d7e2d9aed4c46af1414bd2b9ff013475c23005bc9d46e1ac36041a',
+ 'src/backend/backtest_strategy_one_execution.py': '1e3731185f9c0d59cb7d13cb15d58501eb446ffffed7ffcb9da013145141309e',
  'src/backend/backtest_strategy_liquidity_fade.py': '5e09a1f14b27d0e63bfff7e46ba5487cc1b740c8373a78425f7765513f68b05a',
  'src/trading_runtime/strategy_liquidity_fade_failure.py': '25ec4e6e986c8cd684740d9140ac5b659b36f386170d3bad6ce2af2e5569350e',
  'src/trading_runtime/strategy_liquidity_fade_exit.py': '64fbc594888256b65007f085d713f69fbe8fc47978ee38e2d66553e63839dabd',
@@ -66,7 +67,8 @@ LIQUIDITY_FADE_SOURCE_AST = {'src/trading_runtime/strategy_half_risk_liquidity_f
  'src/backend/backtest_typed_publisher.py': 'dc3b8c9c091c7d4bdee9c75c5df875d9110df643a5c7b85037c7f3287a960724',
  'src/trading_runtime/runtime.py': 'a6d176b98c1107ede3ec7d09edeec555ed069806159e908d134bb51bd8bb7210',
  'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c',
- 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'}
+ 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81',
+ 'src/backend/source_ast_summary.py': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995'}
 
 
 def certify_prepared_liquidity_fade_source(*, source_overrides=None):
@@ -84,10 +86,10 @@ def certify_prepared_liquidity_fade_source(*, source_overrides=None):
     for relative, expected in LIQUIDITY_FADE_SOURCE_AST.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
         try:
-            tree = ast.parse(source)
+            actual = canonical_module_ast_digest(source)
         except SyntaxError as exc:
             raise ValueError('Liquidity source cannot be parsed: ' + relative) from exc
-        if sha256(ast.unparse(tree).encode()).hexdigest() != expected:
+        if actual != expected:
             raise ValueError('Prepared liquidity source changed: ' + relative)
         observed.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observed, separators=(',', ':')).encode()).hexdigest()

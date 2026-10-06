@@ -30,6 +30,7 @@ REQUIRED_SOURCE_FILES = ('pipelines/strategy_one/configuration_publisher.py',
  'src/backend/backtest_typed_publisher.py',
  'src/backend/backtest_v4_saved_review.py',
  'src/backend/replay_run_service.py',
+ 'src/backend/source_ast_summary.py',
  'src/data_provider/calendar.py',
  'src/trading_runtime/arte_backtest_snapshot_anchor.py',
  'src/trading_runtime/arte_journal_commit_v4.py',
@@ -83,7 +84,7 @@ STRATEGY49_SOURCE_AST = {'src/trading_runtime/strategy_forty_nine_contract.py': 
  'src/backend/backtest_squeeze_ladder_admission.py': '7126dd2ba2046ea88c3917ed33ee4b7007a309e16aab611f86c323d407565b46',
  'src/backend/backtest_squeeze_ladder_evidence.py': '4f0963b9433262bbbba2fce52a3d361d0cc32ee932cffc282438d1cccfc080ad',
  'src/backend/backtest_strategy_one_configuration.py': 'e7ac8ac056735d57086db293f47d915a7a987cf0e0e91d428e7117e494399f3f',
- 'src/backend/backtest_strategy_one_execution.py': '84926bc215d7e2d9aed4c46af1414bd2b9ff013475c23005bc9d46e1ac36041a',
+ 'src/backend/backtest_strategy_one_execution.py': '1e3731185f9c0d59cb7d13cb15d58501eb446ffffed7ffcb9da013145141309e',
  'src/backend/backtest_strategy_one_coordinator.py': '188d9b1853e0ffc7b7fe913728d96c60cb27d800a7cfd6e9b61cca97567c52b4',
  'src/backend/backtest_journal_memory.py': '13c94e0045a47141e5b9bd708ee851a267e104c78ae0618cdadfc469bda44eaa',
  'src/backend/backtest_typed_projection.py': '6c0367a9a96836c595fd7e2dda9654b163ac82e072bd370d579da699533cc9e9',
@@ -99,7 +100,8 @@ STRATEGY49_SOURCE_AST = {'src/trading_runtime/strategy_forty_nine_contract.py': 
  'scripts/clickhouse/publish_strategy_forty_nine_configuration.py': '91f90ccd0ddf3695d8f2901b9c9351da922d7837dca97bf90a141c9448362072',
  'scripts/clickhouse/provision_backtest_v4_ladder_runner.py': 'ef34b7dfc73d05919f04b55d616f4950b7f6f3547a88e3a2d342ed2e6ab57f8e',
  'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c',
- 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'}
+ 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81',
+ 'src/backend/source_ast_summary.py': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995'}
 
 
 def certify_strategy_forty_nine_source(*, source_overrides=None):

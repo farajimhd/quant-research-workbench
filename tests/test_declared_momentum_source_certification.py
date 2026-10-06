@@ -14,6 +14,7 @@ ROOT = Path(__file__).parents[1]
 HELPERS = (
     "src/trading_runtime/entry_momentum_growth.py",
     "src/backend/backtest_declared_initial_momentum.py",
+    "src/backend/source_ast_summary.py",
 )
 VERSIONS = ((42, "forty_two"), (50, "fifty"), (59, "fifty_nine"),
             (60, "sixty"), (61, "sixty_one"))
@@ -42,7 +43,7 @@ def test_complete_native_proof(number):
 @pytest.mark.parametrize("number,name,path", NEW_LEAVES)
 def test_every_new_complete_source_leaf_rejects_mutation(tmp_path, number, name, path):
     _, leaves, certify = authority(number, name)
-    assert len(leaves) == 60
+    assert len(leaves) == 61
     assert set(HELPERS) <= set(leaves)
     changed = tmp_path / Path(path).name
     changed.write_text((ROOT / path).read_text(encoding="utf8")

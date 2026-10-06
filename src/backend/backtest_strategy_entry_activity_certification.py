@@ -4,6 +4,7 @@ The complete release certificate composes this with the full Strategy35 proof.
 This source seal alone establishes neither market coverage nor profitability.
 """
 import ast
+from src.backend.source_ast_summary import canonical_module_ast_digest
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -25,7 +26,7 @@ ENTRY_ACTIVITY_SOURCE_AST = {'scripts/clickhouse/publish_strategy_thirty_six_con
  'src/trading_runtime/strategy_registry.py': 'a93f5cde8cbf06e0c1af27ff3d8d097f3eb7e869644025dba4fa187f74ebcad4',
  'src/trading_runtime/numbered_fixed_strategy.py': '295c5db3012f008dee16be92633884c974ad2315120752c86c86f5ccf718335d',
  'src/backend/backtest_strategy_certified_price_break.py': '8d6a7a26fc783252033f882544312eef55a5407b95e60259640452f9f42891ac',
- 'src/backend/backtest_strategy_one_execution.py': '84926bc215d7e2d9aed4c46af1414bd2b9ff013475c23005bc9d46e1ac36041a',
+ 'src/backend/backtest_strategy_one_execution.py': '1e3731185f9c0d59cb7d13cb15d58501eb446ffffed7ffcb9da013145141309e',
  'src/backend/backtest_strategy_one_coordinator.py': '188d9b1853e0ffc7b7fe913728d96c60cb27d800a7cfd6e9b61cca97567c52b4',
  'src/backend/backtest_strategy_one_management.py': '8001c4c43ca9775c3b3b45087c55fc36f9786844f6a19b698cc445393e6cc7db',
  'src/trading_runtime/strategy_one_management_snapshot.py': '32ecf7eb291ee5953dee6fbbac99649e4b8217d1ac9e51ad4a646438933650a6',
@@ -42,7 +43,8 @@ ENTRY_ACTIVITY_SOURCE_AST = {'scripts/clickhouse/publish_strategy_thirty_six_con
  'src/trading_runtime/arte_journal_compound_v4.py': 'c270c28e1fa80d4ff0da67d1b2cd64f8c6b402c7db812caa2fb2d8399010d9e7',
  'src/backend/replay_run_service.py': 'e7eb5b359f9126316ed99721ade0fa50f8a1b8f8eccd99b96b1225ac387b9b86',
  'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c',
- 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'}
+ 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81',
+ 'src/backend/source_ast_summary.py': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995'}
 
 
 def certify_entry_activity_source(*, source_overrides=None):
@@ -55,10 +57,10 @@ def certify_entry_activity_source(*, source_overrides=None):
     for relative, expected in ENTRY_ACTIVITY_SOURCE_AST.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
         try:
-            tree = ast.parse(source)
+            actual = canonical_module_ast_digest(source)
         except SyntaxError as exc:
             raise ValueError('Entry activity source cannot be parsed: ' + relative) from exc
-        if sha256(ast.unparse(tree).encode()).hexdigest() != expected:
+        if actual != expected:
             raise ValueError('Entry activity source changed: ' + relative)
         observed.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observed, separators=(',', ':')).encode()).hexdigest()

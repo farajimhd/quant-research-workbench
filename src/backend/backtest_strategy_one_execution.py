@@ -57,7 +57,9 @@ from src.trading_runtime.runtime import RunMode
 from src.trading_runtime.strategy_engine import StrategyAssignment
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
-from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
+from src.trading_runtime.numbered_fixed_strategy import (
+    numbered_fixed_strategy, resolve_numbered_fixed_strategy,
+)
 
 
 def pinned_strategy_one_ticks(
@@ -256,7 +258,6 @@ async def run_certified_strategy_one_session(
                 full_gate = compile_entry_activity_static_gate(activity_plan)
         else:
             full_gate = compile_certified_price_static_gate(initial_momentum_plan)
-        from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
         cost_policy = numbered_fixed_strategy(runtime.config.strategy_revision).entry_spread_risk_policy
         cost_authority = None
         if cost_policy is not None:

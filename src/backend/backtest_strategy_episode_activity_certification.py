@@ -12,7 +12,8 @@ EPISODE_ACTIVITY_SOURCE_AST = {'src/trading_runtime/strategy_episode_activity_ve
  'pipelines/strategy_one/configuration_publisher.py': 'bebbde79b2ad694092222e96d4e09bd50cb3579295a9ca85bf2fcbcb8ff6dc1f',
  'scripts/clickhouse/publish_strategy_thirty_seven_configuration.py': 'd7489b4edacd0a96aaf3521f189151398a832e3d60c04c5f402d4652c7ee2825',
  'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c',
- 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'}
+ 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81',
+ 'src/backend/source_ast_summary.py': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995'}
 
 
 def certify_episode_activity_source(*, source_overrides=None):

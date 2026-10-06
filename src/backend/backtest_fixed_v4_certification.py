@@ -8,6 +8,7 @@ preflight must reject the runtime source tree.
 from __future__ import annotations
 
 import ast
+from src.backend.source_ast_summary import canonical_symbol_ast_summary
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -1294,7 +1295,7 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'backend/backtest_strategy_initial_ten_percent.py': {'__module__': '73b8b04654cd8ebef2a8906908bac4c82fa06616fb4d50d19f73442f7f07f420'},
  'backend/backtest_strategy_one_configuration.py': {'__module__': 'e7ac8ac056735d57086db293f47d915a7a987cf0e0e91d428e7117e494399f3f'},
  'backend/backtest_strategy_one_coordinator.py': {'run_strategy_one_proposals': '4b87990c4c6ab46db15dde2df683cafe2932bcdd2fd7cc973e1addb5511efdf4'},
- 'backend/backtest_strategy_one_execution.py': {'run_certified_strategy_one_session': '7643d22ab15b880f89f3f3539529b2a4c84d099807a050110a965e40d7890ae2',
+ 'backend/backtest_strategy_one_execution.py': {'run_certified_strategy_one_session': 'd9ce17bd7419ed3cf29d18c07ad2e133c5efe1c90671f5b7e18ee3b8b8f32b4a',
                                                 'run_strategy_one_fixed_session': 'c256cd23b41991c190d2d9cac400265da080456f7f01826e88c4ba8d9b86a3da'},
  'backend/backtest_strategy_one_management.py': {'__init__': 'd2302383942594edc2eb9a0b1b0c314ff75d5b5fc63ee835349ad81ffc27c397',
                                                  'profit_arming_requests': 'f7bbab7b86ead082838c0c069fe589cafc78329b17057c8716edc2013fb81a2e',
@@ -1416,7 +1417,8 @@ _RISING_MOMENTUM_REVIEWED_AST = {'backend/backtest_journal_memory.py': {'Backtes
  'trading_runtime/strategy_twenty_two_release.py': {'__module__': 'dfd5e4ccca3a285d278649a3374412e24638e29e62f57cf62f3db64c902d830f'},
  'trading_runtime/strategy_zero_regime_risk_failure.py': {'__module__': '2cca428561093253b73728c7c52a41b9e91dcf622f28fdd7ca93bb66660e8cd1'},
  'trading_runtime/entry_momentum_growth.py': {'__module__': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c'},
- 'backend/backtest_declared_initial_momentum.py': {'__module__': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'}}
+ 'backend/backtest_declared_initial_momentum.py': {'__module__': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81'},
+ 'backend/source_ast_summary.py': {'__module__': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995'}}
 
 
 def certify_rising_momentum_entry_source(*, source_overrides: dict[str, Path] | None = None) -> str:
@@ -1436,14 +1438,14 @@ def certify_rising_momentum_entry_source(*, source_overrides: dict[str, Path] | 
         path = overrides.get(relative, root / relative)
         source = path.read_text(encoding="utf-8")
         try:
-            tree = ast.parse(source)
+            summaries = canonical_symbol_ast_summary(source, tuple(expected))
         except SyntaxError as exc:
             raise ValueError("Strategy 13 source cannot be parsed: " + relative) from exc
-        for name, digest in expected.items():
-            nodes = ([tree] if name == "__module__" else [node for node in ast.walk(tree)
-                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                     and node.name == name])
-            if (len(nodes) != 1 or sha256(ast.unparse(nodes[0]).encode()).hexdigest() != digest):
+        if len(summaries) != len(expected):
+            raise ValueError("Strategy 13 source summary shape changed: " + relative)
+        for (name, digest), summary in zip(expected.items(), summaries):
+            if (summary.name != name or len(summary.digests) != 1
+                    or summary.digests[0] != digest):
                 raise ValueError("Strategy 13 reviewed source authority changed: " + relative + ":" + name)
         observations.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observations, separators=(",", ":")).encode()).hexdigest()
