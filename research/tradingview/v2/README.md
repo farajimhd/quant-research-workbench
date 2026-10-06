@@ -6,11 +6,13 @@ Replace the old structural indicator on TradingView with the complete contents o
 
 The v2.1 update keeps the qualification thresholds unchanged and enables provisional candidates by default. Qualified levels take display priority. Nearby candidates that fail the reaction-count or distinct-day requirements fill remaining per-side slots as **dashed gray lines labeled PROVISIONAL**. Disable `Show provisional candidates` for strict qualified-only display. This is an explicit exploratory display mode, not a relaxation of level qualification. No pivots or no nearby candidates can still mean no lines.
 
-The status panel now appears on every latest-bar update and reports retained/independent pivots, buckets, qualified and displayed counts, and rejection counts for reaction count, distinct days, and distance. Rejection categories overlap. If there are no accepted pivots, check history/pivot lengths/ATR gate. If buckets exist but none are displayed, check distance and provisional visibility. The panel distinguishes an empty qualified set from an indicator that is not running; compilation/runtime errors still appear in TradingView's indicator error UI.
+The v2.2 presentation removes the status table. Defaults show up to eight zones above and eight below price, within 3%, prioritizing qualified zones and then nearby provisional candidates. `Zones above / below price` accepts up to 30 per side. The count is a maximum, not a promise that enough candidates exist.
 
-Defaults show up to three levels above price and three below, within 3%, prioritizing qualified levels before provisional candidates and proximity within each group. Thin center lines span the visible chart and extend right. Labels sit at the latest completed candle. Bands are off by default; enable them for faint central 80% reaction-price intervals. For qualified levels, green means completed price above the band, red below, orange inside. These colors describe position, not certified support/resistance role transitions.
+Each zone has explicit lower and upper boundary lines, a dotted center line, and a faint central 80% reaction band by default. Provisional geometry is dashed gray; `P` in its caption marks it provisional. Green/red/orange qualified colors retain their price-position meaning. Disable `Show lower / upper boundaries and faint bands` for center lines only.
 
-A label such as `333.20 | S8/R3 | 4d | evidence 6.2` means eight independently spaced confirmed low-pivot reactions, three high-pivot reactions, four distinct exchange days, and a recency-weighted reaction-strength sum. It is not a hold probability or a forecast. Display selection uses proximity, not the evidence score. Current levels overlaid on earlier candles were not necessarily available then: this is expressly an as-of-now snapshot, not a historical backtest overlay. The snapshot refreshes on bar close; panning/zooming triggers Pine recalculation.
+Optional text is placed beneath the lower boundary and right-aligned near the price axis. Pine cannot anchor labels to an axis in pixel coordinates. `Text position: bars to right of latest visible candle` controls the horizontal placement (default 15); adjust it to match your chart's right margin or disable text. If the caption is offscreen, reduce that offset or increase the chart's right margin. Text follows the latest candle while it forms.
+
+A caption such as `333.10 / 333.20 / 333.30 S8/R3` reports lower / center / upper prices, eight independently spaced low-pivot reactions, and three high-pivot reactions. Counts are not hold probabilities. Current levels overlaid on earlier candles were not necessarily available then: this is an as-of-now snapshot, not a historical backtest overlay. Geometry refreshes on bar close; panning/zooming triggers Pine recalculation.
 
 ## Estimator changes
 
@@ -23,7 +25,7 @@ A label such as `333.20 | S8/R3 | 4d | evidence 6.2` means eight independently s
 
 ## Inputs and coverage
 
-Start with defaults on your 1m AAPL chart. On 1s charts, raise pivot lengths if microstructure noise produces too many pivots. Left/confirmation lengths are chart bars; default confirmation takes ten minutes on 1m, ten seconds on 1s. Enable the chart's extended-hours data to include those observations. Requested history defaults to 30 calendar days; the script cannot fetch unavailable history. Loaded span/bar counts do not certify continuity. ATR warmup and pivot confirmation require additional preceding bars.
+Start with defaults on your 1m AAPL chart. On 1s charts, raise pivot lengths if microstructure noise produces too many pivots. Left/confirmation lengths are chart bars; default confirmation takes ten minutes on 1m, ten seconds on 1s. Enable the chart's extended-hours data to include those observations. Requested history defaults to 30 calendar days; the script cannot fetch unavailable history. The removed status table no longer reports coverage; the requested history still does not certify loaded coverage or continuity. ATR warmup and pivot confirmation require additional preceding bars.
 
 All valid reactions are stored up to an explicit default limit of 10,000 (maximum 20,000). Exhaustion raises an error rather than silently dropping data. Increase pivot lengths/reaction threshold, shorten the window, or increase the explicit limit. Historical ingestion is incremental; zone grouping/sorting is done at the historical/live boundary and completed live bars, rather than on every historical bar or realtime tick. Expiration uses array shifts only when old observations leave. TradingView execution limits still apply; 30 days of 1s history has not been benchmarked.
 
@@ -32,8 +34,8 @@ All valid reactions are stored up to an explicit default limit of 10,000 (maximu
 Source review and local invariant checks are distinct from Pine compilation. TradingView compilation, live runtime, and visual validation remain pending.
 
 1. Compile and replace the old structural indicator; ensure it is not still drawing underneath.
-2. Default display should show at most six lines and no shaded rectangles. Toggle bands; bounds should stay close to each center.
-3. Test a one-day window with minimum distinct days set to one, then return to 30 days/two days. Check counts, insufficient-history warning, and an intentionally small retained-pivot limit.
+2. Defaults show at most 16 zones, with three lines per zone and faint bands. Toggle bands/text, adjust horizontal text offset, and confirm text sits below the lower boundary. Increase the per-side zone count to show more candidates.
+3. Test a one-day window with minimum distinct days set to one, then return to 30 days/two days. Check provisional captions and an intentionally small retained-pivot limit. There is no status table or insufficient-history warning.
 4. Compare reload versus streaming on the same loaded dataset at the same completed bar. A new reaction must wait for confirmation and pass its move-away threshold.
 5. Compare measured future holds/breaks against v1 over untouched sessions before making predictive claims. Do not select settings from the evaluation sessions.
 
