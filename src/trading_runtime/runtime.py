@@ -920,6 +920,7 @@ class TradingRuntime:
         liquidity_fade_source: tuple | None = None,
         automatic_entry: Any | None = None,
         declared_submission: Any | None = None,
+        declared_management: Any | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -938,13 +939,32 @@ class TradingRuntime:
                     or evaluation.intents != (declared_submission.intent,)
                     or any(value is not None for value in (strategy_one_proposal, strategy_one_add_proposal,
                         strategy_one_assignment_id, numbered_exit_assignment_id, followthrough_source,
-                        profit_giveback_source, confirmed_ah_source, liquidity_fade_source, automatic_entry))):
+                        profit_giveback_source, confirmed_ah_source, liquidity_fade_source, automatic_entry, declared_management))):
                 raise ValueError('Declared submission requires its exclusive own typed journal channel')
             declared_submission.verify(run_id=self.run_id,strategy_id=self.config.strategy_id,
                 strategy_revision=self.config.strategy_revision,account_id=account_id,session_date=self.config.anchor_date)
             if self.last_event_time != declared_submission.intent.event_time:
                 raise ValueError('Declared submission must match exact completed broker boundary')
             require_installed_submission_binding(declared_submission.binding)
+        if declared_management is not None:
+            from .declared_native_management_submission import (
+                DeclaredNativeManagementSubmission, require_installed_management_binding,
+            )
+            from src.backend.backtest_declared_native_journal import DeclaredNativeJournal
+            if (type(declared_management) is not DeclaredNativeManagementSubmission
+                    or type(self.journal) is not DeclaredNativeJournal
+                    or self.config.mode is not RunMode.BACKTEST or event is not None
+                    or not declared_management.matches_intents(evaluation.intents)
+                    or any(value is not None for value in (strategy_one_proposal, strategy_one_add_proposal,
+                        strategy_one_assignment_id, numbered_exit_assignment_id, followthrough_source,
+                        profit_giveback_source, confirmed_ah_source, liquidity_fade_source, automatic_entry, declared_submission))):
+                raise ValueError('Declared management requires its exclusive own typed journal channel')
+            declared_management.verify(run_id=self.run_id, strategy_id=self.config.strategy_id,
+                strategy_revision=self.config.strategy_revision, account_id=account_id,
+                session_date=self.config.anchor_date)
+            if self.last_event_time != declared_management.event_time:
+                raise ValueError('Declared management must match exact completed broker boundary')
+            require_installed_management_binding(declared_management)
         from .numbered_fixed_strategy import is_numbered_fixed_strategy, resolve_numbered_fixed_strategy
         if (self.config.mode == RunMode.BACKTEST
                 and is_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)):
@@ -1130,6 +1150,10 @@ class TradingRuntime:
         if evaluation.intents and self.order_manager is None:
             raise ValueError("Strategy emitted semantic intents but the runtime has no order manager")
         results: list[dict[str, Any]] = []
+        if declared_management is not None:
+            self.journal.append_declared_native_management(submission=declared_management,
+                account_id=account_id, strategy_id=self.config.strategy_id,
+                strategy_revision=self.config.strategy_revision)
         # Portfolio owns deferred requests; Strategy must refresh their causal
         # authorization. Withdraw any request whose strategy witness expired.
         if (self.config.strategy_id != 'early-squeeze-strategy'
@@ -1140,7 +1164,9 @@ class TradingRuntime:
             self.portfolio.withdraw_invalidated_requests(account_id, active)
         for intent in evaluation.intents:
             intent = replace(intent, metadata=self.journal.reference_evidence(intent.metadata))
-            if declared_submission is not None:
+            if declared_management is not None:
+                pass  # Complete ordered command already journaled atomically.
+            elif declared_submission is not None:
                 self.journal.append_declared_native_intent(submission=declared_submission,intent=intent,
                     account_id=account_id,strategy_id=self.config.strategy_id,strategy_revision=self.config.strategy_revision)
             elif automatic_entry is not None:
@@ -1255,7 +1281,8 @@ class TradingRuntime:
                                          or strategy_one_proposal is not None
                                          or strategy_one_add_proposal is not None
                                          or automatic_entry is not None))
-            assignment_id = (declared_submission.assignment_id if declared_submission is not None
+            assignment_id = (declared_management.assignment_id if declared_management is not None
+                             else declared_submission.assignment_id if declared_submission is not None
                              else automatic_entry.assignment_id if automatic_entry is not None
                              else strategy_one_proposal.assignment_id
                              if strategy_one_proposal is not None
@@ -1555,6 +1582,15 @@ class TradingRuntime:
         return await self._execute_intents(
             StrategyEvaluation(intents=(submission.intent,)),submission.account_id,None,
             declared_submission=submission)
+
+    async def submit_declared_management_submission(self, submission: Any) -> list[dict[str, Any]]:
+        """Own replayable management through the shared actor; gate remains closed."""
+        from .declared_native_management_submission import DeclaredNativeManagementSubmission
+        if type(submission) is not DeclaredNativeManagementSubmission:
+            raise ValueError('Declared management requires exact own typed command')
+        return await self._execute_intents(
+            StrategyEvaluation(intents=submission.intents), submission.account_id, None,
+            declared_management=submission)
 
     async def submit_strategy_one_proposal(self, proposal: Any) -> list[dict[str, Any]]:
         """Route numbered entry evidence through the shared Portfolio/OMS path.
