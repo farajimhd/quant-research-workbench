@@ -2,6 +2,12 @@
 
 Copy the complete `structural_zones.pine` into TradingView's Pine Editor, replacing the old structural indicator. The independent v1 MACD/jump-alert scripts are unchanged. This is a chart-bar approximation, not the repo's causal v7 statistical builder.
 
+## Axis-side text and opacity (v2.9)
+
+Captions are right-aligned at `chart.right_visible_bar_time`, below their main line, so they stay at the visible right edge when panning instead of following an offscreen latest candle. `Axis text offset from rightmost visible candle (bars)` defaults to zero; increase it to position text inside an empty chart right margin, or decrease it to move left. Pine provides no pixel anchor for arbitrary captions on the actual price axis.
+
+`Line opacity (%)` defaults to 65 (0 invisible, 100 fully opaque) and applies to main and optional boundary lines. Provisional lines use 65% of that opacity. `Text opacity (%)` defaults to 90 and is independent of line opacity. All lines remain solid, width 1. Band transparency remains a separate input. Caption suppression remains based on stable price spacing rather than the viewport.
+
 ## Stable level selection
 
 Panning/zooming no longer changes eligibility, price-region selection, or level/caption spacing. The earlier visible-price-range filters and viewport-derived spacing were the cause of disappearing levels. The viewport is now used only for drawing endpoints and horizontal caption placement.
@@ -28,7 +34,7 @@ All main and optional boundary lines are **solid, width 1**. Faint bands are ena
 
 Selection reserves current-day slots (three per side by default), first prioritizing eligible current-day extremes, then reaction strength. Historical selection takes one level per book-price region before filling remaining slots. Historical qualification precedes recency-weighted reaction strength. The overall limit defaults to eight per side and accepts up to 30. Extrema are accepted reaction candidates, not raw session high/low. No particular price is guaranteed to qualify or win bounded display selection.
 
-Evidence strength is `sum(min(move_away_ATR, 5) * 0.5^(age_days / half_life))`; it is not a hold probability. Captions sit below their main line near the right margin; Pine has no pixel anchor to the price axis. Adjust the bars offset to match your chart margin. Nearby captions may be suppressed to avoid overlap, but their lines remain. There is no table.
+Evidence strength is `sum(min(move_away_ATR, 5) * 0.5^(age_days / half_life))`; it is not a hold probability. Captions sit below their main line at the rightmost visible candle; Pine has no pixel anchor to the price axis. Adjust the bars offset to match your chart margin. Nearby captions may be suppressed to avoid overlap, but their lines remain. There is no table.
 
 ## Validation
 

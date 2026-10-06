@@ -21,7 +21,9 @@ maxDistance = input.float(3, "Maximum distance from price (%)", minval = 0.1)
 showBands = input.bool(true, "Show estimated bands when available")
 showBoundaryLines = input.bool(false, "Outline available lower / upper boundaries")
 showText = input.bool(true, "Show text below main level")
-labelOffset = input.int(15, "Text position: bars to right of latest visible candle", minval = 0, maxval = 200)
+labelOffset = input.int(0, "Axis text offset from rightmost visible candle (bars)", minval = -200, maxval = 200)
+lineOpacity = input.int(65, "Line opacity (%)", minval = 0, maxval = 100)
+textOpacity = input.int(90, "Text opacity (%)", minval = 0, maxval = 100)
 bandTransparency = input.int(95, "Band transparency", minval = 80, maxval = 100)
 sampleLimit = input.int(10000, "Maximum retained pivots (error if exhausted)", minval = 100, maxval = 20000)
 
@@ -210,7 +212,8 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                         bool hasUpper = not na(hi) and hi > center
                         bool hasBand = hasLower and hasUpper
                         color baseInk = referencePrice > (hasUpper ? hi : center) ? color.green : referencePrice < (hasLower ? lo : center) ? color.red : color.orange
-                        color ink = provisional ? color.new(baseInk, 55) : baseInk
+                        color ink = color.new(baseInk, 100 - int(math.round(lineOpacity * (provisional ? 0.65 : 1.0))))
+                        color textInk = color.new(baseInk, 100 - textOpacity)
                         int start = z.currentDay ? math.max(math.min(chart.left_visible_bar_time, time), referenceDay) : math.min(chart.left_visible_bar_time, time)
                         int finish = math.max(time + 1000, chart.right_visible_bar_time)
                         array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = line.style_solid))
@@ -227,18 +230,18 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                                     captionFits := false
                         if showText and captionFits
                             array.push(captionPrices, center)
-                            int textTime = math.max(last_bar_time, chart.right_visible_bar_time) + int(labelOffset * timeframe.in_seconds() * 1000)
+                            int textTime = chart.right_visible_bar_time + int(labelOffset * timeframe.in_seconds() * 1000)
                             float textPrice = center - math.max(syminfo.mintick * 2, nz(atr) * 0.08)
                             string caption = (z.currentDay ? "DAY " : "HIST ") + (provisional ? "P " : "") + (center > referencePrice ? "R " : "S ") + str.tostring(center, format.mintick) + (hasLower ? " L:" + str.tostring(lo, format.mintick) : "") + (hasUpper ? " U:" + str.tostring(hi, format.mintick) : "")
-                            array.push(drawnLabels, label.new(textTime, textPrice, caption, xloc = xloc.bar_time, style = label.style_label_upper_right, color = color.new(color.white, 100), textcolor = ink, size = size.small, textalign = text.align_right))
+                            array.push(drawnLabels, label.new(textTime, textPrice, caption, xloc = xloc.bar_time, style = label.style_label_upper_right, color = color.new(color.white, 100), textcolor = textInk, size = size.small, textalign = text.align_right))
                         if overhead
                             above += 1
                         else
                             below += 1
 
-// Keep text near the chart's right margin while the latest candle forms.
+// Keep right-aligned text beside the rightmost visible candle, including when panned.
 // Pine has no pixel anchor to the price axis; the bars offset is user-adjustable.
 if barstate.islast and array.size(drawnLabels) > 0
-    int textTime = math.max(last_bar_time, chart.right_visible_bar_time) + int(labelOffset * timeframe.in_seconds() * 1000)
+    int textTime = chart.right_visible_bar_time + int(labelOffset * timeframe.in_seconds() * 1000)
     for j = 0 to array.size(drawnLabels) - 1
         label.set_x(array.get(drawnLabels, j), textTime)
