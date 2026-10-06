@@ -134,6 +134,24 @@ def test_no_arbitrary_source_interval(fixture):
         m.prepare_parent(fixture[0],fixture[1],fixture[2],fixture[4],start='2026-08-03',inventory=fixture[3])
 
 
+def test_windows_catalog_parent_separators(fixture):
+    root, _, scopes, inventory = fixture[:4]
+    known = next(p for p in CAMPAIGNS if '/' in p)
+    original = m.c.read(root/CAMPAIGNS[0]/'plan.json')
+    m.c.write(root/known/'plan.json', original)
+    inventory = deepcopy(inventory)
+    inventory['rows'][0]['parent'] = known.replace('/', '\\')
+    assert m.source_interval(root, scopes, inventory) == m.source_interval(root, scopes, fixture[3])
+    request = archive.ArchiveRequest('2026-08-05', 'ALPHA', known.replace('/', '\\'), *([H]*5))
+    assert request.parent_relative == known
+    for invalid in ('../'+known, known+'/../'+known, 'C:/'+known, 'foreign/'+known):
+        inventory['rows'][0]['parent'] = invalid
+        with pytest.raises(ValueError, match='outside installed catalog'):
+            m.source_interval(root, scopes, inventory)
+        with pytest.raises(ValueError, match='outside explicit catalog'):
+            archive.ArchiveRequest('2026-08-05', 'ALPHA', invalid, *([H]*5))
+
+
 def test_content_addressed_immutable_restart(fixture):
     root=fixture[0];value=parent(fixture)
     path=m.publish_parent(root,value)

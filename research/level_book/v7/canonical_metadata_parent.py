@@ -86,9 +86,10 @@ def source_interval(root, scopes, inventory):
         if row['state'] != 'queued' or row['parent'] in seen:
             continue
         seen.add(row['parent'])
-        if row['parent'] not in CAMPAIGNS:
+        parent_relative = catalog_relative(row['parent'])
+        if parent_relative not in CAMPAIGNS:
             raise ValueError('Base parent is outside installed catalog')
-        parent=c.read(Path(root)/row['parent']/'plan.json')
+        parent=c.read(Path(root)/parent_relative/'plan.json')
         if (parent['plan_hash'] != row['parent_hash']
                 or parent['plan_hash'] != c.digest({k:v for k,v in parent.items() if k!='plan_hash'})):
             raise ValueError('Frozen base prefix parent differs')
@@ -98,6 +99,13 @@ def source_interval(root, scopes, inventory):
     priors=[market_sessions(_day(s['target_session'])-timedelta(days=14),
                            _day(s['target_session'])-timedelta(days=1))[-1].isoformat() for s in scopes]
     return min(starts),max(priors)
+
+
+def catalog_relative(value):
+    """Normalize separators only; retain closed-catalog and traversal checks."""
+    if type(value) is not str:
+        raise ValueError('Catalog parent must be a relative string')
+    return value.replace('\\', '/')
 
 
 def source_read_plan(root, scopes, inventory, canonical_policy):

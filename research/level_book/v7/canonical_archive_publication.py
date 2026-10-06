@@ -90,10 +90,12 @@ class ArchiveRequest:
         _day(self.target_session)
         if type(self.ticker) is not str or re.fullmatch(r'[A-Z0-9.\- ]{1,30}', self.ticker) is None:
             raise ValueError('Invalid archive ticker identity')
-        from .canonical_metadata_parent import is_relative, relative
-        if self.parent_relative in CAMPAIGNS:
+        from .canonical_metadata_parent import is_relative, relative, catalog_relative
+        parent_relative = catalog_relative(self.parent_relative)
+        if parent_relative in CAMPAIGNS:
             if type(self.metadata_parent_hash) is not str or self.metadata_parent_hash != '':
                 raise ValueError('Legacy archive request cannot claim metadata parent authority')
+            object.__setattr__(self, 'parent_relative', parent_relative)
         elif is_relative(self.parent_relative):
             _hash(self.metadata_parent_hash)
             if self.parent_relative != relative(self.metadata_parent_hash):
