@@ -1,4 +1,4 @@
-"""Independent ticker supervision; portfolio sizing/critic are deliberately absent.
+"""Ticker supervision with optional versioned 1b allocation/context decoding.
 
 Inputs are causal representations. Future episode outcomes occur only in
 targets. Class order and physical output units are a checkpoint contract.
@@ -110,15 +110,23 @@ class TickerDecoder(nn.Module):
     and exit margins are relative to their ticker's WAIT/HOLD logit. Portfolio
     categorical selection is separate from the local teacher cross-entropy.
     """
-    def __init__(self, width):
+    def __init__(self, width, *, teacher_sequence=False):
         super().__init__()
         self.width=width;self.wait_hold=True;self.action_version=VERSION
+        self.teacher_sequence = teacher_sequence
+        if teacher_sequence:
+            from research.rl_trading.v6.teacher_forecast import VERSION as SEQUENCE_VERSION
+            self.action_version = SEQUENCE_VERSION
+            self.market_context = nn.Linear(width, width, bias=False)
         self.heads=TickerHeads(width)
         self.account=nn.Sequential(nn.Linear(7,width),nn.LayerNorm(width))
         self.holding=nn.Sequential(nn.Linear(11,width),nn.LayerNorm(width))
-        self.size_head=nn.Linear(width,1)  # PPO only; absent from teacher loss.
+        self.size_head=nn.Linear(width,1)  # Shared PPO and sequence-enabled 1b teacher.
         self.ticker_outputs=None
         self.supervision_index=None
+        self.supervision_context=None
+        self.supervision_allocation=None
+        self.forecast_context=None
 
     def forward_batch(self,listings,account,held_index,held_features,*,
                       enter_allowed,exit_allowed,stop_allowed,target_allowed):
@@ -128,10 +136,13 @@ class TickerDecoder(nn.Module):
             raise ValueError('Ticker decoder observation shape mismatch')
         scaled=account.sign()*torch.log1p(account.abs())
         context=listings+self.account(scaled)[:,None]
+        if self.teacher_sequence:
+            context=context+self.market_context(listings.mean(1))[:,None]
         features=held_features.clone()
         features[:,:,:3]=torch.sign(features[:,:,:3])*torch.log1p(features[:,:,:3].abs())
         features[:,:,3:6]*=10  # Returns -> physical bps preconditioned per 1,000.
         if h:context=context.scatter_add(1,held_index[:,:,None].expand(-1,-1,d),self.holding(features))
+        self.forecast_context=context
         held=torch.zeros((b,n),dtype=torch.bool,device=listings.device)
         held.scatter_(1,held_index,True)
         out=self.heads(context,held);self.ticker_outputs=out
@@ -163,6 +174,8 @@ class TickerDecoder(nn.Module):
             if not 0 <= i < n or h > 1 or (h and int(held_index[0]) != i):
                 raise ValueError('Teacher local identity must match its single held branch')
             context=listings[i:i+1]+self.account(account.sign()*torch.log1p(account.abs()))[None]
+            if self.teacher_sequence:
+                context=context+self.market_context(listings.mean(0))[None]
             if h:
                 features=held_features.clone()
                 if features.shape[1]==9:features=F.pad(features,(0,2))
@@ -171,15 +184,21 @@ class TickerDecoder(nn.Module):
                 context=context+self.holding(features)
             out=self.heads(context,torch.full((1,),bool(h),device=listings.device,dtype=torch.bool))
             self.ticker_outputs=out
+            self.supervision_context=context
+            self.forecast_context=context
+            self.supervision_allocation=self.size_head(context).squeeze(-1).sigmoid()
             logits=listings.new_full((1+n+4*h,),-torch.inf);logits[0]=0
             if h:
                 logits[1+n]=(out.logits[0,3]-out.logits[0,2]).masked_fill(~masks['exit_allowed'][0],-torch.inf)
                 logits[1+n+3*h]=0
             else:logits[1+i]=(out.logits[0,0]-out.logits[0,1]).masked_fill(~masks['enter_allowed'][i],-torch.inf)
-            return logits,listings.new_zeros(n),listings.new_zeros(h),listings.new_zeros(h)
+            sizes=listings.new_zeros(n)
+            sizes=sizes.index_copy(0,torch.tensor([i],device=listings.device),self.supervision_allocation)
+            return logits,sizes,listings.new_zeros(h),listings.new_zeros(h)
         result=self.forward_batch(listings[None],account[None],held_index[None],held_features[None],
             **{k:v[None] for k,v in masks.items()})
         out=self.ticker_outputs
         self.ticker_outputs=TickerOutputs(*(getattr(out,k).squeeze(0) for k in
             ('logits','value_bps','stop_bps','target_bps')))
+        self.forecast_context=self.forecast_context.squeeze(0)
         return tuple(x.squeeze(0) for x in result)

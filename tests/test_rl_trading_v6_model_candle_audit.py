@@ -27,7 +27,7 @@ def test_120_context_plus_120_session_and_strict_prior_masked_model_history():
     first=rows[120]
     assert first['input_close_us']==prior.close_us[-120:].tolist()
     assert first['time_us'] not in first['input_close_us']
-    assert first['diagnostic_input_close_us'][-1]==first['time_us']
+    assert first['diagnostic_input_close_us']==first['input_close_us']
     # Missing-price bank rows aren't drawn, but remain real model history.
     fifth=rows[124]
     assert current.close_us[3] in fifth['input_close_us']

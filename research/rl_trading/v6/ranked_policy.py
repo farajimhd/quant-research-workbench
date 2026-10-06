@@ -18,6 +18,7 @@ class RankedBracketActorCritic(BracketActorCritic):
         self._market_cache = None
 
         self.independent_episode_supervision = False
+        self.full_market_actions = False
 
     def reset_market(self, listings):
         """Reset once per session; never reset when ranks change."""
@@ -40,6 +41,13 @@ class RankedBracketActorCritic(BracketActorCritic):
 
     def set_pending(self, indices):
         self.pending_indices = tuple(indices)
+
+    def seed_market(self, state, cutoff_us):
+        """Bind prior context before the first target, without inventing volume."""
+        if self.ranker is None or self.candle_state is not None:
+            raise ValueError('Market warmup must follow reset exactly once')
+        self.ranker.seen[:] = state.seen.detach().cpu().numpy() > 0
+        self.candle_state, self.clock_us = state, cutoff_us
 
     def configure_execution_features(self, normalization):
         """Explicit new checkpoint contract; normalization uses training banks only."""
@@ -88,9 +96,10 @@ class RankedBracketActorCritic(BracketActorCritic):
         if self._market_cache is not None and self._market_cache[0] == key:
             enriched = self._market_cache[1]
         else:
-            enriched = self.market_attention(self.candle_state.history,
+            enriched = (self.market_attention(self.candle_state.history,
                 self.candle_state.seen, listing_embeddings, selected,
                 selected_history=self.candle_state.history_for(selected))
+                if len(selected) else listing_embeddings[:0])
             self._market_cache = (key, enriched)
         # Keep [N,D] and the original token IDs. Sorting never rekeys holdings.
         full = listing_embeddings.index_copy(0, selected, enriched)
@@ -104,7 +113,7 @@ class RankedBracketActorCritic(BracketActorCritic):
         selected_mask = torch.zeros(len(full), device=full.device, dtype=torch.bool)
         selected_mask[selected] = True
         masks = dict(masks)
-        if not self.independent_episode_supervision:
+        if not self.independent_episode_supervision and not self.full_market_actions:
             masks['enter_allowed'] = masks['enter_allowed'] & selected_mask
         # Opportunity classification sees every certified ticker, independently
         # of top-R portfolio selection. Attention itself remains causal/bounded.
@@ -115,3 +124,12 @@ class RankedBracketActorCritic(BracketActorCritic):
         if self._critic_market is None:
             raise ValueError('Critic requires same-decision causal attention context')
         return self._critic_market
+
+    def forecast_labels(self):
+        """Five free-running label distributions from the last causal decision."""
+        if not hasattr(self,'teacher_forecast') or self.decoder.forecast_context is None:
+            raise ValueError('A sequence-enabled causal decision is required first')
+        context=self.decoder.forecast_context
+        shape=context.shape[:-1]
+        logits=self.teacher_forecast(context.reshape(-1,context.shape[-1]),self.action_gru)
+        return logits.softmax(-1).reshape(*shape,5,4)

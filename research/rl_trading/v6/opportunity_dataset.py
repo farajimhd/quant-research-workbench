@@ -253,6 +253,9 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
             item=next(s for s in market_proof['shards'] if s['path']==shard['path'])
             copied=market_root/item['path']
             if file_hash(copied/'complete.json')!=item['sha256']:raise ValueError('1b shard receipt changed')
+            if audit_listing_ids is not None:
+                receipt=json.loads((copied/'complete.json').read_bytes())
+                if not set(audit_listing_ids)&set(receipt['identities']):continue
             frame=read_targets(copied)
             if audit_listing_ids is not None:frame=frame.filter(pl.col('listing_id').is_in(audit_listing_ids))
         elif audit_listing_ids is not None:
@@ -266,7 +269,11 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
         entries = {(r['listing_id'],r['pair_id']):r for r in pairs.iter_rows(named=True)} if pairs.height else {}
         weights = frame.group_by('listing_id','pair_id').len()
         counts = {(r['listing_id'],r['pair_id']):r['len'] for r in weights.iter_rows(named=True)}
-        for row in frame.iter_rows(named=True):
+        forecast_windows=None
+        if market_proof is not None:
+            from research.rl_trading.v6.teacher_forecast import ForecastWindows
+            forecast_windows=ForecastWindows.from_frame(frame)
+        for row_index,row in enumerate(frame.iter_rows(named=True)):
             i = identities[row['listing_id']]; uid = f"{session.day}:{row['listing_id']}:pair:{row['pair_id']}"
             if i not in enter_masks:
                 mask=np.zeros(n,bool); mask[i]=True; mask.setflags(write=False); enter_masks[i]=mask
@@ -284,7 +291,9 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
                 opportunity_value_bps=gain/row['close']*10000 if market_proof is None or entry_action else None,
                 label_version=ALGORITHM,raw_entry_gain=gain,raw_exit_gain=None,
                 target_close_us=row['entry_target_us'],target_horizon_seconds=row['entry_horizon_seconds'],
-                allocation_ratio_target=float(row['allocation_ratio']) if market_proof is not None and row['allocation_loss_mask'] else None))
+                allocation_ratio_target=float(row['allocation_ratio']) if market_proof is not None and row['allocation_loss_mask'] else None,
+                forecast_probabilities=forecast_windows.window(row_index)[0] if forecast_windows is not None else None,
+                forecast_close_us=forecast_windows.window(row_index)[1] if forecast_windows is not None else None))
             # Suppressed episodes are flat WAIT examples. The position-conditional
             # head cannot represent held WAIT; do not invent a hypothetical holding.
             if market_proof is not None and row['episode_selected'] is not True:continue

@@ -91,6 +91,8 @@ class TeacherDecision:
     entry_stop_bps: float | None = None
     entry_target_bps: float | None = None
     allocation_ratio_target: float | None = None  # Saved 1b target, never an observation.
+    forecast_probabilities: np.ndarray | None = None  # [<=5,4], retrospective labels.
+    forecast_close_us: np.ndarray | None = None  # Actual clocks, same listing/session.
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,10 @@ class TrainingMetrics:
     action_predicted_class_counts: dict[str, int] | None = None
     ticker_regression_mae_bps: dict[str,float | None] | None = None
     ticker_regression_counts: dict[str,int] | None = None
+    allocation_ratio_mae: float | None = None
+    allocation_targets: int = 0
+    forecast_cross_entropy: tuple[float | None, ...] = ()
+    forecast_targets: tuple[int, ...] = ()
 
 
 def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wait_hold=False):
@@ -157,6 +163,21 @@ def _validate(decisions: tuple[TeacherDecision, ...],
     for item in decisions:
         key = (item.close_us, item.order_index)
         held = len(item.held_index)
+        if item.allocation_ratio_target is not None and (
+                held or not 1 <= item.token <= listings or
+                not math.isfinite(item.allocation_ratio_target) or
+                not 0 <= item.allocation_ratio_target <= 1):
+            raise ValueError('Allocation supervision requires a selected flat ENTRY')
+        if (item.forecast_probabilities is None) != (item.forecast_close_us is None):
+            raise ValueError('Forecast probabilities/clocks must be paired')
+        if item.forecast_probabilities is not None:
+            p, clocks = item.forecast_probabilities, item.forecast_close_us
+            if (held or p.ndim != 2 or not 1 <= len(p) <= 5 or p.shape[1] != 4 or
+                    clocks.shape != (len(p),) or clocks.dtype != np.int64 or
+                    clocks[0] != item.close_us or np.any(np.diff(clocks) <= 0) or
+                    not np.isfinite(p).all() or (p < 0).any() or
+                    not np.allclose(p.sum(1), 1)):
+                raise ValueError('Invalid same-listing five-candle forecast target')
         if (previous_key is not None and key <= previous_key or
                 item.close_us <= 0 or item.order_index < 0 or
                 item.account.shape != (7,) or
@@ -287,6 +308,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                                     dtype=torch.float32, refreshable=wait_hold)
     seed_previous_session(state, policy.encoder, session.listings,
                           session.previous)
+    if prior_only and ranked:
+        policy.seed_market(state, (int(session.bank.close_us.min())//1_000_000-1)*1_000_000)
     action_state = policy.initial_action_state(device=device,
                                                 dtype=torch.float32)
     decision_groups = {clock:tuple(group) for clock, group in
@@ -301,6 +324,17 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     conditional_sum = np.zeros(3, dtype=np.float64)
     conditional_count = np.zeros(3, dtype=np.int64)
     ticker_sum=np.zeros(3);ticker_count=np.zeros(3,dtype=np.int64)
+    sequence = hasattr(policy, 'teacher_forecast')
+    if sequence and (not prior_only or not hasattr(policy.decoder, 'supervision_context') or
+                     not any(d.forecast_probabilities is not None for d in decisions)):
+        raise ValueError('Autoregressive teacher requires copied 1b strict-prior targets')
+    # Fixed task denominators prevent WAIT/missing-target rows diluting sizing.
+    span = (int(session.bank.close_us.max())-int(session.bank.close_us.min()))//1_000_000+1
+    blocks = max(1, math.ceil(span/clocks_per_chunk))
+    ratio_mass = sum(d.sample_weight for d in decisions if d.allocation_ratio_target is not None)
+    forecast_mass = sum(d.sample_weight for d in decisions if d.forecast_probabilities is not None)
+    ratio_sum=ratio_weight=0.; ratio_count=0
+    forecast_sum=np.zeros(5);forecast_weight=np.zeros(5);forecast_count=np.zeros(5,np.int64)
     policy.train(not evaluation)
     if not evaluation:
         optimizer.zero_grad(set_to_none=True)
@@ -314,6 +348,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         pending_predictions = []
         pending_conditional = ([], [], [])
         pending_ticker=([],[],[])
+        pending_ratio=[];pending_forecast=[]
         # Empty chunks still advance every observed candle and actual order
         # outcome, but do not build a useless autograd graph.
         with torch.set_grad_enabled(labeled and not evaluation):
@@ -356,6 +391,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                     if ranked:
                         policy.set_pending(pending_entries.values())
                     def tensor(values, dtype=None):
+                        if isinstance(values,np.ndarray) and not values.flags.writeable:
+                            values=values.copy()
                         return torch.as_tensor(values, dtype=dtype,
                                                device=device)
                     if hasattr(policy.decoder, 'supervision_index'):
@@ -399,6 +436,24 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                             'bracket_loss':aux['stop_loss']+aux['target_loss'],
                             'action_correct':(local.logits.argmax(-1)==p.argmax(-1)).float().mean(),
                             'size_absolute_error':logits.new_zeros(()),'bracket_absolute_error':logits.new_zeros(())}
+                        if sequence and item.allocation_ratio_target is not None:
+                            from research.rl_trading.v6.teacher_forecast import allocation_loss
+                            ratio, error = allocation_loss(policy.decoder.supervision_allocation[0],
+                                                           item.allocation_ratio_target)
+                            pending_ratio.append(ratio*item.sample_weight)
+                            ratio_sum+=float(error.detach())*item.sample_weight
+                            ratio_weight+=item.sample_weight;ratio_count+=1
+                        if sequence and item.forecast_probabilities is not None:
+                            from research.rl_trading.v6.teacher_forecast import forecast_loss
+                            probabilities=torch.tensor(np.array(item.forecast_probabilities,copy=True),device=device)[None]
+                            forecast=policy.teacher_forecast(policy.decoder.supervision_context,policy.action_gru,
+                                steps=probabilities.shape[1],previous_targets=None if evaluation else probabilities,validated=True)
+                            losses=forecast_loss(forecast,probabilities,validated=True)[0]
+                            pending_forecast.append(losses.mean()*item.sample_weight)
+                            length=len(losses)
+                            forecast_sum[:length]+=losses.detach().cpu().numpy()*item.sample_weight
+                            forecast_weight[:length]+=item.sample_weight
+                            forecast_count[:length]+=1
                     else:
                         objective, metrics = bracket_loss(logits, sizes, stops,
                         targets, token=item.token,
@@ -446,6 +501,10 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         if pending_losses:
             mean = (torch.stack(pending_objectives).sum() / loss_denominator
                     if balance is not None else torch.stack(pending_objectives).sum()/sum(pending_weights))
+            if pending_ratio:
+                mean=mean+torch.stack(pending_ratio).sum()/(ratio_mass/blocks)
+            if pending_forecast:
+                mean=mean+torch.stack(pending_forecast).sum()/(forecast_mass/blocks)
             if not torch.isfinite(mean):
                 raise ValueError('Nonfinite teacher objective')
             if not evaluation:
@@ -519,4 +578,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                            if wait_hold and counts['hold'] else None,
                            {name:int(confusion[:, index].sum()) for index,name in enumerate(action_names)},
                            {name:float(ticker_sum[i]/ticker_count[i]) if ticker_count[i] else None for i,name in enumerate(('value','stop','target'))},
-                           {name:int(ticker_count[i]) for i,name in enumerate(('value','stop','target'))})
+                           {name:int(ticker_count[i]) for i,name in enumerate(('value','stop','target'))},
+                           ratio_sum/ratio_weight if ratio_weight else None,ratio_count,
+                           tuple(float(forecast_sum[i]/forecast_weight[i]) if forecast_weight[i] else None for i in range(5)) if sequence else (),
+                           tuple(map(int,forecast_count)) if sequence else ())

@@ -9,6 +9,7 @@ import math
 from research.rl_trading.v6.split import DEVELOPMENT
 
 SELECTION_VERSION = 'rl-v6-development-exact-entry-f1-v1'
+SEQUENCE_SELECTION_VERSION = 'rl-v6-development-entry-f1-allocation-v2'
 
 
 def teacher_validation_score(summaries, *, development_days=None):
@@ -30,11 +31,21 @@ def teacher_validation_score(summaries, *, development_days=None):
         exact += round(accuracy*count); class_correct += round(recall*count)
         total += row['decisions']; loss_sum += row['mean_loss']*row['decisions']
     denominator = actual+predicted
-    return {'version':SELECTION_VERSION, 'exact_entry_f1':2*exact/denominator,
+    result = {'version':SELECTION_VERSION, 'exact_entry_f1':2*exact/denominator,
         'entry_class_f1':2*class_correct/denominator,'mean_label_loss':loss_sum/total,
         'teacher_entry_labels':actual,'predicted_entries':predicted,
         'exact_entry_predictions':exact,'scope':'teacher_state_labels_not_financial_replay'}
+    if any(row.get('forecast_targets') for row in summaries):
+        if not all(row.get('forecast_targets') and row.get('allocation_targets',0)>0 and
+                   row.get('allocation_ratio_mae') is not None for row in summaries):
+            raise ValueError('Every development day needs allocation and forecast evidence')
+        mass=sum(row['allocation_targets'] for row in summaries)
+        result['allocation_ratio_mae']=sum(row['allocation_ratio_mae']*row['allocation_targets'] for row in summaries)/mass
+        if not math.isfinite(result['allocation_ratio_mae']) or not 0<=result['allocation_ratio_mae']<=1:
+            raise ValueError('Invalid development allocation error')
+        result['version']=SEQUENCE_SELECTION_VERSION
+    return result
 
 
 def selection_key(score):
-    return score['exact_entry_f1'],score['entry_class_f1'],-score['mean_label_loss']
+    return score['exact_entry_f1'],score['entry_class_f1'],-score.get('allocation_ratio_mae',0.),-score['mean_label_loss']
