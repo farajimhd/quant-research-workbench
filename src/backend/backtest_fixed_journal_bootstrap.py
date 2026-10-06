@@ -712,5 +712,10 @@ def _v4_cold_reader_preflight(client: Any) -> None:
     if len(selected) > 1:
         raise RuntimeError('V4 cold reader has conflicting profiles')
     expected_principal = selected[0] if selected else 'backtest_v4_runner'
+    geometry_policy = getattr(client, 'ladder_geometry_policy', None)
+    from src.trading_runtime.arte_journal_writer import _validate_ladder_geometry_profile
+    _validate_ladder_geometry_profile(getattr(client, 'automatic_ladder_profile', False), geometry_policy)
+    if geometry_policy is not None:
+        expected_principal = 'backtest_v4_waiting_ladder_runner'
     if client.execute("SELECT currentUser()").strip() != expected_principal:
         raise RuntimeError("V4 cold reader has unexpected principal")

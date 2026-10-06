@@ -36,7 +36,8 @@ class V4AutomaticLadderBatch:
         verify_ladder_evidence_projection(self.evidence, expected=expected)
         object.__setattr__(self, 'evidence', LadderEvidenceRows(
             MappingProxyType(dict(self.evidence.setup)),
-            tuple(MappingProxyType(dict(row)) for row in self.evidence.targets)))
+            tuple(MappingProxyType(dict(row)) for row in self.evidence.targets),
+            tuple(MappingProxyType(dict(row)) for row in self.evidence.geometry_bindings)))
 
     @classmethod
     def from_request(cls, base, request):
@@ -57,13 +58,14 @@ class V4AutomaticLadderBatch:
             market=context.market, v7=context.v7, pivots=context.pivots,
             financial=native_financial, groups=(), tick_int=context.tick_int,
             stop_buffer_ticks=context.stop_buffer_ticks,
-            break_buffer_ticks=context.break_buffer_ticks, target_count=3, allocation='equal')
+            break_buffer_ticks=context.break_buffer_ticks, target_count=3, allocation='equal',
+            geometry_policy=context.geometry_policy, gate_policy=context.gate_policy)
 
 
 def verify_cold_automatic_ladder_families(client, *, related_rows, run_id, batch_id,
         prior_batch_id, verified_prior_prefix, sources, batch_metadata=None):
     """Reconstruct a saved parent without relying on an in-memory proposal."""
-    from src.backend.backtest_squeeze_ladder_evidence import LadderEvidenceRows, SETUP, TARGET
+    from src.backend.backtest_squeeze_ladder_evidence import LadderEvidenceRows, SETUP, TARGET, BINDING
     from src.backend.backtest_squeeze_ladder_readback import reconstruct_ladder_market_decision
     from src.backend.backtest_squeeze_ladder_admission import LadderAdmissionDecision, build_ladder_proposal_intent
     from src.backend.backtest_squeeze_ladder_journal_admission import verify_ladder_intent_parent
@@ -99,11 +101,14 @@ def verify_cold_automatic_ladder_families(client, *, related_rows, run_id, batch
         event['sequence'], event['sequence'], batch_metadata['source_cursor'],
         'running', events, intents=intents,
         intent_slices=tuple(related_rows.get('trading_intent_protection_slice_v1', ())))
-    rows = LadderEvidenceRows(dict(setups[0]), tuple(dict(row) for row in targets))
+    bindings = related_rows.get(BINDING.name, ())
+    rows = LadderEvidenceRows(dict(setups[0]), tuple(dict(row) for row in targets),
+                             tuple(dict(row) for row in bindings))
     decision = reconstruct_ladder_market_decision(rows, observations=source.observations,
         market=source.market, v7=source.v7, pivots=source.pivots, tick_int=source.tick_int,
         stop_buffer_ticks=source.stop_buffer_ticks, break_buffer_ticks=source.break_buffer_ticks,
-        target_count=3, allocation='equal')
+        target_count=3, allocation='equal', geometry_policy=source.geometry_policy,
+        gate_policy=source.gate_policy)
     intent = build_ladder_proposal_intent(decision, session_date=source.session_date,
         assignment_id=setups[0]['assignment_id'], account_id=intents[0]['account_id'])
     verify_ladder_intent_parent(batch, intent, account_id=intents[0]['account_id'], stored_utc=True)
@@ -118,7 +123,8 @@ def verify_cold_automatic_ladder_families(client, *, related_rows, run_id, batch
         parent_record_id=events[0]['record_id'], assignment_id=request.assignment_id,
         session_date=source.session_date)
     for name, stored, proposed in ((SETUP.name, setups, (expected.setup,)),
-                                   (TARGET.name, targets, expected.targets)):
+                                   (TARGET.name, targets, expected.targets),
+                                   (BINDING.name, bindings, expected.geometry_bindings)):
         def content(row, stored_utc):
             return _canonical_typed_content(name, {k:v for k,v in row.items() if k != 'content_hash'},
                 stored_utc=stored_utc)
@@ -137,6 +143,20 @@ def publish_automatic_ladder_batch(client, unit, *, read_client):
     from .arte_journal_writer import _sealed_families, typed_row
     if type(unit) is not V4AutomaticLadderBatch:
         raise ValueError('Automatic ladder writer requires its typed envelope')
+    if getattr(client, 'ladder_geometry_policy', None) != unit.request.market_context.geometry_policy:
+        raise ValueError('Ladder writer profile differs from sealed geometry binding policy')
+    if unit.request.market_context.geometry_policy is not None:
+        from .arte_squeeze_ladder_schema import BINDING
+        from .arte_journal_schema import storage_preflight
+        from .arte_journal_writer import _validate_ladder_geometry_profile
+        _validate_ladder_geometry_profile(getattr(client, 'automatic_ladder_profile', False),
+                                         client.ladder_geometry_policy)
+        if client.execute('SELECT currentUser()').strip() != 'backtest_v4_waiting_ladder_runner':
+            raise ValueError('Waiting ladder requires its separate declared-capability principal')
+        # Missing schema or writer permission remains closed before publication.
+        storage_preflight(client, tables=(BINDING,))
+        if client.execute(f'CHECK GRANT SELECT, INSERT ON arte.{BINDING.name}').strip() != '1':
+            raise ValueError('Waiting ladder lacks durable binding writer capability')
     from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
     declared = 'source_through_boundary_rule' in unit.request.market_context.market_policy_payload()
     sources = (DeclaredLadderSourceAuthority.from_run(read_client, unit.base.run_id) if declared

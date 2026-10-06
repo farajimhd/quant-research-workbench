@@ -70,7 +70,8 @@ class AutomaticLadderRequest:
             observations=context.observations, market=context.market,
             v7=context.v7, pivots=context.pivots, tick_int=context.tick_int,
             stop_buffer_ticks=context.stop_buffer_ticks,
-            break_buffer_ticks=context.break_buffer_ticks, target_count=3, allocation='equal')
+            break_buffer_ticks=context.break_buffer_ticks, target_count=3, allocation='equal',
+            geometry_policy=context.geometry_policy, gate_policy=context.gate_policy)
         if expected != decision:
             raise ValueError('Automatic ladder proposal differs from certified causal source')
         intent = build_ladder_proposal_intent(expected, session_date=session_date,

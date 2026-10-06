@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from hashlib import sha256
 
-from src.backend.backtest_squeeze_ladder_evidence import SETUP, TARGET
+from src.backend.backtest_squeeze_ladder_evidence import SETUP, TARGET, BINDING
 from src.backend.backtest_squeeze_ladder_readback import reconstruct_ladder_evidence
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch, _canonical_typed_content
@@ -48,8 +48,10 @@ def prepare_ladder_journal_families(batch: TypedJournalBatch, rows, *, verified_
     intent = reconstruct_ladder_evidence(rows, run_id=batch.run_id, batch_id=batch.batch_id,
         parent_record_id=event['record_id'], **certified_context)
     verify_ladder_intent_parent(batch, intent, account_id=financial.account_id)
-    return ((SETUP.name, (dict(rows.setup),)),
-            (TARGET.name, tuple(dict(row) for row in rows.targets)))
+    families = ((SETUP.name, (dict(rows.setup),)),
+                (TARGET.name, tuple(dict(row) for row in rows.targets)))
+    return families + (((BINDING.name, tuple(dict(row) for row in rows.geometry_bindings)),)
+                       if rows.geometry_bindings else ())
 
 
 def verify_ladder_intent_parent(batch: TypedJournalBatch, intent, *, account_id: str,

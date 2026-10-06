@@ -39,7 +39,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.trading_runtime.arte_strategy_one_entry_schema import (
     ADD_EVIDENCE, ENTRY_EVIDENCE,
 )
-from src.trading_runtime.arte_squeeze_ladder_schema import TABLES as LADDER_EVIDENCE_TABLES
+from src.trading_runtime.arte_squeeze_ladder_schema import TABLES as LADDER_EVIDENCE_TABLES, BINDING as LADDER_BINDING
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
@@ -140,6 +140,7 @@ _CONTRACTS[ENTRY_SPREAD_RISK.name] = ENTRY_SPREAD_RISK
 # Scalar encoding only. Commit/source authority, installation and numbered
 # registration remain closed until the complete ladder path is qualified.
 _CONTRACTS.update({table.name: table for table in LADDER_EVIDENCE_TABLES})
+_CONTRACTS[LADDER_BINDING.name] = LADDER_BINDING
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ADD_EVIDENCE.name] = ADD_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
@@ -299,7 +300,8 @@ def journal_client_from_env() -> Any:
 
 
 def backtest_v4_journal_client_from_env(*, keeper_session=None,
-                                        lease=None, automatic_ladder=False, entry_spread_risk=False) -> Any:
+                                        lease=None, automatic_ladder=False, entry_spread_risk=False,
+                                        ladder_geometry_policy=None) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -310,7 +312,9 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     from src.trading_runtime.keeper_session import ManagedKeeperSession
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
 
-    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk)
+    _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
+    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
+        **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}))
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
@@ -363,6 +367,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     client.manager_keeper_session = keeper_session
     client.v4_batched_detail_readback = True
     client.automatic_ladder_profile = automatic_ladder
+    client.ladder_geometry_policy = ladder_geometry_policy
     client.entry_spread_risk_profile = entry_spread_risk
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = _V4RunnerClient(
@@ -373,6 +378,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.typed_insert_dispatch = client.typed_insert_dispatch
         lane.typed_insert_strict = True
         lane.backtest_v4_lease = lease
+        lane.automatic_ladder_profile = automatic_ladder
+        lane.ladder_geometry_policy = ladder_geometry_policy
         return lane
     client.v4_insert_lane_factory = new_detail_lane
     client.v4_insert_lane_limit = 4
@@ -380,13 +387,18 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     return client
 
 
-def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False) -> tuple[str, str, str]:
+def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
+                          ladder_geometry_policy=None) -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
     if type(automatic_ladder) is not bool or type(entry_spread_risk) is not bool or (automatic_ladder and entry_spread_risk):
         raise ValueError('V4 runner profile selection must be explicit')
-    stem = 'BACKTEST_V4_LADDER_RUNNER' if automatic_ladder else 'BACKTEST_V4_RUNNER'
-    principal = 'backtest_v4_ladder_runner' if automatic_ladder else 'backtest_v4_runner'
+    _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
+    waiting = ladder_geometry_policy is not None
+    stem = ('BACKTEST_V4_WAITING_LADDER_RUNNER' if waiting else
+            'BACKTEST_V4_LADDER_RUNNER' if automatic_ladder else 'BACKTEST_V4_RUNNER')
+    principal = ('backtest_v4_waiting_ladder_runner' if waiting else
+                 'backtest_v4_ladder_runner' if automatic_ladder else 'backtest_v4_runner')
     if entry_spread_risk:
         stem, principal = 'BACKTEST_V4_ENTRY_COST_RUNNER', 'backtest_v4_entry_cost_runner'
     url, user, password = _dedicated_clickhouse_credentials(
@@ -423,17 +435,21 @@ def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, 
     return inline[0].strip(), inline[1].strip(), inline[2]
 
 
-def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False) -> Any:
+def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False,
+                                         ladder_geometry_policy=None) -> Any:
     """SELECT-only catalog/grant audit before any Keeper claim or run write."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
-    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk)
+    _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
+    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
+        **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}))
     client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"readonly": 1, "max_threads": 2,
                               "max_execution_time": 60})
     client.v4_batched_detail_readback = True
     client.automatic_ladder_profile = automatic_ladder
+    client.ladder_geometry_policy = ladder_geometry_policy
     client.entry_spread_risk_profile = entry_spread_risk
     return client
 
@@ -2273,15 +2289,25 @@ _V4_PREFLIGHT_SECRET = object()
 class _V4PreflightSeal:
     """One-use proof that this exact client passed the full V4 audit."""
 
-    __slots__ = ("client", "secret", "used")
+    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile")
 
     def __init__(self, client: Any, secret: object) -> None:
         self.client, self.secret, self.used = client, secret, False
+        self.ladder_geometry_policy = getattr(client, 'ladder_geometry_policy', None)
+        self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
+
+
+def _validate_ladder_geometry_profile(automatic_ladder, policy):
+    from .squeeze_ladder_geometry import LadderGeometryBindingPolicy
+    if policy is not None and (automatic_ladder is not True or type(policy) is not LadderGeometryBindingPolicy):
+        raise ValueError('Waiting geometry writer requires its typed declared ladder profile')
 
 
 def _v4_preflight(client: Any) -> _V4PreflightSeal:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
     installed = fixed_backtest_v2_contracts()
+    geometry_policy = getattr(client, 'ladder_geometry_policy', None)
+    _validate_ladder_geometry_profile(getattr(client, 'automatic_ladder_profile', False), geometry_policy)
     # A storage_preflight scans active parts as well as schema. Audit the
     # union once: repeating that catalog scan for each family can dominate
     # Backtest startup on a workstation with large market-part catalogs.
@@ -2289,10 +2315,16 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
     writable = v4_journal_write_tables()
     if getattr(client, 'automatic_ladder_profile', False):
         from src.trading_runtime.arte_squeeze_ladder_schema import TABLES as ladder_tables
-        if client.execute('SELECT currentUser()').strip() != 'backtest_v4_ladder_runner':
+        expected_principal = ('backtest_v4_waiting_ladder_runner' if geometry_policy is not None
+                              else 'backtest_v4_ladder_runner')
+        if client.execute('SELECT currentUser()').strip() != expected_principal:
             raise RuntimeError('Automatic ladder profile requires its dedicated principal')
         storage_preflight(client, tables=ladder_tables)
         writable |= frozenset(table.name for table in ladder_tables)
+        # The sealed declaration selects this requirement, never catalog grants.
+        if geometry_policy is not None:
+            storage_preflight(client, tables=(LADDER_BINDING,))
+            writable |= frozenset({LADDER_BINDING.name})
     if getattr(client, 'entry_spread_risk_profile', False):
         if getattr(client, 'automatic_ladder_profile', False) or client.execute('SELECT currentUser()').strip() != 'backtest_v4_entry_cost_runner':
             raise RuntimeError('Entry cost profile requires its dedicated principal')
@@ -3895,6 +3927,8 @@ class ArteJournalWriter:
                 elif (not isinstance(v4_preflight_seal, _V4PreflightSeal)
                       or v4_preflight_seal.client is not client
                       or v4_preflight_seal.secret is not _V4_PREFLIGHT_SECRET
+                      or v4_preflight_seal.ladder_geometry_policy != getattr(client, 'ladder_geometry_policy', None)
+                      or v4_preflight_seal.automatic_ladder_profile != getattr(client, 'automatic_ladder_profile', False)
                       or v4_preflight_seal.used):
                     raise RuntimeError("V4 writer lacks a fresh same-client preflight")
                 else:

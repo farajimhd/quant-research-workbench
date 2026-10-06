@@ -98,7 +98,8 @@ def prepare_ladder_campaign(authority, *, start_boundary_ms, maximum_proposals=2
             counts['market_survivors'] += int(np.count_nonzero(observations.gate.market_rejection == 0))
             setups = bind_ladder_setups(observations, market=context.market,
                 v7=context.v7, pivots=context.pivots, tick_int=context.tick_int,
-                stop_buffer_ticks=context.stop_buffer_ticks)
+                stop_buffer_ticks=context.stop_buffer_ticks,
+                geometry_policy=context.geometry_policy, gate_policy=context.gate_policy)
             for setup in setups:
                 counts[setup.reason] += 1
                 if setup.reason != 'setup_qualified':

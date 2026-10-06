@@ -170,18 +170,26 @@ def test_terminal_review_requires_release_and_native_source(monkeypatch, changed
     assert calls == (['release'] if changed_release else ['release', 'native', 'prefix'])
 
 
-@pytest.mark.parametrize('guard', [
-    'if release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58):',
-    'elif int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58):',
+@pytest.mark.parametrize('guard, replacement', [
+    ('release.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)', None),
+    ('int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)', None),
+    ("declared_fixed_rule(release.strategy_number, 'strategy-thirty-six-completed-entry-activity-fade-v1')", 'False'),
+    ("declared_fixed_rule(release.strategy_number, 'strategy-twenty-six-premarket-first-setup-ten-second-growth-10pct-v1')", 'False'),
 ])
-def test_saved_review_source_certificate_rejects_removed_strategy36_guard(guard, tmp_path):
+def test_saved_review_source_certificate_rejects_removed_strategy36_guard(guard, replacement, tmp_path):
     from pathlib import Path
     from src.backend.backtest_fixed_v4_certification import certify_rising_momentum_entry_source
     source = Path(review.__file__).read_text(encoding='utf-8')
     assert source.count(guard) == 1
+    replacement = guard.replace(', 36,', ',') if replacement is None else replacement
+    assert replacement != guard
+    mutated = source.replace(guard, replacement, 1)
+    assert mutated.count(guard) == 0
+    assert mutated != source
+    # The baseline must certify before a mutation can demonstrate rejection.
     assert len(certify_rising_momentum_entry_source()) == 64
     destination = tmp_path / 'saved_review.py'
-    destination.write_text(source.replace(guard, guard.replace(', 36,', ',')), encoding='utf-8')
+    destination.write_text(mutated, encoding='utf-8')
     with pytest.raises(ValueError, match='reviewed source authority changed: backend/backtest_v4_saved_review.py'):
         certify_rising_momentum_entry_source(source_overrides={
             'backend/backtest_v4_saved_review.py': destination})

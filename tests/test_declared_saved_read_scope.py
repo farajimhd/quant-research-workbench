@@ -42,7 +42,17 @@ def context_setup(monkeypatch, number):
     monkeypatch.setattr(review, 'load_typed_run_context', lambda *_: context)
     monkeypatch.setattr(recorded, 'load_typed_run_context', lambda *_: context)
     monkeypatch.setattr(market, 'readonly_clickhouse_client', lambda **_: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(configurations, 'certify_numbered_configuration', lambda *_: SimpleNamespace(payload_hash='a' * 64))
+    if number == 49:
+        from test_strategy_forty_nine_release import envelope
+        from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
+        sealed = SimpleNamespace(payload_hash='a'*64, strategy_number=number, payload=envelope()['payload'])
+        # This fixture tests reader lifetime/cache routing. Producer source
+        # authority is supplied explicitly; native source proofs have separate tests.
+        monkeypatch.setattr(DeclaredLadderSourceAuthority,'from_run',lambda *a:
+                            SimpleNamespace(verify_immutable_prefix=lambda prefix:None))
+    else:
+        sealed = SimpleNamespace(payload_hash='a'*64)
+    monkeypatch.setattr(configurations, 'certify_numbered_configuration', lambda *_: sealed)
     monkeypatch.setattr(versions, 'backend_source_fingerprint', lambda: versions.LOADED_BACKEND_FINGERPRINT)
     monkeypatch.setattr(review, '_saved_twenty_price_source', lambda *_: object())
     return context

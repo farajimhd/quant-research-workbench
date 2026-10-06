@@ -4,7 +4,7 @@ No BOS fiction, generic payload column or runtime sidecar is an authority.
 These scalar rows need independent source readback and a V4 family fence before
 the eventual numbered strategy can publish or submit a financial command.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import date, datetime, time, timedelta, timezone
 from hashlib import sha256
 from struct import pack, unpack
@@ -12,7 +12,7 @@ from uuid import UUID, NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
 from src.backend.backtest_squeeze_ladder_admission import LadderAdmissionDecision
-from src.trading_runtime.arte_squeeze_ladder_schema import SETUP, TARGET, TABLES
+from src.trading_runtime.arte_squeeze_ladder_schema import SETUP, TARGET, TABLES, BINDING
 from src.trading_runtime.journal_contract import canonical_json
 
 
@@ -20,10 +20,29 @@ from src.trading_runtime.journal_contract import canonical_json
 class LadderEvidenceRows:
     setup: dict
     targets: tuple[dict, ...]
+    geometry_bindings: tuple[dict, ...] = ()
 
 
 def _bits(value):
     return unpack('<Q', pack('<d', float(value)))[0]
+
+
+def verify_geometry_binding_row(rows, binding):
+    """Validate exact companion schema, bytes and source-parent keys cold."""
+    actual = rows.geometry_bindings
+    if binding is None:
+        if actual:
+            raise ValueError('Foreign ladder geometry binding witness')
+        return
+    if len(actual) != 1:
+        raise ValueError('Saved ladder geometry binding differs from earliest certified pair')
+    row = actual[0]
+    keys = {key: rows.setup[key] for key in ('parent_record_id','run_id','event_month','batch_id')}
+    expected = dict(**keys,record_id=str(uuid5(NAMESPACE_URL, keys['parent_record_id'] + ':ladder-geometry-binding')),
+                    **asdict(binding))
+    expected['content_hash'] = sha256(canonical_json(expected).encode()).hexdigest()
+    if set(row) != {key for key,_ in BINDING.columns} or row != expected:
+        raise ValueError('Saved ladder geometry binding differs from earliest certified pair/source parent')
 
 
 def project_ladder_evidence(admission: LadderAdmissionDecision, *, run_id: str,
@@ -75,7 +94,13 @@ def project_ladder_evidence(admission: LadderAdmissionDecision, *, run_id: str,
                    price_bits=_bits(leg.profit_target_price), quantity_fraction_bits=_bits(leg.quantity_fraction))
         row['content_hash'] = sha256(canonical_json(row).encode()).hexdigest()
         targets.append(row)
-    return LadderEvidenceRows(parent, tuple(targets))
+    bindings = ()
+    if setup.geometry_binding is not None:
+        row = dict(**keys, record_id=str(uuid5(NAMESPACE_URL, parent_record_id + ':ladder-geometry-binding')),
+                   **asdict(setup.geometry_binding))
+        row['content_hash'] = sha256(canonical_json(row).encode()).hexdigest()
+        bindings = (row,)
+    return LadderEvidenceRows(parent, tuple(targets), bindings)
 
 
 def verify_ladder_evidence_projection(rows: LadderEvidenceRows, *, expected: LadderEvidenceRows) -> None:
@@ -88,8 +113,11 @@ def verify_ladder_evidence_projection(rows: LadderEvidenceRows, *, expected: Lad
         raise ValueError('Ladder evidence requires complete typed row families')
     if len(rows.targets) != len(expected.targets) or len(rows.targets) != rows.setup.get('target_count'):
         raise ValueError('Ladder evidence target family is incomplete')
+    if len(rows.geometry_bindings) != len(expected.geometry_bindings):
+        raise ValueError('Ladder geometry binding witness is missing or foreign')
     for contract, actual, desired in ((SETUP, rows.setup, expected.setup),
-                                      *((TARGET, actual, desired) for actual, desired in zip(rows.targets, expected.targets, strict=True))):
+                                      *((TARGET, actual, desired) for actual, desired in zip(rows.targets, expected.targets, strict=True)),
+                                      *((BINDING, actual, desired) for actual, desired in zip(rows.geometry_bindings, expected.geometry_bindings, strict=True))):
         if set(actual) != {name for name, _ in contract.columns}:
             raise ValueError('Ladder evidence scalar columns differ')
         content = {name: value for name, value in actual.items() if name != 'content_hash'}

@@ -55,7 +55,8 @@ def declared_source_end(market_policy, definition):
     from src.trading_runtime.squeeze_ladder_columnar import LadderGatePolicy
     keys = {'gate', 'tick_int', 'stop_buffer_ticks', 'break_buffer_ticks',
             'source_through_boundary_rule', 'source_through_boundary_ms_by_session'}
-    if (type(market_policy) is not dict or set(market_policy) not in (keys, keys | {'population_exclusions'})
+    if (type(market_policy) is not dict or not keys <= set(market_policy)
+            or set(market_policy) - keys - {'population_exclusions', 'geometry_binding_policy'}
             or market_policy['source_through_boundary_rule'] != 'extended_session_end'
             or market_policy['source_through_boundary_ms_by_session'] != EXTENDED_ENDS
             or market_policy['tick_int'] != 100
@@ -64,6 +65,8 @@ def declared_source_end(market_policy, definition):
             or set(market_policy['gate']) != {field.name for field in fields(LadderGatePolicy)}):
         raise ValueError('Ladder executable source needs its exact declared extended-session policy')
     declared_population_exclusions(market_policy)
+    from src.trading_runtime.squeeze_ladder_geometry import declared_geometry_binding_policy
+    declared_geometry_binding_policy(market_policy)
     window = (definition['start_local_ms'], definition['end_local_ms'])
     ends = {(14_400_000, 34_200_000): EXTENDED_ENDS['premarket'],
             (57_600_000, 72_000_000): EXTENDED_ENDS['afterhours']}
@@ -116,6 +119,8 @@ class DeclaredLadderSourceAuthority:
         gate = dict(self.market_policy['gate'])
         gate['acquisition_windows'] = tuple(tuple(window) for window in gate['acquisition_windows'])
         self.gate_policy = LadderGatePolicy(**gate)
+        from src.trading_runtime.squeeze_ladder_geometry import declared_geometry_binding_policy
+        self.geometry_policy = declared_geometry_binding_policy(self.market_policy)
         self.max_contexts, self.max_parents = max_contexts, max_parents
         self.max_context_bytes, self._context_bytes = max_context_bytes, 0
         self._context_sizes = {}
@@ -194,7 +199,8 @@ class DeclaredLadderSourceAuthority:
         context = NativeLadderMarketContext(self.run_id, self.session_date,
             self.configuration, observations, self.market, v7, pivots,
             self.market_policy['tick_int'], self.market_policy['stop_buffer_ticks'],
-            self.market_policy['break_buffer_ticks'], self.gate_policy, self.source_end)
+            self.market_policy['break_buffer_ticks'], self.gate_policy, self.source_end,
+            self.geometry_policy)
         context.verify_policy(self.policy)
         size = observations.completed_source.nbytes
         for product in (observations.gate, v7, pivots):

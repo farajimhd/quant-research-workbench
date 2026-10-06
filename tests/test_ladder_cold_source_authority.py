@@ -334,6 +334,9 @@ def test_saved_review_dispatches_by_declared_policy_with_complete_cold_scope(mon
     reader = SimpleNamespace(close=lambda:None)
     monkeypatch.setattr(review, 'load_typed_run_context', lambda *a:native)
     monkeypatch.setattr(review, 'is_numbered_fixed_strategy', lambda *a:True)
+    # This test owns cold-source dispatch, not installed release/read-principal
+    # authorization. The synthetic source identity has no installed profile.
+    monkeypatch.setattr(review, '_require_declared_read_profile', lambda *a,**k:{})
     monkeypatch.setattr(markets, 'readonly_clickhouse_client', lambda **k:reader)
     monkeypatch.setattr(configurations, 'certify_numbered_configuration', lambda *a:cold.configuration)
     monkeypatch.setattr(DeclaredLadderSourceAuthority, 'from_run', lambda *a:cold)

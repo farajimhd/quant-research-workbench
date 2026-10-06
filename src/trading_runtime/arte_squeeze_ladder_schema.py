@@ -23,3 +23,9 @@ TARGET = TableContract('trading_squeeze_ladder_target_evidence_v1', _KEYS + (
     ('content_hash','FixedString(64)')),
     'toYYYYMM(event_month)', 'run_id,parent_record_id,record_id')
 TABLES = (SETUP, TARGET)
+# Optional companion. Existing ladder profiles do not require or install it.
+BINDING = TableContract('trading_squeeze_ladder_geometry_binding_v1', _KEYS + (
+    ('policy_version','String'), ('trigger_source_row_index','UInt32'),
+    ('trigger_boundary_ms','UInt32'), ('freeze_boundary_ms','UInt32'),
+    ('admission_expiry_boundary_ms','UInt32'), ('content_hash','FixedString(64)')),
+    'toYYYYMM(event_month)', 'run_id,parent_record_id,record_id')

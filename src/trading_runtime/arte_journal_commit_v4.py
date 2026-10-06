@@ -984,8 +984,8 @@ def _load_verified_details_v4(
                            and row["entity_type"] in {"portfolio", "position"}}
         if covered != snapshot_events:
             raise RuntimeError("V4 broker snapshot readback lacks complete coverage")
-    from src.trading_runtime.arte_squeeze_ladder_schema import SETUP as LADDER_SETUP, TARGET as LADDER_TARGET
-    if related_rows.get(LADDER_SETUP.name) or related_rows.get(LADDER_TARGET.name):
+    from src.trading_runtime.arte_squeeze_ladder_schema import SETUP as LADDER_SETUP, TARGET as LADDER_TARGET, BINDING as LADDER_BINDING
+    if related_rows.get(LADDER_SETUP.name) or related_rows.get(LADDER_TARGET.name) or related_rows.get(LADDER_BINDING.name):
         from .automatic_ladder_transport import verify_cold_automatic_ladder_families
         if verified_prior_prefix is None:
             raise RuntimeError('Cold ladder entry lacks its independently verified predecessor')
@@ -2140,8 +2140,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
             if dict(families).get('trading_strategy_assignment_command_v1'):
                 raise ValueError('Ladder immutable-permission writer rejects every control intervention')
     dispatch = client.typed_insert_dispatch
-    from .arte_squeeze_ladder_schema import SETUP as LADDER_SETUP, TARGET as LADDER_TARGET
-    if any(name in (LADDER_SETUP.name, LADDER_TARGET.name) and rows for name, rows in families):
+    from .arte_squeeze_ladder_schema import SETUP as LADDER_SETUP, TARGET as LADDER_TARGET, BINDING as LADDER_BINDING
+    if any(name in (LADDER_SETUP.name, LADDER_TARGET.name, LADDER_BINDING.name) and rows for name, rows in families):
         if (live_lease is not None or automatic_ladder_read_client is None
                 or not automatic_ladder_sources or verified_prior_prefix is None):
             raise ValueError('Automatic ladder cannot bypass its dedicated native source admission')

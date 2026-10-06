@@ -49,20 +49,35 @@ class _DeclaredReadProfileRequired(Exception):
         self.options = options
 
 
-def _require_declared_read_profile(client, context):
+def _require_declared_read_profile(client, context, *, sealed_configuration=None):
     """Select authority from the already validated typed run context."""
     from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
     contract = resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision']))
-    options = ({'automatic_ladder': True}
-               if getattr(contract, 'automatic_entry_policy', None) is not None
-               else {'entry_spread_risk': True}
+    if getattr(contract, 'automatic_entry_policy', None) is not None:
+        from src.trading_runtime.squeeze_ladder_geometry import declared_ladder_runner_options
+        if sealed_configuration is None:
+            from contextlib import closing
+            from src.backend.backtest_market_data import readonly_clickhouse_client
+            from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
+            with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+                sealed_configuration = certify_numbered_configuration(reader, int(context['strategy_revision']))
+        if (sealed_configuration.payload_hash != context['configuration_hash']
+                or sealed_configuration.strategy_number != int(context['strategy_revision'])
+                or sealed_configuration.payload['strategy']['strategy_id'] != context['strategy_id']):
+            raise ValueError('Saved ladder read profile differs from sealed run configuration')
+        options = declared_ladder_runner_options(sealed_configuration.payload)
+    else:
+        options = ({'entry_spread_risk': True}
                if getattr(contract, 'entry_spread_risk_policy', None) is not None else {})
     flag = ('automatic_ladder_profile' if 'automatic_ladder' in options
             else 'entry_spread_risk_profile' if options else None)
-    if flag is not None and getattr(client, flag, False) is not True:
+    matches = (flag is not None and getattr(client, flag, False) is True
+               and (flag != 'automatic_ladder_profile' or getattr(client, 'ladder_geometry_policy', None)
+                    == options.get('ladder_geometry_policy')))
+    if flag is not None and not matches:
         if _DECLARED_READ_SCOPE.get() is not None:
             raise _DeclaredReadProfileRequired(options)
-    return options if flag is not None and getattr(client, flag, False) is not True else {}
+    return options if flag is not None and not matches else {}
 
 
 def declared_saved_read_operation(operation):
@@ -273,6 +288,7 @@ def _terminal_attestation(client, normalized: str,
             or not is_numbered_fixed_strategy(context["strategy_id"], int(context["strategy_revision"]))
             or context["evaluation_interval_ms"] != 100):
         raise ValueError("Saved review accepts only installed immutable numbered strategies at 100 ms")
+    release = None
     if int(context["strategy_revision"]) != 1:
         from contextlib import closing
         from src.backend.backtest_market_data import readonly_clickhouse_client
@@ -281,7 +297,7 @@ def _terminal_attestation(client, normalized: str,
             release = certify_numbered_configuration(market, int(context["strategy_revision"]))
         if release.payload_hash != context["configuration_hash"]:
             raise ValueError("Saved numbered configuration differs from its sealed release")
-    options = _require_declared_read_profile(client, context)
+    options = _require_declared_read_profile(client, context, sealed_configuration=release)
     if options:
         from contextlib import closing
         from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env, _v4_preflight

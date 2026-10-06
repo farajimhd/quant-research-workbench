@@ -1,4 +1,5 @@
 from __future__ import annotations
+from src.trading_runtime.squeeze_ladder_geometry import declared_ladder_runner_options
 from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 
 from src.trading_runtime.market_pressure import PressureTracker
@@ -3468,12 +3469,12 @@ class ReplayRunController:
                         backtest_v4_context_client_from_env(
                             keeper_session=keeper)))
                     reader = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env(**({'automatic_ladder':True} if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))))
+                        backtest_v4_operator_client_from_env(**(declared_ladder_runner_options(configuration) if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))))
                     writer = backtest_v4_journal_client_from_env(
                         keeper_session=keeper, lease=lease,
-                        **({'automatic_ladder':True} if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))
+                        **(declared_ladder_runner_options(configuration) if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))
                     terminal = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env(**({'automatic_ladder':True} if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))))
+                        backtest_v4_operator_client_from_env(**(declared_ladder_runner_options(configuration) if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))))
                     bootstrap_timings["strategy_one_journal_clients"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()
@@ -3489,7 +3490,7 @@ class ReplayRunController:
                         writer_factory=ArteJournalWriter,
                         batch_size=4096)
                     if automatic_policy(configuration) is not None:
-                        ladder_reader = backtest_v4_operator_client_from_env(automatic_ladder=True)
+                        ladder_reader = backtest_v4_operator_client_from_env(**declared_ladder_runner_options(self.definition.configuration_revision['payload']))
                         try:
                             assembly.writer.bind_automatic_ladder_read_client(ladder_reader)
                         except BaseException:
@@ -3739,7 +3740,7 @@ class ReplayRunController:
             await self._after_event(market_day_boundary(day, work.boundary_ms))
             if count % 256 == 0:
                 await self._publish()
-        reader = backtest_v4_operator_client_from_env(automatic_ladder=True)
+        reader = backtest_v4_operator_client_from_env(**declared_ladder_runner_options(self.definition.configuration_revision['payload']))
         try:
             source = await asyncio.to_thread(DeclaredLadderSourceAuthority.from_run,
                                              reader, self.run_id)
@@ -10007,7 +10008,7 @@ class ReplayRunService:
         declared_contract = resolve_numbered_fixed_strategy(
             configuration['strategy']['strategy_id'], strategy_number)
         from .backtest_declared_ladder_plan import automatic_policy
-        runner_options = ({'automatic_ladder': True} if automatic_policy(configuration)
+        runner_options = (declared_ladder_runner_options(configuration) if automatic_policy(configuration)
                           else {'entry_spread_risk': True}
                           if getattr(declared_contract, 'entry_spread_risk_policy', None) is not None else {})
         projection_certifier = (certify_strategy_one_v4_projection if strategy_number == 1
@@ -12397,7 +12398,7 @@ def backtest_preflight(
             _v4_preflight,
         )
         try:
-            with closing(backtest_v4_operator_client_from_env(**({'automatic_ladder':True} if ladder_policy else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))
+            with closing(backtest_v4_operator_client_from_env(**(declared_ladder_runner_options(configuration) if ladder_policy else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))
                          if strategy_one_fixed else journal_client_from_env()) as journal_client:
                 if strategy_one_fixed:
                     _v4_preflight(journal_client)

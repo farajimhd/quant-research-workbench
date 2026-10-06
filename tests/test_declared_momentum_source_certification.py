@@ -15,6 +15,7 @@ HELPERS = (
     "src/trading_runtime/entry_momentum_growth.py",
     "src/backend/backtest_declared_initial_momentum.py",
     "src/backend/source_ast_summary.py",
+    "src/trading_runtime/squeeze_ladder_geometry.py",
 )
 VERSIONS = ((42, "forty_two"), (50, "fifty"), (59, "fifty_nine"),
             (60, "sixty"), (61, "sixty_one"))
@@ -43,7 +44,7 @@ def test_complete_native_proof(number):
 @pytest.mark.parametrize("number,name,path", NEW_LEAVES)
 def test_every_new_complete_source_leaf_rejects_mutation(tmp_path, number, name, path):
     _, leaves, certify = authority(number, name)
-    assert len(leaves) == 61
+    assert len(leaves) == 62
     assert set(HELPERS) <= set(leaves)
     changed = tmp_path / Path(path).name
     changed.write_text((ROOT / path).read_text(encoding="utf8")
@@ -56,6 +57,33 @@ def test_every_new_complete_source_leaf_rejects_mutation(tmp_path, number, name,
 @pytest.mark.parametrize("path", HELPERS)
 def test_old_native_proof_seals_each_shared_helper(tmp_path, monkeypatch, number, name, path):
     module, leaves, certify = authority(number, name)
+    if path not in leaves:
+        # Geometry is sealed in the inherited shared core/rising route, while
+        # the immutable Strategy42-specific leaf inventory stays unchanged.
+        from src.backend import backtest_fixed_v4_certification as shared
+        assert path == 'src/trading_runtime/squeeze_ladder_geometry.py'
+        assert path in shared._DRAWDOWN_CORE_REQUIRED_SOURCE_FILES
+        assert len(certify_numbered_fixed_v4_projection(number)) == 64
+        target = (ROOT / path).resolve()
+        source = target.read_text(encoding='utf-8')
+        before = '0 <= self.trigger_source_row_index < 2**32'
+        assert source.count(before) == 1
+        changed = source.replace(before, '0 <= self.trigger_source_row_index', 1)
+        assert changed != source and changed.count(before) == 0
+        original = Path.read_text
+        reads = []
+        def changed_read(file, *args, **kwargs):
+            if file.resolve() == target:
+                reads.append(True)
+                return changed
+            return original(file, *args, **kwargs)
+        monkeypatch.setattr(Path, 'read_text', changed_read)
+        with pytest.raises(ValueError, match=(
+                'Strategy 13 reviewed source authority changed: '
+                'trading_runtime/squeeze_ladder_geometry.py:__module__')):
+            certify_numbered_fixed_v4_projection(number)
+        assert reads
+        return
     assert path in leaves
     changed = tmp_path / Path(path).name
     changed.write_text((ROOT / path).read_text(encoding="utf8")

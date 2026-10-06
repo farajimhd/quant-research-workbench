@@ -10,7 +10,8 @@ from src.backend.backtest_strategy_liquidity_fade_certification import (
 def test_prepared_source_proof_is_deterministic_and_fully_pinned():
     proof = certify_prepared_liquidity_fade_source()
     assert len(proof) == 64 and proof == certify_prepared_liquidity_fade_source()
-    assert len(LIQUIDITY_FADE_SOURCE_AST) == 63
+    assert len(LIQUIDITY_FADE_SOURCE_AST) == 64
+    assert 'src/trading_runtime/squeeze_ladder_geometry.py' in LIQUIDITY_FADE_SOURCE_AST
     assert 'src/backend/source_ast_summary.py' in LIQUIDITY_FADE_SOURCE_AST
     assert {
         'src/trading_runtime/strategy_half_risk_liquidity_fade.py',

@@ -27,6 +27,19 @@ def test_real_old_route_rejects_mutated_reachable_leaf(monkeypatch,number,relati
             reads.append(True)
             if relative.endswith('backtest_fixed_v4_certification.py'):
                 return source.replace('    core_proof = certify_drawdown_measure_core_source()', '    core_proof = "foreign-core"',1)
+            classifier_mutations = {
+                'src/backend/backtest_declared_ladder_plan.py': (
+                    'return declared_ladder_policy(SimpleNamespace(payload=configuration))', 'return None'),
+                'src/backend/backtest_ladder_source_authority.py': ('if declared is None:', 'if True:'),
+                'src/trading_runtime/squeeze_ladder_automatic.py': (
+                    'lot_count=3, allocation=', 'lot_count=4, allocation='),
+            }
+            if relative in classifier_mutations:
+                before, after = classifier_mutations[relative]
+                assert source.count(before) == 1
+                mutated = source.replace(before, after, 1)
+                assert mutated != source and mutated.count(before) == 0
+                return mutated
             return source+'\n_NUMERIC_CORE_MUTATION_PROBE = True\n'
         return source
     monkeypatch.setattr(Path,'read_text',changed)

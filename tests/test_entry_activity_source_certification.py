@@ -17,7 +17,8 @@ def test_installed_compiler_and_full_parent_projection_are_certified():
     assert is_numbered_fixed_configuration(result['payload'])
     proof = certify_numbered_fixed_v4_projection(36)
     assert len(proof) == 64 and proof != certify_numbered_fixed_v4_projection(35)
-    assert len(ENTRY_ACTIVITY_SOURCE_AST) == 35
+    assert len(ENTRY_ACTIVITY_SOURCE_AST) == 36
+    assert 'src/trading_runtime/squeeze_ladder_geometry.py' in ENTRY_ACTIVITY_SOURCE_AST
     assert 'src/backend/source_ast_summary.py' in ENTRY_ACTIVITY_SOURCE_AST
     assert {'src/trading_runtime/arte_journal_rowbinary.py',
             'src/trading_runtime/arte_typed_insert_dispatch.py',

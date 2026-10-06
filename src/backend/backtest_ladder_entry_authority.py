@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from src.backend.backtest_market_data import market_day_boundary
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.squeeze_ladder_geometry import LadderGeometryBindingPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,7 @@ class NativeLadderMarketContext:
     break_buffer_ticks: int
     gate_policy: object
     source_through_boundary_ms: int
+    geometry_policy: LadderGeometryBindingPolicy | None = None
 
     def market_policy_payload(self):
         payload = {'gate': asdict(self.gate_policy), 'tick_int': self.tick_int,
@@ -35,6 +37,10 @@ class NativeLadderMarketContext:
             'break_buffer_ticks': self.break_buffer_ticks,
             'source_through_boundary_ms': self.source_through_boundary_ms}
         declared = self.configuration.payload['strategy']['numbered_release'].get('automatic_market_policy', {})
+        if self.geometry_policy is not None:
+            if type(self.geometry_policy) is not LadderGeometryBindingPolicy:
+                raise ValueError('Invalid ladder geometry binding authority')
+            payload['geometry_binding_policy'] = self.geometry_policy.payload()
         if 'source_through_boundary_rule' in declared:
             from src.backend.backtest_ladder_source_authority import EXTENDED_ENDS, declared_population_exclusions
             payload.pop('source_through_boundary_ms')
