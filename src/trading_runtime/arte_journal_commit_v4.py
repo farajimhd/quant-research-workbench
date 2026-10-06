@@ -5,7 +5,7 @@ No runtime may treat either row alone as a durable fence: recovery requires the
 unique commit, its complete child-family set, and the detail-row readback.
 """
 from __future__ import annotations
-from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule, declared_fixed_exit_reason
 
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
@@ -695,7 +695,7 @@ def _load_verified_details_v4(
     from .strategy_profit_giveback_exit import profit_giveback_reason
     profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
     profit_rows = related_rows.get(PROFIT_GIVEBACK.name, ())
-    if profit_rows or any(row['reason'] in profit_reasons for row in
+    if profit_rows or any((row['reason'] in profit_reasons or declared_fixed_exit_reason(row['reason'], 'strategy-thirty-one-original-risk-profit-giveback-v1')) for row in
                           related_rows.get('trading_strategy_intent_v1', ())):
         if verified_prior_prefix is None:
             raise RuntimeError('Profit readback requires an independently verified preceding prefix')
@@ -705,7 +705,7 @@ def _load_verified_details_v4(
             prefix=verified_prior_prefix, first_price_source=first_price_source)
     from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason
     confirmation_rows = related_rows.get(CONFIRMED_AH_FAILURE.name, ())
-    if confirmation_rows or any(row['reason'] in {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)} for row in
+    if confirmation_rows or any((row['reason'] in {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)} or declared_fixed_exit_reason(row['reason'], 'strategy.confirmed-ah-risk-failure.v1')) for row in
                                related_rows.get('trading_strategy_intent_v1', ())):
         if verified_prior_prefix is None:
             raise RuntimeError('AH confirmation readback requires its verified preceding prefix')

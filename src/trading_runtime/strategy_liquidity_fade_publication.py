@@ -4,6 +4,7 @@ This composes existing native readers; it grants no installed release, writer
 or order admission. Callers must independently certify the supplied market plan
 and preceding prefix. Supplied financial views are claims to check, not proof.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_exit_reason
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -34,7 +35,7 @@ def validate_liquidity_fade_publication_rows(
             or not isinstance(financial_views, Mapping)):
         raise ValueError('Liquidity publication requires bounded immutable family inputs')
     reasons = {liquidity_fade_reason(number) for number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
-    parents = {str(p['record_id']): p for p in intents if p['reason'] in reasons}
+    parents = {str(p['record_id']): p for p in intents if (p['reason'] in reasons or declared_fixed_exit_reason(p['reason'], 'strategy-thirty-five-completed-liquidity-fade-v1'))}
     event_map = {str(e['record_id']): e for e in events}
     if (len({str(p['record_id']) for p in intents}) != len(intents)
             or len(event_map) != len(events) or len(rows) != len(parents)
@@ -96,7 +97,7 @@ def prepare_native_liquidity_fade_rows(client, rows, intents, events, *,
     from .strategy_one_stateful import StrategyOneFinancialView
     from .strategy_engine import AssignmentStatus, StrategyPermissions
     reasons = {liquidity_fade_reason(number) for number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
-    parents = tuple(parent for parent in intents if parent['reason'] in reasons)
+    parents = tuple(parent for parent in intents if (parent['reason'] in reasons or declared_fixed_exit_reason(parent['reason'], 'strategy-thirty-five-completed-liquidity-fade-v1')))
     if not rows and not parents:
         return ()
     if (type(first_price_source) is not CertifiedPriceReadbackAuthority

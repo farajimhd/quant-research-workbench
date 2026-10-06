@@ -4,7 +4,7 @@ This module prepares normalized arte batches. It does not submit or fence them;
 the fixed Backtest launch remains blocked until typed recovery is complete.
 """
 from __future__ import annotations
-from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule, declared_fixed_exit_reason
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
@@ -423,20 +423,20 @@ def project_pending_backtest_v4_prefix(
                     and failure_source is None):
                 raise RuntimeError("Follow-through intent lacks its normalized witness")
             if (kind == ('strategy', 'strategy_intent')
-                    and record.payload.get('reason') in {
-                        profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
+                    and (record.payload.get('reason') in {
+                        profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)} or declared_fixed_exit_reason(record.payload.get('reason'), 'strategy-thirty-one-original-risk-profit-giveback-v1'))
                     and profit_source is None):
                 raise RuntimeError('Profit intent lacks its normalized witness')
             if (kind == ('strategy', 'strategy_intent')
-                    and record.payload.get('reason') in ('strategy_thirty_four_confirmed_ah_failure',
+                    and (record.payload.get('reason') in ('strategy_thirty_four_confirmed_ah_failure',
                                                         'strategy_thirty_five_confirmed_ah_failure',
                                                         'strategy_thirty_six_confirmed_ah_failure',
                                                         'strategy_thirty_seven_confirmed_ah_failure',
-                                                        'strategy_thirty_eight_confirmed_ah_failure')
+                                                        'strategy_thirty_eight_confirmed_ah_failure') or declared_fixed_exit_reason(record.payload.get('reason'), 'strategy.confirmed-ah-risk-failure.v1'))
                     and confirmation_source is None):
                 raise RuntimeError('AH confirmation intent lacks its normalized witness')
-            if (kind == ('strategy', 'strategy_intent') and record.payload.get('reason') in {
-                    liquidity_fade_reason(number) for number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
+            if (kind == ('strategy', 'strategy_intent') and (record.payload.get('reason') in {
+                    liquidity_fade_reason(number) for number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)} or declared_fixed_exit_reason(record.payload.get('reason'), 'strategy-thirty-five-completed-liquidity-fade-v1'))
                     and liquidity_source is None):
                 raise RuntimeError('Liquidity intent lacks its normalized witness')
             if sidecar is None and add_sidecar is None:

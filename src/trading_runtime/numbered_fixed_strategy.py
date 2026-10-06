@@ -32,6 +32,44 @@ def declared_fixed_rule(number: int, rule_id: str | None = None) -> bool:
     return rule_id is None or rule_id in release.rule_set_contracts
 
 
+def declared_fixed_exit_reason(reason: str, rule_id: str) -> bool:
+    """Recognize only an exact factory reason backed by a sealed semantic rule.
+
+    Parent intent rows carry no numbered identity. Recognition is independent
+    of witness presence so missing companions cannot disappear from coverage.
+    """
+    if type(reason) is not str or type(rule_id) is not str:
+        return False
+    import re
+    match = re.fullmatch(
+        r'strategy_([1-9][0-9]{0,9})_(profit_giveback|confirmed_ah_failure|liquidity_fade_failure)',
+        reason, flags=re.ASCII)
+    if match is None:
+        return False
+    supported = {
+        'strategy-thirty-one-original-risk-profit-giveback-v1',
+        'strategy.confirmed-ah-risk-failure.v1',
+        'strategy-thirty-five-completed-liquidity-fade-v1',
+    }
+    if rule_id not in supported:
+        return False
+    number = int(match.group(1))
+    if number > 2**32 - 1:
+        return False
+    if not declared_fixed_rule(number, rule_id):
+        return False
+    if rule_id == 'strategy-thirty-one-original-risk-profit-giveback-v1':
+        from .strategy_profit_giveback_exit import profit_giveback_reason
+        expected = profit_giveback_reason(number)
+    elif rule_id == 'strategy.confirmed-ah-risk-failure.v1':
+        from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason
+        expected = confirmed_ah_reason(number)
+    else:
+        from .strategy_liquidity_fade_exit import liquidity_fade_reason
+        expected = liquidity_fade_reason(number)
+    return reason == expected
+
+
 SESSION_POLICY = MappingProxyType({
     "timezone": "America/New_York",
     "windows": (

@@ -7,7 +7,7 @@ from test_profit_giveback_typed_batch import unit
 
 
 @pytest.mark.parametrize('corruption',[None,'event_time','reason','quantity','intent_id','source_checkpoint','missing','record_id'])
-@pytest.mark.parametrize('number', [31, 32, 33])
+@pytest.mark.parametrize('number', [31, 32, 33, 42, 64])
 def test_sealer_revalidates_real_canonical_factory_and_source_route(monkeypatch,corruption,number):
     """Test-only schema registration and source-reader mock; no native writes."""
     from src.trading_runtime import strategy_profit_giveback_source as source

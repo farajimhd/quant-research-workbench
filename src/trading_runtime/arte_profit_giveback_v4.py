@@ -4,7 +4,7 @@ Projection alone does not prove source checkpoint ancestry. Journal admission
 must verify the referenced manager snapshot and original committed entry before
 this family can be registered for execution.
 """
-from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule, declared_fixed_exit_reason
 from dataclasses import dataclass, fields
 from datetime import date, timezone
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -125,7 +125,7 @@ def seal_profit_giveback_rows(client, rows, intents, events, *, prefix, first_pr
     from .strategy_engine import AssignmentStatus, StrategyPermissions
     from .arte_journal_commit_v4 import V4CommittedPrefix
     reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
-    parents={str(x['record_id']):x for x in intents if x['reason'] in reasons}
+    parents={str(x['record_id']):x for x in intents if (x['reason'] in reasons or declared_fixed_exit_reason(x['reason'], 'strategy-thirty-one-original-risk-profit-giveback-v1'))}
     event_map={str(x['record_id']):x for x in events}
     if (len(event_map)!=len(events) or len({str(x['record_id']) for x in intents})!=len(intents)
             or len(rows)!=len(parents)):

@@ -4,6 +4,7 @@ The caller must independently verify the prefix. The existing bounded original
 entry loader retains its committed-ancestry checks; this module binds that
 authority to the complete new exit witness and exact factory projection.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_exit_reason
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 from types import MappingProxyType
@@ -25,7 +26,7 @@ def validate_confirmed_ah_rows(
     if max(len(rows), len(intents), len(events)) > 65_536:
         raise ValueError('AH confirmation graph exceeds its bounded family limit')
     reasons = {confirmed_ah_reason(number) for number in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
-    parents = {str(p['record_id']): p for p in intents if p['reason'] in reasons}
+    parents = {str(p['record_id']): p for p in intents if (p['reason'] in reasons or declared_fixed_exit_reason(p['reason'], 'strategy.confirmed-ah-risk-failure.v1'))}
     event_map = {str(e['record_id']): e for e in events}
     if (len({str(p['record_id']) for p in intents}) != len(intents)
             or len(event_map) != len(events) or len(rows) != len(parents)):

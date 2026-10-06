@@ -8,7 +8,7 @@ entry-group lineage, but broker-state fingerprints, external reconciliation,
 and executable runtime restoration remain outside this stage.
 """
 from __future__ import annotations
-from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule, declared_fixed_exit_reason
 
 from dataclasses import dataclass, replace
 from copy import deepcopy
@@ -629,7 +629,7 @@ def _approved_strategy_one_oms_intent(
                 strategy_number=state.group["strategy_revision"] if (state.group["strategy_revision"] in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(state.group["strategy_revision"], 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9)
             if expected != approved_intent:
                 raise ValueError("Failure recovery differs from the exact scalar exit intent")
-        elif approved_intent.reason in profit_reasons:
+        elif (approved_intent.reason in profit_reasons or declared_fixed_exit_reason(approved_intent.reason, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
             from .arte_profit_giveback_v4 import restore_profit_giveback
             from .strategy_profit_giveback_exit import profit_giveback_exit_intent
             from .strategy_one_stateful import StrategyOneFinancialView
@@ -949,12 +949,12 @@ def load_recovered_strategy_one_oms_lineage(
     from .strategy_profit_giveback_exit import profit_giveback_reason
     profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
     for record_id, source in by_id.items():
-        if source.intent.reason in liquidity_reasons:
+        if (source.intent.reason in liquidity_reasons or declared_fixed_exit_reason(source.intent.reason, 'strategy-thirty-five-completed-liquidity-fade-v1')):
             raw, _ = load_liquidity_fade_failure(client, prefix, record_id)
             unsigned = {name for name, kind in LIQUIDITY_FADE_FAILURE.columns if kind.startswith('UInt')}
             liquidity_rows[record_id] = {name: int(value) if name in unsigned else value
                                          for name, value in raw.items()}
-        elif source.intent.reason in ah_reasons:
+        elif (source.intent.reason in ah_reasons or declared_fixed_exit_reason(source.intent.reason, 'strategy.confirmed-ah-risk-failure.v1')):
             raw, _ = load_confirmed_ah_failure(client, prefix, record_id)
             # The loader verifies stored hashes before native JSON UInt64
             # strings are adapted. Keep its raw row intact and pass a typed
@@ -966,7 +966,7 @@ def load_recovered_strategy_one_oms_lineage(
                 for name, value in raw.items()}
         elif source.intent.reason == REASON:
             failure_rows[record_id] = load_followthrough_failure(client, prefix, record_id)[0]
-        elif source.intent.reason in profit_reasons:
+        elif (source.intent.reason in profit_reasons or declared_fixed_exit_reason(source.intent.reason, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
             profit_rows[record_id] = load_committed_profit_giveback(
                 client, prefix, record_id, first_price_source=first_price_source)
     return tuple(RecoveredStrategyOneOmsLineage(
