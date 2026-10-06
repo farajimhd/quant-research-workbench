@@ -83,3 +83,12 @@ are selected independently by their calibration AP, and the known position
 state routes inference. Target actions never route predictions. Expert hashes,
 calibration replay, probability calibration and thresholds are frozen before
 new development evaluation; this adds no training or development-based tuning.
+
+`run_balanced_bias_campaign` tests two fixed architectures (lag and structured
+TCN) with 64 examples from each action per 256-row minibatch. It samples with
+replacement using the original TRAIN weights within each class. Its unweighted
+BCE therefore estimates the same equal-class objective as inverse-frequency
+loss weighting, with lower class-mass variance; it never applies both methods
+at once. The original TRAIN/calibration split and data remain unchanged. Size,
+quality and future heads receive no training in this action-only control.
+Select checkpoints only on calibration, then use the same frozen audit path.

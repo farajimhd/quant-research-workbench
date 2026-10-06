@@ -303,3 +303,34 @@ def test_branch_experts_choose_calibration_and_route_without_target_labels():
     np.testing.assert_allclose(route_experts(held,np.array([.8,.1,.7]),np.array([.2,.9,.3])),[.8,.9,.7])
     summaries[0]['selection']['calibration']['ENTRY']['average_precision']=float('nan')
     with pytest.raises(ValueError,match='finite'):select_branch_experts(summaries)
+
+
+def test_balanced_batches_have_fixed_quotas_and_preserve_within_class_weights():
+    from research.rl_trading.v6.run_balanced_bias_campaign import batches
+    actions=np.concatenate((np.zeros(2,np.int64),np.ones(4096,np.int64),np.full(64,2),np.full(8,3)))
+    weight=np.ones(len(actions));weight[1]=9
+    first=list(batches(actions,weight,seed=19));repeat=list(batches(actions,weight,seed=19))
+    for a,b in zip(first,repeat):
+        np.testing.assert_array_equal(a,b)
+        np.testing.assert_array_equal(np.bincount(actions[a],minlength=4),[64]*4)
+    selected=np.concatenate(first);positives=selected[actions[selected]==0]
+    assert .85<(positives==1).mean()<.95
+    with pytest.raises(ValueError,match='four TRAIN'):list(batches(actions[actions!=3],weight[actions!=3]))
+
+
+@pytest.mark.parametrize('device',['cpu']+(['cuda'] if torch.cuda.is_available() else []))
+def test_balanced_batch_real_optimizer_keeps_auxiliary_heads_untrained(device):
+    from research.rl_trading.v6.run_balanced_bias_campaign import run_epoch
+    from research.rl_trading.v6.run_bias_campaign import tensors
+    torch.set_num_threads(2);torch.manual_seed(17)
+    n=16;features=np.random.default_rng(17).normal(size=(n+1,147)).astype(np.float32);features[0]=0
+    data=dict(features=features,windows=np.arange(1,n+1)[:,None].repeat(120,axis=1),action=np.arange(n)%4,
+        weight=np.ones(n,np.float32),future=np.full((n,5),-1),quality=np.zeros(n,np.float32),ratio=np.full(n,np.nan,np.float32),
+        held=np.zeros((n,11),np.float32),market=np.zeros((n,147),np.float32),episode=['fixture']*n)
+    data['held'][data['action']>=2,0]=1
+    model=LocalWindowTeacher('lag',width=8).to(device);before={k:v.detach().clone() for k,v in model.named_parameters()}
+    result=run_epoch(model,tensors(data,dict(mean=[0.]*147,std=[1.]*147),device),torch.optim.AdamW(model.parameters(),lr=.001),epoch=1,batch_size=16)
+    assert result['sampled_action_counts']==[4]*4
+    assert not torch.equal(before['heads.entry.weight'],model.heads.entry.weight)
+    for k,v in model.named_parameters():
+        if k.startswith(('size.','forecast.','forecast_gru.','heads.quality.')):torch.testing.assert_close(v,before[k],rtol=0,atol=0)
