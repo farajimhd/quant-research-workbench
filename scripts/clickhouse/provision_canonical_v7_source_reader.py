@@ -13,7 +13,8 @@ import sys
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
-from research.level_book.v7.canonical_source_reader import PRINCIPAL, STEM, SourceReadPlan, storage_preflight, verify_grants
+from research.level_book.v7.canonical_source_reader import (PRINCIPAL, STEM, SourceReadPlan,
+    storage_preflight, verify_grants, QUERY_SETTINGS, resource_settings_sql, verify_resource_settings)
 from scripts.clickhouse.provision_trading_journal import SECRET_ROOT, _admin_client, _restrict_secret_file
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import URL, WORKSTATION_IPV4
 from src.runtime_paths import WORKSTATION_NAME
@@ -56,10 +57,11 @@ def apply_with_clients(plan, *, admin, private_credential, client_factory):
     if type(password) is not str or len(password)<40:raise ValueError('Private complete credential required')
     if present=='0':
         hashed=sha256(password.encode()).hexdigest()
-        admin.execute(f"CREATE USER {PRINCIPAL} IDENTIFIED WITH sha256_hash BY '{hashed}' HOST IP '172.16.0.0/12', IP '127.0.0.1', IP '::1'")
+        admin.execute(f"CREATE USER {PRINCIPAL} IDENTIFIED WITH sha256_hash BY '{hashed}' HOST IP '172.16.0.0/12', IP '127.0.0.1', IP '::1' SETTINGS {resource_settings_sql()}")
     reader=client_factory(PRINCIPAL,password)
     try:
         if reader.execute('SELECT currentUser()').strip()!=PRINCIPAL:raise ValueError('Foreign authenticated principal')
+        verify_resource_settings(reader)
         have=verify_grants(reader,plan,complete=False)
         for privilege,db,table in sorted(plan.grants-have):
             admin.execute(f'GRANT {privilege} ON {db}.{table} TO {PRINCIPAL}')
@@ -79,6 +81,7 @@ def main(argv=None):
         plan=SourceReadPlan(tuple(args.years),args.canonical_policy)
         if not args.apply:
             print(f'Plan only | {PRINCIPAL} | SELECT {len(plan.grants)} | INSERT 0 | DDL grants 0')
+            print('Bounded readonly profile: 1 thread, 180 seconds, 1 GiB memory; result overflow throws.')
             for _,db,table in sorted(plan.grants):print(f'  SELECT {db}.{table}')
             print('No connection, credential, grant or row changes.')
             return 0
@@ -92,7 +95,7 @@ def main(argv=None):
         try:
             apply_with_clients(plan,admin=admin,private_credential=credential,
                 client_factory=lambda user,password:ClickHouseHttpClient(transport,user,password,
-                    timeout_seconds=180,default_query_params={'readonly':1,'max_threads':1}))
+                    timeout_seconds=180,default_query_params=dict(QUERY_SETTINGS)))
         finally:admin.close()
         print('Exact SELECT grants and canonical placement verified; no data rows written.')
         return 0

@@ -47,6 +47,8 @@ class Client:
         self.queries.append(sql)
         if sql=='SELECT currentUser()':return m.PRINCIPAL
         if sql=='SHOW GRANTS FINAL':return '\n'.join(f'GRANT {p} ON {d}.{t} TO {m.PRINCIPAL}' for p,d,t in sorted(self.grants))
+        if sql.startswith("SELECT getSetting('readonly')"):
+            return json.dumps(dict(m.QUERY_SETTINGS))
         if 'FROM system.storage_policies' in sql:rows=[dict(disks=['canonical_disk'])]
         elif 'FROM system.parts' in sql:rows=[]
         elif 'FROM system.tables' in sql and 'storage_policy' in sql:rows=[dict(name=f'events_{y}',storage_policy=self.plan.canonical_policy) for y in self.plan.years]
@@ -161,6 +163,46 @@ def test_missing_grants(plan):
     assert m.verify_grants(c,plan,complete=False)==c.grants
 
 
+@pytest.mark.parametrize('key,value',[('readonly',0),('readonly',True),('max_threads',2),('max_memory_usage',0),
+    ('max_result_rows',0),('max_result_bytes',67108865),('max_execution_time',181),
+    ('result_overflow_mode','break'),('max_threads',True)])
+def test_private_resource_limits_fail_closed(plan,key,value):
+    client=Client(plan)
+    settings=dict(m.QUERY_SETTINGS);settings[key]=value
+    client.execute=lambda sql:json.dumps(settings)
+    with pytest.raises(ValueError,match='bounds'):m.verify_resource_settings(client)
+
+
+def test_versioned_profile_preserves_legacy_principal():
+    assert m.PRINCIPAL=='canonical_v7_source_reader_v2'
+    assert m.POLICY_ID=='canonical-v7-private-source-read@2'
+    sql=m.resource_settings_sql()
+    assert 'readonly=1 READONLY' in sql
+    assert "result_overflow_mode='throw' READONLY" in sql
+    assert sql.count('CHANGEABLE_IN_READONLY')==5
+
+
+def test_existing_unbounded_profile_stops_before_grants(plan):
+    reader=Client(plan);admin=Client(plan)
+    original=reader.execute
+    def execute(sql):
+        if sql.startswith("SELECT getSetting('readonly')"):
+            return json.dumps({**m.QUERY_SETTINGS,'max_memory_usage':0})
+        return original(sql)
+    reader.execute=execute
+    original_admin=admin.execute
+    def admin_execute(sql):
+        if sql=='SELECT currentUser()':return 'operator'
+        if 'FROM system.users' in sql:return '1'
+        return original_admin(sql)
+    admin.execute=admin_execute
+    with pytest.raises(ValueError,match='bounds'):
+        provision.apply_with_clients(plan,admin=admin,private_credential=lambda **k:'x'*48,
+            client_factory=lambda *a:reader)
+    assert reader.closed
+    assert not any(sql.startswith(('GRANT ','ALTER ','CREATE ')) for sql in admin.queries)
+
+
 def test_provision_plan_no_credentials_or_connections(monkeypatch,capsys):
     monkeypatch.setattr(provision,'_admin_client',lambda *a:pytest.fail('no admin in plan'))
     monkeypatch.setattr(provision,'credential',lambda **k:pytest.fail('no credential in plan'))
@@ -187,6 +229,31 @@ def test_actual_apply_is_exact_idempotent_and_closes(plan):
     writes.clear();reader.closed=False
     provision.apply_with_clients(plan,admin=admin,private_credential=lambda **k:'x'*48,client_factory=lambda *a:reader)
     assert not any(s.startswith('GRANT ') for s in writes)
+
+
+def test_new_principal_create_enforces_versioned_resource_constraints(plan):
+    reader=Client(plan);reader.grants.clear();writes=[];credential_calls=[]
+    class Admin(Client):
+        def execute(self,sql):
+            writes.append(sql)
+            if sql=='SELECT currentUser()':return 'operator'
+            if 'FROM system.users' in sql:return '0'
+            if sql.startswith('CREATE USER '):return ''
+            if sql.startswith('GRANT '):
+                _,permission,_,table,_,user=sql.split();db,name=table.split('.')
+                assert user==m.PRINCIPAL
+                reader.grants.add((permission,db,name));return ''
+            return super().execute(sql)
+    def credential(**kwargs):
+        credential_calls.append(kwargs);return 'x'*48
+    provision.apply_with_clients(plan,admin=Admin(plan),private_credential=credential,
+        client_factory=lambda *a:reader)
+    created=[sql for sql in writes if sql.startswith('CREATE USER ')]
+    assert len(created)==1 and created[0].startswith('CREATE USER canonical_v7_source_reader_v2 ')
+    assert created[0].endswith(' SETTINGS '+m.resource_settings_sql())
+    assert credential_calls==[{'account_exists':False}]
+    assert reader.closed and reader.grants==plan.grants
+    assert not any(sql.startswith(('ALTER ','INSERT ')) for sql in writes)
 
 
 @pytest.mark.parametrize('failure',['storage','extra-grants'])

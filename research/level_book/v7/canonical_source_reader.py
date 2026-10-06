@@ -10,8 +10,8 @@ import os
 from pathlib import Path
 import re
 
-PRINCIPAL = 'canonical_v7_source_reader'
-POLICY_ID = 'canonical-v7-private-source-read@1'
+PRINCIPAL = 'canonical_v7_source_reader_v2'
+POLICY_ID = 'canonical-v7-private-source-read@2'
 STEM = 'CANONICAL_V7_SOURCE_READ_CLICKHOUSE_'
 FILE_KEY = 'CANONICAL_V7_SOURCE_READ_CREDENTIAL_FILE'
 POLICY_KEY = 'CANONICAL_V7_SOURCE_READ_STORAGE_POLICY'
@@ -20,6 +20,32 @@ REFERENCE_TABLES = (('market_sip_compact','events_ordinal_continuity'),
                     ('q_live','historical_trade_reporting_coverage_v1'),
                     ('q_live','market_stock_split_v1'))
 SYSTEM_TABLES = ('tables','parts','storage_policies')
+QUERY_SETTINGS = dict(readonly=1,max_threads=1,max_execution_time=180,
+    max_memory_usage=1024**3,max_result_rows=100000,max_result_bytes=64*1024**2,
+    result_overflow_mode='throw')
+
+
+def resource_settings_sql():
+    """Fixed versioned limits; readonly clients may only lower bounded resources."""
+    return ', '.join(
+        "readonly=1 READONLY" if key=='readonly' else
+        "result_overflow_mode='throw' READONLY" if key=='result_overflow_mode' else
+        f'{key}={value} MIN 1 MAX {value} CHANGEABLE_IN_READONLY'
+        for key,value in QUERY_SETTINGS.items())
+
+
+def verify_resource_settings(client):
+    rows=_rows(client, 'SELECT '+','.join(f"getSetting('{key}') AS {key}"
+        for key in QUERY_SETTINGS)+' FORMAT JSONEachRow')
+    if len(rows)!=1 or set(rows[0])!=set(QUERY_SETTINGS):
+        raise ValueError('Canonical source resource settings shape differs')
+    for key,expected in QUERY_SETTINGS.items():
+        value=rows[0][key]
+        if (key=='readonly' and (type(value) is not int or value!=expected)
+                or key=='result_overflow_mode' and (type(value) is not str or value!=expected)
+                or key not in ('readonly','result_overflow_mode')
+                and (type(value) is not int or not 1<=value<=expected)):
+            raise ValueError('Canonical source resource settings exceed declared bounds')
 
 
 @dataclass(frozen=True)
@@ -170,14 +196,13 @@ def source_client(plan):
     if url != URL or user != PRINCIPAL or not password:
         raise ValueError('Canonical source private identity differs')
     raw = ClickHouseHttpClient(workstation_ipv4_transport(url),user,password,
-        timeout_seconds=180,persistent=True,default_query_params=dict(readonly=1,max_threads=1,
-        max_execution_time=180,max_memory_usage=1024**3,max_result_rows=100000,
-        max_result_bytes=64*1024**2,result_overflow_mode='throw'))
+        timeout_seconds=180,persistent=True,default_query_params=dict(QUERY_SETTINGS))
     client = SourceReader(raw)
     try:
         if client.execute('SELECT currentUser()').strip()!=PRINCIPAL:
             raise ValueError('Canonical source authenticated as foreign principal')
         verify_grants(client,plan)
+        verify_resource_settings(client)
         storage_preflight(client,plan)
         return client
     except BaseException:
