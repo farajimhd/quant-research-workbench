@@ -68,7 +68,9 @@ def main(argv=None):
     def evaluate(p,targets):
         reports=[];probabilities=[]
         for s,t in targets:
-            m,_,values=evaluate_probabilities(p,s,t,device);reports.append(m)
+            evidence={}
+            m,_,values=evaluate_probabilities(p,s,t,device,regression_evidence=evidence)
+            m.update(evidence);reports.append(m)
             probabilities.append(dict(day=s.day.isoformat(),values=values))
         return pool_gate_metrics(reports),reports,probabilities
     replay,reports,_=evaluate(policy,tiny)

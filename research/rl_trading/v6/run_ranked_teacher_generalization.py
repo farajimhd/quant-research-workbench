@@ -93,7 +93,7 @@ def build_policy(ranking, device, *, width=128, normalization=None):
     return policy
 
 
-def evaluate_probabilities(policy, session, targets, device):
+def evaluate_probabilities(policy, session, targets, device, *, regression_evidence=None):
     """Read current logits from the real evaluation; no extra forward/state step."""
     original = policy.decide; rows = []
     def capture(*args, **kwargs):
@@ -106,7 +106,7 @@ def evaluate_probabilities(policy, session, targets, device):
     policy.decide = capture
     try:
         metrics = asdict(train_session(policy, None, session, targets, (), device=device,
-            evaluation=True, evaluate_train=session.role == 'train', teacher_loss='branch-balanced-v3', regression_weights=(0., 0.)))
+            evaluation=True, evaluate_train=session.role == 'train', teacher_loss='branch-balanced-v3', regression_weights=(0., 0.), regression_evidence=regression_evidence))
     finally: policy.decide = original
     if len(rows) != len(targets): raise ValueError('Probability/target row count changed')
     p = np.asarray(rows); held = np.asarray([bool(len(d.held_index)) for d in targets])

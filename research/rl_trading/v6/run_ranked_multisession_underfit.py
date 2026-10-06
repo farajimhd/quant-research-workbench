@@ -42,6 +42,7 @@ def verify_coverage(selection, sessions):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--underfit', type=Path, required=True, help='Verified single-session normalization/input contract')
+    parser.add_argument('--normalization-source-dir', type=Path, help='Exact immutable producer of the frozen normalizer; never model initialization')
     parser.add_argument('--selection', type=Path, required=True)
     parser.add_argument('--initial-cache', type=Path, required=True)
     parser.add_argument('--initial-source', type=Path, required=True)
@@ -53,7 +54,9 @@ def main(argv=None):
     paths = [args.underfit, args.selection, args.initial_cache, args.initial_source, args.additional_cache, args.output]
     if not runtime.is_dir() or any(not p.resolve().is_relative_to(runtime) for p in paths) or args.output.exists() or not 1 <= args.epochs <= 400 or not torch.cuda.is_available():
         raise ValueError('Fresh bounded laptop CUDA experiment required')
-    prior, _ = admit_gate(args.underfit)
+    if args.normalization_source_dir is not None and not args.normalization_source_dir.resolve().is_relative_to(runtime):
+        raise ValueError('Normalizer producer snapshot must be in laptop runtime')
+    prior, _ = admit_gate(args.underfit, source_dir=args.normalization_source_dir)
     if not prior.get('normalization_sha256'):
         raise ValueError('Verified frozen TRAIN normalization required')
     selection = json.loads(args.selection.read_text())
@@ -110,8 +113,13 @@ def main(argv=None):
     if logger is None or logger.settings.mode != 'online': raise ValueError('Online W&B required')
     write('wandb.json', dict(id=logger.id, url=logger.url))
     def evaluate(p):
-        reports = [asdict(train_session(p, None, s, t, (), device=device, evaluation=True,
-            evaluate_train=True, teacher_loss='branch-balanced-v3', regression_weights=(0.,0.))) for s,t in sessions]
+        reports = []
+        for s,t in sessions:
+            evidence = {}
+            report = asdict(train_session(p, None, s, t, (), device=device, evaluation=True,
+                evaluate_train=True, teacher_loss='branch-balanced-v3', regression_weights=(0.,0.),
+                regression_evidence=evidence))
+            report.update(evidence); reports.append(report)
         return pool_gate_metrics(reports), reports
     passed = False
     try:

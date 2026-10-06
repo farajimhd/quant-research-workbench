@@ -44,13 +44,21 @@ def test_actual_cpu_training_resets_market_axes_across_sessions_and_replays():
     one,u=subset(session,labels,('A',),3_000_000,7_000_000)
     optimizer=torch.optim.AdamW(policy.parameters(),lr=.001)
     def evaluate():
-        return [asdict(train_session(policy,None,s,ds,(),device=torch.device('cpu'),evaluation=True,
-                    evaluate_train=True,teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))) for s,ds in ((full,t),(one,u))]
+        reports=[]
+        for s,ds in ((full,t),(one,u)):
+            evidence={}
+            r=asdict(train_session(policy,None,s,ds,(),device=torch.device('cpu'),evaluation=True,
+                evaluate_train=True,teacher_loss='branch-balanced-v3',regression_weights=(0.,0.),
+                regression_evidence=evidence))
+            r.update(evidence);reports.append(r)
+        return reports
     for s,ds in ((full,t),(one,u)):
         train_session(policy,optimizer,s,ds,(),device=torch.device('cpu'),teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))
         assert len(policy.ranker.seen)==len(s.listings)
     first=evaluate(); second=evaluate()
     assert first==second
+    for r in first:
+        assert r['allocation_error_sum']/r['allocation_weight']==r['allocation_ratio_mae']
     pooled=pool_gate_metrics(first)
     assert pooled['allocation_targets']==10
     assert not passes(pooled) # Missing held classes never establish success.

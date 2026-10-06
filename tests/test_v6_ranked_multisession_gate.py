@@ -47,5 +47,5 @@ def test_modified_checkpoint_normalization_or_producer_denies_admission(tmp_path
 
 def test_missing_auxiliary_or_cross_session_evidence_denies_admission(tmp_path):
     write=fixture(tmp_path);r=json.loads((tmp_path/'result.json').read_text())
-    r['sessions'][0]['allocation_ratio_mae']=.2;write('result.json',r)
+    r['sessions'][0]['allocation_ratio_mae']=.2;r['sessions'][0]['allocation_error_sum']=2.;write('result.json',r)
     with pytest.raises(ValueError,match='same-checkpoint'):admit_multisession(tmp_path,tmp_path)

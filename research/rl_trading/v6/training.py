@@ -284,7 +284,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                   evaluation: bool = False, learning_rate_for_clock=None,
                   teacher_loss: str = 'legacy',
                   learning_start_us: int | None = None,
-                  evaluate_train: bool = False, auxiliary_weights=None, regression_weights=(1.,1.)) -> TrainingMetrics:
+                  evaluate_train: bool = False, auxiliary_weights=None, regression_weights=(1.,1.),
+                  regression_evidence: dict | None = None) -> TrainingMetrics:
     """Train with 120 actual-candle histories and bounded chronological BPTT.
 
     Current opportunity targets are stamped at candle close. Their features
@@ -632,6 +633,13 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         raise ValueError('Teacher decision clock absent from certified candles')
     if next_outcome != len(outcomes):
         raise ValueError('Execution outcome occurs after last certified candle')
+    if regression_evidence is not None:
+        regression_evidence.update(
+            allocation_weight=float(ratio_weight), allocation_error_sum=float(ratio_sum),
+            action_quality_weights={name:float(quality_weight[i]) for i,name in enumerate(('ENTRY','EXIT'))},
+            action_quality_error_sums={name:float(quality_sum[i]) for i,name in enumerate(('ENTRY','EXIT'))},
+            forecast_quality_weights=[{name:float(future_quality_weight[h,i]) for i,name in enumerate(('ENTRY','EXIT'))} for h in range(5)],
+            forecast_quality_error_sums=[{name:float(future_quality_sum[h,i]) for i,name in enumerate(('ENTRY','EXIT'))} for h in range(5)])
     counts = {name: int(confusion[index].sum()) for index, name in
               enumerate(action_names)}
     precision, recall, f1 = {}, {}, {}
