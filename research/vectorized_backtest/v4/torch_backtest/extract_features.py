@@ -48,6 +48,8 @@ def main(argv=None):
     from research.rl_trading.v6.config import worker_plan
     from research.rl_trading.v6.bank import write_bank
     from research.rl_trading.v6.build import _ordered_bounded
+    from .source.arte_source import population as research_population
+    from .encoding.config import DEFAULT_EXCLUDED_TICKERS
     import psutil
     if args.previous_date and args.previous_date>=args.date:raise ValueError('Previous feature day must precede current day')
     output=require_runtime(args.output);load_env_files(discover_clickhouse_env_files(),verbose=False)
@@ -58,7 +60,9 @@ def main(argv=None):
     reader=arte_source.reader(threads=1)
     try:
         storage=arte_source.storage_check(reader);reference_storage=reference_features.storage_check(reader)
-        population,proof=arte_source.population(reader,current,args.date)
+        population,proof=research_population(reader,current,args.date,
+            diagnostic_directory=output/'population-audit',excluded_tickers=DEFAULT_EXCLUDED_TICKERS,
+            regular_us_exchanges_only=True)
         population,scope=scope_population(reader,population)
         counts=one_second_counts(reader,current,args.date,[r['ticker'] for r in population])
     finally:reader.close()
