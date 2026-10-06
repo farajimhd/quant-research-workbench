@@ -12,8 +12,9 @@ def run(nodes,x,output=None,mask=None):
     return TorchPrograms([p],CATALOG)(x,torch.ones_like(x,dtype=torch.bool) if mask is None else mask)
 
 def test_full_catalog():
-    assert len(CATALOG)==147 and len({f.name for f in CATALOG})==147
-    x=torch.ones(4,147);x[:,20]=0
+    assert len(CATALOG)==149 and len({f.name for f in CATALOG})==149
+    assert [f.name for f in CATALOG[147:]]==['split_this_session','reverse_split_this_session']
+    x=torch.ones(4,len(CATALOG));x[:,20]=0
     mask=validity(x)
     assert not mask[:,14:20].any() and mask[:,20].all()
 

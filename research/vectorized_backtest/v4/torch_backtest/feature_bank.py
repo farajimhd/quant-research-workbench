@@ -37,6 +37,8 @@ def catalog():
             for i,name in enumerate(LEVELS):
                 unit='ratio' if i<3 else 'log_count' if i<5 else 'log_duration' if i==5 else 'bool'
                 out.append(Feature(f'v7.{side}.{slot}.{name}',unit,-10. if i<3 else 0.,10. if i<3 else 30. if i<6 else 1.,None if i==10 else start+10))
+    # Derived consumer inputs; the original 147 bank channels keep their IDs.
+    out.extend(Feature(name,'bool',0.,1.) for name in ('split_this_session','reverse_split_this_session'))
     return tuple(out)
 
 CATALOG=catalog()
@@ -87,9 +89,13 @@ class CertifiedBank:
         if basis is not None:
             from .splits import rvol_view
             x=rvol_view(x,basis[identity]['rvol_price_factor'])
+        from .splits import append_session_flags
+        x=append_session_flags(x,basis[identity] if basis is not None else None)
         if previous is not None and identity in previous.manifest['offsets']:
             a,b=previous.manifest['offsets'][identity];a=max(a,b-119)
             old=np.concatenate((previous.scalar[a:b],previous.levels[a:b].reshape(-1,110)),axis=1)
+            previous_basis=getattr(previous,'split_basis',None)
+            old=append_session_flags(old,previous_basis[identity] if previous_basis is not None else None)
             if basis is not None:
                 from .splits import history_view,rvol_view
                 old=rvol_view(old,previous.split_basis[identity]['rvol_price_factor'])

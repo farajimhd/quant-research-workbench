@@ -5,7 +5,7 @@ Raw market/broker prices are never changed. Indicators and V7 distances are
 ratios and remain invariant under a uniform change of share basis. Historical
 fundamental observations remain their original point-in-time observations.
 """
-from datetime import date
+from datetime import date,timedelta,datetime,timezone
 import math
 import numpy as np
 import json
@@ -23,6 +23,11 @@ def load_basis(path, bank, previous, mapping, *, rvol_only=False):
         raise ValueError('Invalid split evidence certificate')
     if value['day'] != bank.day['day'] or value['bank_certificate_sha256'] != bank.certificate_hash:
         raise ValueError('Split evidence not bound to current bank')
+    from research.rl_trading.v1.reference_features import opening
+    expected_opening=opening(date.fromisoformat(bank.day['day']))
+    if value.get('opening_asof_utc')!=expected_opening:
+        raise ValueError('Split evidence opening cutoff mismatch')
+    cutoff=datetime.fromisoformat(expected_opening).replace(tzinfo=timezone.utc)
     if not rvol_only and value['previous_bank_certificate_sha256'] != (previous.certificate_hash if previous else None):
         raise ValueError('Split evidence not bound to previous bank')
     if set(value['listings']) != set(mapping):
@@ -32,13 +37,34 @@ def load_basis(path, bank, previous, mapping, *, rvol_only=False):
         if evidence['ticker'] != mapping[identity]:
             raise ValueError('Split evidence listing identity mismatch')
         rows = evidence['splits']
+        for row in rows:
+            inserted=datetime.fromisoformat(str(row['inserted_at']).replace('Z','+00:00'))
+            if inserted.tzinfo is None:inserted=inserted.replace(tzinfo=timezone.utc)
+            if date.fromisoformat(str(row['execution_date']))>date.fromisoformat(bank.day['day']) or inserted>cutoff:
+                raise ValueError('Split evidence was not effective and known at session opening')
         # Recompute rather than trusting serialized factors.
         result[identity] = dict(rvol_price_factor=price_factor(rows, bank.day['previous_day'], bank.day['day']) if bank.day.get('previous_day') else 1.)
         if not rvol_only:
             result[identity]['history_price_factor']=price_factor(rows, previous.day['day'], bank.day['day']) if previous else 1.
         if result[identity] != {key: evidence[key] for key in result[identity]}:
             raise ValueError('Split factor arithmetic mismatch')
+        opening_factor=price_factor(rows,date.fromisoformat(bank.day['day'])-timedelta(days=1),bank.day['day'])
+        changed=not math.isclose(opening_factor,1.,rel_tol=1e-12,abs_tol=0.)
+        result[identity].update(split_this_session=changed,reverse_split_this_session=changed and opening_factor>1.)
     return result, file_hash(path)
+
+
+def append_session_flags(features, basis=None):
+    """Two searchable flags after the unchanged 147 V6 bank channels.
+
+    Real input loading requires the sidecar. The existing split-presence/age
+    features provide a fallback for synthetic contract fixtures only.
+    """
+    if basis is not None and 'split_this_session' in basis:
+        flags=np.broadcast_to(np.array([basis['split_this_session'],basis['reverse_split_this_session']],dtype=np.float32),(len(features),2))
+    else:
+        flags=np.column_stack(((features[:,32]==1)&(features[:,31]==0),(features[:,34]==1)&(features[:,33]==0))).astype(np.float32)
+    return np.concatenate((features,flags),axis=1)
 
 
 def price_factor(rows, previous_day, day):

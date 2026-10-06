@@ -4,7 +4,7 @@ from research.vectorized_backtest.v4.torch_backtest.splits import price_factor, 
 
 
 def row(day, before, after):
-    return dict(execution_date=day, split_from=before, split_to=after)
+    return dict(execution_date=day, split_from=before, split_to=after,inserted_at='2026-07-01 08:00:00.000000')
 
 
 @pytest.mark.parametrize('before,after', [(1, 2), (10, 1)])
@@ -82,7 +82,7 @@ def test_certificate_binding_and_arithmetic_are_enforced(tmp_path):
     from research.vectorized_backtest.v4.torch_backtest.splits import VERSION, load_basis
     previous = SimpleNamespace(day={'day': '2026-07-31'}, certificate_hash='prior-bank')
     current = SimpleNamespace(day={'day': '2026-08-03', 'previous_day': '2026-07-31'}, certificate_hash='current-bank')
-    value = dict(version=VERSION, status='complete', day='2026-08-03', bank_certificate_sha256='current-bank',
+    value = dict(version=VERSION, status='complete', day='2026-08-03', opening_asof_utc='2026-08-03 08:00:00.000000000',bank_certificate_sha256='current-bank',
         previous_bank_certificate_sha256='prior-bank', listings={'stock': dict(ticker='ABC',
         splits=[row('2026-08-03', 1, 2)], history_price_factor=.5, rvol_price_factor=.5)})
     path = tmp_path / 'splits.json'
@@ -92,6 +92,7 @@ def test_certificate_binding_and_arithmetic_are_enforced(tmp_path):
     save()
     basis, _ = load_basis(path, current, previous, {'stock': 'ABC'})
     assert basis['stock']['history_price_factor'] == .5
+    assert basis['stock']['split_this_session'] and not basis['stock']['reverse_split_this_session']
     value['listings']['stock']['history_price_factor'] = 1.
     save()
     with pytest.raises(ValueError, match='arithmetic'):
@@ -100,3 +101,31 @@ def test_certificate_binding_and_arithmetic_are_enforced(tmp_path):
     save()
     with pytest.raises(ValueError, match='current bank'):
         load_basis(path, current, previous, {'stock': 'ABC'})
+
+
+@pytest.mark.parametrize('factor,split,reverse', [(1.,False,False),(.5,True,False),(10.,True,True)])
+def test_searchable_session_flags_are_current_asof_and_vectorized(factor,split,reverse,tmp_path):
+    import json
+    from types import SimpleNamespace
+    from research.rl_trading.v1.common import digest
+    from research.vectorized_backtest.v4.torch_backtest.splits import VERSION, load_basis, append_session_flags
+    from research.vectorized_backtest.v4.torch_backtest.feature_bank import CATALOG,validity
+    from research.vectorized_backtest.v4.torch_backtest.program import Node,Program,Op,TorchPrograms
+    import torch
+    bank=SimpleNamespace(day={'day':'2026-08-03','previous_day':None},certificate_hash='bank')
+    actions=[] if factor==1 else [row('2026-08-03',factor,1)]
+    value=dict(version=VERSION,status='complete',day='2026-08-03',opening_asof_utc='2026-08-03 08:00:00.000000000',bank_certificate_sha256='bank',previous_bank_certificate_sha256=None,
+        listings={'stock':dict(ticker='ABC',splits=actions,history_price_factor=1.,rvol_price_factor=1.)})
+    value['hash']=digest(value);path=tmp_path/'actions.json';path.write_text(json.dumps(value))
+    basis,_=load_basis(path,bank,None,{'stock':'ABC'})
+    features=torch.from_numpy(append_session_flags(np.zeros((3,147),dtype=np.float32),basis['stock']))
+    assert features.shape==(3,149)
+    for index,expected in ((147,split),(148,reverse)):
+        program=Program((Node(Op.FEATURE,feature=index),),0)
+        output,known=TorchPrograms([program],CATALOG)(features,validity(features))
+        assert known.all() and (output==int(expected)).all()
+    for action in (row('2026-08-04',100,1),{**row('2026-08-03',1,2),'inserted_at':'2026-08-03 08:00:00.001'}):
+        value['listings']['stock']['splits']=[action]
+        value['hash']=digest({k:v for k,v in value.items() if k!='hash'});path.write_text(json.dumps(value))
+        with pytest.raises(ValueError,match='known at session opening'):
+            load_basis(path,bank,None,{'stock':'ABC'})

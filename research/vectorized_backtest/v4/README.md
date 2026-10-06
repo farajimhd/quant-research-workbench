@@ -96,6 +96,11 @@ are supported; date-only reference evidence does not establish support for an
 intraday corporate-action event. Accounts begin flat and finish flat each day.
 Forward/reverse split conversion and loader binding have focused CPU coverage;
 historical split evidence and GPU qualification remain launch gates.
+The 147 V6 input IDs remain unchanged. V4 appends two searchable Boolean
+inputs: split_this_session (either direction) and reverse_split_this_session.
+They come from the opening-known sidecar and can combine with the existing
+float, shares outstanding, split presence and split-age channels. Historical
+prefix flags describe their original session, not the current session.
 
 Implementation is under qualification. Do not start a full campaign until all30
 training banks/identity maps/execution snapshots are certified and the same-source
