@@ -258,3 +258,35 @@ def test_current_and_autoregressive_auxiliary_heads_backpropagate(device,shared)
     for head in (model.heads.entry,model.heads.exit,model.forecast_gru):
         assert any(p.grad is not None and p.grad.abs().sum()>0 for p in head.parameters())
         assert all(torch.isfinite(p.grad).all() for p in head.parameters() if p.grad is not None)
+
+
+def test_frozen_public_audit_excludes_old_dates_and_rejects_role_drift():
+    from research.rl_trading.v6.audit_bias_campaign import new_public_records
+    from research.rl_trading.v6.bias_panel import FOLDS,EXTENDED_FOLDS
+    days=EXTENDED_FOLDS['development']
+    source={'sessions':{day:dict(begin_us=i*100,end_us=(i+1)*100,role='development') for i,day in enumerate(days)}}
+    features=np.zeros((7,147),np.float32)
+    original=dict(features=features,clock=np.arange(len(days))*100+1,action=np.arange(len(days))%4,
+        episode=list(days),windows=np.arange(len(days))[:,None])
+    selected,records=new_public_records(original,source)
+    assert selected==[day for day in days if day not in FOLDS['development']]
+    assert records['features'] is features and records['episode']==selected
+    np.testing.assert_array_equal(records['windows'],original['windows'][2:])
+    source['sessions'][selected[0]]['role']='sealed_test'
+    with pytest.raises(ValueError,match='public development'):new_public_records(original,source)
+    source['sessions'][selected[0]]['role']='development'
+    with pytest.raises(ValueError,match='empty'):new_public_records({**original,'clock':original['clock'][:2],'action':original['action'][:2]},source)
+
+
+def test_completed_panel_audit_rejects_byte_or_manifest_drift(tmp_path):
+    import json
+    from research.rl_trading.v1.common import digest,file_hash
+    from research.rl_trading.v6.audit_bias_campaign import checked_panel
+    (tmp_path/'panel.pt').write_bytes(b'authenticated tensor bytes')
+    manifest=dict(scope='public_only');manifest['hash']=digest(manifest)
+    (tmp_path/'manifest.json').write_text(json.dumps(manifest))
+    proof=dict(status='prepared',panel_sha256=file_hash(tmp_path/'panel.pt'),manifest_sha256=file_hash(tmp_path/'manifest.json'))
+    (tmp_path/'complete.json').write_text(json.dumps(proof))
+    assert checked_panel(tmp_path)==(proof,manifest)
+    (tmp_path/'panel.pt').write_bytes(b'corrupted')
+    with pytest.raises(ValueError,match='changed'):checked_panel(tmp_path)

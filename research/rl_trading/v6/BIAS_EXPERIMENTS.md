@@ -66,3 +66,15 @@ Use fresh output roots. A changed input contract requires a new panel; do not
 reuse a stored-row export as if it contained 120 valid-price context candles.
 Preserve invalidated experiment artifacts and clearly mark them in W&B;
 never use their metrics for model selection.
+
+`compose_bias_exports` can assemble the fixed six-day control from authenticated
+per-day exports while the four additional public development sessions prepare.
+It copies no new targets into that control and preserves exact source hashes.
+After the campaign freezes a calibration-selected checkpoint, use
+`audit_bias_campaign --parent CAMPAIGN --parent-panel SIX_DAY_PANEL --panel
+TEN_DAY_PANEL --output FRESH_RUNTIME` to evaluate Aug27/Aug28/Sep1/Sep3 without
+retraining. This audit requires identical original TRAIN/calibration exports,
+normalization and model source, verifies checkpoint identity and replays its
+calibration metrics exactly. It rejects role drift or empty admitted days. W&B
+records aggregate and per-day rare-action metrics. Previously inspected Aug24
+and Aug25 remain exploratory results, not independent validation.
