@@ -1,5 +1,7 @@
 # TradingView research indicators v1
 
+For improved structural presentation and a rolling reaction window, use `../v2/structural_zones.pine` instead. The v1 structural script remains preserved for comparison; v1 MACD and jump-alert scripts remain current.
+
 Copy one complete `.pine` file into TradingView's Pine Editor, save it, and add it to a standard candle chart. Each file is standalone Pine Script v6. Start on a 1-second chart if your subscription/feed provides it; 5-second or 1-minute charts also work, with different results. Enable extended-hours data if you want premarket/after-hours observations. These are exploratory approximations, not certified repo signals or execution strategies.
 
 ## Structural zones

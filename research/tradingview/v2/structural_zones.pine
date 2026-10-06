@@ -1,0 +1,164 @@
+//@version=6
+indicator("Research: structural reaction levels v2", overlay = true, max_lines_count = 40, max_labels_count = 40, max_boxes_count = 40, max_bars_back = 1200)
+
+days = input.int(30, "Rolling history (calendar days)", minval = 1, maxval = 365)
+leftBars = input.int(10, "Pivot left bars", minval = 1, maxval = 500)
+rightBars = input.int(10, "Pivot confirmation bars", minval = 1, maxval = 500)
+bucketPct = input.float(0.1, "Fixed price bucket width (%)", minval = 0.01, maxval = 5, step = 0.01)
+atrLength = input.int(14, "Reaction ATR length", minval = 2, maxval = 500)
+minimumATR = input.float(0.5, "Minimum confirmed move away (ATR)", minval = 0, step = 0.1)
+separation = input.int(300, "Independent same-side reactions: separation seconds", minval = 0)
+minimumCount = input.int(3, "Minimum independent reactions", minval = 1)
+minimumDays = input.int(2, "Minimum distinct reaction days", minval = 1)
+halfLife = input.float(10, "Evidence recency half-life (days)", minval = 0.1)
+perSide = input.int(3, "Levels above / below price", minval = 1, maxval = 10)
+maxDistance = input.float(3, "Maximum distance from price (%)", minval = 0.1)
+showBands = input.bool(false, "Show faint central 80% reaction bands")
+bandTransparency = input.int(95, "Band transparency", minval = 80, maxval = 100)
+minimumWidth = input.float(0.01, "Minimum band half-width (%)", minval = 0, step = 0.01)
+sampleLimit = input.int(10000, "Maximum retained pivots (error if exhausted)", minval = 100, maxval = 20000)
+
+type Reaction
+    float price
+    int pivotTime
+    int availableTime
+    int day
+    int side
+    float strength
+
+type Zone
+    array<float> prices
+    int supports = 0
+    int resistances = 0
+    int lastSupport = na
+    int lastResistance = na
+    int lastDay = na
+    int distinctDays = 0
+    float score = 0
+
+var samples = array.new<Reaction>()
+var drawnLines = array.new<line>()
+var drawnLabels = array.new<label>()
+var drawnBands = array.new<box>()
+var status = table.new(position.top_right, 1, 4)
+var int firstLoaded = time
+var int processed = 0
+var int filtered = 0
+var int lastProcessed = na
+var float referencePrice = na
+var int referenceTime = na
+int windowMs = days * 86400000
+int loadCutoff = last_bar_time - windowMs
+float stepLog = math.log(1 + bucketPct / 100)
+float ph = ta.pivothigh(high, leftBars, rightBars)
+float pl = ta.pivotlow(low, leftBars, rightBars)
+float atr = ta.atr(atrLength)
+int exchangeDay = time("1D")
+
+record(float price, int side) =>
+    float movement = side == 1 ? close - price : price - close
+    float strength = atr[rightBars] > 0 ? movement / atr[rightBars] : na
+    bool accepted = price > 0 and time[rightBars] >= loadCutoff and not na(strength) and strength >= minimumATR
+    if accepted
+        if array.size(samples) >= sampleLimit
+            runtime.error("Retained pivot limit reached. Shorten history, increase pivot lengths / reaction threshold, or raise the explicit limit.")
+        array.push(samples, Reaction.new(price, time[rightBars], time_close, exchangeDay[rightBars], side, strength))
+    accepted
+
+if barstate.isfirst and (not timeframe.isintraday or na(timeframe.in_seconds()))
+    runtime.error("Use a standard time-based intraday candle chart.")
+
+if barstate.isconfirmed and time >= loadCutoff
+    processed += 1
+    lastProcessed := time
+    referencePrice := close
+    referenceTime := time_close
+    // Expire by the reaction's actual time, not by most recent cluster contact.
+    while array.size(samples) > 0
+        Reaction oldest = array.get(samples, 0)
+        if oldest.pivotTime < time - windowMs
+            array.shift(samples)
+        else
+            break
+    if not na(ph)
+        bool accepted = record(ph, -1)
+        if not accepted
+            filtered += 1
+    if not na(pl)
+        bool accepted = record(pl, 1)
+        if not accepted
+            filtered += 1
+
+// Rebuild only at the historical/live boundary and on completed live bars.
+// The drawing is an as-of-now snapshot, even when extended over past candles.
+if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
+    while array.size(drawnLines) > 0
+        line.delete(array.pop(drawnLines))
+    while array.size(drawnLabels) > 0
+        label.delete(array.pop(drawnLabels))
+    while array.size(drawnBands) > 0
+        box.delete(array.pop(drawnBands))
+    zones = array.new<Zone>()
+    lookup = map.new<int, int>()
+    int independent = 0
+    if array.size(samples) > 0
+        for j = 0 to array.size(samples) - 1
+            Reaction r = array.get(samples, j)
+            int key = int(math.floor(math.log(r.price) / stepLog))
+            if not map.contains(lookup, key)
+                map.put(lookup, key, array.size(zones))
+                array.push(zones, Zone.new(array.new<float>()))
+            Zone z = array.get(zones, map.get(lookup, key))
+            int previous = r.side == 1 ? z.lastSupport : z.lastResistance
+            if na(previous) or r.pivotTime - previous >= separation * 1000
+                array.push(z.prices, r.price)
+                independent += 1
+                if r.side == 1
+                    z.supports += 1
+                    z.lastSupport := r.pivotTime
+                else
+                    z.resistances += 1
+                    z.lastResistance := r.pivotTime
+                if na(z.lastDay) or r.day != z.lastDay
+                    z.distinctDays += 1
+                    z.lastDay := r.day
+                float ageDays = math.max(0, (referenceTime - r.availableTime) / 86400000.0)
+                z.score += math.min(r.strength, 5) * math.pow(0.5, ageDays / halfLife)
+    distances = array.new<float>()
+    if array.size(zones) > 0
+        for j = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, j)
+            array.sort(z.prices)
+            float center = array.size(z.prices) > 0 ? array.median(z.prices) : na
+            float distance = math.abs(center / referencePrice - 1) * 100
+            bool qualified = array.size(z.prices) >= minimumCount and z.distinctDays >= minimumDays and distance <= maxDistance
+            array.push(distances, qualified ? distance : 1e20)
+        ranked = array.sort_indices(distances, order.ascending)
+        int above = 0
+        int below = 0
+        for k = 0 to array.size(ranked) - 1
+            int j = array.get(ranked, k)
+            Zone z = array.get(zones, j)
+            if array.get(distances, j) < 1e20
+                float center = array.median(z.prices)
+                bool overhead = center >= referencePrice
+                if (overhead and above < perSide) or (not overhead and below < perSide)
+                    float lo = math.min(array.percentile_linear_interpolation(z.prices, 10), center * (1 - minimumWidth / 100))
+                    float hi = math.max(array.percentile_linear_interpolation(z.prices, 90), center * (1 + minimumWidth / 100))
+                    color ink = referencePrice > hi ? color.green : referencePrice < lo ? color.red : color.orange
+                    int start = math.min(chart.left_visible_bar_time, time)
+                    int finish = math.max(time + 1000, chart.right_visible_bar_time)
+                    array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1))
+                    string caption = str.tostring(center, format.mintick) + " | S" + str.tostring(z.supports) + "/R" + str.tostring(z.resistances) + " | " + str.tostring(z.distinctDays) + "d | evidence " + str.tostring(z.score, "#.0")
+                    array.push(drawnLabels, label.new(time, center, caption, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = ink, size = size.small))
+                    if showBands
+                        array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 85), bgcolor = color.new(ink, bandTransparency)))
+                    if overhead
+                        above += 1
+                    else
+                        below += 1
+    float loadedSpan = (lastProcessed - math.max(firstLoaded, loadCutoff)) / 86400000.0
+    table.cell(status, 0, 0, "Approximation v2 | confirmed snapshot | " + timeframe.period)
+    table.cell(status, 0, 1, "Loaded span " + str.tostring(loadedSpan, "#.##") + "/" + str.tostring(days) + "d | bars " + str.tostring(processed))
+    table.cell(status, 0, 2, "Retained pivots " + str.tostring(array.size(samples)) + " | independent " + str.tostring(independent) + " | filtered " + str.tostring(filtered))
+    table.cell(status, 0, 3, firstLoaded > loadCutoff ? "History shorter than requested | evidence is not probability" : "History reaches cutoff | evidence is not probability", text_color = firstLoaded > loadCutoff ? color.orange : color.gray)
