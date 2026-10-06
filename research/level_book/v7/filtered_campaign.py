@@ -14,6 +14,8 @@ import sys
 import time
 from types import SimpleNamespace
 import uuid
+import json
+from contextlib import closing
 
 import psutil
 from rich.console import Console, Group
@@ -29,6 +31,7 @@ from src.market_engine.filtered_v7_history import kernel, successor
 from src.runtime_paths import WORKSTATION_NAME
 
 NAME = 'filtered-v7-workstation-v1'
+_WORKER_SOURCE_PLAN = None
 EXECUTION_FILES = ('research/level_book/v7/filtered_campaign.py',
     'research/level_book/v7/filtered_prefix.py', 'research/level_book/v7/workstation.py',
     'scripts/prepare_filtered_v7.py', 'src/market_engine/filtered_v7_history.py',
@@ -79,9 +82,65 @@ def checked_plan(folder):
     return plan
 
 
+def declared_source_plan(plan):
+    """An explicit scoped declaration selects preparation reads, not finance."""
+    from .canonical_source_reader import parse_source_contract, FILE_KEY, POLICY_KEY
+    proof=plan.get('scoped_authority')
+    if proof is None:
+        if os.environ.get(FILE_KEY) or os.environ.get(POLICY_KEY):
+            raise ValueError('Canonical source credential/policy requires its declared scoped manifest')
+        return None
+    if (type(proof) is not dict or proof.get('schema')!='canonical-v7-scoped-development-campaign@1'
+            or proof.get('scope_proof_hash')!=c.digest({k:v for k,v in proof.items() if k!='scope_proof_hash'})):
+        raise ValueError('Declared scoped source proof differs')
+    paths=('research/level_book/v7/canonical_scoped_campaign.py',
+           'scripts/prepare_canonical_v7_scoped_campaign.py',
+           'research/level_book/v7/canonical_source_reader.py',
+           'scripts/clickhouse/provision_canonical_v7_source_reader.py')
+    if proof.get('exporter_sources')!={p:sha256((c.REPO/p).read_bytes()).hexdigest() for p in paths}:
+        raise ValueError('Scoped exporter/source-reader source bytes differ')
+    selected=parse_source_contract(proof.get('source_read_contract'))
+    if os.environ.get(POLICY_KEY)!=selected.canonical_policy or not os.environ.get(FILE_KEY):
+        raise ValueError('Declared canonical source policy/private FILE binding differs')
+    return selected
+
+
+def close_declared_worker_source():
+    global _WORKER_SOURCE_PLAN
+    if _WORKER_SOURCE_PLAN is not None:
+        client=c.CLIENTS.pop(1,None)
+        if client is not None:client.close()
+        _WORKER_SOURCE_PLAN=None
+
+
+def initialize_filtered_worker(contract=None):
+    """Legacy initializer unchanged; declared workers never discover credentials."""
+    global _WORKER_SOURCE_PLAN
+    if contract is None:
+        if _WORKER_SOURCE_PLAN is not None:
+            raise ValueError('Cannot switch a declared worker to legacy source transport')
+        initialize_worker()
+        return
+    from .canonical_source_reader import parse_source_contract, source_client, POLICY_KEY, FILE_KEY
+    selected=parse_source_contract(contract)
+    if (c.CLIENTS or _WORKER_SOURCE_PLAN is not None or os.environ.get(POLICY_KEY)!=selected.canonical_policy
+            or not os.environ.get(FILE_KEY)):
+        raise ValueError('Canonical worker inherited cached transport or mismatched profile')
+    signal.signal(signal.SIGINT,signal.SIG_IGN)
+    c.CLIENTS[1]=source_client(selected)
+    _WORKER_SOURCE_PLAN=selected
+    from multiprocessing.util import Finalize
+    Finalize(None,close_declared_worker_source,exitpriority=10)
+
+
 def execute(root, folder, row):
     root,folder = Path(root),Path(folder)
-    checked_plan(folder)
+    execution=checked_plan(folder)
+    selected=declared_source_plan(execution)
+    if selected is not None:
+        from .canonical_source_reader import SourceReader
+        if selected!=_WORKER_SOURCE_PLAN or type(c.CLIENTS.get(1)) is not SourceReader:
+            raise ValueError('Declared worker source transport is not independently initialized')
     parent = c.read(root/row['parent']/'plan.json')
     if parent['plan_hash'] != row['parent_hash'] or c.digest({k:v for k,v in parent.items() if k!='plan_hash'}) != row['parent_hash']:
         raise ValueError('Frozen parent campaign changed')
@@ -142,6 +201,7 @@ def render(state, width=100, height=30, page=1):
 
 
 def run(root, folder, plan, budget):
+    selected=declared_source_plan(plan)
     console=Console();progress={};rows={r['ticker']:dict(state=r['state'],reason=r.get('reason','')) for r in plan['rows']}
     pending=deque(r for r in plan['rows'] if r['state']=='queued');active={}
     with c.exclusive(folder/'controller.lock'):
@@ -153,7 +213,8 @@ def run(root, folder, plan, budget):
             source_files=c.hashes(),scheduler_hashes=execution_hashes(),budget=budget,
             host=os.environ.get('COMPUTERNAME'),python=sys.executable,at=c.now()))
         old=signal.signal(signal.SIGINT,lambda *_:(folder/'STOP').touch())
-        pool=ProcessPoolExecutor(max_workers=budget['workers'],mp_context=multiprocessing.get_context('spawn'),initializer=initialize_worker)
+        pool=ProcessPoolExecutor(max_workers=budget['workers'],mp_context=multiprocessing.get_context('spawn'),
+            initializer=initialize_filtered_worker,initargs=(selected.payload() if selected is not None else None,))
         last_plain=0
         try:
             with Live(console=console,auto_refresh=False,vertical_overflow='crop') as display:
@@ -244,8 +305,15 @@ def main():
     if Catalog(root).fingerprint!=plan['catalog_hash']:raise ValueError('Published campaign authority changed; export a new named plan')
     maximum=resource_budget(os.cpu_count() or 1,psutil.virtual_memory().available)
     budget=resource_budget(os.cpu_count() or 1,psutil.virtual_memory().available,args.workers if args.workers is not None else min(16,maximum['maximum_workers']))
-    c.load_env_files(c.discover_clickhouse_env_files(),verbose=False)
-    if c.query('SELECT hostName() host')[0]['host'].upper()!=WORKSTATION_NAME:raise ValueError('ClickHouse is not the workstation authority')
+    selected=declared_source_plan(plan)
+    if selected is None:
+        c.load_env_files(c.discover_clickhouse_env_files(),verbose=False)
+        host=c.query('SELECT hostName() host')[0]['host']
+    else:
+        from .canonical_source_reader import source_client
+        with closing(source_client(selected)) as reader:
+            host=json.loads(reader.execute('SELECT hostName() host FORMAT JSONEachRow').strip())['host']
+    if host.upper()!=WORKSTATION_NAME:raise ValueError('ClickHouse is not the workstation authority')
     console.print(f"Pinned code/Python/NumPy/SciPy verified | {budget['workers']} processes | 1 SQL thread each")
     console.print(f"{budget['available_gib']} GiB free | {budget['admitted_memory_gib']} GiB admission budget | {folder}")
     if args.command=='preflight':return 0

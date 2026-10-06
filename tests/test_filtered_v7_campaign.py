@@ -31,7 +31,7 @@ def test_stopped_campaign_never_starts_ticker_writer(tmp_path,monkeypatch):
     parent=dict(plan_hash='parent',rows=[dict(ticker='TEST')])
     parent['plan_hash']=f.c.digest({k:v for k,v in parent.items() if k!='plan_hash'})
     f.c.write(tmp_path/'main/plan.json',parent)
-    monkeypatch.setattr(f,'checked_plan',lambda _:None)
+    monkeypatch.setattr(f,'checked_plan',lambda _: {})
     monkeypatch.setattr(f,'successor',lambda *args:(tmp_path/'out',dict(plan_hash='out')))
     folder=tmp_path/'job';folder.mkdir();(folder/'STOP').touch()
     row=dict(parent='main',parent_hash=parent['plan_hash'],ticker='TEST',output='out',plan_hash='out')
