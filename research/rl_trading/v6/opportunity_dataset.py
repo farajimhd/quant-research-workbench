@@ -293,6 +293,7 @@ def load_teacher(root, session, *, runtime_root, audit_development=False, audit_
                 target_close_us=row['entry_target_us'],target_horizon_seconds=row['entry_horizon_seconds'],
                 allocation_ratio_target=float(row['allocation_ratio']) if market_proof is not None and row['allocation_loss_mask'] else None,
                 forecast_probabilities=forecast_windows.window(row_index)[0] if forecast_windows is not None else None,
+                forecast_actions=forecast_windows.action_window(row_index) if forecast_windows is not None else None,
                 forecast_close_us=forecast_windows.window(row_index)[1] if forecast_windows is not None else None))
             # Suppressed episodes are flat WAIT examples. The position-conditional
             # head cannot represent held WAIT; do not invent a hypothetical holding.

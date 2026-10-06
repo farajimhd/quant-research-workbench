@@ -110,3 +110,36 @@ targets; the training loss remains soft cross-entropy. Development forecasts run
 without teacher forcing. W&B stores baseline, epoch metrics and source/scope
 manifests; checkpoints remain in the local runtime. A completed small experiment
 does not establish full-market generalization or profitability.
+
+## Hierarchical v2 heads
+
+The main five-candle launcher now defaults to `--teacher-heads hierarchical-v2`;
+`--teacher-heads soft-v1` retains the previous architecture. Checkpoint contracts
+are distinct and incompatible. The laptop experiment defaults to
+`--heads hierarchical-v2`, and `--compare-with <previous-run>` re-evaluates the
+old soft-v1 checkpoint after requiring identical train/development scope receipts.
+
+Current decisions use two binary branches: ENTRY versus WAIT for known flat
+state, EXIT versus HOLD for known held state. Classification uses the saved
+hard action. Separate sigmoid entry/exit quality outputs regress the original
+probability assigned to that action, only on ENTRY/EXIT supervision. Allocation
+and opportunity value keep their existing targets and masks. No labels are
+rewritten and no future reference state is used as an observation.
+
+The future decoder shares the exact entry/exit/quality modules with current
+decisions. An additional reference-held gate produces joint probabilities:
+`P(ENTRY)=(1-g)e`, `P(WAIT)=(1-g)(1-e)`, `P(HOLD)=g(1-x)`, `P(EXIT)=gx`.
+Reference state is inferred at each horizon; it is not a broker state transition
+or assumed fill. Repeated opportunity labels must not manufacture executions.
+Saved `action` supplies each hard future target, not `argmax(teacher_probabilities)`.
+Future quality is separately supervised on saved ENTRY/EXIT labels.
+
+Training averages teacher-forced and free-running sequence objectives equally.
+Forecast classification uses fixed training-session inverse-square-root weighted
+class mass; development does not supply balance weights. Quality and allocation
+each normalize their own valid task mass. Evaluation is entirely free-running
+and reports hard-label counts/F1, unweighted classification CE and quality MAE
+per horizon. Soft-v1 CE and hierarchical hard-action CE are different objectives,
+so their numerical losses must not be treated as a matched comparison. The
+comparison changes hierarchy, action/quality separation and sequence training
+together; it does not isolate architecture as the cause of any improvement.

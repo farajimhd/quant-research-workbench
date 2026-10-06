@@ -49,7 +49,13 @@ def main(argv=None):
     parser.add_argument('--seconds', type=int, default=600)
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--wandb-project', default='rl-trading-v6')
+    parser.add_argument('--heads', choices=('hierarchical-v2','soft-v1'),default='hierarchical-v2')
+    parser.add_argument('--compare-with',type=Path,help='Re-evaluate the immutable prior pilot checkpoint on identical scope')
     args = parser.parse_args(argv)
+    hierarchical=args.heads=='hierarchical-v2'
+    if hierarchical:
+        from research.rl_trading.v6.hierarchical_heads import CONTRACT as experiment_contract
+    else:experiment_contract=CONTRACT
     root=Path('D:/TradingML/runtimes').resolve(); output=args.output.resolve()
     if not root.is_dir() or not output.is_relative_to(root): raise ValueError('Laptop runtime root required')
     if not 1<=args.seconds<=1800 or not 1<=args.epochs<=20 or not 1<=len(args.tickers)<=10:
@@ -66,10 +72,11 @@ def main(argv=None):
     load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
     import wandb
     started=time.perf_counter()
-    manifest=dict(version='rl-v6-laptop-development-v1',contract=CONTRACT,
+    manifest=dict(version='rl-v6-laptop-development-v2',contract=experiment_contract,
         source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
         arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()},
         device=torch.cuda.get_device_name(),seed=17,scope='bounded_ticker_subset_not_full_market',
+        forecast_metrics_target='explicit_saved_1b_action',
         sizing_denominator='original_full_market_1b_targets_preserved',sealed_labels_read=False,
         ppo=False,source_files_sha256={p.name:file_hash(p) for p in Path(__file__).parent.glob('*.py')})
     manifest['hash']=digest(manifest)
@@ -102,12 +109,34 @@ def main(argv=None):
         training,targets=prepare(args.train_day,'train')
         development,dev_targets=prepare(args.development_day,'development')
         device=torch.device('cuda')
-        policy=configure(RankedBracketActorCritic(config=MarketAttentionConfig(**source.published()[1]['ranking']),wait_hold=True).to(device))
+        ranking=MarketAttentionConfig(**source.published()[1]['ranking'])
+        previous_evaluation=None
+        if args.compare_with:
+            prior=args.compare_with.resolve()
+            if not prior.is_relative_to(root):raise ValueError('Comparison must be an existing laptop runtime')
+            old_complete=json.loads((prior/'complete.json').read_text())
+            if old_complete['status']!='completed' or file_hash(prior/'last.pt')!=old_complete['checkpoint_sha256']:
+                raise ValueError('Comparison checkpoint binding changed')
+            for name in ('train-scope.json','development-scope.json'):
+                if json.loads((prior/name).read_text())!=json.loads((output/name).read_text()):
+                    raise ValueError('Comparison requires identical data/window/ticker receipts')
+            previous=configure(RankedBracketActorCritic(config=ranking,wait_hold=True).to(device))
+            previous.independent_episode_supervision=True
+            saved=torch.load(prior/'last.pt',map_location=device,weights_only=True)
+            if saved['contract']!=CONTRACT:raise ValueError('Expected the prior soft-v1 pilot')
+            previous.load_state_dict(saved['model'],strict=True)
+            previous_evaluation=asdict(train_session(previous,None,development,dev_targets,(),device=device,evaluation=True))
+            write('previous-checkpoint-evaluation.json',dict(metrics=previous_evaluation,checkpoint_sha256=file_hash(prior/'last.pt'),
+                target_contract='saved_hard_action_metrics_soft_v1_loss',source=str(prior)))
+            del previous,saved;gc.collect();torch.cuda.empty_cache()
+        torch.manual_seed(17)
+        policy=configure(RankedBracketActorCritic(config=ranking,wait_hold=True).to(device),hierarchical=hierarchical)
         policy.independent_episode_supervision=True
         optimizer=torch.optim.Adam(policy.parameters(),lr=3e-4)
         def evaluate(): return asdict(train_session(policy,None,development,dev_targets,(),device=device,evaluation=True))
         baseline=evaluate();records=[]
-        logger.log(flatten(baseline,'development'),step=0)
+        logger.log({**flatten(baseline,'development'),
+                    **(flatten(previous_evaluation,'previous_checkpoint_development') if previous_evaluation is not None else {})},step=0)
         write('baseline.json',baseline)
         for epoch in range(1,args.epochs+1):
             def progress(value):
@@ -119,14 +148,21 @@ def main(argv=None):
             records.append(record)
             with (output/'metrics.jsonl').open('a',encoding='utf-8') as stream: stream.write(json.dumps(record)+'\n')
             logger.log({**flatten(trained,'training'),**flatten(evaluated,'development'), 'epoch':epoch},step=epoch)
-            torch.save(dict(model=policy.state_dict(),optimizer=optimizer.state_dict(),contract=CONTRACT,epoch=epoch),output/'last.pt')
+            torch.save(dict(model=policy.state_dict(),optimizer=optimizer.state_dict(),contract=experiment_contract,epoch=epoch),output/'last.pt')
             print(json.dumps(dict(epoch=epoch,development_f1=evaluated['action_class_f1'],allocation_mae=evaluated['allocation_ratio_mae'])),flush=True)
+        restored=configure(RankedBracketActorCritic(config=ranking,wait_hold=True).to(device),hierarchical=hierarchical)
+        restored.independent_episode_supervision=True
+        restored.load_state_dict(torch.load(output/'last.pt',map_location=device,weights_only=True)['model'],strict=True)
+        replay=asdict(train_session(restored,None,development,dev_targets,(),device=device,evaluation=True))
+        if replay!=records[-1]['development']:raise ValueError('Checkpoint reload changed development evaluation')
         logger.summary['completion_status']='completed'
         write('complete.json',dict(status='completed',baseline=baseline,final=records[-1],epochs=args.epochs,
+            previous_checkpoint_development=previous_evaluation,contract=experiment_contract,reload_exact=True,
             wandb_url=logger.url,elapsed_seconds=time.perf_counter()-started,checkpoint_sha256=file_hash(output/'last.pt'),
             sealed_labels_read=False,workstation_gpu_used=False,scope=manifest['scope']))
         for name in ('manifest.json','metrics.jsonl','baseline.json','complete.json','train-scope.json','development-scope.json'):
             logger.save(str(output/name),base_path=str(output),policy='now')
+        if previous_evaluation is not None:logger.save(str(output/'previous-checkpoint-evaluation.json'),base_path=str(output),policy='now')
     finally:
         logger.finish()
     return 0

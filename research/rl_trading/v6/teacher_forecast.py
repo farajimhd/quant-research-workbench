@@ -24,12 +24,19 @@ CONTRACT = dict(version=VERSION, steps=STEPS,
     ranking='bounded_attention_full_certified_action_population')
 
 
-def configure(policy):
+def configure(policy, *, hierarchical=False):
     """One architecture factory shared by the launcher and laptop probe."""
     from research.rl_trading.v6.ticker_heads import TickerDecoder
     parameter=next(policy.parameters())
     policy.decoder=TickerDecoder(policy.encoder.width,teacher_sequence=True).to(parameter.device)
-    policy.teacher_forecast=LabelForecast(policy.encoder.width).to(parameter.device)
+    if hierarchical:
+        from research.rl_trading.v6.hierarchical_heads import HierarchicalTickerHeads, HierarchicalForecast, VERSION as HIERARCHICAL_VERSION
+        policy.decoder.heads=HierarchicalTickerHeads(policy.encoder.width).to(parameter.device)
+        policy.teacher_forecast=HierarchicalForecast(policy.encoder.width,policy.decoder.heads).to(parameter.device)
+        policy.decoder.action_version=HIERARCHICAL_VERSION
+    else:
+        policy.teacher_forecast=LabelForecast(policy.encoder.width).to(parameter.device)
+    policy.hierarchical_teacher=hierarchical
     policy.full_market_actions=True
     return policy
 
@@ -40,6 +47,7 @@ class ForecastWindows:
     probabilities: np.ndarray
     clocks: np.ndarray
     ends: np.ndarray
+    actions: np.ndarray | None = None
 
     @classmethod
     def from_frame(cls, frame):
@@ -58,7 +66,17 @@ class ForecastWindows:
             raise ValueError('Invalid copied 1b forecast probabilities')
         for a in (p, clocks, ends):
             a.setflags(write=False)
-        return cls(p, clocks, ends)
+        actions=None
+        if 'action' in frame.columns:
+            names={'ENTRY':0,'WAIT':1,'HOLD':2,'EXIT':3}
+            if frame['action'].null_count() or not frame['action'].is_in(list(names)).all():raise ValueError('Invalid saved forecast action')
+            actions=frame['action'].replace_strict(names,return_dtype=pl.Int64).to_numpy()
+            actions.setflags(write=False)
+        return cls(p, clocks, ends, actions)
+
+    def action_window(self, index):
+        if self.actions is None:return None
+        return self.actions[index:min(index+STEPS,int(self.ends[index]))]
 
     def window(self, index):
         end = min(index + STEPS, int(self.ends[index]))

@@ -18,6 +18,7 @@ class TickerOutputs:
     value_bps: torch.Tensor  # [...], signed opportunity return; not PPO V(s).
     stop_bps: torch.Tensor  # [...], positive entry-relative distance.
     target_bps: torch.Tensor  # [...], positive entry-relative distance.
+    quality: torch.Tensor | None = None  # Hierarchical entry/exit quality.
 
 
 class TickerHeads(nn.Module):
@@ -200,5 +201,6 @@ class TickerDecoder(nn.Module):
         out=self.ticker_outputs
         self.ticker_outputs=TickerOutputs(*(getattr(out,k).squeeze(0) for k in
             ('logits','value_bps','stop_bps','target_bps')))
+        if out.quality is not None:self.ticker_outputs.quality=out.quality.squeeze(0)
         self.forecast_context=self.forecast_context.squeeze(0)
         return tuple(x.squeeze(0) for x in result)

@@ -94,6 +94,7 @@ class TeacherDecision:
     allocation_ratio_target: float | None = None  # Saved 1b target, never an observation.
     forecast_probabilities: np.ndarray | None = None  # [<=5,4], retrospective labels.
     forecast_close_us: np.ndarray | None = None  # Actual clocks, same listing/session.
+    forecast_actions: np.ndarray | None = None  # Explicit copied 1b actions, not soft argmax.
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,10 @@ class TrainingMetrics:
     forecast_cross_entropy: tuple[float | None, ...] = ()
     forecast_targets: tuple[int, ...] = ()
     forecast_label_metrics: tuple[dict, ...] = ()
+    action_quality_mae: dict[str, float | None] | None = None
+    action_quality_counts: dict[str, int] | None = None
+    forecast_quality_mae: tuple[dict, ...] = ()
+    forecast_quality_counts: tuple[dict, ...] = ()
 
 
 def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wait_hold=False):
@@ -180,6 +185,10 @@ def _validate(decisions: tuple[TeacherDecision, ...],
                     not np.isfinite(p).all() or (p < 0).any() or
                     not np.allclose(p.sum(1), 1)):
                 raise ValueError('Invalid same-listing five-candle forecast target')
+        if item.forecast_actions is not None:
+            if (item.forecast_probabilities is None or item.forecast_actions.shape != (len(item.forecast_probabilities),) or
+                    item.forecast_actions.dtype != np.int64 or (item.forecast_actions < 0).any() or (item.forecast_actions > 3).any()):
+                raise ValueError('Invalid explicit saved forecast actions')
         if (previous_key is not None and key <= previous_key or
                 item.close_us <= 0 or item.order_index < 0 or
                 item.account.shape != (7,) or
@@ -338,6 +347,16 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     ratio_sum=ratio_weight=0.; ratio_count=0
     forecast_sum=np.zeros(5);forecast_weight=np.zeros(5);forecast_count=np.zeros(5,np.int64)
     forecast_confusion=np.zeros((5,4,4),np.int64)
+    hierarchy=getattr(policy,'hierarchical_teacher',False)
+    if hierarchy and any(d.forecast_probabilities is not None and d.forecast_actions is None for d in decisions):
+        raise ValueError('Hierarchy requires explicit saved 1b forecast actions')
+    quality_sum=np.zeros(2);quality_weight=np.zeros(2);quality_count=np.zeros(2,np.int64)
+    future_quality_sum=np.zeros((5,2));future_quality_weight=np.zeros((5,2));future_quality_count=np.zeros((5,2),np.int64)
+    quality_mass=sum(d.sample_weight for d in decisions if (1<=d.token<=listings or len(d.held_index) and d.token==1+listings))
+    future_quality_mass=sum(d.sample_weight*np.isin(d.forecast_actions,[0,3]).mean() for d in decisions if d.forecast_actions is not None)
+    if hierarchy:
+        from research.rl_trading.v6.hierarchical_heads import forecast_class_weights
+        future_class_weights=torch.tensor(np.ones(4) if evaluation else forecast_class_weights(decisions),device=device,dtype=torch.float32)
     policy.train(not evaluation)
     if not evaluation:
         optimizer.zero_grad(set_to_none=True)
@@ -351,7 +370,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         pending_predictions = []
         pending_conditional = ([], [], [])
         pending_ticker=([],[],[])
-        pending_ratio=[];pending_forecast=[]
+        pending_ratio=[];pending_forecast=[];pending_quality=[];pending_future_quality=[]
         # Empty chunks still advance every observed candle and actual order
         # outcome, but do not build a useless autograd graph.
         with torch.set_grad_enabled(labeled and not evaluation):
@@ -425,6 +444,17 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         p=torch.zeros((1,4),device=device)
                         p[0,2 if len(item.held_index) else 1]=item.soft_probabilities[1 if len(item.held_index) else 0]
                         p[0,3 if len(item.held_index) else 0]=item.soft_probabilities[0 if len(item.held_index) else 1]
+                        if hierarchy:
+                            actual_action={'wait':1,'enter_long':0,'hold':2,'exit_long':3}[action_names[target_class]]
+                            if actual_action in (0,3):
+                                branch=actual_action==3
+                                quality_prediction=decoded.quality[identity,int(branch)]
+                                quality_target=p[0,actual_action].detach()
+                                quality_objective=torch.nn.functional.smooth_l1_loss(quality_prediction,quality_target,beta=.1)
+                                pending_quality.append(quality_objective*item.sample_weight)
+                                quality_sum[int(branch)]+=float((quality_prediction-quality_target).abs().detach())*item.sample_weight
+                                quality_weight[int(branch)]+=item.sample_weight;quality_count[int(branch)]+=1
+                            p=torch.nn.functional.one_hot(torch.tensor([actual_action],device=device),4).to(p.dtype)
                         value_valid=torch.tensor([item.opportunity_value_bps is not None],device=device)
                         bracket_valid=torch.tensor([item.entry_stop_bps is not None and item.entry_target_bps is not None],device=device)
                         target=lambda value:logits.new_tensor([float('nan') if value is None else value])
@@ -449,16 +479,39 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                         if sequence and item.forecast_probabilities is not None:
                             from research.rl_trading.v6.teacher_forecast import forecast_loss
                             probabilities=torch.tensor(np.array(item.forecast_probabilities,copy=True),device=device)[None]
-                            forecast=policy.teacher_forecast(policy.decoder.supervision_context,policy.action_gru,
-                                steps=probabilities.shape[1],previous_targets=None if evaluation else probabilities,validated=True)
-                            losses=forecast_loss(forecast,probabilities,validated=True)[0]
-                            pending_forecast.append(losses.mean()*item.sample_weight)
+                            if hierarchy:
+                                from research.rl_trading.v6.hierarchical_heads import sequence_losses
+                                actions=torch.tensor(np.array(item.forecast_actions,copy=True),device=device)[None]
+                                hard_targets=torch.nn.functional.one_hot(actions,4).to(probabilities.dtype)
+                                # Evaluation is always free-running; the two training
+                                # trajectories share parameters and causal context.
+                                variants=(None,) if evaluation else (hard_targets,None)
+                                objectives=[];quality_objectives=[]
+                                for forcing in variants:
+                                    forecast=policy.teacher_forecast(policy.decoder.supervision_context,policy.action_gru,
+                                        steps=probabilities.shape[1],previous_targets=forcing,validated=True)
+                                    action_loss,quality_loss,ce,quality_error,selected=sequence_losses(
+                                        forecast,policy.teacher_forecast.quality_predictions,actions,probabilities,future_class_weights)
+                                    objectives.append(action_loss[0].mean());quality_objectives.append(quality_loss[0].mean())
+                                pending_forecast.append(torch.stack(objectives).mean()*item.sample_weight)
+                                if selected.any():pending_future_quality.append(torch.stack(quality_objectives).mean()*item.sample_weight)
+                                losses=ce[0]  # Unweighted free-running CE, comparable across runs only within this target version.
+                                for branch,label in enumerate((0,3)):
+                                    mask=(item.forecast_actions==label)
+                                    future_quality_sum[:len(mask),branch]+=quality_error[0].detach().cpu().numpy()*mask*item.sample_weight
+                                    future_quality_weight[:len(mask),branch]+=mask*item.sample_weight
+                                    future_quality_count[:len(mask),branch]+=mask
+                            else:
+                                forecast=policy.teacher_forecast(policy.decoder.supervision_context,policy.action_gru,
+                                    steps=probabilities.shape[1],previous_targets=None if evaluation else probabilities,validated=True)
+                                losses=forecast_loss(forecast,probabilities,validated=True)[0]
+                                pending_forecast.append(losses.mean()*item.sample_weight)
                             length=len(losses)
                             forecast_sum[:length]+=losses.detach().cpu().numpy()*item.sample_weight
                             forecast_weight[:length]+=item.sample_weight
                             forecast_count[:length]+=1
                             predicted=forecast.detach().argmax(-1)[0].cpu().numpy()
-                            actual=item.forecast_probabilities.argmax(-1)
+                            actual=item.forecast_actions if item.forecast_actions is not None else item.forecast_probabilities.argmax(-1)
                             forecast_confusion[np.arange(length),actual,predicted]+=1
                     else:
                         objective, metrics = bracket_loss(logits, sizes, stops,
@@ -511,6 +564,10 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                 mean=mean+torch.stack(pending_ratio).sum()/(ratio_mass/blocks)
             if pending_forecast:
                 mean=mean+torch.stack(pending_forecast).sum()/(forecast_mass/blocks)
+            if pending_quality:
+                mean=mean+torch.stack(pending_quality).sum()/(quality_mass/blocks)
+            if pending_future_quality:
+                mean=mean+torch.stack(pending_future_quality).sum()/(future_quality_mass/blocks)
             if not torch.isfinite(mean):
                 raise ValueError('Nonfinite teacher objective')
             if not evaluation:
@@ -589,4 +646,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
                            tuple(float(forecast_sum[i]/forecast_weight[i]) if forecast_weight[i] else None for i in range(5)) if sequence else (),
                            tuple(map(int,forecast_count)) if sequence else (),
                            tuple(classification_metrics(c)
-                                 for c in forecast_confusion) if sequence else ())
+                                 for c in forecast_confusion) if sequence else (),
+                           {name:float(quality_sum[i]/quality_weight[i]) if quality_weight[i] else None for i,name in enumerate(('ENTRY','EXIT'))} if hierarchy else None,
+                           {name:int(quality_count[i]) for i,name in enumerate(('ENTRY','EXIT'))} if hierarchy else None,
+                           tuple({name:float(future_quality_sum[h,i]/future_quality_weight[h,i]) if future_quality_weight[h,i] else None for i,name in enumerate(('ENTRY','EXIT'))} for h in range(5)) if hierarchy else (),
+                           tuple({name:int(future_quality_count[h,i]) for i,name in enumerate(('ENTRY','EXIT'))} for h in range(5)) if hierarchy else ())

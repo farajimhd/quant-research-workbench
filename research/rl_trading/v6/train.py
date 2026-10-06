@@ -104,6 +104,8 @@ def main(argv=None):
     parser.add_argument('--ticker-heads',action='store_true',help='Four local actions and opportunity value; five-candle contract also supervises 1b sizing')
     parser.add_argument('--teacher-forecast-steps',type=int,choices=(1,5),default=5,
         help='Versioned 1b teacher: current plus next four actual candles with autoregressive GRU and allocation supervision; 1 retains legacy architecture')
+    parser.add_argument('--teacher-heads',choices=('hierarchical-v2','soft-v1'),default='hierarchical-v2',
+        help='Five-candle head/loss contract; soft-v1 explicitly retains the previous architecture')
     parser.add_argument('--outside-macd-per-minute',type=float,default=0.,help='Explicit exposure-weighted PPO shaping outside completed-candle positive MACD regime')
     parser.add_argument('--action-contract', choices=('legacy','wait-hold'), default='legacy',
         help='Explicit six-class WAIT and held-ticker HOLD contract with weighted causal label migration')
@@ -287,7 +289,10 @@ def main(argv=None):
             if not dataset.get('market_teacher_dataset'):
                 raise ValueError('Five-candle teacher requires published copied 1b labels')
             from research.rl_trading.v6.teacher_forecast import configure, CONTRACT as FORECAST_CONTRACT
-            configure(policy)
+            hierarchical=args.teacher_heads=='hierarchical-v2'
+            configure(policy,hierarchical=hierarchical)
+            if hierarchical:
+                from research.rl_trading.v6.hierarchical_heads import CONTRACT as FORECAST_CONTRACT
             TICKER_VERSION=policy.decoder.action_version
     policy.independent_episode_supervision=bool(args.episode_supervision_root)
     feature_contract='legacy'
