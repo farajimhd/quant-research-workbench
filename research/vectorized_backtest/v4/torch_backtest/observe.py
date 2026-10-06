@@ -34,7 +34,7 @@ def main(argv=None):
                         key=msvcrt.getwch().lower()
                         args.view={'f':'financial','p':'performance','c':'objective'}.get(key,args.view)
                 live.update(read());time.sleep(1)
-                if last.get('status') in ('completed','failed','interrupted','no_feasible_winner','profile_complete'):break
+                if last.get('status') in ('completed','failed','interrupted','no_feasible_winner','profile_complete','awaiting_validation_inputs'):break
         except KeyboardInterrupt:pass
     console.print(read());return 0
 

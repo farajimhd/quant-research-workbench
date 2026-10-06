@@ -153,7 +153,14 @@ def test_controller_all30_freeze_once_and_audit(tmp_path,monkeypatch):
         metrics={name:[value]*lanes for name,value in dict(net_pnl=100.,cash=10100.,fees=0.,open_quantity=0,drawdown=20.,stop_risk_dollar_seconds=100.,capital_dollar_seconds=1000.,filled_batches=1,terminal_valid=True,positions_opened=1,fill_count=2,open_positions=0,sold_share_seconds=10.,sold_shares=10).items()}
         return dict(day=spec['day'],metrics=metrics,timing={},ledger_sha256=file_hash(ledger),population_sha256=run_search.fingerprint([run_search.state(v) for v in population]))
     monkeypatch.setattr(run_search,'evaluate_session',replay)
-    assert run_search.main(['--sessions',str(path),'--output',str(output),'--execute','--device','cpu','--backend','eager','--population','4','--generations','1','--qualification',str(qualification)])==0
+    monkeypatch.setattr(run_search,'missing_validation_inputs',lambda _: [dict(day='sealed',path='not-published')])
+    arguments=['--sessions',str(path),'--output',str(output),'--execute','--device','cpu','--backend','eager','--population','4','--generations','1','--qualification',str(qualification)]
+    assert run_search.main(arguments)==3
+    assert len(calls)==30 and (output/'frozen_winner.json').exists()
+    assert json.loads((output/'status.json').read_text())['status']=='awaiting_validation_inputs'
+    assert not (output/'owner.lock').exists() and audit(output)['full_budget_verified']
+    monkeypatch.setattr(run_search,'missing_validation_inputs',lambda _: [])
+    assert run_search.main(arguments+['--resume'])==0
     assert calls==[s['day'] for s in sessions['training']+sessions['validation']]
     assert audit(output)['full_budget_verified']
     assert not (output/'owner.lock').exists()

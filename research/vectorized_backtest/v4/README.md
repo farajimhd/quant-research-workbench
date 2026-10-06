@@ -168,4 +168,8 @@ Training days are available for preparation. Final validation preparation
 `--frozen-winner`: an exact full-budget winner with a passed training audit
 bound to the experiment identity, checkpoint and generation receipts.
 An arbitrary winner JSON does not authorize final-session inputs.
+After freeze, unpublished final artifacts produce `awaiting_validation_inputs`
+and exit code 3, with the worker lock released. Prepare those artifacts using
+the audited frozen winner, then use the exact original command with `--resume`.
+Completed training is retained; final evaluation receipts remain immutable.
 

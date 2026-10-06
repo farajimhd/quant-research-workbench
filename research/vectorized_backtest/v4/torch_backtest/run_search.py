@@ -94,6 +94,18 @@ def metric_summary(results,stability,lane,population):
     summary['active_nodes']=sum(p.validate(CATALOG)['active_nodes'] for p in population[lane].programs().values())
     return summary
 
+
+def missing_validation_inputs(sessions):
+    """After freeze only: inspect publication paths, never market contents."""
+    missing=[]
+    for item in sessions:
+        paths=[Path(item['execution_root'])/'receipt.json',Path(item['execution_root'])/'tape.pt',
+               Path(item['feature_root'])/'complete.json',Path(item['identity_map']),Path(item['split_certificate'])]
+        if item.get('previous_feature_root'):
+            paths.extend([Path(item['previous_feature_root'])/'complete.json',Path(item['previous_split_certificate'])])
+        missing.extend(dict(day=item['day'],path=str(path)) for path in paths if not path.is_file())
+    return missing
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sessions',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
@@ -191,7 +203,18 @@ def main(argv=None):
         freeze=dict(winner=winner,criterion=asdict(objective),score=best,metrics=best_metrics,identity_sha256=file_hash(identity_path),frozen_epoch=time.time())
         if frozen.exists():freeze=json.loads(frozen.read_text());winner=freeze['winner']
         else:write_json(frozen,freeze)
-        freeze_hash=file_hash(frozen);emit(status='validation',stage='Evaluate frozen default/winner once',validation_status='FROZEN WINNER; evaluation active')
+        # Independent full-training arithmetic and winner audit authorizes the
+        # separate producers. No validation files are opened by that audit yet.
+        from .audit import audit
+        audit(output)
+        freeze_hash=file_hash(frozen)
+        missing=missing_validation_inputs(spec['validation'])
+        if missing:
+            write_json(output/'validation_inputs_pending.json',dict(freeze_sha256=freeze_hash,missing=missing))
+            emit(status='awaiting_validation_inputs',stage='Frozen winner; certified final inputs required',
+                 validation_status='FROZEN; evaluation not started',waiting_reason=f'{len(missing)} unpublished input artifacts; prepare with this audited frozen winner, then exact resume')
+            return 3
+        emit(status='validation',stage='Evaluate frozen default/winner once',validation_status='FROZEN WINNER; evaluation active')
         default=sample(np.random.default_rng(0),space,1)[0]
         # Baseline is a documented fixed valid-price entry and management policy,
         # not a selected/random strategy.
@@ -203,6 +226,9 @@ def main(argv=None):
             if path.exists():
                 receipt=json.loads(path.read_text())
                 if receipt.get('freeze_sha256')!=freeze_hash or file_hash(folder/'fills.pt')!=receipt['ledger_sha256']:raise ValueError('Frozen evaluation receipt changed')
+                *_,fresh=load_session(session)
+                for key in ('execution','feature_certificate','prior_certificate','identity_map_sha256','split_certificate_sha256','previous_split_certificate_sha256'):
+                    if fresh[key]!=receipt[key]:raise ValueError('Frozen evaluation input changed')
             else:
                 receipt=evaluate_session(session,[default,restore(winner)],space,args,folder,emit,runner_cache);receipt['freeze_sha256']=freeze_hash;receipt['evaluation_epoch']=time.time();write_json(path,receipt)
             validation.append(receipt)
