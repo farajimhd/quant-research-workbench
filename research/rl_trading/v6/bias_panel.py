@@ -23,10 +23,20 @@ from research.rl_trading.v6.execution_features import bps_input
 
 VERSION = 'rl-v6-bias-panel-strict-prior-v1'
 PRICE_HISTORY_VERSION = 'rl-v6-bias-panel-valid-price-prior-v2'
+PRICE_DIVERSITY_VERSION = 'rl-v6-bias-panel-valid-price-train-diversity-v3'
 TICKERS = ('AAPL','NVDA','MU','CYCU','SNDK')
 FOLDS = {'train': ('2026-07-31','2026-08-03','2026-08-04'),
          'calibration': ('2026-08-21',), 'development': ('2026-08-24','2026-08-25')}
 EXTENDED_FOLDS=dict(FOLDS,development=FOLDS['development']+('2026-08-27','2026-08-28','2026-09-01','2026-09-03'))
+DIVERSITY_FOLDS=dict(train=FOLDS['train']+('2026-08-05','2026-08-06','2026-08-07'),
+    calibration=('2026-08-10','2026-08-11'),development=EXTENDED_FOLDS['development'])
+
+def admitted_folds(manifest):
+    if manifest.get('version')==PRICE_DIVERSITY_VERSION:
+        if manifest.get('input_history_contract',{}).get('price_valid_only') is not True:
+            raise ValueError('Diversity version requires valid-price history')
+        return DIVERSITY_FOLDS
+    return EXTENDED_FOLDS if manifest.get('extended_public_development',False) else FOLDS
 
 
 def indexed_panel(session, decisions, *, valid_price_history=False):
@@ -113,7 +123,7 @@ def verify_panel(panel, manifest):
         if not np.isin(values['action'],[0,1,2,3]).all():raise ValueError('Unknown action')
         if (values['windows']<0).any() or values['windows'].max()>=len(values['features']):raise ValueError('Window rows escaped source')
         if not np.isfinite(values['features']).all():raise ValueError('Nonfinite panel')
-    admitted=EXTENDED_FOLDS if manifest.get('extended_public_development',False) else FOLDS
+    admitted=admitted_folds(manifest)
     if manifest['folds']!={k:list(v) for k,v in admitted.items()} or manifest['sealed_labels_read'] is not False:
         raise ValueError('Frozen public-only panel scope changed')
 
@@ -124,6 +134,7 @@ def main(argv=None):
     parser.add_argument('--seconds',type=int,default=3600)
     parser.add_argument('--tickers',nargs='+',default=list(TICKERS))
     parser.add_argument('--extended-public-development',action='store_true')
+    parser.add_argument('--training-diversity',action='store_true',help='Fixed six TRAIN mornings and two later TRAIN-role calibration mornings; all public development is exploratory')
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--valid-price-history',action='store_true',help='Versioned diagnostic: last 120 priced candles, elapsed clock gaps; source labels/indicators unchanged')
     parser.add_argument('--plan-only',action='store_true',help='Freeze fresh scope/source binding before explicitly verified reuse of exports')
@@ -131,7 +142,9 @@ def main(argv=None):
     root=Path('D:/TradingML/runtimes').resolve();output=args.output.resolve()
     if not root.is_dir() or not output.is_relative_to(root) or (output.exists() and not args.resume):raise ValueError('Fresh laptop runtime or explicit resume required')
     if args.seconds not in (3600,14400) or not 1<=len(args.tickers)<=20 or len(set(args.tickers))!=len(args.tickers):raise ValueError('Bounded predeclared ticker/time scope required')
-    folds=EXTENDED_FOLDS if args.extended_public_development else FOLDS
+    if args.training_diversity and (not args.valid_price_history or args.extended_public_development):
+        raise ValueError('Diversity scope requires valid prices and its own explicit fold contract')
+    folds=DIVERSITY_FOLDS if args.training_diversity else EXTENDED_FOLDS if args.extended_public_development else FOLDS
     from research.mlops.env import discover_env_files,load_env_files
     load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
     from research.rl_trading.v6 import saved_label_audit as source,published_market_audit as market
@@ -139,10 +152,11 @@ def main(argv=None):
     from research.rl_trading.v6.opportunity_dataset import load_teacher
     from research.rl_trading.v6.probe_teacher_sequence import subset
     output.mkdir(parents=True,exist_ok=args.resume)
-    manifest=dict(version=PRICE_HISTORY_VERSION if args.valid_price_history else VERSION,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+    manifest=dict(version=PRICE_DIVERSITY_VERSION if args.training_diversity else PRICE_HISTORY_VERSION if args.valid_price_history else VERSION,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
         source_files_sha256={p.name:file_hash(p) for p in Path(__file__).parent.glob('*.py')},
         folds={k:list(v) for k,v in folds.items()},tickers=args.tickers,seconds=args.seconds,extended_public_development=args.extended_public_development,
         sealed_labels_read=False,scope=f'bounded-{len(args.tickers)}-ticker-local-window-diagnostic-not-full-market-policy',sessions={})
+    if args.training_diversity:manifest['development_status']='previously_inspected_exploratory_not_independent_validation'
     if args.valid_price_history:manifest['input_history_contract']=dict(price_valid_only=True,max_candles=120,gaps='elapsed_seconds',source_indicators='unchanged',target_candle='strictly_excluded',ranking='local_diagnostic_only_not_production_ranker')
     planned=output/'planned.json'
     if planned.exists():
@@ -186,6 +200,10 @@ def main(argv=None):
             print(day,manifest['sessions'][day]['counts'],flush=True)
             del full,labels,packed,selected;gc.collect()
         prepared[fold]=combine(items);del items;gc.collect()
+    if args.training_diversity:
+        for key in ('dataset_sha256','market_dataset_sha256'):
+            if len({s[key] for s in manifest['sessions'].values()})!=1:
+                raise ValueError('Diversity panel cannot mix published dataset identities')
     manifest['normalization']=normalization(prepared['train']);manifest['hash']=digest(manifest)
     verify_panel(prepared,manifest)
     torch.save(prepared,output/'panel.pt')

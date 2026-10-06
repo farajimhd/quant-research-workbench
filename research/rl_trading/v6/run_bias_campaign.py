@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 from research.rl_trading.v1.common import digest,file_hash
-from research.rl_trading.v6.bias_panel import verify_panel,normalization,FOLDS,combine
+from research.rl_trading.v6.bias_panel import verify_panel,normalization,FOLDS,combine,PRICE_DIVERSITY_VERSION,DIVERSITY_FOLDS
 from research.rl_trading.v6.bias_models import LocalWindowTeacher,balance_weights,current_objective,VERSION
 from research.rl_trading.v6.bias_metrics import action_report,calibration_thresholds,fit_probability_calibration,calibrated_probability
 
@@ -68,6 +68,12 @@ def tensors(panel,norm,device):
 
 def reserve_calibration(panel,manifest):
     """Pre-experiment chronological reservation; never select using development."""
+    if manifest.get('version')==PRICE_DIVERSITY_VERSION:
+        if manifest['folds']!={k:list(v) for k,v in DIVERSITY_FOLDS.items()}:
+            raise ValueError('Training diversity fold scope changed')
+        if panel['train']['clock'].max()>=panel['calibration']['clock'].min():
+            raise ValueError('Calibration must follow every training decision')
+        return panel
     begin=manifest['sessions']['2026-08-04']['begin_us']
     source=panel['train'];later=source['clock']>=begin
     def records(mask):
@@ -181,11 +187,12 @@ def main(argv=None):
     trials=[t for t in TRIALS if args.only is None or t.name in args.only]
     output.mkdir();manifest=dict(version=VERSION,panel_sha256=proof['panel_sha256'],panel_manifest_sha256=proof['manifest_sha256'],
         source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),source_files_sha256={p.name:file_hash(p) for p in Path(__file__).parent.glob('*.py')},
-        trials=[asdict(t) for t in trials],epochs=args.epochs,normalization=norm,normalization_sha256=digest(norm),
+        trials=[asdict(t) for t in trials],epochs=args.epochs,batch_size=args.batch_size,normalization=norm,normalization_sha256=digest(norm),
         device=torch.cuda.get_device_name(),seed=17,sealed_labels_read=False,workstation_gpu_used=False,
-        selection_fold='calibration_only_training_role_2026-08-04_and_2026-08-21',training_dates=['2026-07-31','2026-08-03'],development='opened_after_trial_selection',
-        prior_inspected_development_dates=['2026-08-24','2026-08-25'],
-        new_public_development_dates=[d for d in panel_manifest['folds']['development'] if d not in ('2026-08-24','2026-08-25')],
+        selection_fold='calibration_only_training_role_Aug10_Aug11' if panel_manifest['version']==PRICE_DIVERSITY_VERSION else 'calibration_only_training_role_2026-08-04_and_2026-08-21',
+        training_dates=list(DIVERSITY_FOLDS['train']) if panel_manifest['version']==PRICE_DIVERSITY_VERSION else ['2026-07-31','2026-08-03'],development='opened_after_trial_selection',
+        prior_inspected_development_dates=list(panel_manifest['folds']['development']) if panel_manifest['version']==PRICE_DIVERSITY_VERSION else ['2026-08-24','2026-08-25'],
+        new_public_development_dates=[] if panel_manifest['version']==PRICE_DIVERSITY_VERSION else [d for d in panel_manifest['folds']['development'] if d not in ('2026-08-24','2026-08-25')],
         scope=panel_manifest['scope'],auxiliary_loss_weights=dict(forecast=.25,quality=.1,ratio=.1),future_quality_supervised=False)
     manifest['hash']=digest(manifest);write(output/'manifest.json',manifest)
     logger=wandb.init(project='rl-trading-v6',name=output.name,mode='online',dir=str(output),config=manifest)
@@ -260,7 +267,7 @@ def main(argv=None):
             for day in panel_manifest['folds']['development']:
                 evidence=panel_manifest['sessions'][day];mask=(panel['development']['clock']>=evidence['begin_us'])&(panel['development']['clock']<evidence['end_us'])
                 if not mask.any():raise ValueError('Admitted development day has no decisions')
-                result['per_day'][day]=dict(status='previously_inspected_exploratory' if day in ('2026-08-24','2026-08-25') else 'new_public_fixed_checkpoint_evaluation',
+                result['per_day'][day]=dict(status='previously_inspected_exploratory' if day in manifest['prior_inspected_development_dates'] else 'new_public_fixed_checkpoint_evaluation',
                     default=action_report(panel['development']['action'][mask],dp[mask]),calibrated=action_report(panel['development']['action'][mask],calibrated_dp[mask],probability_thresholds))
             independent=np.isin(panel['development']['clock']//86_400_000_000,[panel_manifest['sessions'][day]['begin_us']//86_400_000_000 for day in manifest['new_public_development_dates']])
             if independent.any():result['new_public_development']=action_report(panel['development']['action'][independent],calibrated_dp[independent],probability_thresholds)

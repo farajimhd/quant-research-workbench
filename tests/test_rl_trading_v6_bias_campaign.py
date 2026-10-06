@@ -334,3 +334,26 @@ def test_balanced_batch_real_optimizer_keeps_auxiliary_heads_untrained(device):
     assert not torch.equal(before['heads.entry.weight'],model.heads.entry.weight)
     for k,v in model.named_parameters():
         if k.startswith(('size.','forecast.','forecast_gru.','heads.quality.')):torch.testing.assert_close(v,before[k],rtol=0,atol=0)
+
+
+def test_diversity_scope_keeps_six_training_days_and_later_calibration():
+    from research.rl_trading.v6.bias_panel import PRICE_DIVERSITY_VERSION,DIVERSITY_FOLDS,verify_panel
+    manifest=dict(version=PRICE_DIVERSITY_VERSION,folds={k:list(v) for k,v in DIVERSITY_FOLDS.items()},
+        input_history_contract=dict(price_valid_only=True),sealed_labels_read=False)
+    verify_panel({},manifest)
+    panel=dict(train=dict(clock=np.array([1,2,3])),calibration=dict(clock=np.array([4,5])))
+    assert reserve_calibration(panel,manifest) is panel
+    with pytest.raises(ValueError,match='Calibration'):reserve_calibration({**panel,'calibration':dict(clock=np.array([2]))},manifest)
+    manifest['folds']['development'].append('2026-08-26')
+    with pytest.raises(ValueError,match='scope'):verify_panel({},manifest)
+
+
+def test_diversity_reuse_rejects_feature_and_tensor_guard_drift():
+    from research.rl_trading.v6.reuse_diversity_exports import verify_diversity_calculations
+    original={'bias_panel.py':b'def indexed_panel(x): return x-120\ndef combine(x): return x\ndef normalization(x): return x\ndef verify_panel(x,m):\n for v in x: assert v<0\n admitted=1\n if admitted!=m: raise ValueError()\n',
+        'training.py':b'class TeacherDecision: pass\ndef _validate(x): return x\n','other.py':b'FIELD=1\n','run_bias_campaign.py':b'JOB=1\n'}
+    current={**original,'bias_panel.py':original['bias_panel.py'].replace(b'admitted=1',b'admitted=admitted_folds(m)')}
+    verify_diversity_calculations(original,current)
+    for before,after in ((b'x-120',b'x-119'),(b'v<0',b'v<1')):
+        with pytest.raises(ValueError,match='changed'):verify_diversity_calculations(original,{**current,'bias_panel.py':current['bias_panel.py'].replace(before,after)})
+    with pytest.raises(ValueError,match='Unexpected'):verify_diversity_calculations(original,{**current,'other.py':b'FIELD=2\n'})

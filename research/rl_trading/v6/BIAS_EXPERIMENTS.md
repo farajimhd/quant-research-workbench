@@ -92,3 +92,15 @@ loss weighting, with lower class-mass variance; it never applies both methods
 at once. The original TRAIN/calibration split and data remain unchanged. Size,
 quality and future heads receive no training in this action-only control.
 Select checkpoints only on calibration, then use the same frozen audit path.
+
+The fixed v3 diversity panel (`bias_panel --training-diversity
+--valid-price-history`) fits July31/Aug3/Aug4/Aug5/Aug6/Aug7 and reserves
+Aug10/Aug11 for chronological TRAIN-role calibration. Its six development
+dates are explicitly previously inspected and exploratory. It changes no
+features or targets. `reuse_diversity_exports` proves feature/target/reader
+equivalence and authenticates exact bytes before reusing the nine overlapping
+exports under new receipts. Five new public TRAIN-role exports still require
+the full bank, split and label audits. Mixed published dataset identities are
+rejected. A bounded follow-up compares natural lag, structured TCN and focal
+structured TCN for ten epochs; it remains a 19-ticker experiment, not final
+full-market training or sealed validation.
