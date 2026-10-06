@@ -25,7 +25,7 @@ def main(argv=None):
         return render({**last,'_financial_page':financial_page},width=console.width,height=console.height,view=args.view)
     if args.once or not console.is_terminal:
         console.print(read());return 0
-    with Live(read(),console=console,refresh_per_second=1,screen=True) as live:
+    with Live(read(),console=console,refresh_per_second=1,screen=False,transient=False) as live:
         try:
             while True:
                 if os.name=='nt':
