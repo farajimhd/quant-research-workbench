@@ -10,6 +10,28 @@ from types import MappingProxyType
 from .strategy_one_contract import STRATEGY_ID
 
 
+DECLARED_FIXED_ADAPTER = 'declared-numbered-fixed-policy-adapter@1'
+
+
+def declared_fixed_rule(number: int, rule_id: str | None = None) -> bool:
+    """Recognize a separately sealed declaration; numeric identity selects no rule."""
+    if type(number) is not int or (rule_id is not None and type(rule_id) is not str):
+        return False
+    from .strategy_registry import numbered_strategy
+    try:
+        release = numbered_strategy(number)
+    except ValueError as exc:
+        if str(exc) == f'Strategy {number} is not published':
+            return False
+        raise
+    count = release.input_contracts.count(DECLARED_FIXED_ADAPTER)
+    if count == 0:
+        return False
+    if count != 1:
+        raise ValueError('Declared fixed adapter input is duplicated')
+    return rule_id is None or rule_id in release.rule_set_contracts
+
+
 SESSION_POLICY = MappingProxyType({
     "timezone": "America/New_York",
     "windows": (
@@ -222,6 +244,129 @@ class NumberedFixedStrategyContract:
             19_740_000 <= boundary_ms <= 19_800_000 or 57_300_000 <= boundary_ms <= 57_600_000)
 
 
+@dataclass(frozen=True, slots=True)
+class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
+    """Installed adapter capabilities come from an exact immutable release payload.
+
+    The serialized policies are copied canonical content, never a caller-owned
+    mutable dictionary. Legacy contracts do not enter this adapter.
+    """
+    release: object = None
+    policy_json: str = ''
+
+    def __post_init__(self):
+        from .strategy_registry import NumberedStrategyRelease
+        from .journal_contract import canonical_json
+        import json
+        if type(self.release) is not NumberedStrategyRelease:
+            raise ValueError('Declared fixed contract needs an exact typed release')
+        self.release.verify()
+        if (type(self.strategy_number) is not int or self.strategy_number != self.release.number
+                or self.strategy_id != self.release.executor_strategy_id
+                or self.execution_interval != self.release.evaluation_interval
+                or self.release.input_contracts.count(DECLARED_FIXED_ADAPTER) != 1
+                or type(self.policy_json) is not str):
+            raise ValueError('Declared fixed contract identity or input differs')
+        payload = json.loads(self.policy_json)
+        if type(payload) is not dict or canonical_json(payload) != self.policy_json:
+            raise ValueError('Declared fixed policy payload is not canonical')
+        required = ('session_policy', 'activation_policy', 'add_policy', 'trailing_policy',
+                    'target_policy', 'entry_price_policy', 'followthrough_policy',
+                    'entry_spread_risk_policy')
+        if any(type(payload.get(key)) is not dict for key in required):
+            raise ValueError('Declared fixed capability payload is incomplete')
+        bindings = (
+            ('session_policy', 'strategy-two-extended-session-policy-v1', session_policy_payload),
+            ('activation_policy', 'strategy-three-current-session-activation-v1', activation_policy_payload),
+            ('add_policy', 'strategy-four-no-add-v1', add_policy_payload),
+            ('trailing_policy', 'strategy-five-no-completed-30s-low-trailing-v1', trailing_policy_payload),
+            ('target_policy', 'strategy-six-initial-target-only-v1', target_policy_payload),
+            ('entry_price_policy', 'strategy-eight-reference-ask-entry-cap-v1', entry_price_policy_payload),
+        )
+        for key, rule, producer in bindings:
+            if rule not in self.release.rule_set_contracts or payload[key] != producer():
+                raise ValueError('Declared fixed capability policy differs from exact supported rule')
+        # Canonical serialization distinguishes bool/int aliases in producer fields.
+        if any(canonical_json(payload[key]) != canonical_json(producer())
+               for key, _, producer in bindings):
+            raise ValueError('Declared fixed capability scalar types differ')
+        self.entry_spread_risk_policy
+
+    def _policy(self, key):
+        import json
+        return json.loads(self.policy_json)[key]
+
+    def _has(self, rule):
+        return rule in self.release.rule_set_contracts
+
+    @property
+    def _declared_allows_session_exit(self):
+        return self._has('strategy-two-extended-session-policy-v1')
+
+    @property
+    def _declared_allows_adds(self):
+        return self._policy('add_policy')['allows_adds']
+
+    @property
+    def _declared_allows_completed_30s_trailing(self):
+        return self._policy('trailing_policy')['completed_30s_low_trailing']
+
+    @property
+    def _declared_allows_target_escalation(self):
+        return self._policy('target_policy')['target_escalation']
+
+    @property
+    def _declared_caps_entry_at_reference_ask(self):
+        return self._policy('entry_price_policy')['maximum_buy_price'] == 'proposal_reference_ask'
+
+    @property
+    def _declared_allows_followthrough_failure_exit(self):
+        return self._has('strategy-nine-followthrough-failure-v1')
+
+    @property
+    def _declared_entry_spread_risk_policy(self):
+        from .entry_spread_risk import EntrySpreadRiskPolicy
+        payload = self._policy('entry_spread_risk_policy')
+        policy = EntrySpreadRiskPolicy(payload['policy_id'], tuple(payload['maximum_spread_original_risk']))
+        if payload != policy.payload() or not self._has(policy.policy_id):
+            raise ValueError('Declared entry spread policy payload differs from its rule')
+        return policy
+
+    def _windows(self):
+        def clock(value):
+            hours, minutes = map(int, value.split(':'))
+            return ((hours * 60 + minutes) - 4 * 60) * 60_000
+        return tuple(tuple(clock(window[key]) for key in
+                           ('start', 'entry_cutoff', 'liquidation_start', 'end'))
+                     for window in self._policy('session_policy')['windows'])
+
+    def _declared_entry_allowed(self, boundary_ms):
+        return any(start < boundary_ms < cutoff for start, cutoff, _, _ in self._windows())
+
+    def _declared_activation_allowed(self, boundary_ms, episode_start_ms):
+        return any(start < episode_start_ms <= boundary_ms < cutoff
+                   for start, cutoff, _, _ in self._windows())
+
+    def _declared_acquisition_cutoff(self, boundary_ms):
+        return any(cutoff <= boundary_ms <= end for _, cutoff, _, end in self._windows())
+
+    def _declared_liquidation_due(self, boundary_ms):
+        return any(liquidation <= boundary_ms <= end for _, _, liquidation, end in self._windows())
+
+
+    # Preserve legacy named-symbol proof cardinality; public API stays identical.
+    allows_session_exit = _declared_allows_session_exit
+    allows_adds = _declared_allows_adds
+    allows_completed_30s_trailing = _declared_allows_completed_30s_trailing
+    allows_target_escalation = _declared_allows_target_escalation
+    caps_entry_at_reference_ask = _declared_caps_entry_at_reference_ask
+    allows_followthrough_failure_exit = _declared_allows_followthrough_failure_exit
+    entry_spread_risk_policy = _declared_entry_spread_risk_policy
+    entry_allowed = _declared_entry_allowed
+    activation_allowed = _declared_activation_allowed
+    acquisition_cutoff = _declared_acquisition_cutoff
+    liquidation_due = _declared_liquidation_due
+
 def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
     if type(number) is int and number == 51:
         from .strategy_fifty_one_contract import strategy_fifty_one_contract
@@ -230,6 +375,13 @@ def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
         from .strategy_forty_nine_contract import strategy_forty_nine_contract
         return strategy_forty_nine_contract()
     if type(number) is not int or number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        if declared_fixed_rule(number):
+            from .strategy_registry import numbered_strategy, fixed_strategy_executor
+            release = numbered_strategy(number)
+            contract = fixed_strategy_executor(release.executor_strategy_id, number).contract_factory()
+            if type(contract) is not DeclaredFixedStrategyContract or contract.release != release:
+                raise ValueError('Declared fixed factory differs from installed release')
+            return contract
         raise ValueError("No installed numbered fixed Backtest contract")
     return NumberedFixedStrategyContract(number)
 
@@ -241,7 +393,7 @@ def resolve_numbered_fixed_strategy(strategy_id: str, revision: int) -> Numbered
 
 
 def is_numbered_fixed_strategy(strategy_id: str, revision: int) -> bool:
-    return strategy_id == STRATEGY_ID and type(revision) is int and revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
+    return strategy_id == STRATEGY_ID and type(revision) is int and (revision in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(revision, 'strategy-fourteen-numbered-admission-v1'))
 
 
 _SESSION_EXIT_REASONS = MappingProxyType({
@@ -292,4 +444,6 @@ def numbered_session_exit_reason(strategy_number: int) -> str:
     contract = numbered_fixed_strategy(strategy_number)
     if not contract.allows_session_exit:
         raise ValueError("Numbered strategy has no session-exit reason")
+    if strategy_number not in _SESSION_EXIT_REASONS and type(contract) is DeclaredFixedStrategyContract:
+        return f'strategy_{strategy_number}_session_exit'
     return _SESSION_EXIT_REASONS[strategy_number]

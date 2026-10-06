@@ -12,6 +12,8 @@ from .strategy_one_configuration_tree import encode_nodes, node_hash
 
 PARENT_REVISION_ID = 'strategy-one-42:61d09336-6eb1-4298-bc8e-1b985e97aa78'
 PARENT_PAYLOAD_HASH = '048fbd8a27269fcb7c12e1c49d7213e2eb08320a42d86e355d8e55fbdbce37b6'
+PARENT_CODE_COMMIT = '9ad409381449c1f1b859206093b6851282b111bb'
+PARENT_CODE_FINGERPRINT = 'bfa8ad70e0584f27d3159ee1017a78d50ec53e6f7ae2dc601e98429f964eb62e'
 INHERITED_POLICIES = deepcopy(parent_policy.INHERITED_POLICIES)
 HALF_RISK_LIQUIDITY_POLICY = half_risk_liquidity_policy_payload()
 from .entry_spread_risk import EntrySpreadRiskPolicy
@@ -44,6 +46,9 @@ def verify_exact_parent(source):
             or source.payload_hash != PARENT_PAYLOAD_HASH):
         raise ValueError('Strategy64 requires exact pinned certified Strategy42')
     manifest = parent_policy.verify_prepared_strategy_forty_two_manifest(source.payload['strategy'])
+    if (manifest['approved_code_commit'] != PARENT_CODE_COMMIT
+            or manifest['approved_code_fingerprint'] != PARENT_CODE_FINGERPRINT):
+        raise ValueError('Strategy64 exact parent source approval differs')
     return manifest
 
 

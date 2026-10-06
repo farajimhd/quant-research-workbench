@@ -5,10 +5,23 @@ from hashlib import sha256
 
 import pytest
 
-from test_strategy_fifty_release import source_fixture, APPROVAL
+from test_strategy_fifty_release import APPROVAL
+from test_strategy_forty_two_release import source_fixture as prepared41_fixture
+from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
 from src.trading_runtime import strategy_sixty_four_release as child
 from src.trading_runtime import strategy_forty_two_release as parent
 from src.trading_runtime.journal_contract import canonical_json
+
+
+def source_fixture():
+    """Prepared test graph with the real parent approval, never a DB certificate."""
+    approval = {**APPROVAL, 'approved_code_commit': child.PARENT_CODE_COMMIT,
+                'approved_code_fingerprint': child.PARENT_CODE_FINGERPRINT}
+    result = parent.derive_strategy_forty_two_configuration(prepared41_fixture(), **approval)
+    return CertifiedStrategyOneConfiguration(
+        child.PARENT_REVISION_ID.split(':')[1], child.PARENT_PAYLOAD_HASH,
+        result['node_hash'], result['source_candidate_id'], result['source_candidate_hash'],
+        'prepared-test-only', result['payload'])
 
 
 def test_single_rule_preserves_parent_economics_and_configuration():
@@ -58,3 +71,14 @@ def test_resealed_policy_mutations_rejected(policy):
 def test_foreign_parent_rejected(field, value):
     with pytest.raises(ValueError):
         child.derive_strategy_sixty_four_configuration(replace(source_fixture(), **{field:value}), **APPROVAL)
+
+
+@pytest.mark.parametrize('field,value', [('approved_code_commit', 'a'*40), ('approved_code_fingerprint', 'a'*64)])
+def test_resealed_parent_code_approval_rejected(field, value):
+    source = source_fixture()
+    payload = deepcopy(source.payload)
+    manifest = payload['strategy']['numbered_release']
+    manifest[field] = value
+    manifest['manifest_hash'] = sha256(canonical_json({k:v for k,v in manifest.items() if k != 'manifest_hash'}).encode()).hexdigest()
+    with pytest.raises(ValueError, match='parent source approval'):
+        child.derive_strategy_sixty_four_configuration(replace(source, payload=payload), **APPROVAL)

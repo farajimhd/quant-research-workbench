@@ -4,6 +4,7 @@ These rows preserve the compiler-selected anchor and its three plan seals.
 Scalar restoration verifies sources and eligibility; it cannot independently
 prove initiality without the sealed candidate/compiler selection authority.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from .entry_momentum_growth import selected_initial_entry, declared_momentum_policy, observation_entry
 
 from datetime import date, datetime, timedelta, timezone
@@ -57,7 +58,7 @@ def decode_initial_momentum_row(row):
 
 
 def _selection(current, selection, strategy_number=18):
-    if type(strategy_number) is not int or strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-eighteen-first-strong-momentum-setup-v1')):
         raise ValueError("Initial momentum strategy number differs")
     if type(selection) is not InitialMomentumSelectionWitness:
         raise ValueError('Initial momentum requires exact typed selection plan seals')
@@ -69,7 +70,7 @@ def _selection(current, selection, strategy_number=18):
         from .strategy_initial_momentum_growth import first_setup_momentum_growth_entry
         if not first_setup_momentum_growth_entry(selection.initial.first_setup):
             raise ValueError('Strategy 19 requires premarket first-setup 50pct growth')
-    elif declared_momentum_policy(strategy_number) is None and strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    elif declared_momentum_policy(strategy_number) is None and (strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-twenty-six-premarket-first-setup-ten-second-growth-10pct-v1')):
         from .strategy_initial_ten_percent import first_setup_ten_percent_entry
         if not first_setup_ten_percent_entry(selection.initial.first_setup):
             raise ValueError('Strategy 26 requires first-setup strict 10pct growth')
@@ -79,12 +80,12 @@ def project_initial_momentum_entry(proposal, initial, *, run_id, batch_id,
                                    parent_record_id, event_month):
     if type(proposal) is not StrategyOneEntryProposal:
         raise ValueError('Initial momentum requires exact typed entry proposal')
-    if type(proposal.strategy_number) is not int or proposal.strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(proposal.strategy_number) is not int or (proposal.strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(proposal.strategy_number, 'strategy-eighteen-first-strong-momentum-setup-v1')):
         if initial is not None:
             raise ValueError('Old entry cannot carry initial momentum companions')
         return ()
     _selection(proposal.momentum, initial, proposal.strategy_number)
-    if proposal.strategy_number in (19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and initial != proposal.initial_momentum:
+    if (proposal.strategy_number in (19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(proposal.strategy_number, 'strategy-eighteen-first-strong-momentum-setup-v1')) and initial != proposal.initial_momentum:
         raise ValueError('Strategy 19 initial momentum differs from original selection tokens')
     anchor = initial.initial
     first = anchor.first_setup
@@ -121,7 +122,7 @@ def restore_initial_momentum(rows, *, ticker, boundary_ms, episode_start_ms, cur
     first = ordered[0]
     if strategy_number is None:
         strategy_number = first['strategy_number']
-    if type(strategy_number) is not int or strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-eighteen-first-strong-momentum-setup-v1')):
         raise ValueError('Initial momentum strategy number differs')
     identity = ('parent_record_id', 'run_id', 'event_month', 'batch_id', 'strategy_number',
                 'ticker', 'boundary_ms', 'episode_start_ms', 'first_setup_boundary_ms',
@@ -157,7 +158,7 @@ def seal_initial_momentum_rows(rows, entries, intents, events, current_momentum_
     if any('content_hash' in source and source['content_hash'] != row['content_hash']
            for source, row in zip(rows, sealed)):
         raise ValueError('Initial momentum scalar content seal changed')
-    eligible_entries = [row for row in entries if row['strategy_number'] in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)]
+    eligible_entries = [row for row in entries if (row['strategy_number'] in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(row['strategy_number'], 'strategy-eighteen-first-strong-momentum-setup-v1'))]
     required = {row['parent_record_id']: row for row in eligible_entries}
     parents = {row['record_id']: row for row in intents if row['reason'] == 'strategy_one_entry'}
     source_events = {row['record_id']: row for row in events}
@@ -166,8 +167,8 @@ def seal_initial_momentum_rows(rows, entries, intents, events, current_momentum_
             or len(source_events) != len(events)
             or len({row['record_id'] for row in sealed}) != len(sealed)
             or len(sealed) != 2 * len(required)
-            or any(row['parent_record_id'] not in required or row['strategy_number'] not in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) for row in sealed)
-            or any(row['strategy_number'] in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and row['parent_record_id'] not in required
+            or any(row['parent_record_id'] not in required or (row['strategy_number'] not in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(row['strategy_number'], 'strategy-eighteen-first-strong-momentum-setup-v1')) for row in sealed)
+            or any((row['strategy_number'] in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(row['strategy_number'], 'strategy-eighteen-first-strong-momentum-setup-v1')) and row['parent_record_id'] not in required
                    for row in current_momentum_rows)):
         raise ValueError('Initial momentum has missing, extra, duplicate or old entry companions')
     for parent, entry in required.items():

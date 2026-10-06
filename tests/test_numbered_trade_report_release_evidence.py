@@ -15,7 +15,11 @@ def test_report_requires_exact_numbered_release_and_preserves_identity(monkeypat
     plan = SimpleNamespace(build_id='build', token='market-token', units=())
     manifest = {'contract': {'number': number}, 'approved_digest': 'sealed-policy'}
     release = SimpleNamespace(payload_hash=('b' if changed_release else 'a') * 64,
-        payload={'strategy': {'numbered_release': manifest}}, token='release-token')
+        payload={'strategy': {'numbered_release': manifest}}, token='release-token',
+        revision=lambda: {'revision_id': 'certified-revision'})
+    monkeypatch.setattr(command, 'load_backtest_definition', lambda *_a, **_k: {
+        'definition': {'start_local_ms': 14_400_000, 'end_local_ms': 34_200_000,
+                       'configuration_revision_id': 'certified-revision', 'content_hash': 'd' * 64}})
     market = object()
     calls = []
     monkeypatch.setattr(command, 'load_v4_terminal_review_page',
@@ -40,4 +44,31 @@ def test_report_requires_exact_numbered_release_and_preserves_identity(monkeypat
         assert report['numbered_release'] == manifest
         assert report['configuration_release_token'] == release.token
         assert report['initial_cash'] == 10000 and report['open_lifecycle_count'] == 0
+        assert report['saved_run_definition_window'] == {
+            'start_local_ms': 14_400_000, 'end_local_ms': 34_200_000,
+            'configuration_revision_id': 'certified-revision', 'definition_hash': 'd' * 64}
     assert calls == [number]
+
+
+@pytest.mark.parametrize('mutation', ['missing', 'bool_start', 'reversed', 'out_of_day', 'foreign_revision'])
+def test_report_rejects_invalid_verified_definition_window(monkeypatch, mutation):
+    test_report_requires_exact_numbered_release_and_preserves_identity(monkeypatch, 42, False)
+    from src.backend import backtest_strategy_one_configuration as configurations
+    monkeypatch.setattr(configurations, 'certify_numbered_configuration', lambda *_: SimpleNamespace(
+        payload_hash='a' * 64, payload={'strategy': {'numbered_release': {}}},
+        token='release-token', revision=lambda: {'revision_id': 'certified-revision'}))
+    parent = {'start_local_ms': 14_400_000, 'end_local_ms': 34_200_000,
+              'configuration_revision_id': 'certified-revision', 'content_hash': 'd' * 64}
+    if mutation == 'missing':
+        parent.pop('start_local_ms')
+    elif mutation == 'bool_start':
+        parent['start_local_ms'] = True
+    elif mutation == 'reversed':
+        parent['end_local_ms'] = parent['start_local_ms']
+    elif mutation == 'out_of_day':
+        parent['end_local_ms'] = 86_400_001
+    else:
+        parent['configuration_revision_id'] = 'foreign-revision'
+    monkeypatch.setattr(command, 'load_backtest_definition', lambda *_a, **_k: {'definition': parent})
+    with pytest.raises((ValueError, RuntimeError, KeyError)):
+        command.build_report(object(), object(), 'run')

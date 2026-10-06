@@ -3,6 +3,7 @@
 Candidate selection does not commit a snapshot. The native checkpoint publisher
 must persist the complete current capture and return its verified identity.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from dataclasses import dataclass
 from decimal import Decimal
 from math import isfinite
@@ -45,7 +46,7 @@ def profit_arm_candidate(state, financial, *, already_checkpointed: bool) -> Pro
     source=families['submitted'][key]
     high=families['position_highs'][key]
     first=families['first_held_boundaries'][key]
-    if (type(source) is not StrategyOneEntryProposal or source.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
+    if (type(source) is not StrategyOneEntryProposal or (source.strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(source.strategy_number, 'strategy-thirty-one-original-risk-profit-giveback-v1'))
             or (source.account_id,source.assignment_id,source.ticker)!=key
             or type(high) is not int or not 0<high<2**64
             or type(first) is not int or first%100

@@ -1,4 +1,5 @@
 """Prepared Strategy 34 exit factory; registration/persistence remain closed."""
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from datetime import datetime, time, timedelta, timezone
 from math import isfinite
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -17,8 +18,10 @@ REASON = 'strategy_thirty_four_confirmed_ah_failure'
 
 def confirmed_ah_reason(strategy_number):
     """Retain the parent's identity and assign its successor an exact reason."""
-    if type(strategy_number) is not int or strategy_number not in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy.confirmed-ah-risk-failure.v1')):
         raise ValueError('AH confirmation requires Strategy 34 through 40')
+    if declared_fixed_rule(strategy_number, 'strategy.confirmed-ah-risk-failure.v1'):
+        return f'strategy_{strategy_number}_confirmed_ah_failure'
     return {34: REASON, 35: 'strategy_thirty_five_confirmed_ah_failure',
             36: 'strategy_thirty_six_confirmed_ah_failure',
             37: 'strategy_thirty_seven_confirmed_ah_failure', 38: 'strategy_thirty_eight_confirmed_ah_failure', 39: 'strategy_thirty_nine_confirmed_ah_failure', 40: 'strategy_forty_confirmed_ah_failure', 41: 'strategy_forty_one_confirmed_ah_failure', 42: 'strategy_forty_two_confirmed_ah_failure', 46: 'strategy_forty_six_confirmed_ah_failure', 47: 'strategy_forty_seven_confirmed_ah_failure', 48: 'strategy_forty_eight_confirmed_ah_failure', 50: 'strategy_fifty_confirmed_ah_failure', 52: 'strategy_fifty_two_confirmed_ah_failure', 53: 'strategy_fifty_three_confirmed_ah_failure', 54: 'strategy_fifty_four_confirmed_ah_failure', 55: 'strategy_fifty_five_confirmed_ah_failure', 56: 'strategy_fifty_six_confirmed_ah_failure', 57: 'strategy_fifty_seven_confirmed_ah_failure', 58: 'strategy_fifty_eight_confirmed_ah_failure', 59: 'strategy_fifty_nine_confirmed_ah_failure', 60: 'strategy_sixty_confirmed_ah_failure', 61: 'strategy_sixty_one_confirmed_ah_failure'}[strategy_number]

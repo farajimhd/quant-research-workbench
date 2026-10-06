@@ -1,4 +1,5 @@
 """Normalized Strategy 9 failure witness; no alteration of occupied schemas."""
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from dataclasses import dataclass, fields
 from types import MappingProxyType
 from uuid import UUID, NAMESPACE_URL, uuid5
@@ -40,8 +41,8 @@ class V4FollowThroughFailureBatch:
 
 def validate_numbered_failure(witness, strategy_number):
     """Pin the successor eligibility bound at every persistence boundary."""
-    validate_witness(witness, strategy_number=strategy_number if strategy_number in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) else 9)
-    if type(strategy_number) is not int or strategy_number not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    validate_witness(witness, strategy_number=strategy_number if (strategy_number in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9)
+    if type(strategy_number) is not int or (strategy_number not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-nine-followthrough-failure-v1')):
         raise ValueError("Failure evidence requires Strategy 9 through 42 or declared Strategy 46")
     if strategy_number in (11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28):
         from .strategy_early_followthrough_failure import EARLY_FAILURE_WINDOW_MS
@@ -187,7 +188,7 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
             if len(matches) != 1:
                 raise ValueError("Follow-through original entry has no exact typed evidence")
             source_child = matches[0]
-        if (row['strategy_number'] not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
+        if ((row['strategy_number'] not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(row['strategy_number'], 'strategy-nine-followthrough-failure-v1'))
                 or source_child['strategy_number'] != row['strategy_number']
                 or row['assignment_id'] != source_child['assignment_id']
                 or row['run_id'] != parent['run_id'] or row['batch_id'] != parent['batch_id']
@@ -212,7 +213,7 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
             float(parent['quantity']), False, False, False, 1)
         expected = followthrough_exit_intent(witness, financial, session_date=local.date(),
             source_entry_intent_id=str(row['source_entry_intent_id']),
-            strategy_number=row['strategy_number'] if row['strategy_number'] in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) else 9)
+            strategy_number=row['strategy_number'] if (row['strategy_number'] in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(row['strategy_number'], 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9)
         content = {k: v for k, v in parent.items() if k != 'content_hash'}
         expected_content = {**content, **{k: v for k, v in project_strategy_intent(expected).core.items()
                                          if k != "event_time"}}

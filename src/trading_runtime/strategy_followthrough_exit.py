@@ -1,4 +1,5 @@
 """Immutable scalar Strategy 9 liquidation intent from the shared rule witness."""
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from datetime import datetime, time, timedelta, timezone
 from uuid import NAMESPACE_URL, UUID, uuid5
 from zoneinfo import ZoneInfo
@@ -13,12 +14,12 @@ from .strategy_one_stateful import StrategyOneFinancialView
 def validate_witness(witness, *, strategy_number=9):
     if type(witness) is not FollowThroughFailure:
         raise ValueError("Follow-through exit requires the exact scalar witness")
-    if type(strategy_number) is not int or strategy_number not in (9, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (9, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-nine-followthrough-failure-v1')):
         raise ValueError("Failure factory requires legacy or inherited quarter-risk witness authority")
     from .strategy_premarket_quarter_risk_failure import premarket_quarter_risk_failure
     from .strategy_persistent_risk_failure import persistent_risk_failure
     from .strategy_zero_regime_risk_failure import zero_regime_risk_failure
-    rule = (zero_regime_risk_failure if strategy_number in (30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
+    rule = (zero_regime_risk_failure if (strategy_number in (30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-thirty-zero-regime-original-risk-failure-v1'))
             else persistent_risk_failure if strategy_number == 29
             else premarket_quarter_risk_failure if strategy_number in (25, 26, 27, 28)
             else followthrough_failure)

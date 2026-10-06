@@ -5,6 +5,7 @@ consumes its existing producer/held-position fields; it never derives a bar,
 indicator, quote or held-start clock. Native publication and cold replay are
 required before any numbered executor may consume the returned witness.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from dataclasses import dataclass
 from decimal import Decimal
 from math import isfinite
@@ -103,9 +104,9 @@ def numbered_liquidity_fade_failure(value: LiquidityFadeInput, *, strategy_numbe
     numbers cannot reach the additional predicate; Strategy39 considers it
     only when the unchanged parent liquidity predicate did not produce an exit.
     """
-    if type(strategy_number) is not int or strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-thirty-five-completed-liquidity-fade-v1')):
         raise ValueError('Liquidity failure requires an exact supported strategy number')
     inherited = liquidity_fade_failure(value)
-    if inherited is not None or strategy_number not in (39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if inherited is not None or (strategy_number not in (39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-thirty-nine-half-risk-liquidity-failure-v1')):
         return inherited
     return half_risk_liquidity_fade_failure(value)

@@ -34,6 +34,7 @@ from src.backend.strategy_one_entry_context import pinned_entry_volume
 from src.backend.backtest_v4_performance_evidence import load_broker_observed_drawdown
 from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
 from src.trading_runtime.domain import json_safe
+from src.trading_runtime.arte_backtest_definition import load_backtest_definition
 
 RUNTIME_ROOT = Path("D:/TradingML/runtimes")
 DEFAULT_RUNS = ("b62fa860-7570-4976-b23f-58b416b56a42",
@@ -85,12 +86,21 @@ def build_report(journal, market, run_id: str) -> dict:
     if terminal["status"] != "completed":
         raise RuntimeError("Optimization report requires a completed run")
     session, context, _, plan = certified_saved_run_plan(journal, market, run_id=run_id)
+    definition = load_backtest_definition(journal, run_id, run_context=context)["definition"]
+    start = definition["start_local_ms"]
+    end = definition["end_local_ms"]
+    if type(start) is not int or type(end) is not int or not 0 <= start < end <= 86_400_000:
+        raise RuntimeError("Report needs exact ordered committed session window")
+    window = {"start_local_ms": start, "end_local_ms": end,
+              "configuration_revision_id": definition["configuration_revision_id"],
+              "definition_hash": definition["content_hash"]}
     number = int(context["strategy_revision"])
     numbered_evidence = {}
     if number != 1:
         from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
         release = certify_numbered_configuration(market, number)
-        if release.payload_hash != context["configuration_hash"]:
+        if (release.payload_hash != context["configuration_hash"]
+                or release.revision()["revision_id"] != window["configuration_revision_id"]):
             raise RuntimeError("Numbered report differs from the sealed run configuration")
         numbered_evidence = {"strategy_number": number,
                              "numbered_release": release.payload["strategy"]["numbered_release"],
@@ -145,6 +155,7 @@ def build_report(journal, market, run_id: str) -> dict:
                       "verified_sequence": page["verified_sequence"],
                       "market_build_id": plan.build_id, "market_plan_token": plan.token,
                       "saved_context": context,
+                      "saved_run_definition_window": window,
                       "drawdown_scope": "closed episodes only; not intratrade or mark-to-market",
                       "volume_scope": "completed pinned 1s bars through entry; forming second excluded",
                       "report": page["report"], "positions": rows})

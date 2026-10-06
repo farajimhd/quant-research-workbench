@@ -4,6 +4,7 @@ The distinct family retains all four native trade counts and the completed
 observation clock. Hash, producer-attempt, committed-prefix and live financial
 verification remain mandatory integration gates, not claims of this mapper.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from dataclasses import fields
 from types import MappingProxyType
 from collections.abc import Mapping
@@ -110,7 +111,7 @@ def project_liquidity_fade_failure(
 def restore_liquidity_fade_failure(row):
     """Replay complete scalars after raw stored hashes and UInt adaptation."""
     columns = {name for name, _ in LIQUIDITY_FADE_FAILURE.columns} - {"content_hash"}
-    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or row["strategy_number"] not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if set(row) - {"content_hash"} != columns or type(row.get("strategy_number")) is not int or (row["strategy_number"] not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(row["strategy_number"], 'strategy-thirty-five-completed-liquidity-fade-v1')):
         raise ValueError("Liquidity fade requires its complete version-bound Strategy 35 through 42 family")
     validate_liquidity_observation_source(row)
     validate_liquidity_checkpoint_reference(row)
@@ -136,7 +137,7 @@ def restore_liquidity_fade_failure(row):
     witness_type = LiquidityFadeFailure
     prior = values['candles'][0].trade_count + values['candles'][1].trade_count
     recent = values['candles'][2].trade_count + values['candles'][3].trade_count
-    if row['strategy_number'] in (39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and 4 * recent > prior:
+    if (row['strategy_number'] in (39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(row['strategy_number'], 'strategy-thirty-nine-half-risk-liquidity-failure-v1')) and 4 * recent > prior:
         from .strategy_half_risk_liquidity_fade import HalfRiskLiquidityFadeFailure
         witness_type = HalfRiskLiquidityFadeFailure
     witness = witness_type(**values)

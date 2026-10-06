@@ -4,6 +4,7 @@ This is a necessary activity condition, not trade admission. Inputs must come
 from independently certified producer attempts; this compiler does not grant
 that certification. No fill/outcome labels, market reads or order calls exist.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date
@@ -105,10 +106,10 @@ class CompiledLiquidityFadeLookup:
                 or type(plan.units) is not tuple or len(plan.units) > 65_536
                 or any(type(u) is not MarketDayUnit for u in plan.units)):
             raise ValueError('Liquidity lookup requires one independently certified native session')
-        if type(strategy_number) is not int or strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        if type(strategy_number) is not int or (strategy_number not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-thirty-five-completed-liquidity-fade-v1')):
             raise ValueError('Liquidity lookup requires an exact supported strategy number')
         activity_column = 'liquidity_fade'
-        if strategy_number in (39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        if (strategy_number in (39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-thirty-nine-half-risk-liquidity-failure-v1')):
             from .backtest_strategy_half_risk_liquidity_fade import (
                 HALF_RISK_ACTIVITY_FADE, compile_half_risk_liquidity_observations,
             )

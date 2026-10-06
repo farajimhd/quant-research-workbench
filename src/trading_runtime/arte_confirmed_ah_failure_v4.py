@@ -4,6 +4,7 @@ Projection/restoration do not attest market provenance, committed ancestry or
 current Portfolio/OMS state. Native admission must supply those checks before
 this family can become an executable Strategy 34 exit.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -127,7 +128,7 @@ def project_confirmed_ah_failure(
 
 def restore_confirmed_ah_failure(row):
     """Scalar replay only; stored-row hash/prefix verification must precede it."""
-    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(row.get('strategy_number')) is not int or (row['strategy_number'] not in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(row['strategy_number'], 'strategy.confirmed-ah-risk-failure.v1')):
         raise ValueError('AH confirmation requires Strategy 34 through 36')
     integers = {'boundary_ms', 'first_held_boundary_ms', 'completed_close_int', 'quote_age_us'}
     values = {}

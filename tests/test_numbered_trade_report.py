@@ -19,7 +19,11 @@ def test_numbered_report_requires_pinned_configuration_and_labels_number(monkeyp
     monkeypatch.setattr(report, "load_v4_performance_report", lambda *_a:
                         {"position_lifecycles": [], "report": {"episodes": []}, "verified_sequence": 1})
     release = SimpleNamespace(payload_hash="a" * 64, token="sealed-token",
-                              payload={"strategy": {"numbered_release": {"approved_digest": "b" * 64}}})
+                              payload={"strategy": {"numbered_release": {"approved_digest": "b" * 64}}},
+                              revision=lambda: {"revision_id": "certified-revision"})
+    monkeypatch.setattr(report, "load_backtest_definition", lambda *_a, **_kw: {
+        "definition": {"start_local_ms": 14_400_000, "end_local_ms": 34_200_000,
+                       "configuration_revision_id": "certified-revision", "content_hash": "d" * 64}})
     calls = []
     monkeypatch.setattr(configuration, "certify_numbered_configuration", lambda client, number:
                         calls.append(number) or release)

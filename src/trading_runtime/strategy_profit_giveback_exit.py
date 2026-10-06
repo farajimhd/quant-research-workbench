@@ -1,4 +1,5 @@
 """Immutable candidate liquidation intent; no submission or storage authority."""
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from datetime import date, datetime, time, timedelta, timezone
 from math import isfinite
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -17,8 +18,10 @@ REASON = 'strategy_thirty_one_profit_giveback'
 
 def profit_giveback_reason(strategy_number: int) -> str:
     """One exact numbered identity shared by factory, persistence and recovery."""
-    if type(strategy_number) is not int or strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
         raise ValueError('Profit protection requires Strategy 31 through 40')
+    if declared_fixed_rule(strategy_number, 'strategy-thirty-one-original-risk-profit-giveback-v1'):
+        return f'strategy_{strategy_number}_profit_giveback'
     return {31: REASON, 32: 'strategy_thirty_two_profit_giveback',
             33: 'strategy_thirty_three_profit_giveback',
             34: 'strategy_thirty_four_profit_giveback',

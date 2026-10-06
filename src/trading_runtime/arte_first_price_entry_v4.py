@@ -1,4 +1,5 @@
 """Staged exact-integer first-price companion; no table/writer admission."""
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from .entry_momentum_growth import selected_initial_entry, declared_momentum_policy, observation_entry
 
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ FIRST_PRICE = TableContract('trading_first_price_entry_v4', (
 
 
 def _bind(current, selection, price, *, strategy_number=20):
-    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
         raise ValueError('First price requires exact source policy number')
     if type(selection) is not InitialMomentumSelectionWitness:
         raise ValueError('First price requires typed original selection')
@@ -41,7 +42,7 @@ def _bind(current, selection, price, *, strategy_number=20):
     first = selection.initial.first_setup
     from .strategy_initial_ten_percent import first_setup_ten_percent_entry
     policy = declared_momentum_policy(strategy_number)
-    first_rule = (lambda witness: observation_entry(witness, policy, policy.first_fraction)) if policy is not None else first_setup_ten_percent_entry if strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) else first_setup_momentum_growth_entry
+    first_rule = (lambda witness: observation_entry(witness, policy, policy.first_fraction)) if policy is not None else first_setup_ten_percent_entry if (strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-twenty-six-premarket-first-setup-ten-second-growth-10pct-v1')) else first_setup_momentum_growth_entry
     if (not selected_initial_entry(current, selection.initial, strategy_number)
             or not first_rule(first)):
         raise ValueError('First price requires policy-matched first-setup momentum')
@@ -62,7 +63,7 @@ def _bind(current, selection, price, *, strategy_number=20):
 def project_first_price_entry(current, selection, price, *, price_source_token,
                               run_id, batch_id, parent_record_id, event_month,
                               strategy_number=20):
-    if type(strategy_number) is not int or strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
         raise ValueError('First price requires an installed source-bound number')
     if not _bind(current, selection, price, strategy_number=strategy_number):
         return ()
@@ -155,10 +156,10 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
     sealer. This function neither registers it nor installs operational tables.
     """
     from .arte_journal_writer import typed_row
-    required = {row['parent_record_id']: row for row in entries if row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
+    required = {row['parent_record_id']: row for row in entries if (row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(row['strategy_number'], 'strategy-twenty-premarket-first-completed-one-second-price-break-v1'))}
     parents = {row['record_id']: row for row in intents}
     source_events = {row['record_id']: row for row in events}
-    if (len(required) != sum(row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) for row in entries)
+    if (len(required) != sum((row['strategy_number'] in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(row['strategy_number'], 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')) for row in entries)
             or len(parents) != len(intents) or len(source_events) != len(events)
             or any(type(authority) is not FirstPriceEntryAuthority for authority in authorities)):
         raise ValueError('First price graph has ambiguous parents or untyped authority')
@@ -190,7 +191,7 @@ def seal_first_price_rows(rows, entries, intents, events, authorities):
                 or any(intent[name] != entry[name] or event[name] != entry[name]
                        for name in ('run_id', 'batch_id', 'event_month'))):
             raise ValueError('First price graph has unrelated entry/intent/event scope')
-        if ((authority.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or entry['strategy_number'] in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61))
+        if (((authority.strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(authority.strategy_number, 'strategy-twenty-six-premarket-first-setup-ten-second-growth-10pct-v1')) or (entry['strategy_number'] in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(entry['strategy_number'], 'strategy-twenty-six-premarket-first-setup-ten-second-growth-10pct-v1')))
                 and authority.strategy_number != entry['strategy_number']):
             raise ValueError('First price source authority differs from entry policy')
         selected = grouped.get(parent, ())

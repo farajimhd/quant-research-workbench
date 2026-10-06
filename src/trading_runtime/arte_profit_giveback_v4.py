@@ -4,6 +4,7 @@ Projection alone does not prove source checkpoint ancestry. Journal admission
 must verify the referenced manager snapshot and original committed entry before
 this family can be registered for execution.
 """
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from dataclasses import dataclass, fields
 from datetime import date, timezone
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -94,7 +95,7 @@ def project_profit_giveback(
 
 def restore_profit_giveback(row: dict) -> ProfitGivebackWitness:
     """Revalidate scalars after native row hash/source verification, not instead."""
-    if type(row.get('strategy_number')) is not int or row['strategy_number'] not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(row.get('strategy_number')) is not int or (row['strategy_number'] not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(row['strategy_number'], 'strategy-thirty-one-original-risk-profit-giveback-v1')):
         raise ValueError('Profit witness belongs only to Strategy 31 through 36')
     integer_fields = {'boundary_ms', 'first_held_boundary_ms', 'completed_close_int',
                       'quote_age_us', 'prior_high_int', 'prior_high_through_boundary_ms'}

@@ -5,6 +5,7 @@ opens SQLite or writes files.  Publication and recovery are owned by the
 fenced ClickHouse adapter; this buffer is not itself a durability authority.
 """
 from __future__ import annotations
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 
 from src.trading_runtime.numbered_fixed_strategy import numbered_session_exit_reason
 
@@ -101,14 +102,14 @@ class BacktestMemoryJournal:
         columns. It is never serialized as metadata or written to disk.
         """
         from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
-        if proposal.strategy_number in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        if (proposal.strategy_number in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(proposal.strategy_number, 'strategy-thirty-seven-confirmed-episode-activity-veto-v1')):
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
             from src.backend.backtest_strategy_episode_activity_source import certified_episode_entry_intent
             if (type(first_price_source) is not CertifiedPriceReadbackAuthority
                     or first_price_source.run_id != self.run_id):
                 raise ValueError('Strategy37 journal intent lacks its exact native source')
             expected = certified_episode_entry_intent(first_price_source, proposal, session_date=session_date)
-        elif proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        elif (proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(proposal.strategy_number, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
             from src.backend.backtest_strategy_certified_price_break import (
                 CertifiedPriceReadbackAuthority, certified_price_entry_intent,
             )
@@ -231,7 +232,7 @@ class BacktestMemoryJournal:
                     "replace_protective_stop", "replace_profit_target"}
                 or intent.metadata or not account_id
                 or strategy_id != STRATEGY_ID
-                or type(strategy_revision) is not int or strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
+                or type(strategy_revision) is not int or (strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_revision, 'strategy-fourteen-numbered-admission-v1'))
                 or (intent.action == "replace_profit_target"
                     and (intent.reason != "ordinal_resistance_target"
                          or intent.profit_target_price is None
@@ -285,7 +286,7 @@ class BacktestMemoryJournal:
         from uuid import UUID
         validate_numbered_failure(witness, strategy_revision)
         UUID(source_entry_intent_id)
-        if (type(strategy_revision) is not int or strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or strategy_id != "early-squeeze-strategy"
+        if (type(strategy_revision) is not int or (strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_revision, 'strategy-nine-followthrough-failure-v1')) or strategy_id != "early-squeeze-strategy"
                 or not account_id or intent.action != "exit" or intent.reason != REASON
                 or intent.metadata or intent.reference_price != witness.bid):
             raise ValueError("Follow-through exit lacks exact numbered scalar authority")
@@ -335,7 +336,7 @@ class BacktestMemoryJournal:
             source_entry_intent_id=source_entry_intent_id, strategy_number=strategy_revision,
         )
         if (strategy_id != 'early-squeeze-strategy'
-                or type(strategy_revision) is not int or strategy_revision not in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
+                or type(strategy_revision) is not int or (strategy_revision not in (34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_revision, 'strategy.confirmed-ah-risk-failure.v1'))
                 or intent != expected):
             raise ValueError('AH confirmation journal requires exact Strategy 34 factory authority')
         source = (intent, witness, financial, source_entry_intent_id, session_date)
@@ -384,7 +385,7 @@ class BacktestMemoryJournal:
         fields = {'source_build_id', 'source_market_plan_token', 'source_bars_attempt_id',
                   'source_indicators_attempt_id', 'source_liquidity_attempt_id', *CHECKPOINT_REFERENCE_FIELDS}
         if (strategy_id != 'early-squeeze-strategy' or type(strategy_revision) is not int
-                or strategy_revision not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or intent != expected
+                or (strategy_revision not in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_revision, 'strategy-thirty-five-completed-liquidity-fade-v1')) or intent != expected
                 or not isinstance(observation_source, Mapping) or set(observation_source) != fields):
             raise ValueError('Liquidity journal requires exact numbered factory and complete references')
         refs = dict(observation_source)
@@ -428,7 +429,7 @@ class BacktestMemoryJournal:
         from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
         if (type(arm_reference) is not ProfitArmReference
                 or type(arm_reference.candidate) is not ProfitArmCandidate
-                or type(strategy_revision) is not int or strategy_revision not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
+                or type(strategy_revision) is not int or (strategy_revision not in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_revision, 'strategy-thirty-one-original-risk-profit-giveback-v1'))
                 or strategy_id != 'early-squeeze-strategy'
                 or type(account_id) is not str or not account_id
                 or type(assignment_id) is not str or not assignment_id

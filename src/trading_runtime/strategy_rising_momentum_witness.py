@@ -1,4 +1,5 @@
 """Typed completed producer observations; scalar adapter never derives MACD."""
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from dataclasses import dataclass
 from math import isfinite
 import re
@@ -68,13 +69,13 @@ def rising_momentum_entry(witness: RisingMomentumWitness) -> bool:
 
 def numbered_momentum_entry(witness: RisingMomentumWitness, strategy_number: int) -> bool:
     """Pin the stronger rule to 17; retain earlier completed-momentum behavior."""
-    if type(strategy_number) is not int or strategy_number not in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if type(strategy_number) is not int or (strategy_number not in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-thirteen-rising-completed-momentum-v1')):
         raise ValueError("Numbered momentum rule has no installed consumer")
     from .entry_momentum_growth import declared_momentum_policy, observation_entry
     policy = declared_momentum_policy(strategy_number)
     if policy is not None:
         return observation_entry(witness, policy, policy.current_fraction)
-    if strategy_number in (17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if (strategy_number in (17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-seventeen-positive-ten-second-histogram-growth-10pct-v1')):
         from .strategy_strong_ten_second_momentum import strong_ten_second_momentum_entry
         return strong_ten_second_momentum_entry(witness)
     return rising_momentum_entry(witness)

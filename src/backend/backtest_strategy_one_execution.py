@@ -5,6 +5,7 @@ disk journal belongs in this lane. Market inputs are preflight-certified
 persisted products; the broker and Portfolio/OMS alone mutate financial state.
 """
 from __future__ import annotations
+from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 
 import asyncio
 from collections import defaultdict
@@ -157,7 +158,7 @@ async def run_certified_strategy_one_session(
             or manager_ready is not None and not callable(manager_ready)
             or first_price_ready is not None and not callable(first_price_ready)):
         raise ValueError("Strategy 1 session lacks pinned 100ms inputs")
-    if runtime.config.strategy_revision in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and resume_manager_state is not None:
+    if (runtime.config.strategy_revision in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-five-completed-liquidity-fade-v1')) and resume_manager_state is not None:
         raise ValueError("Strategy 35 resume lacks liquidity-cache equivalence acceptance")
     if flat_start_boundary_ms:
         active = getattr(getattr(runtime, "broker", None),
@@ -204,7 +205,7 @@ async def run_certified_strategy_one_session(
     cost_authority = None
     momentum_plan = None
     initial_momentum_plan = None
-    if runtime.config.strategy_revision in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if (runtime.config.strategy_revision in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirteen-rising-completed-momentum-v1')):
         from src.backend.backtest_strategy_rising_momentum import load_rising_momentum_plan
         base_gate = compile_static_entry_gate(visible, entry, strategy_number=12)
         with closing(client_factory()) as momentum_client:
@@ -214,9 +215,9 @@ async def run_certified_strategy_one_session(
         if runtime.config.strategy_revision == 18:
             from src.backend.backtest_strategy_initial_momentum import compile_initial_momentum_plan
             initial_momentum_plan = compile_initial_momentum_plan(visible, entry, momentum_plan)
-        elif runtime.config.strategy_revision in (19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        elif (runtime.config.strategy_revision in (19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-eighteen-first-strong-momentum-setup-v1')):
             from src.backend.backtest_strategy_initial_momentum_growth import compile_initial_momentum_growth_plan
-            if runtime.config.strategy_revision in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+            if (runtime.config.strategy_revision in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-six-premarket-first-setup-ten-second-growth-10pct-v1')):
                 from src.backend.backtest_strategy_initial_ten_percent import compile_initial_ten_percent_plan
                 policy = getattr(numbered_fixed_strategy(runtime.config.strategy_revision), 'entry_momentum_growth_policy', None)
                 if policy is not None:
@@ -226,27 +227,27 @@ async def run_certified_strategy_one_session(
                     initial_momentum_plan = compile_initial_ten_percent_plan(visible, entry, momentum_plan)
             else:
                 initial_momentum_plan = compile_initial_momentum_growth_plan(visible, entry, momentum_plan)
-            if runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+            if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
                 from src.backend.backtest_strategy_first_price_source import load_first_price_source
                 from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan
                 with closing(client_factory()) as price_client:
                     source = load_first_price_source(market, initial_momentum_plan, client=price_client)
                 initial_momentum_plan = compile_certified_price_break_plan(source)
-    if runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+    if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
         from src.backend.backtest_strategy_certified_price_break import (
             compile_certified_price_static_gate, CertifiedPriceReadbackAuthority,
         )
         if not callable(first_price_ready):
             raise ValueError("Strategy20 session lacks its price-source publication binding")
         activity_authority = None
-        if runtime.config.strategy_revision in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        if (runtime.config.strategy_revision in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-six-completed-entry-activity-fade-v1')):
             from src.backend.backtest_strategy_entry_activity_source import (
                 load_entry_activity_plan, EntryActivityReadbackAuthority,
             )
             from src.backend.backtest_strategy_entry_activity_gate import compile_entry_activity_static_gate
             with closing(client_factory()) as activity_client:
                 activity_plan = load_entry_activity_plan(market, initial_momentum_plan, client=activity_client)
-            if runtime.config.strategy_revision in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+            if (runtime.config.strategy_revision in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-seven-confirmed-episode-activity-veto-v1')):
                 # Seal the full candidate prefix before pruning scheduler rows.
                 # Candidates observed while holding still contribute to the veto.
                 from src.backend.backtest_strategy_episode_activity_gate import compile_episode_activity_static_gate
@@ -379,7 +380,7 @@ async def run_certified_strategy_one_session(
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)
-            if runtime.config.strategy_revision in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+            if (runtime.config.strategy_revision in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-five-completed-liquidity-fade-v1')):
                 from .backtest_strategy_liquidity_fade_loader import load_compiled_liquidity_fade_lookup
                 # Publication checks the original entry's certified plan, not
                 # the separately projected V7 computation scope.
@@ -394,7 +395,7 @@ async def run_certified_strategy_one_session(
                     strategy_number=runtime.config.strategy_revision)
                 manager.bind_liquidity_fade_lookup(liquidity_lookup, liquidity_market)
             if resume_manager_state is not None:
-                if runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+                if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
                     manager.restore_state(resume_manager_state, first_price_source=price_authority)
                 else:
                     manager.restore_state(resume_manager_state)
@@ -448,7 +449,7 @@ async def run_strategy_one_fixed_session(
             or not isinstance(getattr(runtime, "journal", None), BacktestMemoryJournal)
             or config is None or config.mode != RunMode.BACKTEST
             or config.strategy_id != STRATEGY_ID
-            or config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
+            or (config.strategy_revision not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(config.strategy_revision, 'strategy-fourteen-numbered-admission-v1'))
             or not callable(getattr(runtime, "process_liquidity_boundary", None))
             or not callable(getattr(broker, "financially_active_tickers", None))
             or not callable(getattr(broker, "positions", None))
@@ -486,13 +487,13 @@ async def run_strategy_one_fixed_session(
     async def observe_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
         # Consume the bucket ending at the cutoff first. Cancel acquisition
         # remainder at its completed clock before any later bucket can fill.
-        if config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
+        if (config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(config.strategy_revision, 'strategy-two-extended-session-policy-v1')):
             await runtime.advance_numbered_session_clock(work.boundary_ms)
         await evidence.observe_completed_seconds(work)
 
     async def finish_numbered_boundary(work: StrategyOneBoundaryWork) -> None:
         await finish_boundary(work)
-        if config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and work.boundary_ms in (19_800_000, 57_600_000):
+        if (config.strategy_revision in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(config.strategy_revision, 'strategy-two-extended-session-policy-v1')) and work.boundary_ms in (19_800_000, 57_600_000):
             active = broker.financially_active_tickers()
             if active:
                 raise RuntimeError(f"Strategy {config.strategy_revision} session ended with residual exposure/orders: {active}")
