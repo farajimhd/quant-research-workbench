@@ -125,11 +125,11 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
                             Layout(name='ownership',size=2),Layout(name='messages',size=6),Layout(name='keys',size=1))
         layout['header'].update(Group(head,Text(status.get('focus','')),issue))
         layout['progress'].update(progress);layout['clock'].update(clock)
-        layout['metrics'].update(performance if view=='performance' else components_table(best,status.get('objective'),profiling=profiling,wide=width>=100) if view=='objective' else
+        layout['metrics'].update(performance if view=='performance' else components_table(best,status.get('objective'),profiling=profiling,wide=width>=100,maximum_rows=max(1,height-27),page=status.get('_objective_page',0)) if view=='objective' else
                                   Panel(Text('\n'.join(f"{item['timestamp']}  {item['text']}" for item in events[-max(1,height-24):])),title='Message history · older entries retained in events.jsonl') if view=='messages' else grid)
         layout['ownership'].update(Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')} | provisional metrics until session completes"))
         layout['messages'].update(Panel(messages,title='MESSAGE CENTER · UTC · chronological · retained in events.jsonl'))
-        layout['keys'].update(Text('F financial/pages | T position timing | P performance | C objective | M messages | Q close'))
+        layout['keys'].update(Text('F financial/pages | T position timing | P performance | C objective/pages | M messages | Q close'))
         return layout
     if height<26 and view=='financial':return Group(head,progress,grid,clock,issue,Text('F financial | P performance | C objective; full metrics: status.json'))
     components=components_table(best,status.get('objective'),profiling=profiling,wide=width>=100)
@@ -138,7 +138,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     if height<50:return Group(head,Text(status.get('focus','')),progress,clock,grid,footer,issue,Text('F financial | T timing | P performance | C objective | M messages | Q close'))
     return Group(head,Text(status.get('focus','')),progress,clock,grid,performance,components,footer,issue)
 
-def components_table(best,objective=None,*,profiling=False,wide=True):
+def components_table(best,objective=None,*,profiling=False,wide=True,maximum_rows=None,page=0):
     objective=objective or {};values=best.get('objective_components') or {}
     table=Table(title='OBJECTIVE COMPONENTS',expand=True)
     table.add_column('Component');table.add_column('Weight',justify='right')
@@ -151,14 +151,21 @@ def components_table(best,objective=None,*,profiling=False,wide=True):
           ('stop_risk_penalty','Stop-risk time','stop_risk_weight',-1,'Mean risk dollar-seconds / cash / 3600'),
           ('capital_time_penalty','Capital time','capital_time_weight',-1,'Mean capital dollar-seconds / cash / 3600'),
           ('complexity_penalty','Complexity','complexity_weight',-1,'Active nodes / configured maximum nodes'))
+    rendered=[]
     for key,label,weight,sign,formula in rows:
         configured=objective.get(weight)
         cells=[label,number(None if configured is None else sign*configured,'.3f')]
         if wide:cells.append(formula)
         cells.append(number(None if key not in values else sign*values[key],'.6f'))
-        table.add_row(*cells)
+        rendered.append(cells)
     total=sum(values[key]*sign for key,_,_,sign,_ in rows) if all(key in values for key,_,_,_,_ in rows) else None
-    table.add_row('Total score','',*(['Sum of signed contributions'] if wide else []),number(total,'.6f'))
+    rendered.append(['Total score','']+(['Sum of signed contributions'] if wide else [])+[number(total,'.6f')])
+    if maximum_rows is not None and len(rendered)>maximum_rows:
+        import math
+        pages=math.ceil(len(rendered)/maximum_rows);page%=pages
+        rendered=rendered[page*maximum_rows:(page+1)*maximum_rows]
+        table.title+=f' · C: page {page+1}/{pages}'
+    for cells in rendered:table.add_row(*cells)
     table.caption=('Profile: full 30-day objective is not computed.' if profiling else
                    'Pending: all 30 training sessions must finish before scoring.' if not values else
                    'Calculated from a completed all-30-session training leader.')

@@ -36,3 +36,19 @@ def test_objective_rows_show_configured_weights_pending_and_signed_arithmetic():
     stream.seek(0);stream.truncate()
     console.print(components_table(dict(objective_components=values),asdict(Objective())))
     assert '0.023700' in stream.getvalue() and '-0.003000' in stream.getvalue()
+
+
+def test_short_fixed_viewport_objective_pages_retain_all_terms_and_scope():
+    status=dict(mode='profile',status='profiling',objective=asdict(Objective()),
+                config=dict(population=128,generations=0,training_sessions=1))
+    for width in (80,128):
+        output=''
+        for page in range(3):
+            stream=StringIO()
+            Console(file=stream,width=width,height=30,force_terminal=False).print(
+                render(dict(status,_objective_page=page),width=width,height=30,view='objective'))
+            frame=stream.getvalue();output+=frame
+            assert len(frame.splitlines())==30
+            assert 'full 30-day objective is not computed' in frame
+        assert all(term in output for term in ('Median reward','Ex-best reward','Tail loss',
+                    'Drawdown','Stop-risk time','Capital time','Complexity','Total score'))

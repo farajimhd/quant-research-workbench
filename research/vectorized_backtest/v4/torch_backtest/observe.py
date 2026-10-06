@@ -7,7 +7,7 @@ from .dashboard import render
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--view',choices=('financial','positions','performance','objective','messages'),default='financial');args=p.parse_args(argv)
-    console=Console(no_color=bool(os.environ.get('NO_COLOR')));last={};error=None;financial_page=0
+    console=Console(no_color=bool(os.environ.get('NO_COLOR')));last={};error=None;financial_page=0;objective_page=0
     identity_path=args.output/'identity.json'
     # Older immutable workers do not emit mode. Derive display scope from their
     # retained launch identity without editing their status or experiment.
@@ -23,7 +23,7 @@ def main(argv=None):
         if profile:
             last={**last,'mode':'profile','focus':'Single training-session profile; validation SEALED'}
             if last.get('status')=='training':last['status']='profiling'
-        return render({**last,'objective':last.get('objective') or objective,'_financial_page':financial_page},width=console.width,height=console.height,view=args.view)
+        return render({**last,'objective':last.get('objective') or objective,'_financial_page':financial_page,'_objective_page':objective_page},width=console.width,height=console.height,view=args.view)
     if args.once or not console.is_terminal:
         console.print(read());return 0
     with Live(read(),console=console,refresh_per_second=1,screen=False,transient=False) as live:
@@ -35,6 +35,7 @@ def main(argv=None):
                         key=msvcrt.getwch().lower()
                         if key=='q':break
                         if key=='f':financial_page=financial_page+1 if args.view=='financial' else 0
+                        if key=='c':objective_page=objective_page+1 if args.view=='objective' else 0
                         args.view={'f':'financial','t':'positions','p':'performance','c':'objective','m':'messages'}.get(key,args.view)
                 live.update(read());time.sleep(1)
                 # Retain the final panel and its navigation until Q/Ctrl-C.
