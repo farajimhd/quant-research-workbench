@@ -2,11 +2,12 @@
 
 Both architectures use the published copied/suppressed 1b labels. The current
 default is hierarchical v2, documented below. The initial sections describe
-the retained soft-v1 architecture. Neither architecture
-recalculate bars, indicators, 1a or 1b labels. The new checkpoint contract is
-`rl-v6-1b-autoregressive-five-candle-v1`. Legacy checkpoints require the explicit
-legacy architecture (`--teacher-forecast-steps 1`); incompatible continuation
-is rejected by action version, manifest configuration and strict state loading.
+the retained soft-v1 architecture. Neither architecture recalculates bars,
+indicators, 1a or 1b labels. The sequence checkpoint contracts are
+`rl-v6-1b-autoregressive-five-candle-v1` and `rl-v6-1b-hierarchical-five-candle-v2`.
+Pre-sequence checkpoints require the explicit one-step architecture
+(`--teacher-forecast-steps 1`); incompatible continuation is rejected by action
+version, manifest configuration and strict state loading.
 
 ## Inputs and outputs
 
