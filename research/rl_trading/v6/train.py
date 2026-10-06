@@ -26,6 +26,7 @@ from research.rl_trading.v6.training_gate import require_dataset
 from research.rl_trading.v6.market_attention import MarketAttentionConfig
 from research.rl_trading.v6.ranked_policy import RankedBracketActorCritic
 from research.rl_trading.v6.session_data import open_session
+from research.rl_trading.v6.context_splits import VERSION as CONTEXT_SPLIT_VERSION
 from research.rl_trading.v6.identity_map import certify_identity_map, open_identity_map
 from research.rl_trading.v6.teacher_data import load_teacher, load_wait_hold_teacher
 from research.rl_trading.v6.action_contract import ACTION_VERSION
@@ -361,6 +362,7 @@ def main(argv=None):
         'ranking':asdict(ranking),'source_commit':_commit(),
         'label_algorithm':dataset['algorithm'],'label_raw_value_units':dataset['raw_value_units'],
         'teacher_label_timing':TEACHER_LABEL_TIMING,
+        'context_split_version':CONTEXT_SPLIT_VERSION,
         'label_publication_audit_sha256':dataset['publication_audit_sha256'],
         'config':{k:([str(item) for item in v] if isinstance(v,list) else str(v) if isinstance(v,Path) else v)
                   for k,v in vars(args).items() if k not in ('resume','audit_only')},
@@ -373,6 +375,9 @@ def main(argv=None):
         'holding_observation_version':'11_fields_modeled_halt_flag_and_age',
         'research_price_increment':.0001,'price_increment_authority':'canonical_precision_scenario_not_exchange_tick',
         'wandb_key_present':bool(os.environ.get('WANDB_API_KEY'))}
+    from research.rl_trading.v6.context_splits import receipt as context_receipt
+    manifest['context_split_receipts']={entry['day']:context_receipt(runtime,
+        json.loads((Path(entry['bank_root'])/'plan.json').read_text()))[1] for entry in dataset['days']}
     manifest['hash']=digest(manifest)
     initialization=None
     if args.initialize_from:
@@ -393,6 +398,8 @@ def main(argv=None):
                 parent.get('action_version')!=manifest['action_version'] or
                 parent.get('teacher_forecast_contract')!=manifest['teacher_forecast_contract'] or
                 parent.get('teacher_label_timing')!=manifest['teacher_label_timing'] or
+                parent.get('context_split_version')!=manifest['context_split_version'] or
+                parent.get('context_split_receipts')!=manifest['context_split_receipts'] or
                 parent['dataset_sha256']!=manifest['dataset_sha256'] or
                 parent['luld_certificates']!=manifest['luld_certificates'] or
                 parent.get('teacher_selection_version')!=SELECTION_VERSION or
@@ -413,6 +420,10 @@ def main(argv=None):
             raise ValueError('Parent checkpoint manifest mismatch')
         if parent_manifest.get('teacher_label_timing') != manifest['teacher_label_timing']:
             raise ValueError('Parent teacher feature timing differs; fresh compatible training required')
+        if parent_manifest.get('context_split_version') != manifest['context_split_version']:
+            raise ValueError('Parent split context differs; fresh compatible training required')
+        if parent_manifest.get('context_split_receipts') != manifest['context_split_receipts']:
+            raise ValueError('Parent split metadata receipts changed')
         if (parent_manifest.get('execution_evidence_version')!=manifest['execution_evidence_version'] or
                 parent_manifest.get('feature_contract','legacy')!=feature_contract or
                 parent_manifest.get('feature_normalization_sha256')!=manifest.get('feature_normalization_sha256')):
@@ -463,7 +474,11 @@ def main(argv=None):
             if payload['cuda_rng']: torch.cuda.set_rng_state_all([r.cpu() for r in payload['cuda_rng']])
             np.random.set_state(payload['numpy_rng']); random.setstate(payload['python_rng'])
         def open_day(entry):
-            return open_session(Path(entry['bank_root']),runtime_root=runtime,previous_root=Path(entry['previous_root']),split_manifest=Path(entry['split_manifest']) if entry.get('split_manifest') else None)
+            session=open_session(Path(entry['bank_root']),runtime_root=runtime,previous_root=Path(entry['previous_root']),split_manifest=Path(entry['split_manifest']) if entry.get('split_manifest') else None)
+            if session.context_split_receipt_sha256 != manifest['context_split_receipts'][entry['day']]:
+                raise ValueError('Training split metadata changed after manifest admission')
+            _write_json(run/f'context-splits-{session.day}.json',dict(version=manifest['context_split_version'],receipt_sha256=session.context_split_receipt_sha256))
+            return session
         def evidence(session):
             key=str(session.day)
             reader=arte_source.reader(threads=2)

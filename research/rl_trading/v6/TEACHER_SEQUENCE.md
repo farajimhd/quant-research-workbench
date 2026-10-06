@@ -146,3 +146,24 @@ per horizon. Soft-v1 CE and hierarchical hard-action CE are different objectives
 so their numerical losses must not be treated as a matched comparison. The
 comparison changes hierarchy, action/quality separation and sequence training
 together; it does not isolate architecture as the cause of any improvement.
+
+## Prior-session split basis
+
+`v6-prior-context-opening-splits-v1` freezes canonical q_live split records
+known by 04:00 ET, effective strictly after the prior bank's session and no
+later than the current session. Receipts live under the runtime root, bind the
+day plan and full listing census, and include negative evidence. Duplicate
+same-date revisions compound once; conflicting or invalid ratios fail closed.
+First admission requires canonical metadata access; subsequent loads use the
+immutable receipt. Late records require an explicit new admission/version.
+
+The loader supplies bounded read-only views over the original bank arrays.
+For new/old share ratio `r`, prior log OHLC subtract `log(r)`, prior volume,
+60s volume and share quantities multiply by `r`. Relative VWAP, MACD, EMA,
+ATR and V7 geometry remain unchanged; their reconstructed dollar values
+therefore scale with adjusted close. Trade counts, clocks, validity masks,
+reference ages and labels stay unchanged. Current RVOL's prior-volume
+denominator also multiplies by `r`. Training warm-up and model-bank charts
+share this view. No bars, indicators, feature banks or label artifacts are
+overwritten or recalculated. Main and laptop run manifests bind receipt hashes;
+main checkpoint admission rejects pre-adjustment or differently bound inputs.

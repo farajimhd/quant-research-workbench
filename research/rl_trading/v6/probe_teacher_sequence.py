@@ -65,7 +65,7 @@ def subset(session, labels, identities, begin, end):
         if item.close_us!=last:last=item.close_us;order=0
         ordered.append(replace(item,order_index=order));order+=1
     return PackedSession(session.day,session.role,session.root,session.source_certificate_sha256,
-                         bank,previous,identities),tuple(ordered)
+                         bank,previous,identities,session.context_split_receipt_sha256),tuple(ordered)
 
 
 def main(argv=None):

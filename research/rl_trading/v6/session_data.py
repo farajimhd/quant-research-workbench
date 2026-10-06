@@ -6,7 +6,7 @@ feature values are never copied into overlapping 120-candle windows.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from hashlib import sha256
 import json
@@ -45,6 +45,7 @@ class PackedSession:
     bank: SessionBank
     previous: SessionBank | None
     listings: tuple[str, ...]
+    context_split_receipt_sha256: str | None = None
 
     def candle_events(self) -> Iterator[CandleEvent]:
         """Yield one causal event per observed close clock, never padded gaps.
@@ -147,8 +148,16 @@ def open_session(root: Path, *, runtime_root: Path,
                     previous.close_us[prior_end - 1] >=
                     bank.close_us[current_start]):
                 raise ValueError('Prior candle context reaches current decision day')
+    context_receipt = None
+    if previous is not None:
+        from research.rl_trading.v6.context_splits import receipt, SplitScalarView
+        ratios, context_receipt = receipt(runtime, plan)
+        previous = replace(previous, scalar=SplitScalarView(previous.scalar,
+            previous.manifest['offsets'], ratios, prior=True))
+        bank = replace(bank, scalar=SplitScalarView(bank.scalar,
+            bank.manifest['offsets'], ratios))
     return PackedSession(day, split_role, root, _hash(certificate_path), bank,
-                         previous, tuple(sorted(bank.manifest['offsets'])))
+                         previous, tuple(sorted(bank.manifest['offsets'])), context_receipt)
 
 
 def _offsets_from_census(census: dict[str, int]) -> dict[str, list[int]]:

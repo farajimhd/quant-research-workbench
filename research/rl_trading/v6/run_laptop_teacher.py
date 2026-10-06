@@ -24,6 +24,7 @@ from research.rl_trading.v6.market_attention import MarketAttentionConfig
 from research.rl_trading.v6.probe_teacher_sequence import subset
 from research.rl_trading.v6.ranked_policy import RankedBracketActorCritic
 from research.rl_trading.v6.session_data import open_session
+from research.rl_trading.v6.context_splits import VERSION as CONTEXT_SPLIT_VERSION
 from research.rl_trading.v6.opportunity_dataset import load_teacher
 from research.rl_trading.v6.teacher_forecast import configure, CONTRACT
 from research.rl_trading.v6.training import train_session
@@ -78,7 +79,11 @@ def main(argv=None):
         device=torch.cuda.get_device_name(),seed=17,scope='bounded_ticker_subset_not_full_market',
         forecast_metrics_target='explicit_saved_1b_action',
         sizing_denominator='original_full_market_1b_targets_preserved',sealed_labels_read=False,
+        context_split_version=CONTEXT_SPLIT_VERSION,
         ppo=False,source_files_sha256={p.name:file_hash(p) for p in Path(__file__).parent.glob('*.py')})
+    from research.rl_trading.v6.context_splits import receipt as context_receipt
+    manifest['context_split_receipts']={e['day']:context_receipt(source.runtime(),
+        source.read_json(source.mapped(e['bank_root'])/'plan.json'))[1] for e in entries}
     manifest['hash']=digest(manifest)
     (output/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     logger=wandb.init(project=args.wandb_project,name=output.name,mode='online',dir=str(output),config=manifest)
@@ -94,6 +99,8 @@ def main(argv=None):
             ids=sorted(i for i,t in symbols.items() if t in args.tickers)
             if len(ids)!=len(args.tickers): raise ValueError('Requested tickers must resolve uniquely on both days')
             full=open_session(bankroot,runtime_root=source.runtime(),previous_root=source.mapped(entry['previous_root']))
+            if full.context_split_receipt_sha256!=manifest['context_split_receipts'][day]:
+                raise ValueError('Pilot split metadata changed after admission')
             ma,_,me,mroot,_=market.session(day)
             labels,_=load_teacher(teacher,full,runtime_root=source.runtime(),audit_development=True,audit_listing_ids=ids,market_root=mroot)
             begin=int(datetime.fromisoformat(day+'T04:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()*1_000_000)
@@ -104,7 +111,8 @@ def main(argv=None):
                 end_us=begin+args.seconds*1_000_000,decisions=len(selected),
                 allocation_targets=sum(d.allocation_ratio_target is not None for d in selected),
                 dataset_sha256=active['sha256'],market_dataset_sha256=ma['sha256'],
-                bank_certificate_sha256=entry['bank_certificate_sha256'],market_certificate_sha256=me['sha256']))
+                bank_certificate_sha256=entry['bank_certificate_sha256'],market_certificate_sha256=me['sha256'],
+                context_split_receipt_sha256=packed.context_split_receipt_sha256))
             return packed,selected
         training,targets=prepare(args.train_day,'train')
         development,dev_targets=prepare(args.development_day,'development')

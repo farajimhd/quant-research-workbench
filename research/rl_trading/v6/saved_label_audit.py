@@ -244,8 +244,17 @@ def model_chart(day,identity,proof,frames,start_us,offset,view):
         validate_previous_context(read_json(bank_root/'plan.json'),prior_plan,prior_certificate)
         # Read feature context only. Never resolve a preceding sealed day's labels.
         previous_bank=certified_bank(str(previous_root),file_hash(previous_root/'complete.json'))
+        from dataclasses import replace
+        from research.rl_trading.v6.context_splits import receipt as split_receipt, SplitScalarView
+        ratios, context_hash=split_receipt(runtime(),read_json(bank_root/'plan.json'))
+        previous_bank=replace(previous_bank,scalar=SplitScalarView(previous_bank.scalar,previous_bank.manifest['offsets'],ratios,prior=True))
+        bank=replace(bank,scalar=SplitScalarView(bank.scalar,bank.manifest['offsets'],ratios))
         if identity in previous_bank.manifest['offsets']: previous=previous_bank.listing(identity)
     raw,window=select_window(bank.listing(identity),previous,offset=offset,start_us=start_us)
+    if entry['previous_root']:
+        window['context_split_receipt_sha256']=context_hash
+        window['context_share_factor']=ratios.get(identity,1.)
+        window['units']='Opening-time split-adjusted prior context; current RVOL uses the same share basis. Source banks remain immutable.'
     candles,overlays,oscillators=project(raw)
     session_clocks=[r['time_us'] for r in raw if r['part']=='session']
     classified=algorithm.classify(frames['labels'].filter(pl.col('time_us').is_in(session_clocks)),proof['config']['quality_threshold'],view)
