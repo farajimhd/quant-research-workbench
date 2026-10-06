@@ -26,7 +26,7 @@ class AncestryMemoryClient(MemoryClient):
         self.queries = []
 
     def execute(self, sql):
-        if sql.startswith('SELECT batch_id,prior_batch_id,first_sequence,last_sequence '):
+        if isinstance(sql, str) and sql.startswith('SELECT batch_id,prior_batch_id,first_sequence,last_sequence '):
             import json
             import re
             self.queries.append(sql)
@@ -217,7 +217,7 @@ def test_failure_source_binds_its_exact_successor_number(strategy_number):
             intents, (source_event, *base.events), (entry,))
 
 
-@pytest.mark.parametrize('strategy_number', [8, 38, True])
+@pytest.mark.parametrize('strategy_number', [8, 63, True])
 def test_projector_rejects_unapproved_failure_consumers(strategy_number):
     witness, intent, base, *_ = fixture()
     with pytest.raises(ValueError, match='Strategy 9'):

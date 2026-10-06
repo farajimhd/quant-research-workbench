@@ -44,7 +44,8 @@ def test_complete_native_proof(number):
 @pytest.mark.parametrize("number,name,path", NEW_LEAVES)
 def test_every_new_complete_source_leaf_rejects_mutation(tmp_path, number, name, path):
     _, leaves, certify = authority(number, name)
-    assert len(leaves) == 62
+    assert len(leaves) == 63
+    assert 'src/trading_runtime/all_held_original_risk_failure.py' in leaves
     assert set(HELPERS) <= set(leaves)
     changed = tmp_path / Path(path).name
     changed.write_text((ROOT / path).read_text(encoding="utf8")

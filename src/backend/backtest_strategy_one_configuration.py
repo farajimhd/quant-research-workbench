@@ -193,6 +193,8 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
             from src.trading_runtime.strategy_sixty_release import derive_strategy_sixty_configuration as derive
         elif strategy_number == 64:
             from src.trading_runtime.strategy_sixty_four_release import derive_strategy_sixty_four_configuration as derive
+        elif strategy_number == 66:
+            from src.trading_runtime.strategy_sixty_six_release import derive_strategy_sixty_six_configuration as derive
         elif strategy_number == 61:
             from src.trading_runtime.strategy_sixty_one_release import derive_strategy_sixty_one_configuration as derive
         elif strategy_number == 57:
@@ -366,6 +368,8 @@ def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
         from src.trading_runtime.strategy_sixty_release import verify_strategy_sixty_manifest as verify
     elif number == 64:
         from src.trading_runtime.strategy_sixty_four_release import verify_strategy_sixty_four_manifest as verify
+    elif number == 66:
+        from src.trading_runtime.strategy_sixty_six_release import verify_strategy_sixty_six_manifest as verify
     elif number == 61:
         from src.trading_runtime.strategy_sixty_one_release import verify_strategy_sixty_one_manifest as verify
     elif number == 57:

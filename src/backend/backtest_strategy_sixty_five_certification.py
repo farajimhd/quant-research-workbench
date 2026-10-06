@@ -85,7 +85,7 @@ REQUIRED_SOURCE_FILES = ('pipelines/strategy_one/configuration_publisher.py',
  'src/trading_runtime/clickhouse_transport.py',
  'research/mlops/clickhouse.py',
  'research/mlops/env.py')
-STRATEGY65_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'b9ed0a45ef7869f2889392413aa44865bab3d564da9c52d0f980e5620eaf8c5d',
+STRATEGY65_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'd6eedccd686e0d26b39153cf8cb07d753f9fae1f77818cf367b0e30ef6570de1',
  'pipelines/strategy_one/strategy_sixty_five_configuration.py': 'aaadd3e34ede7385d3b36175af5549fec334bdae96dc9b64c17fe7b5c1c5a80e',
  'scripts/clickhouse/provision_backtest_v4_ladder_runner.py': 'ef34b7dfc73d05919f04b55d616f4950b7f6f3547a88e3a2d342ed2e6ab57f8e',
  'scripts/clickhouse/provision_backtest_v4_waiting_ladder_runner.py': 'f66d6eb0280ce8c7ac849784d8ab2641572eb24809a4865e5f670b34dc77e732',
@@ -106,7 +106,7 @@ STRATEGY65_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'b
  'src/backend/backtest_squeeze_ladder_loader.py': 'c905275276fe6e3b85814486c5c5e58df7b8e612a9595178b4a829753713ffd3',
  'src/backend/backtest_squeeze_ladder_readback.py': 'ebe50e9a4fa2bb1f620ef4067f8cb5152f2b1802d17388c1fd70a6857b26d066',
  'src/backend/backtest_squeeze_ladder_setup.py': 'f86fab2f6a863bed811b9e1785efd17f55447f6ce84da8ad2adc9654ee1fde41',
- 'src/backend/backtest_strategy_one_configuration.py': '5eeb431d724b2d5417f7017ff8ccf39ee80b38b5a4aeafd757a3a86db5ef736e',
+ 'src/backend/backtest_strategy_one_configuration.py': '6514b72bbb4dc542b958d5d59def72f62491a2ce08acf813f010367e8ce776bb',
  'src/backend/backtest_strategy_one_coordinator.py': '7d40c9a3d75872e1ff263729eb578cf9860e913bae3863ec8889ca999e5df334',
  'src/backend/backtest_strategy_one_execution.py': '637da264cea91bcf316473704933e6b8a0932b43509a6d5a3ffb9809451a9a93',
  'src/backend/backtest_typed_projection.py': '942a03a57b59c9371c1fb2f62310ab31706d56f1e2a5f2326ba3efb745e9908c',
@@ -124,7 +124,7 @@ STRATEGY65_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'b
  'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c',
  'src/trading_runtime/execution_policies.py': 'c0766986efe8afc2d3276e2cbb1f303a4abb99427724f2ee2c1d0a29e4e2f36c',
  'src/trading_runtime/independent_lot_protection.py': '498b88e02d483d3b8c8c327b874045df3946a80cb2cc02ac472737e1ccdd36af',
- 'src/trading_runtime/numbered_fixed_strategy.py': '4efe657dd24b4d1f7ac87df05f0fabf5538c163247a99bc68f6674da69b3b46f',
+ 'src/trading_runtime/numbered_fixed_strategy.py': '3292fce6d35bcf81fc3ce284d47ce133b49dbc528c902178f15f40d27cc3bc46',
  'src/trading_runtime/order_management.py': 'c0b3fb8f09a5c554e937ab0fec1f419e290e0398755c1ef71e4d363958f0343c',
  'src/trading_runtime/portfolio.py': 'd14c31fd8d4c392f2f98c748b401a0b50042524a4d0b56a586b059e19056bf8f',
  'src/trading_runtime/portfolio_config.py': '370094eb372aea53b97c0a5185fc95421065d0ffc9c2a6481496e006e1c60688',
@@ -139,11 +139,11 @@ STRATEGY65_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'b
  'src/trading_runtime/squeeze_ladder_protection.py': '31b1a3c9995f80d6dc1d314a8de26a909917bf892d9eafacc62e3ae27ac8a374',
  'src/trading_runtime/squeeze_ladder_setup.py': 'f8a63bbbb9b9312c3eb88eaaddd9e74a5fb053f9d5bdee7260fce20b9a52fe9a',
  'src/trading_runtime/strategy_orders.py': '51fab3c48cc22dd41d3438f85ab2df92a7c4e80275fc9fd985494ccbb4cd7517',
- 'src/trading_runtime/strategy_registry.py': '2b4fe162b5cef41b16993848121bbe03ee55902164189da195f3b2dd10c6d188',
+ 'src/trading_runtime/strategy_registry.py': '708960fc0d38a859ae97d58f7feac74aa8c8087671b826d3acae0eb4d15a0a9f',
  'src/trading_runtime/strategy_sixty_five_contract.py': '491691d4ffc7e750cce203e19f2359a52957e13db08958255de606f8e8ce48b1',
  'src/trading_runtime/strategy_sixty_five_release.py': '4c5015d7b3923272affe263eee8c8c2d18cf452fb7d229376203480f4078b256',
  'src/backend/backtest_market_data.py': 'ad4135f16a0979b5af821b0c00c294511635b3b84b37b90f7bdff79e503cf9d3',
- 'src/backend/backtest_fixed_v4_certification.py': {'certify_numbered_fixed_v4_projection': '73671438cb3dc0df5f71d90e97334e001f8debaec655d64bd077d3032be59741'},
+ 'src/backend/backtest_fixed_v4_certification.py': {'certify_numbered_fixed_v4_projection': '7354042a5ae61438cbd56a8db4bd10aa8fff9453d22a029f8bb8ae3a3a1bc52d'},
  'src/backend/backtest_fixed_run_context.py': 'b85bfc7b517a0f0fab18062f81388516d5494fb11569e1c11e0a73760f878be0',
  'src/backend/backtest_fixed_v3_preflight.py': 'a2c8e76fd5518de9abce460427a2cf860f6db5872595336a34302f50c00b2452',
  'src/backend/backtest_v4_keeper_lease.py': '7f3a0f228d1df853b9b2bf58d640eccc37b80aa7efda17f4e878b5d2614e4637',
@@ -162,7 +162,7 @@ STRATEGY65_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'b
  'scripts/clickhouse/provision_backtest_v4_runner.py': 'a97b2323c1104b0c81396cc9ad5999d5962ce44bffc8617916ff9f67993fe056',
  'scripts/clickhouse/provision_fixed_backtest_v3_principals.py': '77df1f30c5fb6fb5700f2b8843a2d71a0f801beb27026371678666e5d228a6ee',
  'scripts/clickhouse/provision_trading_journal.py': 'fb0a05f5a3098bcd28482db4b7f34dc3a47e3ac436bca0b0ca747262dd1e507e',
- 'src/backend/backtest_strategy_sixty_five_certification.py': {'certify_strategy_sixty_five_source': '17f0b906df9535f75ce5a182a41cdd1f53ac21ee8d78e32c94b33d999ee225ff'},
+ 'src/backend/backtest_strategy_sixty_five_certification.py': {'certify_strategy_sixty_five_source': 'ff3e19e834584e46556af068c572393e2695297149aa04528b3d9ee7a1a2c99a'},
  'src/trading_runtime/clickhouse_transport.py': '108e4e9a4e757ed792ab01f8d7faefdc035b2da398cfcbdd8dc3917c20cbb5df',
  'research/mlops/clickhouse.py': '2cf6ccee354c65b24f8ea73198a9ec1c0f033f249b3f57430a8073dcf64470c8',
  'research/mlops/env.py': '856dc976500cfd9efc0648b22a28665951f8bdeb81328c45a47f5dc586b5895b'}
@@ -175,7 +175,7 @@ def certify_strategy_sixty_five_source(*, source_overrides=None):
         'src/backend/backtest_fixed_v4_certification.py': ('certify_numbered_fixed_v4_projection',),
         'src/backend/backtest_strategy_sixty_five_certification.py': ('certify_strategy_sixty_five_source',),
     }
-    metadata_anchor = '1efb45d90a37995154a9aa50231ae275e5799e9b688d5a275dfee209a5876ce7'
+    metadata_anchor = 'a534c2903d6bb2edb1960bed0e3cc7c6ad9f2bb48b693490eda12d848eeb90b5'
     overrides = {} if source_overrides is None else source_overrides
     if type(overrides) is not dict or set(overrides) - set(REQUIRED_SOURCE_FILES):
         raise ValueError('Strategy65 source override is outside complete authority')

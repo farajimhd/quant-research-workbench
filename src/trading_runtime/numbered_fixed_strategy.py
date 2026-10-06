@@ -292,6 +292,10 @@ class NumberedFixedStrategyContract:
         return None
 
     @property
+    def all_held_original_risk_policy(self):
+        return None
+
+    @property
     def allows_session_exit(self) -> bool:
         return self.strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)
 
@@ -362,10 +366,18 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         if type(payload) is not dict or canonical_json(payload) != self.policy_json:
             raise ValueError('Declared fixed policy payload is not canonical')
         required = ('session_policy', 'activation_policy', 'add_policy', 'trailing_policy',
-                    'target_policy', 'entry_price_policy', 'followthrough_policy',
-                    'entry_spread_risk_policy')
+                    'target_policy', 'entry_price_policy', 'followthrough_policy')
         if any(type(payload.get(key)) is not dict for key in required):
             raise ValueError('Declared fixed capability payload is incomplete')
+        optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy',
+                    'all_held_original_risk_policy', 'entry_scope_policy', 'recent_bos_policy',
+                    'momentum_policy', 'strong_ten_second_momentum_policy',
+                    'initial_strong_momentum_policy', 'first_setup_growth_policy',
+                    'first_price_break_policy', 'premarket_failure_policy',
+                    'profit_protection_policy', 'confirmed_ah_failure_policy',
+                    'liquidity_fade_policy', 'entry_activity_policy', 'episode_activity_policy'}
+        if set(payload) - set(required) - optional:
+            raise ValueError('Declared fixed capability payload contains an unknown policy')
         bindings = (
             ('session_policy', 'strategy-two-extended-session-policy-v1', session_policy_payload),
             ('activation_policy', 'strategy-three-current-session-activation-v1', activation_policy_payload),
@@ -382,6 +394,15 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
                for key, _, producer in bindings):
             raise ValueError('Declared fixed capability scalar types differ')
         self.entry_spread_risk_policy
+        self.all_held_original_risk_policy
+        from .strategy_half_risk_liquidity_fade import half_risk_liquidity_policy_payload, POLICY_ID
+        has_half_rule = self._has(POLICY_ID)
+        has_half_payload = 'half_risk_liquidity_policy' in payload
+        if has_half_rule != has_half_payload:
+            raise ValueError('Declared half-risk liquidity rule requires its exact companion')
+        if has_half_payload:
+            if canonical_json(payload['half_risk_liquidity_policy']) != canonical_json(half_risk_liquidity_policy_payload()):
+                raise ValueError('Declared half-risk liquidity policy differs from its exact rule')
 
     def _policy(self, key):
         import json
@@ -417,10 +438,33 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
     @property
     def _declared_entry_spread_risk_policy(self):
         from .entry_spread_risk import EntrySpreadRiskPolicy
+        import json
+        if 'entry_spread_risk_policy' not in json.loads(self.policy_json):
+            if self._has('entry-spread-at-most-one-quarter-original-risk@1'):
+                raise ValueError('Declared entry spread rule requires its policy')
+            return None
         payload = self._policy('entry_spread_risk_policy')
         policy = EntrySpreadRiskPolicy(payload['policy_id'], tuple(payload['maximum_spread_original_risk']))
         if payload != policy.payload() or not self._has(policy.policy_id):
             raise ValueError('Declared entry spread policy payload differs from its rule')
+        return policy
+
+    @property
+    def _declared_all_held_original_risk_policy(self):
+        import json
+        from .journal_contract import canonical_json
+        from .all_held_original_risk_failure import (
+            AllHeldOriginalRiskPolicy, ALL_HELD_ORIGINAL_RISK_RULE, ALL_HELD_ORIGINAL_RISK_INPUT)
+        payload = json.loads(self.policy_json)
+        selected = self._has(ALL_HELD_ORIGINAL_RISK_RULE)
+        supplied = 'all_held_original_risk_policy' in payload
+        source_count = self.release.input_contracts.count(ALL_HELD_ORIGINAL_RISK_INPUT)
+        if not selected and not supplied and not source_count:
+            return None
+        policy = AllHeldOriginalRiskPolicy()
+        if (not selected or not supplied or source_count != 1
+                or canonical_json(payload['all_held_original_risk_policy']) != canonical_json(policy.payload())):
+            raise ValueError('Declared all-held policy needs exact rule, input and typed payload')
         return policy
 
     def _windows(self):
@@ -453,6 +497,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
     caps_entry_at_reference_ask = _declared_caps_entry_at_reference_ask
     allows_followthrough_failure_exit = _declared_allows_followthrough_failure_exit
     entry_spread_risk_policy = _declared_entry_spread_risk_policy
+    all_held_original_risk_policy = _declared_all_held_original_risk_policy
     entry_allowed = _declared_entry_allowed
     activation_allowed = _declared_activation_allowed
     acquisition_cutoff = _declared_acquisition_cutoff

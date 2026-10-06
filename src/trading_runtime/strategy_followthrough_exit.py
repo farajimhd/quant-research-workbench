@@ -34,6 +34,12 @@ def validate_witness(witness, *, strategy_number=9):
         actual = declared_followthrough_failure(
             value, inherited=zero_regime_risk_failure,
             early_policy=numbered_fixed_strategy(strategy_number).early_original_risk_policy)
+    elif declared_fixed_rule(strategy_number, 'held-extended-session-quarter-original-risk-failure@1'):
+        from .declared_followthrough_failure import declared_followthrough_failure
+        from .numbered_fixed_strategy import numbered_fixed_strategy
+        actual = declared_followthrough_failure(
+            value, inherited=rule,
+            all_held_policy=numbered_fixed_strategy(strategy_number).all_held_original_risk_policy)
     else:
         actual = rule(value)
     if actual != witness:

@@ -593,6 +593,15 @@ class StrategyOneManagementRunner:
                     await self.runtime.submit_profit_giveback(
                         financial, witness, entry.intent_id, reference)
                     return
+        all_held_policy = getattr(self.contract, 'all_held_original_risk_policy', None)
+        if all_held_policy is not None and boundary_ms % 5_000 == 0:
+            from src.trading_runtime.all_held_original_risk_failure import all_held_original_risk_failure
+            witness = all_held_original_risk_failure(completed, policy=all_held_policy)
+            if witness is not None:
+                entry = self.runtime._strategy_one_entry_intent(source)
+                await self.runtime.submit_followthrough_failure(financial, witness, entry.intent_id)
+                self._profit_arm_financials.pop(key, None)
+                return
         pending = self._pending_breaks.setdefault(key, [])
         # A failed OMS acknowledgement retries the same completed boundary.
         # Preserve witnesses once, not once per retry.
