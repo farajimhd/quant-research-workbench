@@ -12,6 +12,8 @@ from .structural import FIELDS,PreparedStructure,worker_budget,algorithm_hash,_i
 
 def prepare_offline_structure(reader,market,watch,bars,asks,clocks,directory,source_key,*,workers=0,progress=print):
     from research.rl_trading.v6.reference import read_reference
+    from research.rl_trading.v1.arte_source import reader as reference_reader
+    from .reference_prefetch import ordered_references
     from research.rl_trading.v1.common import digest
     day=market.sessions[0];session=date.fromisoformat(day);tickers=tuple(watch['ticker'].to_list())
     if market.sessions != (day,) or not tickers or len(set(tickers)) != len(tickers):
@@ -19,7 +21,8 @@ def prepare_offline_structure(reader,market,watch,bars,asks,clocks,directory,sou
     if asks.shape != (len(clocks),len(tickers)) or not len(clocks):
         raise ValueError('Offline structural asks require [seconds, listing] lanes')
     width=min(worker_budget(workers),len(tickers));directory=require_runtime(directory/'offline-structural-cache')
-    algorithm=sha256((algorithm_hash()+sha256(Path(__file__).read_bytes()).hexdigest()).encode()).hexdigest()
+    algorithm=sha256((algorithm_hash()+sha256(Path(__file__).read_bytes()).hexdigest()
+        +sha256(Path(__file__).with_name('reference_prefetch.py').read_bytes()).hexdigest()).encode()).hexdigest()
     targets=np.full((len(clocks),len(tickers),15),np.inf,dtype=np.float64);valid=np.zeros((len(clocks),len(tickers)),dtype=bool)
     selected=bars.filter((pl.col('price_valid_1000')==1)&(pl.col('extremes_valid_1000')==1))
     groups=selected.select('ticker',*FIELDS).sort('ticker','time_us').partition_by('ticker',as_dict=True)
@@ -39,8 +42,10 @@ def prepare_offline_structure(reader,market,watch,bars,asks,clocks,directory,sou
         os.environ[name]='1'
     with ProcessPoolExecutor(max_workers=width,initializer=_initialize_worker) as pool:
         try:
-            for index,listing in enumerate(watch.iter_rows(named=True)):
-                seed,splits,_,evidence=read_reference(reader,session,listing)
+            references = ordered_references(watch.iter_rows(named=True),session,
+                read_reference=read_reference,reader_factory=lambda:reference_reader(threads=1))
+            for index,(listing,reference) in enumerate(references):
+                seed,splits,_,evidence=reference
                 if seed is None:
                     # This is the V6 certified missing-reference state. It
                     # masks structural targets, never manufactures a seed.
@@ -55,6 +60,7 @@ def prepare_offline_structure(reader,market,watch,bars,asks,clocks,directory,sou
                 if len(pending)>=2*width:collect(wait(pending,return_when=FIRST_COMPLETED)[0])
             while pending:collect(wait(pending,return_when=FIRST_COMPLETED)[0])
         finally:
+            references.close()
             # Children finish within the executor lifetime; release every
             # parent claim even when one worker fails.
             for future,(_,_,_,claim) in pending.items():
