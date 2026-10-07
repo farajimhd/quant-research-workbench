@@ -201,6 +201,8 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
             from src.trading_runtime.strategy_seventy_three_release import derive_strategy_seventy_three_configuration as derive
         elif strategy_number == 75:
             from src.trading_runtime.strategy_seventy_five_release import derive_strategy_seventy_five_configuration as derive
+        elif strategy_number == 78:
+            from src.trading_runtime.strategy_seventy_eight_release import derive_strategy_seventy_eight_configuration as derive
         elif strategy_number == 74:
             from src.trading_runtime.strategy_seventy_four_release import derive_strategy_seventy_four_configuration as derive
         elif strategy_number == 72:
@@ -394,6 +396,8 @@ def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
         from src.trading_runtime.strategy_seventy_three_release import verify_strategy_seventy_three_manifest as verify
     elif number == 75:
         from src.trading_runtime.strategy_seventy_five_release import verify_strategy_seventy_five_manifest as verify
+    elif number == 78:
+        from src.trading_runtime.strategy_seventy_eight_release import verify_strategy_seventy_eight_manifest as verify
     elif number == 74:
         from src.trading_runtime.strategy_seventy_four_release import verify_strategy_seventy_four_manifest as verify
     elif number == 72:
@@ -452,7 +456,7 @@ def selected_numbered_revision(*, revision_id: str = "", run_plan_id: str = "",
         if client is not None:
             kwargs["client"] = client
         return selected_strategy_one_revision(**kwargs)
-    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|64|65|66|68|69|70|71|72|73|74|75|76):[0-9a-fA-F-]{36}", revision_id):
+    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|64|65|66|68|69|70|71|72|73|74|75|76|78):[0-9a-fA-F-]{36}", revision_id):
         raise ValueError("Unknown immutable numbered configuration identity")
     if client is None:
         from src.backend.backtest_market_data import readonly_clickhouse_client

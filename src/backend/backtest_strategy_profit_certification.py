@@ -5,10 +5,10 @@ from hashlib import sha256
 from pathlib import Path
 import json
 
-REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'__module__': 'ea1b79346b0f3b4b09d5fbb2439ed90bdddb2c29a550f40ce25e5545db71c5e8'},
+REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'__module__': '598ea311ff0f9e2a2d835f2d88007bd509babfd9ed18b6559265b9fe100f860b'},
  'pipelines/strategy_one/strategy_thirty_one_configuration.py': {'__module__': 'c17761f3c1bf325c59735b02ded012194a378946a3a50d984044cda6b1582515'},
  'src/backend/backtest_journal_memory.py': {'__module__': '7967a2dc2bd11edd2739caa04a8c27c8fb80f3d900da8bb642a5509deaf08f33'},
- 'src/backend/backtest_strategy_one_configuration.py': {'__module__': '7205d641da91326b4eb8000225cff9bedf3357256d055f005ecd262bdc56d1e9'},
+ 'src/backend/backtest_strategy_one_configuration.py': {'__module__': 'cc290861a5d58ad089ac1e41352d9ad77842cfdfe48503953343c28c9accfeab'},
  'src/backend/backtest_strategy_one_coordinator.py': {'__module__': '7d40c9a3d75872e1ff263729eb578cf9860e913bae3863ec8889ca999e5df334'},
  'src/backend/backtest_strategy_one_execution.py': {'__module__': 'd9ed2de2119170cf4650b139e16004c170fd2503a482831b85f40a1177ab6f8d'},
  'src/backend/backtest_strategy_one_management.py': {'__module__': '6800d3df81562539ae5dea1ed12474f298f7a3dcf3cc16985567530601d342f5'},
@@ -26,7 +26,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/trading_runtime/arte_oms_projection.py': {'__module__': 'e0accf89d43ab445f0d0520d4b4b811c86381b540043fc1be9ee982dd419e25f'},
  'src/trading_runtime/arte_profit_giveback_reader_v4.py': {'__module__': '0cf0f1628422ba7c5400099068b7cfcd0e9fa0ff47f49d7b6051189480ac40a3'},
  'src/trading_runtime/arte_profit_giveback_v4.py': {'__module__': '3e22f8f0c57d85a471cd15a63e18295517c617f9b8dc88eae5d1cc7908a70293'},
- 'src/trading_runtime/numbered_fixed_strategy.py': {'__module__': 'a6a6147f4d001a6217512a74cc35fabd51918984eacd43e7800b4ba2ba94dd0b'},
+ 'src/trading_runtime/numbered_fixed_strategy.py': {'__module__': 'b37f53e1468912b2b70846bc93f24a86d9733b909562d6b5e9686545574254f8'},
  'src/trading_runtime/runtime.py': {'__module__': '6e8c043db1d62b04560fc581e46f3f7d0382c49285975263dc6cff4b40dd8dc8'},
  'src/trading_runtime/strategy_one_management_snapshot.py': {'__module__': '3f239ee12ca02793e6bf2cce4c5a809605593e0f059aa352b32fb4ae5314fa18'},
  'src/trading_runtime/strategy_profit_giveback.py': {'__module__': 'cc23fe27ca6db49c4139a481f364bfc26088b0dea01d1f542ea2f98f79072d10'},
@@ -34,7 +34,7 @@ REVIEWED_PROFIT_ROUTE = {'pipelines/strategy_one/configuration_publisher.py': {'
  'src/trading_runtime/strategy_profit_giveback_arm_reference.py': {'__module__': '87352243161430f4a0f88321acd26b93d3cf69d69a99594d1b01dabe6ee36cf6'},
  'src/trading_runtime/strategy_profit_giveback_exit.py': {'__module__': 'c8466273babe33b6c54ed898d446a6b1b68297fd2e37e69b27270a4bc804b49e'},
  'src/trading_runtime/strategy_profit_giveback_source.py': {'__module__': 'b3e58e1bf6cbb1f77a79ddfd41a8ce7115c634dc80753877549f37947db75189'},
- 'src/trading_runtime/strategy_registry.py': {'__module__': 'd6e7c467ad1bb61c700a05bcea4bf1f36883bd987796f880eb8db7e12943ba3e'},
+ 'src/trading_runtime/strategy_registry.py': {'__module__': '65231a384e85b66cd8282d61493c6b88a02e02147719be0e5d92799fa7d6e508'},
  'src/trading_runtime/strategy_thirty_one_release.py': {'__module__': '2fcd0c7c34073032bf96e2007a901bd8fa99d120d6290a904e13a4e2c94f290e'},
  'src/trading_runtime/strategy_thirty_two_release.py': {'__module__': '66a79fcdd60af4cbf2b7d217340d7b8efa95576ffe694ae05aa597cdd61361a9'},
  'pipelines/strategy_one/strategy_thirty_two_configuration.py': {'__module__': '13a485fb66cdbfab61270b391441d2bb9613c65be77dcfed68eac0494428db7c'},

@@ -102,12 +102,16 @@ class StrategyOneEntryDecision:
 
 def propose_strategy_one_entry(
     evidence: StrategyOneEntryInput, financial: StrategyOneFinancialView,
+    *, reentry_policy=None,
 ) -> StrategyOneEntryDecision:
     """Admit only a flat, permitted, current episode to shared Portfolio/OMS.
 
     Inputs are completed-boundary facts. A proposal is not a reservation,
     command, fill, or permission to skip the broker's activation delay.
     """
+    from .prior_position_high_reentry import PriorPositionHighReentryPolicy
+    if reentry_policy is not None and type(reentry_policy) is not PriorPositionHighReentryPolicy:
+        raise TypeError("Reentry policy requires its exact declared type")
     if (not isinstance(evidence, StrategyOneEntryInput)
             or not isinstance(financial, StrategyOneFinancialView)
             or not evidence.ticker or evidence.ticker != evidence.ticker.upper()
@@ -165,7 +169,7 @@ def propose_strategy_one_entry(
         rapid = evidence.boundary_ms - witness.closed_boundary_ms < 10_000
         same_resistance = (witness.prior_entry_resistance_id ==
                            evidence.bos_support_level_id)
-        if ((rapid or same_resistance)
+        if ((reentry_policy is not None or rapid or same_resistance)
                 and not (witness.previous_bar_close_int <=
                          witness.prior_position_high_int <
                          witness.current_bar_close_int)):

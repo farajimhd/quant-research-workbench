@@ -173,6 +173,8 @@ def _native_proof(root, commit, code_hash, backend, number, registry_hash):
     # the historical source-only process. -I also disables user-site imports.
     environment = {k: v for k, v in os.environ.items() if k.upper() in
                    {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC"}}
+    # Preserve only the resolved OS home identity required by fixed catalog roots.
+    environment["USERPROFILE" if os.name == "nt" else "HOME"] = str(Path.home())
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     result = subprocess.run([sys.executable, "-I", "-B", "-c", _PROOF_PROGRAM, root, str(number)],
                             env=environment, capture_output=True, timeout=180, check=False)
