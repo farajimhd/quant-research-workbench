@@ -100,6 +100,9 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
     from src.trading_runtime.fixed_structural_lot_warm_proof import RULE as WARM_RULE
     if WARM_RULE in numbered_strategy(number).rule_set_contracts:
         from src.trading_runtime.fixed_structural_lot_release_v8 import derive_fixed_structural_lot_release
+    from src.trading_runtime.strategy_registry import IMMUTABLE_NUMBERED_IDENTITY_RULE
+    if IMMUTABLE_NUMBERED_IDENTITY_RULE in numbered_strategy(number).rule_set_contracts:
+        from src.trading_runtime.fixed_structural_lot_release_v9 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')
