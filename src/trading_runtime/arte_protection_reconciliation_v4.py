@@ -59,7 +59,7 @@ TABLES = (RECONCILIATION, ACTION, REPLY)
 
 
 def seal_protection_reconciliation_v4(parents, actions, replies, events,
-                                      *, run_id: str, batch_id: str) -> None:
+                                      *, run_id: str, batch_id: str, recovery_context=None) -> None:
     """Check complete parent/action/reply graph before write and after readback."""
     by_event = {str(UUID(str(row["record_id"]))): row for row in events}
     by_parent = {str(UUID(str(row["record_id"]))): row for row in parents}
@@ -104,6 +104,12 @@ def seal_protection_reconciliation_v4(parents, actions, replies, events,
                 or str(UUID(str(reply["batch_id"]))) != batch_id
                 or reply["event_month"] != by_action[parent_id]["event_month"]):
             raise ValueError("Protection reconciliation reply has no action")
+    readbacks=tuple(row for row in replies if row['reply_kind']=='broker_readback')
+    if readbacks:
+        if recovery_context is None:
+            raise ValueError('Independent broker readback lacks its selected issued source')
+        recovery_context.owner.verify_recovery_graph(recovery_context,
+            parents,actions,replies,events,run_id=run_id,batch_id=batch_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +118,7 @@ class V4ProtectionReconciliationBatch:
     reconciliation: Mapping[str, Any]
     actions: tuple[Mapping[str, Any], ...]
     replies: tuple[Mapping[str, Any], ...]
+    recovery_context: Any = None
 
     def __post_init__(self) -> None:
         def freeze(row: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -143,6 +150,7 @@ def _number(value: object, *, optional: bool = False) -> str | None:
 
 def project_protection_reconciliation_v4(
     record: JournalRecord, *, attempt_id: str, batch_id: str,
+    recovery_context=None,
 ) -> tuple[dict, dict, tuple[dict, ...], tuple[dict, ...]]:
     from .arte_journal_writer import typed_row
 
@@ -247,6 +255,21 @@ def project_protection_reconciliation_v4(
                 kind = "cancel"
                 fields = (str(answer["order_id"]), "", "", answer["msg"],
                           answer["conid"], answer["account"])
+            elif set(answer)=={'observed_order_id','observed_order_status',
+                    'observed_local_order_id','observed_account_id','observed_conid'}:
+                if recovery_context is None:
+                    raise ValueError('Broker readback is not an ordinary order acknowledgement')
+                recovery_context.owner.verify_recovery_record(recovery_context,record)
+                if (source['action']!='readback_protective_stop'
+                        or any(type(answer[key]) is not str or not answer[key] for key in
+                            ('observed_order_id','observed_order_status','observed_local_order_id','observed_account_id'))
+                        or type(answer['observed_conid']) is not int or answer['observed_conid']<=0
+                        or answer['observed_account_id']!=record.account_id
+                        or answer['observed_order_id']!=source.get('order_id')):
+                    raise ValueError('Selected broker readback identity differs')
+                kind='broker_readback'
+                fields=(answer['observed_order_id'],answer['observed_order_status'],
+                    answer['observed_local_order_id'],'',answer['observed_conid'],answer['observed_account_id'])
             else:
                 raise ValueError("Protection reconciliation reply has unmodeled fields")
             replies.append(typed_row(REPLY.name, {
@@ -266,15 +289,18 @@ def project_protection_reconciliation_v4(
 
 def protection_reconciliation_batch_v4(
     record: JournalRecord, *, run_month: date, attempt_id: str,
-    batch_id: str, prior_batch_id: str, source_cursor: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str, recovery_context=None,
 ) -> V4ProtectionReconciliationBatch:
     from .arte_journal_writer import TypedJournalBatch
 
     event, detail, actions, replies = project_protection_reconciliation_v4(
-        record, attempt_id=attempt_id, batch_id=batch_id)
+        record, attempt_id=attempt_id, batch_id=batch_id,recovery_context=recovery_context)
     if run_month.day != 1:
         raise ValueError("Run month must start on day one")
     base = TypedJournalBatch(
         record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
         record.sequence, record.sequence, source_cursor, "running", (event,))
-    return V4ProtectionReconciliationBatch(base, detail, actions, replies)
+    unit=V4ProtectionReconciliationBatch(base, detail, actions, replies,recovery_context)
+    if recovery_context is not None:
+        recovery_context.owner.bind_recovery_batch(recovery_context,unit)
+    return unit

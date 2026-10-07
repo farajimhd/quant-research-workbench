@@ -111,7 +111,8 @@ def test_cold_oms_restores_amended_full_target_profile_and_stop_metadata() -> No
     )
     state = RecoveredOmsGroupState(
         4, source.intent_id,
-        {"account_id": "DU1", "group_id": "group-1"},
+        {"account_id": "DU1", "group_id": "group-1",
+         "strategy_id": STRATEGY_ID, "strategy_revision": 1},
         (), (), (), (), (), (),
     )
     records = tuple(JournalRecord(

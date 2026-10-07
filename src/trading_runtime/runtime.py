@@ -922,6 +922,7 @@ class TradingRuntime:
         automatic_entry: Any | None = None,
         declared_submission: Any | None = None,
         declared_management: Any | None = None,
+        fixed_structural_lot_request: Any | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -932,6 +933,26 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
+        if fixed_structural_lot_request is not None:
+            from src.backend.backtest_fixed_structural_lot_source import FixedStructuralLotRequest
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            from .fixed_structural_lot_entry import _same_typed
+            request=fixed_structural_lot_request
+            if (type(request) is not FixedStructuralLotRequest or type(self.journal) is not BacktestMemoryJournal
+                    or self.config.mode is not RunMode.BACKTEST or event is not None
+                    or any(value is not None for value in (strategy_one_proposal,strategy_one_add_proposal,
+                        strategy_one_assignment_id,numbered_exit_assignment_id,followthrough_source,
+                        profit_giveback_source,confirmed_ah_source,liquidity_fade_source,automatic_entry,
+                        declared_submission,declared_management))
+                    or request.run_id != self.run_id or request.strategy_id != self.config.strategy_id
+                    or type(self.config.strategy_revision) is not int or request.revision != self.config.strategy_revision
+                    or request.entry.session_date != self.config.anchor_date
+                    or account_id != request.entry.proposal.account_id or account_id not in self.config.account_ids
+                    or not _same_typed(evaluation.intents,(request.intent,))
+                    or self.last_event_time != request.intent.event_time):
+                raise ValueError('Fixed lots require their exclusive exact prepared source/broker boundary')
+            request.verify()
+            request.source.require_installed_admission()
         if declared_submission is not None:
             from .declared_native_submission import DeclaredNativeSubmission, require_installed_submission_binding
             from src.backend.backtest_declared_native_journal import DeclaredNativeJournal
@@ -1168,7 +1189,12 @@ class TradingRuntime:
             self.portfolio.withdraw_invalidated_requests(account_id, active)
         for intent in evaluation.intents:
             intent = replace(intent, metadata=self.journal.reference_evidence(intent.metadata))
-            if declared_management is not None:
+            if fixed_structural_lot_request is not None:
+                from .fixed_structural_lot_entry_v4 import _exact as exact_fixed_lot_intent
+                if not exact_fixed_lot_intent(intent, fixed_structural_lot_request.intent):
+                    raise ValueError('Selected journal source differs from executed reference evidence')
+                self.journal.append_fixed_structural_lot_entry(request=fixed_structural_lot_request)
+            elif declared_management is not None:
                 pass  # Complete ordered command already journaled atomically.
             elif declared_submission is not None:
                 self.journal.append_declared_native_intent(submission=declared_submission,intent=intent,
@@ -1282,11 +1308,13 @@ class TradingRuntime:
                 # health/reconciliation mechanism, not sizing authority for a
                 # new exposure-increasing order.
                 await self._refresh_portfolio_from_broker(
-                    for_entry_admission=(declared_submission is not None
+                    for_entry_admission=(fixed_structural_lot_request is not None
+                                         or declared_submission is not None
                                          or strategy_one_proposal is not None
                                          or strategy_one_add_proposal is not None
                                          or automatic_entry is not None))
-            assignment_id = (declared_management.assignment_id if declared_management is not None
+            assignment_id = (fixed_structural_lot_request.entry.proposal.assignment_id if fixed_structural_lot_request is not None
+                             else declared_management.assignment_id if declared_management is not None
                              else declared_submission.assignment_id if declared_submission is not None
                              else automatic_entry.assignment_id if automatic_entry is not None
                              else strategy_one_proposal.assignment_id
@@ -1354,6 +1382,9 @@ class TradingRuntime:
                         "order_group": None,
                     })
                     continue
+            recovery=getattr(self.order_manager,'_fixed_lot_recovery_context',None)
+            if recovery is not None:
+                recovery.owner.bind_recovery_execution(recovery,self,intent,approved_intent,decision)
             try:
                 order_group = await self.order_manager.submit_intent(
                     approved_intent,
@@ -1547,6 +1578,16 @@ class TradingRuntime:
 
     def _strategy_one_entry_intent(self, proposal: Any):
         """Validate entries against the cached source, without market I/O."""
+        selected=getattr(self,'_fixed_structural_lot_operation',None)
+        if selected is not None:
+            from src.backend.backtest_fixed_structural_lot_native import NativeFixedStructuralLotOperation
+            if type(selected) is not NativeFixedStructuralLotOperation:
+                raise ValueError('Exact installed lot operation required')
+            selected.source.require_installed_admission()
+            if (selected.source.run_id!=self.run_id or selected.source._revision!=self.config.strategy_revision
+                    or selected.source._strategy_id!=self.config.strategy_id):
+                raise ValueError('Selected management entry has foreign runtime source')
+            return selected.request(proposal).intent
         if (proposal.strategy_number in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(proposal.strategy_number, 'strategy-thirty-seven-confirmed-episode-activity-veto-v1')):
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
             from src.backend.backtest_strategy_episode_activity_source import certified_episode_entry_intent
@@ -1597,6 +1638,46 @@ class TradingRuntime:
         return await self._execute_intents(
             StrategyEvaluation(intents=submission.intents), submission.account_id, None,
             declared_management=submission)
+
+    async def submit_fixed_structural_lot_request(self, request: Any) -> list[dict[str, Any]]:
+        """Closed uninstalled channel; same financial/Portfolio/OMS actor chain."""
+        from src.backend.backtest_fixed_structural_lot_source import FixedStructuralLotRequest
+        if type(request) is not FixedStructuralLotRequest:
+            raise ValueError('Exact selected prepared lot request required')
+        return await self._execute_intents(StrategyEvaluation(intents=(request.intent,)),
+            request.entry.proposal.account_id,None,fixed_structural_lot_request=request)
+
+    async def submit_fixed_structural_lot_protection(self,request: Any) -> Any:
+        """Selected owner confirms every persisted leg after common actor execution."""
+        from src.backend.backtest_fixed_structural_lot_management import FixedStructuralLotManagementRequest
+        if type(request) is not FixedStructuralLotManagementRequest or self.config.mode!=RunMode.BACKTEST:
+            raise ValueError('Exact selected Backtest management request required')
+        request.verify(self)
+        self.journal.bind_fixed_lot_management_request(request)
+        for intent in request.intents:
+            if self.last_event_time is not None and intent.event_time<self.last_event_time:
+                raise ValueError('Selected protection precedes completed broker boundary')
+            results=await self._execute_intents(StrategyEvaluation(intents=(intent,)),
+                request.financial.account_id,None,strategy_one_assignment_id=request.financial.assignment_id)
+            if (len(results)!=1 or results[0].get('decision',{}).get('status') not in {'approved','resized'}):
+                raise RuntimeError('Selected Portfolio protection command was not approved')
+        receipt=await request.owner.confirm(request)
+        self.journal.release_fixed_lot_management_request(request)
+        return receipt
+
+    async def submit_fixed_structural_lot_recovery(self,context: Any) -> Any:
+        """Explicit fresh-clock continuation, with no automatic lost-ACK retry."""
+        from src.backend.backtest_fixed_structural_lot_management import FixedStructuralLotRecoveryContext
+        if type(context) is not FixedStructuralLotRecoveryContext or self.config.mode!=RunMode.BACKTEST:
+            raise ValueError('Exact selected Backtest recovery context required')
+        if getattr(self.order_manager,'_fixed_lot_recovery_context',None) is not None:
+            raise ValueError('Independent recovery lane is already occupied')
+        await context.owner.begin_recovery(context,self)
+        self.order_manager._fixed_lot_recovery_context=context
+        try:
+            return await self.submit_fixed_structural_lot_protection(context.request)
+        finally:
+            self.order_manager._fixed_lot_recovery_context=None
 
     async def submit_strategy_one_proposal(self, proposal: Any) -> list[dict[str, Any]]:
         """Route numbered entry evidence through the shared Portfolio/OMS path.

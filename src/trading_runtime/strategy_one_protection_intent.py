@@ -28,6 +28,7 @@ def strategy_one_protection_intents(
     previous: ProtectionState, transition: ProtectionTransition,
     financial: StrategyOneFinancialView, *,
     session_date: date, bid: float, ask: float, strategy_number: int = 1,
+    stop_ceiling: float | None = None,
 ) -> tuple[StrategyIntent, ...]:
     """Project approved price amendments, target first, at one causal clock."""
     if (not isinstance(previous, ProtectionState)
@@ -48,8 +49,16 @@ def strategy_one_protection_intents(
             or not 0 < transition.state.boundary_ms <= 57_600_000
             or transition.state.boundary_ms % 100):
         raise ValueError("Strategy 1 protection intent lacks completed position authority")
-    confirm_protection_transition(
-        previous, transition, target_confirmed=False, stop_confirmed=False)
+    if stop_ceiling is not None:
+        if transition.target_amendment is not None:
+            raise ValueError('Selected fixed target protection cannot amend target')
+        confirm_protection_transition(previous,transition,target_confirmed=False,
+            stop_confirmed=False,stop_ceiling=stop_ceiling)
+        if not transition.state.stop < stop_ceiling:
+            raise ValueError('Selected stop exceeds remaining fixed target ceiling')
+    else:
+        confirm_protection_transition(
+            previous, transition, target_confirmed=False, stop_confirmed=False)
     from .numbered_fixed_strategy import numbered_fixed_strategy
     numbered_fixed_strategy(strategy_number)
     boundary = (datetime.combine(session_date, time(4), tzinfo=_NEW_YORK)

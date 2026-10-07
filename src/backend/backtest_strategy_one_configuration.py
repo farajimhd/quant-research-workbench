@@ -1,5 +1,8 @@
 """Read-only Strategy 1 configuration release from normalized ARTE rows."""
 from __future__ import annotations
+from src.backend.backtest_fixed_structural_lot_configuration import (
+    declared_fixed_structural_lot_contract, verify_fixed_structural_lot_configuration,
+    derive_registered_fixed_structural_lot_configuration)
 from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule, declared_automatic_ladder_release
 
 from dataclasses import dataclass
@@ -57,7 +60,7 @@ class CertifiedStrategyOneConfiguration:
 
 def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> CertifiedStrategyOneConfiguration:
     """Exactly one coverage-last release may own each supported immutable number."""
-    if type(strategy_number) is not int or (strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-fourteen-numbered-admission-v1') and not declared_automatic_ladder_release(strategy_number)):
+    if type(strategy_number) is not int or (strategy_number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-fourteen-numbered-admission-v1') and not declared_automatic_ladder_release(strategy_number) and declared_fixed_structural_lot_contract(strategy_number) is None):
         raise ValueError("Unsupported numbered fixed strategy")
     releases = [json.loads(line) for line in client.execute(
         "SELECT release_attempt_id,strategy_id,source_candidate_id,"
@@ -93,13 +96,16 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
             or strategy.get("strategy_number") != strategy_number
             or strategy.get("execution_interval") != "100ms"):
         raise RuntimeError(f"Strategy {strategy_number} typed configuration is not the numbered 100ms contract")
-    if (strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-two-extended-session-policy-v1') or declared_automatic_ladder_release(strategy_number)):
+    if (strategy_number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-two-extended-session-policy-v1') or declared_automatic_ladder_release(strategy_number) or declared_fixed_structural_lot_contract(strategy_number) is not None):
         is_numbered_fixed_configuration(payload)
         _validate_strategy_two_payload(payload)
         from src.trading_runtime.strategy_registry import numbered_strategy_parent
         source_number = numbered_strategy_parent(strategy_number)
         source = certify_numbered_configuration(client, source_number)
-        if strategy_number == 2:
+        if declared_fixed_structural_lot_contract(strategy_number) is not None:
+            from functools import partial
+            derive = partial(derive_registered_fixed_structural_lot_configuration, number=strategy_number)
+        elif strategy_number == 2:
             from src.trading_runtime.strategy_two_release import derive_strategy_two_configuration as derive
         elif strategy_number == 3:
             from src.trading_runtime.strategy_three_release import derive_strategy_three_configuration as derive
@@ -284,8 +290,11 @@ def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
     number = strategy.get("strategy_number")
     if number is None:
         return False
-    if type(number) is not int or (number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(number, 'strategy-fourteen-numbered-admission-v1') and not declared_automatic_ladder_release(number)):
+    if type(number) is not int or (number not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(number, 'strategy-fourteen-numbered-admission-v1') and not declared_automatic_ladder_release(number) and declared_fixed_structural_lot_contract(number) is None):
         raise ValueError("Unknown numbered fixed strategy")
+    if declared_fixed_structural_lot_contract(number) is not None:
+        verify_fixed_structural_lot_configuration(strategy)
+        return True
     if number == 1:
         return True  # Existing full-release boundaries retain exact identity checks.
     if number == 2:
@@ -430,7 +439,10 @@ def _validate_strategy_two_payload(payload: dict[str, Any]) -> None:
     strategy = payload["strategy"]
     if payload.get("assignments"):
         raise ValueError("Numbered release must not embed mutable assignments")
-    if set(strategy.get("parameters") or {}) != {"execution", "sizing"}:
+    selected = declared_fixed_structural_lot_contract(strategy.get('strategy_number'))
+    if selected is not None:
+        verify_fixed_structural_lot_configuration(strategy)
+    if selected is None and set(strategy.get("parameters") or {}) != {"execution", "sizing"}:
         raise ValueError("Numbered parameters differ from inherited sealed inputs")
     behavior = payload.get("strategy_profile", {}).get("lifecycle", {}).get("trading_behavior", {})
     if behavior.get("eligible_sessions") != ["premarket", "afterhours"]:
@@ -444,7 +456,7 @@ def selected_numbered_revision(*, revision_id: str = "", run_plan_id: str = "",
         if client is not None:
             kwargs["client"] = client
         return selected_strategy_one_revision(**kwargs)
-    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|64|65|66|68|69|70|71|72|73|74):[0-9a-fA-F-]{36}", revision_id):
+    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|64|65|66|68|69|70|71|72|73|74|77):[0-9a-fA-F-]{36}", revision_id):
         raise ValueError("Unknown immutable numbered configuration identity")
     if client is None:
         from src.backend.backtest_market_data import readonly_clickhouse_client

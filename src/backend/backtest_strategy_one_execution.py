@@ -88,6 +88,88 @@ def pinned_strategy_one_ticks(
     return ticks
 
 
+def prepare_strategy_one_entry_authorities(*, market, candidates, entry, through_boundary_ms, strategy_number, run_id, client_factory):
+    """Same certified default gate pipeline, reusable before selected writers.
+
+    This read-only stage does not issue a writer or admission capability.
+    """
+    visible = project_candidate_plan(candidates, through_boundary_ms=through_boundary_ms)
+    price_authority = None
+    cost_rejections = ()
+    cost_authority = None
+    momentum_plan = None
+    initial_momentum_plan = None
+    if (strategy_number in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-thirteen-rising-completed-momentum-v1')):
+        from src.backend.backtest_strategy_rising_momentum import load_rising_momentum_plan
+        base_gate = compile_static_entry_gate(visible, entry, strategy_number=12)
+        with closing(client_factory()) as momentum_client:
+            momentum_plan = load_rising_momentum_plan(
+                market, visible, client=momentum_client,
+                candidate_indices=base_gate.eligible_indices)
+        if strategy_number == 18:
+            from src.backend.backtest_strategy_initial_momentum import compile_initial_momentum_plan
+            initial_momentum_plan = compile_initial_momentum_plan(visible, entry, momentum_plan)
+        elif (strategy_number in (19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-eighteen-first-strong-momentum-setup-v1')):
+            from src.backend.backtest_strategy_initial_momentum_growth import compile_initial_momentum_growth_plan
+            if (strategy_number in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-twenty-six-premarket-first-setup-ten-second-growth-10pct-v1')):
+                from src.backend.backtest_strategy_initial_ten_percent import compile_initial_ten_percent_plan
+                policy = getattr(numbered_fixed_strategy(strategy_number), 'entry_momentum_growth_policy', None)
+                if policy is not None:
+                    from src.backend.backtest_declared_initial_momentum import compile_declared_initial_momentum_plan
+                    initial_momentum_plan = compile_declared_initial_momentum_plan(visible, entry, momentum_plan, policy)
+                else:
+                    initial_momentum_plan = compile_initial_ten_percent_plan(visible, entry, momentum_plan)
+            else:
+                initial_momentum_plan = compile_initial_momentum_growth_plan(visible, entry, momentum_plan)
+            if (strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
+                from src.backend.backtest_strategy_first_price_source import load_first_price_source
+                from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan
+                with closing(client_factory()) as price_client:
+                    source = load_first_price_source(market, initial_momentum_plan, client=price_client)
+                initial_momentum_plan = compile_certified_price_break_plan(source)
+    if (strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
+        from src.backend.backtest_strategy_certified_price_break import (
+            compile_certified_price_static_gate, CertifiedPriceReadbackAuthority,
+        )
+        activity_authority = None
+        if (strategy_number in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-thirty-six-completed-entry-activity-fade-v1')):
+            from src.backend.backtest_strategy_entry_activity_source import (
+                load_entry_activity_plan, EntryActivityReadbackAuthority,
+            )
+            from src.backend.backtest_strategy_entry_activity_gate import compile_entry_activity_static_gate
+            with closing(client_factory()) as activity_client:
+                activity_plan = load_entry_activity_plan(market, initial_momentum_plan, client=activity_client)
+            if (strategy_number in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-thirty-seven-confirmed-episode-activity-veto-v1')):
+                # Seal the full candidate prefix before pruning scheduler rows.
+                # Candidates observed while holding still contribute to the veto.
+                from src.backend.backtest_strategy_episode_activity_gate import compile_episode_activity_static_gate
+                from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
+                full_gate = compile_episode_activity_static_gate(activity_plan)
+                activity_authority = EpisodeActivityReadbackAuthority(run_id, full_gate, strategy_number)
+            else:
+                activity_authority = EntryActivityReadbackAuthority(run_id, activity_plan)
+                full_gate = compile_entry_activity_static_gate(activity_plan)
+        else:
+            full_gate = compile_certified_price_static_gate(initial_momentum_plan)
+        cost_policy = numbered_fixed_strategy(strategy_number).entry_spread_risk_policy
+        cost_authority = None
+        if cost_policy is not None:
+            from src.backend.backtest_entry_spread_risk import compile_entry_spread_risk_gate
+            from src.backend.backtest_declared_entry_quote_source import (
+                load_declared_entry_spread_risk_plan, declared_entry_spread_risk_authority)
+            with closing(client_factory()) as cost_client:
+                cost_plan = load_declared_entry_spread_risk_plan(market, full_gate, cost_policy, source_contract=numbered_fixed_strategy(strategy_number).entry_spread_risk_quote_source_contract, client=cost_client)
+            cost_authority = declared_entry_spread_risk_authority(run_id, cost_plan, strategy_number)
+            full_gate = compile_entry_spread_risk_gate(cost_plan)
+            cost_rejections = ((cost_policy.policy_id + ':spread_original_risk_exceeded', int(np.count_nonzero((full_gate.rejection_mask & (1 << 11)) != 0))), (cost_policy.policy_id + ':quote_unavailable_or_stale', int(np.count_nonzero((full_gate.rejection_mask & (1 << 12)) != 0))))
+        price_authority = CertifiedPriceReadbackAuthority(run_id, initial_momentum_plan, activity_authority, cost_authority)
+    else:
+        full_gate = compile_static_entry_gate(
+            visible, entry, strategy_number=strategy_number,
+            momentum_plan=momentum_plan, initial_momentum_plan=initial_momentum_plan)
+    return visible, full_gate, momentum_plan, initial_momentum_plan, cost_authority, cost_rejections, price_authority
+
+
 async def run_certified_strategy_one_session(
     *, market: CertifiedMarketDayPlan, candidates: CertifiedCandidatePlan,
     activations: CertifiedActivationPlan | None, pivots: CertifiedPivotPlan | None,
@@ -159,7 +241,17 @@ async def run_certified_strategy_one_session(
             or manager_ready is not None and not callable(manager_ready)
             or first_price_ready is not None and not callable(first_price_ready)):
         raise ValueError("Strategy 1 session lacks pinned 100ms inputs")
-    if (runtime.config.strategy_revision in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-five-completed-liquidity-fade-v1')) and resume_manager_state is not None:
+    selected_session = getattr(runtime, '_fixed_structural_lot_session', None)
+    if selected_session is not None:
+        from .backtest_fixed_structural_lot_execution import PreparedFixedStructuralLotSession
+        if type(selected_session) is not PreparedFixedStructuralLotSession:
+            raise ValueError('Native fixed-lot execution requires its issued session')
+        selected_session.require(market=market, candidates=candidates, entry=entry,
+            through_boundary_ms=through_boundary_ms, run_id=runtime.run_id,
+            number=runtime.config.strategy_revision)
+    elif getattr(numbered_fixed_strategy(runtime.config.strategy_revision), 'fixed_structural_lot_policy', None) is not None:
+        raise ValueError('Declared fixed lots lack native source preparation')
+    if (runtime.config.strategy_revision in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-five-completed-liquidity-fade-v1')) and resume_manager_state is not None and selected_session is None:
         raise ValueError("Strategy 35 resume lacks liquidity-cache equivalence acceptance")
     if flat_start_boundary_ms:
         active = getattr(getattr(runtime, "broker", None),
@@ -204,82 +296,26 @@ async def run_certified_strategy_one_session(
         return StrategyOneProposalCounts(0, 0, 0, 0)
     visible_activations = project_activation_plan(
         activations, candidates, through_boundary_ms=through_boundary_ms)
-    cost_rejections = ()
-    cost_authority = None
-    momentum_plan = None
-    initial_momentum_plan = None
-    if (runtime.config.strategy_revision in (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirteen-rising-completed-momentum-v1')):
-        from src.backend.backtest_strategy_rising_momentum import load_rising_momentum_plan
-        base_gate = compile_static_entry_gate(visible, entry, strategy_number=12)
-        with closing(client_factory()) as momentum_client:
-            momentum_plan = load_rising_momentum_plan(
-                market, visible, client=momentum_client,
-                candidate_indices=base_gate.eligible_indices)
-        if runtime.config.strategy_revision == 18:
-            from src.backend.backtest_strategy_initial_momentum import compile_initial_momentum_plan
-            initial_momentum_plan = compile_initial_momentum_plan(visible, entry, momentum_plan)
-        elif (runtime.config.strategy_revision in (19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-eighteen-first-strong-momentum-setup-v1')):
-            from src.backend.backtest_strategy_initial_momentum_growth import compile_initial_momentum_growth_plan
-            if (runtime.config.strategy_revision in (26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-six-premarket-first-setup-ten-second-growth-10pct-v1')):
-                from src.backend.backtest_strategy_initial_ten_percent import compile_initial_ten_percent_plan
-                policy = getattr(numbered_fixed_strategy(runtime.config.strategy_revision), 'entry_momentum_growth_policy', None)
-                if policy is not None:
-                    from src.backend.backtest_declared_initial_momentum import compile_declared_initial_momentum_plan
-                    initial_momentum_plan = compile_declared_initial_momentum_plan(visible, entry, momentum_plan, policy)
-                else:
-                    initial_momentum_plan = compile_initial_ten_percent_plan(visible, entry, momentum_plan)
-            else:
-                initial_momentum_plan = compile_initial_momentum_growth_plan(visible, entry, momentum_plan)
-            if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
-                from src.backend.backtest_strategy_first_price_source import load_first_price_source
-                from src.backend.backtest_strategy_certified_price_break import compile_certified_price_break_plan
-                with closing(client_factory()) as price_client:
-                    source = load_first_price_source(market, initial_momentum_plan, client=price_client)
-                initial_momentum_plan = compile_certified_price_break_plan(source)
-    if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
-        from src.backend.backtest_strategy_certified_price_break import (
-            compile_certified_price_static_gate, CertifiedPriceReadbackAuthority,
-        )
+    selected_session = getattr(runtime, '_fixed_structural_lot_session', None)
+    if selected_session is not None:
+        from .backtest_fixed_structural_lot_execution import PreparedFixedStructuralLotSession
+        if type(selected_session) is not PreparedFixedStructuralLotSession:
+            raise ValueError('Native fixed-lot execution requires its issued session')
+        selected_session.require(market=market, candidates=candidates, entry=entry,
+            through_boundary_ms=through_boundary_ms, run_id=runtime.run_id,
+            number=runtime.config.strategy_revision)
+        entry_authorities = selected_session.entry_authorities
+    else:
+        entry_authorities = prepare_strategy_one_entry_authorities(
+            market=market, candidates=candidates, entry=entry, through_boundary_ms=through_boundary_ms,
+            strategy_number=runtime.config.strategy_revision, run_id=runtime.run_id, client_factory=client_factory)
+    (visible, full_gate, momentum_plan, initial_momentum_plan, cost_authority,
+     cost_rejections, price_authority) = entry_authorities
+    if price_authority is not None:
         if not callable(first_price_ready):
             raise ValueError("Strategy20 session lacks its price-source publication binding")
-        activity_authority = None
-        if (runtime.config.strategy_revision in (36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-six-completed-entry-activity-fade-v1')):
-            from src.backend.backtest_strategy_entry_activity_source import (
-                load_entry_activity_plan, EntryActivityReadbackAuthority,
-            )
-            from src.backend.backtest_strategy_entry_activity_gate import compile_entry_activity_static_gate
-            with closing(client_factory()) as activity_client:
-                activity_plan = load_entry_activity_plan(market, initial_momentum_plan, client=activity_client)
-            if (runtime.config.strategy_revision in (37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-seven-confirmed-episode-activity-veto-v1')):
-                # Seal the full candidate prefix before pruning scheduler rows.
-                # Candidates observed while holding still contribute to the veto.
-                from src.backend.backtest_strategy_episode_activity_gate import compile_episode_activity_static_gate
-                from src.backend.backtest_strategy_episode_activity_source import EpisodeActivityReadbackAuthority
-                full_gate = compile_episode_activity_static_gate(activity_plan)
-                activity_authority = EpisodeActivityReadbackAuthority(runtime.run_id, full_gate, runtime.config.strategy_revision)
-            else:
-                activity_authority = EntryActivityReadbackAuthority(runtime.run_id, activity_plan)
-                full_gate = compile_entry_activity_static_gate(activity_plan)
-        else:
-            full_gate = compile_certified_price_static_gate(initial_momentum_plan)
-        cost_policy = numbered_fixed_strategy(runtime.config.strategy_revision).entry_spread_risk_policy
-        cost_authority = None
-        if cost_policy is not None:
-            from src.backend.backtest_entry_spread_risk import compile_entry_spread_risk_gate
-            from src.backend.backtest_declared_entry_quote_source import (
-                load_declared_entry_spread_risk_plan, declared_entry_spread_risk_authority)
-            with closing(client_factory()) as cost_client:
-                cost_plan = load_declared_entry_spread_risk_plan(market, full_gate, cost_policy, source_contract=numbered_fixed_strategy(runtime.config.strategy_revision).entry_spread_risk_quote_source_contract, client=cost_client)
-            cost_authority = declared_entry_spread_risk_authority(runtime.run_id, cost_plan, runtime.config.strategy_revision)
-            full_gate = compile_entry_spread_risk_gate(cost_plan)
-            cost_rejections = ((cost_policy.policy_id + ':spread_original_risk_exceeded', int(np.count_nonzero((full_gate.rejection_mask & (1 << 11)) != 0))), (cost_policy.policy_id + ':quote_unavailable_or_stale', int(np.count_nonzero((full_gate.rejection_mask & (1 << 12)) != 0))))
-        price_authority = CertifiedPriceReadbackAuthority(runtime.run_id, initial_momentum_plan, activity_authority, cost_authority)
         runtime.bind_strategy_one_price_source(price_authority)
         first_price_ready(price_authority)
-    else:
-        full_gate = compile_static_entry_gate(
-            visible, entry, strategy_number=runtime.config.strategy_revision,
-            momentum_plan=momentum_plan, initial_momentum_plan=initial_momentum_plan)
     survivors, activation_schedule = project_static_survivors(
         visible, visible_activations, full_gate)
     # The scheduler sees only survivors. Its local gate must index exactly
@@ -393,7 +429,10 @@ async def run_certified_strategy_one_session(
                     # Every possible entry comes from these static survivors;
                     # no positions or future P&L select the activity population.
                     tickers=tuple(sorted({fact.ticker for fact in surviving_facts})),
-                    after_boundary_ms=start_after_boundary_ms,
+                    # A selected cold owner verifies the complete original
+                    # source operation; rebuild the full held-history cache.
+                    after_boundary_ms=(0 if selected_session is not None and resume_manager_state is not None
+                        else start_after_boundary_ms),
                     through_boundary_ms=through_boundary_ms,
                     strategy_number=runtime.config.strategy_revision)
                 manager.bind_liquidity_fade_lookup(liquidity_lookup, liquidity_market)
@@ -405,7 +444,7 @@ async def run_certified_strategy_one_session(
                     tickers=tuple(sorted({fact.ticker for fact in surviving_facts})),
                     through_boundary_ms=through_boundary_ms)
                 manager.bind_completed_risk_lookup(risk_lookup,risk_market)
-            if resume_manager_state is not None:
+            if resume_manager_state is not None and selected_session is None:
                 if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
                     manager.restore_state(resume_manager_state, first_price_source=price_authority)
                 else:
@@ -424,6 +463,8 @@ async def run_certified_strategy_one_session(
                 finish_boundary=finish_boundary,
                 stage_time=stage_time)
             from dataclasses import replace
+            if manager._fixed_lot_owner is not None:
+                cost_rejections=tuple(sorted((*cost_rejections,*manager._fixed_lot_owner.entry_rejections.items())))
             return replace(counts, declared_entry_rejections=cost_rejections)
         finally:
             scheduler.close()

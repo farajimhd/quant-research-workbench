@@ -125,6 +125,19 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
     from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
 
+    if getattr(client,'fixed_structural_lot_profile',None) is not None:
+        from .fixed_structural_lot_profile import require_fixed_structural_lot_profile
+        profile=require_fixed_structural_lot_profile(client.fixed_structural_lot_profile)
+        source=profile.operation.source
+        if source.run_id!=run_id or (first_price_source is not None and first_price_source is not source.price_authority):
+            raise ValueError('Selected snapshot writer has foreign run/price authority')
+        contexts=tuple(getattr(client,'fixed_structural_lot_contexts',()))
+        if any(context.source is not source for context in contexts):
+            raise ValueError('Selected snapshot writer has foreign committed entry source')
+        return load_verified_v4_prefix(client,run_id,max_commits=max_commits,
+            first_price_source=source.price_authority,fixed_lot_contexts=contexts,
+            fixed_lot_recovery_contexts=tuple(getattr(client,'fixed_lot_recovery_contexts',())))
+
     sources = _declared_writer_ladder_sources(client, run_id)
     if sources is not None:
         if first_price_source is not None:
@@ -273,7 +286,9 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
 def load_verified_v4_prefix(client, run_id: str, *,
                             max_commits: int = 100_000,
                             first_price_source=None, automatic_ladder_sources=(),
-                            declared_native_contexts=()) -> V4CommittedPrefix | None:
+                            declared_native_contexts=(), fixed_lot_contexts=(),
+                            fixed_lot_recovery_contexts=(),_fixed_lot_cold_source=None,
+                            _cold_recovery_context_sink=None) -> V4CommittedPrefix | None:
     """Recompute every detail seal and require one complete contiguous chain.
 
     This SELECT-only cold path is intentionally outside the execution loop.
@@ -287,6 +302,15 @@ def load_verified_v4_prefix(client, run_id: str, *,
     from .arte_declared_native_publication import declared_contexts_by_batch
     declared_context_index = declared_contexts_by_batch(
         run_id, declared_native_contexts, max_commits=max_commits)
+    fixed_lot_context_index = {}
+    recovery_context_index={}
+    if fixed_lot_recovery_contexts:
+        from src.backend.backtest_fixed_structural_lot_management import recovery_contexts_by_batch
+        recovery_context_index=recovery_contexts_by_batch(run_id,fixed_lot_recovery_contexts,max_commits=max_commits)
+    if fixed_lot_contexts:
+        from .fixed_structural_lot_entry_v4 import fixed_lot_contexts_by_batch
+        fixed_lot_context_index = fixed_lot_contexts_by_batch(
+            run_id, fixed_lot_contexts, max_commits=max_commits)
     columns = ",".join(name for name, _ in
                        _CONTRACTS["trading_commit_v4"].columns)
     commits = _rows(client,
@@ -297,9 +321,17 @@ def load_verified_v4_prefix(client, run_id: str, *,
     if len(commits) > max_commits:
         raise RuntimeError("V4 recovery commit count exceeds its memory bound")
     if not commits:
-        if declared_context_index:
+        if declared_context_index or fixed_lot_context_index or recovery_context_index:
             raise ValueError('Declared recovery contexts lack committed batches')
         return None
+    cold_walk=None
+    if _fixed_lot_cold_source is not None:
+        from .fixed_structural_lot_cold_recovery import _start_walk
+        if (_fixed_lot_cold_source.price_authority is not first_price_source
+                or _fixed_lot_cold_source.run_id!=run_id
+                or type(_cold_recovery_context_sink) is not list or _cold_recovery_context_sink):
+            raise ValueError('Cold recovery walk requires fresh exact source and empty bounded result inventory')
+        cold_walk=_start_walk(client,_fixed_lot_cold_source,fixed_lot_contexts)
     prior_id = str(UUID(int=0))
     last_sequence = 0
     status = "running"
@@ -324,11 +356,21 @@ def load_verified_v4_prefix(client, run_id: str, *,
         preceding = (V4CommittedPrefix(
             run_id, last_sequence, prior_id, commits[len(batch_ids)-1]['source_cursor'],
             status, tuple(batch_ids)) if batch_ids else None)
+        if cold_walk is not None:
+            from .fixed_structural_lot_cold_recovery import _advance_walk,_walk_prefix
+            preceding=_walk_prefix(cold_walk)
+            _advance_walk(cold_walk,preceding)
         verified, _ = load_verified_commit_v4(
             client, run_id=run_id, batch_id=batch_id, first_price_source=first_price_source,
+            **({'_fixed_lot_cold_walk':cold_walk,'_cold_recovery_context_sink':_cold_recovery_context_sink}
+               if cold_walk is not None else {}),
             automatic_ladder_sources=automatic_ladder_sources,
             **({'declared_native_context': declared_context_index[batch_id]}
                if batch_id in declared_context_index else {}),
+            **({'fixed_lot_context': fixed_lot_context_index[batch_id]}
+               if batch_id in fixed_lot_context_index else {}),
+            **({'fixed_lot_recovery_context': recovery_context_index[batch_id]}
+               if batch_id in recovery_context_index else {}),
             **({'verified_prior_prefix': preceding} if preceding is not None else {}))
         if verified != row:
             raise RuntimeError("V4 cold commit differs from ordered run inventory")
@@ -339,6 +381,10 @@ def load_verified_v4_prefix(client, run_id: str, *,
         seen_ids.add(batch_id)
     if set(declared_context_index) - seen_ids:
         raise ValueError('Declared recovery contexts name uncommitted batches')
+    if set(recovery_context_index)-seen_ids:
+        raise ValueError('Selected recovery contexts name uncommitted batches')
+    if set(fixed_lot_context_index) - seen_ids:
+        raise ValueError('Selected cold contexts name uncommitted batches')
     return V4CommittedPrefix(
         run_id, last_sequence, prior_id, commits[-1]["source_cursor"],
         status, tuple(batch_ids))
@@ -530,6 +576,9 @@ def load_verified_commit_v4(
     verified_prior_prefix: V4CommittedPrefix | None = None,
     automatic_ladder_sources=(),
     declared_native_context=None,
+    fixed_lot_context=None,
+    fixed_lot_recovery_context=None,
+    _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
 ) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
@@ -576,11 +625,22 @@ def load_verified_commit_v4(
         entry_activity_source=entry_activity_source,
         verified_prior_prefix=verified_prior_prefix,
         automatic_ladder_sources=automatic_ladder_sources, automatic_ladder_batch_metadata=dict(commit),
-        declared_native_context=declared_native_context)
+        declared_native_context=declared_native_context, fixed_lot_context=fixed_lot_context,
+        fixed_lot_recovery_context=fixed_lot_recovery_context,
+        _fixed_lot_cold_walk=_fixed_lot_cold_walk,_cold_recovery_context_sink=_cold_recovery_context_sink)
     try:
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:
         raise RuntimeError("V4 committed family seal differs from readback") from exc
+    if _fixed_lot_cold_walk is not None:
+        from .fixed_structural_lot_cold_recovery import (
+            _finalize_graph,_accept_verified_commit,_VerifiedFrontierSeal,_FRONTIER_SEALS)
+        frontier_seal=_VerifiedFrontierSeal()
+        _FRONTIER_SEALS[frontier_seal]=(_fixed_lot_cold_walk,canonical_json(dict(commit)))
+        _accept_verified_commit(_fixed_lot_cold_walk,frontier_seal)
+        for selected_batch,context in _cold_recovery_context_sink:
+            if selected_batch==identity:
+                _finalize_graph(context,run_id=run_id,batch_id=identity)
     return commit, tuple(family_rows)
 
 
@@ -594,6 +654,9 @@ def _load_verified_details_v4(
     verified_prior_prefix: V4CommittedPrefix | None = None,
     automatic_ladder_sources=(), automatic_ladder_read_client=None, automatic_ladder_batch_metadata=None,
     declared_native_context=None,
+    fixed_lot_context=None,
+    fixed_lot_recovery_context=None,
+    _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
@@ -667,6 +730,17 @@ def _load_verified_details_v4(
                     "trading_oms_execution_tactic_v1",
                     "trading_oms_execution_step_v1"}:
             related_rows[name] = rows
+        if name in {"trading_intent_protection_slice_v1", "trading_fixed_structural_lot_entry_v1",
+                    "trading_fixed_structural_lot_entry_lot_v1",
+                    "trading_fixed_structural_lot_configuration_node_v1"}:
+            related_rows[name] = rows
+    if (fixed_lot_context is not None
+            or any(name.startswith('trading_fixed_structural_lot_') for name in related_rows)
+            or any(row.get('entity_type') == 'fixed_structural_lot_entry_intent'
+                   for row in related_rows.get('trading_event_v1', ()))):
+        from .fixed_structural_lot_entry_v4 import verify_fixed_structural_lot_cold_graph
+        verify_fixed_structural_lot_cold_graph(related_rows, fixed_lot_context,
+            {'run_id': run_id, 'batch_id': batch_id, **(automatic_ladder_batch_metadata or {})})
     from .arte_declared_native_publication import verify_declared_cold_graph
     verify_declared_cold_graph(details, declared_native_context)
     from .arte_declared_native_publication import ENTITY_TYPES
@@ -730,6 +804,13 @@ def _load_verified_details_v4(
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
                if row["reason"] == "strategy_one_entry"}
+    if fixed_lot_context is not None:
+        # The complete own graph was independently replayed above. Its original
+        # reason remains unchanged, but its own event is not a legacy witness.
+        own_entry_ids = {str(UUID(str(row['record_id']))) for row in
+            related_rows.get('trading_event_v1', ())
+            if row.get('entity_type') == 'fixed_structural_lot_entry_intent'}
+        parents = {key: value for key, value in parents.items() if key not in own_entry_ids}
     children = related_rows.get(ENTRY_EVIDENCE.name, ())
     # Every stored row hash was verified above. Reconstruct witnesses from an
     # independent source even if the commit omits the companion family entirely.
@@ -936,12 +1017,23 @@ def _load_verified_details_v4(
             tuple(events.values()), run_id=run_id, batch_id=batch_id)
     except ValueError as exc:
         raise RuntimeError("V4 protection change differs from its typed children") from exc
+    if (_fixed_lot_cold_walk is not None and fixed_lot_recovery_context is None
+            and any(v['reply_kind']=='broker_readback' for v in related_rows.get(RECONCILIATION_REPLY.name,()))):
+        from .fixed_structural_lot_cold_recovery import _issue_graph
+        fixed_lot_recovery_context=_issue_graph(_fixed_lot_cold_walk,verified_prior_prefix,
+            batch_id=batch_id,parents=related_rows.get(PROTECTION_RECONCILIATION.name,()),
+            actions=related_rows.get(RECONCILIATION_ACTION.name,()),replies=related_rows.get(RECONCILIATION_REPLY.name,()),
+            events=tuple(events.values()))
+        if type(_cold_recovery_context_sink) is not list:
+            raise ValueError('Cold recovery inventory is not bounded to its full verification walk')
+        _cold_recovery_context_sink.append((batch_id,fixed_lot_recovery_context))
     try:
         seal_protection_reconciliation_v4(
             related_rows.get(PROTECTION_RECONCILIATION.name, ()),
             related_rows.get(RECONCILIATION_ACTION.name, ()),
             related_rows.get(RECONCILIATION_REPLY.name, ()),
-            tuple(events.values()), run_id=run_id, batch_id=batch_id)
+            tuple(events.values()), run_id=run_id, batch_id=batch_id,
+            recovery_context=fixed_lot_recovery_context)
     except ValueError as exc:
         raise RuntimeError("V4 reconciliation differs from its typed children") from exc
     accounts = related_rows.get("trading_backtest_account_snapshot_v2", ())
@@ -1237,12 +1329,18 @@ def publish_protection_change_batch_v4(client, batch, *, change,
 
 
 def publish_protection_reconciliation_batch_v4(
-    client, batch, *, reconciliation, actions, replies,
+    client, batch, *, reconciliation, actions, replies,recovery_context=None,
 ) -> str:
-    return _publish_typed_batch_v4(
+    result=_publish_typed_batch_v4(
         client, batch, protection_reconciliation_row=reconciliation,
         protection_reconciliation_actions=actions,
-        protection_reconciliation_replies=replies)
+        protection_reconciliation_replies=replies,fixed_lot_recovery_context=recovery_context)
+    if recovery_context is not None:
+        previous=tuple(getattr(client,'fixed_lot_recovery_contexts',()))
+        item=(batch.batch_id,recovery_context)
+        if item not in previous:
+            client.fixed_lot_recovery_contexts=(*previous,item)
+    return result
 
 
 def publish_terminal_typed_batch_v4(
@@ -1481,6 +1579,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                             protection_reconciliation_row=None,
                             protection_reconciliation_actions=(),
                             protection_reconciliation_replies=(),
+                            fixed_lot_recovery_context=None,
                             broker_snapshot_rows=None,
                             _prepare_only=False):
     from src.trading_runtime.arte_journal_writer import (
@@ -1765,7 +1864,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                                        for row in protection_reconciliation_replies)
         seal_protection_reconciliation_v4(
             reconciliation_rows, reconciliation_actions, reconciliation_replies,
-            batch.events, run_id=batch.run_id, batch_id=batch.batch_id)
+            batch.events, run_id=batch.run_id, batch_id=batch.batch_id,
+            recovery_context=fixed_lot_recovery_context)
     elif protection_reconciliation_actions or protection_reconciliation_replies:
         raise ValueError("V4 reconciliation children lack their typed parent")
     allocation_rows = ()
@@ -1991,7 +2091,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         return base_families, families
     return _publish_sealed_batch_v4(client, batch, base_families, families,
         first_price_authorities=first_price_authorities,
-        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
+        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
+        fixed_lot_recovery_context=fixed_lot_recovery_context)
 
 
 def _existing_detail_identities_v4(client, batch, families):
@@ -2108,8 +2209,12 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              verified_prior_prefix: V4CommittedPrefix | None = None,
                              first_price_source=None, automatic_ladder_sources=(),
                              automatic_ladder_read_client=None,
-                             declared_native_context=None) -> str:
+                             declared_native_context=None, fixed_lot_context=None,
+                             fixed_lot_recovery_context=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
+    if fixed_lot_recovery_context is not None:
+        from src.backend.backtest_fixed_structural_lot_management import require_recovery_client
+        require_recovery_client(client,fixed_lot_recovery_context)
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _identity, _insert, _literal, _rows,
         _verify_commission_links, _verify_exact_intent_uses,
@@ -2118,6 +2223,12 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
 
     from .arte_declared_native_publication import verify_declared_publication_graph
     verify_declared_publication_graph(batch, base_families, families, declared_native_context)
+    if (fixed_lot_context is not None
+            or any(name.startswith('trading_fixed_structural_lot_') and rows for name, rows in families)
+            or any(row.get('entity_type') == 'fixed_structural_lot_entry_intent'
+                   for row in dict(base_families).get('trading_event_v1', ()))):
+        from .fixed_structural_lot_entry_v4 import verify_fixed_structural_lot_publication_graph
+        verify_fixed_structural_lot_publication_graph(batch, base_families, families, fixed_lot_context)
     stage_started = perf_counter_ns()
 
     def mark_stage(name: str) -> None:
@@ -2211,7 +2322,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
             first_price_authorities=first_price_authorities,
             verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
             automatic_ladder_sources=automatic_ladder_sources,
-            declared_native_context=declared_native_context)
+            declared_native_context=declared_native_context, fixed_lot_context=fixed_lot_context,
+            fixed_lot_recovery_context=fixed_lot_recovery_context)
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
         dispatch.assert_next_batch(
@@ -2232,7 +2344,9 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
     _verify_commission_links(
         client, batch, base_families, journal_profile=profile)
     _verify_exact_intent_uses(
-        client, batch, base_families, journal_profile=profile)
+        client, batch, base_families, journal_profile=profile,
+        **({"fixed_lot_contexts":client.fixed_structural_lot_contexts}
+           if getattr(client,"fixed_structural_lot_contexts",()) else {}))
     _verify_order_context_links(
         client, batch, base_families, journal_profile=profile)
     dispatch.assert_next_batch(
@@ -2265,7 +2379,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
         automatic_ladder_sources=automatic_ladder_sources,
         automatic_ladder_read_client=automatic_ladder_read_client,
-        declared_native_context=declared_native_context,
+        declared_native_context=declared_native_context, fixed_lot_context=fixed_lot_context,
+        fixed_lot_recovery_context=fixed_lot_recovery_context,
         automatic_ladder_batch_metadata={
             'run_month':batch.run_month.isoformat(), 'attempt_id':batch.attempt_id,
             'first_sequence':batch.first_sequence, 'last_sequence':batch.last_sequence,

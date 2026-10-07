@@ -46,6 +46,9 @@ def certify_entry_activity_source(*, source_overrides=None):
         except SyntaxError as exc:
             raise ValueError('Entry activity source cannot be parsed: ' + relative) from exc
         if actual != expected:
-            raise ValueError('Entry activity source changed: ' + relative)
+            from .backtest_fixed_v4_certification import _reviewed_fixed_lot_profit_projection
+            if (type(expected) is not str
+                    or not _reviewed_fixed_lot_profit_projection(source, relative, '__module__', expected)):
+                raise ValueError('Entry activity source changed: ' + relative)
         observed.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observed, separators=(',', ':')).encode()).hexdigest()

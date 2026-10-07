@@ -117,12 +117,16 @@ def canonical_protection_snapshot_rows(
     )
 
 
-def _validate_state(state: ProtectionState, *, boundary_ms: int) -> None:
+def _validate_state(state: ProtectionState, *, boundary_ms: int,
+                    stop_ceiling: float | None = None) -> None:
+    if stop_ceiling is not None:
+        from .strategy_one_position import _validate_stop_ceiling
+        _validate_stop_ceiling(state,stop_ceiling)
     if (not isinstance(state, ProtectionState)
             or type(state.boundary_ms) is not int
             or not 0 < state.boundary_ms <= boundary_ms
             or state.boundary_ms % 100
-            or not 0 < state.stop < state.target
+            or not 0 < state.stop < (state.target if stop_ceiling is None else stop_ceiling)
             or not isinstance(state.accepted_ids, frozenset)
             or not isinstance(state.pending_group, tuple)
             or not isinstance(state.earned_group, tuple)
@@ -155,6 +159,25 @@ def project_protection_snapshot(*, run_id: str, session_date: date,
                                 checkpoint_sequence: int, boundary_ms: int,
                                 positions: Mapping[tuple[str, str, str], ProtectionState],
                                 ) -> ProtectionSnapshotRows:
+    """Validate default position authority before pure row serialization."""
+    if (not run_id or not isinstance(session_date, date)
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or type(boundary_ms) is not int or not 0 < boundary_ms <= 57_600_000
+            or boundary_ms % 100 or not isinstance(positions, Mapping)):
+        raise ValueError("Strategy 1 snapshot needs a pinned completed cursor")
+    for identity, state in sorted(positions.items()):
+        if (not isinstance(identity, tuple) or len(identity) != 3
+                or any(not isinstance(part, str) or not part for part in identity)):
+            raise ValueError("Strategy 1 position identity is incomplete")
+        account_id, ticker, position_id = identity
+        _validate_state(state, boundary_ms=boundary_ms)
+    return _serialize_protection_snapshot(run_id=run_id,session_date=session_date,
+        checkpoint_sequence=checkpoint_sequence,boundary_ms=boundary_ms,positions=positions)
+
+def _serialize_protection_snapshot(*, run_id: str, session_date: date,
+                                checkpoint_sequence: int, boundary_ms: int,
+                                positions: Mapping[tuple[str, str, str], ProtectionState],
+                                ) -> ProtectionSnapshotRows:
     """Encode all active positions at one committed market boundary.
 
     An empty snapshot is meaningful: its seal proves there were no active
@@ -175,7 +198,6 @@ def project_protection_snapshot(*, run_id: str, session_date: date,
                 or any(not isinstance(part, str) or not part for part in identity)):
             raise ValueError("Strategy 1 position identity is incomplete")
         account_id, ticker, position_id = identity
-        _validate_state(state, boundary_ms=boundary_ms)
         state_id = str(uuid5(NAMESPACE_URL,
             f"{snapshot_id}:{account_id}:{ticker}:{position_id}"))
         common = dict(state_id=state_id, snapshot_id=snapshot_id,
@@ -295,6 +317,13 @@ def restore_protection_snapshot(rows: ProtectionSnapshotRows,
 def load_protection_snapshot_rows(client: object, *, run_id: str,
                                   checkpoint_sequence: int,
                                   ) -> ProtectionSnapshotRows:
+    return _load_protection_snapshot_rows(client,run_id=run_id,checkpoint_sequence=checkpoint_sequence)
+
+
+def _load_protection_snapshot_rows(client: object, *, run_id: str,
+                                  checkpoint_sequence: int,
+                                  _selected_positions=None,
+                                  ) -> ProtectionSnapshotRows:
     """SELECT exact scalar rows; callers also need the original seal hash.
 
     Publication may leave unsealed child rows after an interrupted INSERT;
@@ -343,7 +372,14 @@ def load_protection_snapshot_rows(client: object, *, run_id: str,
     resistances = read(TABLES[2].name, predicate, resistance_count + 1)
     rows = canonical_protection_snapshot_rows(
         ProtectionSnapshotRows(seal, states, resistances))
-    restore_protection_snapshot(rows)
+    if _selected_positions is None:
+        restore_protection_snapshot(rows)
+    else:
+        expected=_serialize_protection_snapshot(run_id=run_id,
+            session_date=date.fromisoformat(seal['session_date']),
+            checkpoint_sequence=checkpoint_sequence,boundary_ms=seal['boundary_ms'],positions=_selected_positions)
+        if canonical_protection_snapshot_rows(rows)!=canonical_protection_snapshot_rows(expected):
+            raise ValueError('Selected cold protection rows differ from independently decoded states')
     return rows
 
 

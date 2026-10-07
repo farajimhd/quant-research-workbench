@@ -1432,8 +1432,15 @@ class OrderManagementEngine:
         if request_index is not None:
             request = group.orders[request_index]
             effective = replace(request, price=order.price or request.price, auxPrice=order.auxPrice or request.auxPrice)
-            self._record_protection(group, effective, phase="effective", broker_order_id=str(order.orderId),
-                                    active=order.order_status in OPEN_ORDER_STATUSES)
+            from .independent_lot_stop_amendment import independent_profile
+            unproved_independent_stop = (independent_profile(group.intent) is not None
+                and fill_role == 'protective_stop' and effective.auxPrice != request.auxPrice)
+            # A broker observation of a changed stop is not its initial creation
+            # or an acknowledged amendment. Preserve the order-update record;
+            # the selected owner must reconcile its exact requested lineage.
+            if not unproved_independent_stop:
+                self._record_protection(group, effective, phase="effective", broker_order_id=str(order.orderId),
+                                        active=order.order_status in OPEN_ORDER_STATUSES)
 
         if next_state in TERMINAL_MANAGEMENT_STATES and group.reprice_task:
             group.reprice_task.cancel()
@@ -2821,6 +2828,12 @@ class OrderManagementEngine:
         return pending
 
     async def _replace_protective_stop(self, intent: StrategyIntent, *, account_id: str) -> OrderGroupSnapshot:
+        from .independent_lot_stop_amendment import independent_profile, replace_independent_stops
+        if any(independent_profile(group.intent) is not None
+               and group.account_id == account_id and group.intent.ticker == intent.ticker
+               and str(group.intent.metadata.get('assignment_id') or '') == str(intent.metadata.get('assignment_id') or '')
+               for group in self._groups.values()):
+            return await replace_independent_stops(self, intent, account_id)
         desired = float(intent.invalidation_price or 0)
         if desired <= 0 or desired >= intent.reference_price:
             raise ValueError("Long support stop must be positive and below the market")

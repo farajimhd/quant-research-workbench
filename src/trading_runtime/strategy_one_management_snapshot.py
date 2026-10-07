@@ -234,6 +234,7 @@ def _project_manager_snapshot_scalar(*, run_id: str, session_date: date,
                              checkpoint_sequence: int,
                              state: StrategyOneManagementState,
                              max_pending_breaks: int = 256,
+                             _protection_rows: ProtectionSnapshotRows | None = None,
                              ) -> ManagerSnapshotRows:
     """Encode bounded scalar references; this alone attests no entry source.
 
@@ -244,10 +245,16 @@ def _project_manager_snapshot_scalar(*, run_id: str, session_date: date,
         state, max_pending_breaks=max_pending_breaks)
     positions = {(key[0], key[2], key[1]): value
                  for key, value in state.positions}
-    protection = project_protection_snapshot(
-        run_id=run_id, session_date=session_date,
-        checkpoint_sequence=checkpoint_sequence,
-        boundary_ms=state.boundary_ms, positions=positions)
+    if _protection_rows is None:
+        protection = project_protection_snapshot(
+            run_id=run_id, session_date=session_date,
+            checkpoint_sequence=checkpoint_sequence,
+            boundary_ms=state.boundary_ms, positions=positions)
+    else:
+        from .fixed_structural_lot_manager_snapshot import validate_manager_protection_rows
+        protection = validate_manager_protection_rows(_protection_rows,run_id=run_id,
+            session_date=session_date,checkpoint_sequence=checkpoint_sequence,
+            boundary_ms=state.boundary_ms,positions=positions)
     root = protection.snapshot
     common = dict(snapshot_id=root["snapshot_id"], run_id=run_id,
                   snapshot_month=root["snapshot_month"],
@@ -340,6 +347,13 @@ def _project_manager_snapshot_scalar(*, run_id: str, session_date: date,
 def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                              max_pending_breaks: int = 256,
                              ) -> StrategyOneManagementState:
+    return _restore_manager_snapshot_scalar(rows,max_pending_breaks=max_pending_breaks)
+
+
+def _restore_manager_snapshot_scalar(rows: ManagerSnapshotRows, *,
+                             max_pending_breaks: int = 256,
+                             _selected_positions=None,
+                             ) -> StrategyOneManagementState:
     """Reject partial/foreign children before constructing executable state."""
     if not isinstance(rows, ManagerSnapshotRows):
         raise ValueError("Strategy 1 manager recovery needs typed rows")
@@ -431,7 +445,17 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                 "role": "resistance", "side": "resistance"}))
     if any(values != list(range(len(values))) for values in ordinals.values()):
         raise ValueError("Strategy 1 pending break ordinals differ")
-    positions = restore_protection_snapshot(rows.protection)
+    if _selected_positions is None:
+        positions = restore_protection_snapshot(rows.protection)
+    else:
+        from .strategy_one_protection_snapshot import _serialize_protection_snapshot
+        positions = dict(_selected_positions)
+        expected = _serialize_protection_snapshot(run_id=seal['run_id'],
+            session_date=date.fromisoformat(seal['session_date']),
+            checkpoint_sequence=seal['checkpoint_sequence'],boundary_ms=seal['boundary_ms'],
+            positions=positions)
+        if canonical_protection_snapshot_rows(expected)!=rows.protection:
+            raise ValueError('Selected cold protection differs from independently decoded owned state')
     state = StrategyOneManagementState(
         int(seal["boundary_ms"]), tuple(submitted),
         tuple(sorted(((account, assignment, ticker), value)
@@ -460,7 +484,8 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
             run_id=seal["run_id"],
             session_date=date.fromisoformat(seal["session_date"]),
             checkpoint_sequence=seal["checkpoint_sequence"],
-            state=state, max_pending_breaks=max_pending_breaks) != rows:
+            state=state, max_pending_breaks=max_pending_breaks,
+            _protection_rows=rows.protection if _selected_positions is not None else None) != rows:
         raise ValueError("Strategy 1 manager snapshot does not round-trip exactly")
     return state
 

@@ -28,7 +28,11 @@ def certify_profit_giveback_route_source(*, source_overrides=None):
         if len(summaries) != len(expected):
             raise ValueError('Strategy 31 source summary shape changed: ' + relative)
         for (name, digest), summary in zip(expected.items(), summaries):
-            if summary.name != name or len(summary.digests) != 1 or summary.digests[0] != digest:
+            if summary.name != name or len(summary.digests) != 1:
                 raise ValueError('Strategy 31 reviewed profit-route authority changed: ' + relative + ':' + name)
+            if summary.digests[0] != digest:
+                from .backtest_fixed_v4_certification import _reviewed_fixed_lot_profit_projection
+                if not _reviewed_fixed_lot_profit_projection(source, relative, name, digest):
+                    raise ValueError('Strategy 31 reviewed profit-route authority changed: ' + relative + ':' + name)
         observed.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observed, separators=(',', ':')).encode()).hexdigest()

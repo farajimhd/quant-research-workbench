@@ -46,7 +46,8 @@ NIL_BATCH_ID = str(UUID(int=0))
 
 def committed_oms_order_lineage(group: object, *, run_id: str,
                                 strategy_id: str, strategy_revision: int,
-                                authorized_protection: Mapping | None = None) -> dict[str, tuple]:
+                                authorized_protection: Mapping | None = None,
+                                source_sequence=None, source_boundary=None) -> dict[str, tuple]:
     """Index only lineage already validated against a typed OMS transition."""
     from src.trading_runtime.arte_oms_projection import canonical_oms_order_metadata
 
@@ -59,7 +60,8 @@ def committed_oms_order_lineage(group: object, *, run_id: str,
             "canonical_strategy_revision": strategy_revision,
             "canonical_run_id": run_id,
             "canonical_metadata": canonical_oms_order_metadata(
-                group, order, authorized_protection),
+                group, order, authorized_protection, source_sequence=source_sequence,
+                source_boundary=source_boundary, source_run_id=run_id),
         }
         lineage = (expected, group.account_id, order.ticker.upper(), order.conid,
                    group.group_id, group.intent.intent_id)
@@ -123,6 +125,7 @@ def project_pending_backtest_v4_prefix(
     first_price_source: object | None = None,
     expected_market_start: datetime | None = None,
     published_sources: Mapping[str, tuple[TypedJournalBatch, object]] | None = None,
+    published_fixed_lot_units: Mapping[str, object] | None = None,
     committed_order_lineage: Mapping[str, tuple] | None = None,
     committed_order_lineage_proofs: Mapping[str, str] | None = None,
     committed_order_lineage_oms_records: Mapping[str, str] | None = None,
@@ -180,6 +183,7 @@ def project_pending_backtest_v4_prefix(
     units = []
     ordinary: list[TypedJournalBatch] = []
     sources = dict(published_sources or {})
+    fixed_lot_units = dict(published_fixed_lot_units or {})
     order_lineage = dict(committed_order_lineage or {})
     order_lineage_proofs = dict(committed_order_lineage_proofs or {})
     order_lineage_oms_records = dict(committed_order_lineage_oms_records or {})
@@ -224,7 +228,9 @@ def project_pending_backtest_v4_prefix(
                 if not 0 <= policy_version <= 0xFFFFFFFF:
                     raise ValueError("Strategy 1 command policy revision is invalid")
                 policy_version = str(policy_version)
-            sealed_source = dict(_sealed_families(source[0]))[
+            sealed_source = dict(_sealed_families(source[0],
+                **({'fixed_lot_unit':fixed_lot_units[source[1].intent_id]}
+                   if source[1].intent_id in fixed_lot_units else {})))[
                 "trading_strategy_intent_v1"]
             if len(sealed_source) != 1:
                 raise RuntimeError("Strategy 1 command source is not one typed intent")
@@ -289,7 +295,9 @@ def project_pending_backtest_v4_prefix(
                 run_month=run_month, attempt_id=attempt, batch_id=batch_id,
                 prior_batch_id=previous, source_cursor=cursor,
                 strategy_id=(expected_config or {}).get("strategy_id"),
-                strategy_revision=(expected_config or {}).get("strategy_revision"))
+                strategy_revision=(expected_config or {}).get("strategy_revision"),
+                **({'fixed_lot_request':journal.fixed_lot_management_request(record.entity_id)}
+                   if journal.fixed_lot_management_request(record.entity_id) is not None else {}))
         elif kind == ("protection", "protection_change"):
             unit = protection_change_batch_v4(
                 record, run_month=run_month, attempt_id=attempt,
@@ -299,7 +307,9 @@ def project_pending_backtest_v4_prefix(
             unit = protection_reconciliation_batch_v4(
                 record, run_month=run_month, attempt_id=attempt,
                 batch_id=batch_id, prior_batch_id=previous,
-                source_cursor=cursor)
+                source_cursor=cursor,
+                recovery_context=(journal.fixed_lot_recovery_record(record.record_id)
+                    if hasattr(journal,'fixed_lot_recovery_record') else None))
         elif kind == ("order_management", "order_group_state"):
             group = journal.oms_group_for_record(record.record_id)
             admission = journal.oms_admission_for_record(record.record_id)
@@ -326,6 +336,8 @@ def project_pending_backtest_v4_prefix(
                 strategy_revision=record.payload["strategy_revision"],
                 recorded_at=record.recorded_at,
                 published_intent_batch=source_batch,
+                **({'fixed_lot_unit':fixed_lot_units[group.intent.intent_id]}
+                   if group.intent.intent_id in fixed_lot_units else {}),
                 committed_intent_batch_id=source_batch.batch_id,
                 admission_source_intent=source_intent,
                 admission_reservation=admission,
@@ -347,7 +359,8 @@ def project_pending_backtest_v4_prefix(
                     group, run_id=record.run_id,
                     strategy_id=record.payload["strategy_id"],
                     strategy_revision=record.payload["strategy_revision"],
-                    authorized_protection=protection_proof).items():
+                    authorized_protection=protection_proof, source_sequence=record.sequence,
+                    source_boundary=record.event_time).items():
                 if (client_order_id in order_lineage
                         and order_lineage[client_order_id] != lineage
                         and not authorized_oms_lineage_transition(
@@ -382,6 +395,20 @@ def project_pending_backtest_v4_prefix(
                 expected_mode="backtest", allow_v3_reservation_reasons=True)
             reasons = project_reservation_reasons_v3(record, batch_id=batch_id)
             unit = V4ReservationReasonBatch(base, reasons) if reasons else base
+        elif kind == ('strategy', 'fixed_structural_lot_entry_intent'):
+            from src.trading_runtime.fixed_structural_lot_entry_v4 import fixed_structural_lot_semantic_batch
+            request=journal.fixed_structural_lot_entry_for_record(record.record_id)
+            if (request is None or expected_config.get('mode') != 'backtest'
+                    or expected_config.get('strategy_id') != request.strategy_id
+                    or type(expected_config.get('strategy_revision')) is not int
+                    or expected_config['strategy_revision'] != request.revision
+                    or expected_config.get('parent_configuration_hash') != request.source.parent_payload_hash
+                    or expected_config.get('selected_configuration_hash') != request.source.selected_configuration_hash):
+                raise ValueError('Own lot entry lacks exact retained source/configuration binding')
+            unit=fixed_structural_lot_semantic_batch(record,request,run_month=run_month,
+                attempt_id=attempt,batch_id=batch_id,prior_batch_id=previous,source_cursor=cursor)
+            sources[request.intent.intent_id]=(unit.base,request.intent)
+            fixed_lot_units[request.intent.intent_id]=unit
         else:
             progress_state = (journal.backtest_progress_for_record(record.record_id)
                               if kind == ("checkpoint", "market_boundary") else None)

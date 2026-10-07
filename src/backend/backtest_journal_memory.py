@@ -37,6 +37,10 @@ class BacktestMemoryJournal:
         # the execution path. These are provisional until the V4 writer fences.
         self._live_counts = {"signals": 0, "intents": 0, "commands": 0, "fills": 0}
         self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
+        self._fixed_structural_lot_entries: dict[str, Any] = {}
+        self._fixed_lot_management_requests: dict[str, Any] = {}
+        self._fixed_lot_recovery_records: dict[str, Any] = {}
+        self._fixed_structural_lot_retry_sources: dict[str, Any] = {}
         self._automatic_entries: dict[str, Any] = {}
         self._control_intervened = False
         self._automatic_fresh_run = initial_sequence == 0
@@ -72,6 +76,8 @@ class BacktestMemoryJournal:
         self._effective_protection_records: dict[
             tuple[object, object, str], list[JournalRecord]
         ] = {}
+        self._initial_lot_stop_records: dict[tuple[object, object, str], list[JournalRecord]] = {}
+        self._initial_lot_profiles: dict[tuple[str, str], Any] = {}
         self._checkpoint: dict[str, Any] | None = None
         self._portfolio_states: dict[str, dict[str, Any]] = {}
         self._order_states: dict[str, dict[str, Any]] = {}
@@ -158,6 +164,44 @@ class BacktestMemoryJournal:
             self._automatic_entries[record.record_id] = request
             self._entry_assignments[intent.intent_id] = request.assignment_id
             return record
+
+    def append_fixed_structural_lot_entry(self, *, request):
+        """Retain own source companion atomically before any shared admission.
+
+        Storage alone does not install a release or authorize financial execution.
+        The native selected owner must separately enforce installed authority.
+        """
+        from .backtest_fixed_structural_lot_source import FixedStructuralLotRequest
+        from src.trading_runtime.fixed_structural_lot_entry import _same_typed
+        if type(request) is not FixedStructuralLotRequest or request.run_id != self.run_id:
+            raise ValueError('Exact own prepared lot request/run required')
+        request.verify()
+        with self._lock:
+            key=('strategy','fixed_structural_lot_entry_intent',request.intent.intent_id)
+            previous=self._by_identity.get(key)
+            if previous is not None:
+                old=self._fixed_structural_lot_retry_sources.get(request.intent.intent_id)
+                if (old is None or not _same_typed(old.entry,request.entry)
+                        or not _same_typed(old.original,request.original)
+                        or not _same_typed(old.intent,request.intent)
+                        or old.source.parent_token != request.source.parent_token
+                        or old.source.selected_configuration_hash != request.source.selected_configuration_hash
+                        or old.source.quotes != request.source.quotes):
+                    raise ValueError('Own lot entry retry differs from retained original source')
+                return previous
+            record,_=self.append_once(run_id=self.run_id,category='strategy',
+                entity_type='fixed_structural_lot_entry_intent',entity_id=request.intent.intent_id,
+                account_id=request.entry.proposal.account_id,event_time=request.intent.event_time,
+                payload={**request.intent.payload(),'strategy_id':request.strategy_id,'strategy_revision':request.revision})
+            self._initial_lot_profiles[(request.entry.proposal.account_id,request.intent.intent_id)] = request.intent.protection_profile
+            self._fixed_structural_lot_entries[record.record_id]=request
+            self._fixed_structural_lot_retry_sources[request.intent.intent_id]=request
+            self._entry_assignments[request.intent.intent_id]=request.entry.proposal.assignment_id
+            return record
+
+    def fixed_structural_lot_entry_for_record(self, record_id):
+        with self._lock:
+            return self._fixed_structural_lot_entries.get(record_id)
 
     def automatic_entry_for_record(self, record_id):
         with self._lock:
@@ -580,6 +624,20 @@ class BacktestMemoryJournal:
                 hash(key)
             except TypeError:
                 return {}
+            original_profile = self._initial_lot_profiles.get((record.account_id, key[1]))
+            if original_profile is not None:
+                    initial = self._initial_lot_stop_records.get(key, ())
+                    initial_end = bisect_left(initial, record.sequence, key=lambda prior: prior.sequence)
+                    for index in range(initial_end - 1, -1, -1):
+                        prior = initial[index]
+                        client_id = prior.payload.get('client_order_id')
+                        if type(client_id) is str and client_id:
+                            result[f'initial_stop:{client_id}'] = prior
+                            result[f'initial_stop_history:{prior.sequence}'] = prior
+                    amendments = self._effective_protection_records.get(key, ())
+                    amendment_end = bisect_left(amendments, record.sequence, key=lambda prior: prior.sequence)
+                    for prior in amendments[:amendment_end]:
+                        result[f'lot_amendment_history:{prior.sequence}'] = prior
             matching = self._effective_protection_records.get(key, ())
             end = bisect_left(matching, record.sequence,
                               key=lambda prior: prior.sequence)
@@ -655,7 +713,21 @@ class BacktestMemoryJournal:
                             or key in self._reservation_creations or key in creations):
                         raise ValueError("Portfolio reservation creation is invalid or duplicated")
                     creations[key] = deepcopy(record.payload)
+            lot_profiles = {}
+            from src.trading_runtime.execution_policies import AddProtectionPolicy, protection_profile_from_payload
+            for record in result:
+                profile_payload = record.payload.get('protection_profile')
+                if ((record.category, record.entity_type) == ('strategy', 'strategy_intent')
+                        and type(profile_payload) is dict
+                        and profile_payload.get('add_policy') == AddProtectionPolicy.INDEPENDENT_FIXED_LOTS.value):
+                    profile = protection_profile_from_payload(profile_payload)
+                    key = (record.account_id, record.entity_id)
+                    prior = lot_profiles.get(key, self._initial_lot_profiles.get(key))
+                    if prior is not None and prior != profile:
+                        raise ValueError('Independent original admission profile identity was reused')
+                    lot_profiles[key] = profile
             self._records.extend(result)
+            self._initial_lot_profiles.update(lot_profiles)
             self._next_sequence += len(result)
             self._reservation_creations.update(creations)
             for record in result:
@@ -679,6 +751,15 @@ class BacktestMemoryJournal:
     def _index_effective_protection(self, record: JournalRecord) -> None:
         """Register one immutable protection fact in sequence order."""
         payload = record.payload
+        if (payload.get('kind') == 'stop' and payload.get('phase') == 'effective'
+                and payload.get('action') in {None, 'enter_long'}):
+            key = (payload.get('order_group_id'), payload.get('source_intent_id'), record.account_id)
+            try:
+                hash(key)
+            except TypeError:
+                pass
+            else:
+                self._initial_lot_stop_records.setdefault(key, []).append(record)
         if (payload.get("kind") not in {"stop", "target"}
                 or payload.get("phase") != "effective"
                 or payload.get("action") not in {
@@ -716,6 +797,49 @@ class BacktestMemoryJournal:
         with self._lock:
             return self._next_sequence - self._fenced_sequence
 
+    def bind_fixed_lot_management_request(self, request):
+        from .backtest_fixed_structural_lot_management import FixedStructuralLotManagementRequest
+        if type(request) is not FixedStructuralLotManagementRequest:
+            raise ValueError('Exact selected owner management request required')
+        request.owner._verify_issued_request(request)
+        if request.entry_request.source.run_id!=self.run_id:
+            raise ValueError('Foreign selected management journal')
+        with self._lock:
+            self._require_open()
+            if len(self._fixed_lot_management_requests)+len(request.intents)>self.max_pending_records:
+                raise ValueError('Selected pending management source capacity exhausted')
+            for intent in request.intents:
+                old=self._fixed_lot_management_requests.get(intent.intent_id)
+                if old is not None and old is not request:
+                    raise ValueError('Conflicting selected management source')
+            for intent in request.intents:self._fixed_lot_management_requests[intent.intent_id]=request
+
+    def fixed_lot_management_request(self, intent_id):
+        with self._lock:return self._fixed_lot_management_requests.get(intent_id)
+
+    def bind_fixed_lot_recovery_record(self,record,context):
+        from .backtest_fixed_structural_lot_management import FixedStructuralLotRecoveryContext
+        if type(context) is not FixedStructuralLotRecoveryContext or record.run_id!=self.run_id:
+            raise ValueError('Exact selected reconciliation source required')
+        context.owner.verify_recovery_record(context,record)
+        with self._lock:
+            self._require_open()
+            if len(self._fixed_lot_recovery_records)>=self.max_pending_records:
+                raise ValueError('Selected reconciliation source capacity exhausted')
+            previous=self._fixed_lot_recovery_records.get(record.record_id)
+            if previous is not None and previous is not context:
+                raise ValueError('Conflicting selected reconciliation source')
+            self._fixed_lot_recovery_records[record.record_id]=context
+
+    def fixed_lot_recovery_record(self,record_id):
+        with self._lock:return self._fixed_lot_recovery_records.get(record_id)
+
+    def release_fixed_lot_management_request(self, request):
+        with self._lock:
+            for intent in request.intents:
+                if self._fixed_lot_management_requests.get(intent.intent_id) is request:
+                    self._fixed_lot_management_requests.pop(intent.intent_id)
+
     def mark_fenced(self, sequence: int) -> None:
         """Release pending capacity only after ClickHouse confirms its fence."""
         with self._lock:
@@ -724,6 +848,9 @@ class BacktestMemoryJournal:
             discard = sequence - self._base_sequence
             if discard:
                 for record in self._records[:discard]:
+                    if record.entity_type=='protection_replacement_deferred':
+                        self._fixed_lot_management_requests.pop(record.entity_id,None)
+                    self._fixed_structural_lot_entries.pop(record.record_id, None)
                     self._automatic_entries.pop(record.record_id, None)
                     self._strategy_one_entries.pop(record.record_id, None)
                     self._strategy_one_adds.pop(record.record_id, None)
@@ -1155,6 +1282,8 @@ class BacktestMemoryJournal:
 
     def close(self) -> None:
         with self._lock:
+            self._fixed_structural_lot_entries.clear()
+            self._fixed_structural_lot_retry_sources.clear()
             self._closed = True
             self._automatic_entries.clear()
             self._strategy_one_entries.clear()
@@ -1165,6 +1294,8 @@ class BacktestMemoryJournal:
             self._backtest_progress.clear()
             self._oms_groups.clear()
             self._oms_admissions.clear()
+            self._initial_lot_stop_records.clear()
+            self._initial_lot_profiles.clear()
             self._reservation_creations.clear()
 
 

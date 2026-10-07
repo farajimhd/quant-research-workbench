@@ -2441,7 +2441,9 @@ class ReplayRunController:
                 boundary = dict(self._source_cursor).get('boundary_ms')
                 if type(boundary) is not int:
                     raise RuntimeError('Strategy 1 checkpoint has no completed boundary')
-                manager_state = manager.capture_state(boundary_ms=boundary)
+                selected_owner = getattr(manager, '_fixed_lot_owner', None)
+                manager_state = (selected_owner.capture(manager, boundary_ms=boundary)
+                    if selected_owner is not None else manager.capture_state(boundary_ms=boundary))
                 evidence_state = manager.evidence.capture_recovery_state()
                 if evidence_state.boundary_ms != boundary:
                     raise RuntimeError("Strategy 1 evidence clock differs from checkpoint")
@@ -3520,6 +3522,17 @@ class ReplayRunController:
             mode=self.definition.mode, configuration=configuration,
             account_ids=account_ids, anchor_date=self.definition.session_date,
             run_id=self.run_id)
+        from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
+        selected_lot_session = None
+        if declared_fixed_structural_lot_contract(strategy_number) is not None:
+            from .backtest_fixed_structural_lot_execution import prepare_fixed_structural_lot_session
+            from .backtest_market_data import readonly_clickhouse_client
+            selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session,
+                number=strategy_number, run_id=self.run_id, session_date=self.definition.session_date,
+                market=plans.market, candidates=plans.candidates, entry=plans.entry,
+                seeds=plans.seeds, through_boundary_ms=self._fixed_through_boundary_ms(),
+                client_factory=lambda: readonly_clickhouse_client(market_stream=True, v3_read_principal=True))
+        self._fixed_structural_lot_session = selected_lot_session
         code_hash_started = time.perf_counter()
         try:
             code_hash = await asyncio.to_thread(
@@ -3548,19 +3561,25 @@ class ReplayRunController:
                         backtest_v4_context_client_from_env(
                             keeper_session=keeper)))
                     reader = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env(**declared_fixed_runner_options(configuration))))
+                        backtest_v4_operator_client_from_env(**({'fixed_structural_lot_profile':selected_lot_session.profile}
+                            if selected_lot_session is not None else declared_fixed_runner_options(configuration)))))
                     writer = backtest_v4_journal_client_from_env(
                         keeper_session=keeper, lease=lease,
-                        **declared_fixed_runner_options(configuration))
+                        **({'fixed_structural_lot_profile':selected_lot_session.profile}
+                            if selected_lot_session is not None else declared_fixed_runner_options(configuration)))
                     terminal = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env(**declared_fixed_runner_options(configuration))))
+                        backtest_v4_operator_client_from_env(**({'fixed_structural_lot_profile':selected_lot_session.profile}
+                            if selected_lot_session is not None else declared_fixed_runner_options(configuration)))))
                     bootstrap_timings["strategy_one_journal_clients"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()
                     assembly = publish_and_assemble_fixed_v4_journal(
                         context, reader, writer, terminal,
                         run=run, config=config, account_ids=account_ids,
-                        attempt_id=str(uuid4()), expected_config=config,
+                        attempt_id=str(uuid4()), expected_config=(dict(config,
+                            parent_configuration_hash=selected_lot_session.operation.source.parent_payload_hash,
+                            selected_configuration_hash=selected_lot_session.operation.source.selected_configuration_hash)
+                            if selected_lot_session is not None else config),
                         configuration_revision=self.definition.configuration_revision,
                         fixed_market_parent_plan=plans.market,
                         fixed_market_execution_plan=plans.execution_market,
@@ -3631,6 +3650,8 @@ class ReplayRunController:
             }
         self._fixed_v4_account_ids = account_ids
         try:
+            if selected_lot_session is not None:
+                selected_lot_session.operation.bind_publisher(assembly.publisher)
             self._attach_fixed_journal_assembly(assembly)
             self._fixed_keeper_session = keeper
             self._fixed_v4_lease = lease
@@ -3977,6 +3998,14 @@ class ReplayRunController:
         async def manager_ready(manager):
             if getattr(self, '_strategy_one_manager', None) is not None:
                 raise RuntimeError('Strategy 1 manager is already bound')
+            selected_lot_session = getattr(self, '_fixed_structural_lot_session', None)
+            if selected_lot_session is not None:
+                from .backtest_fixed_structural_lot_execution import bind_fixed_structural_lot_manager
+                owner = bind_fixed_structural_lot_manager(selected_lot_session,
+                    manager=manager, publisher=self._journal_publisher, session=self.definition.session_date)
+                if fixed_restore is not None:
+                    from .backtest_fixed_journal_bootstrap import restore_fixed_structural_lot_native_manager
+                    await restore_fixed_structural_lot_native_manager(owner, manager, self._fixed_keeper_session)
             self._strategy_one_manager = manager
             if getattr(manager.contract,'confirmed_original_risk_policy',None) is not None:
                 requests=manager.original_risk_requests(boundary_ms=start_after)
@@ -3994,7 +4023,7 @@ class ReplayRunController:
 
         try:
             session_started = time.perf_counter()
-            await run_certified_strategy_one_session(
+            native_counts = await run_certified_strategy_one_session(
                 market=market, candidates=candidates,
                 activations=activations, pivots=pivots, hod=hod,
                 seeds=seeds, interval_plan=v7_intervals,
@@ -4015,6 +4044,30 @@ class ReplayRunController:
                 resume_manager_state=(fixed_restore.manager
                                       if fixed_restore is not None else None),
                 stage_time=self._record_stage_time)
+            if getattr(self, '_fixed_structural_lot_session', None) is not None:
+                from src.backend.backtest_strategy_one_coordinator import StrategyOneProposalCounts
+                if type(native_counts) is not StrategyOneProposalCounts:
+                    raise ValueError('Selected native session lacks typed execution counts')
+                self._fixed_structural_lot_execution_counts = {
+                    'run_id': self.run_id,
+                    'market_plan_token': market.token,
+                    'source_build_id': market.build_id,
+                    'configuration_revision': self.definition.configuration_revision['revision_id'],
+                    'selected_configuration_hash': self._fixed_structural_lot_session.operation.source.selected_configuration_hash,
+                    'declared_lot_policy': self._fixed_structural_lot_session.operation.source.policy.payload(),
+                    'session_date': day,
+                    'requested_start_boundary_ms': requested_start_ms,
+                    'start_after_boundary_ms': start_after,
+                    'through_boundary_ms': self._fixed_through_boundary_ms(),
+                    'scope': 'resumed_execution_segment' if fixed_restore is not None else 'fresh_execution_window',
+                    'completed_boundaries': native_counts.completed_boundaries,
+                    'candidate_decisions': native_counts.candidate_decisions,
+                    'entry_proposals': native_counts.entry_proposals,
+                    'management_evaluations': native_counts.management_evaluations,
+                    'declared_entry_rejections': native_counts.declared_entry_rejections,
+                }
+                logging.getLogger(__name__).info('Fixed structural lot native execution counts: %s',
+                    json.dumps(self._fixed_structural_lot_execution_counts, sort_keys=True))
         except StopRequested:
             await self._finish("stopped")
             return
@@ -5141,6 +5194,9 @@ class ReplayRunController:
         # Canonical recovery first checks broker state at the completed
         # boundary, then restores the exact runtime event clock for playback.
         self._runtime.last_event_time = self.current_time or self.definition.session_start
+        selected_lot_session = getattr(self, '_fixed_structural_lot_session', None)
+        if selected_lot_session is not None:
+            selected_lot_session.bind_runtime(self._runtime)
         await self._runtime.initialize(
             record_lifecycle=record_lifecycle,
             review_only=review_only,
@@ -9866,7 +9922,10 @@ class ReplayRunService:
                 raise RuntimeError(
                     'Declared automatic ladder is fresh-only; interrupted campaign recovery '
                     'requires separate causal actor acceptance; start a new run')
-            if (dict(definition.configuration_revision.get("payload", {}).get(
+            from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
+            selected_lot_contract = declared_fixed_structural_lot_contract(
+                dict(definition.configuration_revision.get("payload", {}).get("strategy") or {}).get("strategy_number"))
+            if selected_lot_contract is None and (dict(definition.configuration_revision.get("payload", {}).get(
                     "strategy") or {}).get("strategy_number") in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(dict(definition.configuration_revision.get("payload", {}).get(
                     "strategy") or {}).get("strategy_number"), 'strategy-two-extended-session-policy-v1')):
                 raise RuntimeError(
@@ -10098,7 +10157,18 @@ class ReplayRunService:
         declared_contract = resolve_numbered_fixed_strategy(
             configuration['strategy']['strategy_id'], strategy_number)
         from .backtest_declared_ladder_plan import automatic_policy
-        runner_options = declared_fixed_runner_options(configuration)
+        from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
+        selected_lot_session = None
+        if declared_fixed_structural_lot_contract(strategy_number) is not None:
+            from .backtest_fixed_structural_lot_execution import prepare_fixed_structural_lot_session
+            from .backtest_market_data import readonly_clickhouse_client
+            selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session,
+                number=strategy_number,run_id=run_id,session_date=definition.session_date,
+                market=plans.market,candidates=plans.candidates,entry=plans.entry,seeds=plans.seeds,
+                through_boundary_ms=controller._fixed_through_boundary_ms(),
+                client_factory=lambda:readonly_clickhouse_client(market_stream=True,v3_read_principal=True))
+        runner_options = ({'fixed_structural_lot_profile':selected_lot_session.profile}
+            if selected_lot_session is not None else declared_fixed_runner_options(configuration))
         projection_certifier = (certify_strategy_one_v4_projection if strategy_number == 1
                                 else lambda: certify_numbered_fixed_v4_projection(strategy_number))
         profiles, _ = historical_strategy_one_portfolio_profiles(configuration)
@@ -10130,21 +10200,27 @@ class ReplayRunService:
                     market = control_clients.enter_context(closing(v3_client("read")))
                     writer_client = backtest_v4_journal_client_from_env(
                         keeper_session=keeper, lease=lease, **runner_options)
+                    selected_resume = None
+                    if selected_lot_session is not None:
+                        from .backtest_fixed_structural_lot_resume import prepare_fixed_structural_lot_resume
+                        selected_resume = prepare_fixed_structural_lot_resume(reader,keeper,prepared=selected_lot_session)
                     anchor = cold_verify_v4_resume_anchor(
                         reader, dispatch=writer_client.typed_insert_dispatch,
                         lease=lease, run_id=run_id, plan=plans.market,
                         configuration_hash=configuration_hash,
-                        account_ids=account_ids, code_hash=code_hash)
+                        account_ids=account_ids, code_hash=code_hash,
+                        **({"fixed_lot_resume":selected_resume} if selected_resume is not None else {}))
                     mark_stage("resume_anchor")
                     recovery = load_v4_running_recovery_evidence(
                         reader, run_id=run_id, account_ids=account_ids,
                         strategy_number=configuration["strategy"]["strategy_number"],
-                        manager_keeper=ManagedManagerSnapshotHeadReader(keeper),
+                        manager_keeper=(None if selected_resume is not None else ManagedManagerSnapshotHeadReader(keeper)),
                         broker_keeper=ManagedBrokerMatchHeadReader(keeper),
                         evidence_keeper=ManagedEvidenceSnapshotHeadReader(keeper),
                         campaign_keeper=ManagedCampaignSnapshotHeadReader(keeper),
                         oms_observation_keeper=ManagedOmsObservationHeadReader(keeper),
-                        market_client=market, market_plan=plans.market)
+                        market_client=market, market_plan=plans.market,
+                        **({"fixed_lot_resume":selected_resume} if selected_resume is not None else {}))
                     mark_stage("resume_recovery_evidence")
                     fixed_authority = load_committed_fixed_market_authority(
                         reader, recovery.prefix, parent_plan=plans.market,
@@ -10153,7 +10229,8 @@ class ReplayRunService:
                     mark_stage("resume_market_authority")
                     image = load_v4_fixed_runtime_image(
                         reader, recovery, anchor, profiles,
-                        strategy_number=configuration["strategy"]["strategy_number"])
+                        strategy_number=configuration["strategy"]["strategy_number"],
+                        **({"fixed_lot_resume":selected_resume} if selected_resume is not None else {}))
                     mark_stage("resume_actor_image")
                     token = prepare_fixed_v4_journal_token(
                         reader, writer_client, terminal, run_id=run_id,
@@ -10174,7 +10251,8 @@ class ReplayRunService:
                         fixed_market_execution_plan=plans.execution_market,
                         expected_market_start=definition.session_start,
                         code_hash=code_hash, recovery_evidence=recovery,
-                        writer_factory=ArteJournalWriter, batch_size=4096)
+                        writer_factory=ArteJournalWriter, batch_size=4096,
+                        **({"fixed_lot_resume":selected_resume} if selected_resume is not None else {}))
                     mark_stage("resume_journal_assembly")
                     if journal_anchor != image.anchor:
                         raise RuntimeError("V4 actor and writer anchors differ")
@@ -10200,6 +10278,7 @@ class ReplayRunService:
             resumed = ReplayRunController(
                 definition, run_id=run_id, runtime_root=self.runtime_root,
                 fixed_v4_runtime_image=image)
+            resumed._fixed_structural_lot_session = selected_lot_session
             resumed._strategy_one_fixed_plans = plans
             resumed._fixed_market_plan = controller._fixed_market_plan
             resumed._fixed_price_plan = controller._fixed_price_plan

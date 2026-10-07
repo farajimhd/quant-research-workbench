@@ -39,6 +39,7 @@ from src.trading_runtime.arte_journal_compound_v4 import (
 )
 from src.trading_runtime.arte_oms_tactic_projection import V4OmsTacticBatch
 from src.trading_runtime.automatic_ladder_transport import V4AutomaticLadderBatch
+from src.trading_runtime.fixed_structural_lot_entry_v4 import V4FixedStructuralLotEntryBatch,FixedStructuralLotPublicationContext
 
 
 def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
@@ -49,12 +50,15 @@ def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
     Backtest, so the intent and its simulated OMS action share one durability
     boundary without weakening live order admission.
     """
-    if any(type(unit) is V4AutomaticLadderBatch for unit in units):
+    def isolated(unit):
+        return (type(unit) in (V4AutomaticLadderBatch,V4FixedStructuralLotEntryBatch)
+            or (isinstance(unit,V4ProtectionReconciliationBatch) and unit.recovery_context is not None))
+    if any(isolated(unit) for unit in units):
         # Its financial authority is the exact immediately preceding prefix.
         # Keep both the proposal and each neighboring compound isolated.
         result, pending = [], []
         for unit in units:
-            if type(unit) is V4AutomaticLadderBatch:
+            if isolated(unit):
                 if pending:
                     result.extend(_coalesce_v4_units(tuple(pending), max_events=max_events))
                     pending.clear()
@@ -197,6 +201,8 @@ class BacktestTypedJournalPublisher:
         self.fixed_market_parent_plan = fixed_market_parent_plan
         self.fixed_market_execution_plan = fixed_market_execution_plan
         self._first_price_source = None
+        self._fixed_lot_source = None
+        self._committed_fixed_lot_units = {}
         self.expected_market_start = expected_market_start
         self.expected_market_plan_token = expected_market_plan_token
         self.expected_query_sha256 = expected_query_sha256
@@ -220,22 +226,27 @@ class BacktestTypedJournalPublisher:
         self._committed_order_lineage_proofs: dict[str, str] = {}
         self._committed_order_lineage_oms_records: dict[str, str] = {}
 
-    def restore_verified_oms_sources(self, lineages, protection_history) -> None:
+    def restore_verified_oms_sources(self, lineages, protection_history, *, fixed_lot_resume=None) -> None:
         """Seed pre-crash source indexes from normalized committed V4 facts."""
         from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
         from src.trading_runtime.arte_oms_projection import (
             RecoveredStrategyOneOmsLineage,
         )
 
+        if fixed_lot_resume is not None:
+            from .backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+            binding=require_fixed_structural_lot_resume(fixed_lot_resume,self.journal.run_id)
+            if self._fixed_lot_source is not binding.source or self._sequence!=binding.image.sequence:
+                raise ValueError('Cold OMS publisher has foreign selected source/frontier')
         if (self.writer.journal_profile != "backtest_v4"
                 or not isinstance(protection_history, CompleteProtectionHistory)
                 or protection_history.run_id != self.journal.run_id
                 or protection_history.through_sequence != self._sequence
-                or self._committed_strategy_intents
+                or (self._committed_strategy_intents and fixed_lot_resume is None)
                 or self._committed_order_lineage
                 or self.journal.pending_record_count):
             raise RuntimeError("Cold OMS sources require a clean verified V4 prefix")
-        sources = {}
+        sources = dict(self._committed_strategy_intents) if fixed_lot_resume is not None else {}
         orders = {}
         records = {}
         proofs = {}
@@ -360,6 +371,53 @@ class BacktestTypedJournalPublisher:
             raise ValueError('Publisher cannot bind undeclared entry cost source')
         self._first_price_source = source
 
+    def bind_fixed_structural_lot_source(self, source) -> None:
+        """Bind one issued operation source before any own prefix is projected."""
+        from .backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
+        require_native_fixed_structural_lot_source(source)
+        if (source.run_id != self.journal.run_id
+                or self.writer.journal_profile != 'backtest_v4' or self._fixed_lot_source is not None
+                or self._sequence != 0 or not isinstance(self.expected_config,dict)
+                or self.expected_config.get('parent_configuration_hash')!=source.parent_payload_hash
+                or self.expected_config.get('selected_configuration_hash')!=source.selected_configuration_hash):
+            raise ValueError('Native lot publisher lacks exact unbound source/configuration')
+        source.require_installed_admission()
+        self._fixed_lot_source=source
+
+    def restore_fixed_structural_lot_source(self,source,*,prefix,contexts):
+        """Cold selected source only after independent full committed readback."""
+        from .backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
+        from src.trading_runtime.fixed_structural_lot_entry_v4 import fixed_lot_contexts_by_batch
+        from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+        require_native_fixed_structural_lot_source(source)
+        if (self._fixed_lot_source is not None
+                or self.writer.journal_profile!='backtest_v4' or source.run_id!=self.journal.run_id
+                or self.journal.pending_record_count or self._committed_strategy_intents
+                or self.expected_config.get('parent_configuration_hash')!=source.parent_payload_hash
+                or self.expected_config.get('selected_configuration_hash')!=source.selected_configuration_hash):
+            raise ValueError('Cold selected publisher has foreign or active source')
+        source.require_installed_admission()
+        cold_recoveries=[]
+        actual=load_verified_v4_prefix(self.writer._client,source.run_id,first_price_source=source.price_authority,
+            fixed_lot_contexts=contexts,_fixed_lot_cold_source=source,_cold_recovery_context_sink=cold_recoveries)
+        if (actual!=prefix or actual.last_sequence!=self._sequence
+                or actual.batch_ids[-1]!=self._batch_id or actual.source_cursor!=self._source_cursor):
+            raise ValueError('Cold selected publisher differs from verified committed prefix')
+        self.writer._client.fixed_lot_recovery_contexts=tuple(cold_recoveries)
+        selected=fixed_lot_contexts_by_batch(source.run_id,contexts,max_commits=100_000)
+        units={};intents={}
+        for batch_id,context in selected.items():
+            if context.source is not source or batch_id not in actual.batch_ids:
+                raise ValueError('Cold selected publisher source context differs')
+            request=context.verify_source()
+            if request.intent.intent_id in units:raise ValueError('Cold selected original intent duplicated')
+            units[request.intent.intent_id]=context.unit
+            intents[request.intent.intent_id]=(context.unit.base,request.intent)
+        self._fixed_lot_source=source
+        self._committed_fixed_lot_units=units
+        self._committed_strategy_intents=intents
+        self.writer._client.fixed_structural_lot_contexts=tuple(selected.values())
+
     def _prepare_batches(self, through_sequence: int) -> tuple[
             TypedJournalBatch | V3SqueezeBatch | V4CompoundBatch
             | V4StrategyOneEntryBatch | V4FollowThroughFailureBatch
@@ -385,6 +443,8 @@ class BacktestTypedJournalPublisher:
                 first_price_source=self._first_price_source,
                 expected_market_start=self.expected_market_start,
                 published_sources=dict(self._committed_strategy_intents),
+                **({} if self._fixed_lot_source is None else {
+                    "published_fixed_lot_units":dict(self._committed_fixed_lot_units)}),
                 committed_order_lineage=dict(self._committed_order_lineage),
                 committed_order_lineage_proofs=dict(self._committed_order_lineage_proofs),
                 committed_order_lineage_oms_records=dict(
@@ -441,7 +501,7 @@ class BacktestTypedJournalPublisher:
                     raise RuntimeError("Typed Backtest projector changed the bounded prefix")
                 for unit in batches:
                     batch = unit.base if isinstance(
-                        unit, (V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch,
+                        unit, (V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch, V4FixedStructuralLotEntryBatch,
                                V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
@@ -453,7 +513,17 @@ class BacktestTypedJournalPublisher:
                     if (batch.first_sequence != self._sequence + 1
                             or batch.prior_batch_id != self._batch_id):
                         raise RuntimeError("Typed Backtest batch chain is not contiguous")
-                    receipt = (self.writer.submit_automatic_ladder_v4(unit)
+                    if type(unit) is V4FixedStructuralLotEntryBatch:
+                        if self._fixed_lot_source is None:
+                            raise ValueError('Own lot entry has no bound native operation source')
+                        records=self.journal.unfenced_records(after_sequence=batch.first_sequence-1,
+                            through_sequence=batch.last_sequence)
+                        if len(records)!=1:
+                            raise ValueError('Own lot source lost its exact original record')
+                        context=FixedStructuralLotPublicationContext(unit,records[0],self._fixed_lot_source)
+                    receipt = (self.writer.submit_fixed_structural_lot_entry_v4(context)
+                               if type(unit) is V4FixedStructuralLotEntryBatch
+                               else self.writer.submit_automatic_ladder_v4(unit)
                                if isinstance(unit, V4AutomaticLadderBatch)
                                else self.writer.submit_compound_v4(unit,
                                     **({'first_price_source': self._first_price_source}
@@ -503,7 +573,12 @@ class BacktestTypedJournalPublisher:
                             unit, V4CompoundBatch) else (unit,)):
                         source_batch = (source_unit if isinstance(source_unit,
                             TypedJournalBatch) else source_unit.base)
-                        if isinstance(source_unit, V4AutomaticLadderBatch):
+                        if type(source_unit) is V4FixedStructuralLotEntryBatch:
+                            request=context.verify_source()
+                            self._committed_fixed_lot_units[request.intent.intent_id]=source_unit
+                            self._committed_strategy_intents[request.intent.intent_id]=(
+                                source_unit.base,request.intent)
+                        elif isinstance(source_unit, V4AutomaticLadderBatch):
                             intent = source_unit.request.intent
                             parent_id = source_unit.base.events[0]['record_id']
                             if self.journal.automatic_entry_for_record(parent_id) is None:
@@ -614,7 +689,8 @@ class BacktestTypedJournalPublisher:
                                     group, run_id=source_batch.run_id,
                                     strategy_id=source_batch.oms_group_states[0]["strategy_id"],
                                     strategy_revision=source_batch.oms_group_states[0]["strategy_revision"],
-                                    authorized_protection=protection_proof).items():
+                                    authorized_protection=protection_proof,
+                                    source_sequence=source_record.sequence,source_boundary=source_record.event_time).items():
                                 if (key in self._committed_order_lineage
                                         and self._committed_order_lineage[key] != lineage
                                         and not authorized_oms_lineage_transition(
@@ -649,7 +725,10 @@ class BacktestTypedJournalPublisher:
                                     waiter.set_exception(RuntimeError(
                                         "Typed Backtest checkpoint cursor differs from committed prefix"))
                                 else:
-                                    if manager_state is not None:
+                                    from src.backend.backtest_fixed_structural_lot_management import FixedStructuralLotManagerCheckpoint
+                                    selected_manager=(isinstance(manager_state,tuple) and len(manager_state)==2
+                                        and type(manager_state[1]) is FixedStructuralLotManagerCheckpoint)
+                                    if manager_state is not None and not selected_manager:
                                         manager_receipt = self.writer.submit_manager_snapshot(
                                             session_date=session_date,
                                             checkpoint_sequence=sequence,
@@ -714,6 +793,13 @@ class BacktestTypedJournalPublisher:
                                         if await asyncio.wrap_future(campaign_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "Campaign snapshot differs from committed checkpoint")
+                                    if selected_manager:
+                                        owner,capture=manager_state
+                                        manager_receipt=self.writer.submit_fixed_structural_lot_manager_snapshot(
+                                            owner=owner,state=capture,checkpoint_sequence=sequence,
+                                            journal_batch_id=self._batch_id)
+                                        if await asyncio.wrap_future(manager_receipt)!=self._batch_id:
+                                            raise RuntimeError('Selected manager snapshot differs from committed checkpoint')
                                     waiter.set_result(current)
                         else:
                             remaining.append((sequence, cursor, session_date,
@@ -757,6 +843,7 @@ class BacktestTypedJournalPublisher:
                            evidence_state: object | None = None,
                            portfolio_captures: tuple[CapturedPortfolioSnapshot, ...] = (),
                            campaign_ownership: tuple[dict[str, object], ...] | None = None,
+                           fixed_lot_owner: object | None = None,
                            ) -> asyncio.Future[TypedBacktestReceipt]:
         """Return immediately; resolve only after this exact cursor is durable."""
         if status != "running":
@@ -773,13 +860,27 @@ class BacktestTypedJournalPublisher:
                    ("checkpoint", "market_boundary", boundary_id)):
             raise ValueError("Typed Backtest checkpoint needs the last normalized cursor")
         if manager_state is not None:
+            from src.backend.backtest_fixed_structural_lot_management import (
+                FixedStructuralLotManagerCheckpoint,NativeFixedStructuralLotManagement)
+            is_selected_capture=type(manager_state) is FixedStructuralLotManagerCheckpoint
+            if is_selected_capture:
+                if (type(fixed_lot_owner) is not NativeFixedStructuralLotManagement
+                        or fixed_lot_owner.publisher is not self
+                        or fixed_lot_owner.operation.source is not self._fixed_lot_source
+                        or manager_state.inherited.boundary_ms!=pending[-1].payload.get('boundary_ms')
+                        or broker_state is None or oms_observations is None or not portfolio_captures):
+                    raise ValueError('Selected manager capture needs exact source owner and all financial checkpoints')
+                manager_state=(fixed_lot_owner,fixed_lot_owner.freeze_checkpoint(manager_state))
+            elif fixed_lot_owner is not None:
+                raise ValueError('Selected manager owner cannot replace an ordinary capture')
             from src.backend.backtest_strategy_one_management import (
                 StrategyOneManagementState,
             )
             if (self.writer.journal_profile != "backtest_v4"
-                    or not isinstance(manager_state, StrategyOneManagementState)
+                    or (not is_selected_capture and (
+                    not isinstance(manager_state, StrategyOneManagementState)
                     or manager_state.boundary_ms != pending[-1].payload.get(
-                        "boundary_ms")):
+                        "boundary_ms")))):
                 raise ValueError("Manager capture differs from checkpoint boundary")
         if broker_state is not None:
             if (self.writer.journal_profile != "backtest_v4"

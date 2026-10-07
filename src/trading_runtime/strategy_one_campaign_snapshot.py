@@ -201,13 +201,20 @@ def load_campaign_snapshot(
 def load_attested_campaign_snapshot(
     client: Any, keeper: CampaignSnapshotHeadReader, *, run_id: str,
     checkpoint_sequence: int,
-    first_price_source=None,
+    first_price_source=None, fixed_lot_resume=None,
 ) -> CampaignSnapshotRows:
     """Require a stable running V4 prefix and its exact completed cursor."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 
-    prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
+    if fixed_lot_resume is not None:
+        from src.backend.backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+        binding = require_fixed_structural_lot_resume(fixed_lot_resume, run_id)
+        if first_price_source is not None and first_price_source is not binding.source.price_authority:
+            raise ValueError('Selected resume received conflicting first-price authority')
+        prefix = binding.prefix(client, run_id)
+    else:
+        prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence):
         raise RuntimeError("Campaign recovery lacks its committed running V4 prefix")
@@ -228,7 +235,8 @@ def load_attested_campaign_snapshot(
             or cursor.get("session_date") != root["session_date"]
             or cursor.get("boundary_ms") != root["boundary_ms"]
             or prefix.last_batch_id != root["journal_batch_id"]
-            or load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source})) != prefix
+            or (require_fixed_structural_lot_resume(fixed_lot_resume, run_id).prefix(client, run_id)
+                if fixed_lot_resume is not None else load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))) != prefix
             or keeper.read_head(run_id=run_id) != selected):
         raise RuntimeError("Campaign checkpoint differs from committed market cursor")
     return rows

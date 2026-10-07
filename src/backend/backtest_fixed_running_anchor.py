@@ -42,7 +42,7 @@ class FixedRunningPrefixAnchor:
 def cold_verify_v4_resume_anchor(
     client: Any, *, dispatch: Any, lease: Any, run_id: str,
     plan: CertifiedMarketDayPlan, configuration_hash: str,
-    account_ids: tuple[str, ...], code_hash: str,
+    account_ids: tuple[str, ...], code_hash: str, fixed_lot_resume=None,
 ) -> FixedRunningPrefixAnchor:
     """Join one exclusive owner, quiescent dispatch gate, and exact V4 cursor.
 
@@ -68,11 +68,13 @@ def cold_verify_v4_resume_anchor(
     try:
         barrier.verify_run_context_receipt(client)
         prefix = barrier.verify_committed_prefix(
-            client, journal_profile="backtest_v4")
+            client, journal_profile="backtest_v4",
+            **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
         anchor = load_fixed_running_prefix_anchor(
             client, run_id=run_id, plan=plan,
             configuration_hash=configuration_hash,
-            account_ids=account_ids, journal_profile="backtest_v4")
+            account_ids=account_ids, journal_profile="backtest_v4",
+            **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
         if (not isinstance(prefix, V4CommittedPrefix)
                 or prefix.status != "running"
                 or prefix.last_sequence != anchor.journal_sequence
@@ -90,7 +92,7 @@ def load_fixed_running_prefix_anchor(
     client: Any, *, run_id: str, plan: CertifiedMarketDayPlan,
     configuration_hash: str, account_ids: tuple[str, ...],
     journal_profile: str = "backtest_v2",
-    expected_query_sha256: str | None = None,
+    expected_query_sha256: str | None = None, fixed_lot_resume=None,
 ) -> FixedRunningPrefixAnchor:
     """Cold-verify a V2/V3/V4 journal prefix and its exact pinned market cursor.
 
@@ -116,7 +118,11 @@ def load_fixed_running_prefix_anchor(
             or tuple(context.get("account_ids") or ()) != account_ids):
         raise RuntimeError("Fixed running anchor differs from typed run context")
     if journal_profile == "backtest_v4":
-        prefix = load_verified_v4_prefix(client, run_id)
+        if fixed_lot_resume is not None:
+            from .backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+            prefix = require_fixed_structural_lot_resume(fixed_lot_resume,run_id).prefix(client,run_id)
+        else:
+            prefix = load_verified_v4_prefix(client, run_id)
     elif journal_profile == "backtest_v3":
         prefix = load_verified_squeeze_v3_prefix(
             client, run_id, expected_market_plan_token=plan.token,

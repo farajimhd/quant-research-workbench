@@ -111,6 +111,12 @@ from src.trading_runtime.arte_entry_activity_v4 import ENTRY_ACTIVITY
 from src.trading_runtime.arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK
 
 _CONTRACTS = {table.name: table for table in TABLES}
+from .fixed_structural_lot_entry_schema import TABLES as FIXED_STRUCTURAL_LOT_ENTRY_TABLES
+_CONTRACTS.update({table.name: table for table in FIXED_STRUCTURAL_LOT_ENTRY_TABLES})
+from .fixed_structural_lot_snapshot import TABLES as FIXED_STRUCTURAL_LOT_PROTECTION_TABLES
+from .fixed_structural_lot_manager_schema import TABLES as FIXED_STRUCTURAL_LOT_MANAGER_TABLES
+_CONTRACTS.update({table.name: table for table in (*FIXED_STRUCTURAL_LOT_PROTECTION_TABLES,
+                                                *FIXED_STRUCTURAL_LOT_MANAGER_TABLES)})
 from .arte_declared_native_entry_schema import TABLES as DECLARED_ENTRY_TABLES
 from .arte_declared_native_management_schema import TABLES as DECLARED_MANAGEMENT_TABLES
 _CONTRACTS.update({table.name: table for table in (*DECLARED_ENTRY_TABLES, *DECLARED_MANAGEMENT_TABLES)})
@@ -305,7 +311,7 @@ def journal_client_from_env() -> Any:
 
 def backtest_v4_journal_client_from_env(*, keeper_session=None,
                                         lease=None, automatic_ladder=False, entry_spread_risk=False,
-                                        ladder_geometry_policy=None, confirmed_original_risk_policy=None) -> Any:
+                                        ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -319,7 +325,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
     url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
         **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}),
-        **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}))
+        **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}),
+        **({'fixed_structural_lot_profile':fixed_structural_lot_profile} if fixed_structural_lot_profile is not None else {}))
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
@@ -375,6 +382,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     client.ladder_geometry_policy = ladder_geometry_policy
     client.entry_spread_risk_profile = entry_spread_risk
     client.confirmed_original_risk_policy = confirmed_original_risk_policy
+    client.fixed_structural_lot_profile = fixed_structural_lot_profile
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = _V4RunnerClient(
             url, user, password, timeout_seconds=60, persistent=True,
@@ -387,6 +395,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.automatic_ladder_profile = automatic_ladder
         lane.ladder_geometry_policy = ladder_geometry_policy
         lane.confirmed_original_risk_policy = confirmed_original_risk_policy
+        lane.fixed_structural_lot_profile = fixed_structural_lot_profile
         return lane
     client.v4_insert_lane_factory = new_detail_lane
     client.v4_insert_lane_limit = 4
@@ -395,7 +404,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
 
 
 def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
-                          ladder_geometry_policy=None, confirmed_original_risk_policy=None) -> tuple[str, str, str]:
+                          ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
     if type(automatic_ladder) is not bool or type(entry_spread_risk) is not bool or (automatic_ladder and entry_spread_risk):
@@ -412,6 +421,13 @@ def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
         stem, principal = 'BACKTEST_V4_ENTRY_COST_RUNNER', 'backtest_v4_entry_cost_runner'
     if confirmed_original_risk_policy is not None:
         stem,principal='BACKTEST_V4_ORIGINAL_RISK_RUNNER','backtest_v4_original_risk_runner'
+    if fixed_structural_lot_profile is not None:
+        _validate_fixed_structural_lot_profile(fixed_structural_lot_profile,
+            automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
+            ladder_geometry_policy=ladder_geometry_policy, risk_policy=confirmed_original_risk_policy)
+        stem,principal='BACKTEST_V4_FIXED_STRUCTURAL_LOT_RUNNER','backtest_v4_fixed_structural_lot_runner'
+        if not os.environ.get(stem+'_CREDENTIAL_FILE','').strip():
+            raise ValueError('Selected fixed-lot runner requires its private credential FILE')
     url, user, password = _dedicated_clickhouse_credentials(
         stem + '_CLICKHOUSE_', stem + '_CREDENTIAL_FILE')
     url = workstation_ipv4_transport(url)
@@ -447,14 +463,15 @@ def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, 
 
 
 def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False,
-                                         ladder_geometry_policy=None, confirmed_original_risk_policy=None) -> Any:
+                                         ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> Any:
     """SELECT-only catalog/grant audit before any Keeper claim or run write."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
     _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
     url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
         **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}),
-        **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}))
+        **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}),
+        **({'fixed_structural_lot_profile':fixed_structural_lot_profile} if fixed_structural_lot_profile is not None else {}))
     client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"readonly": 1, "max_threads": 2,
@@ -464,6 +481,7 @@ def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread
     client.ladder_geometry_policy = ladder_geometry_policy
     client.entry_spread_risk_profile = entry_spread_risk
     client.confirmed_original_risk_policy = confirmed_original_risk_policy
+    client.fixed_structural_lot_profile = fixed_structural_lot_profile
     return client
 
 
@@ -814,6 +832,7 @@ def _sealed_families(
     v4_snapshot_account_ids: tuple[str, ...] = (),
     v4_snapshot_position_ids: tuple[str, ...] = (),
     declared_unit=None,
+    fixed_lot_unit=None,
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
     if declared_unit is not None:
@@ -821,6 +840,11 @@ def _sealed_families(
         if type(declared_unit) is not DeclaredNativeV4Unit or declared_unit.base is not batch:
             raise ValueError('Declared sealing requires its complete exact native unit')
         declared_unit.__post_init__()
+    if fixed_lot_unit is not None:
+        from .fixed_structural_lot_entry_v4 import V4FixedStructuralLotEntryBatch
+        if type(fixed_lot_unit) is not V4FixedStructuralLotEntryBatch or fixed_lot_unit.base is not batch:
+            raise ValueError('Fixed lot sealing requires its complete exact selected unit')
+        fixed_lot_unit.__post_init__()
     if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
         raise ValueError("Journal batch must cover a contiguous event sequence")
     sequences = [int(row["sequence"]) for row in batch.events]
@@ -1075,6 +1099,9 @@ def _sealed_families(
         expected_details = {**expected_details,
             ('strategy', 'declared_native_intent'): 'trading_strategy_intent_v1',
             ('strategy', 'declared_native_management_intent'): 'trading_strategy_intent_v1'}
+    if fixed_lot_unit is not None:
+        expected_details = {**expected_details,
+            ('strategy','fixed_structural_lot_entry_intent'):'trading_strategy_intent_v1'}
     for event in by_family["trading_event_v1"]:
         key = (str(event["category"]), str(event["entity_type"]))
         if key not in expected_details:
@@ -1671,6 +1698,7 @@ def _insert(
     dispatch_terminal_account_id: str | None = None,
     dispatch_snapshot_account_id: str | None = None,
     dispatch_manager_snapshot_hash: str | None = None,
+    dispatch_fixed_lot_manager_context: Any | None = None,
     dispatch_broker_snapshot_hash: str | None = None,
     dispatch_evidence_snapshot_hash: str | None = None,
     dispatch_campaign_snapshot_hash: str | None = None,
@@ -1791,7 +1819,12 @@ def _insert(
                 row.get("account_id") != dispatch_snapshot_account_id
                 or row.get("state_revision") != dispatch_sequence for row in rows):
             raise ValueError("Snapshot dispatch identity differs from typed rows")
-        if dispatch_manager_snapshot_hash is not None and (
+        if dispatch_fixed_lot_manager_context is not None:
+            from .fixed_structural_lot_manager_snapshot import verify_manager_insert
+            verify_manager_insert(dispatch_fixed_lot_manager_context,client=client,
+                table=name,rows=rows,run_id=rows[0].get('run_id'),sequence=dispatch_sequence,
+                batch_id=dispatch_batch_id,snapshot_hash=dispatch_manager_snapshot_hash)
+        if dispatch_fixed_lot_manager_context is None and dispatch_manager_snapshot_hash is not None and (
                 name not in {table.name for table in (
                     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
                     *(selected_snapshot_contracts() if getattr(client,'confirmed_original_risk_policy',None)
@@ -1836,6 +1869,7 @@ def _insert(
             terminal_account_id=dispatch_terminal_account_id,
             snapshot_account_id=dispatch_snapshot_account_id,
             manager_snapshot_hash=dispatch_manager_snapshot_hash,
+            fixed_lot_manager_context=dispatch_fixed_lot_manager_context,
             broker_snapshot_hash=dispatch_broker_snapshot_hash,
             evidence_snapshot_hash=dispatch_evidence_snapshot_hash,
             campaign_snapshot_hash=dispatch_campaign_snapshot_hash,
@@ -2157,7 +2191,7 @@ def _verify_order_context_links(
 def _verify_exact_intent_uses(
     client: Any, batch: TypedJournalBatch,
     families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
-    *, journal_profile: str = "v1",
+    *, journal_profile: str = "v1", fixed_lot_contexts=(),
 ) -> None:
     by_family = dict(families)
     uses = by_family["trading_strategy_intent_use_v1"]
@@ -2194,6 +2228,10 @@ def _verify_exact_intent_uses(
             raise RuntimeError("Exact intent revision lacks one earlier committed record")
         intents.update({str(UUID(str(row["record_id"]))): row for row in prior_intents})
         events.update({str(UUID(str(row["record_id"]))): row for row in prior_events})
+    selected_index = {}
+    if fixed_lot_contexts:
+        from .fixed_structural_lot_entry_v4 import fixed_lot_contexts_by_batch
+        selected_index = fixed_lot_contexts_by_batch(batch.run_id, fixed_lot_contexts, max_commits=100_000)
     for use in uses:
         parent_id = str(UUID(str(use["parent_record_id"])))
         intent_id = str(UUID(str(use["intent_record_id"])))
@@ -2201,9 +2239,20 @@ def _verify_exact_intent_uses(
         source = events[intent_id]
         detail = intents[intent_id]
         consumer = groups.get(parent_id) or contexts.get(parent_id)
+        selected_source = False
+        if source['entity_type'] == 'fixed_structural_lot_entry_intent':
+            context = selected_index.get(str(source['batch_id']))
+            if (journal_profile != 'backtest_v4' or context is None
+                    or context.record.record_id != intent_id
+                    or context.unit.base.intents[0]['intent_id'] != detail['intent_id']):
+                raise RuntimeError('Own lot intent use lacks its exact committed source context')
+            from .arte_journal_commit_v4 import load_verified_commit_v4
+            load_verified_commit_v4(client, run_id=batch.run_id,
+                batch_id=str(source['batch_id']), fixed_lot_context=context)
+            selected_source = True
         if (consumer is None or int(source["sequence"]) >= int(parent["sequence"])
                 or source["category"] != "strategy"
-                or source["entity_type"] != "strategy_intent"
+                or (source["entity_type"] != "strategy_intent" and not selected_source)
                 or str(UUID(str(source["batch_id"]))) != str(UUID(str(detail["batch_id"])))
                 or str(source["account_id"]) != str(use["account_id"])
                 or str(detail["account_id"]) != str(use["account_id"])
@@ -2304,19 +2353,29 @@ _V4_PREFLIGHT_SECRET = object()
 class _V4PreflightSeal:
     """One-use proof that this exact client passed the full V4 audit."""
 
-    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "confirmed_original_risk_policy")
+    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "confirmed_original_risk_policy", "fixed_structural_lot_profile")
 
     def __init__(self, client: Any, secret: object) -> None:
         self.client, self.secret, self.used = client, secret, False
         self.ladder_geometry_policy = getattr(client, 'ladder_geometry_policy', None)
         self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
         self.confirmed_original_risk_policy = getattr(client,'confirmed_original_risk_policy',None)
+        self.fixed_structural_lot_profile = getattr(client,'fixed_structural_lot_profile',None)
 
 
 def _validate_ladder_geometry_profile(automatic_ladder, policy):
     from .squeeze_ladder_geometry import LadderGeometryBindingPolicy
     if policy is not None and (automatic_ladder is not True or type(policy) is not LadderGeometryBindingPolicy):
         raise ValueError('Waiting geometry writer requires its typed declared ladder profile')
+
+
+def _validate_fixed_structural_lot_profile(profile, *, automatic_ladder=False,
+                                           entry_spread_risk=False, ladder_geometry_policy=None,
+                                           risk_policy=None):
+    from .fixed_structural_lot_profile import require_fixed_structural_lot_profile
+    require_fixed_structural_lot_profile(profile)
+    if automatic_ladder is not False or entry_spread_risk is not False or ladder_geometry_policy is not None or risk_policy is not None:
+        raise ValueError('Fixed-lot runner cannot mix declared writer profiles')
 
 
 def _v4_preflight(client: Any) -> _V4PreflightSeal:
@@ -2356,6 +2415,18 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
             raise RuntimeError('Entry cost profile requires its dedicated principal')
         storage_preflight(client, tables=(ENTRY_SPREAD_RISK,))
         writable |= frozenset({ENTRY_SPREAD_RISK.name})
+    lot_profile=getattr(client,'fixed_structural_lot_profile',None)
+    if lot_profile is not None:
+        _validate_fixed_structural_lot_profile(lot_profile,
+            automatic_ladder=getattr(client,'automatic_ladder_profile',False),
+            entry_spread_risk=getattr(client,'entry_spread_risk_profile',False),
+            ladder_geometry_policy=geometry_policy,risk_policy=risk_policy)
+        from .fixed_structural_lot_profile import selected_fixed_structural_lot_tables
+        if client.execute('SELECT currentUser()').strip()!='backtest_v4_fixed_structural_lot_runner':
+            raise RuntimeError('Fixed-lot profile requires its dedicated principal')
+        selected_tables=selected_fixed_structural_lot_tables(lot_profile)
+        storage_preflight(client,tables=selected_tables)
+        writable |= frozenset(table.name for table in selected_tables)
     readonly = frozenset(table.name for table in installed) - writable
     # Producer-owned episode context is an optional SELECT-only extension.
     # Its absence must not prevent Strategy 1 from executing; once installed,
@@ -3855,6 +3926,7 @@ class _ManagerSnapshotUnit:
     journal_batch_id: str
     state: Any
     first_price_source: Any | None = None
+    fixed_lot_context: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3956,6 +4028,7 @@ class ArteJournalWriter:
                       or v4_preflight_seal.ladder_geometry_policy != getattr(client, 'ladder_geometry_policy', None)
                       or v4_preflight_seal.automatic_ladder_profile != getattr(client, 'automatic_ladder_profile', False)
                       or v4_preflight_seal.confirmed_original_risk_policy != getattr(client,'confirmed_original_risk_policy',None)
+                      or v4_preflight_seal.fixed_structural_lot_profile is not getattr(client,'fixed_structural_lot_profile',None)
                       or v4_preflight_seal.used):
                     raise RuntimeError("V4 writer lacks a fresh same-client preflight")
                 else:
@@ -4191,6 +4264,27 @@ class ArteJournalWriter:
             receipt: Future[str] = Future()
             try:
                 self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull('V4 journal queue is full; stop admission') from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_fixed_structural_lot_entry_v4(self, context) -> Future[str]:
+        """Queue the exact own entry/source; no ordinary channel substitutes it."""
+        from .fixed_structural_lot_entry_v4 import FixedStructuralLotPublicationContext
+        if (self._journal_profile != 'backtest_v4'
+                or type(context) is not FixedStructuralLotPublicationContext
+                or context.base.run_id != self._run_id or context.base.status != 'running'):
+            raise ValueError('Own lot source requires exact Backtest V4 context')
+        context.verify_admission()
+        from .fixed_structural_lot_profile import require_fixed_structural_lot_client_context
+        require_fixed_structural_lot_client_context(self._client,context)
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('V4 writer is closed or failed')
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((context, receipt))
             except Full as exc:
                 raise JournalQueueFull('V4 journal queue is full; stop admission') from exc
             self._accepted_writes = True
@@ -4507,6 +4601,9 @@ class ArteJournalWriter:
         if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4ProtectionReconciliationBatch)):
             raise ValueError("V4 reconciliation requires its typed writer profile")
+        if unit.recovery_context is not None:
+            from src.backend.backtest_fixed_structural_lot_management import require_recovery_client
+            require_recovery_client(self._client,unit.recovery_context)
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -4727,6 +4824,26 @@ class ArteJournalWriter:
                 raise JournalQueueFull("Terminal Backtest queue is full; stop execution") from exc
             self._accepted_writes = True
         return receipt
+
+    def submit_fixed_structural_lot_manager_snapshot(self,*,owner,state,checkpoint_sequence,journal_batch_id):
+        from .fixed_structural_lot_manager_snapshot import issue_manager_publication
+        if self._journal_profile!='backtest_v4' or owner.client is not self._client:
+            raise ValueError('Selected manager checkpoint has foreign writer')
+        context=issue_manager_publication(owner,state,client=self._client,
+            sequence=checkpoint_sequence,batch_id=journal_batch_id)
+        if context.run_id!=self._run_id:
+            raise ValueError('Selected manager checkpoint has foreign writer run')
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('Selected manager writer is unavailable')
+            receipt: Future[str]=Future()
+            try:
+                self._queue.put_nowait((_ManagerSnapshotUnit(owner.operation.source.session_date,
+                    checkpoint_sequence,journal_batch_id,context.checkpoint.inherited,
+                    owner.operation.source.price_authority,context),receipt))
+            except Full as exc:
+                raise JournalQueueFull('Selected manager checkpoint queue is full') from exc
+            return receipt
 
     def submit_manager_snapshot(self, *, session_date: date,
                                 checkpoint_sequence: int,
@@ -4964,6 +5081,7 @@ class ArteJournalWriter:
     def _run(self) -> None:
         from .arte_journal_compound_v4 import V4CompoundBatch
         from .arte_oms_tactic_projection import V4OmsTacticBatch
+        from .fixed_structural_lot_entry_v4 import FixedStructuralLotPublicationContext
 
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
@@ -5014,7 +5132,7 @@ class ArteJournalWriter:
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
-                                            V4CompoundBatch,
+                                            FixedStructuralLotPublicationContext, V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
                                             V4PortfolioAllocationBatch,
@@ -5036,7 +5154,16 @@ class ArteJournalWriter:
                                      _CampaignSnapshotUnit,
                                      _RunningPortfolioSnapshotUnit, _ProfitPublicationUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
-                if isinstance(group[0][0], _ProfitPublicationUnit):
+                if type(group[0][0]) is FixedStructuralLotPublicationContext:
+                    from .fixed_structural_lot_entry_v4 import publish_fixed_structural_lot_entry_v4
+                    context=group[0][0]
+                    committed_id=publish_fixed_structural_lot_entry_v4(self._client,context)
+                    prior=tuple(getattr(self._client,'fixed_structural_lot_contexts',()))
+                    if any(c.base.batch_id==context.base.batch_id and c is not context for c in prior):
+                        raise ValueError('Queued lot source conflicts with committed operation context')
+                    if not any(c is context for c in prior):
+                        self._client.fixed_structural_lot_contexts=(*prior,context)
+                elif isinstance(group[0][0], _ProfitPublicationUnit):
                     from .arte_journal_commit_v4 import (
                         load_writer_v4_snapshot_prefix, _publish_typed_batch_v4,
                         verified_batch_predecessor,
@@ -5089,7 +5216,7 @@ class ArteJournalWriter:
                     committed_id = publish_protection_reconciliation_batch_v4(
                         self._client, unit.base,
                         reconciliation=unit.reconciliation,
-                        actions=unit.actions, replies=unit.replies)
+                        actions=unit.actions, replies=unit.replies,recovery_context=unit.recovery_context)
                 elif isinstance(group[0][0], V4ProtectionChangeBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_protection_change_batch_v4,
@@ -5270,13 +5397,18 @@ class ArteJournalWriter:
                             "Manager snapshot has no preceding ordered V4 commit")
                     price_context = ({} if unit.first_price_source is None else
                                      {'first_price_source': unit.first_price_source})
-                    rows = project_manager_snapshot(
-                        run_id=self._run_id, session_date=unit.session_date,
-                        checkpoint_sequence=unit.checkpoint_sequence,
-                        state=unit.state, **price_context)
-                    publish_manager_snapshot(
-                        self._client, self._client.manager_keeper_session, rows,
-                        journal_batch_id=unit.journal_batch_id, **price_context)
+                    if unit.fixed_lot_context is not None:
+                        from .fixed_structural_lot_manager_snapshot import publish_manager_publication
+                        publish_manager_publication(self._client,self._client.manager_keeper_session,
+                            unit.fixed_lot_context)
+                    else:
+                        rows = project_manager_snapshot(
+                            run_id=self._run_id, session_date=unit.session_date,
+                            checkpoint_sequence=unit.checkpoint_sequence,
+                            state=unit.state, **price_context)
+                        publish_manager_snapshot(
+                            self._client, self._client.manager_keeper_session, rows,
+                            journal_batch_id=unit.journal_batch_id, **price_context)
                     committed_id = unit.journal_batch_id
                 elif isinstance(group[0][0], _BrokerMatchSnapshotUnit):
                     from src.trading_runtime.strategy_one_broker_match_snapshot import (

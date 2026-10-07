@@ -70,7 +70,7 @@ def _journal_instant(value: Any) -> datetime:
 
 def load_typed_protection_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
-    limit: int = 500, max_children: int = 50_000,
+    limit: int = 500, max_children: int = 50_000, fixed_lot_contexts=(),
 ) -> TypedProtectionPage:
     """Cold-read one V4 event page and all normalized protection children.
 
@@ -89,7 +89,8 @@ def load_typed_protection_page(
             or type(max_children) is not int or max_children < 0):
         raise ValueError("Typed protection page needs V4 authority and a child bound")
     page = load_typed_event_page(
-        client, prefix, after_sequence=after_sequence, limit=limit)
+        client, prefix, after_sequence=after_sequence, limit=limit,
+        **({"fixed_lot_contexts":fixed_lot_contexts} if fixed_lot_contexts else {}))
     selected = [item for item in page
                 if (item.event["category"], item.event["entity_type"])
                 == ("protection", "protection_change")]
@@ -137,7 +138,7 @@ def load_typed_protection_page(
 
 def load_complete_typed_protection_history(
     client: Any, prefix: VerifiedPrefix, *, page_size: int = 500,
-    max_events: int = 100_000, max_children_per_page: int = 50_000,
+    max_events: int = 100_000, max_children_per_page: int = 50_000, fixed_lot_contexts=(),
 ) -> CompleteProtectionHistory:
     """Prove the complete V4 protection history through one committed head.
 
@@ -162,7 +163,8 @@ def load_complete_typed_protection_history(
     while cursor < prefix.last_sequence:
         page = load_typed_protection_page(
             client, prefix, after_sequence=cursor, limit=page_size,
-            max_children=max_children_per_page)
+            max_children=max_children_per_page,
+            **({"fixed_lot_contexts":fixed_lot_contexts} if fixed_lot_contexts else {}))
         if not cursor < page.next_sequence <= prefix.last_sequence:
             raise RuntimeError("Committed protection history did not advance")
         if any(not cursor < row.sequence <= page.next_sequence
@@ -217,7 +219,7 @@ def _verified_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
 def load_typed_event_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
-    selected_sequences: tuple[int, ...] | None = None,
+    selected_sequences: tuple[int, ...] | None = None, fixed_lot_contexts=(),
 ) -> tuple[TypedJournalEvent, ...]:
     """Read one typed page with one batched detail query per present family."""
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
@@ -262,7 +264,23 @@ def load_typed_event_page(
             raise RuntimeError("Typed event page differs from its committed prefix")
         previous = sequence
         kind = (event["category"], event["entity_type"])
-        family = _detail_family(prefix, kind)
+        if kind == ('strategy', 'fixed_structural_lot_entry_intent'):
+            from .fixed_structural_lot_entry_v4 import fixed_lot_contexts_by_batch, sealed_fixed_structural_lot_families
+            selected = fixed_lot_contexts_by_batch(prefix.run_id, fixed_lot_contexts, max_commits=100_000)
+            context = selected.get(str(event['batch_id']))
+            if (context is None or context.record.record_id != record_id
+                    or context.record.sequence != sequence or context.record.run_id != prefix.run_id):
+                raise RuntimeError('Own lot typed event lacks exact fresh committed source context')
+            from .arte_journal_commit_v4 import load_verified_commit_v4
+            load_verified_commit_v4(client, run_id=prefix.run_id,
+                batch_id=context.unit.base.batch_id, fixed_lot_context=context)
+            expected_base, _ = sealed_fixed_structural_lot_families(context.unit)
+            expected_event = dict(expected_base)['trading_event_v1'][0]
+            if raw['content_hash'] != expected_event['content_hash']:
+                raise RuntimeError('Own lot typed event differs from its complete original source')
+            family = 'trading_strategy_intent_v1'
+        else:
+            family = _detail_family(prefix, kind)
         if (family == "trading_strategy_signal_v1"
                 and isinstance(prefix, (V2CommittedPrefix, V4CommittedPrefix))):
             family = "trading_strategy_signal_v2"

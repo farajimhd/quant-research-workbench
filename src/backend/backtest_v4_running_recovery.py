@@ -105,9 +105,12 @@ def load_v4_fixed_runtime_image(
     client: Any, recovery: V4RunningRecoveryEvidence,
     anchor: FixedRunningPrefixAnchor,
     profiles: tuple[PortfolioAccountProfile, ...],
-    *, strategy_number: int = 1,
+    *, strategy_number: int = 1, fixed_lot_resume=None,
 ) -> V4FixedRuntimeImage:
     """Read all mutable actor families at one verified checkpoint, no writes."""
+    if fixed_lot_resume is not None:
+        from .backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+        require_fixed_structural_lot_resume(fixed_lot_resume,recovery.prefix.run_id)
     controller = reconstruct_v4_controller_image(recovery, anchor)
     if (not profiles or len({row.account_id for row in profiles}) != len(profiles)
             or set(recovery.portfolio_images) != {row.account_id for row in profiles}):
@@ -121,9 +124,12 @@ def load_v4_fixed_runtime_image(
             or any(revision != anchor.journal_sequence
                    for revision in portfolio.revisions.values())):
         raise RuntimeError("V4 runtime portfolio image differs from pinned cursor")
-    broker = load_v4_running_broker_image(client, recovery)
-    oms = load_v4_running_oms_image(client, recovery, strategy_number=strategy_number)
-    if load_verified_v4_prefix(client, anchor.run_id) != recovery.prefix:
+    broker = load_v4_running_broker_image(client, recovery,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
+    oms = load_v4_running_oms_image(client, recovery, strategy_number=strategy_number,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
+    if (fixed_lot_resume.prefix(client,anchor.run_id) if fixed_lot_resume is not None
+            else load_verified_v4_prefix(client, anchor.run_id)) != recovery.prefix:
         raise RuntimeError("V4 runtime image prefix moved during actor reads")
     return V4FixedRuntimeImage(
         anchor, controller, portfolio, broker, oms,
@@ -207,9 +213,12 @@ def verify_v4_recovery_at_anchor(
 
 def load_v4_running_oms_image(
     client: Any, recovery: V4RunningRecoveryEvidence,
-    *, strategy_number: int = 1,
+    *, strategy_number: int = 1, fixed_lot_resume=None,
 ) -> TypedOmsActorImage:
     """Recover and cross-audit OMS from complete committed protection history."""
+    if fixed_lot_resume is not None:
+        from .backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+        require_fixed_structural_lot_resume(fixed_lot_resume,recovery.prefix.run_id)
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     numbered_fixed_strategy(strategy_number)
     if not isinstance(recovery, V4RunningRecoveryEvidence):
@@ -226,18 +235,19 @@ def load_v4_running_oms_image(
         raise RuntimeError("V4 OMS protection history differs from recovery prefix")
     image = reconstruct_typed_oms_actor_image(
         recovery.oms, history, run_id=recovery.prefix.run_id,
-        strategy_id=STRATEGY_ID, strategy_revision=strategy_number,
+        strategy_id=(fixed_lot_resume.source._strategy_id if fixed_lot_resume is not None else STRATEGY_ID), strategy_revision=strategy_number,
         through_sequence=recovery.prefix.last_sequence, cutoff_at=cutoff)
     image = attach_typed_oms_observations(
         image, recovery.oms_observations,
         through_sequence=recovery.prefix.last_sequence)
     verify_typed_oms_broker_open_orders(image, recovery.broker)
-    if load_verified_v4_prefix(client, recovery.prefix.run_id) != recovery.prefix:
+    if (fixed_lot_resume.prefix(client,recovery.prefix.run_id) if fixed_lot_resume is not None
+            else load_verified_v4_prefix(client, recovery.prefix.run_id)) != recovery.prefix:
         raise RuntimeError("V4 OMS image prefix moved across protection reads")
     return image
 
 
-def reconstruct_v4_broker_state(evidence: V4RunningRecoveryEvidence) -> dict:
+def reconstruct_v4_broker_state(evidence: V4RunningRecoveryEvidence, *, fixed_lot_resume=None) -> dict:
     """Build the exact open-order simulator image from joined cold evidence.
 
     This is an offline integrity step, not authorization to resume execution.
@@ -268,7 +278,7 @@ def reconstruct_v4_broker_state(evidence: V4RunningRecoveryEvidence) -> dict:
 
 
 def load_v4_running_broker_image(client: Any,
-                                 evidence: V4RunningRecoveryEvidence) -> dict:
+                                 evidence: V4RunningRecoveryEvidence, *, fixed_lot_resume=None) -> dict:
     """Cold-join broker matching and full trade history at one V4 prefix.
 
     The result is an in-memory candidate only. No execution actor is installed
@@ -304,7 +314,8 @@ def load_v4_running_broker_image(client: Any,
         at = datetime.fromisoformat(execution["trade_time"])
         if at.tzinfo is None or at.astimezone(timezone.utc) > boundary:
             raise RuntimeError("V4 broker execution exceeds completed boundary")
-    if load_verified_v4_prefix(client, evidence.prefix.run_id) != evidence.prefix:
+    if (fixed_lot_resume.prefix(client,evidence.prefix.run_id) if fixed_lot_resume is not None
+            else load_verified_v4_prefix(client, evidence.prefix.run_id)) != evidence.prefix:
         raise RuntimeError("V4 broker image prefix moved across trade reads")
     return state
 
@@ -314,29 +325,41 @@ def load_v4_running_recovery_evidence(
     manager_keeper: Any, broker_keeper: Any, evidence_keeper: Any,
     market_client: Any, market_plan: CertifiedMarketDayPlan,
     campaign_keeper: Any = None, oms_observation_keeper: Any = None,
-    strategy_number: int = 1,
+    strategy_number: int = 1, fixed_lot_resume=None,
 ) -> V4RunningRecoveryEvidence:
     """Join every available recovery family at the same committed cursor."""
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     numbered_fixed_strategy(strategy_number)
     prefix, portfolios = load_v4_running_portfolio_images(
-        client, run_id=run_id, account_ids=account_ids)
+        client, run_id=run_id, account_ids=account_ids,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
     progress = load_committed_backtest_progress(client, prefix, required=True)
-    manager = load_attested_manager_snapshot(
-        client, manager_keeper, run_id=run_id,
-        checkpoint_sequence=prefix.last_sequence)
+    if fixed_lot_resume is not None:
+        from .backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+        binding=require_fixed_structural_lot_resume(fixed_lot_resume,run_id)
+        manager=binding.image.inherited
+        if (binding.image.sequence,binding.image.batch_id)!=(prefix.last_sequence,prefix.last_batch_id):
+            raise ValueError('Selected recovery manager head has foreign cursor')
+    else:
+        manager = load_attested_manager_snapshot(
+            client, manager_keeper, run_id=run_id,
+            checkpoint_sequence=prefix.last_sequence)
     evidence = load_attested_evidence_snapshot(
         client, evidence_keeper, run_id=run_id,
-        checkpoint_sequence=prefix.last_sequence)
+        checkpoint_sequence=prefix.last_sequence,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
     broker = load_attested_broker_match_snapshot(
         client, broker_keeper, run_id=run_id,
-        checkpoint_sequence=prefix.last_sequence)
+        checkpoint_sequence=prefix.last_sequence,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
     campaign = load_attested_campaign_snapshot(
         client, campaign_keeper, run_id=run_id,
-        checkpoint_sequence=prefix.last_sequence)
+        checkpoint_sequence=prefix.last_sequence,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
     oms_observations = load_attested_oms_observation_snapshot(
         client, oms_observation_keeper, run_id=run_id,
-        checkpoint_sequence=prefix.last_sequence)
+        checkpoint_sequence=prefix.last_sequence,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
     if (not isinstance(manager, StrategyOneManagementState)
             or not isinstance(evidence, StrategyOneEvidenceState)
             or not isinstance(broker, BrokerMatchSnapshotRows)
@@ -361,10 +384,12 @@ def load_v4_running_recovery_evidence(
                    for key, _ in family)):
         raise RuntimeError("V4 recovery families differ from pinned accounts or cursor")
     history = load_complete_typed_protection_history(
-        client, prefix, page_size=1_000)
+        client, prefix, page_size=1_000,
+        **({"fixed_lot_contexts":fixed_lot_resume.contexts} if fixed_lot_resume is not None else {}))
     oms = load_recovered_strategy_one_oms_lineage(
         client, prefix, allowed_accounts=frozenset(account_ids),
-        protection_history=history, strategy_number=strategy_number)
+        protection_history=history, strategy_number=strategy_number,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
     requests = {}
     broker_bindings = {}
     seen_broker_ids = set()
@@ -400,7 +425,8 @@ def load_v4_running_recovery_evidence(
             raise RuntimeError("V4 broker open order lacks exact OMS lineage")
     quotes = load_completed_broker_quotes(
         market_client, plan=market_plan, broker=broker)
-    if load_verified_v4_prefix(client, run_id) != prefix:
+    if (fixed_lot_resume.prefix(client,run_id) if fixed_lot_resume is not None
+            else load_verified_v4_prefix(client, run_id)) != prefix:
         raise RuntimeError("V4 recovery prefix moved across domain reads")
     return V4RunningRecoveryEvidence(prefix, progress, portfolios, manager, evidence, broker, oms,
                                      quotes, campaign, oms_observations, history)

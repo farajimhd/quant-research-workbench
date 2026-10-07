@@ -73,6 +73,7 @@ def ordered_protection_amendments(
 def confirm_protection_transition(
     previous: ProtectionState, transition: ProtectionTransition, *,
     target_confirmed: bool, stop_confirmed: bool,
+    stop_ceiling: float | None = None,
 ) -> ProtectionState:
     """Commit only broker-acknowledged prices; retain causal break history.
 
@@ -81,6 +82,12 @@ def confirm_protection_transition(
     unapplied so a later completed boundary may retry it. A refused target
     cannot license a stop above the still-working target.
     """
+    if stop_ceiling is not None:
+        _validate_stop_ceiling(previous, stop_ceiling)
+        if type(transition) is not ProtectionTransition:
+            raise ValueError('Explicit stop ceiling requires a typed transition')
+        if target_confirmed or transition.target_amendment is not None:
+            raise ValueError('Explicit stop ceiling cannot authorize target advancement')
     if (not isinstance(previous, ProtectionState)
             or not isinstance(transition, ProtectionTransition)
             or type(target_confirmed) is not bool or type(stop_confirmed) is not bool
@@ -101,7 +108,7 @@ def confirm_protection_transition(
     state = transition.state
     stop = state.stop if stop_confirmed else previous.stop
     target = state.target if target_confirmed else previous.target
-    if not 0 < stop < target:
+    if not 0 < stop < (target if stop_ceiling is None else stop_ceiling):
         raise RuntimeError("Strategy 1 confirmed stop would cross working target")
     return replace(state, stop=stop, target=target,
                    applied_groups=(state.applied_groups if stop_confirmed
@@ -153,7 +160,8 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
                        overhead_levels: Sequence[Mapping],
                        price_bearing_bar: bool,
                        allows_completed_30s_trailing: bool = True,
-                       allows_target_escalation: bool = True) -> ProtectionTransition:
+                       allows_target_escalation: bool = True,
+                       stop_ceiling: float | None = None) -> ProtectionTransition:
     """Ratchet a filled position without looking beyond its completed clock.
 
     Distinct accepted resistances belong to this position, not the ticker's
@@ -163,11 +171,15 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
     ordinal rule; a quote-only boundary cannot create a price crossing.
     """
     _quote(bid=bid, ask=ask, tick=tick)
+    if stop_ceiling is not None:
+        _validate_stop_ceiling(state, stop_ceiling)
+        if allows_target_escalation is not False:
+            raise ValueError('Explicit stop ceiling requires fixed targets')
     if (type(allows_completed_30s_trailing) is not bool
             or type(allows_target_escalation) is not bool
             or not isinstance(state, ProtectionState) or type(now_ms) is not int
             or now_ms <= state.boundary_ms or now_ms % 100
-            or not 0 < state.stop < state.target
+            or not 0 < state.stop < (state.target if stop_ceiling is None else stop_ceiling)
             or not isinstance(state.accepted_ids, frozenset)
             or not isinstance(state.pending_group, tuple)
             or not isinstance(state.earned_group, tuple)
@@ -237,7 +249,7 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
     # sparse jump. Never submit a crossed stop/target bracket while OMS is
     # resolving that target's fill or an explicit liquidation.
     stop_amendment = upward_stop_update(
-        current=state.stop, executable_bid=min(bid, effective_target),
+        current=state.stop, executable_bid=min(bid, effective_target if stop_ceiling is None else stop_ceiling),
         swing=swing, resistance=resistance)
     updated = replace(
         state, boundary_ms=now_ms, accepted_ids=seen,
@@ -250,3 +262,13 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
                         "three_resistance_step_stop" else state.applied_groups),
     )
     return ProtectionTransition(updated, stop_amendment, target_amendment)
+
+
+def _validate_stop_ceiling(state: ProtectionState, ceiling: float) -> None:
+    """Pure bound validation; this input grants no source/financial authority."""
+    if (type(state) is not ProtectionState or type(ceiling) is not float
+            or type(state.target) not in (int,float) or not isfinite(state.target)
+            or type(state.stop) not in (int,float) or not isfinite(state.stop)
+            or state.target<=0 or not isfinite(ceiling) or ceiling < state.target
+            or not 0 < state.stop < ceiling):
+        raise ValueError('Explicit stop ceiling is inconsistent with original target')

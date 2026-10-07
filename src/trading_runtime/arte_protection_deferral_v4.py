@@ -18,13 +18,28 @@ def protection_deferral_batch_v4(
     record: JournalRecord, *, source_batch: Any, source_intent: StrategyIntent,
     run_month: date, attempt_id: str, batch_id: str,
     prior_batch_id: str, source_cursor: str,
-    strategy_id: str, strategy_revision: int,
+    strategy_id: str, strategy_revision: int, fixed_lot_request=None,
 ):
     """Project exactly one failed amendment into the existing decision family."""
     from .arte_journal_writer import TypedJournalBatch
 
     for identity in (record.record_id, attempt_id, batch_id, prior_batch_id):
         UUID(str(identity))
+    selected=fixed_lot_request is not None
+    if selected:
+        from src.backend.backtest_fixed_structural_lot_management import FixedStructuralLotManagementRequest
+        if type(fixed_lot_request) is not FixedStructuralLotManagementRequest:
+            raise ValueError('Exact owner-issued selected deferral required')
+        fixed_lot_request.owner._verify_issued_request(fixed_lot_request)
+        fixed_lot_request.owner.verify_deferral_source(fixed_lot_request,source_batch,source_intent)
+        request=fixed_lot_request.entry_request
+        request.source.require_installed_admission()
+        if (record.run_id!=request.source.run_id or record.account_id!=fixed_lot_request.financial.account_id
+                or strategy_id!=request.strategy_id or strategy_revision!=request.revision
+                or not any(type(command) is type(source_intent) and command==source_intent
+                           for command in fixed_lot_request.intents)
+                or source_batch.last_sequence>=record.sequence):
+            raise ValueError('Selected deferral differs from exact owned command/source')
     payload = record.payload
     allowed = {"action", "reason", "correlation_id", "causation_id"}
     if ((record.category, record.entity_type) !=
@@ -44,8 +59,8 @@ def protection_deferral_batch_v4(
             or source_batch.intents[0]["ticker"] != source_intent.ticker
             or source_batch.intents[0]["action"] != source_intent.action
             or source_batch.run_id != record.run_id
-            or strategy_id != STRATEGY_ID
-            or strategy_revision != STRATEGY_NUMBER):
+            or (not selected and (strategy_id != STRATEGY_ID
+                                  or strategy_revision != STRATEGY_NUMBER))):
         raise ValueError("Strategy 1 protection deferral lacks its typed intent")
     month = record.event_time.astimezone(timezone.utc).date().replace(day=1)
     if run_month.day != 1:
@@ -70,7 +85,8 @@ def protection_deferral_batch_v4(
         "decision_kind": "protection_replacement_deferred",
         "action": "wait", "reason_code": "broker_replacement_not_confirmed",
         "reason_detail": payload["reason"], "reference_price": None,
-        "strategy_id": STRATEGY_ID, "strategy_revision": STRATEGY_NUMBER,
+        "strategy_id": strategy_id if selected else STRATEGY_ID,
+        "strategy_revision": strategy_revision if selected else STRATEGY_NUMBER,
         "assignment_status": "", "reason_count": 0,
         "source_event_time": at,
     }

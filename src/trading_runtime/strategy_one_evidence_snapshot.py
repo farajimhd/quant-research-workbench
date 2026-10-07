@@ -358,7 +358,7 @@ def load_unattested_evidence_snapshot_rows(
 def load_attested_evidence_snapshot(
     client: Any, keeper: EvidenceSnapshotHeadReader, *, run_id: str,
     checkpoint_sequence: int,
-    first_price_source=None,
+    first_price_source=None, fixed_lot_resume=None,
 ) -> StrategyOneEvidenceState:
     """Cold-read only Keeper-selected evidence at its committed V4 cursor."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
@@ -369,7 +369,14 @@ def load_attested_evidence_snapshot(
             or not callable(getattr(client, "execute", None))
             or not callable(getattr(keeper, "read_head", None))):
         raise ValueError("Strategy 1 evidence cold read lacks exact authorities")
-    prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
+    if fixed_lot_resume is not None:
+        from src.backend.backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+        binding = require_fixed_structural_lot_resume(fixed_lot_resume, run_id)
+        if first_price_source is not None and first_price_source is not binding.source.price_authority:
+            raise ValueError('Selected resume received conflicting first-price authority')
+        prefix = binding.prefix(client, run_id)
+    else:
+        prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not prefix.batch_ids

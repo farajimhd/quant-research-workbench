@@ -588,12 +588,15 @@ class TypedInsertDispatch:
                              terminal_account_id: str | None = None,
                              snapshot_account_id: str | None = None,
                              manager_snapshot_hash: str | None = None,
+                             fixed_lot_manager_context: Any | None = None,
                              broker_snapshot_hash: str | None = None,
                              evidence_snapshot_hash: str | None = None,
                              campaign_snapshot_hash: str | None = None,
                              oms_observation_snapshot_hash: str | None = None,
                              running_financial_checkpoint_hash: str | None = None) -> None:
         header = _request_header(sql)
+        if fixed_lot_manager_context is not None and manager_snapshot_hash is None:
+            raise ValueError('Selected manager dispatch lacks selected parent hash')
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not header.startswith(f"INSERT INTO arte.{table} (")
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1"
@@ -623,7 +626,16 @@ class TypedInsertDispatch:
             oms_observation_snapshot_hash, running_financial_checkpoint_hash)
             if value is not None), None)
         if scalar_hash is not None:
-            tables = (_manager_tables(getattr(client,'confirmed_original_risk_policy',None))
+            if fixed_lot_manager_context is not None:
+                from .fixed_structural_lot_manager_snapshot import require_manager_publication
+                selected=require_manager_publication(fixed_lot_manager_context,client=client)
+                from .fixed_structural_lot_manager_schema import PARENT
+                if ((run_id,batch_last_sequence,batch_id,manager_snapshot_hash)!=(
+                        fixed_lot_manager_context.run_id,fixed_lot_manager_context.sequence,
+                        fixed_lot_manager_context.batch_id,selected[PARENT.name][0]['content_hash'])):
+                    raise ValueError('Selected manager dispatch differs from issued cursor')
+            tables = (frozenset(selected) if fixed_lot_manager_context is not None
+                      else _manager_tables(getattr(client,'confirmed_original_risk_policy',None))
                       if manager_snapshot_hash is not None
                       else _BROKER_MATCH_TABLES if broker_snapshot_hash is not None
                       else _EVIDENCE_TABLES if evidence_snapshot_hash is not None
@@ -1148,6 +1160,22 @@ class TypedInsertDispatch:
                 return
         raise KeeperUnavailable("Manager snapshot head CAS contended")
 
+    def compact_verified_fixed_lot_manager_snapshot(self,*,client,context,operations,previous):
+        from .fixed_structural_lot_manager_snapshot import require_manager_publication,selected_manager_head_path
+        from .fixed_structural_lot_manager_schema import PARENT
+        from .strategy_one_management_snapshot import ManagerSnapshotHead
+        rows=require_manager_publication(context,client=client)
+        seal=rows[PARENT.name][0]
+        expected=tuple((table,_manager_token(context.run_id,context.sequence,
+            seal['content_hash'],table)) for table,values in rows.items() if values)
+        if set(operations)!=set(expected) or len(operations)!=len(expected):
+            raise ValueError('Selected manager compaction lacks complete issued inventory')
+        self._compact_verified_checkpoint_family(run_id=context.run_id,batch_id=context.batch_id,
+            last_sequence=context.sequence,snapshot_hash=seal['content_hash'],operations=operations,
+            previous=previous,head_type=ManagerSnapshotHead,head_path=selected_manager_head_path(context.run_id),
+            tables=frozenset(rows),root_table=PARENT.name,token_factory=_manager_token,
+            label='Fixed structural lot manager snapshot')
+
     def _compact_verified_checkpoint_family(
         self, *, run_id: str, batch_id: str, last_sequence: int,
         snapshot_hash: str, operations: tuple[tuple[str, str], ...],
@@ -1601,7 +1629,7 @@ class ColdDispatchBarrier:
         return snapshot
 
     def verify_committed_prefix(self, client: Any, *,
-                                journal_profile: str) -> Any:
+                                journal_profile: str, fixed_lot_resume=None) -> Any:
         """Scan the selected CH prefix once and bind its terminal commit to Keeper."""
         from src.trading_runtime.arte_journal_writer import (
             _COMMIT_COLUMNS, _literal, _rows, load_committed_prefix,
@@ -1624,7 +1652,13 @@ class ColdDispatchBarrier:
                     f"WHERE run_id={_literal(self.run_id)} LIMIT 1 FORMAT JSONEachRow")
                 if mixed:
                     raise KeeperUnavailable("Cold dispatch cannot mix V4 and older commit fences")
-            prefix = load_verified_v4_prefix(client, self.run_id)
+            if fixed_lot_resume is not None:
+                if journal_profile != 'backtest_v4':
+                    raise ValueError('Selected resume cannot authorize another journal profile')
+                from src.backend.backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+                prefix = require_fixed_structural_lot_resume(fixed_lot_resume,self.run_id).prefix(client,self.run_id)
+            else:
+                prefix = load_verified_v4_prefix(client, self.run_id)
             gate, _ = self.authority._read_gate(self.run_id)
             if gate.compacted_through == 0:
                 if prefix is not None:

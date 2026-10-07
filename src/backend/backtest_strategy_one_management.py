@@ -154,6 +154,17 @@ class StrategyOneManagementRunner:
         self._liquidity_latest_five_second: dict[str, Mapping] = {}
         self._completed_risk_lookup = None
         self._original_risk_requests = {}
+        self._fixed_lot_owner = None
+
+    def bind_fixed_structural_lot_management(self,owner):
+        from .backtest_fixed_structural_lot_management import NativeFixedStructuralLotManagement
+        if (type(owner) is not NativeFixedStructuralLotManagement or self._fixed_lot_owner is not None
+                or self._submitted or owner.publisher.journal is not self.runtime.journal
+                or owner.operation.source.run_id!=self.runtime.run_id
+                or owner.operation.source._revision!=self.contract.strategy_number):
+            raise ValueError('Selected manager needs its exact installed native owner')
+        owner.operation.source.require_installed_admission()
+        self._fixed_lot_owner=owner
 
     def bind_completed_risk_lookup(self,lookup,market_plan):
         from .backtest_confirmed_original_risk_source import CompiledCompletedRiskLookup
@@ -480,12 +491,27 @@ class StrategyOneManagementRunner:
         key = (proposal.account_id, proposal.assignment_id, proposal.ticker)
         if key in self._submitted:
             raise RuntimeError("Strategy 1 assignment already owns an entry")
-        results = await self.runtime.submit_strategy_one_proposal(proposal)
+        if self._fixed_lot_owner is None:
+            results = await self.runtime.submit_strategy_one_proposal(proposal)
+        else:
+            from src.trading_runtime.fixed_structural_lot_entry import FixedStructuralLotTargetCountIneligible
+            try:
+                request=self._fixed_lot_owner.operation.request(proposal)
+            except FixedStructuralLotTargetCountIneligible as error:
+                if type(error) is not FixedStructuralLotTargetCountIneligible:
+                    raise
+                reason=self._fixed_lot_owner.operation.source.verified_entry_rejection(error,proposal)
+                counts=self._fixed_lot_owner.entry_rejections
+                counts[reason]=counts.get(reason,0)+1
+                return
+            results=await self.runtime.submit_fixed_structural_lot_request(request)
         if (len(results) != 1 or results[0].get("order_group") is None
                 or results[0].get("decision", {}).get("status")
                 not in {"approved", "resized"}):
             return
         self._submitted[key] = proposal
+        if self._fixed_lot_owner is not None:
+            self._fixed_lot_owner.register_entry(request,results[0]['order_group']['group_id'])
 
     async def on_management(
         self, financial: StrategyOneFinancialView,
@@ -500,6 +526,8 @@ class StrategyOneManagementRunner:
             self._profit_arm_financials[key] = financial
         if financial.position_quantity <= 0:
             if not financial.pending_entry and not financial.pending_exit:
+                if self._fixed_lot_owner is not None and key in self._fixed_lot_owner.entries:
+                    await self._fixed_lot_owner.retire(key)
                 source = self._submitted.get(key)
                 high_int = self._position_highs.pop(key, None)
                 if source is not None and high_int is not None:
@@ -526,6 +554,9 @@ class StrategyOneManagementRunner:
             # its aggregate bucket, so it cannot advance protection yet.
             self._positions[key] = ProtectionState(
                 boundary_ms, source.initial_stop, source.initial_target)
+            if self._fixed_lot_owner is not None:
+                selected=await self._fixed_lot_owner.first_held(key)
+                self._positions[key]=selected.protection
             # The fill can occur anywhere inside its aggregate liquidity bar.
             # Do not include that bucket's high in the prior-position witness.
             self._position_highs[key] = round(source.reference_ask * 10_000)
@@ -754,6 +785,25 @@ class StrategyOneManagementRunner:
         tick = self.tick_for_ticker(financial.ticker)
         if type(tick) not in (int, float) or not isfinite(tick) or tick <= 0:
             raise ValueError("Strategy 1 management lacks a point-in-time tick")
+        if self._fixed_lot_owner is not None:
+            self._fixed_lot_owner.publisher.enqueue_pending()
+            await self._fixed_lot_owner.publisher.await_fence()
+            request=self._fixed_lot_owner.propose(self._fixed_lot_owner.entries[key],financial,
+                now_ms=boundary_ms,bid=evidence.bid,ask=evidence.ask,tick=tick,
+                low_boundary_ms=evidence.low_boundary_ms,low_int=evidence.low_int,
+                low_price_valid=evidence.low_int is not None,low_extremes_valid=evidence.low_int is not None,
+                breaks=tuple(pending),overhead_levels=evidence.overhead_levels,
+                price_bearing_bar=evidence.price_bearing_bar,
+                allows_completed_30s_trailing=self.contract.allows_completed_30s_trailing)
+            receipt=await self.runtime.submit_fixed_structural_lot_protection(request)
+            confirmed=receipt.state.protection
+            if (confirmed.boundary_ms!=boundary_ms or not previous.accepted_ids<=confirmed.accepted_ids
+                    or confirmed.target!=source.initial_target
+                    or not 0<confirmed.stop<float(receipt.state.roster.ceiling)):
+                raise RuntimeError('Selected manager returned inconsistent per-lot protection')
+            self._positions[key]=confirmed
+            pending.clear()
+            return
         transition = advance_protection(
             previous, now_ms=boundary_ms, bid=evidence.bid, ask=evidence.ask,
             tick=tick, low_boundary_ms=evidence.low_boundary_ms,

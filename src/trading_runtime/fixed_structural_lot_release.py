@@ -1,0 +1,114 @@
+"""Prepare a complete immutable lot declaration; never install or admit it."""
+from copy import deepcopy
+from hashlib import sha256
+import re
+
+from .fixed_structural_lot_policy import parse_fixed_structural_lot_policy
+from .journal_contract import canonical_json
+from .strategy_one_configuration_tree import encode_nodes, node_hash
+from .strategy_registry import NumberedStrategyRelease
+from .numbered_fixed_strategy import DECLARED_FIXED_ADAPTER
+
+
+def derive_fixed_structural_lot_release(
+        parent, *, parent_release, release, policy, approved_code_commit,
+        approved_code_fingerprint, approval_reference):
+    """Pure preparation under an explicit parent and reviewed own release.
+
+    Returned nodes are publication inputs, not a source certificate. The
+    installed operation independently reloads both immutable configurations.
+    """
+    from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
+    from src.backend.backtest_fixed_structural_lot_native import (
+        ENTRY_RULE, SOURCE_INPUT, parent_reference,
+    )
+    if (type(parent) is not CertifiedStrategyOneConfiguration
+            or type(parent_release) is not NumberedStrategyRelease
+            or type(release) is not NumberedStrategyRelease):
+        raise ValueError('Complete parent certificate and exact release contracts required')
+    parent_release.verify()
+    release.verify()
+    if (parent_release.number != parent.strategy_number
+            or release.number == parent_release.number
+            or release.executor_revision != release.number
+            or release.executor_strategy_id != parent_release.executor_strategy_id
+            or release.evaluation_interval != parent_release.evaluation_interval
+            or release.input_contracts != (*parent_release.input_contracts, DECLARED_FIXED_ADAPTER, SOURCE_INPUT)
+            or release.rule_set_contracts != (*parent_release.rule_set_contracts, ENTRY_RULE)):
+        raise ValueError('Lot release must preserve exact parent contracts')
+    payload = deepcopy(parent.payload)
+    if (sha256(canonical_json(payload).encode()).hexdigest() != parent.payload_hash
+            or node_hash(encode_nodes(payload)) != parent.node_hash
+            or payload.get('assignments')):
+        raise ValueError('Parent nodes differ or contain mutable assignments')
+    if (not isinstance(approved_code_commit, str)
+            or not re.fullmatch(r'[0-9a-f]{40}', approved_code_commit)
+            or not isinstance(approved_code_fingerprint, str)
+            or not re.fullmatch(r'[0-9a-f]{64}', approved_code_fingerprint)
+            or type(approval_reference) is not str or not approval_reference.strip()):
+        raise ValueError('Reviewed source approval identity required')
+    selected_policy = parse_fixed_structural_lot_policy(policy)
+    reference = parent_reference(parent)
+    strategy = payload['strategy']
+    if (strategy.get('strategy_id') != parent_release.executor_strategy_id
+            or strategy.get('revision') != parent_release.executor_revision
+            or strategy.get('execution_interval') != parent_release.evaluation_interval):
+        raise ValueError('Parent execution identity differs from its release')
+    if (strategy['numbered_release'].get('contract') != parent_release.canonical_payload()
+            or strategy['numbered_release'].get('approved_digest') != parent_release.approved_digest):
+        raise ValueError('Parent manifest differs from its complete release')
+    parameters = strategy['parameters']
+    if {'fixed_structural_lot_policy', 'fixed_structural_lot_parent'} & set(parameters):
+        raise ValueError('Parent already contains selected lot declaration')
+    parameters.update(fixed_structural_lot_policy=selected_policy.payload(),
+                      fixed_structural_lot_parent=reference)
+    manifest = deepcopy(strategy['numbered_release'])
+    manifest.pop('manifest_hash', None)
+    manifest.update(contract=release.canonical_payload(),
+                    approved_digest=release.approved_digest,
+                    approved_code_commit=approved_code_commit,
+                    approved_code_fingerprint=approved_code_fingerprint,
+                    approval_reference=approval_reference,
+                    publication_mode='backtest_only',
+                    source_revision_id=reference['revision_id'],
+                    source_payload_hash=reference['payload_hash'])
+    manifest['manifest_hash'] = sha256(canonical_json(manifest).encode()).hexdigest()
+    number = release.number
+    profile_id = f'strategy-one-{number}'
+    strategy.update(strategy_number=number, revision=number, profile_id=profile_id,
+                    profile_revision=number, name=f'Early Squeeze Strategy {number}',
+                    numbered_release=manifest)
+    payload['strategy_profile'].update(profile_id=profile_id, revision=number,
+        definition_revision=number, name=f'Early Squeeze Strategy {number}',
+        description=release.behavior_specification)
+    payload['run_plan'].update(profile_id=profile_id, name=f'Strategy {number} Backtest',
+        description=release.behavior_specification)
+    nodes = encode_nodes(payload)
+    return dict(source_candidate_id=f'fixed-structural-lots-from:{reference["revision_id"]}',
+                source_candidate_hash=parent.payload_hash, payload=payload, nodes=nodes,
+                payload_hash=sha256(canonical_json(payload).encode()).hexdigest(),
+                node_hash=node_hash(nodes), node_count=len(nodes))
+
+
+def verify_prepared_fixed_structural_lot_release(parent, payload, *, parent_release, release):
+    """Reconstruct the entire declared tree, including every manifest field.
+
+    Source approval and installed publication remain independently verified
+    by their owners; this function proves only exact compiler derivation.
+    """
+    if type(payload) is not dict:
+        raise ValueError('Complete prepared configuration required')
+    try:
+        strategy = payload['strategy']
+        manifest = strategy['numbered_release']
+        policy = strategy['parameters']['fixed_structural_lot_policy']
+        prepared = derive_fixed_structural_lot_release(parent,
+            parent_release=parent_release, release=release, policy=policy,
+            approved_code_commit=manifest['approved_code_commit'],
+            approved_code_fingerprint=manifest['approved_code_fingerprint'],
+            approval_reference=manifest['approval_reference'])
+    except (KeyError, TypeError) as exc:
+        raise ValueError('Prepared declaration is incomplete') from exc
+    if canonical_json(prepared['payload']) != canonical_json(payload):
+        raise ValueError('Prepared declaration differs from complete parent derivation')
+    return prepared

@@ -12,6 +12,226 @@ import re
 from typing import Any, Callable
 from uuid import UUID
 
+
+def _fixed_structural_lot_oms_image(owner,image,contexts):
+    """Reuse the normalized production decoder, including observed frontiers."""
+    from src.trading_runtime.fixed_structural_lot_manager_snapshot import require_cold_manager_image
+    from src.trading_runtime.arte_oms_projection import (load_latest_committed_oms_groups,
+        load_committed_oms_admission_page,load_committed_oms_decision_page,
+        _approved_strategy_one_oms_intent,reconstruct_strategy_one_oms_lineage,RecoveredStrategyOneOmsLineage)
+    from src.trading_runtime.arte_intent_projection import RecoveredIntent
+    from src.trading_runtime.arte_journal_reader import load_complete_typed_protection_history
+    from src.trading_runtime.arte_oms_actor_restore import (
+        reconstruct_typed_oms_actor_image,attach_typed_oms_observations,verify_typed_oms_broker_open_orders)
+    from src.trading_runtime.strategy_one_oms_observation_snapshot import load_unattested_oms_observation_snapshot
+    from src.trading_runtime.strategy_one_broker_match_snapshot import load_unattested_broker_match_snapshot
+    from src.backend.backtest_market_data import market_day_boundary
+    from datetime import timedelta
+    source=owner.operation.source;require_cold_manager_image(image,source=source)
+    prefix,_=owner._prefix()
+    if (prefix.last_sequence,prefix.last_batch_id)!=(image.sequence,image.batch_id):
+        raise ValueError('Selected OMS bootstrap has foreign committed cursor')
+    roots=dict(v for v in image.financial_roots if v[0]!='portfolio')
+    observed=load_unattested_oms_observation_snapshot(owner.client,run_id=source.run_id,checkpoint_sequence=image.sequence)
+    broker=load_unattested_broker_match_snapshot(owner.client,run_id=source.run_id,checkpoint_sequence=image.sequence)
+    if observed.root['content_hash']!=roots['root'] or broker.snapshot['content_hash']!=roots['snapshot']:
+        raise ValueError('Selected OMS bootstrap financial root changed')
+    groups=load_latest_committed_oms_groups(owner.client,prefix,
+        strategy_identity=(source._strategy_id,source._revision),require_tactic=True,fixed_lot_contexts=contexts)
+    history=load_complete_typed_protection_history(owner.client,prefix,fixed_lot_contexts=contexts)
+    by_intent={v.base.intents[0]['intent_id']:v for v in contexts};lineages=[]
+    for group in groups:
+        ctx=by_intent.get(group.group['strategy_intent_id'])
+        if ctx is None:raise ValueError('Selected OMS bootstrap lacks complete owned source lineage')
+        request=ctx.verify_source()
+        admission=load_committed_oms_admission_page(owner.client,prefix,(group,))[group.sequence]
+        decision=load_committed_oms_decision_page(owner.client,prefix,(group,),{group.sequence:admission})[group.sequence]
+        original=RecoveredIntent(ctx.record.sequence,ctx.record.account_id,ctx.record.record_id,ctx.base.batch_id,request.intent,ctx.base)
+        approved,_=_approved_strategy_one_oms_intent(group,original,history,admission,decision)
+        orders=reconstruct_strategy_one_oms_lineage(group,original,history,admission_reservation=admission,admission_decision=decision)
+        lineages.append(RecoveredStrategyOneOmsLineage(group,original,orders,image.sequence,approved,admission))
+    decoded=reconstruct_typed_oms_actor_image(tuple(lineages),history,run_id=source.run_id,
+        strategy_id=source._strategy_id,strategy_revision=source._revision,through_sequence=image.sequence,
+        cutoff_at=market_day_boundary(source.session_date,image.inherited.boundary_ms))
+    decoded=attach_typed_oms_observations(decoded,observed,through_sequence=image.sequence)
+    verify_typed_oms_broker_open_orders(decoded,broker)
+    return decoded
+
+
+async def restore_fixed_structural_lot_native_manager(owner, manager, keeper_session):
+    """Selected cold bootstrap after ordinary Portfolio/broker/OMS recovery.
+
+    Read persisted source and financial roots afresh. Caller captures, ceilings,
+    live publication capabilities and requested-stop booleans grant no authority.
+    The ordinary fixed bootstrap and restoration paths remain unchanged.
+    """
+    from dataclasses import replace
+    from datetime import timedelta, timezone
+    from zoneinfo import ZoneInfo
+    from .backtest_fixed_structural_lot_management import (
+        NativeFixedStructuralLotManagement,FixedStructuralLotManagerCheckpoint)
+    from .backtest_strategy_one_management import StrategyOneManagementRunner
+    from .backtest_strategy_one_financial import read_strategy_one_financial_views
+    from src.trading_runtime.strategy_engine import StrategyAssignment
+    from src.trading_runtime.fixed_structural_lot_manager_snapshot import load_cold_manager_image
+    from src.trading_runtime.arte_portfolio_snapshot import (
+        prepare_captured_portfolio_snapshot,_snapshot_rows,_state_hash,
+        load_portfolio_snapshot,capture_portfolio_snapshot)
+    if (type(owner) is not NativeFixedStructuralLotManagement
+            or type(manager) is not StrategyOneManagementRunner or manager._fixed_lot_owner is not owner
+            or owner.states or owner.entries or owner.financials
+            or manager._submitted or manager._positions):
+        raise ValueError('Selected bootstrap requires fresh actual manager owners')
+    source=owner.operation.source;source.require_installed_admission()
+    runtime=manager.runtime
+    if (runtime.journal is not owner.publisher.journal or runtime.run_id!=source.run_id
+            or (runtime.config.strategy_id,runtime.config.strategy_revision,runtime.config.anchor_date)!=
+               (source._strategy_id,source._revision,source.session_date)):
+        raise ValueError('Selected bootstrap has foreign native configuration/run/source')
+    contexts=tuple(getattr(owner.client,'fixed_structural_lot_contexts',()))
+    image=load_cold_manager_image(owner.client,keeper_session,source=source,fixed_lot_contexts=contexts)
+    prefix,_=owner._prefix()
+    if (prefix.last_sequence,prefix.last_batch_id)!=(image.sequence,image.batch_id):
+        raise ValueError('Selected bootstrap committed cursor changed')
+    instant=(datetime.combine(source.session_date,datetime.min.time(),ZoneInfo('America/New_York'))
+        +timedelta(hours=4,milliseconds=image.inherited.boundary_ms)).astimezone(timezone.utc)
+    portfolio_roots={v[1]:(v[2],v[3]) for v in image.financial_roots if v[0]=='portfolio'}
+    if set(runtime.portfolio.states)!=set(portfolio_roots):
+        raise ValueError('Selected bootstrap restored Portfolio account inventory differs')
+    from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_engine_state
+    recovery=recover_portfolio_engine_state(owner.client,run_id=source.run_id,
+        profiles=tuple(v.profile for _,v in sorted(runtime.portfolio.states.items())),
+        state_revisions={account:image.sequence for account in portfolio_roots},cutoff_at=instant)
+    for account,(expected_hash,snapshot_at) in portfolio_roots.items():
+        original=load_portfolio_snapshot(owner.client,run_id=source.run_id,account_id=account,state_revision=image.sequence)
+        if original is None or original['state_hash']!=expected_hash or datetime.fromisoformat(snapshot_at)!=instant:
+            raise ValueError('Selected bootstrap pre-recovery committed Portfolio root differs')
+        expected_capture=capture_portfolio_snapshot(run_id=source.run_id,state_revision=image.sequence,snapshot_at=instant,
+            state=recovery.states[account],reservations=recovery.reservations.values(),
+            allocations=recovery.allocations.values(),reconciliation=recovery.differences.values())
+        expected=prepare_captured_portfolio_snapshot(expected_capture)
+        transformed_hash=_state_hash(_snapshot_rows(expected.run_id,expected.account_id,expected.state_revision,expected.snapshot_month,expected.rows))
+        captured=runtime.portfolio.capture_recovery_snapshot(account,state_revision=image.sequence,snapshot_at=instant)
+        prepared=prepare_captured_portfolio_snapshot(captured)
+        rows=_snapshot_rows(prepared.run_id,prepared.account_id,prepared.state_revision,prepared.snapshot_month,prepared.rows)
+        if _state_hash(rows)!=transformed_hash:
+            raise ValueError('Selected bootstrap restored Portfolio full state differs from committed root')
+    from src.trading_runtime.strategy_one_broker_match_snapshot import project_broker_match_snapshot
+    from src.trading_runtime.strategy_one_oms_observation_snapshot import project_oms_observation_snapshot
+    roots=dict(v for v in image.financial_roots if v[0]!='portfolio')
+    actual_broker=project_broker_match_snapshot(run_id=source.run_id,session_date=source.session_date,
+        checkpoint_sequence=image.sequence,boundary_ms=image.inherited.boundary_ms,state=runtime.broker.broker_match_snapshot_state())
+    if actual_broker.snapshot['content_hash']!=roots['snapshot']:
+        raise ValueError('Selected bootstrap complete actual broker checkpoint differs')
+    if not runtime.order_manager.snapshots():
+        from src.trading_runtime.arte_oms_actor_restore import install_typed_oms_actor_image
+        install_typed_oms_actor_image(runtime.order_manager,_fixed_structural_lot_oms_image(owner,image,contexts))
+    actual_oms=project_oms_observation_snapshot(run_id=source.run_id,session_date=source.session_date,
+        checkpoint_sequence=image.sequence,boundary_ms=image.inherited.boundary_ms,groups=runtime.order_manager.capture_observed_broker_states())
+    if actual_broker.snapshot['content_hash']!=roots['snapshot']:
+        raise ValueError('Selected bootstrap complete actual broker checkpoint differs')
+    if actual_oms.root['content_hash']!=roots['root']:
+        raise ValueError('Selected bootstrap complete actual OMS observation checkpoint differs')
+    assignments_method=getattr(runtime.strategy,'assignments',None)
+    if not callable(assignments_method):
+        raise ValueError('Selected bootstrap lacks actual native assignment owner')
+    assignments=tuple(assignments_method())
+    if (any(type(v) is not StrategyAssignment or (v.strategy_id,v.strategy_revision)!=(source._strategy_id,source._revision)
+            or v.account_id not in portfolio_roots for v in assignments)
+            or len({(v.account_id,v.assignment_id,v.ticker) for v in assignments})!=len(assignments)):
+        raise ValueError('Selected bootstrap has duplicate or foreign actual assignments')
+    active_keys=set(dict(image.inherited.positions));financials={}
+    for ticker in sorted({v.ticker for v in assignments}):
+        views=await read_strategy_one_financial_views(tuple(v for v in assignments if v.ticker==ticker),
+            runtime.broker,runtime.order_manager)
+        for view in views:
+            key=(view.account_id,view.assignment_id,view.ticker)
+            if key in active_keys:financials[key]=view
+            elif view.position_quantity or view.pending_entry or view.pending_exit:
+                raise ValueError('Selected bootstrap contains unexpected active financial ownership')
+    if set(financials)!=active_keys:
+        raise ValueError('Selected bootstrap omitted actual held assignment')
+    from decimal import Decimal
+    expected_positions={(key[0],key[2]):Decimal(str(view.position_quantity))
+        for key,view in financials.items() if view.position_quantity}
+    actual_positions={}
+    for account in sorted(portfolio_roots):
+        for row in await runtime.broker.positions(account):
+            quantity=Decimal(str(row.position))
+            if not quantity:continue
+            key=(account,str(row.contractDesc).upper())
+            if key in actual_positions:raise ValueError('Selected bootstrap repeated broker position')
+            actual_positions[key]=quantity
+    if actual_positions!=expected_positions:
+        raise ValueError('Selected bootstrap complete actual broker inventory differs')
+    from src.trading_runtime.arte_oms_projection import (
+        load_latest_committed_oms_groups,load_committed_oms_admission_page,
+        load_committed_oms_decision_page,_approved_strategy_one_oms_intent,
+        reconstruct_strategy_one_oms_lineage,_duration_ms,_exact_decimal,freeze_oms_group)
+    from src.trading_runtime.arte_intent_projection import RecoveredIntent
+    from src.trading_runtime.arte_journal_reader import load_complete_typed_protection_history
+    from src.trading_runtime.order_management import TERMINAL_MANAGEMENT_STATES
+    groups=load_latest_committed_oms_groups(owner.client,prefix,allowed_accounts=frozenset(portfolio_roots),
+        strategy_identity=(source._strategy_id,source._revision),require_tactic=True,fixed_lot_contexts=contexts)
+    history=load_complete_typed_protection_history(owner.client,prefix,fixed_lot_contexts=contexts)
+    context_by_intent={v.base.intents[0]['intent_id']:v for v in contexts}
+    live=tuple(freeze_oms_group(group) for group in runtime.order_manager._groups.values())
+    live_by_id={v.group_id:v for v in live}
+    if len(live_by_id)!=len(live):raise ValueError('Selected bootstrap repeated actual OMS group')
+    expected_ids=set()
+    for stored in groups:
+        ctx=context_by_intent.get(stored.group['strategy_intent_id'])
+        if ctx is None:raise ValueError('Selected bootstrap group lacks actual source companion')
+        request=ctx.verify_source();key=(request.entry.proposal.account_id,request.entry.proposal.assignment_id,request.entry.proposal.ticker)
+        if key not in active_keys:continue
+        admission=load_committed_oms_admission_page(owner.client,prefix,(stored,))[stored.sequence]
+        decision=load_committed_oms_decision_page(owner.client,prefix,(stored,),{stored.sequence:admission})[stored.sequence]
+        original=RecoveredIntent(ctx.record.sequence,ctx.record.account_id,ctx.record.record_id,
+            ctx.base.batch_id,request.intent,ctx.base)
+        approved,_=_approved_strategy_one_oms_intent(stored,original,history,admission,decision)
+        orders=reconstruct_strategy_one_oms_lineage(stored,original,history,
+            admission_reservation=admission,admission_decision=decision)
+        actual=live_by_id.get(stored.group['group_id'])
+        if (actual is None or actual.account_id!=key[0] or actual.intent.metadata.get('assignment_id')!=key[1]
+                or actual.intent.ticker!=key[2] or actual.intent!=approved or tuple(actual.orders)!=tuple(orders)
+                or actual.broker_order_request_indexes!={v['broker_order_id']:v['request_index'] for v in stored.broker_bindings}
+                or actual.filled_by_broker_order!={v['broker_order_id']:float(v['filled_quantity']) for v in stored.broker_bindings}
+                or actual.terminal_broker_order_ids!={v['broker_order_id'] for v in stored.broker_bindings if v['terminal']}):
+            raise ValueError('Selected bootstrap actual OMS/source/order/ACK inventory differs')
+        from src.trading_runtime.arte_journal_reader import _journal_instant
+        if actual.state.value!=stored.group['state']:
+            raise ValueError('Selected bootstrap actual OMS management state differs')
+        for field in ('created_at','updated_at','submitted_at','last_reprice_at','failed_reprice_at'):
+            expected=stored.group[field]
+            if getattr(actual,field)!=(_journal_instant(expected) if expected is not None else None):
+                raise ValueError('Selected bootstrap actual OMS causal timing differs')
+        for field in ('decision_to_submit_ms','internal_reaction_ms'):
+            if _duration_ms(getattr(actual,field))!=stored.group[field]:
+                raise ValueError('Selected bootstrap actual OMS timing telemetry differs')
+        for field in ('filled_quantity','remaining_quantity','high_water_price','low_water_price',
+                'protection_required_quantity','protection_coverage_quantity','current_limit_price'):
+            value=getattr(actual,field)
+            if (None if value is None else _exact_decimal(value))!=stored.group[field]:
+                raise ValueError('Selected bootstrap actual OMS financial/protection scalar differs')
+        if (actual.rejection_reason!=stored.group['rejection_reason']
+                or actual.reprice_count!=stored.group['reprice_count']
+                or int(actual.protection_delegated)!=stored.group['protection_delegated']
+                or actual.broker_order_roles!={v['broker_order_id']:v['role'] for v in stored.broker_bindings}
+                or actual.broker_order_slices!={v['broker_order_id']:v['slice_id'] for v in stored.broker_bindings}):
+            raise ValueError('Selected bootstrap actual OMS flags/binding roles differ')
+        deferred=actual.deferred_reprice
+        if ((tuple(_exact_decimal(v) for v in deferred) if deferred is not None else (None,None))!=
+                (stored.group['deferred_reprice_from'],stored.group['deferred_reprice_to'])):
+            raise ValueError('Selected bootstrap actual OMS pending reprice differs')
+        expected_ids.add(actual.group_id)
+    if any(v.group_id not in expected_ids and v.state not in TERMINAL_MANAGEMENT_STATES for v in live):
+        raise ValueError('Selected bootstrap unexpected active or acquiring OMS group')
+    # Restore validates fresh source/normalized OMS roster and exact quantities
+    # independently; no scalar ceiling or supplied ACK enters this checkpoint.
+    checkpoint=FixedStructuralLotManagerCheckpoint(image.inherited,image.selected_positions,tuple(sorted(financials.items())))
+    owner.restore(manager,checkpoint)
+    return image
+
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_squeeze_episode_schema import (
     RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
@@ -245,7 +465,7 @@ def assemble_resumed_fixed_v4_journal(
     code_hash: str, recovery_evidence: object,
     writer_factory: Callable[..., ArteJournalWriter],
     batch_size: int = 1024, queue_capacity: int = 8,
-    configuration_revision=None,
+    configuration_revision=None, fixed_lot_resume=None,
 ) -> tuple[FixedJournalAssembly, Any]:
     """Cold-seed a V4 lane from Keeper plus the exact committed market cursor.
 
@@ -286,7 +506,8 @@ def assemble_resumed_fixed_v4_journal(
         read_client, dispatch=dispatch, lease=lease, run_id=token.run_id,
         plan=fixed_market_parent_plan,
         configuration_hash=token.configuration_hash,
-        account_ids=token.account_ids, code_hash=code_hash)
+        account_ids=token.account_ids, code_hash=code_hash,
+        **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
     verify_v4_recovery_at_anchor(recovery_evidence, anchor)
     context = load_typed_run_context(writer_client, token.run_id)
     if (context != load_typed_run_context(terminal_client, token.run_id)
@@ -313,6 +534,11 @@ def assemble_resumed_fixed_v4_journal(
         prior_batch_id=anchor.batch_id,
         source_cursor=anchor.source_cursor)
     try:
+        if fixed_lot_resume is not None:
+            from .backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+            binding=require_fixed_structural_lot_resume(fixed_lot_resume,token.run_id)
+            assembly.publisher.restore_fixed_structural_lot_source(binding.source,
+                prefix=recovery_evidence.prefix,contexts=binding.contexts)
         assembly.journal.restore_verified_campaign_ownership(
             recovery_evidence.campaign)
         assembly.journal.restore_verified_portfolio_admissions(
@@ -321,10 +547,12 @@ def assemble_resumed_fixed_v4_journal(
             load_complete_typed_protection_history,
         )
         protection_history = load_complete_typed_protection_history(
-            read_client, recovery_evidence.prefix)
+            read_client, recovery_evidence.prefix,
+            **({"fixed_lot_contexts":fixed_lot_resume.contexts} if fixed_lot_resume is not None else {}))
         assembly.journal.restore_committed_records(protection_history.records)
         assembly.publisher.restore_verified_oms_sources(
-            recovery_evidence.oms, protection_history)
+            recovery_evidence.oms, protection_history,
+            **({"fixed_lot_resume":fixed_lot_resume} if fixed_lot_resume is not None else {}))
     except BaseException:
         assembly.writer.close()
         assembly.journal.close()
@@ -723,5 +951,13 @@ def _v4_cold_reader_preflight(client: Any) -> None:
         getattr(client,'entry_spread_risk_profile',False),risk_policy)
     if risk_policy is not None:
         expected_principal='backtest_v4_original_risk_runner'
+    lot_profile=getattr(client,'fixed_structural_lot_profile',None)
+    if lot_profile is not None:
+        from src.trading_runtime.arte_journal_writer import _validate_fixed_structural_lot_profile
+        _validate_fixed_structural_lot_profile(lot_profile,
+            automatic_ladder=getattr(client,'automatic_ladder_profile',False),
+            entry_spread_risk=getattr(client,'entry_spread_risk_profile',False),
+            ladder_geometry_policy=geometry_policy,risk_policy=risk_policy)
+        expected_principal='backtest_v4_fixed_structural_lot_runner'
     if client.execute("SELECT currentUser()").strip() != expected_principal:
         raise RuntimeError("V4 cold reader has unexpected principal")

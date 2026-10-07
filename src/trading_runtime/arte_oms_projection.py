@@ -130,12 +130,64 @@ def _target_proof_failures(
 def canonical_oms_order_metadata(
     group: FrozenOmsGroup | _ColdLineageView, order: OrderRequest,
     authorized_protection: Mapping[str, JournalRecord] | None = None,
+    *, source_sequence=None, source_boundary=None, source_run_id=None,
 ) -> dict[str, Any]:
     """Rebuild initial lineage plus only the target amendment's typed delta."""
     from src.trading_runtime.strategy_orders import canonical_runtime_metadata
 
     metadata = canonical_runtime_metadata(order, approved_oms_lineage_intent(group))
     proofs = authorized_protection or {}
+    from .independent_lot_stop_amendment import independent_profile
+    if independent_profile(group.intent) is not None and order.side == 'SELL' and not order.parentId:
+        indexes = [index for index, value in enumerate(group.orders) if value.cOID == order.cOID]
+        if len(indexes) != 1:
+            raise ValueError('Independent repair metadata has ambiguous request identity')
+        index = indexes[0]
+        stop_index = index if order.orderType in {'STP', 'STOP_LIMIT'} else index + 1
+        slices = group.plan.order_slice_ids if isinstance(group, FrozenOmsGroup) else group.order_slice_ids
+        if (stop_index >= len(group.orders) or slices[index] != slices[stop_index]
+                or group.orders[stop_index].orderType not in {'STP', 'STOP_LIMIT'}):
+            raise ValueError('Independent repair metadata lacks its owned stop pair')
+        stop = group.orders[stop_index]
+        creation = proofs.get(f'initial_stop:{stop.cOID}')
+        if creation is None and stop_index not in set(group.broker_order_request_indexes.values()):
+            if type(source_sequence) is not int or source_sequence <= 0 or source_boundary is None:
+                raise ValueError('Pending independent repair lacks its causal snapshot fence')
+            prior=[]
+            for proof in {p.sequence:p for p in proofs.values()}.values():
+                payload=proof.payload
+                matches=[i for i,o in enumerate(group.orders) if o.cOID==payload.get('client_order_id')]
+                if (payload.get('kind')=='stop' and payload.get('phase')=='effective'
+                        and payload.get('action')=='replace_protective_stop'
+                        and len(matches)==1 and slices[matches[0]]==slices[stop_index]):
+                    if (proof.run_id!=source_run_id or proof.account_id!=group.account_id
+                            or not 0 < proof.sequence < source_sequence or proof.event_time > source_boundary
+                            or payload.get('order_group_id')!=group.group_id
+                            or payload.get('source_intent_id')!=group.intent.intent_id
+                            or payload.get('ticker')!=group.intent.ticker
+                            or payload.get('order_id') not in group.broker_order_request_indexes
+                            or group.broker_order_request_indexes[payload['order_id']]!=matches[0]):
+                        raise ValueError('Pending independent repair has foreign/future acknowledged source')
+                    prior.append(proof)
+            if not prior:
+                raise ValueError('Pending independent repair lacks earlier acknowledged source')
+            earlier=max(prior,key=lambda proof:proof.sequence)
+            price=earlier.payload['price']
+            if (stop.auxPrice!=price or group.intent.metadata.get('confirmed_support_stop')!=price):
+                raise ValueError('Pending independent repair differs from earlier acknowledged price')
+            # This copies prior-earned lineage only. No broker binding, status,
+            # repair creation proof, coverage or stop-confirmed flag is added.
+            return {**metadata,'confirmed_support_stop':price}
+
+        if (creation is None or creation.account_id != group.account_id
+                or creation.payload.get('order_group_id') != group.group_id
+                or creation.payload.get('source_intent_id') != group.intent.intent_id
+                or creation.payload.get('client_order_id') != stop.cOID
+                or creation.payload.get('kind') != 'stop'
+                or creation.payload.get('phase') != 'effective'
+                or creation.payload.get('action') not in {None, 'enter_long'}):
+            raise ValueError('Independent repair metadata lacks its initial effective source')
+        metadata = {**metadata, 'confirmed_support_stop': creation.payload['price']}
     proof = proofs.get(f"target:{order.cOID}") or proofs.get("target")
     if proof is not None and not _target_proof_failures(group, order, proof):
         metadata = {**metadata, "reason": "structural_profit_target_advanced",
@@ -190,6 +242,7 @@ def oms_group_state_batch(
     journal_record_id: str | None = None,
     correlation_id: str = "",
     causation_id: str = "",
+    fixed_lot_unit=None,
 ) -> TypedJournalBatch:
     """Project the represented group revision and its keyed recovery components."""
     if not run_id or not group.group_id or not group.account_id or not group.intent.intent_id:
@@ -242,7 +295,24 @@ def oms_group_state_batch(
             mismatch.append("confirmed_support_stop")
         original_profile = source_intent.protection_profile
         expected_profile = original_profile
-        if original_profile is not None and (amended_stop or amended_target):
+        from .independent_lot_stop_amendment import independent_profile, rebuild_independent_profile
+        if independent_profile(source_intent) is not None:
+            if (len(set(group.broker_order_ids)) != len(group.broker_order_ids)
+                    or any(broker_id not in values for broker_id in group.broker_order_ids
+                           for values in (group.broker_order_request_indexes,
+                                          group.broker_order_slices, group.broker_order_roles))):
+                raise ValueError('Independent normalized broker bindings are incomplete')
+            bindings = tuple((broker_id, group.broker_order_request_indexes[broker_id],
+                              group.broker_order_slices[broker_id], group.broker_order_roles[broker_id])
+                             for broker_id in group.broker_order_ids)
+            per_order = {proof.sequence: proof for key, proof in proofs.items() if ':' in key}
+            expected_profile = rebuild_independent_profile(original_profile, group.orders,
+                group.plan.order_slice_ids, bindings, tuple(per_order.values()),
+                run_id=run_id, account_id=group.account_id, group_id=group.group_id,
+                source_intent_id=group.intent.intent_id, sequence=sequence, boundary=group.updated_at)
+            if amended_target:
+                mismatch.append('fixed_target_amendment')
+        elif original_profile is not None and (amended_stop or amended_target):
             expected_profile = replace(original_profile, slices=tuple(
                 replace(item,
                         stop=(replace(item.stop, price=group.intent.invalidation_price)
@@ -290,13 +360,23 @@ def oms_group_state_batch(
         correlation_id=str(original["correlation_id"]),
         causation_id=str(original["causation_id"]),
     )
+    if fixed_lot_unit is not None:
+        from .fixed_structural_lot_entry_v4 import V4FixedStructuralLotEntryBatch
+        if (type(fixed_lot_unit) is not V4FixedStructuralLotEntryBatch
+                or fixed_lot_unit.base is not published_intent_batch
+                or original.get('entity_type') != 'fixed_structural_lot_entry_intent'):
+            raise ValueError('OMS selected source lacks its exact original companion wrapper')
+        fixed_lot_unit.__post_init__()
+        rebuilt = replace(rebuilt, events=({**rebuilt.events[0],
+            'entity_type': original['entity_type']},))
     if (rebuilt.events != published_intent_batch.events
             or rebuilt.intents != published_intent_batch.intents
             or rebuilt.intent_slices != published_intent_batch.intent_slices):
         raise ValueError("OMS group intent differs from its published typed revision")
     intent_record_id = str(UUID(str(original_detail["record_id"])))
     committed_source_id = str(UUID(committed_intent_batch_id))
-    sealed_intent = dict(_sealed_families(published_intent_batch))[
+    sealed_intent = dict(_sealed_families(published_intent_batch,
+        **({"fixed_lot_unit":fixed_lot_unit} if fixed_lot_unit is not None else {})))[
         "trading_strategy_intent_v1"][0]
     intent_content_hash = typed_row("trading_strategy_intent_v1", {
         **{key: value for key, value in sealed_intent.items() if key != "content_hash"},
@@ -321,7 +401,8 @@ def oms_group_state_batch(
                 "canonical_strategy_id": strategy_id,
                 "canonical_strategy_revision": strategy_revision,
                 "canonical_metadata": canonical_oms_order_metadata(
-                    group, order, authorized_protection),
+                    group, order, authorized_protection, source_sequence=sequence,
+                    source_boundary=group.updated_at, source_run_id=run_id),
             }
             if order.raw != expected_raw:
                 changed = sorted(key for key in set(order.raw) | set(expected_raw)
@@ -489,6 +570,7 @@ class _ColdLineageView:
     orders: tuple[OrderRequest, ...]
     broker_order_request_indexes: dict[str, int]
     terminal_broker_order_ids: frozenset[str]
+    order_slice_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -696,6 +778,24 @@ def _approved_strategy_one_oms_intent(
            or (row.category, row.entity_type) !=
            ("protection", "protection_change") for row in history):
         raise ValueError("Strategy 1 OMS protection history differs from its prefix")
+    from .independent_lot_stop_amendment import independent_profile, rebuild_independent_profile
+    if independent_profile(approved_intent) is not None:
+        from .arte_journal_reader import _journal_instant
+        boundary = _journal_instant(state.group['updated_at'])
+        bindings = tuple((row['broker_order_id'], row['request_index'], row['slice_id'], row['role'])
+                         for row in state.broker_bindings)
+        profile = rebuild_independent_profile(approved_intent.protection_profile, state.orders,
+            state.order_slice_ids, bindings, history, run_id=protection_history.run_id,
+            account_id=account, group_id=state.group['group_id'], source_intent_id=approved_intent.intent_id,
+            sequence=state.sequence, boundary=boundary)
+        effective = [row for row in history if row.payload.get('phase') == 'effective'
+                     and row.payload.get('action') == 'replace_protective_stop']
+        if effective:
+            latest = max(effective, key=lambda row: row.sequence)
+            price = latest.payload['price']
+            approved_intent = replace(approved_intent, invalidation_price=price,
+                protection_profile=profile, metadata={**approved_intent.metadata, 'confirmed_support_stop': price})
+        return approved_intent, history
     for kind, field in (("stop", "invalidation_price"),
                         ("target", "profit_target_price")):
         effective = [row for row in history
@@ -811,7 +911,7 @@ def reconstruct_strategy_one_oms_lineage(
         admission_reservation, admission_decision, followthrough_row, profit_giveback_row,
         confirmed_ah_row, liquidity_fade_row, automatic_ladder_sources,original_risk_diagnostic)
     view = _ColdLineageView(
-        identity, account, approved_intent, state.orders, bindings, terminal)
+        identity, account, approved_intent, state.orders, bindings, terminal, state.order_slice_ids)
     rebuilt = []
     for order in state.orders:
         amendments = [row for row in history
@@ -824,6 +924,16 @@ def reconstruct_strategy_one_oms_lineage(
         if len(matching) > 1:
             raise ValueError("Strategy 1 target amendment lineage is ambiguous")
         proofs = {}
+        from .independent_lot_stop_amendment import independent_profile
+        if independent_profile(approved_intent) is not None:
+            for row in sorted(history, key=lambda value: value.sequence):
+                if (row.payload.get('kind') == 'stop' and row.payload.get('phase') == 'effective'
+                        and row.payload.get('action') in {None, 'enter_long'}):
+                    proofs.setdefault(f"initial_stop:{row.payload.get('client_order_id')}", row)
+        if independent_profile(approved_intent) is not None:
+            for proof in history:
+                if proof.payload.get('phase') == 'effective' and proof.payload.get('action') == 'replace_protective_stop':
+                    proofs[f'lot_amendment_history:{proof.sequence}'] = proof
         if matching:
             proof = matching[0]
             if (proof.sequence <= source_intent.sequence
@@ -833,7 +943,10 @@ def reconstruct_strategy_one_oms_lineage(
                     or _target_proof_failures(view, order, proof)):
                 raise ValueError("Strategy 1 target amendment proof differs")
             proofs[f"target:{order.cOID}"] = proof
-        metadata = canonical_oms_order_metadata(view, order, proofs)
+        metadata = canonical_oms_order_metadata(view, order, proofs,
+            **({"source_sequence":state.sequence,
+                "source_boundary":datetime.fromisoformat(str(group["updated_at"])).replace(tzinfo=timezone.utc),
+                "source_run_id":protection_history.run_id} if independent_profile(approved_intent) is not None else {}))
         rebuilt.append(replace(order, raw={
             "canonical_run_id": protection_history.run_id,
             "canonical_strategy_id": group["strategy_id"],
@@ -851,7 +964,7 @@ def load_recovered_strategy_one_oms_lineage(
     protection_history: CompleteProtectionHistory | None = None,
     strategy_number: int = 1,
     first_price_source: Any = None,
-    automatic_ladder_sources: Any = None,
+    automatic_ladder_sources: Any = None, fixed_lot_resume=None,
 ) -> tuple[RecoveredStrategyOneOmsLineage, ...]:
     """Cold-join latest OMS groups to exact intents and complete protection.
 
@@ -859,6 +972,14 @@ def load_recovered_strategy_one_oms_lineage(
     broker state or grant permission to resume an OMS actor or send an order.
     """
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    selected = fixed_lot_resume is not None
+    contexts = ()
+    if selected:
+        from src.backend.backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+        binding=require_fixed_structural_lot_resume(fixed_lot_resume,prefix.run_id)
+        if binding.source._revision!=strategy_number or automatic_ladder_sources is not None or binding.prefix(client,prefix.run_id)!=prefix:
+            raise ValueError('Selected OMS resume has foreign strategy/source/frontier')
+        contexts=binding.contexts
     automatic = automatic_ladder_sources is not None
     if automatic:
         from src.backend.backtest_ladder_source_authority import DeclaredLadderSourceAuthority
@@ -896,7 +1017,8 @@ def load_recovered_strategy_one_oms_lineage(
         raise TypeError("Strategy 1 OMS needs verified protection history")
     history = (protection_history if protection_history is not None
                else load_complete_typed_protection_history(
-                   client, prefix, page_size=1_000, max_events=max_events))
+                   client, prefix, page_size=1_000, max_events=max_events,
+                   **({"fixed_lot_contexts":contexts} if selected else {})))
     if (history.run_id != prefix.run_id
             or history.through_sequence != prefix.last_sequence
             or history.committed_batch_ids != prefix.batch_ids):
@@ -904,7 +1026,8 @@ def load_recovered_strategy_one_oms_lineage(
     groups = load_latest_committed_oms_groups(
         client, prefix, page_size=page_size,
         max_transitions=max_transitions, allowed_accounts=allowed_accounts,
-        strategy_identity=(automatic_ladder_sources.native['strategy_id'] if automatic else STRATEGY_ID, strategy_number), require_tactic=True)
+        strategy_identity=(binding.source._strategy_id if selected else automatic_ladder_sources.native['strategy_id'] if automatic else STRATEGY_ID, strategy_number), require_tactic=True,
+        **({"fixed_lot_contexts":contexts} if selected else {}))
     if len(groups) > max_groups:
         raise RuntimeError("Strategy 1 OMS cold group inventory exceeds bound")
     if not groups:
@@ -915,7 +1038,14 @@ def load_recovered_strategy_one_oms_lineage(
     if None in wanted:
         raise RuntimeError("Strategy 1 OMS group lacks an intent revision")
     by_id = {}
-    identifiers = sorted(wanted)
+    if selected:
+        from .arte_intent_projection import RecoveredIntent
+        for context in contexts:
+            if context.record.record_id in wanted:
+                request=context.verify_source()
+                by_id[context.record.record_id]=RecoveredIntent(context.record.sequence,
+                    context.record.account_id,context.record.record_id,context.base.batch_id,request.intent,context.base)
+    identifiers = sorted(wanted-set(by_id))
     for start in range(0, len(identifiers), page_size):
         chunk = tuple(identifiers[start:start + page_size])
         page = load_committed_strategy_intent_page(
@@ -1006,7 +1136,7 @@ def load_latest_committed_oms_groups(
     max_transitions: int = 20_000,
     allowed_accounts: frozenset[str] | None = None,
     strategy_identity: tuple[str, int] | None = None,
-    require_tactic: bool = False,
+    require_tactic: bool = False, fixed_lot_contexts=(),
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read one latest normalized state per OMS group, with a hard bound.
 
@@ -1037,7 +1167,8 @@ def load_latest_committed_oms_groups(
         try:
             page = load_committed_oms_group_state_page(
                 client, prefix, after_sequence=after, limit=current_page_size,
-                require_tactic=require_tactic)
+                require_tactic=require_tactic,
+                **({"fixed_lot_contexts":fixed_lot_contexts} if fixed_lot_contexts else {}))
         except RuntimeError as exc:
             # A dense group can exceed the independently bounded child count.
             # Retry the *same* cursor with fewer parents; never skip or relax
@@ -1230,7 +1361,7 @@ def load_committed_oms_group_state_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_children: int = 4096,
     require_intent_revision: bool = True,
-    require_tactic: bool = False,
+    require_tactic: bool = False, fixed_lot_contexts=(),
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read a bounded, fence-certified OMS group page without disk state."""
     if not _valid_prefix(prefix):
@@ -1334,6 +1465,11 @@ def load_committed_oms_group_state_page(
                                     key=lambda row: int(row["ordinal"])))
             tactic_by_group[str(UUID(str(parent["parent_record_id"])))] = (
                 tactic_from_rows(parent, selected, stored_utc=True))
+    selected_sources = {}
+    if fixed_lot_contexts:
+        from .fixed_structural_lot_entry_v4 import fixed_lot_contexts_by_batch
+        selected_sources = fixed_lot_contexts_by_batch(prefix.run_id, fixed_lot_contexts, max_commits=100_000)
+    verified_selected = set()
     source_by_id: dict[str, dict[str, Any]] = {}
     source_events: dict[str, dict[str, Any]] = {}
     if links:
@@ -1396,12 +1532,25 @@ def load_committed_oms_group_state_page(
         if source_id is not None:
             source = source_by_id[source_id]
             source_event = source_events[source_id]
+            selected_source = False
+            if source_event['entity_type'] == 'fixed_structural_lot_entry_intent':
+                context = selected_sources.get(str(source_event['batch_id']))
+                if (context is None or context.record.record_id != source_id
+                        or context.unit.base.intents[0]['intent_id'] != source['intent_id']
+                        or context.record.account_id != source['account_id']):
+                    raise RuntimeError('Own lot cold OMS join lacks exact fresh source context')
+                if context.unit.base.batch_id not in verified_selected:
+                    from .arte_journal_commit_v4 import load_verified_commit_v4
+                    load_verified_commit_v4(client, run_id=prefix.run_id,
+                        batch_id=context.unit.base.batch_id, fixed_lot_context=context)
+                    verified_selected.add(context.unit.base.batch_id)
+                selected_source = True
             if (str(source["intent_id"]) != str(group["strategy_intent_id"])
                     or source["account_id"] != group["account_id"]
                     or source_event["account_id"] != group["account_id"]
                     or str(UUID(str(source["batch_id"]))) != str(UUID(str(source_event["batch_id"])))
                     or source_event["category"] != "strategy"
-                    or source_event["entity_type"] != "strategy_intent"
+                    or (source_event["entity_type"] != "strategy_intent" and not selected_source)
                     or str(source["content_hash"]) != str(use_rows[0]["intent_content_hash"])
                     or int(source_event["sequence"]) >= sequence):
                 raise RuntimeError("Committed OMS intent revision differs from its source")

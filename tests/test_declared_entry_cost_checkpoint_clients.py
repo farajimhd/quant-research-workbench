@@ -90,7 +90,8 @@ def test_real_resume_assembly_propagates_profile_to_readers_and_writer(monkeypat
         credential_calls.append((options,resolved[1]))
         return resolved
     monkeypatch.setattr(writers,'_v4_runner_credentials',credentials)
-    config={'strategy':{'strategy_id':'early-squeeze-strategy','strategy_number':number}}
+    # Installed numbered configuration requires revision == strategy_number.
+    config={'strategy':{'strategy_id':'early-squeeze-strategy','strategy_number':number,'revision':number}}
     if number in (49,51):
         from src.trading_runtime.squeeze_ladder_automatic import AutomaticLadderPolicy
         config['strategy']['numbered_release']={'automatic_entry_policy':AutomaticLadderPolicy().payload()}

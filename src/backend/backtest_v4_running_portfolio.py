@@ -17,7 +17,7 @@ from src.trading_runtime.arte_portfolio_snapshot import load_portfolio_snapshot
 
 
 def load_v4_running_portfolio_images(
-    client: Any, *, run_id: str, account_ids: tuple[str, ...],
+    client: Any, *, run_id: str, account_ids: tuple[str, ...], fixed_lot_resume=None,
 ) -> tuple[V4CommittedPrefix, dict[str, dict[str, Any]]]:
     """Reject an incomplete, moved, or cross-cursor account recovery image."""
     if (not isinstance(run_id, str) or not run_id
@@ -26,7 +26,11 @@ def load_v4_running_portfolio_images(
             or any(not isinstance(account_id, str) or not account_id
                    for account_id in account_ids)):
         raise ValueError("V4 running portfolio needs distinct pinned accounts")
-    prefix = load_verified_v4_prefix(client, run_id)
+    if fixed_lot_resume is not None:
+        from .backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
+        prefix = require_fixed_structural_lot_resume(fixed_lot_resume,run_id).prefix(client,run_id)
+    else:
+        prefix = load_verified_v4_prefix(client, run_id)
     if (not isinstance(prefix, V4CommittedPrefix)
             or prefix.run_id != run_id or prefix.status != "running"
             or prefix.last_sequence < 1 or not prefix.batch_ids
@@ -64,6 +68,7 @@ def load_v4_running_portfolio_images(
                 or root.get("state_revision") != prefix.last_sequence):
             raise RuntimeError("V4 running portfolio account image changed identity")
         snapshots[account_id] = snapshot
-    if load_verified_v4_prefix(client, run_id) != prefix:
+    if (fixed_lot_resume.prefix(client,run_id) if fixed_lot_resume is not None
+            else load_verified_v4_prefix(client, run_id)) != prefix:
         raise RuntimeError("V4 running portfolio prefix moved during cold read")
     return prefix, snapshots
