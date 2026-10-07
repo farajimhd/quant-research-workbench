@@ -602,7 +602,9 @@ def test_v4_cold_batched_readback_still_recomputes_row_hash(monkeypatch):
         "trading_event_v1": [event],
     }
     calls = []
-    def batched(reader, specs, filters):
+    def batched(reader, specs, filters, *, fixed_lot_context=None,
+                fixed_lot_recovery_context=None):
+        assert fixed_lot_context is None and fixed_lot_recovery_context is None
         calls.append((specs, filters))
         return {name: [dict(row) for row in reader.tables[name]]
                 for name, _, _ in specs}

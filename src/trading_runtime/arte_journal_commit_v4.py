@@ -689,7 +689,8 @@ def _load_verified_details_v4(
                              family["row_count"]))
     row_sets = (
         _batched_detail_rows_v4(client, tuple(spec for spec in family_specs
-            if spec[0] not in (MOMENTUM.name, INITIAL_MOMENTUM.name)), filters)
+            if spec[0] not in (MOMENTUM.name, INITIAL_MOMENTUM.name)), filters,
+            fixed_lot_context=fixed_lot_context, fixed_lot_recovery_context=fixed_lot_recovery_context)
         if batched_readback else None
     )
     for name, column_names, row_count in family_specs:
@@ -1114,7 +1115,8 @@ def _load_verified_details_v4(
     return details
 
 
-def _batched_detail_rows_v4(client, family_specs, filters):
+def _batched_detail_rows_v4(client, family_specs, filters, *,
+                            fixed_lot_context=None, fixed_lot_recovery_context=None):
     """Read complete typed rows in bounded UNIONs; JSON is transport only.
 
     The stored rows remain normalized. Each row is reconstructed using its
@@ -1122,6 +1124,37 @@ def _batched_detail_rows_v4(client, family_specs, filters):
     hash and cross-family validators in _load_verified_details_v4.
     """
     from src.trading_runtime.arte_journal_writer import _literal, _rows
+
+    from .strategy_registry import BATCHED_DETAIL_SELECT_RULE
+    outer_select = False
+    for context in (fixed_lot_context, fixed_lot_recovery_context):
+        if context is None:
+            continue
+        from .fixed_structural_lot_entry_v4 import FixedStructuralLotPublicationContext
+        from .fixed_structural_lot_cold_recovery import FixedStructuralLotColdRecoveryContext, require_cold_recovery_context
+        if type(context) not in (FixedStructuralLotPublicationContext, FixedStructuralLotColdRecoveryContext):
+            raise ValueError('Batched journal envelope has foreign source context')
+        source = context.source
+        installed = source.installed_payload
+        if installed is None:
+            continue
+        rules = installed.get('strategy', {}).get('numbered_release', {}).get('contract', {}).get('rule_set_contracts', ())
+        if BATCHED_DETAIL_SELECT_RULE not in rules:
+            continue
+        if type(rules) is not list or rules.count(BATCHED_DETAIL_SELECT_RULE) != 1:
+            raise ValueError('Batched journal envelope requires one exact declared rule')
+        if type(context) is FixedStructuralLotPublicationContext:
+            context.verify_admission()
+            batch_id = context.base.batch_id
+        else:
+            require_cold_recovery_context(context, run_id=source.run_id,
+                                          batch_id=context.batch_id, _allow_pending=True)
+            batch_id = context.batch_id
+        expected_filters = (f"WHERE run_id={_literal(source.run_id)} "
+                            f"AND batch_id=toUUID({_literal(batch_id)}) ")
+        if filters != expected_filters:
+            raise ValueError('Batched journal envelope has foreign run/batch filters')
+        outer_select = True
 
     row_sets = {name: [] for name, _, _ in family_specs}
     for start in range(0, len(family_specs), 8):
@@ -1133,8 +1166,10 @@ def _batched_detail_rows_v4(client, family_specs, filters):
             f"FROM arte.{name} {filters}LIMIT {row_count + 1})"
             for name, columns, row_count in group
         ]
-        for envelope in _rows(client, " UNION ALL ".join(selects)
-                              + " FORMAT JSONEachRow"):
+        query = " UNION ALL ".join(selects)
+        if outer_select:
+            query = "SELECT family_name,payload FROM (" + query + ")"
+        for envelope in _rows(client, query + " FORMAT JSONEachRow"):
             name = envelope.get("family_name")
             if name not in allowed or type(envelope.get("payload")) is not str:
                 raise RuntimeError("V4 batched detail readback has a foreign family")
