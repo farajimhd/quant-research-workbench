@@ -22,7 +22,10 @@ from .batched import BatchedEvaluator
 
 def evaluate_panel(sessions, population, evaluator, folder, emit):
     receipts, results = [], []
-    with SessionPrefetch(sessions, lambda s: load_session(s, isolated_banks=True)) as prefetch:
+    options=getattr(evaluator,'args',None)
+    kwargs=dict(isolated_banks=True)
+    if getattr(options,'prefetch_features',False):kwargs['feature_gib']=options.feature_gib
+    with SessionPrefetch(sessions, lambda s: load_session(s,**kwargs)) as prefetch:
         for index, session in enumerate(sessions):
             emit(completed_sessions=index, focus=session['day'], selected_days=[s['day'] for s in sessions])
             receipt = evaluator.evaluate(session, population, folder/f'session_{index:03d}', prefetch.take(index), emit)
@@ -49,6 +52,10 @@ def main(argv=None):
     p.add_argument('--chunk-candles',type=int,default=4096);p.add_argument('--maximum-fills',type=int,default=65536)
     p.add_argument('--maximum-tape-gib',type=float,default=12);p.add_argument('--feature-gib',type=float,default=24)
     p.add_argument('--maximum-state-gib',type=float,default=16);p.add_argument('--maximum-gate-gib',type=float,default=32)
+    p.add_argument('--rule-prefetch',action=argparse.BooleanOptionalAction,default=False)
+    p.add_argument('--rule-prefetch-gib',type=float,default=24)
+    p.add_argument('--concurrent-writes',action=argparse.BooleanOptionalAction,default=False)
+    p.add_argument('--prefetch-features',action=argparse.BooleanOptionalAction,default=False)
     args=p.parse_args(argv)
     if not 1<=args.batch_size<=1024: p.error('GPU batch size must be 1..1024')
     spec=json.loads(args.sessions.read_text());preflight(spec)

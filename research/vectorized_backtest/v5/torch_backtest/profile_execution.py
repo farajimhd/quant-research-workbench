@@ -59,6 +59,10 @@ def main(argv=None):
     p.add_argument('--baseline-session',type=Path,required=True);p.add_argument('--population',type=int,default=4096)
     p.add_argument('--batch-size',type=int,default=512);p.add_argument('--repeats',type=int,default=2)
     p.add_argument('--profile-seconds',type=int,default=256)
+    p.add_argument('--rule-prefetch',action=argparse.BooleanOptionalAction,default=False)
+    p.add_argument('--rule-prefetch-gib',type=float,default=24)
+    p.add_argument('--concurrent-writes',action=argparse.BooleanOptionalAction,default=False)
+    p.add_argument('--prefetch-features',action=argparse.BooleanOptionalAction,default=False)
     args=p.parse_args(argv)
     if not 2<=args.repeats<=3:p.error('Bounded cold/warm sweep requires two or three passes')
     root=require_runtime(args.output);reference=args.baseline_session
@@ -79,7 +83,11 @@ def main(argv=None):
                 if (root/'STOP').exists():write_json(child/'STOP',dict(reason='Parent profile stop requested'))
             result=profile_staged.main(['--sessions',str(args.sessions),'--output',str(child),
                 '--populations',str(args.population),'--batch-sizes',str(args.batch_size),
-                '--session-count','1','--profile-seconds',str(args.profile_seconds)],emit_hook=emit)
+                '--session-count','1','--profile-seconds',str(args.profile_seconds),
+                '--rule-prefetch' if args.rule_prefetch else '--no-rule-prefetch',
+                '--concurrent-writes' if args.concurrent_writes else '--no-concurrent-writes',
+                '--prefetch-features' if args.prefetch_features else '--no-prefetch-features',
+                '--rule-prefetch-gib',str(args.rule_prefetch_gib)],emit_hook=emit)
             if result:raise ValueError('Child specialization profile failed')
             row=json.loads((child/'measurements.json').read_text())[0]
             if row['status']=='memory_limit':raise MemoryError(row['error'])

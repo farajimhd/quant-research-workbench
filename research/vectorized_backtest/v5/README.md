@@ -153,3 +153,34 @@ Evidence remains under the workstation V5 runtime:
 `profiles/20261007-7044f421e-full-prefetch/full_comparison.json`.
 These are timing/parity experiments, not strategy-performance evidence. Sealed
 validation remains unopened and the final campaign schedule is awaiting review.
+
+### Bounded preparation and persistence overlap
+
+`--rule-prefetch` prepares batch N+1 while N replays, in the same GPU-owner
+process on a separate CUDA stream. A single future and a distinct packed gate
+buffer prevent overwriting captured replay inputs. Buffers are recycled after
+their readers finish. Producer work is drained before another graph capture,
+session transition or durable stop. Replay barriers wait only for the replay
+stream; compilation/capture still waits for all preparation to finish.
+
+The extra lookahead gate allocation has its own `--rule-prefetch-gib` budget
+(24 GiB by default), with a workspace/free-headroom check before launch. Resource
+failure is explicit, never a silent sequential fallback. Rule evaluation keeps
+the existing device arithmetic and all observed-candle validity masks.
+
+`--prefetch-features` moves CPU assembly of each listing's certified split-adjusted
+feature/context views into the existing one-session input producer. These views
+are bound to exact prior-session identity and timestamp bounds; a changed context
+fails closed. Each session's cached views are bounded by `--feature-gib`.
+
+`--concurrent-writes` seals an owned CPU fill snapshot and publishes its receipt
+in a single background writer while subsequent computation proceeds. Counts are
+copied before submission; the writer never reads mutable runner state or touches
+CUDA. Receipt hashes are collected only after publication. Completion and STOP
+drain writes before emitting the durable session/checkpoint boundary.
+
+These switches are independently selectable for profiling; defaults remain off
+until workstation throughput measurements select the intended campaign options.
+Timing reports include producer wait, measured replay/preparation overlap and
+receipt-write wait. Overlapped phase durations must not be summed as wall time.
+The performance panel reports lookahead readiness and pending receipt writes.

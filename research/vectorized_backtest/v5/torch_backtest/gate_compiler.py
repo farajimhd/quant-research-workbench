@@ -9,6 +9,24 @@ from .feature_bank import CATALOG
 from .program import TorchPrograms
 from .evolution import STAGES
 
+class HostFeatureRows:
+    """CPU-prefetched causal/split views bound to one exact session context."""
+    def __init__(self,bank,identities,previous,*,start_us,end_us,maximum_gib):
+        if maximum_gib<=0:raise ValueError('Positive host feature budget required')
+        self.previous=previous;self.start_us=start_us;self.end_us=end_us;self.rows={};self.bytes=0
+        for identity in identities:
+            rows=bank.listing(identity,previous=previous,start_us=start_us,end_us=end_us)
+            self.bytes+=sum(v.numel()*v.element_size() for v in rows)
+            if self.bytes>maximum_gib*1024**3:raise MemoryError('CPU feature lookahead exceeds declared budget')
+            if any(v.device.type!='cpu' for v in rows):raise ValueError('Host feature producer cannot use CUDA')
+            self.rows[identity]=rows
+
+    def listing(self,identity,*,previous=None,start_us=None,end_us=None):
+        if previous is not self.previous or start_us!=self.start_us or end_us!=self.end_us:
+            raise ValueError('Prefetched feature causal/split context changed')
+        return self.rows[identity]
+
+
 class FeatureResident:
     def __init__(self,bank,identities,previous=None,*,device='cuda',maximum_gib=24.,start_us=None,end_us=None):
         self.bank=bank;self.device=torch.device(device);self.rows=[];self.bytes=0

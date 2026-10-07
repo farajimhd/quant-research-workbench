@@ -42,7 +42,7 @@ def load_execution(root):
         _EXECUTION_CACHE[key]=(tape,binding,stamps(paths));_HOST_BYTES+=tape.bytes
     return tape,binding
 
-def load_session(spec, *, isolated_banks=False):
+def load_session(spec, *, isolated_banks=False, feature_gib=None):
     tape,receipt=load_execution(spec['execution_root'])
     # Split basis is session-specific mutable metadata. A prefetched prior
     # must not change the bank being consumed by the current GPU session.
@@ -89,7 +89,12 @@ def load_session(spec, *, isolated_banks=False):
         prices=np.exp(bank.scalar[a+safe[selected],3].astype(np.float64))
         expected=tape.close[selected,ticker].numpy()
         if not valid.all() or not np.allclose(prices,expected,rtol=2e-6,atol=1e-4):raise ValueError('Feature/financial prices or validity disagree')
-    return tape,bank,prior,identities,dict(day=spec['day'],execution=receipt,feature_certificate=bank.certificate_hash,prior_certificate=prior.certificate_hash if prior else None,identity_map_sha256=file_hash(mapping_path),split_certificate_sha256=split_hash,previous_split_certificate_sha256=previous_split_hash)
+    binding=dict(day=spec['day'],execution=receipt,feature_certificate=bank.certificate_hash,prior_certificate=prior.certificate_hash if prior else None,identity_map_sha256=file_hash(mapping_path),split_certificate_sha256=split_hash,previous_split_certificate_sha256=previous_split_hash)
+    if feature_gib is not None:
+        from .gate_compiler import HostFeatureRows
+        bank=HostFeatureRows(bank,identities,prior,start_us=int(tape.clocks[0])*1_000_000,
+                             end_us=int(tape.clocks[-1])*1_000_000,maximum_gib=feature_gib)
+    return tape,bank,prior,identities,binding
 
 def preflight(spec,*,require_full=True,profile=False):
     training=spec.get('training',[]);validation=spec.get('validation',[])

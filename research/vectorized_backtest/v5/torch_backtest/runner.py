@@ -1172,9 +1172,9 @@ class SqueezeRunner:
                     # Bound queued work for truthful UI cursors. One barrier per
                     # 256 ticks avoids per-tick reads/synchronization overhead.
                     if progress and (_ + 1) % max(1, 256 // self.graph_steps) == 0:
-                        torch.cuda.synchronize(self.tape.device)
+                        torch.cuda.current_stream(self.tape.device).synchronize()
                     if progress and perf_counter() - updated >= 1:
-                        torch.cuda.synchronize(self.tape.device)
+                        torch.cuda.current_stream(self.tape.device).synchronize()
                         progress(
                             {
                                 "completed_seconds": self.completed
@@ -1199,7 +1199,7 @@ class SqueezeRunner:
                         )
                         updated = perf_counter()
             if self.tape.device.type == "cuda":
-                torch.cuda.synchronize(self.tape.device)
+                torch.cuda.current_stream(self.tape.device).synchronize()
         if bool(self.overflow.any()):
             raise RuntimeError("Fill ledger full; no truncation or completed result")
         if bool(self.financial_error.any()):

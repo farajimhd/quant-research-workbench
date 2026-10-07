@@ -29,6 +29,10 @@ def main(argv=None,*,emit_hook=None):
     p.add_argument('--maximum-fills',type=int,default=65536);p.add_argument('--maximum-state-gib',type=float,default=20)
     p.add_argument('--maximum-gate-gib',type=float,default=32);p.add_argument('--maximum-tape-gib',type=float,default=12)
     p.add_argument('--feature-gib',type=float,default=24);p.add_argument('--chunk-candles',type=int,default=4096)
+    p.add_argument('--rule-prefetch',action=argparse.BooleanOptionalAction,default=False)
+    p.add_argument('--rule-prefetch-gib',type=float,default=24,help='Additional single lookahead gate-buffer budget')
+    p.add_argument('--concurrent-writes',action=argparse.BooleanOptionalAction,default=False)
+    p.add_argument('--prefetch-features',action=argparse.BooleanOptionalAction,default=False)
     args=p.parse_args(argv)
     if not 1<=args.session_count<=30 or not 32<=args.profile_seconds<=19800 or any(n<10 for n in args.populations) or any(not 1<=n<=1024 for n in args.batch_sizes):
         p.error('Invalid bounded profiling budget')
@@ -66,7 +70,8 @@ def main(argv=None,*,emit_hook=None):
                 if args.device=='cuda':torch.cuda.reset_peak_memory_stats()
                 receipts=[]
                 try:
-                    with SessionPrefetch(sessions,lambda s:load_session(s,isolated_banks=True)) as prefetch:
+                    with SessionPrefetch(sessions,lambda s:load_session(s,isolated_banks=True,
+                            feature_gib=args.feature_gib if args.prefetch_features else None)) as prefetch:
                         for index,session in enumerate(sessions):
                             emit(focus=f'B{size} / batch {batch_size} / {session["day"]}')
                             receipt=evaluator.evaluate(session,population,job/f'session_{index:03d}',prefetch.take(index),emit)
