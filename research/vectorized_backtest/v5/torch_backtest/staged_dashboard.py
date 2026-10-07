@@ -52,7 +52,9 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
                         Layout(name='timing',size=2),Layout(name='messages',size=5 if height>=30 else 3),Layout(name='keys',size=1))
     layout['header'].update(Text(f"V5 {status.get('status','starting').upper()} | {status.get('stage','Preflight')} | updated {age:.0f}s ago\n{status.get('focus','')} | validation {status.get('validation_status','SEALED')}",style='cyan' if age<30 else 'yellow'))
     bars=Progress(TextColumn('{task.description}',table_column=Column(min_width=18,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}'),expand=True)
-    for label,done,total in [('Generations',status.get('completed_generations',0),config.get('generations',0)),
+    for label,done,total in [('Qualification passes' if status.get('mode')=='profile' else 'Generations',
+                               max(0,status.get('execution_pass',1)-1) if status.get('mode')=='profile' else status.get('completed_generations',0),
+                               status.get('execution_passes',0) if status.get('mode')=='profile' else config.get('generations',0)),
                               ('Sessions',status.get('completed_sessions',0),config.get('training_sessions',0)),
                               ('Candidate batches',status.get('completed_batches',0),status.get('total_batches',0)),
                               ('Backtest timestamps',cursor.get('completed_seconds',0),cursor.get('total_seconds',0)),
@@ -108,11 +110,24 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
               ('Median return / worst-tail loss %',f"{number(None if metrics.get('median_return') is None else metrics['median_return']*100)} / {number(None if metrics.get('tail_loss') is None else metrics['tail_loss']*100)}"),
               ('Active-batch provisional median / max P&L $',f"{number(active.get('pnl_median'))} / {number(active.get('pnl_max'))}"),
               ('Active-batch financial errors / overflows',f"{active.get('financial_error_candidates','—')} / {active.get('overflow_candidates','—')}")]
-    if not metrics and view!='performance':rows.insert(0,('Ranking','Pending completed panel; live batch values provisional'))
+    if not metrics and view=='financial':
+        rows=[('Current activity',status.get('stage','Waiting for worker snapshot')),
+              ('Ranking','Pending completed common panel'),
+              ('Live metrics scope','Active batch; provisional marked equity'),
+              ('Batch P&L min / median / max $',' / '.join(number(active.get(k)) for k in ('pnl_min','pnl_median','pnl_max'))),
+              ('Closed-position win rate %',number(None if active.get('position_win_rate') is None else active['position_win_rate']*100)),
+              ('Profit factor',number(active.get('profit_factor'))),
+              ('Largest drawdown $',number(active.get('drawdown_max'))),
+              ('Closed positions / most open',f"{number(active.get('closed_positions'),',.0f')} / {number(active.get('open_positions_max'),',.0f')}"),
+              ('Most fills',number(active.get('fills_max'),',.0f')),
+              ('Closed hold mean / median / P90 s',' / '.join(number(active.get(k)) for k in ('closed_hold_mean_seconds','closed_hold_median_seconds','closed_hold_p90_seconds'))),
+              ('Financial errors / overflows',f"{active.get('financial_error_candidates','--')} / {active.get('overflow_candidates','--')}")]
+        if not active:rows.insert(1,('Backtest metrics','Not available until replay begins'))
+    elif not metrics and view!='performance':rows.insert(0,('Ranking','Pending completed panel; live batch values provisional'))
     page=status.get('_page',0);available=max(1,height-(14+leader_height+(5 if height>=30 else 3)))
     pages=max(1,(len(rows)+available-1)//available);page%=pages
     for label,value in rows[page*available:(page+1)*available]:grid.add_row(label,value)
-    layout['metrics'].update(Panel(grid,title=f'Rank {selected} | {view} | page {page+1}/{pages}',padding=0))
+    layout['metrics'].update(Panel(grid,title=f'{"Live batch" if not metrics else "Rank "+str(selected)} | {view} | page {page+1}/{pages}',padding=0))
     averages=status.get('average_timing',{})
     layout['timing'].update(Text(f"Elapsed {duration(now-status.get('started_epoch',now))} | replay ETA {duration(status.get('replay_eta'))} | session ETA {duration(status.get('session_eta'))}\nAverage session {duration(averages.get('end_to_end'))} | average batch {duration(status.get('average_batch_seconds'))} | GPU {number(status.get('gpu_gib'))} GiB"))
     messages=status.get('messages',[])[-(3 if height>=30 else 1):]
