@@ -26,7 +26,7 @@ class FixedStructuralLotStopCeiling:
 
 def load_fixed_structural_lot_stop_ceiling(client, prefix, *, entry, intervals,
                                          intent, group_id, strategy_identity,
-                                         entry_request=None,fixed_lot_contexts=()):
+                                         entry_request=None,fixed_lot_contexts=(),now_ms=None):
     """Freshly verify normalized OMS rows and preserve every frozen lot target.
 
     The prefix/OMS reader verifies committed content. Entry replay checks source
@@ -126,10 +126,20 @@ def load_fixed_structural_lot_stop_ceiling(client, prefix, *, entry, intervals,
     remaining=tuple((lot,value.remaining) for lot,value in zip(slices,exposure))
     active={lot for lot,value in remaining if value>0}|acquiring
     ceiling=min((targets[lot] for lot in active),default=None)
-    elapsed=_journal_instant(g['updated_at'])-market_day_boundary(entry.session_date,0)
-    observed=(elapsed.days*86400+elapsed.seconds)*1000+elapsed.microseconds//1000
-    if elapsed.microseconds%1000 or observed<entry.proposal.boundary_ms:
-        raise ValueError('Fixed lot roster clock precedes its entry')
+    from .fixed_structural_lot_causal_clock import selected_clock, committed_observed_clock
+    if selected_clock(entry_request):
+        matching=tuple(context for context in fixed_lot_contexts
+            if context.record.entity_id==entry_request.intent.intent_id)
+        if len(matching)!=1 or matching[0].source is not entry_request.source:
+            raise ValueError('Causal roster requires its exact committed entry source')
+        observed=committed_observed_clock(client,prefix,state,session_date=entry.session_date,
+            entry_boundary_ms=entry.proposal.boundary_ms,now_ms=now_ms,
+            entry_sequence=matching[0].record.sequence)
+    else:
+        elapsed=_journal_instant(g['updated_at'])-market_day_boundary(entry.session_date,0)
+        observed=(elapsed.days*86400+elapsed.seconds)*1000+elapsed.microseconds//1000
+        if elapsed.microseconds%1000 or observed<entry.proposal.boundary_ms:
+            raise ValueError('Fixed lot roster clock precedes its entry')
     return FixedStructuralLotStopCeiling(prefix.run_id,group_id,prefix.last_sequence,
         state.sequence,remaining,tuple(lot for lot in slices if lot in acquiring),ceiling,
         intent.intent_id,fixed_structural_lot_entry_hash(entry),observed)

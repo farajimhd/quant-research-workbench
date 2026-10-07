@@ -98,12 +98,17 @@ def _fresh(state,*,client,prefix,intervals,intent,strategy_identity,now_ms,
 
 
 def open_fixed_structural_lot_protection(entry,*,client,prefix,intervals,intent,
-                                       group_id,strategy_identity,entry_request=None,fixed_lot_contexts=()):
+                                       group_id,strategy_identity,entry_request=None,fixed_lot_contexts=(),now_ms=None):
+    from .fixed_structural_lot_causal_clock import selected_clock,require_completed_boundary
+    causal_clock=selected_clock(entry_request)
+    if causal_clock:
+        require_completed_boundary(now_ms)
     roster=load_fixed_structural_lot_stop_ceiling(client,prefix,entry=entry,intervals=intervals,
         intent=intent,group_id=group_id,strategy_identity=strategy_identity,
         **({'entry_request':entry_request,'fixed_lot_contexts':fixed_lot_contexts}
-           if entry_request is not None or fixed_lot_contexts else {}))
-    protection=ProtectionState(max(entry.proposal.boundary_ms,roster.observed_boundary_ms),
+           if entry_request is not None or fixed_lot_contexts else {}),
+        **({'now_ms':now_ms} if causal_clock else {}))
+    protection=ProtectionState(now_ms if causal_clock else max(entry.proposal.boundary_ms,roster.observed_boundary_ms),
                                entry.proposal.initial_stop,entry.proposal.initial_target)
     return FixedStructuralLotProtectionState(entry,protection,roster)
 

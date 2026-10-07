@@ -131,12 +131,19 @@ def canonical_oms_order_metadata(
     group: FrozenOmsGroup | _ColdLineageView, order: OrderRequest,
     authorized_protection: Mapping[str, JournalRecord] | None = None,
     *, source_sequence=None, source_boundary=None, source_run_id=None,
+    fixed_lot_source=None, source_strategy_id=None, source_strategy_revision=None,
 ) -> dict[str, Any]:
     """Rebuild initial lineage plus only the target amendment's typed delta."""
     from src.trading_runtime.strategy_orders import canonical_runtime_metadata
 
     metadata = canonical_runtime_metadata(order, approved_oms_lineage_intent(group))
     proofs = authorized_protection or {}
+    from .independent_lot_initial_stop_lineage import initial_metadata
+    initial = initial_metadata(group,order,metadata,proofs,source=fixed_lot_source,
+        run_id=source_run_id,strategy_id=source_strategy_id,strategy_revision=source_strategy_revision,
+        sequence=source_sequence,boundary=source_boundary)
+    if initial is not None:
+        return initial
     from .independent_lot_stop_amendment import independent_profile
     if independent_profile(group.intent) is not None and order.side == 'SELL' and not order.parentId:
         indexes = [index for index, value in enumerate(group.orders) if value.cOID == order.cOID]
@@ -242,7 +249,7 @@ def oms_group_state_batch(
     journal_record_id: str | None = None,
     correlation_id: str = "",
     causation_id: str = "",
-    fixed_lot_unit=None,
+    fixed_lot_unit=None, fixed_lot_source=None,
 ) -> TypedJournalBatch:
     """Project the represented group revision and its keyed recovery components."""
     if not run_id or not group.group_id or not group.account_id or not group.intent.intent_id:
@@ -402,7 +409,8 @@ def oms_group_state_batch(
                 "canonical_strategy_revision": strategy_revision,
                 "canonical_metadata": canonical_oms_order_metadata(
                     group, order, authorized_protection, source_sequence=sequence,
-                    source_boundary=group.updated_at, source_run_id=run_id),
+                    source_boundary=group.updated_at, source_run_id=run_id,
+                    fixed_lot_source=fixed_lot_source,source_strategy_id=strategy_id,source_strategy_revision=strategy_revision),
             }
             if order.raw != expected_raw:
                 changed = sorted(key for key in set(order.raw) | set(expected_raw)
@@ -835,7 +843,7 @@ def reconstruct_strategy_one_oms_lineage(
     confirmed_ah_row: Mapping[str, Any] | None = None,
     liquidity_fade_row: Mapping[str, Any] | None = None,
     automatic_ladder_sources: Any = None,
-    original_risk_diagnostic: Any = None,
+    original_risk_diagnostic: Any = None, fixed_lot_source=None,
 ) -> tuple[OrderRequest, ...]:
     """Rebuild exact entry-group raw lineage from completed typed evidence.
 
@@ -944,6 +952,7 @@ def reconstruct_strategy_one_oms_lineage(
                 raise ValueError("Strategy 1 target amendment proof differs")
             proofs[f"target:{order.cOID}"] = proof
         metadata = canonical_oms_order_metadata(view, order, proofs,
+            fixed_lot_source=fixed_lot_source,source_strategy_id=group["strategy_id"],source_strategy_revision=group["strategy_revision"],
             **({"source_sequence":state.sequence,
                 "source_boundary":datetime.fromisoformat(str(group["updated_at"])).replace(tzinfo=timezone.utc),
                 "source_run_id":protection_history.run_id} if independent_profile(approved_intent) is not None else {}))
@@ -1117,7 +1126,8 @@ def load_recovered_strategy_one_oms_lineage(
             confirmed_ah_row=confirmed_ah_rows.get(group.intent_record_id),
             liquidity_fade_row=liquidity_rows.get(group.intent_record_id),
             original_risk_diagnostic=risk_diagnostics.get(group.intent_record_id),
-            **({'automatic_ladder_sources': automatic_ladder_sources} if automatic else {})),
+            **({'automatic_ladder_sources': automatic_ladder_sources} if automatic else {}),
+            **({'fixed_lot_source':binding.source} if selected else {})),
         history.through_sequence,
         _approved_strategy_one_oms_intent(
             group, by_id[group.intent_record_id], history,

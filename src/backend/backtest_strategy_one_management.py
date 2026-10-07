@@ -555,7 +555,7 @@ class StrategyOneManagementRunner:
             self._positions[key] = ProtectionState(
                 boundary_ms, source.initial_stop, source.initial_target)
             if self._fixed_lot_owner is not None:
-                selected=await self._fixed_lot_owner.first_held(key)
+                selected=await self._fixed_lot_owner.first_held(key,boundary_ms=boundary_ms)
                 self._positions[key]=selected.protection
             # The fill can occur anywhere inside its aggregate liquidity bar.
             # Do not include that bucket's high in the prior-position witness.

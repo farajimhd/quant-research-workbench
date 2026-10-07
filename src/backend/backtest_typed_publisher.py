@@ -700,7 +700,8 @@ class BacktestTypedJournalPublisher:
                                     strategy_id=source_batch.oms_group_states[0]["strategy_id"],
                                     strategy_revision=source_batch.oms_group_states[0]["strategy_revision"],
                                     authorized_protection=protection_proof,
-                                    source_sequence=source_record.sequence,source_boundary=source_record.event_time).items():
+                                    source_sequence=source_record.sequence,source_boundary=source_record.event_time,
+                                    fixed_lot_source=(self._fixed_lot_projection_authority.source if self._fixed_lot_projection_authority is not None else None)).items():
                                 if (key in self._committed_order_lineage
                                         and self._committed_order_lineage[key] != lineage
                                         and not authorized_oms_lineage_transition(

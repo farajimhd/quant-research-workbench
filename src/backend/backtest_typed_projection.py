@@ -47,7 +47,7 @@ NIL_BATCH_ID = str(UUID(int=0))
 def committed_oms_order_lineage(group: object, *, run_id: str,
                                 strategy_id: str, strategy_revision: int,
                                 authorized_protection: Mapping | None = None,
-                                source_sequence=None, source_boundary=None) -> dict[str, tuple]:
+                                source_sequence=None, source_boundary=None, fixed_lot_source=None) -> dict[str, tuple]:
     """Index only lineage already validated against a typed OMS transition."""
     from src.trading_runtime.arte_oms_projection import canonical_oms_order_metadata
 
@@ -61,7 +61,8 @@ def committed_oms_order_lineage(group: object, *, run_id: str,
             "canonical_run_id": run_id,
             "canonical_metadata": canonical_oms_order_metadata(
                 group, order, authorized_protection, source_sequence=source_sequence,
-                source_boundary=source_boundary, source_run_id=run_id),
+                source_boundary=source_boundary, source_run_id=run_id,
+                fixed_lot_source=fixed_lot_source,source_strategy_id=strategy_id,source_strategy_revision=strategy_revision),
         }
         lineage = (expected, group.account_id, order.ticker.upper(), order.conid,
                    group.group_id, group.intent.intent_id)
@@ -343,6 +344,7 @@ def project_pending_backtest_v4_prefix(
                 admission_source_intent=source_intent,
                 admission_reservation=admission,
                 authorized_protection=protection_proof,
+                fixed_lot_source=(fixed_lot_projection_authority.source if fixed_lot_projection_authority is not None else None),
                 journal_record_id=record.record_id,
                 correlation_id=record.payload.get("correlation_id", ""),
                 causation_id=record.payload.get("causation_id", ""))
@@ -361,7 +363,8 @@ def project_pending_backtest_v4_prefix(
                     strategy_id=record.payload["strategy_id"],
                     strategy_revision=record.payload["strategy_revision"],
                     authorized_protection=protection_proof, source_sequence=record.sequence,
-                    source_boundary=record.event_time).items():
+                    source_boundary=record.event_time,
+                    fixed_lot_source=(fixed_lot_projection_authority.source if fixed_lot_projection_authority is not None else None)).items():
                 if (client_order_id in order_lineage
                         and order_lineage[client_order_id] != lineage
                         and not authorized_oms_lineage_transition(

@@ -210,11 +210,13 @@ class NativeFixedStructuralLotManagement:
             for v in group.broker_bindings
             if v['role']=='protective_stop' and v['terminal']==0)
 
-    def open(self,entry_request,*,group_id):
+    def open(self,entry_request,*,group_id,boundary_ms=None):
         prefix,contexts=self._prefix()
         args=self._arguments(entry_request,prefix,contexts)
         self._group(entry_request,prefix,contexts,group_id)
-        state=open_fixed_structural_lot_protection(entry_request.entry,group_id=group_id,**args)
+        from src.trading_runtime.fixed_structural_lot_causal_clock import selected_clock
+        state=open_fixed_structural_lot_protection(entry_request.entry,group_id=group_id,**args,
+            **({'now_ms':boundary_ms} if selected_clock(entry_request) else {}))
         key=(entry_request.entry.proposal.account_id,entry_request.entry.proposal.assignment_id,
              entry_request.entry.proposal.ticker)
         if key in self.states:raise ValueError('Selected management position already open')
@@ -231,11 +233,11 @@ class NativeFixedStructuralLotManagement:
         if key in self.entries:raise ValueError('Selected manager cannot overwrite an entry')
         self.entries[key]=request;self.groups[key]=group_id
 
-    async def first_held(self,key):
+    async def first_held(self,key,*,boundary_ms=None):
         self.publisher.enqueue_pending();await self.publisher.await_fence()
         request=self.entries[key]
         # open checks complete actual fills/acquisition ownership at the fence.
-        return self.open(request,group_id=self.groups[key])
+        return self.open(request,group_id=self.groups[key],boundary_ms=boundary_ms)
 
     async def retire(self,key):
         from src.trading_runtime.fixed_structural_lot_management import load_fixed_structural_lot_stop_ceiling
