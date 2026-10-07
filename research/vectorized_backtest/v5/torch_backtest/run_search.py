@@ -111,4 +111,3 @@ def metric_summary(results,stability,lane,population):
     summary['objective_components']={k:clean(v[lane]) for k,v in stability['components'].items()}
     summary['active_nodes']=sum(p.validate(CATALOG)['active_nodes'] for p in population[lane].programs().values())
     return summary
-
