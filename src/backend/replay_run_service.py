@@ -3525,7 +3525,7 @@ class ReplayRunController:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v4 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v5 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number, run_id=self.run_id, session_date=self.definition.session_date,
@@ -3533,7 +3533,7 @@ class ReplayRunController:
                 seeds=plans.seeds, through_boundary_ms=self._fixed_through_boundary_ms(),
                 client_factory=lambda: readonly_clickhouse_client(market_stream=True, v3_read_principal=True))
         self._fixed_structural_lot_session = selected_lot_session
-        from .backtest_fixed_structural_lot_projection_authority import uses_projection_authority
+        from .backtest_fixed_structural_lot_projection_runtime_authority import uses_projection_authority
         separate_lot_projection = (selected_lot_session is not None
             and uses_projection_authority(selected_lot_session.operation.source))
         code_hash_started = time.perf_counter()
@@ -10163,7 +10163,7 @@ class ReplayRunService:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v4 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v5 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number,run_id=run_id,session_date=definition.session_date,
@@ -10247,7 +10247,7 @@ class ReplayRunService:
                     # same fenced authority that the new-run writer consumed.
                     journal_config = load_typed_run_context(reader, run_id)
                     if selected_lot_session is not None:
-                        from .backtest_fixed_structural_lot_projection_authority import uses_projection_authority, runtime_config_from_context
+                        from .backtest_fixed_structural_lot_projection_runtime_authority import uses_projection_authority, runtime_config_from_context
                         if uses_projection_authority(selected_lot_session.operation.source):
                             journal_config = runtime_config_from_context(journal_config)
                     assembly, journal_anchor = assemble_resumed_fixed_v4_journal(

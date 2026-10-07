@@ -400,7 +400,7 @@ def project_pending_backtest_v4_prefix(
             from src.trading_runtime.fixed_structural_lot_entry_v4 import fixed_structural_lot_semantic_batch
             request=journal.fixed_structural_lot_entry_for_record(record.record_id)
             if fixed_lot_projection_authority is not None:
-                from .backtest_fixed_structural_lot_projection_authority import require_fixed_lot_projection_authority
+                from .backtest_fixed_structural_lot_projection_runtime_authority import require_fixed_lot_projection_authority
                 if (request is None or expected_config.get('strategy_id') != request.strategy_id
                         or type(expected_config.get('strategy_revision')) is not int
                         or expected_config['strategy_revision'] != request.revision):

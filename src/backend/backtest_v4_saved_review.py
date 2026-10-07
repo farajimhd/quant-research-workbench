@@ -55,7 +55,7 @@ def _require_declared_read_profile(client, context, *, sealed_configuration=None
     contract = resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision']))
     from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
     if declared_fixed_structural_lot_contract(int(context['strategy_revision'])) is not None:
-        from .backtest_fixed_structural_lot_saved_source import fixed_lot_saved_read_options
+        from .backtest_fixed_structural_lot_saved_runtime_source import fixed_lot_saved_read_options
         options = fixed_lot_saved_read_options(client, context, sealed_configuration)
         if options and _DECLARED_READ_SCOPE.get() is not None:
             raise _DeclaredReadProfileRequired(options)
@@ -219,7 +219,7 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release, *, f
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         if declared_fixed_structural_lot_contract(release.strategy_number) is None:
             raise ValueError('Saved fixed-lot session requires its declared contract')
-        from .backtest_fixed_structural_lot_execution_v4 import prepare_fixed_structural_lot_session
+        from .backtest_fixed_structural_lot_execution_v5 import prepare_fixed_structural_lot_session
         return prepare_fixed_structural_lot_session(plans=fixed, number=release.strategy_number,
             run_id=run_id, session_date=date.fromisoformat(context['session_date']),
             market=market, candidates=fixed.candidates, entry=fixed.entry, seeds=fixed.seeds,
@@ -349,7 +349,7 @@ def _terminal_attestation(client, normalized: str,
         ladder = (declared_ladder_policy(release)
                   if int(context['strategy_revision']) != 1 else None)
         if getattr(client, 'fixed_structural_lot_profile', None) is not None:
-            from .backtest_fixed_structural_lot_saved_source import load_fixed_lot_saved_prefix
+            from .backtest_fixed_structural_lot_saved_runtime_source import load_fixed_lot_saved_prefix
             prefix = load_fixed_lot_saved_prefix(client, normalized, context, release)
         elif ladder is not None:
             sources = DeclaredLadderSourceAuthority.from_run(client, normalized)

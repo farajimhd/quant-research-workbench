@@ -88,6 +88,9 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
     from .backtest_fixed_structural_lot_projection_authority import PROJECTION_RULE
     if PROJECTION_RULE in numbered_strategy(number).rule_set_contracts:
         from src.trading_runtime.fixed_structural_lot_release_v4 import derive_fixed_structural_lot_release
+    from .backtest_fixed_structural_lot_projection_runtime_authority import PROJECTION_RULE as RUNTIME_HASH_RULE
+    if RUNTIME_HASH_RULE in numbered_strategy(number).rule_set_contracts:
+        from src.trading_runtime.fixed_structural_lot_release_v5 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')

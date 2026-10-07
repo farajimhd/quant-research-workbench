@@ -376,7 +376,7 @@ class BacktestTypedJournalPublisher:
         """Bind one issued operation source before any own prefix is projected."""
         from .backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
         require_native_fixed_structural_lot_source(source)
-        from .backtest_fixed_structural_lot_projection_authority import uses_projection_authority, issue_fixed_lot_projection_authority
+        from .backtest_fixed_structural_lot_projection_runtime_authority import uses_projection_authority, issue_fixed_lot_projection_authority
         selected_authority = (issue_fixed_lot_projection_authority(self.writer._client, source, self.expected_config)
                               if uses_projection_authority(source) else None)
         if (source.run_id != self.journal.run_id
@@ -395,7 +395,7 @@ class BacktestTypedJournalPublisher:
         from src.trading_runtime.fixed_structural_lot_entry_v4 import fixed_lot_contexts_by_batch
         from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
         require_native_fixed_structural_lot_source(source)
-        from .backtest_fixed_structural_lot_projection_authority import uses_projection_authority, issue_fixed_lot_projection_authority
+        from .backtest_fixed_structural_lot_projection_runtime_authority import uses_projection_authority, issue_fixed_lot_projection_authority
         selected_authority = (issue_fixed_lot_projection_authority(self.writer._client, source, self.expected_config)
                               if uses_projection_authority(source) else None)
         if (self._fixed_lot_source is not None
