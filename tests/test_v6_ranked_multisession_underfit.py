@@ -126,3 +126,25 @@ def test_exporting_regression_evidence_preserves_training_and_weights():
     assert all(torch.equal(v,exported.state_dict()[k]) for k,v in policy.state_dict().items())
     assert evidence['allocation_weight']==sum(d.sample_weight for d in labels if d.allocation_ratio_target is not None)
     assert evidence['allocation_error_sum']/evidence['allocation_weight']==actual.allocation_ratio_mae
+
+
+def test_resource_pacing_preserves_real_training_and_evaluation():
+    torch.set_num_threads(2)
+    policy,session,labels=fixture('cpu')
+    replace_encoder(policy,'tcn',structured=True);configure(policy,hierarchical=True,shared_heads=False)
+    policy.independent_episode_supervision=True
+    labels=tuple(replace(d,forecast_actions=np.zeros(len(d.forecast_close_us),np.int64)) for d in labels)
+    session,labels=subset(session,labels,session.listings,3_000_000,7_000_000)
+    paced=copy.deepcopy(policy);calls=[]
+    paced.resource_pacer=lambda:calls.append(True)
+    args=dict(device=torch.device('cpu'),teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))
+    a=torch.optim.AdamW(policy.parameters(),lr=.001)
+    b=torch.optim.AdamW(paced.parameters(),lr=.001)
+    torch.manual_seed(123);baseline=train_session(policy,a,session,labels,(),**args)
+    torch.manual_seed(123);actual=train_session(paced,b,session,labels,(),**args)
+    assert calls and baseline==actual
+    assert all(torch.equal(v,paced.state_dict()[k]) for k,v in policy.state_dict().items())
+    calls.clear()
+    first=train_session(policy,None,session,labels,(),evaluation=True,evaluate_train=True,**args)
+    second=train_session(paced,None,session,labels,(),evaluation=True,evaluate_train=True,**args)
+    assert calls and first==second
