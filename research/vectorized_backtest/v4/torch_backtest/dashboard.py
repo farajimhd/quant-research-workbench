@@ -141,8 +141,10 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         layout['progress'].update(progress);layout['clock'].update(clock)
         layout['metrics'].update(performance if view=='performance' else components_table(best,status.get('objective'),profiling=profiling,wide=width>=100,maximum_rows=max(1,height-27),page=status.get('_objective_page',0)) if view=='objective' else
                                   Panel(Text('\n'.join(f"{item['timestamp']}  {item['text']}" for item in events[-max(1,height-24):])),title='Message history · older entries retained in events.jsonl') if view=='messages' else grid)
-        ownership=Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')} | provisional metrics until session completes")
+        ownership=Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')}")
         if active:
+            ownership.append(f" | Live median P&L ${number(active.get('pnl_median'))}")
+            if width>=100:ownership.append(f" | DD ${number(active.get('drawdown_max'))} | open {active.get('open_positions_max','—')} | fills {active.get('fills_max','—')}")
             rates=Text(f"Live pooled win {number(None if active.get('position_win_rate') is None else 100*active['position_win_rate'])}% | PF {number(active.get('profit_factor'))} | closed {number(active.get('closed_positions'),',.0f')} | mean hold {number(active.get('closed_hold_mean_seconds'))}s",style='yellow')
             layout['ownership'].update(Group(ownership,rates))
         else:layout['ownership'].update(ownership)

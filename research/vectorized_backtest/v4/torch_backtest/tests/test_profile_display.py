@@ -52,14 +52,14 @@ def test_real_observer_uses_profile_identity_count(tmp_path,capsys,monkeypatch):
 
 def test_live_training_rates_and_holding_are_visible_before_any_leader():
     status=dict(status='training',stage='Backtest',config=dict(population=128,generations=32,training_sessions=30),
-                active_session=dict(position_win_rate=.375,profit_factor=1.25,closed_positions=80,
+                active_session=dict(pnl_median=123.45,position_win_rate=.375,profit_factor=1.25,closed_positions=80,
                                     winning_positions=30,losing_positions=50,closed_hold_mean_seconds=42.5,
                                     closed_hold_p90_seconds=90,financial_error_candidates=0,overflow_candidates=0))
     for width,height in ((80,24),(128,42)):
         stream=StringIO()
         Console(file=stream,width=width,height=height,force_terminal=False).print(render(status,width=width,height=height))
         output=stream.getvalue()
-        assert '37.50' in output and '1.25' in output and '42.50' in output
+        assert '123.45' in output and '37.50' in output and '1.25' in output and '42.50' in output
         assert len(output.splitlines())<=height
         assert all(len(line)<=width for line in output.splitlines())
     stream=StringIO()
