@@ -53,6 +53,7 @@ def main(argv=None):
     parser.add_argument('--activation-checkpointing', action='store_true')
     parser.add_argument('--history-microbatch', type=int, default=16)
     parser.add_argument('--gpu-duty-cycle', type=float, default=.75)
+    parser.add_argument('--cpu-saved-tensors', action='store_true')
     args = parser.parse_args(argv)
     if not 1 <= args.history_microbatch <= 32 or not 0 < args.gpu_duty_cycle <= .8:
         raise ValueError('Laptop requires bounded history batches and at most 80% duty cycle')
@@ -103,6 +104,7 @@ def main(argv=None):
         sessions=bindings, selection_sha256=file_hash(args.selection), normalization_sha256=prior['normalization_sha256'],
         normalization_origin='frozen_verified_single_TRAIN_contract_no_refitting', initialization='fresh_weights',
         epochs=args.epochs, width=args.width, activation_checkpointing=args.activation_checkpointing,
+        cpu_saved_tensors=args.cpu_saved_tensors,
         laptop_resources=dict(history_microbatch=args.history_microbatch,duty_cycle=args.gpu_duty_cycle,reserve_bytes=4*1024**3),
         seed=17, learning_rate=3e-4, weight_decay=1e-4,
         ranking=prior['ranking'], teacher_loss='branch-balanced-v3', regression_weights=[0.,0.],
@@ -120,6 +122,7 @@ def main(argv=None):
         from research.rl_trading.v6.laptop_resources import LaptopGpuPacer
         policy.resource_pacer=LaptopGpuPacer(device,duty_cycle=args.gpu_duty_cycle)
         policy.encoder.resource_pacer=policy.resource_pacer
+        policy.cpu_saved_tensors=args.cpu_saved_tensors
         return policy
     policy = model(); optimizer = torch.optim.AdamW(policy.parameters(), lr=3e-4, weight_decay=1e-4)
     load_env_files(discover_env_files(Path.cwd()), verbose=False)

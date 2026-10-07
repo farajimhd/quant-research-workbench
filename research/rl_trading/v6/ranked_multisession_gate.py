@@ -15,6 +15,10 @@ def admit_multisession(root, source_dir=None):
     result = json.loads((root/'result.json').read_text())
     width = plan.get('width', 128)
     resources=plan.get('laptop_resources')
+    offload=plan.get('cpu_saved_tensors',False)
+    if type(offload) is not bool or ('cpu_saved_tensors' in plan and
+            plan.get('arguments',{}).get('cpu_saved_tensors') is not offload):
+        raise ValueError('Saved tensor offloading must match admitted underfit arguments')
     if resources is not None:
         if (set(resources)!={'history_microbatch','duty_cycle','reserve_bytes'} or
                 type(resources['history_microbatch']) is not int or not 1<=resources['history_microbatch']<=32 or

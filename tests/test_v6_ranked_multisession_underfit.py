@@ -128,7 +128,8 @@ def test_exporting_regression_evidence_preserves_training_and_weights():
     assert evidence['allocation_error_sum']/evidence['allocation_weight']==actual.allocation_ratio_mae
 
 
-def test_resource_pacing_preserves_real_training_and_evaluation():
+@pytest.mark.parametrize('offload',[False,True])
+def test_resource_pacing_preserves_real_training_and_evaluation(offload):
     torch.set_num_threads(2)
     policy,session,labels=fixture('cpu')
     replace_encoder(policy,'tcn',structured=True);configure(policy,hierarchical=True,shared_heads=False)
@@ -136,6 +137,7 @@ def test_resource_pacing_preserves_real_training_and_evaluation():
     labels=tuple(replace(d,forecast_actions=np.zeros(len(d.forecast_close_us),np.int64)) for d in labels)
     session,labels=subset(session,labels,session.listings,3_000_000,7_000_000)
     paced=copy.deepcopy(policy);calls=[]
+    paced.cpu_saved_tensors=offload
     paced.resource_pacer=lambda:calls.append(True)
     args=dict(device=torch.device('cpu'),teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))
     a=torch.optim.AdamW(policy.parameters(),lr=.001)

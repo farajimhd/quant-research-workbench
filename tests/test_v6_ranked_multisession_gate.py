@@ -71,3 +71,13 @@ def test_checkpointing_is_bound_to_underfit_arguments(tmp_path,flag,argument,all
     if allowed:admit_multisession(tmp_path,tmp_path)
     else:
         with pytest.raises(ValueError,match='Activation checkpointing'):admit_multisession(tmp_path,tmp_path)
+
+
+@pytest.mark.parametrize('flag,argument,allowed',[(True,True,True),(False,False,True),(True,False,False),(1,1,False)])
+def test_offloading_is_bound_to_underfit_arguments(tmp_path,flag,argument,allowed):
+    write=fixture(tmp_path);plan=json.loads((tmp_path/'manifest.json').read_text())
+    plan.update(cpu_saved_tensors=flag,arguments=dict(cpu_saved_tensors=argument))
+    plan.pop('hash');plan['hash']=digest(plan);write('manifest.json',plan)
+    if allowed:admit_multisession(tmp_path,tmp_path)
+    else:
+        with pytest.raises(ValueError,match='Saved tensor offloading'):admit_multisession(tmp_path,tmp_path)

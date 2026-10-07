@@ -73,6 +73,7 @@ def main(argv=None):
         from research.rl_trading.v6.laptop_resources import LaptopGpuPacer
         policy.resource_pacer=LaptopGpuPacer(device,duty_cycle=resources['duty_cycle'],reserve_bytes=resources['reserve_bytes'])
         policy.encoder.resource_pacer=policy.resource_pacer
+        policy.cpu_saved_tensors=prior.get('cpu_saved_tensors',False)
         return policy
     policy=model();policy.load_state_dict(torch.load(args.underfit/'last.pt',weights_only=True),strict=True)
     def evaluate(p,targets):
@@ -96,6 +97,7 @@ def main(argv=None):
         checkpoint_selection='fixed_final_epoch_before_development_targets',width=prior.get('width',128),
         activation_checkpointing=prior.get('activation_checkpointing',False),learning_rate=3e-4,weight_decay=1e-4,
         laptop_resources=resources,
+        cpu_saved_tensors=prior.get('cpu_saved_tensors',False),
         teacher_loss=prior['teacher_loss'],auxiliary_weights=prior['auxiliary_weights'],
         initialization='verified_six_session_underfit_weights_fresh_optimizer',sealed_labels_read=False,
         workstation_gpu_used=False,input_population_preserved=True,

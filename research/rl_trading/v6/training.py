@@ -8,6 +8,7 @@ model replay. Old V5 clock-second orders cannot satisfy this contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from itertools import groupby
 import math
 
@@ -396,7 +397,10 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         pending_ratio=[];pending_forecast=[];pending_quality=[];pending_future_quality=[]
         # Empty chunks still advance every observed candle and actual order
         # outcome, but do not build a useless autograd graph.
-        with torch.set_grad_enabled(labeled and not evaluation):
+        offload = (torch.autograd.graph.save_on_cpu(pin_memory=False)
+                   if labeled and not evaluation and getattr(policy, 'cpu_saved_tensors', False)
+                   else nullcontext())
+        with torch.set_grad_enabled(labeled and not evaluation), offload:
             for event in chunk:
                 # An execution bucket can close before this candle does.
                 # Apply it using the *previous* completed-candle state, even
