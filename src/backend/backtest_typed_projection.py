@@ -126,6 +126,7 @@ def project_pending_backtest_v4_prefix(
     expected_market_start: datetime | None = None,
     published_sources: Mapping[str, tuple[TypedJournalBatch, object]] | None = None,
     published_fixed_lot_units: Mapping[str, object] | None = None,
+    fixed_lot_projection_authority=None,
     committed_order_lineage: Mapping[str, tuple] | None = None,
     committed_order_lineage_proofs: Mapping[str, str] | None = None,
     committed_order_lineage_oms_records: Mapping[str, str] | None = None,
@@ -398,7 +399,15 @@ def project_pending_backtest_v4_prefix(
         elif kind == ('strategy', 'fixed_structural_lot_entry_intent'):
             from src.trading_runtime.fixed_structural_lot_entry_v4 import fixed_structural_lot_semantic_batch
             request=journal.fixed_structural_lot_entry_for_record(record.record_id)
-            if (request is None or expected_config.get('mode') != 'backtest'
+            if fixed_lot_projection_authority is not None:
+                from .backtest_fixed_structural_lot_projection_authority import require_fixed_lot_projection_authority
+                if (request is None or expected_config.get('strategy_id') != request.strategy_id
+                        or type(expected_config.get('strategy_revision')) is not int
+                        or expected_config['strategy_revision'] != request.revision):
+                    raise ValueError('Own lot entry lacks retained request/configuration')
+                require_fixed_lot_projection_authority(fixed_lot_projection_authority, source=request.source,
+                    run_id=journal.run_id, expected_config=expected_config)
+            elif (request is None or expected_config.get('mode') != 'backtest'
                     or expected_config.get('strategy_id') != request.strategy_id
                     or type(expected_config.get('strategy_revision')) is not int
                     or expected_config['strategy_revision'] != request.revision

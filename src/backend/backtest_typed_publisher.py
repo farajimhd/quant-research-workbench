@@ -202,6 +202,7 @@ class BacktestTypedJournalPublisher:
         self.fixed_market_execution_plan = fixed_market_execution_plan
         self._first_price_source = None
         self._fixed_lot_source = None
+        self._fixed_lot_projection_authority = None
         self._committed_fixed_lot_units = {}
         self.expected_market_start = expected_market_start
         self.expected_market_plan_token = expected_market_plan_token
@@ -375,14 +376,18 @@ class BacktestTypedJournalPublisher:
         """Bind one issued operation source before any own prefix is projected."""
         from .backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
         require_native_fixed_structural_lot_source(source)
+        from .backtest_fixed_structural_lot_projection_authority import uses_projection_authority, issue_fixed_lot_projection_authority
+        selected_authority = (issue_fixed_lot_projection_authority(self.writer._client, source, self.expected_config)
+                              if uses_projection_authority(source) else None)
         if (source.run_id != self.journal.run_id
                 or self.writer.journal_profile != 'backtest_v4' or self._fixed_lot_source is not None
                 or self._sequence != 0 or not isinstance(self.expected_config,dict)
-                or self.expected_config.get('parent_configuration_hash')!=source.parent_payload_hash
-                or self.expected_config.get('selected_configuration_hash')!=source.selected_configuration_hash):
+                or (selected_authority is None and (self.expected_config.get('parent_configuration_hash')!=source.parent_payload_hash
+                or self.expected_config.get('selected_configuration_hash')!=source.selected_configuration_hash))):
             raise ValueError('Native lot publisher lacks exact unbound source/configuration')
         source.require_installed_admission()
         self._fixed_lot_source=source
+        self._fixed_lot_projection_authority=selected_authority
 
     def restore_fixed_structural_lot_source(self,source,*,prefix,contexts):
         """Cold selected source only after independent full committed readback."""
@@ -390,11 +395,14 @@ class BacktestTypedJournalPublisher:
         from src.trading_runtime.fixed_structural_lot_entry_v4 import fixed_lot_contexts_by_batch
         from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
         require_native_fixed_structural_lot_source(source)
+        from .backtest_fixed_structural_lot_projection_authority import uses_projection_authority, issue_fixed_lot_projection_authority
+        selected_authority = (issue_fixed_lot_projection_authority(self.writer._client, source, self.expected_config)
+                              if uses_projection_authority(source) else None)
         if (self._fixed_lot_source is not None
                 or self.writer.journal_profile!='backtest_v4' or source.run_id!=self.journal.run_id
                 or self.journal.pending_record_count or self._committed_strategy_intents
-                or self.expected_config.get('parent_configuration_hash')!=source.parent_payload_hash
-                or self.expected_config.get('selected_configuration_hash')!=source.selected_configuration_hash):
+                or (selected_authority is None and (self.expected_config.get('parent_configuration_hash')!=source.parent_payload_hash
+                or self.expected_config.get('selected_configuration_hash')!=source.selected_configuration_hash))):
             raise ValueError('Cold selected publisher has foreign or active source')
         source.require_installed_admission()
         cold_recoveries=[]
@@ -414,6 +422,7 @@ class BacktestTypedJournalPublisher:
             units[request.intent.intent_id]=context.unit
             intents[request.intent.intent_id]=(context.unit.base,request.intent)
         self._fixed_lot_source=source
+        self._fixed_lot_projection_authority=selected_authority
         self._committed_fixed_lot_units=units
         self._committed_strategy_intents=intents
         self.writer._client.fixed_structural_lot_contexts=tuple(selected.values())
@@ -441,6 +450,7 @@ class BacktestTypedJournalPublisher:
                 fixed_market_parent_plan=self.fixed_market_parent_plan,
                 fixed_market_execution_plan=self.fixed_market_execution_plan,
                 first_price_source=self._first_price_source,
+                fixed_lot_projection_authority=self._fixed_lot_projection_authority,
                 expected_market_start=self.expected_market_start,
                 published_sources=dict(self._committed_strategy_intents),
                 **({} if self._fixed_lot_source is None else {

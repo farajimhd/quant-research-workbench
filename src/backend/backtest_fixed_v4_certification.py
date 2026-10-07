@@ -81,7 +81,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
             raise ValueError('Fixed-lot registered parent cannot refer to itself')
         parent_proof = certify_numbered_fixed_v4_projection(parent_number)
         from src.trading_runtime.fixed_structural_lot_interval_validator_v2 import VALIDATOR_RULE
-        if VALIDATOR_RULE in selected_lots.release.rule_set_contracts:
+        from .backtest_fixed_structural_lot_projection_authority import PROJECTION_RULE
+        if PROJECTION_RULE in selected_lots.release.rule_set_contracts:
+            from .backtest_fixed_structural_lot_certification_v4 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v4
+            additional_proof = certify_fixed_structural_lot_source_v4()
+        elif VALIDATOR_RULE in selected_lots.release.rule_set_contracts:
             from .backtest_fixed_structural_lot_certification_v3 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v3
             additional_proof = certify_fixed_structural_lot_source_v3()
         elif 'fixed-structural-lot-source@2' in selected_lots.release.input_contracts:
@@ -1508,6 +1512,8 @@ def _reviewed_fixed_lot_journal_projection(source: str, name: str, expected: str
 
 def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expected: str) -> bool:
     """Pin this exact registration delta and prove whole legacy module restoration."""
+    from .backtest_fixed_structural_lot_compatibility_v4 import restore_reviewed_parent_source as restore_v4
+    source = restore_v4(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v3 import restore_reviewed_parent_source
     source = restore_reviewed_parent_source(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v2 import restore_reviewed_parent_source
@@ -1636,6 +1642,8 @@ def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: 
 
 def _reviewed_fixed_lot_typed_projection(source: str, name: str, expected: str) -> bool:
     """Accept exact source-bound selected projection with the unchanged default projector."""
+    from .backtest_fixed_structural_lot_compatibility_v4 import restore_reviewed_parent_source
+    source = restore_reviewed_parent_source(source, 'src/backend/backtest_typed_projection.py')
     functions = [n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
                  and n.name == "project_pending_backtest_v4_prefix"]
     if name != "project_pending_backtest_v4_prefix" or len(functions) != 1 or sha256(ast.unparse(functions[0]).encode()).hexdigest() != 'c3173f8074af73f2f956dc27ad45db0ca2dd8c85b4397d0599724152ff9a0fcb':
@@ -1670,6 +1678,8 @@ _FIXED_LOT_LEGACY_AST_RECIPES = {('backend/backtest_typed_publisher.py', '_drain
 def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:
     """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""
     supplied_source = source
+    from .backtest_fixed_structural_lot_compatibility_v4 import restore_reviewed_parent_source as restore_v4
+    source = restore_v4(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v3 import restore_reviewed_parent_source
     source = restore_reviewed_parent_source(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v2 import restore_reviewed_parent_source
