@@ -12,8 +12,8 @@ from research.vectorized_backtest.v5.torch_backtest.runtime import configure_cac
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='Real CUDA qualification required on workstation')
 def test_captured_whole_block_prefix_matches_eager_metrics_and_fills():
     configure_caches(DEFAULT/'tests'/'prefix-cuda')
-    space=StrategySpace();population=sample(np.random.default_rng(7),space,3)
-    gates=torch.full((96,3,2),5,dtype=torch.uint8)
+    space=StrategySpace();population=sample(np.random.default_rng(2),space,7)
+    gates=torch.full((96,7,2),5,dtype=torch.uint8)
     eager=ProgramRunner(synthetic_tape(seconds=96),space,population,gates,backend='eager',maximum_fills=256)
     expected=eager.run(steps=64)
     assert int(eager.fill_count.sum())>0
