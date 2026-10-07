@@ -5,9 +5,32 @@ from rich.console import Console
 from rich.live import Live
 from .dashboard import render
 
+def completed_metrics(output, generation):
+    """Recover display-only metrics from a completed training generation."""
+    from .run_search import metric_summary,restore,fingerprint
+    from .runtime import file_hash
+    record=json.loads((output/f'generation_{generation-1:03d}'/'generation.json').read_text())
+    scores=record['scores'];population=record['population']
+    if fingerprint(population)!=record['population_sha256']:
+        raise ValueError('Completed population hash mismatch')
+    results=[]
+    for binding in record['receipts']:
+        recorded=Path(binding['path'])
+        if recorded.parent.parent.name!=f'generation_{generation-1:03d}':raise ValueError('Receipt generation mismatch')
+        path=output/recorded.parent.parent.name/recorded.parent.name/recorded.name
+        if file_hash(path)!=binding['sha256']:raise ValueError('Completed receipt hash mismatch')
+        receipt=json.loads(path.read_text())
+        if receipt['population_sha256']!=record['population_sha256']:raise ValueError('Receipt population mismatch')
+        results.append(receipt['metrics'])
+    if len(results)!=30:raise ValueError('Completed generation requires 30 sessions')
+    top=max(range(len(population)),key=lambda i:(scores['feasible'][i],-scores['violation'][i],scores['score'][i]))
+    return dict(closest_score=scores['score'][top],closest_violation=scores['violation'][top],
+                closest_metrics=metric_summary(results,scores,top,[restore(v) for v in population]),
+                feasible_candidates=sum(scores['feasible']))
+
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--view',choices=('financial','positions','performance','objective','messages'),default='financial');args=p.parse_args(argv)
-    console=Console(no_color=bool(os.environ.get('NO_COLOR')));last={};error=None;financial_page=0;objective_page=0
+    console=Console(no_color=bool(os.environ.get('NO_COLOR')));last={};error=None;financial_page=0;objective_page=0;recovered={}
     identity_path=args.output/'identity.json'
     # Older immutable workers do not emit mode. Derive display scope from their
     # retained launch identity without editing their status or experiment.
@@ -21,6 +44,13 @@ def main(argv=None):
         try:last=json.loads((args.output/'status.json').read_text(encoding='utf-8'));error=None
         except (FileNotFoundError,PermissionError,json.JSONDecodeError) as e:error=f'Snapshot unavailable: {type(e).__name__}; retaining last good view'
         if error:last={**last,'waiting_reason':error}
+        generation=last.get('completed_generations',0)
+        if not profile and generation and not last.get('best_metrics') and not last.get('closest_metrics'):
+            try:
+                if generation not in recovered:recovered[generation]=completed_metrics(args.output,generation)
+                last={**last,**recovered[generation]}
+            except (OSError,ValueError,KeyError,IndexError) as e:
+                last={**last,'waiting_reason':f'Completed metrics unavailable: {e}'}
         if profile:
             last={**last,'mode':'profile','focus':f'{profile_sessions} training-session profile; validation SEALED',
                   'config':{**last.get('config',{}),'training_sessions':profile_sessions}}
