@@ -457,7 +457,7 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, V4AutomaticLadderBatch)
                                else self.writer.submit_compound_v4(unit,
                                     **({'first_price_source': self._first_price_source}
-                                       if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures'] else {}))
+                                       if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures'] or unit.children.get('original_risk_diagnostics') else {}))
                                if isinstance(unit, V4CompoundBatch)
                                else self.writer.submit_profit_exit_v4(unit,
                                     first_price_source=self._first_price_source)
