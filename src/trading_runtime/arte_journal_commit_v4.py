@@ -597,6 +597,8 @@ def load_verified_commit_v4(
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:
         raise RuntimeError("V4 committed family seal differs from readback") from exc
+    from ._checkpoint_prefix_read import _observe_verified_exit_source
+    _observe_verified_exit_source(client, first_price_source, commit, family_rows, details)
     return commit, tuple(family_rows)
 
 

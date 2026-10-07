@@ -71,6 +71,20 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
 
 def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
+    if type(strategy_number) is int and strategy_number == 76:
+        from .backtest_strategy_seventy_six_certification import certify_strategy_seventy_six_source
+        from src.trading_runtime.strategy_seventy_six_release import release_contract
+        from src.trading_runtime.strategy_registry import numbered_strategy, fixed_strategy_executor
+        from .backtest_frozen_parent_source import certify_frozen_performance_parent_source
+        parent_proof = certify_frozen_performance_parent_source().native_proof
+        additional_proof = certify_strategy_seventy_six_source()
+        release = release_contract()
+        release.verify()
+        if numbered_strategy(76) != release:
+            raise ValueError("Strategy76 installed release differs from source approval")
+        fixed_strategy_executor(release.executor_strategy_id, 76).verify()
+        return sha256(json.dumps((parent_proof, additional_proof, release.approved_digest),
+                                 separators=(',', ':')).encode()).hexdigest()
     if type(strategy_number) is int and strategy_number == 75:
         from .backtest_strategy_seventy_five_certification import certify_strategy_seventy_five_source
         from src.trading_runtime.strategy_seventy_five_release import release_contract
