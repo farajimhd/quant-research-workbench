@@ -13,7 +13,13 @@ def main(argv=None):
         nonlocal last
         try:last=json.loads((args.output/'status.json').read_text())
         except (OSError,json.JSONDecodeError):last={**last,'error':'Snapshot unavailable; retaining last good values'}
-        return render({**last,'_rank':rank,'_page':page,'_rank_page':rank_page},width=console.width,height=console.height,view=args.view)
+        display=dict(last)
+        if last.get('mode')=='profile' or last.get('status')=='qualifying':
+            try:
+                schedule=json.loads((args.output/'schedule.json').read_text())
+                display['queued_campaign']=dict(generations=schedule[-1]['end_generation'],sessions=schedule[0]['sessions'],population=schedule[0]['population'])
+            except (OSError,json.JSONDecodeError,IndexError,KeyError):pass
+        return render({**display,'_rank':rank,'_page':page,'_rank_page':rank_page},width=console.width,height=console.height,view=args.view)
     if args.once or not console.is_terminal:console.print(read());return 0
     with Live(read(),console=console,screen=True,refresh_per_second=1) as live:
         try:

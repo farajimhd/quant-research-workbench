@@ -44,18 +44,23 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     now=time.time() if now is None else now
     config=status.get('config',{});cursor=status.get('progress') or {}
     age=max(0,now-status.get('updated_epoch',now))
+    queued=status.get('queued_campaign') or {}
+    progress_height=7 if queued else 5
     page_size=ranking_page_size(height)
     leader_height=page_size+4
     layout=Layout()
-    layout.split_column(Layout(name='header',size=2),Layout(name='progress',size=5),
+    layout.split_column(Layout(name='header',size=2),Layout(name='progress',size=progress_height),
                         Layout(name='leaders',size=leader_height),Layout(name='metrics',ratio=1),
                         Layout(name='timing',size=2),Layout(name='messages',size=5 if height>=30 else 3),Layout(name='keys',size=1))
-    layout['header'].update(Text(f"V5 {status.get('status','starting').upper()} | {status.get('stage','Preflight')} | updated {age:.0f}s ago\n{status.get('focus','')} | validation {status.get('validation_status','SEALED')}",style='cyan' if age<30 else 'yellow'))
+    layout['header'].update(Text(f"V5 {status.get('status','starting').upper()} | {status.get('stage','Preflight')} | updated {age:.0f}s ago\n{status.get('focus','')}{' | queued population '+str(queued['population']) if queued else ''} | validation {status.get('validation_status','SEALED')}",style='cyan' if age<30 else 'yellow'))
     bars=Progress(TextColumn('{task.description}',table_column=Column(min_width=18,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}'),expand=True)
+    if queued:
+        bars.add_task('Campaign generations (queued)',total=queued['generations'],completed=0)
+        bars.add_task('Generation 1 sessions (queued)',total=queued['sessions'],completed=0)
     for label,done,total in [('Qualification passes' if status.get('mode')=='profile' else 'Generations',
                                max(0,status.get('execution_pass',1)-1) if status.get('mode')=='profile' else status.get('completed_generations',0),
                                status.get('execution_passes',0) if status.get('mode')=='profile' else config.get('generations',0)),
-                              ('Sessions',status.get('completed_sessions',0),config.get('training_sessions',0)),
+                              ('Qualification sessions' if queued else 'Generation sessions',status.get('completed_sessions',0),config.get('training_sessions',0)),
                               ('Candidate batches',status.get('completed_batches',0),status.get('total_batches',0)),
                               ('Backtest timestamps',cursor.get('completed_seconds',0),cursor.get('total_seconds',0)),
                               ('Rule listings',status.get('completed_tickers',0),status.get('total_tickers',0))]:
@@ -124,7 +129,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
               ('Financial errors / overflows',f"{active.get('financial_error_candidates','--')} / {active.get('overflow_candidates','--')}")]
         if not active:rows.insert(1,('Backtest metrics','Not available until replay begins'))
     elif not metrics and view!='performance':rows.insert(0,('Ranking','Pending completed panel; live batch values provisional'))
-    page=status.get('_page',0);available=max(1,height-(14+leader_height+(5 if height>=30 else 3)))
+    page=status.get('_page',0);available=max(1,height-(9+progress_height+leader_height+(5 if height>=30 else 3)))
     pages=max(1,(len(rows)+available-1)//available);page%=pages
     for label,value in rows[page*available:(page+1)*available]:grid.add_row(label,value)
     layout['metrics'].update(Panel(grid,title=f'{"Live batch" if not metrics else "Rank "+str(selected)} | {view} | page {page+1}/{pages}',padding=0))
