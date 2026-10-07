@@ -456,7 +456,7 @@ def selected_numbered_revision(*, revision_id: str = "", run_plan_id: str = "",
         if client is not None:
             kwargs["client"] = client
         return selected_strategy_one_revision(**kwargs)
-    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|64|65|66|68|69|70|71|72|73|74|77|80|81|82|83):[0-9a-fA-F-]{36}", revision_id):
+    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|64|65|66|68|69|70|71|72|73|74|77|80|81|82|83|84):[0-9a-fA-F-]{36}", revision_id):
         raise ValueError("Unknown immutable numbered configuration identity")
     if client is None:
         from src.backend.backtest_market_data import readonly_clickhouse_client

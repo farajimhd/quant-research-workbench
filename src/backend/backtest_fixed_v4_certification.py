@@ -83,7 +83,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         from src.trading_runtime.fixed_structural_lot_interval_validator_v2 import VALIDATOR_RULE
         from .backtest_fixed_structural_lot_projection_authority import PROJECTION_RULE
         from .backtest_fixed_structural_lot_projection_runtime_authority import PROJECTION_RULE as RUNTIME_HASH_RULE
-        if RUNTIME_HASH_RULE in selected_lots.release.rule_set_contracts:
+        from src.trading_runtime.fixed_structural_lot_native_source_rule import NATIVE_SOURCE_RULE
+        if NATIVE_SOURCE_RULE in selected_lots.release.rule_set_contracts:
+            from .backtest_fixed_structural_lot_certification_v6 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v6
+            additional_proof = certify_fixed_structural_lot_source_v6()
+        elif RUNTIME_HASH_RULE in selected_lots.release.rule_set_contracts:
             from .backtest_fixed_structural_lot_certification_v5 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v5
             additional_proof = certify_fixed_structural_lot_source_v5()
         elif PROJECTION_RULE in selected_lots.release.rule_set_contracts:
@@ -1516,6 +1520,8 @@ def _reviewed_fixed_lot_journal_projection(source: str, name: str, expected: str
 
 def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expected: str) -> bool:
     """Pin this exact registration delta and prove whole legacy module restoration."""
+    from .backtest_fixed_structural_lot_compatibility_v6 import restore_reviewed_parent_source as restore_v6
+    source = restore_v6(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v5 import restore_reviewed_parent_source as restore_v5
     source = restore_v5(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v4 import restore_reviewed_parent_source as restore_v4
@@ -1648,6 +1654,8 @@ def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: 
 
 def _reviewed_fixed_lot_typed_projection(source: str, name: str, expected: str) -> bool:
     """Accept exact source-bound selected projection with the unchanged default projector."""
+    from .backtest_fixed_structural_lot_compatibility_v6 import restore_reviewed_parent_source as restore_v6
+    source = restore_v6(source, 'src/backend/backtest_typed_projection.py')
     from .backtest_fixed_structural_lot_compatibility_v5 import restore_reviewed_parent_source as restore_v5
     source = restore_v5(source, 'src/backend/backtest_typed_projection.py')
     from .backtest_fixed_structural_lot_compatibility_v4 import restore_reviewed_parent_source
@@ -1686,6 +1694,8 @@ _FIXED_LOT_LEGACY_AST_RECIPES = {('backend/backtest_typed_publisher.py', '_drain
 def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:
     """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""
     supplied_source = source
+    from .backtest_fixed_structural_lot_compatibility_v6 import restore_reviewed_parent_source as restore_v6
+    source = restore_v6(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v5 import restore_reviewed_parent_source as restore_v5
     source = restore_v5(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v4 import restore_reviewed_parent_source as restore_v4
