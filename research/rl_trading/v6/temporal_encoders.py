@@ -47,6 +47,7 @@ class TemporalCandleEncoder(ActualCandleEncoder):
         if architecture not in ARCHITECTURES:raise ValueError('Unknown temporal architecture')
         self.architecture=architecture;self.encoder_version=VERSION
         self.activation_checkpointing=False
+        self.history_microbatch=None
         self.reproject_history_for_gradient=architecture!='lag'
         if structured:self.project=StructuredProjection(width)
         if architecture=='tcn':self.temporal=nn.Sequential(*(CausalResidual(width,d) for d in (1,2,4,8,16,32)))
@@ -61,6 +62,12 @@ class TemporalCandleEncoder(ActualCandleEncoder):
         if history.ndim!=3 or history.shape[1:]!=(120,self.width):raise ValueError('Expected bounded actual-candle history')
         if present is None:present=torch.ones(history.shape[:2],dtype=torch.bool,device=history.device)
         if present.shape!=history.shape[:2] or present.dtype!=torch.bool:raise ValueError('Invalid history presence mask')
+        limit=self.history_microbatch
+        if limit is not None:
+            if type(limit) is not int or limit < 1:raise ValueError('Positive history microbatch required')
+            if len(history)>limit:
+                return torch.cat([self.encode_history(history[i:i+limit],present[i:i+limit])
+                                  for i in range(0,len(history),limit)],dim=0)
         x=history*present[...,None]
         if self.architecture=='lag':return super().encode_history(x,present)
         if self.architecture=='tcn':
