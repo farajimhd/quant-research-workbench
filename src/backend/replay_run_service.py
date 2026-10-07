@@ -2443,6 +2443,13 @@ class ReplayRunController:
                 if type(boundary) is not int:
                     raise RuntimeError('Strategy 1 checkpoint has no completed boundary')
                 selected_owner = getattr(manager, '_fixed_lot_owner', None)
+                selected_source = getattr(getattr(selected_owner, 'operation', None), 'source', None)
+                if selected_source is not None:
+                    from src.trading_runtime.fixed_structural_lot_warm_proof import selected as warm_proof_selected
+                    if warm_proof_selected(selected_source) and getattr(publisher, '_task', None) is not None:
+                        # Only the genuine current publisher receipt may settle
+                        # its owned dispatch before immutable proof capture.
+                        await publisher.await_fence()
                 manager_state = (selected_owner.capture(manager, boundary_ms=boundary)
                     if selected_owner is not None else manager.capture_state(boundary_ms=boundary))
                 evidence_state = manager.evidence.capture_recovery_state()
@@ -3528,7 +3535,7 @@ class ReplayRunController:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v7 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v8 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number, run_id=self.run_id, session_date=self.definition.session_date,
@@ -10166,7 +10173,7 @@ class ReplayRunService:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v7 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v8 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number,run_id=run_id,session_date=definition.session_date,

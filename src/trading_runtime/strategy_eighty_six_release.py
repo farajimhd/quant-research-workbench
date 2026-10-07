@@ -1,0 +1,39 @@
+"""Prepared immutable fixed-lot comparison; no installed execution approval."""
+from . import strategy_forty_two_release as parent_release
+from .fixed_structural_lot_policy import FixedStructuralLotPolicy, parse_fixed_structural_lot_policy
+from .fixed_structural_lot_release_v8 import derive_fixed_structural_lot_release, verify_prepared_fixed_structural_lot_release
+from .strategy_registry import NumberedStrategyRelease
+from .numbered_fixed_strategy import DECLARED_FIXED_ADAPTER
+from .fixed_structural_lot_interval_validator_v2 import VALIDATOR_RULE
+from src.backend.backtest_fixed_structural_lot_projection_runtime_authority import PROJECTION_RULE
+from .fixed_structural_lot_native_source_rule import NATIVE_SOURCE_RULE
+from .fixed_structural_lot_causal_clock import CLOCK_RULE
+from .independent_lot_initial_stop_lineage import RULE as INITIAL_STOP_RULE
+from .fixed_structural_lot_warm_proof import RULE as WARM_RULE
+BEHAVIOR = 'Inherit Strategy42 entry, reentry, sizing, exposure, fees and exit precedence. Three equal fixed structural target lots, tick rounding and upward-only stops; no target escalation. Portfolio owns cash; OMS owns fills and recovery. PM/AH Backtest only with certified V7 warmup. Source@2 and validator@2 retain full price/candidate scope and causal checks. Projection@3 binds separate runtime and backend hashes. Native certification uses the real source certifier. Causal roster clock binds exact OMS and owned fill times to reached100ms boundaries. Initial-stop lineage requires exact original ACKs without granting coverage. Exclusive writer warm-proof@1 reuses immutable verified transport only at unchanged source/context/lease/frontier; initial/new frontiers remain fully verified. Selected checkpoint ownership is forwarded with all financial captures. Economics unchanged.'
+
+def release_contract() -> NumberedStrategyRelease:
+    parent = parent_release.release_contract()
+    values = dict(number=86, executor_strategy_id=parent.executor_strategy_id, executor_revision=86, evaluation_interval=parent.evaluation_interval, input_contracts=(*parent.input_contracts, DECLARED_FIXED_ADAPTER, 'fixed-structural-lot-source@2'), rule_set_contracts=(*parent.rule_set_contracts, 'fixed-structural-lot-entry@1', VALIDATOR_RULE, PROJECTION_RULE, NATIVE_SOURCE_RULE, CLOCK_RULE, INITIAL_STOP_RULE, WARM_RULE), behavior_specification=BEHAVIOR)
+    draft = NumberedStrategyRelease(**values, approved_digest='')
+    release = NumberedStrategyRelease(**values, approved_digest=draft.digest())
+    release.verify()
+    return release
+
+def derive_strategy_eighty_six_configuration(source, *, approved_code_commit, approved_code_fingerprint, approval_reference):
+    """Prepare the declared comparison from an authentic installed parent."""
+    from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
+    if type(source) is not CertifiedStrategyOneConfiguration or source.strategy_number != 42:
+        raise ValueError('Fixed-lot comparison requires certified Strategy42 parent')
+    parent_release.verify_strategy_forty_two_manifest(source.payload['strategy'])
+    return derive_fixed_structural_lot_release(source, parent_release=parent_release.release_contract(), release=release_contract(), policy=FixedStructuralLotPolicy().payload(), approved_code_commit=approved_code_commit, approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference)
+
+def verify_prepared_strategy_eighty_six_configuration(parent, payload):
+    """Reject policy changes under this identity and reconstruct the whole tree."""
+    from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
+    if type(parent) is not CertifiedStrategyOneConfiguration or parent.strategy_number != 42:
+        raise ValueError('Fixed-lot comparison requires certified Strategy42 parent')
+    parent_release.verify_strategy_forty_two_manifest(parent.payload['strategy'])
+    if type(payload) is not dict or parse_fixed_structural_lot_policy(payload['strategy']['parameters'].get('fixed_structural_lot_policy')) != FixedStructuralLotPolicy():
+        raise ValueError('Prepared comparison differs from its declared three-equal-lot policy')
+    return verify_prepared_fixed_structural_lot_release(parent, payload, parent_release=parent_release.release_contract(), release=release_contract())
