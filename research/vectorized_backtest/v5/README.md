@@ -200,3 +200,31 @@ performs four ordered full-session passes in one GPU process: serial cold/warm,
 then pipelined cold/warm. It compares the warmed totals and requires exact actual
 fills plus independent full-session financial/terminal audits. It never launches
 an optimization or opens final validation.
+
+The full-session paired profile (`13113b5b6`) passed all 47 workstation qualification
+checks and both exact actual-fill comparisons, financial metric tolerance checks
+(rtol 1e-10 / atol 1e-7), independent cash/fee/quantity/holding audits and terminal
+eligibility audits. Same-source, same-population (256 / physical batch 128), one
+19,800-timestamp training session, four sequential passes in the same process:
+
+| Warm measurement | Serial | Prefetched pipeline |
+| --- | ---: | ---: |
+| Total elapsed seconds | 291.66 | 276.56 |
+| Replay seconds | 245.71 | 246.88 |
+| Rule preparation seconds | 32.45 | 49.85 |
+| Rule/replay overlap seconds | 0 | 33.35 |
+| Peak allocated GPU GiB | 24.66 | 30.25 |
+| Peak reserved GPU GiB | 28.60 | 38.78 |
+
+Warm total improved 5.18%, while replay slowed 0.48% from GPU contention. Preparation
+latency increased but overlapped replay; do not sum these phase durations. Serial
+cold elapsed 396.84 s included 81.64 s compilation. Pipeline first use 276.37 s
+benefited from the preceding serial compilation cache and is not a fair cold-speedup
+comparison. The one-session test cannot measure next-session CPU prefetch overlap.
+Evidence: `profiles/20261007-13113b5b6-full-concurrency/report.json`.
+
+Intended campaign options are explicit `--rule-prefetch --prefetch-features
+--concurrent-writes`, retaining the 24 GiB additional gate budget and free-headroom
+checks. They remain independently selectable rather than changing immutable source
+or silently falling back. The final population/session schedule still requires user
+review; no final optimization or sealed validation was launched by these profiles.
