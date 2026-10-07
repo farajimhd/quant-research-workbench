@@ -53,6 +53,24 @@ def padded_tape(source, listings, device):
     return SqueezeTape(**values).validate()
 
 
+def can_bind_tape(target, source, listings):
+    """Check every captured tensor layout before reusing a device allocation."""
+    if len(target.tickers)!=listings or (target.structural_targets is None)!=(source.structural_targets is None):
+        return False
+    for field in fields(source):
+        name,value=field.name,getattr(source,field.name)
+        out=getattr(target,name)
+        if not isinstance(value,torch.Tensor):
+            if isinstance(out,torch.Tensor):return False
+            continue
+        if not isinstance(out,torch.Tensor) or out.dtype!=value.dtype:return False
+        if source.structural_targets is not None and name in INTERVAL_BOOK_FIELDS:continue
+        shape=list(value.shape)
+        if name!='clocks':shape[_axis(name,value)]=listings
+        if tuple(shape)!=tuple(out.shape):return False
+    return True
+
+
 def bind_tape(target, source):
     """Copy source fields in place; CUDA graph references remain unchanged."""
     for field in fields(source):

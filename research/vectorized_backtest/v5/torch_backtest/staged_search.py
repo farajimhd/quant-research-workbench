@@ -56,6 +56,7 @@ def main(argv=None):
     output=require_runtime(args.output);objective=Objective().validate();space=StrategySpace()
     features=searchable_features(spec['training'],'premarket')
     identity=dict(version='v5-staged-v1',code_hash=code_hash(),sessions_sha256=file_hash(args.sessions),
+                  sessions=spec,financial_settings=asdict(space.settings),searchable_features=list(features) if features is not None else None,
                   schedule=[asdict(s) for s in stages],objective=asdict(objective),
                   arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items() if k not in ('execute','resume','output','qualification')})
     if not args.execute:

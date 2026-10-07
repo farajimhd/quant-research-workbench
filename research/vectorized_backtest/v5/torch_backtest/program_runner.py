@@ -90,7 +90,8 @@ class ProgramRunner(SearchRunner):
         self.set_genomes([v.policy for v in individuals])
         if isinstance(self.program_gates,torch.Tensor):
             if not isinstance(gates,torch.Tensor) or gates.shape!=self.program_gates.shape:raise ValueError('Packed gate allocation changed')
-            self.program_gates.copy_(gates);return
+            if gates is not self.program_gates:self.program_gates.copy_(gates)
+            return
         for stage in STAGES:
             if gates[stage].shape!=self.program_gates[stage].shape:raise ValueError('Program gate allocation changed')
             self.program_gates[stage].copy_(gates[stage])

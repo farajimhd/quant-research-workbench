@@ -5,7 +5,7 @@ from research.vectorized_backtest.v5.torch_backtest.fixtures import synthetic_ta
 from research.vectorized_backtest.v5.torch_backtest.evolution import sample
 from research.vectorized_backtest.v5.torch_backtest.genome import StrategySpace
 from research.vectorized_backtest.v5.torch_backtest.program_runner import ProgramRunner
-from research.vectorized_backtest.v5.torch_backtest.session_pool import padded_tape,bind_tape
+from research.vectorized_backtest.v5.torch_backtest.session_pool import padded_tape,bind_tape,can_bind_tape
 
 
 def test_packed_program_graph_rebinds_different_widths_and_real_timestamps():
@@ -31,7 +31,11 @@ def test_packed_program_graph_rebinds_different_widths_and_real_timestamps():
         if reusable is None:
             reusable=ProgramRunner(working,space,population,gates,backend='eager',maximum_fills=512).compile()
         else:
-            bind_tape(reusable.tape,working)
+            assert can_bind_tape(reusable.tape,source,8)
+            pointer=reusable.tape.close.data_ptr()
+            bind_tape(reusable.tape,source)
+            assert reusable.tape.close.data_ptr()==pointer
+            assert not can_bind_tape(reusable.tape,synthetic_tape(seconds=91,listings=2),8)
             reusable.start_boundary.fill_(1+offset);reusable.end_boundary.fill_(90+offset)
             reusable.set_population(population,gates)
         actual=reusable.run()

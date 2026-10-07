@@ -15,6 +15,12 @@ def authorize_day(sessions, day, frozen_winner=None):
         identity_path=root/'identity.json';audit_path=root/'audit.json'
         freeze=json.loads(freeze_path.read_text(encoding='utf-8'))
         identity=json.loads(identity_path.read_text(encoding='utf-8'))
+        if identity.get('version')=='v5-staged-v1':
+            from .staged_audit import require_frozen
+            verified,_=require_frozen(root)
+            if verified['sessions']!=spec or verified['sessions_sha256']!=file_hash(sessions):
+                raise ValueError('Final input plan differs from audited staged split')
+            return item
         audit=json.loads(audit_path.read_text(encoding='utf-8'))
         if (not freeze.get('winner') or identity['sessions']!=spec
                 or identity['arguments'].get('profile') or not audit.get('full_budget_verified')

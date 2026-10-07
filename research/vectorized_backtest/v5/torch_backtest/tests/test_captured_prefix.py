@@ -24,5 +24,17 @@ def test_captured_whole_block_prefix_matches_eager_metrics_and_fills():
         if isinstance(value,torch.Tensor):torch.testing.assert_close(result[key].cpu(),value,rtol=1e-12,atol=1e-12,equal_nan=True)
     for lane,count in enumerate(eager.fill_count.tolist()):
         torch.testing.assert_close(captured.ledger[lane,:count].cpu(),eager.ledger[lane,:count],rtol=1e-12,atol=1e-12)
+    pointer=captured.program_gates.data_ptr()
+    gates[32:]|=2
+    captured.program_gates.copy_(gates)
+    captured.set_population(population,captured.program_gates)
+    assert captured.program_gates.data_ptr()==pointer
+    eager.set_population(population,gates)
+    expected=eager.run(steps=64);result=captured.run(steps=64)
+    for key,value in expected.items():
+        if isinstance(value,torch.Tensor):torch.testing.assert_close(result[key].cpu(),value,rtol=1e-12,atol=1e-12,equal_nan=True)
+    assert int(eager.fill_count.sum())>0
+    for lane,count in enumerate(eager.fill_count.tolist()):
+        torch.testing.assert_close(captured.ledger[lane,:count].cpu(),eager.ledger[lane,:count],rtol=1e-12,atol=1e-12)
     with pytest.raises(ValueError):captured.run(steps=1)
     with pytest.raises(ValueError):captured.run(reset=False,steps=32)

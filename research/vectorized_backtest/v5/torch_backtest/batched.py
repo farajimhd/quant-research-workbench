@@ -4,7 +4,7 @@ import time
 import torch
 from .gate_compiler import FeatureResident
 from .program_runner import ProgramRunner
-from .session_pool import padded_tape, bind_tape
+from .session_pool import padded_tape, bind_tape, can_bind_tape
 from .run_search import clean, state, fingerprint, seal_ledger
 from .runtime import write_json, file_hash, require_runtime
 
@@ -59,7 +59,11 @@ class BatchedEvaluator:
         estimate = host_tape.bytes*capacity/len(host_tape.tickers)
         if estimate > args.maximum_tape_gib*1024**3:
             raise MemoryError('Broker tape exceeds declared budget')
-        tape = padded_tape(host_tape, capacity, args.device)
+        if self.runner is not None and can_bind_tape(self.runner.tape,host_tape,capacity):
+            tape=self.runner.tape
+            bind_tape(tape,host_tape)
+        else:
+            tape = padded_tape(host_tape, capacity, args.device)
         if tape.bytes > args.maximum_tape_gib*1024**3:
             raise MemoryError('Padded tape exceeds declared budget')
         resident = FeatureResident(bank, identities, previous=prior, device=args.device,
@@ -83,12 +87,14 @@ class BatchedEvaluator:
             else:
                 emit(stage='Compile lifecycle rules', completed_batches=index, total_batches=total_batches,
                      candidate_start=left, candidate_end=left+len(members))
-                gates, rule_seconds = resident.compile(members, tape, chunk_candles=args.chunk_candles,
-                                                       emit=lambda event: emit(**event),maximum_gate_gib=args.maximum_gate_gib)
                 key = (len(tape.clocks), capacity, len(members), tuple(tape.level_lower.shape), tape.structural_targets is not None)
+                reuse = self.runner is not None and self.key == key
+                gates, rule_seconds = resident.compile(members, tape, chunk_candles=args.chunk_candles,
+                                                       emit=lambda event: emit(**event),maximum_gate_gib=args.maximum_gate_gib,
+                                                       out=self.runner.program_gates if reuse else None)
                 compiled = 0.
-                if self.runner is not None and self.key == key:
-                    bind_tape(self.runner.tape, tape)
+                if reuse:
+                    if self.runner.tape is not tape:bind_tape(self.runner.tape, tape)
                     self.runner.start_boundary.fill_(int(tape.provenance.get('start_second', int(tape.clocks[0]))))
                     self.runner.end_boundary.copy_(tape.clocks[-1])
                     self.runner.set_population(members, gates)

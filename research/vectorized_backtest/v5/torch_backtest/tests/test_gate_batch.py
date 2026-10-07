@@ -34,6 +34,15 @@ def test_batched_gates_match_independent_full_history_with_sparse_clocks():
     for batch_size in (1,2,32):
         actual,_=resident.compile(individuals,tape,chunk_candles=41,listing_batch=batch_size)
         assert torch.equal(actual,expected)
+    pointer=actual.data_ptr()
+    actual.fill_(255)  # Stale previous-population bits must be cleared.
+    reused,_=resident.compile(individuals,tape,chunk_candles=41,out=actual)
+    assert reused is actual and reused.data_ptr()==pointer
+    assert torch.equal(reused,expected)
+    with pytest.raises(ValueError,match='Reusable packed'):
+        resident.compile(individuals,tape,out=actual[:,:1])
+    with pytest.raises(ValueError,match='Reusable packed'):
+        resident.compile(individuals,tape,packed=False,out=actual)
     unpacked,_=resident.compile(individuals,tape,chunk_candles=41,packed=False)
     for bit,stage in enumerate(STAGES):
         assert torch.equal(unpacked[stage],(expected&(1<<bit))!=0)

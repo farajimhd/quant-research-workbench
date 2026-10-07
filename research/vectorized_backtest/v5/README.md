@@ -20,6 +20,14 @@ finalist requiring an independent ledger/input audit before freeze; this control
 never opens validation. Final audited freeze/evaluation delivery remains a separate
 gate, not automatic permission from a profiling result.
 
+`staged_audit --output RUN --freeze` independently reconstructs the complete
+training search, checks exact RNG/population evolution, receipt and actual-fill
+hashes, objective arithmetic and fresh training-input bytes before freezing.
+`staged_validation --output RUN` accepts that audited freeze only, then evaluates
+the default and frozen finalist together once on the six sealed sessions. A
+completed report cannot be evaluated again; interrupted work reuses hash-bound
+batch receipts. Final input and independent fill audits accompany the report.
+
 The V4 score and seven component weights are unchanged. Positive ex-best profitability
 and 1–20 acquisitions every day are no longer eligibility gates. Invalid/nonfinite
 metrics and nonflat terminal accounts remain invalid; accounting and causal checks
@@ -42,6 +50,8 @@ population and actual fill hashes for exact reuse.
 `torch_backtest.batched` loads/prefetches sessions in order, holds one shared GPU
 feature/tape bank and evaluates bounded candidate lanes in Torch. One GPU owner
 reuses captured financial graphs across equal-sized batches/sessions. Candidates
+also reuse the packed gate allocation in place after replay synchronization,
+preserving captured pointers without retaining a second full gate tensor. Candidates
 are independent accounts; liquidity is shared among positions within each candidate,
 not between strategies. Logical population may greatly exceed a physical batch.
 No per-candidate feature histories or competing GPU worker processes are created.
