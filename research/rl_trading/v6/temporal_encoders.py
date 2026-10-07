@@ -6,6 +6,7 @@ No episode identity, label or future outcome enters this module.
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from research.rl_trading.v6.model import ActualCandleEncoder,INPUT_WIDTH
 
 VERSION='rl-v6-structured-temporal-encoder-v1'
@@ -45,6 +46,7 @@ class TemporalCandleEncoder(ActualCandleEncoder):
         super().__init__(width)
         if architecture not in ARCHITECTURES:raise ValueError('Unknown temporal architecture')
         self.architecture=architecture;self.encoder_version=VERSION
+        self.activation_checkpointing=False
         self.reproject_history_for_gradient=architecture!='lag'
         if structured:self.project=StructuredProjection(width)
         if architecture=='tcn':self.temporal=nn.Sequential(*(CausalResidual(width,d) for d in (1,2,4,8,16,32)))
@@ -61,7 +63,11 @@ class TemporalCandleEncoder(ActualCandleEncoder):
         if present.shape!=history.shape[:2] or present.dtype!=torch.bool:raise ValueError('Invalid history presence mask')
         x=history*present[...,None]
         if self.architecture=='lag':return super().encode_history(x,present)
-        if self.architecture=='tcn':output=self.temporal(x.transpose(1,2))[:,:,-1]
+        if self.architecture=='tcn':
+            temporal_input=x.transpose(1,2)
+            output=(checkpoint(self.temporal,temporal_input,use_reentrant=False)
+                    if self.activation_checkpointing and self.training and torch.is_grad_enabled()
+                    else self.temporal(temporal_input))[:,:,-1]
         elif self.architecture=='gru':output=self.temporal(x)[0][:,-1]
         elif self.architecture=='transformer':
             safe=present.clone();safe[:,0]=True

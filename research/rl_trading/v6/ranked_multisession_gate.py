@@ -16,6 +16,10 @@ def admit_multisession(root, source_dir=None):
     width = plan.get('width', 128)
     if type(width) is not int or width not in (128, 512) or ('width' in plan and plan.get('arguments', {}).get('width') != width):
         raise ValueError('Bounded model width must match admitted underfit arguments')
+    checkpointing=plan.get('activation_checkpointing',False)
+    if type(checkpointing) is not bool or ('activation_checkpointing' in plan and
+            plan.get('arguments',{}).get('activation_checkpointing') is not checkpointing):
+        raise ValueError('Activation checkpointing must match admitted underfit arguments')
     if (plan.get('version') != 'rl-v6-ranked-six-session-underfit-v1' or
             plan.get('hash') != digest({k:v for k,v in plan.items() if k != 'hash'}) or
             len(plan.get('sessions', [])) != 6 or

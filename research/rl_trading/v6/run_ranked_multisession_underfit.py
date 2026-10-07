@@ -50,6 +50,7 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--epochs', type=int, default=400)
     parser.add_argument('--width', type=int, choices=(128, 512), default=128)
+    parser.add_argument('--activation-checkpointing', action='store_true')
     args = parser.parse_args(argv)
     runtime = Path('D:/TradingML/runtimes').resolve()
     paths = [args.underfit, args.selection, args.initial_cache, args.initial_source, args.additional_cache, args.output]
@@ -97,7 +98,8 @@ def main(argv=None):
         forecast_contract=prior['forecast_contract'],
         sessions=bindings, selection_sha256=file_hash(args.selection), normalization_sha256=prior['normalization_sha256'],
         normalization_origin='frozen_verified_single_TRAIN_contract_no_refitting', initialization='fresh_weights',
-        epochs=args.epochs, width=args.width, seed=17, learning_rate=3e-4, weight_decay=1e-4,
+        epochs=args.epochs, width=args.width, activation_checkpointing=args.activation_checkpointing,
+        seed=17, learning_rate=3e-4, weight_decay=1e-4,
         ranking=prior['ranking'], teacher_loss='branch-balanced-v3', regression_weights=[0.,0.],
         auxiliary_weights=dict(ratio=1., forecast=1., quality=1., future_quality=1.),
         input_population_preserved=True, sealed_labels_read=False, development_labels_read=False,
@@ -106,7 +108,10 @@ def main(argv=None):
         source_files_sha256={p.name:file_hash(p) for p in Path(__file__).parent.glob('*.py')})
     plan['hash'] = digest(plan); write('manifest.json', plan); write('normalization.json', normalization)
     torch.manual_seed(17); torch.set_num_threads(4); device = torch.device('cuda')
-    def model(): return build_policy(ranking, device, width=args.width, normalization=normalization)
+    def model():
+        policy=build_policy(ranking, device, width=args.width, normalization=normalization)
+        policy.encoder.activation_checkpointing=args.activation_checkpointing
+        return policy
     policy = model(); optimizer = torch.optim.AdamW(policy.parameters(), lr=3e-4, weight_decay=1e-4)
     load_env_files(discover_env_files(Path.cwd()), verbose=False)
     import wandb

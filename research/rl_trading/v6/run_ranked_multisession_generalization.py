@@ -63,7 +63,10 @@ def main(argv=None):
         tiny.append((s,selected_targets(selection,b['day'],b['cache_sha256'],t)))
     torch.manual_seed(17);torch.set_num_threads(4);device=torch.device('cuda')
     ranking=MarketAttentionConfig(**prior['ranking'])
-    def model():return build_policy(ranking,device,width=prior.get('width',128),normalization=normalization)
+    def model():
+        policy=build_policy(ranking,device,width=prior.get('width',128),normalization=normalization)
+        policy.encoder.activation_checkpointing=prior.get('activation_checkpointing',False)
+        return policy
     policy=model();policy.load_state_dict(torch.load(args.underfit/'last.pt',weights_only=True),strict=True)
     def evaluate(p,targets):
         reports=[];probabilities=[]
@@ -83,7 +86,8 @@ def main(argv=None):
         underfit_manifest_sha256=file_hash(args.underfit/'manifest.json'),underfit_checkpoint_sha256=complete['checkpoint_sha256'],
         normalization_sha256=prior['normalization_sha256'],feature_contract=prior['feature_contract'],
         train_sessions=prior['sessions'],development_day=args.development_day,epochs=args.epochs,
-        checkpoint_selection='fixed_final_epoch_before_development_targets',width=prior.get('width',128),learning_rate=3e-4,weight_decay=1e-4,
+        checkpoint_selection='fixed_final_epoch_before_development_targets',width=prior.get('width',128),
+        activation_checkpointing=prior.get('activation_checkpointing',False),learning_rate=3e-4,weight_decay=1e-4,
         teacher_loss=prior['teacher_loss'],auxiliary_weights=prior['auxiliary_weights'],
         initialization='verified_six_session_underfit_weights_fresh_optimizer',sealed_labels_read=False,
         workstation_gpu_used=False,input_population_preserved=True,

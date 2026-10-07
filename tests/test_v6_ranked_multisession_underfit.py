@@ -13,7 +13,8 @@ from research.rl_trading.v6.training import train_session
 from test_rl_trading_v6_teacher_forecast import fixture
 
 
-def test_capacity512_actual_training_and_checkpoint_replay():
+@pytest.mark.parametrize('checkpointing',[False,True])
+def test_capacity512_actual_training_and_checkpoint_replay(checkpointing):
     from research.rl_trading.v6.run_ranked_teacher_generalization import build_policy
     from research.rl_trading.v6.market_attention import MarketAttentionConfig
     torch.set_num_threads(2)
@@ -21,14 +22,36 @@ def test_capacity512_actual_training_and_checkpoint_replay():
     labels=tuple(replace(d,forecast_actions=np.zeros(len(d.forecast_close_us),np.int64)) for d in labels)
     ranking=MarketAttentionConfig(top_r=1,market_tokens=2,heads=2)
     policy=build_policy(ranking,torch.device('cpu'),width=512)
+    policy.encoder.activation_checkpointing=checkpointing
     optimizer=torch.optim.AdamW(policy.parameters(),lr=.001)
     fitted=train_session(policy,optimizer,session,labels,(),device=torch.device('cpu'),teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))
     assert fitted.optimizer_steps>0 and np.isfinite(fitted.mean_loss)
     restored=build_policy(ranking,torch.device('cpu'),width=512)
+    restored.encoder.activation_checkpointing=checkpointing
     restored.load_state_dict(policy.state_dict(),strict=True)
     def evaluate(p):
         return asdict(train_session(p,None,session,labels,(),device=torch.device('cpu'),evaluation=True,evaluate_train=True,teacher_loss='branch-balanced-v3',regression_weights=(0.,0.)))
     assert evaluate(policy)==evaluate(restored)
+
+
+def test_checkpointing_preserves_temporal_outputs_gradients_and_update():
+    from research.rl_trading.v6.temporal_encoders import TemporalCandleEncoder
+    torch.set_num_threads(2);torch.manual_seed(71)
+    baseline=TemporalCandleEncoder(16);checked=copy.deepcopy(baseline)
+    checked.activation_checkpointing=True
+    history=torch.randn(3,120,16);present=torch.ones(3,120,dtype=torch.bool)
+    present[0,:30]=False;present[2]=False
+    a=history.clone().requires_grad_();b=history.clone().requires_grad_()
+    first=baseline.encode_history(a,present);second=checked.encode_history(b,present)
+    assert torch.equal(first,second)
+    first.square().sum().backward();second.square().sum().backward()
+    assert torch.equal(a.grad,b.grad)
+    for x,y in zip(baseline.parameters(),checked.parameters()):
+        assert (x.grad is None)==(y.grad is None)
+        if x.grad is not None:assert torch.equal(x.grad,y.grad)
+    torch.optim.AdamW(baseline.parameters(),lr=.001).step()
+    torch.optim.AdamW(checked.parameters(),lr=.001).step()
+    assert all(torch.equal(v,checked.state_dict()[k]) for k,v in baseline.state_dict().items())
 
 
 def test_day_cache_and_unique_target_binding():
