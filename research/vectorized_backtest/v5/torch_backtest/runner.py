@@ -1134,9 +1134,9 @@ class SqueezeRunner:
         ):
             raise ValueError("Invalid replay prefix")
         count = remaining if steps is None else steps
-        if self.graph is not None and steps is not None:
+        if self.graph is not None and steps is not None and (not reset or count % self.graph_steps):
             raise ValueError(
-                "Prefix validation/checkpoint runs use eager or compile backend"
+                "Captured prefix requires reset and exact whole graph blocks"
             )
         started = perf_counter()
         updated = started

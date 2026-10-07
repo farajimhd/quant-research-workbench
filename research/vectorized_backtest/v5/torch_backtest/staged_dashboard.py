@@ -69,7 +69,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     for label,value in rows[page*available:(page+1)*available]:grid.add_row(label,value)
     layout['metrics'].update(Panel(grid,title=f'Rank {selected} | {view} | page {page+1}/{pages}',padding=0))
     averages=status.get('average_timing',{})
-    layout['timing'].update(Text(f"Elapsed {duration(now-status.get('started_epoch',now))} | replay ETA {duration(status.get('replay_eta'))} | campaign ETA {duration(status.get('campaign_eta'))}\nAverage session {duration(averages.get('end_to_end'))} | replay {duration(averages.get('replay'))} | GPU {number(status.get('gpu_gib'))} GiB"))
+    layout['timing'].update(Text(f"Elapsed {duration(now-status.get('started_epoch',now))} | replay ETA {duration(status.get('replay_eta'))} | session ETA {duration(status.get('session_eta'))}\nAverage session {duration(averages.get('end_to_end'))} | average batch {duration(status.get('average_batch_seconds'))} | GPU {number(status.get('gpu_gib'))} GiB"))
     messages=status.get('messages',[])[-(3 if height>=30 else 1):]
     lines=[f"{m.get('timestamp','')} {m.get('text','')}" for m in messages]
     if status.get('error'):lines[-1:]=[str(status['error'])]

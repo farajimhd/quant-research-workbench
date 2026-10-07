@@ -70,6 +70,7 @@ class BatchedEvaluator:
         totals = dict(load=load, prefetch_wait=wait, transfer=transfer, rule_prepare=0., compile=0., replay=0.)
         total_batches = (len(population)+args.batch_size-1)//args.batch_size
         for index, left in enumerate(range(0, len(population), args.batch_size)):
+            batch_started = time.perf_counter()
             members = population[left:left+args.batch_size]
             folder = require_runtime(destination/f'batch_{index:04d}')
             path = folder/'receipt.json'
@@ -106,10 +107,14 @@ class BatchedEvaluator:
                 def progress(cursor):
                     elapsed = time.perf_counter()-replay_started
                     done = cursor['completed_seconds']
+                    total = getattr(args,'profile_seconds',None) or cursor['total_seconds']
+                    cursor = dict(cursor,total_seconds=total)
                     emit(progress=cursor, replay_elapsed=elapsed, replay_rate=done/elapsed if elapsed else None,
-                         replay_eta=(cursor['total_seconds']-done)*elapsed/done if done else None,
+                         replay_eta=(total-done)*elapsed/done if done else None,
                          active_session=self.runner.live_metrics())
-                result = self.runner.run(progress=progress,steps=getattr(args,'profile_seconds',None))
+                steps=getattr(args,'profile_seconds',None)
+                if steps==len(tape.clocks):steps=None
+                result = self.runner.run(progress=progress,steps=steps)
                 metrics = {k: clean(v) for k, v in result.items() if isinstance(v, torch.Tensor) or k == 'closed_position_duration_samples'}
                 ledger = self.runner.ledger[:, :int(self.runner.fill_count.max())].detach().cpu()
                 ledger_hash = seal_ledger(folder/'fills.pt', ledger, self.runner.fill_count)
@@ -121,7 +126,10 @@ class BatchedEvaluator:
             for key, value in record['timing'].items():
                 totals[key] += value
             batches.append(dict(directory=folder.name, sha256=file_hash(path)))
-            emit(completed_batches=index+1, total_batches=total_batches)
+            elapsed=time.perf_counter()-batch_started
+            emit(completed_batches=index+1, total_batches=total_batches,
+                 average_batch_seconds=(time.perf_counter()-began-transfer-wait)/(index+1),
+                 session_eta=(total_batches-index-1)*elapsed)
             if (self.args.output/'STOP').exists():
                 raise InterruptedError('Stopped at durable candidate-batch boundary')
         totals['end_to_end'] = time.perf_counter()-began+wait

@@ -31,6 +31,8 @@ def main(argv=None):
     args=p.parse_args(argv)
     if not 1<=args.session_count<=30 or not 32<=args.profile_seconds<=19800 or any(n<10 for n in args.populations) or any(not 1<=n<=1024 for n in args.batch_sizes):
         p.error('Invalid bounded profiling budget')
+    if args.backend=='compiled_graph' and args.profile_seconds!=19800 and args.profile_seconds%args.graph_steps:
+        p.error('Captured prefix must contain an exact number of graph blocks')
     spec=json.loads(args.sessions.read_text());preflight(spec,profile=True)
     output=require_runtime(args.output);configure_caches(output);torch.set_num_threads(1)
     identity=dict(version='v5-profile',code_hash=code_hash(),sessions_sha256=file_hash(args.sessions),arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()})
