@@ -593,6 +593,16 @@ def load_attested_broker_match_snapshot(
     run_id: str, checkpoint_sequence: int,
     first_price_source=None,
 ) -> BrokerMatchSnapshotRows:
+    """Standalone cold read; always independently verifies its full prefix."""
+    return _load_attested_broker_match_snapshot(client, keeper, run_id=run_id,
+        checkpoint_sequence=checkpoint_sequence, first_price_source=first_price_source)
+
+
+def _load_attested_broker_match_snapshot(
+    client: Any, keeper: BrokerMatchHeadReader, *,
+    run_id: str, checkpoint_sequence: int,
+    first_price_source=None, _scope=None,
+) -> BrokerMatchSnapshotRows:
     """Require exact Keeper, V4, and market-cursor agreement on cold read.
 
     A verified broker root alone is not a complete executable checkpoint:
@@ -607,7 +617,11 @@ def load_attested_broker_match_snapshot(
             or not callable(getattr(client, "execute", None))
             or not callable(getattr(keeper, "read_head", None))):
         raise ValueError("Broker match cold read lacks exact authorities")
-    prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
+    if _scope is None:
+        prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
+    else:
+        from ._checkpoint_prefix_read import _scoped_prefix
+        prefix = _scoped_prefix(_scope, client, run_id, checkpoint_sequence, first_price_source)
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not prefix.batch_ids
