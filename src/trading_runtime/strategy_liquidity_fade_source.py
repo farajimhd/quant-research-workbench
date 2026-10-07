@@ -1,6 +1,6 @@
 """Prepared original-entry/first-held binding; no commit or producer attestation."""
 from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
-from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+from src.backend.backtest_strategy_one_management import inherited_management_state_type
 from .strategy_liquidity_fade_exit import validate_liquidity_fade_witness, validate_liquidity_fade_financial
 from .strategy_one_stateful import StrategyOneEntryProposal, StrategyOneFinancialView
 from .strategy_one_position import ProtectionState
@@ -20,7 +20,7 @@ def validate_liquidity_fade_state(witness, state, financial) -> StrategyOneEntry
     validate_liquidity_fade_witness(witness,
         strategy_number=39 if type(witness) is HalfRiskLiquidityFadeFailure else 35)
     validate_liquidity_fade_financial(financial)
-    if (type(state) is not StrategyOneManagementState
+    if (not inherited_management_state_type(state, financial)
             or type(financial) is not StrategyOneFinancialView
             or state.boundary_ms != witness.boundary_ms
             or financial.position_quantity <= 0 or financial.pending_exit):

@@ -67,6 +67,30 @@ class OriginalRiskManagementState(StrategyOneManagementState):
     original_risk_requests: tuple = ()
 
 
+def inherited_management_state_type(state, financial) -> bool:
+    """Admit a closed declared capture type without changing inherited facts."""
+    if type(state) is StrategyOneManagementState:
+        return True
+    if (type(state) is not OriginalRiskManagementState
+            or type(financial) is not StrategyOneFinancialView
+            or type(state.submitted) is not tuple
+            or type(state.original_risk_requests) is not tuple
+            or any(type(pair) is not tuple or len(pair) != 2 for pair in state.submitted)):
+        return False
+    key = financial.account_id, financial.assignment_id, financial.ticker
+    entries = [source for identity, source in state.submitted if identity == key]
+    if (len(entries) != 1 or type(entries[0]) is not StrategyOneEntryProposal
+            or type(entries[0].strategy_number) is not int):
+        return False
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    from src.trading_runtime.confirmed_original_risk_failure import ConfirmedOriginalRiskPolicy
+    try:
+        policy = numbered_fixed_strategy(entries[0].strategy_number).confirmed_original_risk_policy
+    except ValueError:
+        return False
+    return type(policy) is ConfirmedOriginalRiskPolicy
+
+
 @dataclass(frozen=True, slots=True)
 class LiquidityFadeCheckpointRequest:
     """Completed decision pending an exact native manager/broker checkpoint."""

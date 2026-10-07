@@ -4,7 +4,7 @@ This does not certify a checkpoint or an entry commit. Writer/recovery callers
 must first load those authorities through the existing native sealed readers.
 """
 from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
-from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+from src.backend.backtest_strategy_one_management import inherited_management_state_type
 from .strategy_one_stateful import StrategyOneEntryProposal, StrategyOneFinancialView
 from .strategy_profit_giveback_exit import validate_profit_giveback_witness
 from .strategy_profit_giveback import ProfitGivebackWitness
@@ -13,7 +13,7 @@ from .strategy_profit_giveback import ProfitGivebackWitness
 def validate_profit_giveback_state(witness, state, financial) -> StrategyOneEntryProposal:
     """Bind the prior high, held clock and original risk to the exact position."""
     if (type(witness) is not ProfitGivebackWitness
-            or type(state) is not StrategyOneManagementState
+            or not inherited_management_state_type(state, financial)
             or type(financial) is not StrategyOneFinancialView):
         raise ValueError('Profit source needs exact manager and financial types')
     if state.boundary_ms != witness.prior_high_through_boundary_ms:

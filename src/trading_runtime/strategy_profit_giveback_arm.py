@@ -7,7 +7,7 @@ from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 from dataclasses import dataclass
 from decimal import Decimal
 from math import isfinite
-from src.backend.backtest_strategy_one_management import StrategyOneManagementState
+from src.backend.backtest_strategy_one_management import inherited_management_state_type
 from .strategy_one_stateful import StrategyOneFinancialView, StrategyOneEntryProposal
 
 
@@ -25,7 +25,7 @@ class ProfitArmCandidate:
 
 def profit_arm_candidate(state, financial, *, already_checkpointed: bool) -> ProfitArmCandidate | None:
     """Select current completed high once; the current bucket cannot exit."""
-    if (type(state) is not StrategyOneManagementState
+    if (not inherited_management_state_type(state, financial)
             or type(financial) is not StrategyOneFinancialView
             or type(already_checkpointed) is not bool
             or type(financial.position_quantity) not in (int,float)
