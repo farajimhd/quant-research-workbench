@@ -232,3 +232,29 @@ The parent directory remains immutable. This operation requires a new
 same-source workstation qualification and a new output directory. Ordinary
 checkpoint resumes continue to require exact source identity.
 
+After all generations complete and financial worker ownership is released,
+run the receipt audit, then the supplemental byte audit from an independently
+versioned auditor checkout. Keep the financial simulation source unchanged:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.vectorized_backtest.v4.torch_backtest.audit --output <experiment>
+python -B -m research.vectorized_backtest.v4.torch_backtest.input_audit --output <experiment>
+```
+
+The supplemental audit freshly hashes every consumed training tape, current
+and prior feature array, certificate and identity map. It reconciles the exact
+input bindings across all generations instead of following mutable publication
+pointers. It rejects an existing worker lock and incomplete budget; do not run
+this full scan alongside the campaign. `training_input_integrity.json` records
+the financial source and separate auditor source, byte counts and file hashes.
+It supplements `audit.json` and does not authorize validation preparation.
+
+After the frozen default/winner evaluation completes all six final sessions,
+rerun the receipt audit with the updated auditor (which binds the six receipt
+hashes), then run `input_audit --output <experiment> --include-validation`.
+This writes `final_input_integrity.json` after checking the freeze and those
+six hashes. Without that flag, final input payloads remain unopened. A passed
+unit fixture verifies the audit gates and tamper detection; it does not prove
+the historical campaign's input integrity until these commands actually run.
+

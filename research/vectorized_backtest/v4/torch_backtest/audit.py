@@ -2,7 +2,7 @@
 import argparse,json
 from pathlib import Path
 import torch
-from .runtime import file_hash,write_json
+from .runtime import file_hash,write_json,code_hash
 from .run_search import restore,state,fingerprint,clean
 from .stability import Objective,score
 from .feature_bank import CATALOG
@@ -36,7 +36,7 @@ def audit(root):
             if feasible and (best is None or value>best):best=value;winner=state(population[lane])
         generations.append(dict(path=str(folder/'generation.json'),sha256=file_hash(folder/'generation.json')))
         verified+=1
-    freeze=root/'frozen_winner.json';validation=0
+    freeze=root/'frozen_winner.json';validation=0;validation_bindings=[]
     if freeze.exists():
         frozen=json.loads(freeze.read_text());h=file_hash(freeze)
         if frozen['identity_sha256']!=file_hash(root/'identity.json'):raise ValueError('Frozen winner identity changed')
@@ -54,8 +54,10 @@ def audit(root):
             audit_fills(folder/'fills.pt',r['metrics'],initial_cash=initial_cash)
             financial_verified+=1
             validation+=1
+            validation_bindings.append(dict(path=str(receipt),sha256=file_hash(receipt)))
     report=dict(status='passed',completed_generations_verified=verified,validation_sessions_verified=validation,financial_receipts_verified=financial_verified,identity_sha256=file_hash(root/'identity.json'),full_budget_verified=verified==identity['arguments']['generations'],
-                generation_bindings=generations,freeze_sha256=file_hash(freeze) if freeze.exists() else None,
+                auditor_code_hash=code_hash(),simulation_code_hash=identity['code_hash'],
+                generation_bindings=generations,validation_bindings=validation_bindings,freeze_sha256=file_hash(freeze) if freeze.exists() else None,
                 checkpoint_sha256=file_hash(root/'checkpoint.json') if (root/'checkpoint.json').exists() else None)
     write_json(root/'audit.json',report);return report
 

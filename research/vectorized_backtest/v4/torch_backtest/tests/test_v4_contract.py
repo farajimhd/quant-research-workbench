@@ -149,13 +149,18 @@ def test_controller_all30_freeze_once_and_audit(tmp_path,monkeypatch):
     path=tmp_path/'sessions.json';path.write_text(json.dumps(sessions));qualification=tmp_path/'unit-only-qualification.json'
     qualification.write_text(json.dumps(dict(status='passed',code_hash=code_hash(),population=4,sessions_sha256=file_hash(path))))
     calls=[];output=tmp_path/'experiment'
-    def replay(spec,population,space,args,folder,emit,cache=None):
+    def loaded(spec,**kwargs):
+        return None,None,None,None,dict(day=spec['day'],execution={'fixture':True},feature_certificate='fixture',
+            prior_certificate=None,identity_map_sha256='fixture',split_certificate_sha256='fixture',previous_split_certificate_sha256=None)
+    monkeypatch.setattr(run_search,'load_session',loaded)
+    def replay(spec,population,space,args,folder,emit,cache=None,prepared=None):
         calls.append(spec['day']);lanes=len(population)
         if len(calls)>30:assert (output/'frozen_winner.json').exists()
         ledger=folder/'fills.pt';rows=torch.tensor([[1000,0,0,1,10,10,0,0,0],[1001,0,0,-1,10,20,0,1,1]],dtype=torch.float64)
         torch.save(dict(ledger=rows.expand(lanes,-1,-1).clone(),counts=torch.ones(lanes,dtype=torch.int64)*2),ledger)
         metrics={name:[value]*lanes for name,value in dict(net_pnl=100.,cash=10100.,fees=0.,open_quantity=0,drawdown=20.,stop_risk_dollar_seconds=100.,capital_dollar_seconds=1000.,filled_batches=1,terminal_valid=True,positions_opened=1,fill_count=2,open_positions=0,sold_share_seconds=10.,sold_shares=10).items()}
-        return dict(day=spec['day'],metrics=metrics,timing={},ledger_sha256=file_hash(ledger),population_sha256=run_search.fingerprint([run_search.state(v) for v in population]))
+        binding=loaded(spec)[-1]
+        return dict(**binding,metrics=metrics,timing={},ledger_sha256=file_hash(ledger),population_sha256=run_search.fingerprint([run_search.state(v) for v in population]))
     monkeypatch.setattr(run_search,'evaluate_session',replay)
     monkeypatch.setattr(run_search,'missing_validation_inputs',lambda _: [dict(day='sealed',path='not-published')])
     arguments=['--sessions',str(path),'--output',str(output),'--execute','--device','cpu','--backend','eager','--population','4','--generations','1','--qualification',str(qualification)]
@@ -166,7 +171,10 @@ def test_controller_all30_freeze_once_and_audit(tmp_path,monkeypatch):
     monkeypatch.setattr(run_search,'missing_validation_inputs',lambda _: [])
     assert run_search.main(arguments+['--resume'])==0
     assert calls==[s['day'] for s in sessions['training']+sessions['validation']]
-    assert audit(output)['full_budget_verified']
+    report=audit(output)
+    assert report['full_budget_verified']
+    assert len(report['validation_bindings'])==6
+    assert all(file_hash(item['path'])==item['sha256'] for item in report['validation_bindings'])
     assert not (output/'owner.lock').exists()
     with pytest.raises(ValueError,match='immutable'):
         run_search.main(['--sessions',str(path),'--output',str(output),'--execute','--resume','--device','cpu','--backend','eager','--population','4','--generations','1','--qualification',str(qualification)])
