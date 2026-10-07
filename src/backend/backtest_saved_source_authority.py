@@ -98,9 +98,11 @@ class SavedReviewSourceAuthority:
     reader_fingerprint: str
     reader_certificate: str
     _seal: Any = field(repr=False, compare=False)
+    historical_writer: Any = field(default=None, repr=False)
+    execution_code_hash: str = ""
 
     def evidence(self) -> dict[str, Any]:
-        return {
+        evidence = {
             "scope": "saved_run_read_only_no_execution_or_resume",
             "run_id": self.run_id, "configuration_hash": self.configuration_hash,
             "strategy_number": self.strategy_number,
@@ -109,6 +111,15 @@ class SavedReviewSourceAuthority:
             "reader_source_fingerprint": self.reader_fingerprint,
             "reader_projection_certificate": self.reader_certificate,
         }
+        if self.historical_writer is not None:
+            evidence["historical_writer"] = {
+                "execution_commit": self.historical_writer.execution_commit,
+                "execution_code_hash": self.historical_writer.code_hash,
+                "execution_backend_fingerprint": self.historical_writer.backend_fingerprint,
+                "native_projection_certificate": self.historical_writer.native_certificate,
+                "root_registry_sha256": self.historical_writer.registry_hash,
+            }
+        return evidence
 
 
 def certify_saved_review_source(
@@ -148,13 +159,20 @@ def certify_saved_review_source(
     current = versions.backend_source_fingerprint()
     if current != versions.LOADED_BACKEND_FINGERPRINT:
         raise RuntimeError("Saved review reader source changed after startup; restart the backend")
-    certificate = versions._loaded_numbered_projection(
-        certify_numbered_fixed_v4_projection, current, number)
+    from .backtest_saved_writer_source import certify_historical_writer
+    writer = certify_historical_writer(context, revision)
+    if writer is None:
+        # This is explicit source-identity routing, never an exception fallback.
+        certificate = versions._loaded_numbered_projection(
+            certify_numbered_fixed_v4_projection, current, number)
+    else:
+        from .backtest_saved_reader_certification import certify_saved_reader_source
+        certificate = certify_saved_reader_source(writer.reader_fingerprint)
     if re.fullmatch(r"[0-9a-f]{64}", certificate or "") is None:
         raise ValueError("Saved review reader lacks its current projection certificate")
     return SavedReviewSourceAuthority(
         run_id, revision["content_hash"], number, commit, approved,
-        current, certificate, _SEAL)
+        current, certificate, _SEAL, writer, str(context.get("code_hash") or ""))
 
 
 def validate_saved_review_source(
@@ -177,11 +195,19 @@ def validate_saved_review_source(
             or authority.reader_fingerprint != versions.LOADED_BACKEND_FINGERPRINT
             or authority.reader_fingerprint != versions.backend_source_fingerprint()):
         raise ValueError("Saved review source binding or reader freshness changed")
+    if authority.historical_writer is None:
+        certificate = versions._loaded_numbered_projection(
+            certify_numbered_fixed_v4_projection, authority.reader_fingerprint,
+            authority.strategy_number)
+    else:
+        from .backtest_saved_writer_source import certify_historical_writer
+        from .backtest_saved_reader_certification import certify_saved_reader_source
+        writer = certify_historical_writer({"code_hash": authority.execution_code_hash}, revision)
+        if writer is None or writer != authority.historical_writer:
+            raise ValueError("Saved review historical writer binding changed")
+        certificate = certify_saved_reader_source(writer.reader_fingerprint)
     if (approved_git_source_fingerprint(str(versions.ROOT), authority.approved_commit)
-            != authority.approved_fingerprint
-            or versions._loaded_numbered_projection(
-                certify_numbered_fixed_v4_projection, authority.reader_fingerprint,
-                authority.strategy_number) != authority.reader_certificate):
+            != authority.approved_fingerprint or certificate != authority.reader_certificate):
         raise ValueError("Saved review source or reader certificate changed")
 
 
