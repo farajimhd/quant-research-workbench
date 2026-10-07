@@ -65,6 +65,13 @@ def configure_compiler():
         # The wheel normally locates TinyCC under sysconfig's site-packages.
         # A --target install requires this explicit task-local toolchain path.
         os.environ.setdefault("CC", str(compiler))
+        # CPU custom-op dispatch can probe availability before this overlay is
+        # installed. Refresh discovery after changing the search path; do not
+        # retain a cached "unavailable" result for the now-configured package.
+        from torch.utils import _triton
+        for probe in vars(_triton).values():
+            clear=getattr(probe,'cache_clear',None)
+            if callable(clear):clear()
 
 
 def write_json(path, value):
