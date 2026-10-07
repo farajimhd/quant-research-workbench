@@ -374,7 +374,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         if any(type(payload.get(key)) is not dict for key in required):
             raise ValueError('Declared fixed capability payload is incomplete')
         optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy',
-                    'all_held_original_risk_policy', 'confirmed_original_risk_policy', 'entry_scope_policy', 'recent_bos_policy',
+                    'all_held_original_risk_policy', 'confirmed_original_risk_policy', 'premarket_confirmed_original_risk_policy', 'entry_scope_policy', 'recent_bos_policy',
                     'momentum_policy', 'strong_ten_second_momentum_policy',
                     'initial_strong_momentum_policy', 'first_setup_growth_policy',
                     'first_price_break_policy', 'premarket_failure_policy',
@@ -400,6 +400,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         self.entry_spread_risk_policy
         self.all_held_original_risk_policy
         self.confirmed_original_risk_policy
+        self.premarket_confirmed_original_risk_policy
         from .strategy_half_risk_liquidity_fade import half_risk_liquidity_policy_payload, POLICY_ID
         has_half_rule = self._has(POLICY_ID)
         has_half_payload = 'half_risk_liquidity_policy' in payload
@@ -488,6 +489,24 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         if (not selected or not supplied or source_count != 1
                 or canonical_json(payload['confirmed_original_risk_policy']) != canonical_json(policy.payload())):
             raise ValueError('Declared confirmed policy needs exact rule, input and typed payload')
+        return policy
+
+    @property
+    def premarket_confirmed_original_risk_policy(self):
+        import json
+        from .journal_contract import canonical_json
+        from .premarket_confirmed_original_risk import (
+            PremarketConfirmedOriginalRiskPolicy, PREMARKET_CONFIRMED_RISK_RULE, PREMARKET_CONFIRMED_RISK_INPUT)
+        payload=json.loads(self.policy_json)
+        count=self.release.rule_set_contracts.count(PREMARKET_CONFIRMED_RISK_RULE)
+        source_count=self.release.input_contracts.count(PREMARKET_CONFIRMED_RISK_INPUT)
+        supplied='premarket_confirmed_original_risk_policy' in payload
+        if not count and not source_count and not supplied:
+            return None
+        policy=PremarketConfirmedOriginalRiskPolicy()
+        if (count!=1 or source_count!=1 or not supplied or self.confirmed_original_risk_policy is None
+            or canonical_json(payload['premarket_confirmed_original_risk_policy'])!=canonical_json(policy.payload())):
+            raise ValueError('PM replacement requires exact paired rule/input/policy and completed source authority')
         return policy
 
     def _windows(self):

@@ -93,7 +93,7 @@ class OriginalRiskDecisionDiagnostic:
     checkpoint: object = None
 
 
-def validate_decision_diagnostic(diagnostic, *, policy):
+def validate_decision_diagnostic(diagnostic, *, policy, premarket_policy=None):
     if (type(diagnostic) is not OriginalRiskDecisionDiagnostic
             or type(diagnostic.current) is not FollowThroughFailure
             or type(diagnostic.newest) is not CompletedRiskBucket
@@ -112,6 +112,18 @@ def validate_decision_diagnostic(diagnostic, *, policy):
         witness.quote_age_us,1.,False)
     from .strategy_zero_regime_risk_failure import zero_regime_risk_failure
     inherited = zero_regime_risk_failure(value)
+    from .premarket_confirmed_original_risk import (
+        PREMARKET_CONFIRMED_RISK_RULE, replacement_stage, premarket_confirmed_original_risk_failure)
+    replaced = premarket_policy is not None and replacement_stage(value,policy=premarket_policy)
+    if diagnostic.semantic_rule == PREMARKET_CONFIRMED_RISK_RULE:
+        if premarket_policy is None or not replaced:
+            raise ValueError('PM replacement diagnostic lacks exact selected stage')
+        actual=premarket_confirmed_original_risk_failure(value,prior=diagnostic.prior,newest=newest,policy=premarket_policy)
+        if actual is None or actual.current!=witness:
+            raise ValueError('PM replacement diagnostic lacks its exact consecutive witnesses')
+        return diagnostic
+    if replaced:
+        raise ValueError('Replaced PM stage cannot claim inherited or extension firing authority')
     if diagnostic.semantic_rule == INHERITED_ORIGINAL_RISK_RULE:
         if diagnostic.prior is not None or inherited != witness:
             raise ValueError('Inherited firing diagnostic differs from exact inherited rule')

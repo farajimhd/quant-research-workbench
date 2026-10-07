@@ -182,8 +182,9 @@ class StrategyOneManagementRunner:
         if newest is None:raise RuntimeError('Selected failure lacks exact newest producer bucket')
         diagnostic=OriginalRiskDecisionDiagnostic(witness,newest,
             confirmed.prior if confirmed is not None else None,
-            CONFIRMED_ORIGINAL_RISK_RULE if confirmed is not None else INHERITED_ORIGINAL_RISK_RULE)
-        validate_decision_diagnostic(diagnostic,policy=policy)
+            confirmed.semantic_rule if confirmed is not None else INHERITED_ORIGINAL_RISK_RULE)
+        validate_decision_diagnostic(diagnostic,policy=policy,
+            premarket_policy=getattr(self.contract,'premarket_confirmed_original_risk_policy',None))
         from src.trading_runtime.original_risk_checkpoint import OriginalRiskCheckpointRequest
         request=OriginalRiskCheckpointRequest(diagnostic,financial,source_entry_id)
         key=financial.account_id,financial.assignment_id,financial.ticker
@@ -547,6 +548,7 @@ class StrategyOneManagementRunner:
                 or evidence.ticker != financial.ticker
                 or evidence.boundary_ms != boundary_ms):
             raise ValueError("Strategy 1 management evidence crossed its causal boundary")
+        replacement_active = False
         if self.contract.allows_followthrough_failure_exit and boundary_ms % 5_000 == 0:
             from src.trading_runtime.strategy_followthrough_failure import (
                 FollowThroughFailureInput, followthrough_failure,
@@ -583,6 +585,18 @@ class StrategyOneManagementRunner:
                 bar.get("macd_signal"), evidence.bid, evidence.ask, age_us,
                 financial.position_quantity, financial.pending_exit)
             witness = failure_rule(completed)
+            replacement = None
+            pm_policy = getattr(self.contract,'premarket_confirmed_original_risk_policy',None)
+            if pm_policy is not None:
+                from src.trading_runtime.premarket_confirmed_original_risk import replacement_stage, premarket_confirmed_original_risk_failure
+                replacement_active = replacement_stage(completed,policy=pm_policy)
+                if replacement_active:
+                    if self._completed_risk_lookup is None:
+                        raise RuntimeError('PM replacement lacks certified completed source')
+                    pair=self._completed_risk_lookup.pair_at(financial.ticker,boundary_ms)
+                    replacement=premarket_confirmed_original_risk_failure(completed,
+                        prior=None if pair is None else pair[0],newest=None if pair is None else pair[1],policy=pm_policy)
+                    witness=None if replacement is None else replacement.current
             if witness is not None:
                 # Reuse the runtime's cached, exact native source validation;
                 # the older constructor deliberately excludes price entries.
@@ -591,7 +605,7 @@ class StrategyOneManagementRunner:
                          else strategy_one_entry_intent(
                              source, session_date=self.runtime.config.anchor_date))
                 await self._submit_followthrough_with_diagnostic(
-                    financial, witness, entry.intent_id)
+                    financial, witness, entry.intent_id, confirmed=replacement)
                 if (self.contract.strategy_number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(self.contract.strategy_number, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
                     # The pre-submission financial view cannot attest that
                     # the position is still available for arming after OMS.
@@ -710,7 +724,7 @@ class StrategyOneManagementRunner:
                 self._profit_arm_financials.pop(key, None)
                 return
         confirmed_policy = getattr(self.contract, 'confirmed_original_risk_policy', None)
-        if confirmed_policy is not None and boundary_ms % 5000 == 0:
+        if confirmed_policy is not None and not replacement_active and boundary_ms % 5000 == 0:
             if self._completed_risk_lookup is None:
                 raise RuntimeError('Declared consecutive failure lacks certified completed source')
             pair=self._completed_risk_lookup.pair_at(financial.ticker,boundary_ms)

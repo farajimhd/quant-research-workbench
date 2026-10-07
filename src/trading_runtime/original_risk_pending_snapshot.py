@@ -72,8 +72,10 @@ def project_pending_requests(requests, common, state):
             raise ValueError('Pending original-risk snapshot contains foreign requests')
         diagnostic=request.diagnostic;witness=request.witness;financial=request.financial
         source=validate_original_risk_state(witness,state,financial)
-        policy=numbered_fixed_strategy(source.strategy_number).confirmed_original_risk_policy
-        validate_decision_diagnostic(diagnostic,policy=policy)
+        contract=numbered_fixed_strategy(source.strategy_number)
+        policy=contract.confirmed_original_risk_policy
+        validate_decision_diagnostic(diagnostic,policy=policy,
+            premarket_policy=getattr(contract,"premarket_confirmed_original_risk_policy",None))
         newest=diagnostic.newest;prior=diagnostic.prior
         key=financial.account_id,financial.assignment_id,financial.ticker
         if (key in seen or newest.ticker!=financial.ticker
