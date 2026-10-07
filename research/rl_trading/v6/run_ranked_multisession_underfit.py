@@ -119,6 +119,7 @@ def main(argv=None):
         policy.encoder.history_microbatch=args.history_microbatch
         from research.rl_trading.v6.laptop_resources import LaptopGpuPacer
         policy.resource_pacer=LaptopGpuPacer(device,duty_cycle=args.gpu_duty_cycle)
+        policy.encoder.resource_pacer=policy.resource_pacer
         return policy
     policy = model(); optimizer = torch.optim.AdamW(policy.parameters(), lr=3e-4, weight_decay=1e-4)
     load_env_files(discover_env_files(Path.cwd()), verbose=False)

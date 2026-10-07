@@ -48,6 +48,7 @@ class TemporalCandleEncoder(ActualCandleEncoder):
         self.architecture=architecture;self.encoder_version=VERSION
         self.activation_checkpointing=False
         self.history_microbatch=None
+        self.resource_pacer=None
         self.reproject_history_for_gradient=architecture!='lag'
         if structured:self.project=StructuredProjection(width)
         if architecture=='tcn':self.temporal=nn.Sequential(*(CausalResidual(width,d) for d in (1,2,4,8,16,32)))
@@ -68,8 +69,13 @@ class TemporalCandleEncoder(ActualCandleEncoder):
             if len(history)>limit:
                 return torch.cat([self.encode_history(history[i:i+limit],present[i:i+limit])
                                   for i in range(0,len(history),limit)],dim=0)
+        reserve_check=getattr(self.resource_pacer,'check_reserve',None)
+        if reserve_check is not None:reserve_check()
         x=history*present[...,None]
-        if self.architecture=='lag':return super().encode_history(x,present)
+        if self.architecture=='lag':
+            output=super().encode_history(x,present)
+            if self.resource_pacer is not None:self.resource_pacer()
+            return output
         if self.architecture=='tcn':
             temporal_input=x.transpose(1,2)
             output=(checkpoint(self.temporal,temporal_input,use_reentrant=False)
@@ -85,7 +91,9 @@ class TemporalCandleEncoder(ActualCandleEncoder):
             variance=((x-mean[:,None])**2*present[...,None]).sum(1)/denominator
             output=self.temporal(torch.cat((x[:,-1],mean,torch.sqrt(variance+1e-6)),1))
         output=self.norm(output)
-        return torch.where(present.any(1)[:,None],output,torch.zeros_like(output))
+        result=torch.where(present.any(1)[:,None],output,torch.zeros_like(output))
+        if self.resource_pacer is not None:self.resource_pacer()
+        return result
 
     def encode_listing(self,scalar,levels):
         projected=self.project(self._input(scalar,levels));outputs=[]

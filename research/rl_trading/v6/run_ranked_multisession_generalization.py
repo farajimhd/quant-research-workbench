@@ -72,6 +72,7 @@ def main(argv=None):
         policy.encoder.history_microbatch=resources['history_microbatch']
         from research.rl_trading.v6.laptop_resources import LaptopGpuPacer
         policy.resource_pacer=LaptopGpuPacer(device,duty_cycle=resources['duty_cycle'],reserve_bytes=resources['reserve_bytes'])
+        policy.encoder.resource_pacer=policy.resource_pacer
         return policy
     policy=model();policy.load_state_dict(torch.load(args.underfit/'last.pt',weights_only=True),strict=True)
     def evaluate(p,targets):
