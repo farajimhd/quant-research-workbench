@@ -17,10 +17,12 @@ def declared_fixed_structural_lot_contract(number):
         if str(exc) == f'Strategy {number} is not published':
             return None
         raise
-    rule, source = 'fixed-structural-lot-entry@1', 'fixed-structural-lot-source@1'
-    if rule not in release.rule_set_contracts and source not in release.input_contracts:
+    rule = 'fixed-structural-lot-entry@1'
+    sources = tuple(s for s in ('fixed-structural-lot-source@1', 'fixed-structural-lot-source@2') if s in release.input_contracts)
+    source = sources[0] if len(sources) == 1 else ''
+    if rule not in release.rule_set_contracts and not sources:
         return None
-    if (release.rule_set_contracts.count(rule) != 1 or release.input_contracts.count(source) != 1
+    if (len(sources) != 1 or release.rule_set_contracts.count(rule) != 1 or release.input_contracts.count(source) != 1
             or release.input_contracts.count(DECLARED_FIXED_ADAPTER) != 1):
         raise ValueError('Fixed-lot configuration lacks exact semantic companions')
     factory = fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).contract_factory
@@ -78,6 +80,8 @@ def verify_fixed_structural_lot_configuration(strategy):
 def derive_registered_fixed_structural_lot_configuration(parent, *, number,
         approved_code_commit, approved_code_fingerprint, approval_reference):
     from src.trading_runtime.fixed_structural_lot_release import derive_fixed_structural_lot_release
+    if 'fixed-structural-lot-source@2' in numbered_strategy(number).input_contracts:
+        from src.trading_runtime.fixed_structural_lot_release_v2 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')

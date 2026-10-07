@@ -14,7 +14,8 @@ class FixedStructuralLotStrategyContract(DeclaredFixedStrategyContract):
         if type(self.selected_policy) is not FixedStructuralLotPolicy:
             raise ValueError('Exact typed fixed-lot contract policy required')
         self.selected_policy.__post_init__()
-        if (self.release.input_contracts.count('fixed-structural-lot-source@1') != 1
+        if (sum(self.release.input_contracts.count(source) for source in
+                    ('fixed-structural-lot-source@1', 'fixed-structural-lot-source@2')) != 1
                 or self.release.rule_set_contracts.count('fixed-structural-lot-entry@1') != 1):
             raise ValueError('Fixed-lot contract lacks exact selected source and entry declarations')
 
