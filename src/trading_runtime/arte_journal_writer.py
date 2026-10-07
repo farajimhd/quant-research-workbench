@@ -99,6 +99,7 @@ if TYPE_CHECKING:
 
 
 from src.trading_runtime.arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch
+from src.trading_runtime.arte_original_risk_diagnostic_v4 import DIAGNOSTIC as ORIGINAL_RISK_DIAGNOSTIC
 from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch
 from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, V4ConfirmedAhFailureBatch
 from src.trading_runtime.arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
@@ -118,6 +119,9 @@ from .arte_running_financial_checkpoint_schema import TABLES as RUNNING_FINANCIA
 _CONTRACTS.update({table.name: table for table in RUNNING_FINANCIAL_TABLES})
 RUNNING_FINANCIAL_TABLE_NAMES = frozenset(table.name for table in RUNNING_FINANCIAL_TABLES)
 _CONTRACTS[FAILURE.name] = FAILURE
+_CONTRACTS[ORIGINAL_RISK_DIAGNOSTIC.name] = ORIGINAL_RISK_DIAGNOSTIC
+from .original_risk_pending_snapshot import selected_snapshot_contracts
+_CONTRACTS.update({table.name:table for table in selected_snapshot_contracts()})
 _CONTRACTS[PROFIT_GIVEBACK.name] = PROFIT_GIVEBACK
 _CONTRACTS[CONFIRMED_AH_FAILURE.name] = CONFIRMED_AH_FAILURE
 # Typed scalar encoding only. Envelope/commit/worker admission is separate;
@@ -301,7 +305,7 @@ def journal_client_from_env() -> Any:
 
 def backtest_v4_journal_client_from_env(*, keeper_session=None,
                                         lease=None, automatic_ladder=False, entry_spread_risk=False,
-                                        ladder_geometry_policy=None) -> Any:
+                                        ladder_geometry_policy=None, confirmed_original_risk_policy=None) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -314,7 +318,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
 
     _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
     url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
-        **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}))
+        **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}),
+        **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}))
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
@@ -369,6 +374,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     client.automatic_ladder_profile = automatic_ladder
     client.ladder_geometry_policy = ladder_geometry_policy
     client.entry_spread_risk_profile = entry_spread_risk
+    client.confirmed_original_risk_policy = confirmed_original_risk_policy
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = _V4RunnerClient(
             url, user, password, timeout_seconds=60, persistent=True,
@@ -380,6 +386,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.backtest_v4_lease = lease
         lane.automatic_ladder_profile = automatic_ladder
         lane.ladder_geometry_policy = ladder_geometry_policy
+        lane.confirmed_original_risk_policy = confirmed_original_risk_policy
         return lane
     client.v4_insert_lane_factory = new_detail_lane
     client.v4_insert_lane_limit = 4
@@ -388,12 +395,14 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
 
 
 def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
-                          ladder_geometry_policy=None) -> tuple[str, str, str]:
+                          ladder_geometry_policy=None, confirmed_original_risk_policy=None) -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
     if type(automatic_ladder) is not bool or type(entry_spread_risk) is not bool or (automatic_ladder and entry_spread_risk):
         raise ValueError('V4 runner profile selection must be explicit')
     _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
+    from .original_risk_diagnostic_profile import validate_original_risk_profile
+    validate_original_risk_profile(automatic_ladder,entry_spread_risk,confirmed_original_risk_policy)
     waiting = ladder_geometry_policy is not None
     stem = ('BACKTEST_V4_WAITING_LADDER_RUNNER' if waiting else
             'BACKTEST_V4_LADDER_RUNNER' if automatic_ladder else 'BACKTEST_V4_RUNNER')
@@ -401,6 +410,8 @@ def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
                  'backtest_v4_ladder_runner' if automatic_ladder else 'backtest_v4_runner')
     if entry_spread_risk:
         stem, principal = 'BACKTEST_V4_ENTRY_COST_RUNNER', 'backtest_v4_entry_cost_runner'
+    if confirmed_original_risk_policy is not None:
+        stem,principal='BACKTEST_V4_ORIGINAL_RISK_RUNNER','backtest_v4_original_risk_runner'
     url, user, password = _dedicated_clickhouse_credentials(
         stem + '_CLICKHOUSE_', stem + '_CREDENTIAL_FILE')
     url = workstation_ipv4_transport(url)
@@ -436,13 +447,14 @@ def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, 
 
 
 def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False,
-                                         ladder_geometry_policy=None) -> Any:
+                                         ladder_geometry_policy=None, confirmed_original_risk_policy=None) -> Any:
     """SELECT-only catalog/grant audit before any Keeper claim or run write."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
     _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
     url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
-        **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}))
+        **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}),
+        **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}))
     client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"readonly": 1, "max_threads": 2,
@@ -451,6 +463,7 @@ def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread
     client.automatic_ladder_profile = automatic_ladder
     client.ladder_geometry_policy = ladder_geometry_policy
     client.entry_spread_risk_profile = entry_spread_risk
+    client.confirmed_original_risk_policy = confirmed_original_risk_policy
     return client
 
 
@@ -1781,6 +1794,8 @@ def _insert(
         if dispatch_manager_snapshot_hash is not None and (
                 name not in {table.name for table in (
                     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
+                    *(selected_snapshot_contracts() if getattr(client,'confirmed_original_risk_policy',None)
+                      is not None else ()),
                 )}
                 or any(row.get("checkpoint_sequence") != dispatch_sequence
                        or row.get("snapshot_id") != rows[0].get("snapshot_id")
@@ -2289,12 +2304,13 @@ _V4_PREFLIGHT_SECRET = object()
 class _V4PreflightSeal:
     """One-use proof that this exact client passed the full V4 audit."""
 
-    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile")
+    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "confirmed_original_risk_policy")
 
     def __init__(self, client: Any, secret: object) -> None:
         self.client, self.secret, self.used = client, secret, False
         self.ladder_geometry_policy = getattr(client, 'ladder_geometry_policy', None)
         self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
+        self.confirmed_original_risk_policy = getattr(client,'confirmed_original_risk_policy',None)
 
 
 def _validate_ladder_geometry_profile(automatic_ladder, policy):
@@ -2308,11 +2324,21 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
     installed = fixed_backtest_v2_contracts()
     geometry_policy = getattr(client, 'ladder_geometry_policy', None)
     _validate_ladder_geometry_profile(getattr(client, 'automatic_ladder_profile', False), geometry_policy)
+    from .original_risk_diagnostic_profile import validate_original_risk_profile
+    risk_policy=getattr(client,'confirmed_original_risk_policy',None)
+    validate_original_risk_profile(getattr(client,'automatic_ladder_profile',False),
+        getattr(client,'entry_spread_risk_profile',False),risk_policy)
     # A storage_preflight scans active parts as well as schema. Audit the
     # union once: repeating that catalog scan for each family can dominate
     # Backtest startup on a workstation with large market-part catalogs.
     storage_preflight(client, tables=v4_storage_contracts())
     writable = v4_journal_write_tables()
+    if risk_policy is not None:
+        if client.execute('SELECT currentUser()').strip()!='backtest_v4_original_risk_runner':
+            raise RuntimeError('Original-risk profile requires its dedicated principal')
+        selected_tables=(ORIGINAL_RISK_DIAGNOSTIC,*selected_snapshot_contracts())
+        storage_preflight(client,tables=selected_tables)
+        writable |= frozenset(table.name for table in selected_tables)
     if getattr(client, 'automatic_ladder_profile', False):
         from src.trading_runtime.arte_squeeze_ladder_schema import TABLES as ladder_tables
         expected_principal = ('backtest_v4_waiting_ladder_runner' if geometry_policy is not None
@@ -3929,6 +3955,7 @@ class ArteJournalWriter:
                       or v4_preflight_seal.secret is not _V4_PREFLIGHT_SECRET
                       or v4_preflight_seal.ladder_geometry_policy != getattr(client, 'ladder_geometry_policy', None)
                       or v4_preflight_seal.automatic_ladder_profile != getattr(client, 'automatic_ladder_profile', False)
+                      or v4_preflight_seal.confirmed_original_risk_policy != getattr(client,'confirmed_original_risk_policy',None)
                       or v4_preflight_seal.used):
                     raise RuntimeError("V4 writer lacks a fresh same-client preflight")
                 else:
@@ -4117,7 +4144,8 @@ class ArteJournalWriter:
                 or type(unit) is not V4CompoundBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 compound requires its pinned writer")
-        if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures']:
+        if (unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures']
+                or unit.children['liquidity_fade_failures'] or unit.children.get('original_risk_diagnostics')):
             return self._submit_profit_publication(unit, first_price_source=first_price_source)
         if first_price_source is not None:
             raise ValueError('Compound price context requires a profit witness')
@@ -4186,11 +4214,15 @@ class ArteJournalWriter:
             self._accepted_writes = True
             return receipt
 
-    def submit_followthrough_exit_v4(self, unit: V4FollowThroughFailureBatch) -> Future[str]:
+    def submit_followthrough_exit_v4(self, unit: V4FollowThroughFailureBatch, *, first_price_source=None) -> Future[str]:
         """Queue the immutable exit and scalar witness without network I/O."""
         if self._journal_profile not in self._V4_PROFILES or not isinstance(
                 unit, V4FollowThroughFailureBatch):
             raise ValueError("Follow-through exit requires the V4 writer profile")
+        if unit.diagnostic is not None:
+            return self._submit_profit_publication(unit,first_price_source=first_price_source)
+        if first_price_source is not None:
+            raise ValueError('Legacy followthrough queue cannot carry selected diagnostic context')
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -4215,15 +4247,27 @@ class ArteJournalWriter:
         from .arte_journal_compound_v4 import V4CompoundBatch
         from zoneinfo import ZoneInfo
         if (self._journal_profile != 'backtest_v4'
-                or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch, V4CompoundBatch)
+                or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch, V4CompoundBatch, V4FollowThroughFailureBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError('Profit publication requires its exact Backtest writer')
+        if type(unit) is V4FollowThroughFailureBatch and unit.diagnostic is None:
+            raise ValueError('Source-fenced followthrough lane requires selected diagnostic')
+        selected_failures=((unit.failure,) if type(unit) is V4FollowThroughFailureBatch else
+                           tuple(row for row in unit.children['followthrough_failures']
+                                 if any(str(d['parent_record_id'])==str(row['parent_record_id'])
+                                        for d in unit.children.get('original_risk_diagnostics',())))
+                           if type(unit) is V4CompoundBatch else ())
+        if selected_failures:
+            from .arte_original_risk_diagnostic_v4 import diagnostic_policy
+            for row in selected_failures:
+                if getattr(self._client,'confirmed_original_risk_policy',None)!=diagnostic_policy(row['strategy_number']):
+                    raise ValueError('Selected failure writer lacks its exact declared diagnostic capability')
         # A compound may start with a present-day run-creation event. Only the
         # linked historical exit clocks attest the native market session.
-        exits = (unit.children['profit_givebacks'] + unit.children['confirmed_ah_failures'] + unit.children['liquidity_fade_failures']
+        exits = (unit.children['profit_givebacks'] + unit.children['confirmed_ah_failures'] + unit.children['liquidity_fade_failures'] + selected_failures
                  if type(unit) is V4CompoundBatch else
                  (unit.profit,) if type(unit) is V4ProfitGivebackBatch else
-                 (unit.failure,) if type(unit) is V4LiquidityFadeFailureBatch else
+                 (unit.failure,) if type(unit) in (V4LiquidityFadeFailureBatch,V4FollowThroughFailureBatch) else
                  (unit.confirmation,))
         events = {str(row['record_id']): row for row in unit.base.events}
         if not exits or len(events) != len(unit.base.events):
@@ -4705,6 +4749,10 @@ class ArteJournalWriter:
             raise ValueError("Manager snapshot batch ID is invalid") from exc
         StrategyOneManagementRunner._validate_capture(
             state, max_pending_breaks=256)
+        from src.backend.backtest_strategy_one_management import OriginalRiskManagementState
+        selected=getattr(self._client,'confirmed_original_risk_policy',None) is not None
+        if selected != (type(state) is OriginalRiskManagementState):
+            raise ValueError('Manager snapshot selected pending capability differs from declared writer')
         if first_price_source is not None or any(
                 (proposal.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(proposal.strategy_number, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')) for _, proposal in state.submitted):
             from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
@@ -5013,6 +5061,9 @@ class ArteJournalWriter:
                     elif type(unit) is V4LiquidityFadeFailureBatch:
                         committed_id = _publish_typed_batch_v4(self._client, unit.base,
                             liquidity_fade_rows=(unit.failure,), **context)
+                    elif type(unit) is V4FollowThroughFailureBatch:
+                        committed_id = _publish_typed_batch_v4(self._client,unit.base,
+                            followthrough_rows=(unit.failure,),original_risk_diagnostic_rows=(unit.diagnostic,),**context)
                     else:
                         committed_id = _publish_typed_batch_v4(self._client, unit.base,
                             profit_giveback_rows=(unit.profit,), **context)

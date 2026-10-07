@@ -29,7 +29,7 @@ class LiquidityFadeFinancialCheckpoint:
 
 
 def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event, financial,
-                                           *, first_price_source=None):
+                                           *, first_price_source=None, original_risk_diagnostic=None):
     """Verify exact held quantity and absence of pending assignment exits.
 
     Requires an independently verified preceding V4 prefix. Native context,
@@ -53,7 +53,18 @@ def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event,
     from .signals import StrategyIntent
     from .order_management import OrderManagementState, TERMINAL_MANAGEMENT_STATES
 
-    witness = restore_liquidity_fade_failure(row)
+    if original_risk_diagnostic is None:
+        witness = restore_liquidity_fade_failure(row)
+        expected_reason = liquidity_fade_reason(row['strategy_number'])
+    else:
+        from .arte_followthrough_failure_v4 import restore_failure, REASON
+        from .arte_original_risk_diagnostic_v4 import diagnostic_policy
+        from .confirmed_original_risk_failure import OriginalRiskDecisionDiagnostic
+        if (type(original_risk_diagnostic) is not OriginalRiskDecisionDiagnostic
+                or diagnostic_policy(row['strategy_number']) is None):
+            raise ValueError('Native financial checkpoint lacks selected typed original-risk capability')
+        witness = restore_failure(row,diagnostic=original_risk_diagnostic)
+        expected_reason = REASON
     validate_liquidity_fade_financial(financial)
     sequence = row['source_manager_checkpoint_sequence']
     if (type(prefix) is not V4CommittedPrefix or prefix.status != 'running'
@@ -66,7 +77,7 @@ def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event,
             or parent['record_id'] != row['parent_record_id'] or event['record_id'] != parent['record_id']
             or parent['account_id'] != event['account_id'] or financial.account_id != event['account_id']
             or financial.assignment_id != row['assignment_id'] or financial.ticker != parent['ticker']
-            or parent['action'] != 'exit' or parent['reason'] != liquidity_fade_reason(row['strategy_number'])):
+            or parent['action'] != 'exit' or parent['reason'] != expected_reason):
         raise ValueError('Liquidity financial checkpoint lacks its exact preceding exit graph')
     at = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
     if at.tzinfo is None:

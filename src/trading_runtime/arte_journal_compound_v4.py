@@ -29,6 +29,7 @@ from .arte_oms_tactic_projection import (
 
 
 from .arte_followthrough_failure_v4 import FAILURE, V4FollowThroughFailureBatch, seal_followthrough_rows
+from .arte_original_risk_diagnostic_v4 import DIAGNOSTIC as ORIGINAL_RISK_DIAGNOSTIC
 from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4ProfitGivebackBatch, seal_profit_giveback_rows
 from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, V4ConfirmedAhFailureBatch, seal_confirmed_ah_rows
 from .arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
@@ -58,6 +59,23 @@ _EVENT_PARENT_KEYS = frozenset({
 _MULTIROW_CHILD_KEYS = frozenset({"reservation_reasons", "protection_entry_orders"})
 
 
+def _compound_child_keys(units):
+    return _CHILD_KEYS + (('original_risk_diagnostics',) if any(
+        type(unit) is V4FollowThroughFailureBatch and unit.diagnostic is not None for unit in units) else ())
+
+
+def _rekey_original_risk_diagnostics(failures,diagnostics):
+    from .arte_journal_writer import typed_row
+    hashes={str(row['record_id']):typed_row(FAILURE.name,
+        {k:v for k,v in row.items() if k!='content_hash'})['content_hash'] for row in failures}
+    result=[]
+    for row in diagnostics:
+        key=str(row['failure_record_id'])
+        if key not in hashes:raise ValueError('Compound diagnostic lacks exact linked failure')
+        result.append({**{k:v for k,v in row.items() if k!='content_hash'},'failure_content_hash':hashes[key]})
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class V4CompoundBatch:
     """One future commit with its original units retained for source fencing."""
@@ -68,16 +86,16 @@ class V4CompoundBatch:
 
     def __post_init__(self) -> None:
         if (self.base.status != "running" or len(self.units) < 2
-                or set(self.children) != set(_CHILD_KEYS)
+                or set(self.children) != set(_compound_child_keys(self.units))
                 or len(self.base.events) > MAX_V4_COMMIT_EVENTS
                 or len(self.base.events)
                    != self.base.last_sequence - self.base.first_sequence + 1):
             raise ValueError("V4 compound lacks a bounded contiguous event prefix")
-        if any(len(self.children[key]) > 65_536 for key in _CHILD_KEYS):
+        if any(len(self.children[key]) > 65_536 for key in _compound_child_keys(self.units)):
             raise ValueError("V4 compound exceeds a normalized family readback bound")
         object.__setattr__(self, "children", MappingProxyType({
             key: tuple(MappingProxyType(dict(row)) for row in self.children[key])
-            for key in _CHILD_KEYS
+            for key in _compound_child_keys(self.units)
         }))
 
 
@@ -89,7 +107,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
     if type(unit) is V4ProfitGivebackBatch:
         return (("profit_givebacks", unit.profit),)
     if type(unit) is V4FollowThroughFailureBatch:
-        return (("followthrough_failures", unit.failure),)
+        return (("followthrough_failures", unit.failure),) + (
+            (('original_risk_diagnostics',unit.diagnostic),) if unit.diagnostic is not None else ())
     if type(unit) is TypedJournalBatch:
         return tuple(("command_lineages", row)
                      for row in unit.v4_command_lineages)
@@ -150,9 +169,9 @@ def coalesce_v4_units(
     if len(event_ids) != len(combined.events):
         raise ValueError("V4 compound repeats a source event identity")
     children: dict[str, list[Mapping[str, Any]]] = {
-        key: [] for key in _CHILD_KEYS
+        key: [] for key in _compound_child_keys(units)
     }
-    child_ids: dict[str, set[str]] = {key: set() for key in _CHILD_KEYS}
+    child_ids: dict[str, set[str]] = {key: set() for key in _compound_child_keys(units)}
     nested_parents: list[tuple[str, str]] = []
     for unit, base in zip(units, bases, strict=True):
         for key, source in _unit_children(unit):
@@ -163,7 +182,7 @@ def coalesce_v4_units(
             parent_id = str(UUID(str(source.get(
                 "parent_record_id", source.get("record_id")))))
             identity = str(UUID(str(source["record_id"])))
-            if key in _EVENT_PARENT_KEYS and parent_id not in event_ids:
+            if (key in _EVENT_PARENT_KEYS or key=='original_risk_diagnostics') and parent_id not in event_ids:
                 raise ValueError("V4 scalar child has no event parent")
             if identity in child_ids[key] and key not in _MULTIROW_CHILD_KEYS:
                 raise ValueError("V4 compound repeats a scalar child identity")
@@ -195,6 +214,9 @@ def coalesce_v4_units(
     if any(parent == identity or parent not in all_ids
            for parent, identity in nested_parents):
         raise ValueError("V4 scalar child has no normalized compound parent")
+    if 'original_risk_diagnostics' in children:
+        children['original_risk_diagnostics']=_rekey_original_risk_diagnostics(
+            children['followthrough_failures'],children['original_risk_diagnostics'])
     return V4CompoundBatch(combined, tuple(units), children)
 
 
@@ -206,7 +228,8 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
     if type(unit) is V4ProfitGivebackBatch:
         return {"profit_giveback_rows": (unit.profit,)}
     if type(unit) is V4FollowThroughFailureBatch:
-        return {"followthrough_rows": (unit.failure,)}
+        return {"followthrough_rows": (unit.failure,), **(
+            {'original_risk_diagnostic_rows':(unit.diagnostic,)} if unit.diagnostic is not None else {})}
     if type(unit) is V4OmsTacticBatch:
         return {"oms_tactic_rows": (unit.tactic_state, unit.tactic_steps)}
     if type(unit) is V4StrategyOneEntryBatch:
@@ -324,6 +347,8 @@ def prepare_compound_v4_families(
         "oms_tactic_steps": STEP_TABLE,
     }
     base_names = {_v4_family_table(name) for name, _, _, _ in _FAMILIES}
+    if 'original_risk_diagnostics' in compound.children:
+        table_for_key['original_risk_diagnostics']=ORIGINAL_RISK_DIAGNOSTIC.name
     extra: dict[str, list[dict[str, Any]]] = {
         name: [] for name in table_for_key.values()
     }
@@ -342,6 +367,9 @@ def prepare_compound_v4_families(
                    if key != "content_hash"},
                 "batch_id": compound.base.batch_id,
             }) for row in rows)
+    if ORIGINAL_RISK_DIAGNOSTIC.name in extra:
+        extra[ORIGINAL_RISK_DIAGNOSTIC.name]=[typed_row(ORIGINAL_RISK_DIAGNOSTIC.name,row)
+            for row in _rekey_original_risk_diagnostics(extra[FAILURE.name],extra[ORIGINAL_RISK_DIAGNOSTIC.name])]
     # The protection parent includes a digest of its child rows. All other
     # scalar columns must match micro-preparation exactly; only that digest
     # changes when the child's batch ID is rekeyed.
@@ -446,7 +474,8 @@ def prepare_compound_v4_families(
         dict(base_families)["trading_strategy_intent_v1"],
         compound.base.events, extra[ENTRY_EVIDENCE.name],
         prior_batch_id=compound.base.prior_batch_id,
-        verified_prefix=verified_prior_prefix, first_price_source=first_price_source)
+        verified_prefix=verified_prior_prefix, first_price_source=first_price_source,
+        diagnostic_rows=extra.get(ORIGINAL_RISK_DIAGNOSTIC.name,()))
     seal_profit_giveback_rows(client, extra[PROFIT_GIVEBACK.name],
         dict(base_families)['trading_strategy_intent_v1'],
         compound.base.events, prefix=verified_prior_prefix, first_price_source=first_price_source)
@@ -461,7 +490,7 @@ def prepare_compound_v4_families(
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))
-        for key in _CHILD_KEYS if extra[table_for_key[key]])
+        for key in _compound_child_keys(compound.units) if extra[table_for_key[key]])
     return base_families, families
 
 

@@ -44,6 +44,7 @@ class BacktestMemoryJournal:
         self._strategy_one_protection: dict[str, Any] = {}
         self._numbered_session_exits: dict[str, Any] = {}
         self._followthrough_exits: dict[str, Any] = {}
+        self._followthrough_diagnostics: dict[str, Any] = {}
         self._followthrough_intents: dict[str, Any] = {}
         self._profit_giveback_exits: dict[str, Any] = {}
         self._profit_giveback_intents: dict[str, Any] = {}
@@ -281,10 +282,10 @@ class BacktestMemoryJournal:
             return self._numbered_session_exits.get(record_id)
 
     def append_followthrough_exit(self, *, intent, witness, source_entry_intent_id,
-                                 account_id, strategy_id, strategy_revision, assignment_id=None):
+                                 account_id, strategy_id, strategy_revision, assignment_id=None, diagnostic=None):
         from src.trading_runtime.arte_followthrough_failure_v4 import REASON, validate_numbered_failure
         from uuid import UUID
-        validate_numbered_failure(witness, strategy_revision)
+        validate_numbered_failure(witness, strategy_revision, diagnostic=diagnostic)
         UUID(source_entry_intent_id)
         if (type(strategy_revision) is not int or (strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_revision, 'strategy-nine-followthrough-failure-v1')) or strategy_id != "early-squeeze-strategy"
                 or not account_id or intent.action != "exit" or intent.reason != REASON
@@ -303,7 +304,8 @@ class BacktestMemoryJournal:
             if prior_intent is not None:
                 prior_record, prior_source = prior_intent
                 if (prior_source != source or prior_record.account_id != account_id
-                        or prior_record.payload.get("strategy_revision") != strategy_revision):
+                        or prior_record.payload.get("strategy_revision") != strategy_revision
+                        or self._followthrough_diagnostics.get(prior_record.record_id) != diagnostic):
                     raise ValueError("Follow-through retry changed immutable witness")
                 return prior_record
             record = self.append(run_id=self.run_id, category="strategy",
@@ -316,6 +318,8 @@ class BacktestMemoryJournal:
             if prior is not None and prior != source:
                 raise ValueError("Follow-through retry changed immutable witness")
             self._followthrough_exits[record.record_id] = source
+            if diagnostic is not None:
+                self._followthrough_diagnostics[record.record_id] = diagnostic
             return record
 
     def assignment_for_intent(self, intent_id):
@@ -489,6 +493,10 @@ class BacktestMemoryJournal:
     def followthrough_exit_for_record(self, record_id):
         with self._lock:
             return self._followthrough_exits.get(record_id)
+
+    def followthrough_diagnostic_for_record(self,record_id):
+        with self._lock:
+            return self._followthrough_diagnostics.get(record_id)
 
     def append_strategy_order_command(
         self, *, order_request: Any, run_id: str, category: str,
@@ -722,6 +730,7 @@ class BacktestMemoryJournal:
                     self._strategy_one_protection.pop(record.record_id, None)
                     self._numbered_session_exits.pop(record.record_id, None)
                     self._followthrough_exits.pop(record.record_id, None)
+                    self._followthrough_diagnostics.pop(record.record_id, None)
                     self._profit_giveback_exits.pop(record.record_id, None)
                     self._liquidity_fade_exits.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)

@@ -62,6 +62,12 @@ class StrategyOneManagementState:
 
 
 @dataclass(frozen=True, slots=True)
+class OriginalRiskManagementState(StrategyOneManagementState):
+    """Versioned selected capture; legacy state shape stays unchanged."""
+    original_risk_requests: tuple = ()
+
+
+@dataclass(frozen=True, slots=True)
 class LiquidityFadeCheckpointRequest:
     """Completed decision pending an exact native manager/broker checkpoint."""
     witness: Any
@@ -122,6 +128,58 @@ class StrategyOneManagementRunner:
         self._liquidity_sources = None
         self._liquidity_requests: dict[ManagerKey, LiquidityFadeCheckpointRequest] = {}
         self._liquidity_latest_five_second: dict[str, Mapping] = {}
+        self._completed_risk_lookup = None
+        self._original_risk_requests = {}
+
+    def bind_completed_risk_lookup(self,lookup,market_plan):
+        from .backtest_confirmed_original_risk_source import CompiledCompletedRiskLookup
+        from .backtest_market_data import CertifiedMarketDayPlan
+        if (getattr(self.contract, 'confirmed_original_risk_policy', None) is None
+                or self._completed_risk_lookup is not None
+                or type(lookup) is not CompiledCompletedRiskLookup
+                or type(market_plan) is not CertifiedMarketDayPlan
+                or lookup.plan != market_plan
+                or lookup.session_date != self.runtime.config.anchor_date):
+            raise ValueError('Confirmed failure manager needs exact declared prepared source')
+        self._completed_risk_lookup = lookup
+
+    async def _submit_followthrough_with_diagnostic(self,financial,witness,source_entry_id,
+                                                   *,confirmed=None):
+        policy=getattr(self.contract, 'confirmed_original_risk_policy', None)
+        if policy is None:
+            if confirmed is not None:raise ValueError('Undeclared confirmed witness')
+            return await self.runtime.submit_followthrough_failure(financial,witness,source_entry_id)
+        if self._completed_risk_lookup is None:
+            raise RuntimeError('Declared failure diagnostics lack certified completed source')
+        from src.trading_runtime.confirmed_original_risk_failure import (
+            OriginalRiskDecisionDiagnostic, INHERITED_ORIGINAL_RISK_RULE,
+            CONFIRMED_ORIGINAL_RISK_RULE, validate_decision_diagnostic)
+        newest=self._completed_risk_lookup.bucket_at(financial.ticker,witness.boundary_ms)
+        if newest is None:raise RuntimeError('Selected failure lacks exact newest producer bucket')
+        diagnostic=OriginalRiskDecisionDiagnostic(witness,newest,
+            confirmed.prior if confirmed is not None else None,
+            CONFIRMED_ORIGINAL_RISK_RULE if confirmed is not None else INHERITED_ORIGINAL_RISK_RULE)
+        validate_decision_diagnostic(diagnostic,policy=policy)
+        from src.trading_runtime.original_risk_checkpoint import OriginalRiskCheckpointRequest
+        request=OriginalRiskCheckpointRequest(diagnostic,financial,source_entry_id)
+        key=financial.account_id,financial.assignment_id,financial.ticker
+        previous=self._original_risk_requests.get(key)
+        if previous is not None and previous != request:
+            raise RuntimeError('Original-risk pending checkpoint changed its frozen decision')
+        if len(self._original_risk_requests) >= 65536 and key not in self._original_risk_requests:
+            raise RuntimeError('Original-risk pending checkpoint inventory exceeds its bound')
+        self._original_risk_requests[key]=request
+
+    def original_risk_requests(self, *, boundary_ms):
+        requests=tuple(value for key,value in sorted(self._original_risk_requests.items()))
+        if any(request.witness.boundary_ms != boundary_ms for request in requests):
+            raise RuntimeError('Original-risk decision was not fenced before advancing boundary')
+        return requests
+
+    def complete_original_risk_requests(self, requests, *, boundary_ms):
+        if requests != self.original_risk_requests(boundary_ms=boundary_ms):
+            raise ValueError('Original-risk checkpoint completion changed pending decisions')
+        self._original_risk_requests.clear()
 
     def bind_liquidity_fade_lookup(self, lookup, market_plan) -> None:
         """Bind one independently certified, precompiled source before replay."""
@@ -250,6 +308,11 @@ class StrategyOneManagementRunner:
             tuple(sorted(self._first_held_boundaries.items())),
         )
         self._validate_capture(state, max_pending_breaks=self.max_pending_breaks)
+        if getattr(self.contract,'confirmed_original_risk_policy',None) is not None:
+            from dataclasses import fields
+            state=OriginalRiskManagementState(**{f.name:getattr(state,f.name)
+                for f in fields(StrategyOneManagementState)},
+                original_risk_requests=self.original_risk_requests(boundary_ms=boundary_ms))
         return state
 
     def restore_state(self, state: StrategyOneManagementState, *, first_price_source=None) -> None:
@@ -295,6 +358,22 @@ class StrategyOneManagementRunner:
                         raise ValueError("Strategy 19 manager recovery requires premarket first-setup 50pct growth")
             elif proposal.initial_momentum is not None:
                 raise ValueError("Earlier manager cannot restore initial momentum selection")
+        pending_requests={}
+        selected=getattr(self.contract,'confirmed_original_risk_policy',None)
+        if selected is not None:
+            if type(state) is not OriginalRiskManagementState:
+                raise ValueError('Selected manager recovery lacks durable pending-decision authority')
+            requests=state.original_risk_requests
+            from src.trading_runtime.original_risk_checkpoint import validate_original_risk_state
+            for request in requests:
+                validate_original_risk_state(request.witness,state,request.financial)
+            pending_requests={
+                (request.financial.account_id,request.financial.assignment_id,request.financial.ticker):request
+                for request in requests}
+            if len(pending_requests)!=len(requests):
+                raise ValueError('Recovered original-risk pending decisions repeat identity')
+        elif type(state) is OriginalRiskManagementState:
+            raise ValueError('Legacy manager cannot restore selected pending decisions')
         self._submitted = dict(state.submitted)
         self._positions = dict(state.positions)
         self._pending_breaks = {key: [ResistanceBreak(
@@ -303,6 +382,8 @@ class StrategyOneManagementRunner:
         self._position_highs = dict(state.position_highs)
         self._closed_positions = dict(state.closed_positions)
         self._first_held_boundaries = dict(state.first_held_boundaries)
+        if selected is not None:
+            self._original_risk_requests=pending_requests
 
     def owns_position_source(self, financial: StrategyOneFinancialView) -> bool:
         """Check ownership before cleanup; a same-bucket exit cannot reenter."""
@@ -385,6 +466,8 @@ class StrategyOneManagementRunner:
         self, financial: StrategyOneFinancialView,
         resolutions: Mapping[int, Mapping], boundary_ms: int,
     ) -> None:
+        if self._original_risk_requests:
+            self.original_risk_requests(boundary_ms=boundary_ms)
         if not isinstance(financial, StrategyOneFinancialView):
             raise TypeError("Strategy 1 management needs typed financial state")
         key = (financial.account_id, financial.assignment_id, financial.ticker)
@@ -483,7 +566,7 @@ class StrategyOneManagementRunner:
                          if (self.contract.strategy_number in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(self.contract.strategy_number, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1'))
                          else strategy_one_entry_intent(
                              source, session_date=self.runtime.config.anchor_date))
-                await self.runtime.submit_followthrough_failure(
+                await self._submit_followthrough_with_diagnostic(
                     financial, witness, entry.intent_id)
                 if (self.contract.strategy_number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(self.contract.strategy_number, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
                     # The pre-submission financial view cannot attest that
@@ -602,6 +685,21 @@ class StrategyOneManagementRunner:
                 await self.runtime.submit_followthrough_failure(financial, witness, entry.intent_id)
                 self._profit_arm_financials.pop(key, None)
                 return
+        confirmed_policy = getattr(self.contract, 'confirmed_original_risk_policy', None)
+        if confirmed_policy is not None and boundary_ms % 5000 == 0:
+            if self._completed_risk_lookup is None:
+                raise RuntimeError('Declared consecutive failure lacks certified completed source')
+            pair=self._completed_risk_lookup.pair_at(financial.ticker,boundary_ms)
+            if pair is not None:
+                from src.trading_runtime.confirmed_original_risk_failure import confirmed_original_risk_failure
+                confirmation=confirmed_original_risk_failure(completed,prior=pair[0],newest=pair[1],
+                                                            policy=confirmed_policy)
+                if confirmation is not None:
+                    entry=self.runtime._strategy_one_entry_intent(source)
+                    await self._submit_followthrough_with_diagnostic(financial,confirmation.current,
+                        entry.intent_id,confirmed=confirmation)
+                    self._profit_arm_financials.pop(key,None)
+                    return
         pending = self._pending_breaks.setdefault(key, [])
         # A failed OMS acknowledgement retries the same completed boundary.
         # Preserve witnesses once, not once per retry.

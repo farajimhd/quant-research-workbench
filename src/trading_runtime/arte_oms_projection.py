@@ -511,11 +511,14 @@ def _approved_strategy_one_oms_intent(
     confirmed_ah_row: Mapping[str, Any] | None = None,
     liquidity_fade_row: Mapping[str, Any] | None = None,
     automatic_ladder_sources: Any = None,
+    original_risk_diagnostic: Any = None,
 ) -> tuple[StrategyIntent, tuple[Any, ...]]:
     """Restore the approved, amended group intent from normalized facts."""
     if (admission_reservation is None) != (admission_decision is None):
         raise ValueError("Strategy 1 OMS admission needs its decision and reservation")
     approved_intent = source_intent.intent
+    if original_risk_diagnostic is not None and followthrough_row is None:
+        raise ValueError('Original-risk OMS diagnostic lacks its selected failure parent')
     from .strategy_profit_giveback_exit import profit_giveback_reason
     profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
     from .strategy_confirmed_ah_failure_exit import confirmed_ah_reason
@@ -623,9 +626,9 @@ def _approved_strategy_one_oms_intent(
             financial = StrategyOneFinancialView(reservation["assignment_id"], account,
                 approved_intent.ticker, AssignmentStatus.WATCHING, StrategyPermissions(),
                 approved_intent.quantity, False, False, False, 1)
-            expected = followthrough_exit_intent(restore_failure(followthrough_row), financial,
+            expected = followthrough_exit_intent(restore_failure(followthrough_row,diagnostic=original_risk_diagnostic), financial,
                 session_date=approved_intent.event_time.astimezone(ZoneInfo("America/New_York")).date(),
-                source_entry_intent_id=str(followthrough_row["source_entry_intent_id"]),
+                source_entry_intent_id=str(followthrough_row["source_entry_intent_id"]), diagnostic=original_risk_diagnostic,
                 strategy_number=state.group["strategy_revision"] if (state.group["strategy_revision"] in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(state.group["strategy_revision"], 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9)
             if expected != approved_intent:
                 raise ValueError("Failure recovery differs from the exact scalar exit intent")
@@ -732,6 +735,7 @@ def reconstruct_strategy_one_oms_lineage(
     confirmed_ah_row: Mapping[str, Any] | None = None,
     liquidity_fade_row: Mapping[str, Any] | None = None,
     automatic_ladder_sources: Any = None,
+    original_risk_diagnostic: Any = None,
 ) -> tuple[OrderRequest, ...]:
     """Rebuild exact entry-group raw lineage from completed typed evidence.
 
@@ -805,7 +809,7 @@ def reconstruct_strategy_one_oms_lineage(
     approved_intent, history = _approved_strategy_one_oms_intent(
         state, source_intent, protection_history,
         admission_reservation, admission_decision, followthrough_row, profit_giveback_row,
-        confirmed_ah_row, liquidity_fade_row, automatic_ladder_sources)
+        confirmed_ah_row, liquidity_fade_row, automatic_ladder_sources,original_risk_diagnostic)
     view = _ColdLineageView(
         identity, account, approved_intent, state.orders, bindings, terminal)
     rebuilt = []
@@ -934,6 +938,7 @@ def load_recovered_strategy_one_oms_lineage(
     decisions = load_committed_oms_decision_page(
         client, prefix, groups, admissions, max_rows=4096)
     failure_rows = {}
+    risk_diagnostics = {}
     profit_rows = {}
     confirmed_ah_rows = {}
     liquidity_rows = {}
@@ -965,7 +970,9 @@ def load_recovered_strategy_one_oms_lineage(
                 name: int(value) if name in unsigned else value
                 for name, value in raw.items()}
         elif source.intent.reason == REASON:
-            failure_rows[record_id] = load_followthrough_failure(client, prefix, record_id)[0]
+            row,_,diagnostic=load_followthrough_failure(client,prefix,record_id,include_diagnostic=True)
+            failure_rows[record_id]=row
+            risk_diagnostics[record_id]=diagnostic
         elif (source.intent.reason in profit_reasons or declared_fixed_exit_reason(source.intent.reason, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
             profit_rows[record_id] = load_committed_profit_giveback(
                 client, prefix, record_id, first_price_source=first_price_source)
@@ -979,6 +986,7 @@ def load_recovered_strategy_one_oms_lineage(
             profit_giveback_row=profit_rows.get(group.intent_record_id),
             confirmed_ah_row=confirmed_ah_rows.get(group.intent_record_id),
             liquidity_fade_row=liquidity_rows.get(group.intent_record_id),
+            original_risk_diagnostic=risk_diagnostics.get(group.intent_record_id),
             **({'automatic_ladder_sources': automatic_ladder_sources} if automatic else {})),
         history.through_sequence,
         _approved_strategy_one_oms_intent(
@@ -987,7 +995,8 @@ def load_recovered_strategy_one_oms_lineage(
             failure_rows.get(group.intent_record_id),
             profit_rows.get(group.intent_record_id),
             confirmed_ah_rows.get(group.intent_record_id),
-            liquidity_rows.get(group.intent_record_id), automatic_ladder_sources)[0],
+            liquidity_rows.get(group.intent_record_id), automatic_ladder_sources,
+            risk_diagnostics.get(group.intent_record_id))[0],
         dict(admissions[group.sequence]),
     ) for group in groups)
 

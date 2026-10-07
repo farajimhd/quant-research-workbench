@@ -468,7 +468,8 @@ class BacktestTypedJournalPublisher:
                                else self.writer.submit_liquidity_fade_exit_v4(unit,
                                     first_price_source=self._first_price_source)
                                if isinstance(unit, V4LiquidityFadeFailureBatch)
-                               else self.writer.submit_followthrough_exit_v4(unit)
+                               else self.writer.submit_followthrough_exit_v4(unit,
+                                    **({'first_price_source':self._first_price_source} if unit.diagnostic is not None else {}))
                                if isinstance(unit, V4FollowThroughFailureBatch)
                                else self.writer.submit_strategy_one_entry_v4(unit)
                                if isinstance(unit, V4StrategyOneEntryBatch)

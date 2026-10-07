@@ -582,10 +582,15 @@ def project_pending_backtest_v4_prefix(
                 assignment_id = journal.assignment_for_intent(source_entry_id) if hasattr(journal, 'assignment_for_intent') else ''
             if not assignment_id:
                 raise RuntimeError("Failure source has no normalized assignment evidence")
+            diagnostic = journal.followthrough_diagnostic_for_record(record.record_id)
             failure = project_followthrough_failure(witness, intent, source_entry_id,
                 run_id=batch.run_id, batch_id=batch.batch_id, parent_record_id=record.record_id,
-                assignment_id=assignment_id, strategy_number=record.payload["strategy_revision"])
-            unit = V4FollowThroughFailureBatch(batch, failure)
+                assignment_id=assignment_id, strategy_number=record.payload["strategy_revision"], diagnostic=diagnostic)
+            companion = None
+            if diagnostic is not None:
+                from src.trading_runtime.arte_original_risk_diagnostic_v4 import project_original_risk_diagnostic
+                companion = project_original_risk_diagnostic(diagnostic,failure)
+            unit = V4FollowThroughFailureBatch(batch, failure, companion)
             sources[intent.intent_id] = (batch, intent)
         if profit_source is not None:
             from zoneinfo import ZoneInfo

@@ -124,6 +124,9 @@ TABLES = (PARENT, SOURCE, BREAK, HIGH, CLOSED, PARENT_V3, FIRST_HELD)
 
 
 def _parent_contract(snapshot):
+    if 'original_risk_pending_count' in snapshot:
+        from .original_risk_pending_snapshot import selected_parent_contract
+        return selected_parent_contract()
     return PARENT_V3 if "first_held_count" in snapshot else PARENT
 
 
@@ -136,6 +139,11 @@ class ManagerSnapshotRows:
     position_highs: tuple[dict[str, Any], ...] = ()
     closed_positions: tuple[dict[str, Any], ...] = ()
     first_held_boundaries: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class OriginalRiskManagerSnapshotRows(ManagerSnapshotRows):
+    original_risk_requests: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +320,18 @@ def _project_manager_snapshot_scalar(*, run_id: str, session_date: date,
     if first_held or any((proposal.strategy_number in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(proposal.strategy_number, 'strategy-nine-followthrough-failure-v1')) for _, proposal in state.submitted):
         seal.update(first_held_count=len(first_held),
                     first_held_hash=_digest([row["content_hash"] for row in first_held]))
+    from src.backend.backtest_strategy_one_management import OriginalRiskManagementState
+    if type(state) is OriginalRiskManagementState:
+        from .original_risk_pending_snapshot import project_pending_requests
+        requests=project_pending_requests(state.original_risk_requests,
+            {**common,'session_date':session_date.isoformat()},state)
+        seal.update(first_held_count=len(first_held),
+                    first_held_hash=_digest([row['content_hash'] for row in first_held]),
+                    original_risk_pending_count=len(requests),
+                    original_risk_pending_hash=_digest([row['content_hash'] for row in requests]))
+        return OriginalRiskManagerSnapshotRows(
+            {**seal,'content_hash':_digest(seal)},tuple(sources),tuple(breaks),protection,
+            tuple(highs),tuple(closed),tuple(first_held),requests)
     return ManagerSnapshotRows(
         {**seal, "content_hash": _digest(seal)}, tuple(sources),
         tuple(breaks), protection, tuple(highs), tuple(closed), tuple(first_held))
@@ -323,6 +343,7 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
     """Reject partial/foreign children before constructing executable state."""
     if not isinstance(rows, ManagerSnapshotRows):
         raise ValueError("Strategy 1 manager recovery needs typed rows")
+    selected_requests=getattr(rows,'original_risk_requests',None)
     rows = ManagerSnapshotRows(
         _canonical_snapshot_row(_parent_contract(rows.snapshot), rows.snapshot),
         tuple(sorted((_canonical_snapshot_row(SOURCE, row)
@@ -344,6 +365,17 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                       for row in rows.first_held_boundaries), key=lambda row: (
                           row["account_id"], row["assignment_id"], row["ticker"]))),
     )
+    if 'original_risk_pending_count' in rows.snapshot:
+        if selected_requests is None:
+            raise ValueError('Selected manager snapshot lacks typed pending companions')
+        from .original_risk_pending_snapshot import PENDING
+        from dataclasses import fields
+        rows=OriginalRiskManagerSnapshotRows(**{f.name:getattr(rows,f.name)
+            for f in fields(ManagerSnapshotRows)},original_risk_requests=tuple(sorted(
+                (_canonical_snapshot_row(PENDING,row) for row in selected_requests),
+                key=lambda row:(row['account_id'],row['assignment_id'],row['ticker']))))
+    elif selected_requests is not None:
+        raise ValueError('Legacy manager snapshot cannot carry selected pending companions')
     seal = rows.snapshot
     if (seal.get("content_hash") != _digest({
             key: value for key, value in seal.items() if key != "content_hash"})
@@ -417,6 +449,13 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                int(row["first_held_boundary_ms"])) for row in rows.first_held_boundaries))
     StrategyOneManagementRunner._validate_capture(
         state, max_pending_breaks=max_pending_breaks)
+    if type(rows) is OriginalRiskManagerSnapshotRows:
+        from .original_risk_pending_snapshot import restore_pending_requests
+        from src.backend.backtest_strategy_one_management import OriginalRiskManagementState
+        from dataclasses import fields
+        state=OriginalRiskManagementState(**{f.name:getattr(state,f.name)
+            for f in fields(StrategyOneManagementState)},
+            original_risk_requests=restore_pending_requests(rows.original_risk_requests,seal))
     if _project_manager_snapshot_scalar(
             run_id=seal["run_id"],
             session_date=date.fromisoformat(seal["session_date"]),
@@ -450,7 +489,17 @@ def load_unattested_manager_snapshot_rows(
 
     scope = (f"run_id={_literal(run_id)} "
              f"AND checkpoint_sequence={checkpoint_sequence}")
-    seals = (*read(PARENT, scope, 2), *read(PARENT_V3, scope, 2))
+    selected_policy=getattr(client,'confirmed_original_risk_policy',None)
+    if selected_policy is not None:
+        from .confirmed_original_risk_failure import ConfirmedOriginalRiskPolicy
+        from .original_risk_pending_snapshot import selected_parent_contract
+        if type(selected_policy) is not ConfirmedOriginalRiskPolicy:
+            raise ValueError('Selected manager reader requires typed declared original-risk policy')
+        seals=read(selected_parent_contract(),scope,2)
+        if read(PARENT,scope,1) or read(PARENT_V3,scope,1):
+            raise RuntimeError('Selected manager cursor contains a foreign legacy seal')
+    else:
+        seals = (*read(PARENT, scope, 2), *read(PARENT_V3, scope, 2))
     if len(seals) != 1:
         raise RuntimeError("Strategy 1 manager lacks exactly one selected seal")
     seal = seals[0]
@@ -481,7 +530,15 @@ def load_unattested_manager_snapshot_rows(
         read(BREAK, predicate, break_count + 1), protection,
         read(HIGH, predicate, high_count + 1),
         read(CLOSED, predicate, closed_count + 1),
-        read(FIRST_HELD, predicate, first_held_count + 1) if _parent_contract(seal) is PARENT_V3 else ())
+        read(FIRST_HELD, predicate, first_held_count + 1) if 'first_held_count' in seal else ())
+    if selected_policy is not None:
+        from .original_risk_pending_snapshot import PENDING
+        from dataclasses import fields
+        count=seal.get('original_risk_pending_count')
+        if type(count) is not int or not 0 <= count <= 65536:
+            raise RuntimeError('Selected manager pending request bound is invalid')
+        rows=OriginalRiskManagerSnapshotRows(**{f.name:getattr(rows,f.name)
+            for f in fields(ManagerSnapshotRows)},original_risk_requests=read(PENDING,predicate,count+1))
     restore_manager_snapshot(rows)
     return rows
 
@@ -643,7 +700,8 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
                 raise RuntimeError("Manager snapshot head conflicts with same cursor")
             if load_attested_manager_snapshot(
                     client, reader, run_id=run_id,
-                    checkpoint_sequence=sequence) != restored:
+                    checkpoint_sequence=sequence,
+                    **({} if first_price_source is None else {'first_price_source':first_price_source})) != restored:
                 raise RuntimeError("Manager snapshot repeat differs from selected state")
             return previous
         if previous.checkpoint_sequence > sequence:
@@ -666,6 +724,10 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
             (_parent_contract(seal).name, (seal,)),
         ),
     )
+    if type(rows) is OriginalRiskManagerSnapshotRows:
+        from .original_risk_pending_snapshot import PENDING
+        families=(families[0],((*families[1][:-1],
+            (PENDING.name,rows.original_risk_requests),families[1][-1])))
     operations: list[tuple[str, str]] = []
     selected_id = str(UUID(str(seal["snapshot_id"])))
     for group in families:
@@ -680,6 +742,9 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
             operations.append((table, token))
 
     contracts = {table.name: table for table in (*TABLES, *PROTECTION_TABLES)}
+    if type(rows) is OriginalRiskManagerSnapshotRows:
+        from .original_risk_pending_snapshot import PENDING,selected_parent_contract
+        contracts.update({table.name:table for table in (PENDING,selected_parent_contract())})
     expected_rows = {
         "trading_strategy_one_protection_snapshot_v1": (protection.snapshot,),
         "trading_strategy_one_protection_state_v1": protection.states,
@@ -688,8 +753,10 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
         BREAK.name: rows.pending_breaks,
         HIGH.name: rows.position_highs,
         CLOSED.name: rows.closed_positions,
-        **({FIRST_HELD.name: rows.first_held_boundaries} if _parent_contract(seal) is PARENT_V3 else {}),
+        **({FIRST_HELD.name: rows.first_held_boundaries} if 'first_held_count' in seal else {}),
     }
+    if type(rows) is OriginalRiskManagerSnapshotRows:
+        expected_rows[PENDING.name]=rows.original_risk_requests
     for table, expected in expected_rows.items():
         contract = contracts[table]
         projection = ",".join(
@@ -715,7 +782,8 @@ def publish_manager_snapshot(client: Any, session: ManagedKeeperSession,
     client.typed_insert_dispatch.compact_verified_manager_snapshot(
         run_id=run_id, batch_id=journal_batch_id, last_sequence=sequence,
         snapshot_hash=seal["content_hash"], operations=tuple(operations),
-        previous=previous)
+        previous=previous,**({'confirmed_original_risk_policy':client.confirmed_original_risk_policy}
+            if type(rows) is OriginalRiskManagerSnapshotRows else {}))
     selected = reader.read_head(run_id=run_id)
     if (selected.checkpoint_sequence != sequence
             or selected.journal_batch_id != journal_batch_id

@@ -4,76 +4,104 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-REQUIRED_SOURCE_FILES = ('pipelines/strategy_one/configuration_publisher.py',
- 'pipelines/strategy_one/strategy_fifty_six_configuration.py',
- 'scripts/clickhouse/install_trading_journal_layout.py',
- 'scripts/clickhouse/plan_trading_journal_layout.py',
- 'scripts/clickhouse/provision_backtest_v4_entry_cost_runner.py',
- 'scripts/clickhouse/publish_strategy_fifty_six_configuration.py',
- 'scripts/clickhouse/report_strategy_one_trades.py',
- 'src/backend/backtest_declared_entry_quote_source.py',
- 'src/backend/backtest_declared_initial_momentum.py',
- 'src/backend/backtest_entry_spread_risk.py',
- 'src/backend/backtest_entry_spread_risk_v2.py',
- 'src/backend/backtest_fixed_journal_bootstrap.py',
- 'src/backend/backtest_fixed_v4_certification.py',
- 'src/backend/backtest_journal_memory.py',
- 'src/backend/backtest_strategy_certified_price_break.py',
- 'src/backend/backtest_strategy_episode_activity_source.py',
- 'src/backend/backtest_strategy_liquidity_fade.py',
- 'src/backend/backtest_strategy_liquidity_fade_loader.py',
- 'src/backend/backtest_strategy_one_configuration.py',
- 'src/backend/backtest_strategy_one_coordinator.py',
- 'src/backend/backtest_strategy_one_execution.py',
- 'src/backend/backtest_strategy_one_management.py',
- 'src/backend/backtest_typed_projection.py',
- 'src/backend/backtest_typed_publisher.py',
- 'src/backend/backtest_v4_saved_review.py',
- 'src/backend/replay_run_service.py',
- 'src/backend/source_ast_summary.py',
- 'src/trading_runtime/arte_confirmed_ah_failure_v4.py',
- 'src/trading_runtime/arte_entry_activity_v4.py',
- 'src/trading_runtime/arte_entry_spread_risk_v4.py',
- 'src/trading_runtime/arte_first_price_entry_v4.py',
- 'src/trading_runtime/arte_followthrough_failure_v4.py',
- 'src/trading_runtime/arte_initial_momentum_entry_v4.py',
- 'src/trading_runtime/arte_journal_commit_v4.py',
- 'src/trading_runtime/arte_journal_compound_v4.py',
- 'src/trading_runtime/arte_journal_writer.py',
- 'src/trading_runtime/arte_liquidity_fade_failure_v4.py',
- 'src/trading_runtime/arte_oms_projection.py',
- 'src/trading_runtime/arte_profit_giveback_v4.py',
- 'src/trading_runtime/arte_rising_momentum_entry_v4.py',
- 'src/trading_runtime/arte_strategy_one_entry_journal.py',
- 'src/trading_runtime/declared_followthrough_failure.py',
- 'src/trading_runtime/declared_profit_giveback.py',
- 'src/trading_runtime/early_original_risk_failure.py',
- 'src/trading_runtime/entry_momentum_growth.py',
- 'src/trading_runtime/entry_spread_risk.py',
- 'src/trading_runtime/numbered_fixed_strategy.py',
- 'src/trading_runtime/runtime.py',
- 'src/trading_runtime/strategy_confirmed_ah_failure_exit.py',
- 'src/trading_runtime/strategy_confirmed_ah_failure_source.py',
- 'src/trading_runtime/strategy_fifty_release.py',
- 'src/trading_runtime/strategy_fifty_six_contract.py',
- 'src/trading_runtime/strategy_fifty_six_release.py',
- 'src/trading_runtime/strategy_followthrough_exit.py',
- 'src/trading_runtime/strategy_half_risk_liquidity_fade.py',
- 'src/trading_runtime/strategy_liquidity_fade_exit.py',
- 'src/trading_runtime/strategy_liquidity_fade_publication.py',
- 'src/trading_runtime/strategy_liquidity_fade_source.py',
- 'src/trading_runtime/strategy_one_management_snapshot.py',
- 'src/trading_runtime/strategy_profit_giveback.py',
- 'src/trading_runtime/strategy_profit_giveback_arm.py',
- 'src/trading_runtime/strategy_profit_giveback_exit.py',
- 'src/trading_runtime/strategy_profit_giveback_source.py',
- 'src/trading_runtime/strategy_registry.py',
- 'src/trading_runtime/strategy_rising_momentum_witness.py',
- 'src/trading_runtime/squeeze_ladder_geometry.py',
- 'src/trading_runtime/all_held_original_risk_failure.py')
+REQUIRED_SOURCE_FILES = (
+    'pipelines/strategy_one/configuration_publisher.py',
+    'pipelines/strategy_one/strategy_fifty_six_configuration.py',
+    'scripts/clickhouse/install_trading_journal_layout.py',
+    'scripts/clickhouse/plan_trading_journal_layout.py',
+    'scripts/clickhouse/provision_backtest_v4_entry_cost_runner.py',
+    'scripts/clickhouse/publish_strategy_fifty_six_configuration.py',
+    'scripts/clickhouse/report_strategy_one_trades.py',
+    'src/backend/backtest_declared_entry_quote_source.py',
+    'src/backend/backtest_declared_initial_momentum.py',
+    'src/backend/backtest_entry_spread_risk.py',
+    'src/backend/backtest_entry_spread_risk_v2.py',
+    'src/backend/backtest_fixed_journal_bootstrap.py',
+    'src/backend/backtest_fixed_v4_certification.py',
+    'src/backend/backtest_journal_memory.py',
+    'src/backend/backtest_strategy_certified_price_break.py',
+    'src/backend/backtest_strategy_episode_activity_source.py',
+    'src/backend/backtest_strategy_liquidity_fade.py',
+    'src/backend/backtest_strategy_liquidity_fade_loader.py',
+    'src/backend/backtest_strategy_one_configuration.py',
+    'src/backend/backtest_strategy_one_coordinator.py',
+    'src/backend/backtest_strategy_one_execution.py',
+    'src/backend/backtest_strategy_one_management.py',
+    'src/backend/backtest_typed_projection.py',
+    'src/backend/backtest_typed_publisher.py',
+    'src/backend/backtest_v4_saved_review.py',
+    'src/backend/replay_run_service.py',
+    'src/backend/source_ast_summary.py',
+    'src/trading_runtime/arte_confirmed_ah_failure_v4.py',
+    'src/trading_runtime/arte_entry_activity_v4.py',
+    'src/trading_runtime/arte_entry_spread_risk_v4.py',
+    'src/trading_runtime/arte_first_price_entry_v4.py',
+    'src/trading_runtime/arte_followthrough_failure_v4.py',
+    'src/trading_runtime/arte_initial_momentum_entry_v4.py',
+    'src/trading_runtime/arte_journal_commit_v4.py',
+    'src/trading_runtime/arte_journal_compound_v4.py',
+    'src/trading_runtime/arte_journal_writer.py',
+    'src/trading_runtime/arte_liquidity_fade_failure_v4.py',
+    'src/trading_runtime/arte_oms_projection.py',
+    'src/trading_runtime/arte_profit_giveback_v4.py',
+    'src/trading_runtime/arte_rising_momentum_entry_v4.py',
+    'src/trading_runtime/arte_strategy_one_entry_journal.py',
+    'src/trading_runtime/declared_followthrough_failure.py',
+    'src/trading_runtime/declared_profit_giveback.py',
+    'src/trading_runtime/early_original_risk_failure.py',
+    'src/trading_runtime/entry_momentum_growth.py',
+    'src/trading_runtime/entry_spread_risk.py',
+    'src/trading_runtime/numbered_fixed_strategy.py',
+    'src/trading_runtime/runtime.py',
+    'src/trading_runtime/strategy_confirmed_ah_failure_exit.py',
+    'src/trading_runtime/strategy_confirmed_ah_failure_source.py',
+    'src/trading_runtime/strategy_fifty_release.py',
+    'src/trading_runtime/strategy_fifty_six_contract.py',
+    'src/trading_runtime/strategy_fifty_six_release.py',
+    'src/trading_runtime/strategy_followthrough_exit.py',
+    'src/trading_runtime/strategy_half_risk_liquidity_fade.py',
+    'src/trading_runtime/strategy_liquidity_fade_exit.py',
+    'src/trading_runtime/strategy_liquidity_fade_publication.py',
+    'src/trading_runtime/strategy_liquidity_fade_source.py',
+    'src/trading_runtime/strategy_one_management_snapshot.py',
+    'src/trading_runtime/strategy_profit_giveback.py',
+    'src/trading_runtime/strategy_profit_giveback_arm.py',
+    'src/trading_runtime/strategy_profit_giveback_exit.py',
+    'src/trading_runtime/strategy_profit_giveback_source.py',
+    'src/trading_runtime/strategy_registry.py',
+    'src/trading_runtime/strategy_rising_momentum_witness.py',
+    'src/trading_runtime/squeeze_ladder_geometry.py',
+    'src/trading_runtime/all_held_original_risk_failure.py',
+    'src/trading_runtime/confirmed_original_risk_failure.py',
+    'src/trading_runtime/arte_original_risk_diagnostic_v4.py',
+    'src/trading_runtime/original_risk_diagnostic_profile.py',
+    'src/backend/backtest_confirmed_original_risk_source.py',
+    'src/backend/backtest_market_data.py',
+    'src/backend/backtest_declared_ladder_plan.py',
+    'src/backend/backtest_ladder_source_authority.py',
+    'src/trading_runtime/squeeze_ladder_automatic.py',
+    'src/trading_runtime/original_risk_checkpoint.py',
+    'src/trading_runtime/original_risk_pending_snapshot.py',
+    'src/trading_runtime/strategy_liquidity_fade_financial_checkpoint.py',
+    'src/trading_runtime/strategy_one_broker_match_snapshot.py',
+)
 
-STRATEGY56_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'd6eedccd686e0d26b39153cf8cb07d753f9fae1f77818cf367b0e30ef6570de1', 'pipelines/strategy_one/strategy_fifty_six_configuration.py': '2c3195ad4aa51032557e1636f94803d34d1880745ba4d3de6ab5db8c909958b5', 'scripts/clickhouse/install_trading_journal_layout.py': 'b7dad511f062c717beee0ff60fbc6b4eba19cc9fab34d1735c07ee279dda00b8', 'scripts/clickhouse/plan_trading_journal_layout.py': '0c811495a1a760a1a0ecc254ecd1705a12c94110dc0e5c33b992704fc7765f6d', 'scripts/clickhouse/provision_backtest_v4_entry_cost_runner.py': '59eb0fa003f4f41e1add1ff409ea3661c4372987c8424f9d9d8550e793b62646', 'scripts/clickhouse/publish_strategy_fifty_six_configuration.py': '781a72b9ea84593637f0c9af97483c6521c67e9ff6f39779f0bf061203080ffc', 'scripts/clickhouse/report_strategy_one_trades.py': '04d1b0a3c0a9bd58785d8753c87b4207f225fc1c0636081a22ad0662a5a925f4', 'src/backend/backtest_entry_spread_risk.py': 'e1ca99c0382dd355000b122742acbc3fd3ff0a703f5204172eee76584cc44a1d', 'src/backend/backtest_entry_spread_risk_v2.py': '0287cbbb1d9795121b23f1fa666e128135001cb1129c9b5b16cc0ac951e13cb9', 'src/backend/backtest_declared_entry_quote_source.py': '7a812908fd044f2573d525ac54b59383ab241ca673dbe8194ef30b12c79259e7', 'src/backend/backtest_fixed_journal_bootstrap.py': 'a9923563b6be510187d171e8a13413c638228b0672c07e88bccc7fd146b00837', 'src/backend/backtest_fixed_v4_certification.py': '7e720a8504f8142c95287a88fc4b18d6b2f855deae0c6b89f453be4b00d6c65c', 'src/backend/backtest_journal_memory.py': '6c31e1a22ea4ae131363e4a7b630f0edeb0ab14bb0c0c641cd4ecb8175ba2864', 'src/backend/backtest_strategy_certified_price_break.py': 'e1fa545fbbd95b4784e4cf2e0ef320276a4ff525683f680ddea6fc0ccd4c1a38', 'src/backend/backtest_strategy_episode_activity_source.py': '2d4fa40c46a866be83328ce7443a350655620bf9c4b4a82044dc45ee7441c8c0', 'src/backend/backtest_strategy_liquidity_fade.py': '4870509aaef5af9a6b45d7a9c389dfe737a927f0beb71164b00ef9919d1a7e24', 'src/backend/backtest_strategy_liquidity_fade_loader.py': 'd6e5660d40bb75df739f8fe862ac7a8ed8441cdd7c58da64184f219d5d8a62b4', 'src/backend/backtest_strategy_one_configuration.py': '7fb2771427ab2bb7e629d8d20b7208c1af7068689fb92eb16fed5a6907bd0ccd', 'src/backend/backtest_strategy_one_coordinator.py': '7d40c9a3d75872e1ff263729eb578cf9860e913bae3863ec8889ca999e5df334', 'src/backend/backtest_strategy_one_execution.py': '637da264cea91bcf316473704933e6b8a0932b43509a6d5a3ffb9809451a9a93', 'src/backend/backtest_strategy_one_management.py': '96c4bc9c6ac5e3041bba14bb382565395d4431549f1e3de98dcb7c8c582c1e1e', 'src/backend/backtest_typed_projection.py': '942a03a57b59c9371c1fb2f62310ab31706d56f1e2a5f2326ba3efb745e9908c', 'src/backend/backtest_typed_publisher.py': '24e615607412b1a477f405a4188c24db67b69031a74965de0fbc189ee369c218', 'src/backend/backtest_v4_saved_review.py': 'e75fcb1c1fbb4689f5144d5964248b8e2e2402428048d5afb6177d986620664e', 'src/backend/replay_run_service.py': '1871d07a8d40f07def8accc0811ca228320d49940a9a122f8f71c496e5831440', 'src/trading_runtime/arte_confirmed_ah_failure_v4.py': '5f8b90176e9bbe6232a1f7b88a86333cc2466dc5a932740d27b7cbf4d4345435', 'src/trading_runtime/arte_entry_activity_v4.py': '95b32e75b49992cb38e0569e1576e093841f46eb3b8defd37e5ec4d0e8494b92', 'src/trading_runtime/arte_entry_spread_risk_v4.py': '936b3a9b67c7d9ad9be63a0b44b6d9255e0275941f9c4ef95eaf2779b1c6f3e6', 'src/trading_runtime/arte_first_price_entry_v4.py': 'c968e50cb42d4326f9499b20134ec6500990058a6415aed581f373fb2d2efec6', 'src/trading_runtime/arte_followthrough_failure_v4.py': '13377a8b4d30488440076af50949db7f4a54c612d02e10391efbf4edb54f68c9', 'src/trading_runtime/arte_initial_momentum_entry_v4.py': '037069b752fbc7af9de87ba44f53d3af79833cdb379872ce2554013456af21ea', 'src/trading_runtime/arte_journal_compound_v4.py': 'c270c28e1fa80d4ff0da67d1b2cd64f8c6b402c7db812caa2fb2d8399010d9e7', 'src/trading_runtime/arte_journal_commit_v4.py': 'b554846e3a213c17818c6e89cfb3baee1f0738834caf3dc0d0d3b526b16d0e22', 'src/trading_runtime/arte_journal_writer.py': '3040cb3e96f6fc0448ce7ab039d1dd08fbaa37126777e9954c4a5b33aac13a31', 'src/trading_runtime/arte_liquidity_fade_failure_v4.py': '216e413631d81e7cb0b29d7103ab1939320946a43a6efeba17c646cdc6147134', 'src/trading_runtime/arte_oms_projection.py': 'a4514545219759a1ae0c79465531e548ec2e34584c61d1fb7abc09da130893f9', 'src/trading_runtime/arte_profit_giveback_v4.py': '3e22f8f0c57d85a471cd15a63e18295517c617f9b8dc88eae5d1cc7908a70293', 'src/trading_runtime/arte_rising_momentum_entry_v4.py': '2f9b2689448c0592d99134286955618d0c312c29d8712d37f79310bffbb55d1d', 'src/trading_runtime/arte_strategy_one_entry_journal.py': '45dc2b6abf7f528fbf1e056c5249a78eb1b52813f051a732512712abc5993856', 'src/trading_runtime/declared_followthrough_failure.py': 'ad60271c51250ee004e00e5fc00f8bd8e220794968a9421ec0ff73bd002d5c98', 'src/trading_runtime/declared_profit_giveback.py': '944de8d53f75e5f270120fa36d5d8786a6ea167ed824f1d8e501c8a9ae120bc3', 'src/trading_runtime/early_original_risk_failure.py': '1df39278ef45fd7392fa570702b836588c21274aa0eb36c3667477dbcef0dc89', 'src/trading_runtime/entry_spread_risk.py': 'cbb5fcbae0b6c6581a3dd9a2d59dd6dbc57372799f2781e3d69c4559b5a6be8e', 'src/trading_runtime/numbered_fixed_strategy.py': '3292fce6d35bcf81fc3ce284d47ce133b49dbc528c902178f15f40d27cc3bc46', 'src/trading_runtime/runtime.py': '57af631c859aa491b604830bb552f47abdc3e50e8a94d2b7fbeec234133fa465', 'src/trading_runtime/strategy_confirmed_ah_failure_exit.py': '5fce50ffc270e19c98f200dbe949edd9ce718959d8f7cb48324dce5f1e96590f', 'src/trading_runtime/strategy_confirmed_ah_failure_source.py': '5b5fbaeda54d8e7593d6646c7d6631ab8323ee472cdf73ecee947e049a77b50a', 'src/trading_runtime/strategy_fifty_six_contract.py': '73ae47d0412cd7da6c4ffdfa0db16cbd98eaf124f103fcf98c0dc66e2c7933b4', 'src/trading_runtime/strategy_fifty_six_release.py': 'b05f86a523103cee7f7f0ef56bbf3a8ef380d4ff56270811da13d4521d8eb646', 'src/trading_runtime/strategy_fifty_release.py': '2f078566963e645c725d14526621e87a99d623f415fa010aa2440921e8d87f1b', 'src/trading_runtime/strategy_followthrough_exit.py': 'c3e1a4cb00ae48d3f2e11ffb6218dc26a411bc254b6700f36cb613a1bef32d91', 'src/trading_runtime/strategy_half_risk_liquidity_fade.py': '3f8d8949125090eda81d3256cae65920f950da12cbbb88dc6fb30a922c4cbe21', 'src/trading_runtime/strategy_liquidity_fade_exit.py': '3ccbc3b5f09d6553a23372e9a2c435c936defa2dc800717d36f2824c21a04325', 'src/trading_runtime/strategy_liquidity_fade_publication.py': '3ae4e11e8b2d2d9f470c4beab7c0af09b0259c1168a367f728778ed8accb6827', 'src/trading_runtime/strategy_liquidity_fade_source.py': '0a92702b17b61fba3112bf040afa8bc764ca3df2656ef25bd90130b13714b189', 'src/trading_runtime/strategy_one_management_snapshot.py': 'c6bc24067dac5501499bcf1bdf92d84b45361776ee43bd104d5e40c95e2d1f05', 'src/trading_runtime/strategy_profit_giveback.py': 'cc23fe27ca6db49c4139a481f364bfc26088b0dea01d1f542ea2f98f79072d10', 'src/trading_runtime/strategy_profit_giveback_arm.py': '5757092f1089572ad5ae39a6c482932fc8629930413e48b5c6944dc742d2358c', 'src/trading_runtime/strategy_profit_giveback_exit.py': 'c8466273babe33b6c54ed898d446a6b1b68297fd2e37e69b27270a4bc804b49e', 'src/trading_runtime/strategy_profit_giveback_source.py': '1ed0dcde9e4a462519e773069686a1a95731534312d6a5a290fa351290aefa29', 'src/trading_runtime/strategy_registry.py': '708960fc0d38a859ae97d58f7feac74aa8c8087671b826d3acae0eb4d15a0a9f', 'src/trading_runtime/strategy_rising_momentum_witness.py': '8433d7be44361854221822708c23dbbc7899b106a16aa5d9f62d2e1825d6bf30', 'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c', 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81', 'src/backend/source_ast_summary.py': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995', 'src/trading_runtime/squeeze_ladder_geometry.py': '34658cac7dba475b19ca3963bbcad1397a88f5f86e4133664947c9e656671e0d',
-    'src/trading_runtime/all_held_original_risk_failure.py': '093bb7f1b73277f21aa1a399a7b3b9f36d77dea8ca614f1130314029fcfaf8cf'}
+STRATEGY56_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'fe6f71767e450e7a6c8c7f59dd2fbdf309b095f6a7de9e3342f25292176b6fc6', 'pipelines/strategy_one/strategy_fifty_six_configuration.py': '2c3195ad4aa51032557e1636f94803d34d1880745ba4d3de6ab5db8c909958b5', 'scripts/clickhouse/install_trading_journal_layout.py': 'b7dad511f062c717beee0ff60fbc6b4eba19cc9fab34d1735c07ee279dda00b8', 'scripts/clickhouse/plan_trading_journal_layout.py': '0c811495a1a760a1a0ecc254ecd1705a12c94110dc0e5c33b992704fc7765f6d', 'scripts/clickhouse/provision_backtest_v4_entry_cost_runner.py': '59eb0fa003f4f41e1add1ff409ea3661c4372987c8424f9d9d8550e793b62646', 'scripts/clickhouse/publish_strategy_fifty_six_configuration.py': '781a72b9ea84593637f0c9af97483c6521c67e9ff6f39779f0bf061203080ffc', 'scripts/clickhouse/report_strategy_one_trades.py': 'ae5e51880141272adf310070c163d59c287ee90433e87ec89490414f0f581f3f', 'src/backend/backtest_entry_spread_risk.py': 'e1ca99c0382dd355000b122742acbc3fd3ff0a703f5204172eee76584cc44a1d', 'src/backend/backtest_entry_spread_risk_v2.py': '0287cbbb1d9795121b23f1fa666e128135001cb1129c9b5b16cc0ac951e13cb9', 'src/backend/backtest_declared_entry_quote_source.py': '7a812908fd044f2573d525ac54b59383ab241ca673dbe8194ef30b12c79259e7', 'src/backend/backtest_fixed_journal_bootstrap.py': 'b1e67803f6ddc4b3c28e4030febd61cc8800d0f6d3e21f151b88fd24f4ce689d', 'src/backend/backtest_fixed_v4_certification.py': 'b8852737ad215dd18c7a9f3587540ec4592d039e78580977c6f94a7a24537d58', 'src/backend/backtest_journal_memory.py': '7967a2dc2bd11edd2739caa04a8c27c8fb80f3d900da8bb642a5509deaf08f33', 'src/backend/backtest_strategy_certified_price_break.py': 'e1fa545fbbd95b4784e4cf2e0ef320276a4ff525683f680ddea6fc0ccd4c1a38', 'src/backend/backtest_strategy_episode_activity_source.py': '2d4fa40c46a866be83328ce7443a350655620bf9c4b4a82044dc45ee7441c8c0', 'src/backend/backtest_strategy_liquidity_fade.py': '4870509aaef5af9a6b45d7a9c389dfe737a927f0beb71164b00ef9919d1a7e24', 'src/backend/backtest_strategy_liquidity_fade_loader.py': 'd6e5660d40bb75df739f8fe862ac7a8ed8441cdd7c58da64184f219d5d8a62b4', 'src/backend/backtest_strategy_one_configuration.py': '6a7720a1ce6223e3fff3364d95a3524442c8d37ad2dea0bff121b5eaab750f29', 'src/backend/backtest_strategy_one_coordinator.py': '7d40c9a3d75872e1ff263729eb578cf9860e913bae3863ec8889ca999e5df334', 'src/backend/backtest_strategy_one_execution.py': 'd9ed2de2119170cf4650b139e16004c170fd2503a482831b85f40a1177ab6f8d', 'src/backend/backtest_strategy_one_management.py': '7ac9b315872470ac627a6a623cf683d2260cd07ccc5a516ae6698c2b60d89833', 'src/backend/backtest_typed_projection.py': '30e7ad90b8d41270aa80ced61ed1e9b3fdd539265ff7395b9285308237db3a9e', 'src/backend/backtest_typed_publisher.py': '0b496a1667ee617a96238773ec2cbc306b4a4f798db2fc4ea0280f7d7767661f', 'src/backend/backtest_v4_saved_review.py': 'f6a2048ea195b7a39e6694e89cb7f164e4d83826197727ee90dceefb5e852ce9', 'src/backend/replay_run_service.py': '341053ab5a8a8c0d51dfafa62893237801379896aa690b2185900d6f66dec8c1', 'src/trading_runtime/arte_confirmed_ah_failure_v4.py': '5f8b90176e9bbe6232a1f7b88a86333cc2466dc5a932740d27b7cbf4d4345435', 'src/trading_runtime/arte_entry_activity_v4.py': '95b32e75b49992cb38e0569e1576e093841f46eb3b8defd37e5ec4d0e8494b92', 'src/trading_runtime/arte_entry_spread_risk_v4.py': '936b3a9b67c7d9ad9be63a0b44b6d9255e0275941f9c4ef95eaf2779b1c6f3e6', 'src/trading_runtime/arte_first_price_entry_v4.py': 'c968e50cb42d4326f9499b20134ec6500990058a6415aed581f373fb2d2efec6', 'src/trading_runtime/arte_followthrough_failure_v4.py': '2ce1e6805a9db71fa5afe0ec63aba61a7d87fc95e3847b89bd7e94b93aa1bc6c', 'src/trading_runtime/arte_initial_momentum_entry_v4.py': '037069b752fbc7af9de87ba44f53d3af79833cdb379872ce2554013456af21ea', 'src/trading_runtime/arte_journal_compound_v4.py': '05b28c131df86e9b743117c1c801eec7384995b0bbe8c8b80c9afb53e183eb4c', 'src/trading_runtime/arte_journal_commit_v4.py': 'fd634b0f4f16f673f6795479fd03ef258c81b33b6e264f5395305b936c4b0a1f', 'src/trading_runtime/arte_journal_writer.py': 'faafb31844ea3c0dfd7c7d5f205552d01c3e6652179612ef57298a918f93d37c', 'src/trading_runtime/arte_liquidity_fade_failure_v4.py': '216e413631d81e7cb0b29d7103ab1939320946a43a6efeba17c646cdc6147134', 'src/trading_runtime/arte_oms_projection.py': 'e0accf89d43ab445f0d0520d4b4b811c86381b540043fc1be9ee982dd419e25f', 'src/trading_runtime/arte_profit_giveback_v4.py': '3e22f8f0c57d85a471cd15a63e18295517c617f9b8dc88eae5d1cc7908a70293', 'src/trading_runtime/arte_rising_momentum_entry_v4.py': '2f9b2689448c0592d99134286955618d0c312c29d8712d37f79310bffbb55d1d', 'src/trading_runtime/arte_strategy_one_entry_journal.py': '45dc2b6abf7f528fbf1e056c5249a78eb1b52813f051a732512712abc5993856', 'src/trading_runtime/declared_followthrough_failure.py': 'ad60271c51250ee004e00e5fc00f8bd8e220794968a9421ec0ff73bd002d5c98', 'src/trading_runtime/declared_profit_giveback.py': '944de8d53f75e5f270120fa36d5d8786a6ea167ed824f1d8e501c8a9ae120bc3', 'src/trading_runtime/early_original_risk_failure.py': '1df39278ef45fd7392fa570702b836588c21274aa0eb36c3667477dbcef0dc89', 'src/trading_runtime/entry_spread_risk.py': 'cbb5fcbae0b6c6581a3dd9a2d59dd6dbc57372799f2781e3d69c4559b5a6be8e', 'src/trading_runtime/numbered_fixed_strategy.py': '96d118e8a2ad954cb3e79b742df4634d07bae2b81913036ae78737285bd7954d', 'src/trading_runtime/runtime.py': '6e8c043db1d62b04560fc581e46f3f7d0382c49285975263dc6cff4b40dd8dc8', 'src/trading_runtime/strategy_confirmed_ah_failure_exit.py': '5fce50ffc270e19c98f200dbe949edd9ce718959d8f7cb48324dce5f1e96590f', 'src/trading_runtime/strategy_confirmed_ah_failure_source.py': '5b5fbaeda54d8e7593d6646c7d6631ab8323ee472cdf73ecee947e049a77b50a', 'src/trading_runtime/strategy_fifty_six_contract.py': '73ae47d0412cd7da6c4ffdfa0db16cbd98eaf124f103fcf98c0dc66e2c7933b4', 'src/trading_runtime/strategy_fifty_six_release.py': 'b05f86a523103cee7f7f0ef56bbf3a8ef380d4ff56270811da13d4521d8eb646', 'src/trading_runtime/strategy_fifty_release.py': '2f078566963e645c725d14526621e87a99d623f415fa010aa2440921e8d87f1b', 'src/trading_runtime/strategy_followthrough_exit.py': '85057326d73128bfe04f23fdd72f433693aa49b5837a06354bdba1e5a76b628b', 'src/trading_runtime/strategy_half_risk_liquidity_fade.py': '3f8d8949125090eda81d3256cae65920f950da12cbbb88dc6fb30a922c4cbe21', 'src/trading_runtime/strategy_liquidity_fade_exit.py': '3ccbc3b5f09d6553a23372e9a2c435c936defa2dc800717d36f2824c21a04325', 'src/trading_runtime/strategy_liquidity_fade_publication.py': '3ae4e11e8b2d2d9f470c4beab7c0af09b0259c1168a367f728778ed8accb6827', 'src/trading_runtime/strategy_liquidity_fade_source.py': '0a92702b17b61fba3112bf040afa8bc764ca3df2656ef25bd90130b13714b189', 'src/trading_runtime/strategy_one_management_snapshot.py': '102cb6778c4cde6bd89393cd7338962b0092a9ad9414b57b17976081299f90b3', 'src/trading_runtime/strategy_profit_giveback.py': 'cc23fe27ca6db49c4139a481f364bfc26088b0dea01d1f542ea2f98f79072d10', 'src/trading_runtime/strategy_profit_giveback_arm.py': '5757092f1089572ad5ae39a6c482932fc8629930413e48b5c6944dc742d2358c', 'src/trading_runtime/strategy_profit_giveback_exit.py': 'c8466273babe33b6c54ed898d446a6b1b68297fd2e37e69b27270a4bc804b49e', 'src/trading_runtime/strategy_profit_giveback_source.py': '1ed0dcde9e4a462519e773069686a1a95731534312d6a5a290fa351290aefa29', 'src/trading_runtime/strategy_registry.py': '570c8d53eb1133a5b14f403b71d8804970f16c65aede3d12a8ae05ee579fbc13', 'src/trading_runtime/strategy_rising_momentum_witness.py': '8433d7be44361854221822708c23dbbc7899b106a16aa5d9f62d2e1825d6bf30', 'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c', 'src/backend/backtest_declared_initial_momentum.py': '786a12c62a157c092652c8cd7d695fe4f5e8ebfb315c9b8dbab56580fb0a4b81', 'src/backend/source_ast_summary.py': '8316c975ab6d554ce9508b10fe3fe9ad87e059e0c48db91640357241ecdfe995', 'src/trading_runtime/squeeze_ladder_geometry.py': '34658cac7dba475b19ca3963bbcad1397a88f5f86e4133664947c9e656671e0d',
+    'src/trading_runtime/all_held_original_risk_failure.py': '093bb7f1b73277f21aa1a399a7b3b9f36d77dea8ca614f1130314029fcfaf8cf',
+    'src/trading_runtime/confirmed_original_risk_failure.py': '653f8f54f8800c9b9c8dac7804fd6ef2d1ae83a2a8785aef258f0787c1413197',
+    'src/trading_runtime/arte_original_risk_diagnostic_v4.py': 'c048997055bb65060ca280d197b986994a4a4c1fee2eca883ec2c5cc9fbe5a51',
+    'src/trading_runtime/original_risk_diagnostic_profile.py': '595f15675892f4b9f59cb1ee1b19536e59ab47ca563f55971b39811614a4298c',
+    'src/backend/backtest_confirmed_original_risk_source.py': '0df8a2bda59e1ce95b150ca9ff43a22a2752f5a602856eaeee0cf6d866dac6f0',
+    'src/backend/backtest_market_data.py': 'ad4135f16a0979b5af821b0c00c294511635b3b84b37b90f7bdff79e503cf9d3',
+    'src/backend/backtest_declared_ladder_plan.py': {'automatic_policy': 'f5383587a2b55fcd05c6c6f0872d7e641b1059d6ee229094f5a10ef15b5c2669'},
+    'src/backend/backtest_ladder_source_authority.py': {'declared_ladder_policy': '56c0bef2dbea0bccd752d45293520c1ce8ebec0b3e2829c48c5a2a7eccbe360c'},
+    'src/trading_runtime/squeeze_ladder_automatic.py': {'AutomaticLadderPolicy': '8e6b530d31208cc0c139f51eee83da902e67a16f532118b6f7eacc90a30f936f'},
+
+    'src/trading_runtime/original_risk_checkpoint.py': '9049359bdf28ddbbbfdebeaa31cf48dfe4fd035cae561869f0a1e831ed4a1cee',
+    'src/trading_runtime/original_risk_pending_snapshot.py': 'bef2be65cd8fa6d02a435bc8290b3e765bb496567e3abb7b3d7fd912311239a7',
+    'src/trading_runtime/strategy_liquidity_fade_financial_checkpoint.py': 'a6011032b9690f0ddb72e8db54401e57e7850431e243023f3c3b8d90d524643c',
+    'src/trading_runtime/strategy_one_broker_match_snapshot.py': 'c104a2420df90e936d594b95b47125195523130f69388043be66f3c0527f1262',
+}
 
 
 def certify_strategy_fifty_six_source(*, source_overrides=None):
@@ -87,10 +115,29 @@ def certify_strategy_fifty_six_source(*, source_overrides=None):
     for relative, expected in STRATEGY56_SOURCE_AST.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
         try:
-            tree = ast.parse(source)
+            from src.backend.source_ast_summary import canonical_module_ast_digest, canonical_symbol_ast_summary
+            classifier_symbols = {
+                'src/backend/backtest_declared_ladder_plan.py': ('automatic_policy',),
+                'src/backend/backtest_ladder_source_authority.py': ('declared_ladder_policy',),
+                'src/trading_runtime/squeeze_ladder_automatic.py': ('AutomaticLadderPolicy',),
+            }
+            if relative in classifier_symbols:
+                if type(expected) is not dict or tuple(expected) != classifier_symbols[relative]:
+                    raise ValueError('Closed classifier source selector shape changed: '+relative)
+                from src.backend.source_ast_summary import canonical_symbol_ast_summary
+                kinds = ('ClassDef',) if relative == 'src/trading_runtime/squeeze_ladder_automatic.py' else ('FunctionDef',)
+                summaries = canonical_symbol_ast_summary(source, classifier_symbols[relative], kinds=kinds)
+                if (len(summaries) != 1 or len(summaries[0].digests) != 1
+                        or summaries[0].name != classifier_symbols[relative][0]):
+                    raise ValueError('Closed classifier source symbol changed: '+relative)
+                actual = {summaries[0].name: summaries[0].digests[0]}
+            else:
+                if type(expected) is not str:
+                    raise ValueError('Unknown dictionary source selector: '+relative)
+                actual = canonical_module_ast_digest(source)
         except SyntaxError as exc:
             raise ValueError('Strategy56 source cannot be parsed: ' + relative) from exc
-        if sha256(ast.unparse(tree).encode()).hexdigest() != expected:
+        if actual != expected:
             raise ValueError('Strategy56 pinned source changed: ' + relative)
         observed.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observed, separators=(',', ':')).encode()).hexdigest()

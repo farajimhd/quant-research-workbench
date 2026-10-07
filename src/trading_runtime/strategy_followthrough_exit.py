@@ -11,7 +11,7 @@ from .strategy_followthrough_failure import FollowThroughFailure, FollowThroughF
 from .strategy_one_stateful import StrategyOneFinancialView
 
 
-def validate_witness(witness, *, strategy_number=9):
+def validate_witness(witness, *, strategy_number=9, diagnostic=None):
     if type(witness) is not FollowThroughFailure:
         raise ValueError("Follow-through exit requires the exact scalar witness")
     if type(strategy_number) is not int or (strategy_number not in (9, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-nine-followthrough-failure-v1')):
@@ -28,6 +28,16 @@ def validate_witness(witness, *, strategy_number=9):
         witness.reference_ask, witness.initial_stop, witness.boundary_ms,
         witness.completed_close_int, True, witness.macd_line, witness.macd_signal,
         witness.bid, witness.ask, witness.quote_age_us, 1.0, False)
+    from .numbered_fixed_strategy import numbered_fixed_strategy
+    from .confirmed_original_risk_failure import validate_decision_diagnostic
+    selected = numbered_fixed_strategy(strategy_number).confirmed_original_risk_policy
+    if selected is not None:
+        if diagnostic is None or diagnostic.current != witness:
+            raise ValueError('Declared consecutive failure requires its selected firing diagnostic')
+        validate_decision_diagnostic(diagnostic, policy=selected)
+        return
+    if diagnostic is not None:
+        raise ValueError('Undeclared failure cannot carry a selected firing diagnostic')
     if strategy_number in (46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61):
         from .declared_followthrough_failure import declared_followthrough_failure
         from .numbered_fixed_strategy import numbered_fixed_strategy
@@ -46,14 +56,21 @@ def validate_witness(witness, *, strategy_number=9):
         raise ValueError("Follow-through witness does not satisfy its pinned rule")
 
 
-def followthrough_exit_intent(witness, financial, *, session_date, source_entry_intent_id, strategy_number=9):
-    validate_witness(witness, strategy_number=strategy_number)
+def followthrough_exit_intent(witness, financial, *, session_date, source_entry_intent_id, strategy_number=9, diagnostic=None):
+    validate_witness(witness, strategy_number=strategy_number, diagnostic=diagnostic)
+    if diagnostic is not None:
+        from .original_risk_checkpoint import OriginalRiskCheckpointReference
+        if type(diagnostic.checkpoint) is not OriginalRiskCheckpointReference:
+            raise ValueError('Selected failure exit lacks its actual native checkpoint reference')
     UUID(source_entry_intent_id)
     if (type(financial) is not StrategyOneFinancialView
             or not financial.account_id or not financial.assignment_id or not financial.ticker
             or not isfinite(financial.position_quantity) or financial.position_quantity <= 0
             or financial.pending_exit):
         raise ValueError("Follow-through exit requires exact held financial authority")
+    if diagnostic is not None and (diagnostic.newest.ticker!=financial.ticker
+            or diagnostic.newest.session_date!=session_date.isoformat()):
+        raise ValueError('Selected failure diagnostic differs from held ticker or native session')
     at = datetime.combine(session_date, time(4), ZoneInfo("America/New_York")) + timedelta(milliseconds=witness.boundary_ms)
     identity = f"strategy-{strategy_number}-followthrough-exit:{session_date}:{financial.account_id}:{financial.assignment_id}:{financial.ticker}:{source_entry_intent_id}:{witness.boundary_ms}"
     return StrategyIntent(intent_id=str(uuid5(NAMESPACE_URL, identity)),

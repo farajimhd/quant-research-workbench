@@ -49,6 +49,7 @@ from src.backend.backtest_protection_change_v3 import (
 
 
 from .arte_followthrough_failure_v4 import FAILURE, seal_followthrough_rows
+from .arte_original_risk_diagnostic_v4 import DIAGNOSTIC as ORIGINAL_RISK_DIAGNOSTIC, seal_original_risk_diagnostics
 from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, seal_profit_giveback_rows
 from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, seal_confirmed_ah_rows
 from .arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
@@ -650,7 +651,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name, ENTRY_SPREAD_RISK.name,
+                    ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, ORIGINAL_RISK_DIAGNOSTIC.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name, ENTRY_SPREAD_RISK.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
@@ -691,7 +692,7 @@ def _load_verified_details_v4(
         related_rows.get("trading_strategy_intent_v1", ()),
         related_rows.get("trading_event_v1", ()), related_rows.get(ENTRY_EVIDENCE.name, ()),
         prior_batch_id=prior_batch_id, verified_prefix=verified_prior_prefix,
-        first_price_source=first_price_source)
+        first_price_source=first_price_source,diagnostic_rows=related_rows.get(ORIGINAL_RISK_DIAGNOSTIC.name,()))
     from .strategy_profit_giveback_exit import profit_giveback_reason
     profit_reasons = {profit_giveback_reason(number) for number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61)}
     profit_rows = related_rows.get(PROFIT_GIVEBACK.name, ())
@@ -1459,7 +1460,7 @@ def _validate_strategy_one_add_link(row, parent, event, run_id, batch_id):
         raise ValueError("V4 Strategy 1 add evidence differs from its typed parent")
 
 
-def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_one_entry_rows=(),
+def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_one_entry_rows=(), original_risk_diagnostic_rows=(),
                            profit_giveback_rows=(), confirmed_ah_rows=(), liquidity_fade_rows=(), verified_prior_prefix=None, first_price_source=None,
                            rising_momentum_rows=(), initial_momentum_rows=(),
                            first_price_rows=(), first_price_authorities=(),
@@ -1507,7 +1508,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         if (any(getattr(batch, name) for name in (
                 "backtest_cursors", "backtest_market_authorities",
                 "backtest_progress", "prepared_v7_leases"))
-                or broker_snapshot_rows is not None or profit_giveback_rows or confirmed_ah_rows or liquidity_fade_rows):
+                or broker_snapshot_rows is not None or profit_giveback_rows or confirmed_ah_rows or liquidity_fade_rows or original_risk_diagnostic_rows):
             raise ValueError("Live V4 cannot publish Backtest-only families")
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
@@ -1864,7 +1865,11 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                         dict(base_families)["trading_event_v1"], entry_rows,
                         prior_batch_id=batch.prior_batch_id,
                         verified_prefix=verified_prior_prefix,
-                        first_price_source=first_price_source))
+                        first_price_source=first_price_source,diagnostic_rows=original_risk_diagnostic_rows))
+    # The full failure sealer above independently validated these companions.
+    # Micro-preparation defers both families together to the compound sealer.
+    diagnostic_rows=tuple(typed_row(ORIGINAL_RISK_DIAGNOSTIC.name,{k:v for k,v in row.items()
+                         if k!='content_hash'}) for row in original_risk_diagnostic_rows)
     # The referenced checkpoint must already be durable before this prefix.
     # Micro-preparation hashes rows; compound preparation seals the merged graph.
     profit_rows = (tuple(typed_row(PROFIT_GIVEBACK.name, {
@@ -1927,6 +1932,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += ((STEP_TABLE, tactic_steps),)
     if failure_rows:
         families += ((FAILURE.name, failure_rows),)
+    if diagnostic_rows:
+        families += ((ORIGINAL_RISK_DIAGNOSTIC.name,diagnostic_rows),)
     if profit_rows:
         families += ((PROFIT_GIVEBACK.name, profit_rows),)
     if confirmation_rows:

@@ -48,6 +48,16 @@ _MANAGER_TABLES = frozenset({
     "trading_strategy_one_manager_position_high_v2",
     "trading_strategy_one_manager_closed_position_v2",
 })
+
+
+def _manager_tables(confirmed_original_risk_policy=None):
+    if confirmed_original_risk_policy is None:
+        return _MANAGER_TABLES
+    from .confirmed_original_risk_failure import ConfirmedOriginalRiskPolicy
+    from .original_risk_pending_snapshot import selected_snapshot_contracts
+    if type(confirmed_original_risk_policy) is not ConfirmedOriginalRiskPolicy:
+        raise ValueError('Manager dispatch requires exact declared original-risk capability')
+    return _MANAGER_TABLES | frozenset(t.name for t in selected_snapshot_contracts())
 _BROKER_MATCH_TABLES = frozenset({
     "trading_strategy_one_broker_match_snapshot_v5",
     "trading_strategy_one_broker_match_account_v5",
@@ -613,7 +623,8 @@ class TypedInsertDispatch:
             oms_observation_snapshot_hash, running_financial_checkpoint_hash)
             if value is not None), None)
         if scalar_hash is not None:
-            tables = (_MANAGER_TABLES if manager_snapshot_hash is not None
+            tables = (_manager_tables(getattr(client,'confirmed_original_risk_policy',None))
+                      if manager_snapshot_hash is not None
                       else _BROKER_MATCH_TABLES if broker_snapshot_hash is not None
                       else _EVIDENCE_TABLES if evidence_snapshot_hash is not None
                       else _CAMPAIGN_TABLES if campaign_snapshot_hash is not None
@@ -1030,7 +1041,7 @@ class TypedInsertDispatch:
     def compact_verified_manager_snapshot(
         self, *, run_id: str, batch_id: str, last_sequence: int,
         snapshot_hash: str, operations: tuple[tuple[str, str], ...],
-        previous: Any | None,
+        previous: Any | None, confirmed_original_risk_policy=None,
     ) -> None:
         """Select read-back-verified scalar rows at one compacted V4 cursor.
 
@@ -1041,18 +1052,22 @@ class TypedInsertDispatch:
             ManagerSnapshotHead,
         )
         _identity(run_id, "run")
+        operation_tables={table for table,_ in operations}
+        legacy_roots={'trading_strategy_one_manager_snapshot_v2','trading_strategy_one_manager_snapshot_v3'}
+        if confirmed_original_risk_policy is None:
+            root_invalid=(len(operation_tables & legacy_roots)!=1
+                or ('trading_strategy_one_manager_first_held_v1' in operation_tables
+                    and 'trading_strategy_one_manager_snapshot_v3' not in operation_tables))
+        else:
+            _manager_tables(confirmed_original_risk_policy)
+            root_invalid=('trading_strategy_one_manager_snapshot_v4' not in operation_tables
+                          or bool(operation_tables & legacy_roots))
         if (type(last_sequence) is not int or last_sequence < 1
                 or re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None
                 or not operations or len(set(operations)) != len(operations)
                 or "trading_strategy_one_protection_snapshot_v1"
                 not in {table for table, _ in operations}
-                or len({table for table, _ in operations} & {
-                    "trading_strategy_one_manager_snapshot_v2",
-                    "trading_strategy_one_manager_snapshot_v3"}) != 1
-                or ("trading_strategy_one_manager_first_held_v1"
-                    in {table for table, _ in operations}
-                    and "trading_strategy_one_manager_snapshot_v3"
-                    not in {table for table, _ in operations})):
+                or root_invalid):
             raise ValueError("Manager snapshot operation inventory is invalid")
         try:
             if str(UUID(batch_id)) != batch_id or batch_id == _ZERO_BATCH:
@@ -1096,7 +1111,7 @@ class TypedInsertDispatch:
                 raise KeeperUnavailable("Manager snapshot previous head changed")
             paths = []
             for table, token in operations:
-                if (table not in _MANAGER_TABLES
+                if (table not in _manager_tables(confirmed_original_risk_policy)
                         or token != _manager_token(
                             run_id, last_sequence, snapshot_hash, table)):
                     raise KeeperUnavailable("Manager snapshot operation identity differs")

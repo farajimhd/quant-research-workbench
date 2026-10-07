@@ -53,7 +53,8 @@ def _require_declared_read_profile(client, context, *, sealed_configuration=None
     """Select authority from the already validated typed run context."""
     from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
     contract = resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision']))
-    if getattr(contract, 'automatic_entry_policy', None) is not None:
+    if (getattr(contract, 'automatic_entry_policy', None) is not None
+            or getattr(contract, 'confirmed_original_risk_policy', None) is not None):
         from src.trading_runtime.squeeze_ladder_geometry import declared_ladder_runner_options
         if sealed_configuration is None:
             from contextlib import closing
@@ -65,7 +66,11 @@ def _require_declared_read_profile(client, context, *, sealed_configuration=None
                 or sealed_configuration.strategy_number != int(context['strategy_revision'])
                 or sealed_configuration.payload['strategy']['strategy_id'] != context['strategy_id']):
             raise ValueError('Saved ladder read profile differs from sealed run configuration')
-        options = declared_ladder_runner_options(sealed_configuration.payload)
+        if getattr(contract, 'confirmed_original_risk_policy', None) is not None:
+            from src.trading_runtime.original_risk_diagnostic_profile import declared_fixed_runner_options
+            options=declared_fixed_runner_options(sealed_configuration.payload)
+        else:
+            options = declared_ladder_runner_options(sealed_configuration.payload)
     else:
         options = ({'entry_spread_risk': True}
                if getattr(contract, 'entry_spread_risk_policy', None) is not None else {})
@@ -74,6 +79,15 @@ def _require_declared_read_profile(client, context, *, sealed_configuration=None
     matches = (flag is not None and getattr(client, flag, False) is True
                and (flag != 'automatic_ladder_profile' or getattr(client, 'ladder_geometry_policy', None)
                     == options.get('ladder_geometry_policy')))
+    if 'confirmed_original_risk_policy' in options:
+        flag='confirmed_original_risk_policy'
+        actual=getattr(client,flag,None)
+        if actual is not None and actual!=options[flag]:
+            raise ValueError('Saved original-risk reader carries a foreign typed policy')
+        from src.trading_runtime.original_risk_diagnostic_profile import validate_original_risk_profile
+        validate_original_risk_profile(getattr(client,'automatic_ladder_profile',False),
+            getattr(client,'entry_spread_risk_profile',False),actual)
+        matches=actual==options[flag]
     if flag is not None and not matches:
         if _DECLARED_READ_SCOPE.get() is not None:
             raise _DeclaredReadProfileRequired(options)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from src.trading_runtime.squeeze_ladder_geometry import declared_ladder_runner_options
+from src.trading_runtime.original_risk_diagnostic_profile import declared_fixed_runner_options, declared_contract_runner_options
 from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 
 from src.trading_runtime.market_pressure import PressureTracker
@@ -2632,7 +2633,7 @@ class ReplayRunController:
         from src.trading_runtime.strategy_profit_giveback_arm_reference import confirm_profit_arm_reference
 
         def confirm():
-            with closing(backtest_v4_operator_client_from_env(**({'entry_spread_risk': True} if getattr(manager.contract, 'entry_spread_risk_policy', None) is not None else {}))) as reader:
+            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
                 head = ManagedManagerSnapshotHeadReader(keeper)
                 return tuple(confirm_profit_arm_reference(
                     reader, head, candidate, financial, receipt,
@@ -2677,7 +2678,7 @@ class ReplayRunController:
         from src.trading_runtime.strategy_one_broker_match_snapshot import ManagedBrokerMatchHeadReader
         from src.trading_runtime.strategy_liquidity_fade_checkpoint_reference import confirm_liquidity_fade_checkpoint_sources
         def confirm():
-            with closing(backtest_v4_operator_client_from_env(**({'entry_spread_risk': True} if getattr(manager.contract, 'entry_spread_risk_policy', None) is not None else {}))) as reader:
+            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
                 return confirm_liquidity_fade_checkpoint_sources(reader,
                     ManagedManagerSnapshotHeadReader(self._fixed_keeper_session),
                     ManagedBrokerMatchHeadReader(self._fixed_keeper_session), requests, receipt,
@@ -2692,6 +2693,84 @@ class ReplayRunController:
             await self._runtime.submit_liquidity_fade_failure(request.financial, request.witness,
                 request.source_entry_intent_id, source)
         manager.complete_liquidity_fade_requests(requests, boundary_ms=boundary)
+
+    async def _confirm_original_risk_checkpoint(self, requests: tuple, *, event_time):
+        """Fence the completed decision before ordinary Portfolio/OMS submission."""
+        manager, publisher = self._strategy_one_manager, self._journal_publisher
+        boundary = dict(self._source_cursor).get('boundary_ms')
+        if (self.definition.mode != RunMode.BACKTEST or getattr(manager.contract, 'confirmed_original_risk_policy', None) is None
+                or publisher is None or publisher.writer.journal_profile != 'backtest_v4'
+                or self._fixed_keeper_session is None or not requests
+                or requests != manager.original_risk_requests(boundary_ms=boundary)):
+            raise RuntimeError('Original-risk exit lacks its completed native Backtest boundary')
+        from .backtest_strategy_one_financial import read_strategy_one_financial_view
+        assignments = {(item.account_id, item.assignment_id, item.ticker): item
+                       for item in self._runtime.strategy.assignments()}
+        for request in requests:
+            view = request.financial
+            assignment = assignments.get((view.account_id, view.assignment_id, view.ticker))
+            if assignment is None or await read_strategy_one_financial_view(
+                    assignment, self._runtime.broker, self._runtime.order_manager) != view:
+                raise RuntimeError('Original-risk completed decision financial state changed before checkpoint')
+        receipt = await self._save_restart_checkpoint_responsive(event_time)
+        from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
+        from src.trading_runtime.strategy_one_management_snapshot import ManagedManagerSnapshotHeadReader
+        from src.trading_runtime.strategy_one_broker_match_snapshot import ManagedBrokerMatchHeadReader
+        from src.trading_runtime.original_risk_checkpoint import confirm_original_risk_checkpoint_sources
+        def confirm():
+            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
+                return confirm_original_risk_checkpoint_sources(reader,
+                    ManagedManagerSnapshotHeadReader(self._fixed_keeper_session),
+                    ManagedBrokerMatchHeadReader(self._fixed_keeper_session), requests, receipt,
+                    run_id=self.run_id, first_price_source=publisher._first_price_source)
+        task = asyncio.create_task(asyncio.to_thread(confirm))
+        try:
+            references = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+        await self._drain_original_risk_requests(requests,references,boundary=boundary)
+
+    async def _drain_original_risk_requests(self,requests,references,*,boundary):
+        drain=asyncio.create_task(self._submit_original_risk_requests(requests,references,boundary=boundary))
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError:
+            await drain
+            raise
+
+    async def _submit_original_risk_requests(self,requests,references,*,boundary):
+        """Complete selected memory/OMS work before any later durable cursor.
+
+        The publisher captures a fixed target at each engine checkpoint. This
+        task performs no enqueue, checkpoint or independent durable write.
+        Cancellation of its caller cannot expose a half-drained running image.
+        """
+        from src.trading_runtime.strategy_followthrough_exit import followthrough_exit_intent
+        from src.trading_runtime.order_management import OrderManagementState
+        manager=self._strategy_one_manager
+        if (requests!=manager.original_risk_requests(boundary_ms=boundary)
+                or type(references) is not tuple or len(references)!=len(requests)):
+            raise RuntimeError('Original-risk drain differs from its frozen pending inventory')
+        accepted={OrderManagementState.ACKNOWLEDGED,OrderManagementState.WORKING,
+                  OrderManagementState.PARTIALLY_FILLED,OrderManagementState.FILLED}
+        for request,source in zip(requests,references,strict=True):
+            expected=followthrough_exit_intent(request.witness,request.financial,
+                source_entry_intent_id=request.source_entry_intent_id,diagnostic=source,
+                session_date=self._runtime.config.anchor_date,
+                strategy_number=manager.contract.strategy_number)
+            result=await self._runtime.submit_followthrough_failure(request.financial,request.witness,
+                request.source_entry_intent_id,diagnostic=source)
+            group=(result[0].get('order_group') if type(result) is list and len(result)==1
+                   and type(result[0]) is dict else None)
+            if (type(group) is not dict or result[0].get('decision',{}).get('status')!='approved'
+                    or group.get('state') not in accepted or not group.get('group_id')
+                    or group.get('intent_id')!=expected.intent_id
+                    or group.get('account_id')!=request.financial.account_id
+                    or group.get('assignment_id')!=request.financial.assignment_id
+                    or group.get('ticker')!=request.financial.ticker or group.get('action')!='exit'):
+                raise RuntimeError('Original-risk drain lacks its exact accepted OMS result')
+        manager.complete_original_risk_requests(requests,boundary_ms=boundary)
 
     def _prepare_terminal_v2_handoff(self, verified_prefix, *, committed_at):
         """Inactive fixed-Backtest handoff; publication still needs admission.
@@ -3469,12 +3548,12 @@ class ReplayRunController:
                         backtest_v4_context_client_from_env(
                             keeper_session=keeper)))
                     reader = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env(**(declared_ladder_runner_options(configuration) if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))))
+                        backtest_v4_operator_client_from_env(**declared_fixed_runner_options(configuration))))
                     writer = backtest_v4_journal_client_from_env(
                         keeper_session=keeper, lease=lease,
-                        **(declared_ladder_runner_options(configuration) if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))
+                        **declared_fixed_runner_options(configuration))
                     terminal = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env(**(declared_ladder_runner_options(configuration) if automatic_policy(configuration) else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))))
+                        backtest_v4_operator_client_from_env(**declared_fixed_runner_options(configuration))))
                     bootstrap_timings["strategy_one_journal_clients"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()
@@ -3880,6 +3959,10 @@ class ReplayRunController:
             self.processed_events += len(work.broker_rows)
             await self._after_event(at)
             manager = self._strategy_one_manager
+            if getattr(manager.contract, 'confirmed_original_risk_policy', None) is not None:
+                original_risk_requests=manager.original_risk_requests(boundary_ms=work.boundary_ms)
+                if original_risk_requests:
+                    await self._confirm_original_risk_checkpoint(original_risk_requests,event_time=at)
             if (manager.contract.strategy_number in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(manager.contract.strategy_number, 'strategy-thirty-five-completed-liquidity-fade-v1')):
                 liquidity_requests = manager.liquidity_fade_requests(boundary_ms=work.boundary_ms)
                 if liquidity_requests:
@@ -3891,10 +3974,17 @@ class ReplayRunController:
             if boundary_count % 256 == 0:
                 await self._publish()
 
-        def manager_ready(manager):
+        async def manager_ready(manager):
             if getattr(self, '_strategy_one_manager', None) is not None:
                 raise RuntimeError('Strategy 1 manager is already bound')
             self._strategy_one_manager = manager
+            if getattr(manager.contract,'confirmed_original_risk_policy',None) is not None:
+                requests=manager.original_risk_requests(boundary_ms=start_after)
+                if requests:
+                    if fixed_restore is None or fixed_restore.manager.boundary_ms != start_after:
+                        raise RuntimeError('Pending original-risk recovery lacks exact saved decision boundary')
+                    await self._confirm_original_risk_checkpoint(requests,event_time=market_day_boundary(
+                        self._runtime.config.anchor_date,start_after))
 
         def first_price_ready(source):
             publisher = self._journal_publisher
@@ -10008,9 +10098,7 @@ class ReplayRunService:
         declared_contract = resolve_numbered_fixed_strategy(
             configuration['strategy']['strategy_id'], strategy_number)
         from .backtest_declared_ladder_plan import automatic_policy
-        runner_options = (declared_ladder_runner_options(configuration) if automatic_policy(configuration)
-                          else {'entry_spread_risk': True}
-                          if getattr(declared_contract, 'entry_spread_risk_policy', None) is not None else {})
+        runner_options = declared_fixed_runner_options(configuration)
         projection_certifier = (certify_strategy_one_v4_projection if strategy_number == 1
                                 else lambda: certify_numbered_fixed_v4_projection(strategy_number))
         profiles, _ = historical_strategy_one_portfolio_profiles(configuration)
@@ -12398,7 +12486,7 @@ def backtest_preflight(
             _v4_preflight,
         )
         try:
-            with closing(backtest_v4_operator_client_from_env(**(declared_ladder_runner_options(configuration) if ladder_policy else {'entry_spread_risk':True} if configuration.get('strategy', {}).get('numbered_release', {}).get('entry_spread_risk_policy') is not None else {}))
+            with closing(backtest_v4_operator_client_from_env(**declared_fixed_runner_options(configuration))
                          if strategy_one_fixed else journal_client_from_env()) as journal_client:
                 if strategy_one_fixed:
                     _v4_preflight(journal_client)

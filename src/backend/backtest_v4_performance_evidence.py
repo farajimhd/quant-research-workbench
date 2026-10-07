@@ -93,6 +93,23 @@ def managed_exit_evidence(client, prefix, executions):
                 "source_sequence": source.sequence, "source_record_id": source.record_id,
                 "intent_id": intent.intent_id, "command_record_id": command["record_id"],
                 "command_sequence": int(command["sequence"])}
+            from src.trading_runtime.arte_original_risk_diagnostic_v4 import diagnostic_policy
+            from src.trading_runtime.arte_followthrough_failure_v4 import REASON
+            if getattr(client, 'confirmed_original_risk_policy', None) is not None and intent.reason == REASON:
+                if diagnostic_policy(execution.strategy_revision) != client.confirmed_original_risk_policy:
+                    raise RuntimeError('Exit attribution diagnostic profile differs from immutable intent')
+                from dataclasses import asdict
+                from src.trading_runtime.arte_followthrough_failure_v4 import load_followthrough_failure
+                failure, witness, diagnostic = load_followthrough_failure(
+                    client, prefix, source.record_id, include_diagnostic=True)
+                if (diagnostic is None or diagnostic.current != witness
+                        or failure['strategy_number'] != execution.strategy_revision
+                        or diagnostic.newest.ticker != execution.instrument.symbol):
+                    raise RuntimeError('Selected exit attribution lacks its exact completed diagnostic')
+                result[execution.execution_id]['original_risk_diagnostic'] = {
+                    'failure_record_id': str(failure['record_id']),
+                    'failure_content_hash': failure['content_hash'],
+                    **asdict(diagnostic)}
     return result
 
 
@@ -113,7 +130,7 @@ def attach_exit_evidence(client, prefix, lifecycles, executions):
             proof = ({"reason": first.exit_reason, "source": "journal",
                       "source_sequence": first.journal_sequence} if first.exit_reason
                      else protection_exit_evidence(lifecycle, first))
-            if proof is None:
+            if proof is None or getattr(client, 'confirmed_original_risk_policy', None) is not None:
                 pending.append(first)
             evidence[order] = proof
         grouped.append((lifecycle, exits, orders, evidence))
@@ -122,6 +139,9 @@ def attach_exit_evidence(client, prefix, lifecycles, executions):
         components = []
         for order, fills in orders.items():
             proof = evidence[order] or managed.get(fills[0].execution_id)
+            selected = managed.get(fills[0].execution_id, {})
+            if 'original_risk_diagnostic' in selected:
+                proof = {**(proof or {}), 'original_risk_diagnostic': selected['original_risk_diagnostic']}
             components.append({"broker_order_id": order,
                 "execution_ids": [row.execution_id for row in fills],
                 "quantity": sum((row.quantity for row in fills), Decimal(0)),

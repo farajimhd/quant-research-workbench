@@ -29,6 +29,7 @@ REASON = "strategy_nine_followthrough_failure"
 class V4FollowThroughFailureBatch:
     base: object
     failure: object
+    diagnostic: object = None
 
     def __post_init__(self):
         from .arte_journal_writer import TypedJournalBatch
@@ -36,12 +37,26 @@ class V4FollowThroughFailureBatch:
                 or len(self.base.events) != 1 or len(self.base.intents) != 1):
             raise ValueError("Follow-through witness requires one exact typed intent")
         object.__setattr__(self, "failure", MappingProxyType(dict(self.failure)))
+        from .arte_original_risk_diagnostic_v4 import diagnostic_policy
+        selected = diagnostic_policy(self.failure['strategy_number'])
+        if (selected is not None) != (self.diagnostic is not None):
+            raise ValueError('Declared original-risk failure needs exactly its diagnostic companion')
+        if self.diagnostic is not None:
+            from .arte_original_risk_diagnostic_v4 import restore_original_risk_diagnostic,project_original_risk_diagnostic
+            integer={'boundary_ms','first_held_boundary_ms','completed_close_int','quote_age_us'}
+            witness=FollowThroughFailure(**{f.name:(int(self.failure[f.name]) if f.name in integer
+                else float(self.failure[f.name])) for f in fields(FollowThroughFailure)})
+            restored=restore_original_risk_diagnostic(self.diagnostic,witness)
+            expected=project_original_risk_diagnostic(restored,self.failure)
+            if dict(self.diagnostic)!=expected:
+                raise ValueError('Original-risk companion differs from exact selected failure')
+            object.__setattr__(self,'diagnostic',MappingProxyType(dict(self.diagnostic)))
 
 
 
-def validate_numbered_failure(witness, strategy_number):
+def validate_numbered_failure(witness, strategy_number, diagnostic=None):
     """Pin the successor eligibility bound at every persistence boundary."""
-    validate_witness(witness, strategy_number=strategy_number if (strategy_number in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9)
+    validate_witness(witness, strategy_number=strategy_number if (strategy_number in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(strategy_number, 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9, diagnostic=diagnostic)
     if type(strategy_number) is not int or (strategy_number not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(strategy_number, 'strategy-nine-followthrough-failure-v1')):
         raise ValueError("Failure evidence requires Strategy 9 through 42 or declared Strategy 46")
     if strategy_number in (11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28):
@@ -50,8 +65,8 @@ def validate_numbered_failure(witness, strategy_number):
             raise ValueError("Strategy 11 failure witness exceeds the first-minute eligibility window")
 
 def project_followthrough_failure(witness, intent, source_entry_intent_id, *,
-                                run_id, batch_id, parent_record_id, assignment_id, strategy_number=9):
-    validate_numbered_failure(witness, strategy_number)
+                                run_id, batch_id, parent_record_id, assignment_id, strategy_number=9, diagnostic=None):
+    validate_numbered_failure(witness, strategy_number, diagnostic=diagnostic)
     UUID(source_entry_intent_id)
     if intent.reason != REASON or intent.action != "exit" or intent.metadata or not assignment_id:
         raise ValueError("Failure witness requires a metadata-free Strategy 9 exit")
@@ -62,11 +77,15 @@ def project_followthrough_failure(witness, intent, source_entry_intent_id, *,
         assignment_id=assignment_id, **{f.name: getattr(witness, f.name) for f in fields(witness)})
 
 
-def restore_failure(row):
+def _restore_failure_scalar(row):
     integer = {"boundary_ms", "first_held_boundary_ms", "completed_close_int", "quote_age_us"}
-    witness = FollowThroughFailure(**{f.name: (int(row[f.name]) if f.name in integer else float(row[f.name]))
+    return FollowThroughFailure(**{f.name: (int(row[f.name]) if f.name in integer else float(row[f.name]))
                                      for f in fields(FollowThroughFailure)})
-    validate_numbered_failure(witness, row["strategy_number"])
+
+
+def restore_failure(row,diagnostic=None):
+    witness = _restore_failure_scalar(row)
+    validate_numbered_failure(witness, row["strategy_number"],diagnostic=diagnostic)
     return witness
 
 
@@ -153,13 +172,16 @@ def _verify_source_ancestor_interval(client, run_id, source_commit, predecessor,
         raise RuntimeError("Failure ancestry includes an orphan or conflicting commit")
 
 def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_batch_id=None,
-                            verified_prefix=None, first_price_source=None):
+                            verified_prefix=None, first_price_source=None, diagnostic_rows=()):
     """Bind witness, exit and original entry graph before committing a head."""
     from .arte_journal_writer import typed_row, _canonical_typed_content
     parents = {str(r['record_id']): r for r in intents if r['reason'] == REASON}
     event_map = {str(r['record_id']): r for r in events}
     if len(rows) != len(parents):
         raise ValueError("Follow-through exit witness is missing or extra")
+    from .arte_original_risk_diagnostic_v4 import seal_original_risk_diagnostics
+    _,diagnostics=seal_original_risk_diagnostics(client,diagnostic_rows,rows,intents,
+        first_price_source=first_price_source,verified_prefix=verified_prefix,events=events)
     sealed, seen = [], set()
     for row in rows:
         parent_id = str(row['parent_record_id'])
@@ -167,7 +189,8 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
             raise ValueError("Follow-through witness lacks a unique exit parent")
         seen.add(parent_id)
         parent, event = parents[parent_id], event_map[parent_id]
-        witness = restore_failure(row)
+        diagnostic=diagnostics.get(parent_id)
+        witness = restore_failure(row,diagnostic=diagnostic)
         local = datetime.fromisoformat(str(event['event_time']).replace('Z', '+00:00'))
         if local.tzinfo is None:
             local = local.replace(tzinfo=timezone.utc)
@@ -212,7 +235,7 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
             parent['ticker'], AssignmentStatus.WATCHING, StrategyPermissions(),
             float(parent['quantity']), False, False, False, 1)
         expected = followthrough_exit_intent(witness, financial, session_date=local.date(),
-            source_entry_intent_id=str(row['source_entry_intent_id']),
+            source_entry_intent_id=str(row['source_entry_intent_id']), diagnostic=diagnostic,
             strategy_number=row['strategy_number'] if (row['strategy_number'] in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(row['strategy_number'], 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9)
         content = {k: v for k, v in parent.items() if k != 'content_hash'}
         expected_content = {**content, **{k: v for k, v in project_strategy_intent(expected).core.items()
@@ -224,7 +247,7 @@ def seal_followthrough_rows(client, rows, intents, events, entries=(), *, prior_
     return tuple(sealed)
 
 
-def load_followthrough_failure(client, prefix, exit_record_id):
+def load_followthrough_failure(client, prefix, exit_record_id,*,include_diagnostic=False):
     from .arte_journal_writer import _literal, _rows, _CONTRACTS
     from .arte_intent_projection import _verify_stored_row
     columns = ','.join(k for k, _ in _CONTRACTS[FAILURE.name].columns)
@@ -232,4 +255,11 @@ def load_followthrough_failure(client, prefix, exit_record_id):
     if len(rows) != 1 or str(rows[0]['batch_id']) not in prefix.batch_ids:
         raise RuntimeError("Recovered failure witness lacks its committed prefix")
     _verify_stored_row(FAILURE.name, rows[0])
-    return rows[0], restore_failure(rows[0])
+    if type(include_diagnostic) is not bool:
+        raise ValueError('Failure diagnostic read selection must be explicit')
+    from .arte_original_risk_diagnostic_v4 import diagnostic_policy,load_original_risk_diagnostic
+    diagnostic=None
+    if diagnostic_policy(rows[0]['strategy_number']) is not None:
+        _,diagnostic=load_original_risk_diagnostic(client,prefix,exit_record_id,rows[0])
+    restored=restore_failure(rows[0],diagnostic=diagnostic)
+    return (rows[0],restored,diagnostic) if include_diagnostic else (rows[0],restored)

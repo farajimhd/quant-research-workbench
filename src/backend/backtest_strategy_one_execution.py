@@ -8,6 +8,7 @@ from __future__ import annotations
 from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
 
 import asyncio
+from inspect import isawaitable
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -197,7 +198,9 @@ async def run_certified_strategy_one_session(
                 raise RuntimeError("Empty Strategy 1 prefix has recovered financial state")
             manager.restore_state(resume_manager_state)
         if manager_ready is not None:
-            manager_ready(manager)
+            ready=manager_ready(manager)
+            if isawaitable(ready):
+                await ready
         return StrategyOneProposalCounts(0, 0, 0, 0)
     visible_activations = project_activation_plan(
         activations, candidates, through_boundary_ms=through_boundary_ms)
@@ -394,13 +397,23 @@ async def run_certified_strategy_one_session(
                     through_boundary_ms=through_boundary_ms,
                     strategy_number=runtime.config.strategy_revision)
                 manager.bind_liquidity_fade_lookup(liquidity_lookup, liquidity_market)
+            if getattr(manager.contract, 'confirmed_original_risk_policy', None) is not None:
+                from .backtest_confirmed_original_risk_source import load_completed_risk_lookup
+                risk_market = price_authority.plan.source.market
+                risk_lookup = await asyncio.to_thread(load_completed_risk_lookup,reader,
+                    plan=risk_market,session_date=runtime.config.anchor_date,
+                    tickers=tuple(sorted({fact.ticker for fact in surviving_facts})),
+                    through_boundary_ms=through_boundary_ms)
+                manager.bind_completed_risk_lookup(risk_lookup,risk_market)
             if resume_manager_state is not None:
                 if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
                     manager.restore_state(resume_manager_state, first_price_source=price_authority)
                 else:
                     manager.restore_state(resume_manager_state)
             if manager_ready is not None:
-                manager_ready(manager)
+                ready=manager_ready(manager)
+                if isawaitable(ready):
+                    await ready
             counts = await run_strategy_one_fixed_session(
                 scheduler, entry, evidence, manager, runtime=runtime,
                 static_gate=surviving_gate, assignments=assignments, momentum_plan=momentum_plan,

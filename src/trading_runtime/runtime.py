@@ -1076,9 +1076,12 @@ class TradingRuntime:
         if followthrough_source is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
             from .strategy_followthrough_exit import followthrough_exit_intent
-            witness, financial, source_entry_intent_id = followthrough_source
+            if type(followthrough_source) is not tuple or len(followthrough_source) not in (3, 4):
+                raise ValueError('Follow-through source requires its exact typed witness tuple')
+            witness, financial, source_entry_intent_id = followthrough_source[:3]
+            diagnostic = followthrough_source[3] if len(followthrough_source) == 4 else None
             from .arte_followthrough_failure_v4 import validate_numbered_failure
-            validate_numbered_failure(witness, self.config.strategy_revision)
+            validate_numbered_failure(witness, self.config.strategy_revision, diagnostic=diagnostic)
             if (self.config.mode != RunMode.BACKTEST
                     or self.config.strategy_id != STRATEGY_ID
                     or (self.config.strategy_revision not in (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) and not declared_fixed_rule(self.config.strategy_revision, 'strategy-nine-followthrough-failure-v1'))
@@ -1090,7 +1093,7 @@ class TradingRuntime:
                     or strategy_one_add_proposal is not None
                     or evaluation.intents != (followthrough_exit_intent(
                         witness, financial, session_date=self.config.anchor_date,
-                        source_entry_intent_id=source_entry_intent_id,
+                        source_entry_intent_id=source_entry_intent_id, diagnostic=diagnostic,
                         strategy_number=self.config.strategy_revision if (self.config.strategy_revision in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(self.config.strategy_revision, 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9),)):
                 raise ValueError("Strategy 9 failure exit lacks exact typed authority")
         elif any(intent.reason == "strategy_nine_followthrough_failure"
@@ -1194,11 +1197,12 @@ class TradingRuntime:
                     strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
             elif followthrough_source is not None:
-                witness, financial, source_entry_intent_id = followthrough_source
+                witness, financial, source_entry_intent_id = followthrough_source[:3]
                 self.journal.append_followthrough_exit(
                     intent=intent, witness=witness,
                     source_entry_intent_id=source_entry_intent_id,
                     assignment_id=financial.assignment_id,
+                    diagnostic=followthrough_source[3] if len(followthrough_source) == 4 else None,
                     account_id=account_id, strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
             elif liquidity_fade_source is not None:
@@ -1446,16 +1450,17 @@ class TradingRuntime:
             self._numbered_completed_cutoffs = completed | {cutoff}
 
     async def submit_followthrough_failure(self, financial, witness,
-                                          source_entry_intent_id):
+                                          source_entry_intent_id, diagnostic=None):
         """Route a completed failure witness through shared Portfolio and OMS."""
         from .strategy_followthrough_exit import followthrough_exit_intent
         intent = followthrough_exit_intent(
             witness, financial, session_date=self.config.anchor_date,
-            source_entry_intent_id=source_entry_intent_id,
+            source_entry_intent_id=source_entry_intent_id, diagnostic=diagnostic,
             strategy_number=self.config.strategy_revision if (self.config.strategy_revision in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(self.config.strategy_revision, 'strategy-twenty-five-premarket-quarter-original-risk-failure-v1')) else 9)
         return await self._execute_intents(
             StrategyEvaluation(intents=(intent,)), financial.account_id, None,
-            followthrough_source=(witness, financial, source_entry_intent_id))
+            followthrough_source=((witness, financial, source_entry_intent_id, diagnostic)
+                                 if diagnostic is not None else (witness, financial, source_entry_intent_id)))
 
     async def submit_profit_giveback(self, financial, witness,
                                     source_entry_intent_id, arm_reference):

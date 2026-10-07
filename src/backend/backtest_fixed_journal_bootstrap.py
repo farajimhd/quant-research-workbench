@@ -717,5 +717,11 @@ def _v4_cold_reader_preflight(client: Any) -> None:
     _validate_ladder_geometry_profile(getattr(client, 'automatic_ladder_profile', False), geometry_policy)
     if geometry_policy is not None:
         expected_principal = 'backtest_v4_waiting_ladder_runner'
+    risk_policy=getattr(client,'confirmed_original_risk_policy',None)
+    from src.trading_runtime.original_risk_diagnostic_profile import validate_original_risk_profile
+    validate_original_risk_profile(getattr(client,'automatic_ladder_profile',False),
+        getattr(client,'entry_spread_risk_profile',False),risk_policy)
+    if risk_policy is not None:
+        expected_principal='backtest_v4_original_risk_runner'
     if client.execute("SELECT currentUser()").strip() != expected_principal:
         raise RuntimeError("V4 cold reader has unexpected principal")

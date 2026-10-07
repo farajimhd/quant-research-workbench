@@ -53,6 +53,7 @@ class SelectOnly:
         self.entry_spread_risk_profile = getattr(client, 'entry_spread_risk_profile', False)
         self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
         self.ladder_geometry_policy = getattr(client, 'ladder_geometry_policy', None)
+        self.confirmed_original_risk_policy = getattr(client, 'confirmed_original_risk_policy', None)
         self.v4_batched_detail_readback = getattr(client, 'v4_batched_detail_readback', False)
 
     def declared_read_wrapper(self, client):
