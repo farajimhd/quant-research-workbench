@@ -14,6 +14,14 @@ def admit_multisession(root, source_dir=None):
     complete = json.loads((root/'complete.json').read_text())
     result = json.loads((root/'result.json').read_text())
     width = plan.get('width', 128)
+    resources=plan.get('laptop_resources')
+    if resources is not None:
+        if (set(resources)!={'history_microbatch','duty_cycle','reserve_bytes'} or
+                type(resources['history_microbatch']) is not int or not 1<=resources['history_microbatch']<=32 or
+                not 0<resources['duty_cycle']<=.8 or resources['reserve_bytes']!=4*1024**3 or
+                plan['arguments'].get('history_microbatch')!=resources['history_microbatch'] or
+                plan['arguments'].get('gpu_duty_cycle')!=resources['duty_cycle']):
+            raise ValueError('Laptop resource settings must match underfit arguments')
     if type(width) is not int or width not in (128, 512) or ('width' in plan and plan.get('arguments', {}).get('width') != width):
         raise ValueError('Bounded model width must match admitted underfit arguments')
     checkpointing=plan.get('activation_checkpointing',False)

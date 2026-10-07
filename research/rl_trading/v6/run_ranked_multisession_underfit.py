@@ -51,7 +51,11 @@ def main(argv=None):
     parser.add_argument('--epochs', type=int, default=400)
     parser.add_argument('--width', type=int, choices=(128, 512), default=128)
     parser.add_argument('--activation-checkpointing', action='store_true')
+    parser.add_argument('--history-microbatch', type=int, default=16)
+    parser.add_argument('--gpu-duty-cycle', type=float, default=.75)
     args = parser.parse_args(argv)
+    if not 1 <= args.history_microbatch <= 32 or not 0 < args.gpu_duty_cycle <= .8:
+        raise ValueError('Laptop requires bounded history batches and at most 80% duty cycle')
     runtime = Path('D:/TradingML/runtimes').resolve()
     paths = [args.underfit, args.selection, args.initial_cache, args.initial_source, args.additional_cache, args.output]
     if not runtime.is_dir() or any(not p.resolve().is_relative_to(runtime) for p in paths) or args.output.exists() or not 1 <= args.epochs <= 400 or not torch.cuda.is_available():
@@ -99,6 +103,7 @@ def main(argv=None):
         sessions=bindings, selection_sha256=file_hash(args.selection), normalization_sha256=prior['normalization_sha256'],
         normalization_origin='frozen_verified_single_TRAIN_contract_no_refitting', initialization='fresh_weights',
         epochs=args.epochs, width=args.width, activation_checkpointing=args.activation_checkpointing,
+        laptop_resources=dict(history_microbatch=args.history_microbatch,duty_cycle=args.gpu_duty_cycle,reserve_bytes=4*1024**3),
         seed=17, learning_rate=3e-4, weight_decay=1e-4,
         ranking=prior['ranking'], teacher_loss='branch-balanced-v3', regression_weights=[0.,0.],
         auxiliary_weights=dict(ratio=1., forecast=1., quality=1., future_quality=1.),
@@ -111,6 +116,9 @@ def main(argv=None):
     def model():
         policy=build_policy(ranking, device, width=args.width, normalization=normalization)
         policy.encoder.activation_checkpointing=args.activation_checkpointing
+        policy.encoder.history_microbatch=args.history_microbatch
+        from research.rl_trading.v6.laptop_resources import LaptopGpuPacer
+        policy.resource_pacer=LaptopGpuPacer(device,duty_cycle=args.gpu_duty_cycle)
         return policy
     policy = model(); optimizer = torch.optim.AdamW(policy.parameters(), lr=3e-4, weight_decay=1e-4)
     load_env_files(discover_env_files(Path.cwd()), verbose=False)

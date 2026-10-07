@@ -49,6 +49,9 @@ def main(argv=None):
     if not runtime.is_dir() or args.output.exists() or not all(p.resolve().is_relative_to(runtime) for p in (args.underfit,args.output)) or not 1<=args.epochs<=10 or not torch.cuda.is_available():
         raise ValueError('Fresh bounded laptop GPU pilot required')
     prior,complete,normalization=admit_multisession(args.underfit)
+    resources=prior.get('laptop_resources')
+    if resources is None:
+        raise ValueError('Laptop resource settings require a newly verified underfit run')
     if args.development_day<=max(s['day'] for s in prior['sessions']):
         raise ValueError('Development date must follow every TRAIN session')
     selection_path=Path(prior['arguments']['selection'])
@@ -66,6 +69,9 @@ def main(argv=None):
     def model():
         policy=build_policy(ranking,device,width=prior.get('width',128),normalization=normalization)
         policy.encoder.activation_checkpointing=prior.get('activation_checkpointing',False)
+        policy.encoder.history_microbatch=resources['history_microbatch']
+        from research.rl_trading.v6.laptop_resources import LaptopGpuPacer
+        policy.resource_pacer=LaptopGpuPacer(device,duty_cycle=resources['duty_cycle'],reserve_bytes=resources['reserve_bytes'])
         return policy
     policy=model();policy.load_state_dict(torch.load(args.underfit/'last.pt',weights_only=True),strict=True)
     def evaluate(p,targets):
@@ -88,6 +94,7 @@ def main(argv=None):
         train_sessions=prior['sessions'],development_day=args.development_day,epochs=args.epochs,
         checkpoint_selection='fixed_final_epoch_before_development_targets',width=prior.get('width',128),
         activation_checkpointing=prior.get('activation_checkpointing',False),learning_rate=3e-4,weight_decay=1e-4,
+        laptop_resources=resources,
         teacher_loss=prior['teacher_loss'],auxiliary_weights=prior['auxiliary_weights'],
         initialization='verified_six_session_underfit_weights_fresh_optimizer',sealed_labels_read=False,
         workstation_gpu_used=False,input_population_preserved=True,
