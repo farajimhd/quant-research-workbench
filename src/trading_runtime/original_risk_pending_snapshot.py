@@ -25,6 +25,27 @@ PENDING = TableContract('trading_original_risk_pending_snapshot_v1',(
     'toYYYYMM(snapshot_month)','run_id, checkpoint_sequence, account_id, assignment_id, ticker')
 
 
+def canonical_pending_snapshot_row(row):
+    """Use declared Float64 types before hashing or verifying JSON readback."""
+    from math import isfinite
+    from .strategy_one_protection_snapshot import _canonical_snapshot_row
+    canonical = _canonical_snapshot_row(PENDING, row)
+    for name, kind in PENDING.columns:
+        if kind != 'Float64':
+            continue
+        value = canonical[name]
+        if type(value) not in (int, float):
+            raise ValueError('Pending original-risk Float64 scalar has a foreign type')
+        try:
+            value = float(value)
+        except OverflowError as error:
+            raise ValueError('Pending original-risk Float64 scalar is not finite') from error
+        if not isfinite(value):
+            raise ValueError('Pending original-risk Float64 scalar is not finite')
+        canonical[name] = 0.0 if value == 0.0 else value
+    return canonical
+
+
 def selected_parent_contract():
     from .strategy_one_management_snapshot import PARENT_V3
     return TableContract('trading_strategy_one_manager_snapshot_v4',(
@@ -82,12 +103,14 @@ def project_pending_requests(requests, common, state):
             prior_close_int=prior.close_int if prior else 0,
             prior_macd_line=prior.macd_line if prior else 0.,
             prior_macd_signal=prior.macd_signal if prior else 0.)
-        result.append({**row,'content_hash':_digest(row)})
+        canonical = canonical_pending_snapshot_row({**row, 'content_hash': ''})
+        canonical.pop('content_hash')
+        result.append({**canonical,'content_hash':_digest(canonical)})
     return tuple(sorted(result,key=lambda r:(r['account_id'],r['assignment_id'],r['ticker'])))
 
 
 def restore_pending_requests(rows, seal):
-    from .strategy_one_protection_snapshot import _canonical_snapshot_row,_digest
+    from .strategy_one_protection_snapshot import _digest
     from .strategy_followthrough_failure import FollowThroughFailure
     from .confirmed_original_risk_failure import CompletedRiskBucket,OriginalRiskDecisionDiagnostic
     from .original_risk_checkpoint import OriginalRiskCheckpointRequest
@@ -95,7 +118,7 @@ def restore_pending_requests(rows, seal):
     from .strategy_engine import AssignmentStatus,StrategyPermissions
     result=[];seen=set();canonical=[]
     for raw in rows:
-        row=_canonical_snapshot_row(PENDING,raw)
+        row=canonical_pending_snapshot_row(raw)
         if (row['content_hash']!=_digest({k:v for k,v in row.items() if k!='content_hash'})
                 or any(row[k]!=seal[k] for k in ('snapshot_id','run_id','snapshot_month','checkpoint_sequence'))
                 or row['boundary_ms']!=seal['boundary_ms'] or row['session_date']!=seal['session_date']):

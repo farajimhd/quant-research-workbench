@@ -368,11 +368,11 @@ def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
     if 'original_risk_pending_count' in rows.snapshot:
         if selected_requests is None:
             raise ValueError('Selected manager snapshot lacks typed pending companions')
-        from .original_risk_pending_snapshot import PENDING
+        from .original_risk_pending_snapshot import canonical_pending_snapshot_row
         from dataclasses import fields
         rows=OriginalRiskManagerSnapshotRows(**{f.name:getattr(rows,f.name)
             for f in fields(ManagerSnapshotRows)},original_risk_requests=tuple(sorted(
-                (_canonical_snapshot_row(PENDING,row) for row in selected_requests),
+                (canonical_pending_snapshot_row(row) for row in selected_requests),
                 key=lambda row:(row['account_id'],row['assignment_id'],row['ticker']))))
     elif selected_requests is not None:
         raise ValueError('Legacy manager snapshot cannot carry selected pending companions')

@@ -195,6 +195,8 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
             from src.trading_runtime.strategy_sixty_four_release import derive_strategy_sixty_four_configuration as derive
         elif strategy_number == 66:
             from src.trading_runtime.strategy_sixty_six_release import derive_strategy_sixty_six_configuration as derive
+        elif strategy_number == 70:
+            from src.trading_runtime.strategy_seventy_release import derive_strategy_seventy_configuration as derive
         elif strategy_number == 69:
             from src.trading_runtime.strategy_sixty_nine_release import derive_strategy_sixty_nine_configuration as derive
         elif strategy_number == 68:
@@ -374,6 +376,8 @@ def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
         from src.trading_runtime.strategy_sixty_four_release import verify_strategy_sixty_four_manifest as verify
     elif number == 66:
         from src.trading_runtime.strategy_sixty_six_release import verify_strategy_sixty_six_manifest as verify
+    elif number == 70:
+        from src.trading_runtime.strategy_seventy_release import verify_strategy_seventy_manifest as verify
     elif number == 69:
         from src.trading_runtime.strategy_sixty_nine_release import verify_strategy_sixty_nine_manifest as verify
     elif number == 68:
@@ -424,7 +428,7 @@ def selected_numbered_revision(*, revision_id: str = "", run_plan_id: str = "",
         if client is not None:
             kwargs["client"] = client
         return selected_strategy_one_revision(**kwargs)
-    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|64|65|66|68|69):[0-9a-fA-F-]{36}", revision_id):
+    if not re.fullmatch(r"strategy-one-(?:[23456789]|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|64|65|66|68|69|70):[0-9a-fA-F-]{36}", revision_id):
         raise ValueError("Unknown immutable numbered configuration identity")
     if client is None:
         from src.backend.backtest_market_data import readonly_clickhouse_client
