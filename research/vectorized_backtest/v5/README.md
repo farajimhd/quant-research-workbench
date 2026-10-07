@@ -113,3 +113,43 @@ select rank; F/O/T/P select financial/objective/positions/performance; N pages m
 Q exits the renderer. Search and full-training ranking scopes are explicit. Live
 batch metrics remain provisional. Logs stay in a bounded timestamped panel and
 complete `events.jsonl`, rather than scrolling the terminal.
+
+### Measured execution specialization (2026-10-07)
+
+Workstation replay source `7044f421e` was compared with `53e1bb7a5` using the
+same population, certified inputs, two training days and all 19,800 timestamps
+per day. Both runs used 512 candidates and a physical GPU batch of 512.
+
+| Measurement | Before | Specialized | Reduction |
+| --- | ---: | ---: | ---: |
+| Total elapsed, two full sessions | 2,972.09 s | 1,398.65 s | 52.94% |
+| Financial replay, two sessions | 2,809.15 s | 1,236.74 s | 55.97% |
+| Rule preparation, two sessions | 69.99 s | 75.48 s | -7.84% |
+| Compilation | 39.31 s | 36.73 s | 6.58% |
+| Peak allocated GPU memory | 46.59 GiB | 45.92 GiB | 1.45% |
+
+The bundled changes provide about 2.13 times the full-session throughput; these
+measurements do not attribute gains to individual changes. This 512-candidate
+batch still requires 15 lots. Per-batch lot reductions become useful when a
+larger population can be grouped into multiple batches.
+
+For 4,096 candidates in eight batches of 512, the 256-timestamp prefix replay
+fell from 145.70 s to 43.98 s cold / 44.43 s warm (about 70%). Cold total time
+fell from 489.59 s to 457.63 s (6.53%); the warm total was 340.43 s. Comparing
+that warm total with the cold baseline includes cache effects and is not a pure
+algorithm improvement. Cold peak allocation fell from 46.59 to 44.69 GiB
+(4.07%). Rule preparation remains a bottleneck and did not improve.
+
+Exact actual fill rows matched in both prefix passes and both full sessions.
+Financial metrics agreed at rtol 1e-10 / atol 1e-7; independent cash, quantity,
+fee and holding-duration checks passed. Full-session terminal checks passed;
+prefix audits explicitly exclude final terminal eligibility. Audit reader
+`323e8532c` preserves the JSON-null pattern of invalid objective scores without
+modifying original receipts or the immutable replay source. The replay source
+passed 41 workstation qualification tests; the reader added three focused tests.
+
+Evidence remains under the workstation V5 runtime:
+`profiles/20261007-7044f421e-specialization/report.json` and
+`profiles/20261007-7044f421e-full-prefetch/full_comparison.json`.
+These are timing/parity experiments, not strategy-performance evidence. Sealed
+validation remains unopened and the final campaign schedule is awaiting review.
