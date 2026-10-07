@@ -48,3 +48,19 @@ def test_batched_gates_match_independent_full_history_with_sparse_clocks():
         assert torch.equal(unpacked[stage],(expected&(1<<bit))!=0)
     with pytest.raises(MemoryError,match='workspace'):
         resident.compile(individuals,tape,workspace_gib=1e-9)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA buffer residency required')
+def test_cuda_reuses_unindexed_device_gate_buffer():
+    class Bank:
+        def listing(self,identity,previous=None):
+            return torch.arange(1,21)*1_000_000,torch.ones(20,len(CATALOG)),torch.ones(20,len(CATALOG),dtype=torch.bool)
+    space=StrategySpace();nodes=[Node(Op.CONSTANT,value=1,unit='bool')]
+    individual=Individual(space.default.tolist(),{s:[(nodes,0)] for s in STAGES},{s:[] for s in STAGES})
+    tape=synthetic_tape(seconds=20,device='cuda')
+    resident=FeatureResident(Bank(),range(2),device='cuda')
+    expected,_=resident.compile([individual],tape)
+    buffer=torch.full_like(expected,255);pointer=buffer.data_ptr()
+    actual,_=resident.compile([individual],tape,out=buffer)
+    assert actual is buffer and actual.data_ptr()==pointer
+    assert torch.equal(actual,expected)

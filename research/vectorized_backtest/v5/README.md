@@ -49,9 +49,10 @@ population and actual fill hashes for exact reuse.
 
 `torch_backtest.batched` loads/prefetches sessions in order, holds one shared GPU
 feature/tape bank and evaluates bounded candidate lanes in Torch. One GPU owner
-reuses captured financial graphs across equal-sized batches/sessions. Candidates
-also reuse the packed gate allocation in place after replay synchronization,
-preserving captured pointers without retaining a second full gate tensor. Candidates
+reuses captured financial graphs across equal-sized batches/sessions. It reuses
+the packed gate allocation in place after replay synchronization and copies
+compatible host sessions directly into the captured tape allocation, preserving
+pointers without retaining duplicate full gate/tape tensors. Candidates
 are independent accounts; liquidity is shared among positions within each candidate,
 not between strategies. Logical population may greatly exceed a physical batch.
 No per-candidate feature histories or competing GPU worker processes are created.
