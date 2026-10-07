@@ -373,7 +373,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
                     'target_policy', 'entry_price_policy', 'followthrough_policy')
         if any(type(payload.get(key)) is not dict for key in required):
             raise ValueError('Declared fixed capability payload is incomplete')
-        optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy',
+        optional = {'prior_position_high_reentry_policy', 'half_risk_liquidity_policy', 'entry_spread_risk_policy',
                     'all_held_original_risk_policy', 'confirmed_original_risk_policy', 'premarket_confirmed_original_risk_policy', 'entry_scope_policy', 'recent_bos_policy',
                     'momentum_policy', 'strong_ten_second_momentum_policy',
                     'initial_strong_momentum_policy', 'first_setup_growth_policy',
@@ -401,6 +401,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         self.all_held_original_risk_policy
         self.confirmed_original_risk_policy
         self.premarket_confirmed_original_risk_policy
+        self.prior_position_high_reentry_policy
         from .strategy_half_risk_liquidity_fade import half_risk_liquidity_policy_payload, POLICY_ID
         has_half_rule = self._has(POLICY_ID)
         has_half_payload = 'half_risk_liquidity_policy' in payload
@@ -507,6 +508,25 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         if (count!=1 or source_count!=1 or not supplied or self.confirmed_original_risk_policy is None
             or canonical_json(payload['premarket_confirmed_original_risk_policy'])!=canonical_json(policy.payload())):
             raise ValueError('PM replacement requires exact paired rule/input/policy and completed source authority')
+        return policy
+
+    @property
+    def prior_position_high_reentry_policy(self):
+        import json
+        from .journal_contract import canonical_json
+        from .prior_position_high_reentry import (
+            PriorPositionHighReentryPolicy, PRIOR_POSITION_HIGH_REENTRY_RULE,
+            PRIOR_POSITION_HIGH_REENTRY_INPUT)
+        payload = json.loads(self.policy_json)
+        rules = self.release.rule_set_contracts.count(PRIOR_POSITION_HIGH_REENTRY_RULE)
+        inputs = self.release.input_contracts.count(PRIOR_POSITION_HIGH_REENTRY_INPUT)
+        supplied = 'prior_position_high_reentry_policy' in payload
+        if not rules and not inputs and not supplied:
+            return None
+        policy = PriorPositionHighReentryPolicy()
+        if (rules != 1 or inputs != 1 or not supplied
+                or canonical_json(payload['prior_position_high_reentry_policy']) != canonical_json(policy.payload())):
+            raise ValueError('Reentry policy requires exact paired rule, input and typed payload')
         return policy
 
     def _windows(self):

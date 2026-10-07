@@ -13,7 +13,7 @@ from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_strategy_one_entry_product import ActivationFact, CandidateFact
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 from src.trading_runtime.strategy_recent_bos_entry import recent_bos_entry
-from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy, DeclaredFixedStrategyContract
 from src.trading_runtime.strategy_one_stateful import (
     StrategyOneEntryDecision, StrategyOneEntryInput,
     StrategyOneFinancialView, StrategyOneReentryWitness,
@@ -94,7 +94,9 @@ def propose_certified_strategy_one_entry(
         fact.stop_price, fact.target_price, fact.target_level_id,
         fact.target_ordinal, bid_int, ask_int, now_us - quote_at,
         reentry)
-    decision = propose_strategy_one_entry(evidence, financial)
+    decision = propose_strategy_one_entry(evidence, financial,
+        reentry_policy=(contract.prior_position_high_reentry_policy
+            if type(contract) is DeclaredFixedStrategyContract else None))
     if decision.proposal is not None and (declared is not None or strategy_number in (13, 14, 15, 16, 17, 18, 19)):
         return replace(decision, proposal=replace(decision.proposal, strategy_number=strategy_number if declared is not None else decision.proposal.strategy_number, momentum=momentum,
                                                  initial_momentum=initial_momentum))
