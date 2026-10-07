@@ -966,6 +966,7 @@ class BacktestTypedJournalPublisher:
         evidence_state: object | None = None,
         portfolio_captures: tuple[CapturedPortfolioSnapshot, ...] = (),
         campaign_ownership: tuple[dict[str, object], ...] | None = None,
+        fixed_lot_owner: object | None = None,
     ) -> TypedBacktestReceipt:
         """Fence one normalized completed cursor, never an opaque state map.
 
@@ -979,7 +980,8 @@ class BacktestTypedJournalPublisher:
             oms_observations=oms_observations,
             evidence_state=evidence_state,
             portfolio_captures=portfolio_captures,
-            campaign_ownership=campaign_ownership))
+            campaign_ownership=campaign_ownership,
+            fixed_lot_owner=fixed_lot_owner))
 
     def enqueue_terminal(
         self, captures: tuple[CapturedPortfolioSnapshot, ...],

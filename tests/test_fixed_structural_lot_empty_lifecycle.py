@@ -125,7 +125,7 @@ def test_certified_empty_horizon_flat_terminal_and_fresh_cold_actors(monkeypatch
                     boundary_ms=source.through_boundary_ms,market_sequence=0,frame_as_of=None,frame_ticker=None,
                     frame_timeframe=None,frame_sequence=None))
             captures=tuple(replace(v,state_revision=record.sequence) for v in owner.require_checkpoint(captured)[6])
-            receipt=await publisher.enqueue_checkpoint(boundary_id=cursor,manager_state=captured,fixed_lot_owner=owner,
+            receipt=await publisher.fence_checkpoint(boundary_id=cursor,manager_state=captured,fixed_lot_owner=owner,
                 broker_state=(source.through_boundary_ms,broker.broker_match_snapshot_state()),
                 oms_observations=oms.capture_observed_broker_states(),portfolio_captures=captures)
             assert receipt.last_sequence==record.sequence

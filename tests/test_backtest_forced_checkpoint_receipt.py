@@ -60,6 +60,44 @@ def test_forced_checkpoint_returns_only_after_actual_publisher_fence():
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize('nonblocking', [False, True])
+def test_controller_forwards_selected_capture_owner(monkeypatch, nonblocking):
+    """Exercise both controller routes; native owner validation is tested separately."""
+    async def exercise():
+        controller, writer, publisher = controller_fixture()
+        writer.journal_profile = 'backtest_v4'
+        captured = object()
+        owner = SimpleNamespace(capture=lambda manager, **kwargs: captured)
+        controller._strategy_one_manager = SimpleNamespace(
+            _fixed_lot_owner=owner,
+            evidence=SimpleNamespace(capture_recovery_state=lambda:
+                SimpleNamespace(boundary_ms=300_000)))
+        controller._account_map = {'assignment': 'account'}
+        controller.warmup_events = 0
+        controller._processed_frames = 0
+        controller._runtime = SimpleNamespace(
+            processed_events=2, last_event_time=AT,
+            broker=SimpleNamespace(broker_match_snapshot_state=lambda: ()),
+            order_manager=SimpleNamespace(capture_observed_broker_states=lambda: ()),
+            portfolio=SimpleNamespace(capture_recovery_snapshot=lambda *a, **k: object()))
+        calls = []
+        def enqueue(**kwargs):
+            calls.append(kwargs)
+            sequence = controller._journal.unfenced_records()[-1].sequence
+            publisher._sequence = sequence
+            result = asyncio.get_running_loop().create_future()
+            result.set_result(TypedBacktestReceipt(sequence, 'batch', kwargs['boundary_id']))
+            return result
+        monkeypatch.setattr(publisher, 'enqueue_checkpoint', enqueue)
+        await controller._save_restart_checkpoint_responsive(AT, nonblocking_fixed=nonblocking)
+        await asyncio.sleep(0)
+        assert len(calls) == 1
+        assert calls[0]['manager_state'] is captured
+        assert calls[0]['fixed_lot_owner'] is owner
+        assert calls[0]['portfolio_captures']
+    asyncio.run(exercise())
+
+
 def test_failed_publication_cannot_return_an_arming_receipt():
     async def exercise():
         controller, writer, publisher = controller_fixture()

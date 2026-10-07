@@ -2422,6 +2422,7 @@ class ReplayRunController:
             oms_observations = None
             evidence_state = None
             campaign_ownership = None
+            selected_owner = None
             from .backtest_declared_ladder_plan import automatic_policy
             ladder = automatic_policy(getattr(self.definition, 'configuration_revision', {}).get('payload', {}))
             if ladder is not None:
@@ -2539,7 +2540,8 @@ class ReplayRunController:
                         oms_observations=oms_observations,
                         evidence_state=evidence_state,
                         portfolio_captures=portfolio_captures,
-                        campaign_ownership=campaign_ownership)
+                        campaign_ownership=campaign_ownership,
+                        fixed_lot_owner=selected_owner)
                     self._checkpoint_io_task = receipt
                     def completed(done):
                         try:
@@ -2568,6 +2570,7 @@ class ReplayRunController:
                     evidence_state=evidence_state,
                     portfolio_captures=portfolio_captures,
                     campaign_ownership=campaign_ownership,
+                    fixed_lot_owner=selected_owner,
                 ))
                 try:
                     durable = await asyncio.shield(self._checkpoint_io_task)
