@@ -7,7 +7,8 @@ from src.market_engine.completed_endpoint_return_contract import (
 from src.market_engine.completed_return_campaign_contract import certify_native_population
 
 
-def load_installed_completed_returns(market, packet_index, client, *, source_kind, authority):
+def load_installed_completed_returns(market, packet_index, client, *, source_kind, authority,
+                                    structural_declaration=None,structural_authority=None):
     """Derive keys/attempt/seals from certified population and installed receipt.
 
     Separate native-release dependency registration remains mandatory. This
@@ -15,7 +16,8 @@ def load_installed_completed_returns(market, packet_index, client, *, source_kin
     """
     # Producer publication functions are not imported or called by this reader.
     from src.backend.backtest_completed_return_campaign_store import read_certificate, storage_preflight
-    population = certify_native_population(market, client, source_kind=source_kind)
+    population = certify_native_population(market, client, source_kind=source_kind,
+        structural_declaration=structural_declaration,structural_authority=structural_authority)
     storage_preflight(client)
     keys, attempt = population.packet(packet_index)
     request = ReturnSourceRequest(market, keys)

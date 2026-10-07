@@ -13,7 +13,7 @@ from src.market_engine.completed_endpoint_return_contract import (
 from src.trading_runtime.journal_contract import canonical_json
 
 CERTIFICATE_TABLE = 'arte.completed_endpoint_return_packet_certification_v1'
-CAMPAIGN_CONTRACT = 'completed-endpoint-return-installed-campaign@2'
+CAMPAIGN_CONTRACT = 'completed-endpoint-return-installed-campaign@3'
 CERTIFICATE_SCHEMA = pa.schema([
     ('build_id', pa.string()), ('session_date', pa.date32()),
     ('feature_attempt_id', pa.string()), ('population_token', pa.string()),
@@ -42,7 +42,11 @@ def campaign_source_hash():
              'pipelines/market_sip/events/completed_return_campaign.py',
              'src/backend/backtest_certified_completed_returns.py',
              'src/backend/backtest_completed_return_campaign_store.py',
-             'src/market_engine/completed_return_insert_authority.py')
+             'src/market_engine/completed_return_insert_authority.py',
+             'src/market_engine/structural_decision_population_contract.py',
+             'src/market_engine/structural_decision_insert_authority.py',
+             'pipelines/market_sip/events/structural_decision_population_producer.py',
+             'src/backend/backtest_structural_decision_population_store.py')
     return canonical_source_hash([(name, (root / name).read_bytes()) for name in names])
 
 
@@ -61,6 +65,8 @@ class NativeDecisionPopulation:
     producer_source_hash: str
     campaign_source_hash: str
     token: str
+    structural_declaration: object = None
+    structural_authority: object = None
 
     def __post_init__(self):
         from src.backend.backtest_market_data import CertifiedMarketDayPlan
@@ -103,14 +109,23 @@ def population_token(market, candidate_token, keys, producer_hash, campaign_hash
         decision_source_kind=source_kind.value)).encode()).hexdigest()
 
 
-def certify_native_population(market, client, *, source_kind):
+def certify_native_population(market, client, *, source_kind, structural_declaration=None, structural_authority=None):
     """Recheck real source/candidate products; callers cannot choose arbitrary keys."""
     if type(source_kind) is not DecisionSourceKind:
         raise ValueError('An explicit declared decision source kind is mandatory')
     if source_kind is DecisionSourceKind.CERTIFIED_STRUCTURAL_DECISIONS:
-        raise MissingDecisionProducer('No producer-owned normalized EarlySqueeze/native-VWAP/structural '
-            'decision-scope product and installed certification verifier exist for this source kind; '
-            'MACD candidate population cannot substitute for it')
+        if structural_declaration is None or structural_authority is None:
+            raise MissingDecisionProducer('Installed structural declaration/completion authority missing; MACD population cannot substitute')
+        from src.backend.backtest_structural_decision_population_store import load_installed_structural_population
+        packet=load_installed_structural_population(market,structural_declaration,client,authority=structural_authority)
+        keys=tuple(sorted(zip(packet.rows['ticker'].to_pylist(),packet.rows['boundary_ms'].to_pylist())))
+        producer_hash,campaign_hash=producer_implementation_hash(),campaign_source_hash()
+        decision_token=packet.certificate['population_hash'][0].as_py()
+        return NativeDecisionPopulation(market,source_kind,decision_token,keys,producer_hash,campaign_hash,
+            population_token(market,decision_token,keys,producer_hash,campaign_hash,source_kind),
+            structural_declaration,structural_authority)
+    if structural_declaration is not None or structural_authority is not None:
+        raise ValueError('Structural scope cannot be injected into MACD population')
     from src.backend.backtest_market_data import verify_market_day_plan
     from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
     from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST

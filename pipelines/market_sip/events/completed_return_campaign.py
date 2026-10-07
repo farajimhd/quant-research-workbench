@@ -87,7 +87,8 @@ def _publish_owned(client, population, index, projection, lease):
     No deletes, replacement, retries, mutation or silent deduplication. Every
     restart must re-certify the whole native decision population independently.
     """
-    verified = certify_native_population(population.market, client, source_kind=population.source_kind)
+    verified = certify_native_population(population.market, client, source_kind=population.source_kind,
+        structural_declaration=population.structural_declaration,structural_authority=population.structural_authority)
     if verified != population:
         raise ValueError('Return campaign population differs from current certified native source')
     keys, attempt = population.packet(index)
@@ -163,7 +164,7 @@ def produce_and_publish_packet(client, population, index, *, authority):
         return _publish_owned(client, population, index, projection, lease)
 
 
-def run_campaign(client, market, *, source_kind, progress, authority):
+def run_campaign(client, market, *, source_kind, progress, authority, structural_declaration=None, structural_authority=None):
     """Serialized explicit restart: compact phase counts; stop on first failure.
 
     The controlling launcher must persist progress/receipts outside source,
@@ -172,7 +173,8 @@ def run_campaign(client, market, *, source_kind, progress, authority):
     """
     if not callable(progress):
         raise ValueError('Campaign requires an explicit progress/receipt sink')
-    population = certify_native_population(market, client, source_kind=source_kind)
+    population = certify_native_population(market, client, source_kind=source_kind,
+        structural_declaration=structural_declaration,structural_authority=structural_authority)
     completed = skipped = 0
     for index in range(population.packet_count):
         state = dict(population_token=population.token, packet_index=index,

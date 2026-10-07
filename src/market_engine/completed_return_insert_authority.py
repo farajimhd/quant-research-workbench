@@ -50,6 +50,16 @@ class KeeperProductInsertAuthority:
     def __init__(self, keeper):
         self.keeper = keeper
 
+    @property
+    def namespace(self):
+        return ROOT
+
+    @property
+    def allowed_tables(self):
+        from src.market_engine.completed_return_campaign_contract import CERTIFICATE_TABLE
+        from src.market_engine.completed_endpoint_return_contract import FEATURE_TABLE, COVERAGE_TABLE
+        return (FEATURE_TABLE,COVERAGE_TABLE,CERTIFICATE_TABLE)
+
     def _connected(self):
         if getattr(self.keeper, 'connected', False) is not True:
             raise InsertAuthorityUnavailable('Producer Keeper connection unavailable')
@@ -58,7 +68,7 @@ class KeeperProductInsertAuthority:
     def _ownership(self, attempt, *, resolution=False):
         require_uuid(attempt)
         self._connected()
-        path = ROOT + '/' + attempt
+        path = self.namespace + '/' + attempt
         self.keeper.ensure_path(path)
         owner = str(uuid4()).encode()
         try:
@@ -110,8 +120,8 @@ class KeeperProductInsertAuthority:
     def assert_complete(self, attempt, projection_token):
         self._connected()
         try:
-            wire, _ = self.keeper.get(ROOT + '/' + attempt + '/gate')
-            gate = _decode(wire)
+            wire, _ = self.keeper.get(self.namespace + '/' + attempt + '/gate')
+            gate = _decode(wire,self.allowed_tables)
         except Exception as exc:
             raise InsertAuthorityUnavailable('Installed product lacks producer completion fence') from exc
         if gate != dict(state='complete', projection_token=projection_token):
@@ -122,7 +132,7 @@ def _wire(gate):
     return json.dumps(gate, sort_keys=True, separators=(',', ':')).encode('ascii')
 
 
-def _decode(wire):
+def _decode(wire,allowed_tables):
     try:
         gate = json.loads(wire)
         state = gate['state']
@@ -136,9 +146,7 @@ def _decode(wire):
         if set(gate) != expected[state] or _wire(gate) != wire:
             raise ValueError('noncanonical gate')
         if state in ('pending','ack'):
-            from src.market_engine.completed_return_campaign_contract import CERTIFICATE_TABLE
-            from src.market_engine.completed_endpoint_return_contract import FEATURE_TABLE, COVERAGE_TABLE
-            if gate['table'] not in (FEATURE_TABLE,COVERAGE_TABLE,CERTIFICATE_TABLE):
+            if gate['table'] not in allowed_tables:
                 raise ValueError('foreign table')
             require_uuid(gate['query_id'])
             require_hash(gate['payload_hash'])
@@ -164,7 +172,7 @@ class ProductInsertLease:
     def read(self):
         self.assert_owner()
         wire, stat = self.authority.keeper.get(self.path + '/gate')
-        return _decode(wire), stat.version
+        return _decode(wire,self.authority.allowed_tables), stat.version
 
     def set(self, gate, version):
         self.assert_owner()
@@ -195,6 +203,8 @@ class ProductInsertLease:
             self.set(dict(state='idle'), version)
 
     def execute(self, client, table, payload, verify_readback):
+        if table not in self.authority.allowed_tables:
+            raise InsertAuthorityUnavailable('Foreign product table; dispatch rejected')
         gate, version = self.read()
         if gate['state'] != 'idle':
             raise InsertAuthorityUnavailable('INSERT requires free durable producer dispatch gate')
