@@ -21,12 +21,13 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     severity='red' if state in ('failed','interrupted') else 'yellow' if age>30 else 'cyan'
     head=Text(f"V4  {state.upper()}  |  {status.get('stage','Preflight')}  |  updated {age:.0f}s ago",style='bold '+severity)
     config=status.get('config',{});cursor=status.get('progress',{})
+    preparing=status.get('stage') in ('Load certified inputs','Transfer certified inputs','Compile lifecycle rules','Compile financial replay')
     profiling=status.get('mode')=='profile'
     progress=Progress(TextColumn('{task.description}',table_column=Column(min_width=15,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}',table_column=Column(no_wrap=True)),expand=True)
     for label,done,total in (
         ('Generations',status.get('completed_generations',0),0 if profiling else config.get('generations',0)),
         ('Profile session' if profiling else 'Session',status.get('completed_sessions',0),config.get('training_sessions',1 if profiling else 0)),
-        ('Backtest s',cursor.get('completed_seconds',0),cursor.get('total_seconds',0)),
+        ('Last backtest s' if preparing else 'Backtest s',cursor.get('completed_seconds',0),cursor.get('total_seconds',0)),
         ('Preparation',status.get('prepared_sessions',0),config.get('training_sessions',1 if profiling else 0))):
         if total:progress.add_task(label,total=total,completed=done)
     if status.get('stage')=='Compile lifecycle rules' and status.get('total_tickers'):
@@ -79,14 +80,27 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         if height<26:metrics=metrics[:5]+trade_metrics+[metrics[-2],metrics[-1]]
         else:metrics.extend(trade_metrics+position_metrics)
     if view=='positions':
-        source=(status.get('active_session') or {}) if profiling else best
+        live_positions=profiling or not best
+        source=(status.get('active_session') or {}) if live_positions else best
         active=status.get('active_session') or {}
         metrics=[('Closed hold '+label+' s',number(source.get('closed_hold_'+field+'_seconds'))) for label,field in (('minimum','min'),('mean','mean'),('median','median'),('P90','p90'),('maximum','max'))]
-        metrics.extend([('Share-weighted hold s',number(source.get('weighted_hold_seconds') if profiling else source.get('mean_hold_seconds'))),
+        metrics.extend([('Share-weighted hold s',number(source.get('weighted_hold_seconds') if live_positions else source.get('mean_hold_seconds'))),
                         ('Live open age mean s',number(active.get('open_age_mean_seconds'))),
                         ('Live open age maximum s',number(active.get('open_age_max_seconds'))),
                         ('Timing basis','First fill → final fill; real seconds')])
-        grid.title='POSITION TIMING · actual elapsed seconds'
+        grid.title='LIVE POPULATION POSITION TIMING' if live_positions else 'POSITION TIMING · actual elapsed seconds'
+    if height<26 and view=='financial' and not profiling and status.get('active_session'):
+        active=status['active_session']
+        grid.title='LIVE SESSION POPULATION · provisional'
+        metrics=[('Marked P&L median / range $',f"{number(active.get('pnl_median'))} / {number(active.get('pnl_min'))} .. {number(active.get('pnl_max'))}"),
+                 ('Largest drawdown $',number(active.get('drawdown_max'))),
+                 ('Pooled closed-position win %',number(None if active.get('position_win_rate') is None else 100*active['position_win_rate'])),
+                 ('Pooled profit factor',number(active.get('profit_factor'))),
+                 ('Closed / winning / losing',f"{active.get('closed_positions','—')} / {active.get('winning_positions','—')} / {active.get('losing_positions','—')}"),
+                 ('Closed hold mean / P90 s',f"{number(active.get('closed_hold_mean_seconds'))} / {number(active.get('closed_hold_p90_seconds'))}"),
+                 ('Most open positions',number(active.get('open_positions_max'),',.0f')),
+                 ('Financial errors / overflow',f"{active.get('financial_error_candidates','—')} / {active.get('overflow_candidates','—')}"),
+                 ('Validation',status.get('validation_status','SEALED'))]
     if height>=30:
         import math
         capacity=max(1,height-26)*(2 if width>=100 else 1)
@@ -103,7 +117,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         performance.add_row(key.replace('_',' ').title(),number(timing.get(key)),number(status.get('average_timing',{}).get(key)))
     terminal=state in ('completed','failed','interrupted','no_feasible_winner','profile_complete','awaiting_validation_inputs')
     elapsed_end=status.get('updated_epoch',now) if terminal else now
-    clock=Text(f"Elapsed {duration(elapsed_end-status['started_epoch']) if status.get('started_epoch') else '—'} | replay ETA {duration(status.get('replay_eta'))} | campaign ETA {duration(status.get('campaign_eta'))}")
+    clock=Text(f"Elapsed {duration(elapsed_end-status['started_epoch']) if status.get('started_epoch') else '—'} | replay ETA {duration(None if preparing else status.get('replay_eta'))} | campaign ETA {duration(status.get('campaign_eta'))}")
     average=status.get('average_timing',{}).get('end_to_end')
     clock.append(f" | avg session {duration(average)} ({status.get('timed_sessions',0)} measured)")
     footer=Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | host {number(status.get('host_gib'),'.1f')} GiB | prefetched {status.get('prefetched_sessions','—')} | worker {status.get('worker_pid','—')}")
@@ -127,7 +141,11 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         layout['progress'].update(progress);layout['clock'].update(clock)
         layout['metrics'].update(performance if view=='performance' else components_table(best,status.get('objective'),profiling=profiling,wide=width>=100,maximum_rows=max(1,height-27),page=status.get('_objective_page',0)) if view=='objective' else
                                   Panel(Text('\n'.join(f"{item['timestamp']}  {item['text']}" for item in events[-max(1,height-24):])),title='Message history · older entries retained in events.jsonl') if view=='messages' else grid)
-        layout['ownership'].update(Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')} | provisional metrics until session completes"))
+        ownership=Text(f"GPU {number(status.get('gpu_gib'),'.1f')} GiB | worker {status.get('worker_pid','—')} | provisional metrics until session completes")
+        if active:
+            rates=Text(f"Live pooled win {number(None if active.get('position_win_rate') is None else 100*active['position_win_rate'])}% | PF {number(active.get('profit_factor'))} | closed {number(active.get('closed_positions'),',.0f')} | mean hold {number(active.get('closed_hold_mean_seconds'))}s",style='yellow')
+            layout['ownership'].update(Group(ownership,rates))
+        else:layout['ownership'].update(ownership)
         layout['messages'].update(Panel(messages,title='MESSAGE CENTER · UTC · chronological · retained in events.jsonl'))
         layout['keys'].update(Text('F financial/pages | T position timing | P performance | C objective/pages | M messages | Q close'))
         return layout
