@@ -16,6 +16,7 @@ def test_captured_whole_block_prefix_matches_eager_metrics_and_fills():
     gates=torch.full((96,3,2),5,dtype=torch.uint8)
     eager=ProgramRunner(synthetic_tape(seconds=96),space,population,gates,backend='eager',maximum_fills=256)
     expected=eager.run(steps=64)
+    assert int(eager.fill_count.sum())>0
     captured=ProgramRunner(synthetic_tape(seconds=96,device='cuda'),space,population,gates.cuda(),backend='compiled_graph',graph_steps=32,maximum_fills=256)
     captured.compile();result=captured.run(steps=64)
     assert not result['terminal'] and captured.completed==64

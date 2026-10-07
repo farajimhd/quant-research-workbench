@@ -68,6 +68,7 @@ def test_candidate_batch_parity_full_financial_metrics_and_fills():
     gates=torch.zeros((40,7,2),dtype=torch.uint8);gates[:, :, :]=5
     full=ProgramRunner(tape,space,population,gates,backend='eager',maximum_fills=256)
     expected=full.run();parts=[]
+    assert int(full.fill_count.sum())>0
     for left in range(0,7,3):
         runner=ProgramRunner(tape,space,population[left:left+3],gates[:,left:left+3].contiguous(),backend='eager',maximum_fills=256)
         result=runner.run()
