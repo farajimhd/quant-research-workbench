@@ -1,4 +1,4 @@
-"""Fixed regions for stage progress, three ranked strategies and timed messages."""
+"""Fixed regions for stage progress, paginated top-100 rankings and timed messages."""
 import time
 from rich.layout import Layout
 from rich.panel import Panel
@@ -14,13 +14,41 @@ def duration(value):
     minutes,seconds=divmod(max(0,int(value)),60);hours,minutes=divmod(minutes,60)
     return f'{hours}:{minutes:02d}:{seconds:02d}'
 
+def ranked_rows(status):
+    """Use authoritative ranks from a completed, common evaluation panel."""
+    return sorted(status.get('top_strategies',[]),key=lambda row:row['rank'])[:100]
+
+
+def ranking_page_size(height):
+    return max(1,min(10,(height-22)//2))
+
+
+def navigate(status,key,*,rank=1,rank_page=0,detail_page=0,height=38):
+    rows=ranked_rows(status);size=ranking_page_size(height)
+    pages=max(1,(len(rows)+size-1)//size)
+    rank_page=min(max(0,rank_page),pages-1)
+    if key in ('n','b'):
+        rank_page=(rank_page+(1 if key=='n' else -1))%pages
+        if rows:rank=rows[rank_page*size]['rank']
+        detail_page=0
+    elif key in ('j','k') and rows:
+        index=next((i for i,row in enumerate(rows) if row['rank']==rank),0)
+        index=(index+(1 if key=='j' else -1))%len(rows)
+        rank=rows[index]['rank'];rank_page=index//size;detail_page=0
+    elif key==']':detail_page+=1
+    elif key=='[':detail_page=max(0,detail_page-1)
+    return rank,rank_page,detail_page
+
+
 def render(status,*,width=110,height=38,now=None,view='financial'):
     now=time.time() if now is None else now
-    config=status.get('config',{});cursor=status.get('progress',{})
+    config=status.get('config',{});cursor=status.get('progress') or {}
     age=max(0,now-status.get('updated_epoch',now))
+    page_size=ranking_page_size(height)
+    leader_height=page_size+4
     layout=Layout()
     layout.split_column(Layout(name='header',size=2),Layout(name='progress',size=5),
-                        Layout(name='leaders',size=6 if height>=30 else 3),Layout(name='metrics',ratio=1),
+                        Layout(name='leaders',size=leader_height),Layout(name='metrics',ratio=1),
                         Layout(name='timing',size=2),Layout(name='messages',size=5 if height>=30 else 3),Layout(name='keys',size=1))
     layout['header'].update(Text(f"V5 {status.get('status','starting').upper()} | {status.get('stage','Preflight')} | updated {age:.0f}s ago\n{status.get('focus','')} | validation {status.get('validation_status','SEALED')}",style='cyan' if age<30 else 'yellow'))
     bars=Progress(TextColumn('{task.description}',table_column=Column(min_width=18,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}'),expand=True)
@@ -31,13 +59,24 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
                               ('Rule listings',status.get('completed_tickers',0),status.get('total_tickers',0))]:
         if total:bars.add_task(label,total=total,completed=done)
     layout['progress'].update(bars)
-    leaders=status.get('top_strategies',[]);selected=status.get('_rank',1)
-    table=Table(expand=True,padding=(0,1));table.add_column('Rank');table.add_column('Score',justify='right');table.add_column('Net P&L $',justify='right');table.add_column('Win %',justify='right');table.add_column('Positions',justify='right')
-    for rank in range(1,4):
-        leader=next((v for v in leaders if v['rank']==rank),{});metrics=leader.get('metrics',{})
-        table.add_row(f'{rank}'+(' *' if rank==selected else ''),number(leader.get('score'),'.6f'),number(metrics.get('total_pnl')),
-                      number(None if metrics.get('position_win_rate') is None else metrics['position_win_rate']*100),number(metrics.get('positions'),',.0f'))
-    layout['leaders'].update(Panel(table,title=status.get('evaluation_basis','No completed ranking yet'),padding=0))
+    leaders=ranked_rows(status);selected=status.get('_rank',1)
+    rank_pages=max(1,(len(leaders)+page_size-1)//page_size)
+    rank_page=min(max(0,status.get('_rank_page',0)),rank_pages-1)
+    table=Table(expand=True,padding=(0,1),show_edge=False)
+    for label in ('Rank','Score','Net P&L $','Win %','Positions'):
+        table.add_column(label,justify='right',no_wrap=True)
+    if width>=110:
+        table.add_column('Drawdown $',justify='right',no_wrap=True)
+        table.add_column('Profit factor',justify='right',no_wrap=True)
+    for leader in leaders[rank_page*page_size:(rank_page+1)*page_size]:
+        metrics=leader.get('metrics',{});rank=leader['rank']
+        values=[f'{rank}'+(' *' if rank==selected else ''),number(leader.get('score'),'.6f'),number(metrics.get('total_pnl')),
+                number(None if metrics.get('position_win_rate') is None else metrics['position_win_rate']*100),number(metrics.get('positions'),',.0f')]
+        if width>=110:values.extend([number(metrics.get('worst_drawdown')),number(metrics.get('profit_factor'))])
+        table.add_row(*values,style='bold cyan' if rank==selected else '')
+    if not leaders:table.add_row('--','Pending completed ranking',*(['--']*(len(table.columns)-2)))
+    basis=status.get('evaluation_basis','No completed ranking yet')
+    layout['leaders'].update(Panel(table,title=f'Top {len(leaders)}/100 | page {rank_page+1}/{rank_pages}',subtitle=basis,padding=0))
     leader=next((v for v in leaders if v['rank']==selected),{});metrics=leader.get('metrics',{})
     active=status.get('active_session') or {}
     grid=Table(expand=True,padding=(0,1));grid.add_column('Metric');grid.add_column('Value',justify='right')
@@ -70,7 +109,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
               ('Active-batch provisional median / max P&L $',f"{number(active.get('pnl_median'))} / {number(active.get('pnl_max'))}"),
               ('Active-batch financial errors / overflows',f"{active.get('financial_error_candidates','—')} / {active.get('overflow_candidates','—')}")]
     if not metrics and view!='performance':rows.insert(0,('Ranking','Pending completed panel; live batch values provisional'))
-    page=status.get('_page',0);available=max(2,height-(24 if height>=30 else 19))
+    page=status.get('_page',0);available=max(1,height-(14+leader_height+(5 if height>=30 else 3)))
     pages=max(1,(len(rows)+available-1)//available);page%=pages
     for label,value in rows[page*available:(page+1)*available]:grid.add_row(label,value)
     layout['metrics'].update(Panel(grid,title=f'Rank {selected} | {view} | page {page+1}/{pages}',padding=0))
@@ -80,5 +119,5 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     lines=[f"{m.get('timestamp','')} {m.get('text','')}" for m in messages]
     if status.get('error'):lines[-1:]=[str(status['error'])]
     layout['messages'].update(Panel(Text('\n'.join(lines)),title='Messages | full history in events.jsonl',padding=0))
-    layout['keys'].update(Text('1/2/3 rank | F financial | O objective | T positions | P performance | N next page | Q close'))
+    layout['keys'].update(Text('N/B rankings page | J/K select | [/] detail page | F/O/T/P view | Q close'))
     return layout

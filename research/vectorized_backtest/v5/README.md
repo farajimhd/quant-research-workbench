@@ -108,8 +108,10 @@ memory, candidate-timestamp throughput, cold and total timing, resource failures
 population/source/input identities and receipts. Final search budgets stay unset
 until those measurements are reviewed.
 
-`staged_observe --output ...` is the read-only fixed-screen dashboard. Keys 1/2/3
-select rank; F/O/T/P select financial/objective/positions/performance; N pages metrics;
+`staged_observe --output ...` is the read-only fixed-screen dashboard. Up to 100
+completed-panel strategies are sorted by authoritative rank, with adaptive pages.
+N/B navigate ranking pages; J/K select rows; [/] page selected-strategy details;
+F/O/T/P select financial/objective/positions/performance views.
 Q exits the renderer. Search and full-training ranking scopes are explicit. Live
 batch metrics remain provisional. Logs stay in a bounded timestamped panel and
 complete `events.jsonl`, rather than scrolling the terminal.

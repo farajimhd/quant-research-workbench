@@ -125,7 +125,7 @@ def main(argv=None):
                 results,receipts=evaluate_panel(selected,population,evaluator,folder,emit)
                 scored=objective_matrix(results,population,objective);rank=rank_valid(scored)
                 if not rank:raise ValueError('All strategies invalid under crucial constraints')
-                leaders=[dict(rank=j+1,score=float(scored['score'][i]),metrics=metric_summary(results,scored,i,population)) for j,i in enumerate(rank[:3])]
+                leaders=[dict(rank=j+1,score=float(scored['score'][i]),metrics=metric_summary(results,scored,i,population)) for j,i in enumerate(rank[:100])]
                 emit(top_strategies=leaders,best_score=leaders[0]['score'],best_metrics=leaders[0]['metrics'],feasible_candidates=len(rank))
                 write_json(folder/'generation.json',clean(dict(population=[state(v) for v in population],population_sha256=fingerprint([state(v) for v in population]),
                                                               receipts=receipts,scores=scored,selected_days=[s['day'] for s in selected])))
@@ -145,7 +145,7 @@ def main(argv=None):
             if not rank:raise ValueError('No valid full-training finalist')
             write_json(folder/'ranking.json',clean(dict(population=[state(v) for v in finalists],population_sha256=fingerprint([state(v) for v in finalists]),
                                                        receipts=receipts,scores=scored)))
-            leaders=[dict(rank=j+1,score=float(scored['score'][i]),metrics=metric_summary(results,scored,i,finalists)) for j,i in enumerate(rank[:3])]
+            leaders=[dict(rank=j+1,score=float(scored['score'][i]),metrics=metric_summary(results,scored,i,finalists)) for j,i in enumerate(rank[:100])]
             emit(top_strategies=leaders,best_score=leaders[0]['score'],best_metrics=leaders[0]['metrics'])
             if stage_index==len(stages)-1:
                 # No validation is opened here. Independent ledger audit is required to authorize freeze.
