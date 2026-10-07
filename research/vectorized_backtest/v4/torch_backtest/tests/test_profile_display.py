@@ -7,7 +7,7 @@ from research.vectorized_backtest.v4.torch_backtest.stability import Objective
 
 def test_profile_has_one_session_and_no_campaign_generation_bar():
     status=dict(mode='profile',status='profiling',stage='Backtest',
-                config=dict(population=128,generations=32,training_sessions=30),
+                config=dict(population=128,generations=32,training_sessions=1),
                 completed_sessions=0,prepared_sessions=1,
                 progress=dict(completed_seconds=100,total_seconds=19800))
     status['active_session']=dict(pnl_median=12.5,drawdown_max=99.,open_positions_max=15,fills_max=99)
@@ -22,6 +22,32 @@ def test_profile_has_one_session_and_no_campaign_generation_bar():
             assert '0/1' in output and '0/30' not in output
             assert len(output.splitlines())<=height
             assert all(len(line)<=width for line in output.splitlines())
+
+
+def test_two_session_profile_displays_actual_durable_counts():
+    status=dict(mode='profile',status='profiling',stage='Backtest',
+                config=dict(population=128,generations=0,training_sessions=2),
+                completed_sessions=1,prepared_sessions=2)
+    for width,height in ((80,24),(128,42)):
+        stream=StringIO()
+        Console(file=stream,width=width,height=height,force_terminal=False).print(
+            render(status,width=width,height=height))
+        output=stream.getvalue()
+        assert '1/2' in output and '2/2' in output and '1/1' not in output
+        assert len(output.splitlines())<=height
+        assert all(len(line)<=width for line in output.splitlines())
+
+
+def test_real_observer_uses_profile_identity_count(tmp_path,capsys,monkeypatch):
+    import json
+    from research.vectorized_backtest.v4.torch_backtest.observe import main
+    monkeypatch.setattr('research.vectorized_backtest.v4.torch_backtest.observe.Console',
+                        lambda **kwargs: Console(width=128,height=42,**kwargs))
+    (tmp_path/'identity.json').write_text(json.dumps(dict(arguments=dict(profile=True),profile_sessions=2)))
+    (tmp_path/'status.json').write_text(json.dumps(dict(status='profile_complete',completed_sessions=2,prepared_sessions=2)))
+    assert main(['--output',str(tmp_path),'--once'])==0
+    output=capsys.readouterr().out
+    assert '2/2' in output and '2 training-session profile' in output
 
 
 def test_objective_rows_show_configured_weights_pending_and_signed_arithmetic():

@@ -11,17 +11,19 @@ def main(argv=None):
     identity_path=args.output/'identity.json'
     # Older immutable workers do not emit mode. Derive display scope from their
     # retained launch identity without editing their status or experiment.
-    profile=False;objective=None
+    profile=False;profile_sessions=1;objective=None
     if identity_path.exists():
         identity=json.loads(identity_path.read_text(encoding='utf-8'))
         profile=bool(identity.get('arguments',{}).get('profile',False));objective=identity.get('objective')
+        profile_sessions=identity.get('profile_sessions',1)
     def read():
         nonlocal last,error
         try:last=json.loads((args.output/'status.json').read_text(encoding='utf-8'));error=None
         except (FileNotFoundError,PermissionError,json.JSONDecodeError) as e:error=f'Snapshot unavailable: {type(e).__name__}; retaining last good view'
         if error:last={**last,'waiting_reason':error}
         if profile:
-            last={**last,'mode':'profile','focus':'Single training-session profile; validation SEALED'}
+            last={**last,'mode':'profile','focus':f'{profile_sessions} training-session profile; validation SEALED',
+                  'config':{**last.get('config',{}),'training_sessions':profile_sessions}}
             if last.get('status')=='training':last['status']='profiling'
         return render({**last,'objective':last.get('objective') or objective,'_financial_page':financial_page,'_objective_page':objective_page},width=console.width,height=console.height,view=args.view)
     if args.once or not console.is_terminal:

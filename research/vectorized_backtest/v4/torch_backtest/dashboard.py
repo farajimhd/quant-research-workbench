@@ -25,9 +25,9 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     progress=Progress(TextColumn('{task.description}',table_column=Column(min_width=15,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}',table_column=Column(no_wrap=True)),expand=True)
     for label,done,total in (
         ('Generations',status.get('completed_generations',0),0 if profiling else config.get('generations',0)),
-        ('Profile session' if profiling else 'Session',status.get('completed_sessions',0),1 if profiling else config.get('training_sessions',0)),
+        ('Profile session' if profiling else 'Session',status.get('completed_sessions',0),config.get('training_sessions',1 if profiling else 0)),
         ('Backtest s',cursor.get('completed_seconds',0),cursor.get('total_seconds',0)),
-        ('Preparation',status.get('prepared_sessions',0),1 if profiling else config.get('training_sessions',0))):
+        ('Preparation',status.get('prepared_sessions',0),config.get('training_sessions',1 if profiling else 0))):
         if total:progress.add_task(label,total=total,completed=done)
     if status.get('stage')=='Compile lifecycle rules' and status.get('total_tickers'):
         progress.add_task('Rule compile',total=status['total_tickers'],completed=status.get('completed_tickers',0))
