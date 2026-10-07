@@ -5,7 +5,7 @@ import time
 
 class LaptopGpuPacer:
     def __init__(self, device, *, duty_cycle=.75, reserve_bytes=4*1024**3,
-                 clock=time.monotonic, sleep=time.sleep, cuda=None):
+                 clock=time.perf_counter, sleep=time.sleep, cuda=None):
         if not math.isfinite(duty_cycle) or not 0 < duty_cycle < 1:
             raise ValueError('GPU duty cycle must be strictly between zero and one')
         if not isinstance(reserve_bytes, int) or reserve_bytes <= 0:
