@@ -62,6 +62,9 @@ class SelectOnly:
     def execute(self, query, *args, **kwargs):
         return self.client.execute(report_select_query(query), *args, **kwargs)
 
+    def iter_arrow_record_batches(self, query, *args, **kwargs):
+        return self.client.iter_arrow_record_batches(report_select_query(query), *args, **kwargs)
+
 
 def report_select_query(query: str) -> str:
     """Keep strict SELECT admission for the journal's parenthesized UNION reads."""

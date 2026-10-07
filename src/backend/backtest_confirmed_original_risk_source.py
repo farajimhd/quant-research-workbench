@@ -46,11 +46,17 @@ class CompiledCompletedRiskLookup:
                 or frame.height > max_rows):
             raise ValueError('Completed risk lookup lacks bounded certified session authority')
         units = {}
+        stages = ('bars', 'technical', 'broker_100ms')
+        declared_tickers = frozenset(plan.tickers)
+        producer_units = {}
+        for unit in plan.units:
+            if (type(unit) is MarketDayUnit and unit.ticker in declared_tickers
+                    and unit.stage in stages):
+                producer_units.setdefault((unit.ticker, unit.stage), []).append(unit)
         for ticker in plan.tickers:
             pair = {}
-            for stage in ('bars', 'technical', 'broker_100ms'):
-                matches = [u for u in plan.units if type(u) is MarketDayUnit
-                           and u.ticker == ticker and u.stage == stage]
+            for stage in stages:
+                matches = producer_units.get((ticker, stage), ())
                 if (len(matches) != 1 or matches[0].build_id != plan.build_id
                         or matches[0].session_date != session_date.isoformat()):
                     raise ValueError('Completed risk source lacks exact producer attempts')
