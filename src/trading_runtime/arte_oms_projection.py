@@ -1142,6 +1142,14 @@ def load_recovered_strategy_one_oms_lineage(
 
 
 def load_latest_committed_oms_groups(
+    client: Any, prefix: VerifiedPrefix, **kwargs,
+) -> tuple[RecoveredOmsGroupState, ...]:
+    """Use declared writer proof transport; cold/default inventory is unchanged."""
+    from .fixed_structural_lot_warm_proof import load_oms_groups
+    return load_oms_groups(client, prefix, **kwargs)
+
+
+def _load_latest_committed_oms_groups(
     client: Any, prefix: VerifiedPrefix, *, page_size: int = 500,
     max_transitions: int = 20_000,
     allowed_accounts: frozenset[str] | None = None,

@@ -134,6 +134,10 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
         contexts=tuple(getattr(client,'fixed_structural_lot_contexts',()))
         if any(context.source is not source for context in contexts):
             raise ValueError('Selected snapshot writer has foreign committed entry source')
+        from .fixed_structural_lot_warm_proof import selected, load_prefix
+        if selected(source) and getattr(client,'backtest_v4_lease',None) is not None:
+            return load_prefix(client,run_id,max_commits=max_commits,
+                first_price_source=first_price_source)
         return load_verified_v4_prefix(client,run_id,max_commits=max_commits,
             first_price_source=source.price_authority,fixed_lot_contexts=contexts,
             fixed_lot_recovery_contexts=tuple(getattr(client,'fixed_lot_recovery_contexts',())))

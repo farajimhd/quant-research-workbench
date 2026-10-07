@@ -183,6 +183,9 @@ class NativeFixedStructuralLotManagement:
         contexts=tuple(getattr(self.client,'fixed_structural_lot_contexts',()))
         if any(v.source is not source for v in contexts):
             raise ValueError('Selected management lacks exact committed entry contexts')
+        from src.trading_runtime.fixed_structural_lot_warm_proof import selected, load_prefix
+        if selected(source) and getattr(self.client,'backtest_v4_lease',None) is not None:
+            return load_prefix(self.client,source.run_id),contexts
         prefix=load_verified_v4_prefix(self.client,source.run_id,fixed_lot_contexts=contexts,
             fixed_lot_recovery_contexts=tuple(getattr(self.client,'fixed_lot_recovery_contexts',())))
         return prefix,contexts
@@ -194,8 +197,8 @@ class NativeFixedStructuralLotManagement:
             fixed_lot_contexts=contexts)
 
     def _group(self,request,prefix,contexts,group_id):
-        from src.trading_runtime.arte_oms_projection import load_latest_committed_oms_groups
-        groups=load_latest_committed_oms_groups(self.client,prefix,
+        from src.trading_runtime.fixed_structural_lot_warm_proof import load_oms_groups
+        groups=load_oms_groups(self.client,prefix,
             allowed_accounts=frozenset((request.entry.proposal.account_id,)),
             strategy_identity=(request.strategy_id,request.revision),fixed_lot_contexts=contexts)
         matched=tuple(v for v in groups if v.group['strategy_intent_id']==request.intent.intent_id)
