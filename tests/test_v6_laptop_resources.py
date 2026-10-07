@@ -33,6 +33,17 @@ def test_reserve_fails_before_another_chunk():
         pacer()
 
 
+def test_prechunk_reserve_check_does_not_sleep_or_reset_clock():
+    cuda = Cuda(); cuda.free = 8*1024**3
+    now = [0.]; pauses = []
+    pacer = LaptopGpuPacer('cuda:0', cuda=cuda, clock=lambda:now[0], sleep=pauses.append)
+    now[0] = 3.
+    assert pacer.check_reserve() == cuda.free
+    assert not pauses and pacer.started == 0.
+    pacer()
+    assert pauses == pytest.approx([1.])
+
+
 @pytest.mark.parametrize('duty', [0.,1.,float('nan'),float('inf')])
 def test_invalid_duty(duty):
     with pytest.raises(ValueError):

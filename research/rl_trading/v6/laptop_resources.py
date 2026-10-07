@@ -18,12 +18,16 @@ class LaptopGpuPacer:
         self.clock, self.sleep = clock, sleep
         self.started = clock()
 
-    def __call__(self, progress=None):
+    def check_reserve(self):
         self.cuda.synchronize(self.device)
         free, total = self.cuda.mem_get_info(self.device)
         if free < self.reserve_bytes:
             raise RuntimeError(f'Laptop VRAM reserve breached: {free} free bytes; '
                                f'{self.reserve_bytes} required; {total} total')
+        return free
+
+    def __call__(self, progress=None):
+        free = self.check_reserve()
         elapsed = max(0., self.clock()-self.started)
         pause = elapsed*(1/self.duty_cycle-1)
         self.sleep(pause)
