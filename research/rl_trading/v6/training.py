@@ -625,6 +625,11 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         if pending_losses and not evaluation and wait_hold:
             state.refresh_projection(policy.encoder)
         action_state = action_state.detach()
+        # Resource pacing also covers evaluation and empty chronological chunks.
+        # It runs after detachment/refresh and never changes optimizer boundaries.
+        resource_pacer = getattr(policy, 'resource_pacer', None)
+        if resource_pacer is not None:
+            resource_pacer()
         if progress_callback:
             progress_callback({'close_us':chunk[-1].close_us,
                 'observed_decisions':observed_decisions,'optimizer_updates':updates,
