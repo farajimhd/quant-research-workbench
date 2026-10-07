@@ -7,6 +7,14 @@ from .runtime import require_runtime,write_json,file_hash,code_hash
 from .financial_audit import audit_fills
 
 
+def assert_metric_equal(values,reference):
+    """Compare sealed JSON metrics, including serialized non-finite scores."""
+    if len(values)!=len(reference) or [v is None for v in values]!=[v is None for v in reference]:
+        raise ValueError('Metric null/invalid-score pattern changed')
+    numeric=lambda items:torch.tensor([float('nan') if v is None else v for v in items],dtype=torch.float64)
+    torch.testing.assert_close(numeric(values),numeric(reference),rtol=1e-10,atol=1e-7,equal_nan=True)
+
+
 def compare(reference,target):
     before=json.loads((reference/'receipt.json').read_text());after=json.loads((target/'receipt.json').read_text())
     keys=('day','population_sha256','execution','feature_certificate','prior_certificate',
@@ -16,8 +24,7 @@ def compare(reference,target):
         if name=='closed_position_duration_samples':
             if values!=after['metrics'][name]:raise ValueError('Holding samples changed')
         else:
-            torch.testing.assert_close(torch.tensor(after['metrics'][name],dtype=torch.float64),
-                                       torch.tensor(values,dtype=torch.float64),rtol=1e-10,atol=1e-7,equal_nan=True)
+            assert_metric_equal(after['metrics'][name],values)
     def lanes(folder,receipt):
         result={};order=receipt.get('candidate_order',list(range(len(receipt['metrics']['fill_count']))));left=0
         if sorted(order)!=list(range(len(order))):raise ValueError('Incomplete execution permutation')
