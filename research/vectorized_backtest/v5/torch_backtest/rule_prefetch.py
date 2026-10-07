@@ -1,5 +1,5 @@
 """One ordered lookahead, separate gate storage, no competing GPU process."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor,TimeoutError
 from time import perf_counter
 import torch
 
@@ -13,6 +13,7 @@ class RulePrefetch:
         self.workspace_bytes=int(workspace_gib*1024**3)
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='v5-rules')
         self.future=None;self.index=None
+        self.progress={}
         self.stream=torch.cuda.Stream(device=self.device,priority=0) if self.device.type=='cuda' else None
 
     def __enter__(self):return self
@@ -39,12 +40,20 @@ class RulePrefetch:
                     value=prepare(out)
                     self.stream.synchronize()
             return value,started,perf_counter()
-        self.index=index;self.future=self.pool.submit(work)
+        self.progress={};self.index=index;self.future=self.pool.submit(work)
 
-    def take(self,index):
+    def update(self,event):self.progress=dict(event)
+
+    def take(self,index,progress=None):
         if self.future is None or index!=self.index:raise ValueError('Rule lookahead consumed out of order')
         started=perf_counter()
-        value,begin,end=self.future.result()
+        while True:
+            try:
+                value,begin,end=self.future.result(timeout=1.)
+                break
+            except TimeoutError:
+                if self.future.done():self.future.result() # Propagate producer errors.
+                if progress:progress(dict(self.progress))
         wait=perf_counter()-started
         self.future=None;self.index=None
         return value,wait,begin,end

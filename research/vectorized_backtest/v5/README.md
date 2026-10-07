@@ -184,3 +184,19 @@ until workstation throughput measurements select the intended campaign options.
 Timing reports include producer wait, measured replay/preparation overlap and
 receipt-write wait. Overlapped phase durations must not be summed as wall time.
 The performance panel reports lookahead readiness and pending receipt writes.
+
+The first workstation overlap sweep (`0bc7cfb13`) passed 45 focused qualification
+tests and exact actual-fill/financial-metric parity in both passes. For 4,096
+candidates / physical batch 512 / 256 replay timestamps, warm wall time fell from
+340.43 s to 329.60 s (3.18%). Replay increased from 44.43 s to 47.34 s (6.57%),
+and rule-preparation latency increased from 274.16 s to 301.12 s (9.83%) because
+they shared GPU resources. Measured overlap was 40.33 s; residual receipt-write
+wait was 0.11 s. Peak allocation rose from 44.46 to 66.82 GiB. These prefix
+measurements exclude final terminal eligibility and do not establish a full-day
+speedup. Evidence: `profiles/20261007-0bc7cfb13-concurrency-sweep/report.json`.
+
+`profile_concurrency --sessions PLAN --output UNIQUE --population 256 --batch-size 128`
+performs four ordered full-session passes in one GPU process: serial cold/warm,
+then pipelined cold/warm. It compares the warmed totals and requires exact actual
+fills plus independent full-session financial/terminal audits. It never launches
+an optimization or opens final validation.

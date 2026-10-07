@@ -112,7 +112,7 @@ class BatchedEvaluator:
                     metadata=dict(directory=folder.name,sha256=file_hash(path))
                 else:
                     emit(stage='Compile lifecycle rules', completed_batches=index, total_batches=total_batches,
-                         candidate_start=left, candidate_end=left+len(members))
+                         candidate_start=left, candidate_end=left+len(members),active_session=None)
                     execution_key=ProgramRunner.specialization_key(members,self.space) if specialize else None
                     key = (len(tape.clocks), capacity, len(members), tuple(tape.level_lower.shape), tape.structural_targets is not None,execution_key)
                     emit(execution_lot_capacity=execution_key[0] if specialize else 15,
@@ -122,7 +122,10 @@ class BatchedEvaluator:
                     reuse_gates=self.runner is not None and self.runner.program_gates.shape==(len(tape.clocks),len(members),capacity)
                     rule_wait=0.;overlap=0.
                     if prefetch.index==index:
-                        (gates,rule_seconds),rule_wait,rule_begin,rule_end=prefetch.take(index)
+                        def waiting(event):
+                            emit(stage='Wait for prefetched lifecycle rules',rule_prefetch_batch=index,
+                                 completed_tickers=event.get('completed_tickers',0),total_tickers=len(resident.rows))
+                        (gates,rule_seconds),rule_wait,rule_begin,rule_end=prefetch.take(index,waiting)
                         previous_begin,previous_end=replay_intervals[index]
                         overlap=max(0.,min(previous_end,rule_end)-max(previous_begin,rule_begin))
                     else:
@@ -157,7 +160,7 @@ class BatchedEvaluator:
                         if spare is not None and tuple(spare.shape)!=next_shape:spare=None
                         def prepare(out,next_members=next_members):
                             return resident.compile(next_members,tape,chunk_candles=args.chunk_candles,
-                                maximum_gate_gib=args.maximum_gate_gib,out=out,specialize_windows=specialize)
+                                maximum_gate_gib=args.maximum_gate_gib,out=out,specialize_windows=specialize,emit=prefetch.update)
                         prefetch.submit(next_index,next_shape,prepare,spare)
                     del spare,old_gates
                     replay_started = time.perf_counter()
@@ -170,7 +173,7 @@ class BatchedEvaluator:
                         emit(progress=cursor, replay_elapsed=elapsed, replay_rate=done/elapsed if elapsed else None,
                              replay_eta=(total-done)*elapsed/done if done else None,
                              rule_prefetch_batch=prefetch.index,rule_prefetch_ready=prefetch.future.done() if prefetch.future else False,
-                             receipt_writer_pending=writer.future is not None,
+                             receipt_writer_pending=writer.future is not None and not writer.future.done(),
                              active_session=self.runner.live_metrics())
                     steps=getattr(args,'profile_seconds',None)
                     if steps==len(tape.clocks):steps=None
@@ -203,6 +206,7 @@ class BatchedEvaluator:
                     writer.drain()
                     raise InterruptedError('Stopped at durable candidate-batch boundary')
             writer.drain()
+            emit(rule_prefetch_batch=None,rule_prefetch_ready=False,receipt_writer_pending=False)
             totals['receipt_write_wait']=writer.wait_seconds
             totals['end_to_end'] = time.perf_counter()-began+wait
             receipt = dict(binding, population_sha256=pop_hash, batch_size=args.batch_size,
