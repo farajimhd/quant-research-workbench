@@ -274,6 +274,18 @@ def load_verified_v4_prefix(client, run_id: str, *,
                             max_commits: int = 100_000,
                             first_price_source=None, automatic_ladder_sources=(),
                             declared_native_contexts=()) -> V4CommittedPrefix | None:
+    """Fully verify with a bounded memo confined to this synchronous call."""
+    from ._checkpoint_prefix_read import _full_prefix_operation
+    with _full_prefix_operation(client, run_id, first_price_source):
+        return _load_verified_v4_prefix(client, run_id, max_commits=max_commits,
+            first_price_source=first_price_source, automatic_ladder_sources=automatic_ladder_sources,
+            declared_native_contexts=declared_native_contexts)
+
+
+def _load_verified_v4_prefix(client, run_id: str, *,
+                            max_commits: int = 100_000,
+                            first_price_source=None, automatic_ladder_sources=(),
+                            declared_native_contexts=()) -> V4CommittedPrefix | None:
     """Recompute every detail seal and require one complete contiguous chain.
 
     This SELECT-only cold path is intentionally outside the execution loop.
@@ -324,6 +336,8 @@ def load_verified_v4_prefix(client, run_id: str, *,
         preceding = (V4CommittedPrefix(
             run_id, last_sequence, prior_id, commits[len(batch_ids)-1]['source_cursor'],
             status, tuple(batch_ids)) if batch_ids else None)
+        from ._checkpoint_prefix_read import _register_verified_predecessor
+        _register_verified_predecessor(client, first_price_source, preceding)
         verified, _ = load_verified_commit_v4(
             client, run_id=run_id, batch_id=batch_id, first_price_source=first_price_source,
             automatic_ladder_sources=automatic_ladder_sources,
@@ -332,6 +346,8 @@ def load_verified_v4_prefix(client, run_id: str, *,
             **({'verified_prior_prefix': preceding} if preceding is not None else {}))
         if verified != row:
             raise RuntimeError("V4 cold commit differs from ordered run inventory")
+        from ._checkpoint_prefix_read import _record_verified_commit
+        _record_verified_commit(client, first_price_source, row)
         prior_id = batch_id
         last_sequence = row["last_sequence"]
         status = row["status"]

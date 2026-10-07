@@ -82,9 +82,9 @@ def confirm_original_risk_checkpoint_sources(client, manager_keeper, broker_keep
     from .original_risk_checkpoint import OriginalRiskCheckpointRequest
     from src.backend.backtest_typed_publisher import TypedBacktestReceipt
     from .strategy_one_management_snapshot import (
-        ManagerSnapshotHead, load_attested_manager_snapshot, load_unattested_manager_snapshot_rows,
+        ManagerSnapshotHead, _load_attested_manager_snapshot, load_unattested_manager_snapshot_rows,
     )
-    from .strategy_one_broker_match_snapshot import BrokerMatchHead, load_attested_broker_match_snapshot
+    from .strategy_one_broker_match_snapshot import BrokerMatchHead, _load_attested_broker_match_snapshot
     from .original_risk_checkpoint import validate_original_risk_state
     from .arte_liquidity_fade_failure_v4 import validate_liquidity_checkpoint_reference
     if (type(requests) is not tuple or not 0 < len(requests) <= 65_536
@@ -97,56 +97,67 @@ def confirm_original_risk_checkpoint_sources(client, manager_keeper, broker_keep
             or any(head.run_id != run_id or head.checkpoint_sequence != receipt.last_sequence
                    or head.journal_batch_id != receipt.last_batch_id for head in (manager_head, broker_head))):
         raise ValueError('Original-risk confirmation receipt differs from selected native snapshot heads')
-    state = load_attested_manager_snapshot(client, manager_keeper, run_id=run_id,
-        checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source)
-    broker = load_attested_broker_match_snapshot(client, broker_keeper, run_id=run_id,
-        checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source)
-    manager = load_unattested_manager_snapshot_rows(client, run_id=run_id, checkpoint_sequence=receipt.last_sequence)
-    from src.backend.backtest_strategy_one_management import OriginalRiskManagementState
-    if type(state) is not OriginalRiskManagementState or state.original_risk_requests != requests:
-        raise ValueError('Original-risk pending decisions differ from the actual selected manager root')
-    if (manager.snapshot['content_hash'] != manager_head.snapshot_hash
-            or broker.snapshot['content_hash'] != broker_head.snapshot_hash
-            or manager.snapshot['boundary_ms'] != state.boundary_ms
-            or broker.snapshot['boundary_ms'] != state.boundary_ms
-            or manager.snapshot['session_date'] != broker.snapshot['session_date']):
-        raise ValueError('Original-risk confirmation snapshot roots differ from their attested decision clock')
-    refs = dict(source_manager_snapshot_id=manager.snapshot['snapshot_id'],
-        source_manager_checkpoint_sequence=receipt.last_sequence,
-        source_manager_snapshot_hash=manager_head.snapshot_hash,
-        source_broker_snapshot_id=broker.snapshot['snapshot_id'], source_broker_snapshot_hash=broker_head.snapshot_hash)
-    validate_liquidity_checkpoint_reference(refs)
-    identities, result = set(), []
-    for request in requests:
-        financial = request.financial
-        key = financial.account_id, financial.assignment_id, financial.ticker
-        if key in identities or request.witness.boundary_ms != state.boundary_ms:
-            raise ValueError('Original-risk confirmation repeats a position or crosses its native boundary')
-        identities.add(key)
-        source = validate_original_risk_state(request.witness, state, financial)
-        from src.backend.backtest_strategy_certified_price_break import (
-            CertifiedPriceReadbackAuthority,certified_price_entry_intent,
-        )
-        from src.backend.backtest_strategy_episode_activity_source import certified_episode_entry_intent
-        from .numbered_fixed_strategy import declared_fixed_rule
-        from datetime import date
-        if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id != run_id:
-            raise ValueError('Original-risk checkpoint lacks exact certified entry authority')
-        day=date.fromisoformat(manager.snapshot['session_date'])
-        entry=(certified_episode_entry_intent(first_price_source,source,session_date=day)
-            if declared_fixed_rule(source.strategy_number,'strategy-thirty-seven-confirmed-episode-activity-veto-v1')
-            else certified_price_entry_intent(first_price_source.plan,source,session_date=day))
-        if (entry.intent_id != request.source_entry_intent_id
-                or request.diagnostic.newest.session_date != manager.snapshot['session_date']
-                or request.diagnostic.newest.ticker != financial.ticker):
-            raise ValueError('Original-risk checkpoint crosses original entry or active session')
-        result.append(replace(request.diagnostic,checkpoint=OriginalRiskCheckpointReference(**refs)))
+    from ._checkpoint_prefix_read import _checkpoint_prefix_scope
+    with _checkpoint_prefix_scope(client, run_id=run_id,
+            checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source) as scope:
+        state = _load_attested_manager_snapshot(client, manager_keeper, run_id=run_id,
+            checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source, _scope=scope)
+        broker = _load_attested_broker_match_snapshot(client, broker_keeper, run_id=run_id,
+            checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source, _scope=scope)
+        manager = load_unattested_manager_snapshot_rows(client, run_id=run_id, checkpoint_sequence=receipt.last_sequence)
+        from src.backend.backtest_strategy_one_management import OriginalRiskManagementState
+        if type(state) is not OriginalRiskManagementState or state.original_risk_requests != requests:
+            raise ValueError('Original-risk pending decisions differ from the actual selected manager root')
+        if (manager.snapshot['content_hash'] != manager_head.snapshot_hash
+                or broker.snapshot['content_hash'] != broker_head.snapshot_hash
+                or manager.snapshot['boundary_ms'] != state.boundary_ms
+                or broker.snapshot['boundary_ms'] != state.boundary_ms
+                or manager.snapshot['session_date'] != broker.snapshot['session_date']):
+            raise ValueError('Original-risk confirmation snapshot roots differ from their attested decision clock')
+        refs = dict(source_manager_snapshot_id=manager.snapshot['snapshot_id'],
+            source_manager_checkpoint_sequence=receipt.last_sequence,
+            source_manager_snapshot_hash=manager_head.snapshot_hash,
+            source_broker_snapshot_id=broker.snapshot['snapshot_id'], source_broker_snapshot_hash=broker_head.snapshot_hash)
+        validate_liquidity_checkpoint_reference(refs)
+        identities, result = set(), []
+        for request in requests:
+            financial = request.financial
+            key = financial.account_id, financial.assignment_id, financial.ticker
+            if key in identities or request.witness.boundary_ms != state.boundary_ms:
+                raise ValueError('Original-risk confirmation repeats a position or crosses its native boundary')
+            identities.add(key)
+            source = validate_original_risk_state(request.witness, state, financial)
+            from src.backend.backtest_strategy_certified_price_break import (
+                CertifiedPriceReadbackAuthority,certified_price_entry_intent,
+            )
+            from src.backend.backtest_strategy_episode_activity_source import certified_episode_entry_intent
+            from .numbered_fixed_strategy import declared_fixed_rule
+            from datetime import date
+            if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id != run_id:
+                raise ValueError('Original-risk checkpoint lacks exact certified entry authority')
+            day=date.fromisoformat(manager.snapshot['session_date'])
+            entry=(certified_episode_entry_intent(first_price_source,source,session_date=day)
+                if declared_fixed_rule(source.strategy_number,'strategy-thirty-seven-confirmed-episode-activity-veto-v1')
+                else certified_price_entry_intent(first_price_source.plan,source,session_date=day))
+            if (entry.intent_id != request.source_entry_intent_id
+                    or request.diagnostic.newest.session_date != manager.snapshot['session_date']
+                    or request.diagnostic.newest.ticker != financial.ticker):
+                raise ValueError('Original-risk checkpoint crosses original entry or active session')
+            result.append(replace(request.diagnostic,checkpoint=OriginalRiskCheckpointReference(**refs)))
     if manager_keeper.read_head(run_id=run_id) != manager_head or broker_keeper.read_head(run_id=run_id) != broker_head:
         raise ValueError('Original-risk checkpoint heads changed before reference selection')
     return tuple(result)
 
 
 def load_original_risk_checkpoint(client, prefix, failure, parent, event, diagnostic,
+                                  *, first_price_source):
+    """Reconstruct or reuse an exact completed proof inside one full read only."""
+    from ._checkpoint_prefix_read import _reconstruct_original_risk_checkpoint
+    return _reconstruct_original_risk_checkpoint(client, prefix, failure, parent,
+        event, diagnostic, first_price_source=first_price_source)
+
+
+def _load_original_risk_checkpoint(client, prefix, failure, parent, event, diagnostic,
                                   *, first_price_source):
     """Verify actual pre-exit manager and broker state against a committed prefix."""
     from .arte_journal_commit_v4 import V4CommittedPrefix
@@ -215,4 +226,7 @@ def load_original_risk_checkpoint(client, prefix, failure, parent, event, diagno
             or float(entry['invalidation_price']) != diagnostic.current.initial_stop
             or source_event['sequence'] >= sequence):
         raise ValueError('Original-risk checkpoint differs from committed original entry')
+    from ._checkpoint_prefix_read import _observe_checkpoint_completed
+    _observe_checkpoint_completed(client, prefix, cursor, rows, state,
+        first_price_source=first_price_source, diagnostic=diagnostic)
     return state

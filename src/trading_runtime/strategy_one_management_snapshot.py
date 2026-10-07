@@ -548,6 +548,16 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
                                    checkpoint_sequence: int,
                                    first_price_source=None,
                                    ) -> StrategyOneManagementState:
+    """Standalone cold read; always independently verifies its full prefix."""
+    return _load_attested_manager_snapshot(client, keeper, run_id=run_id,
+        checkpoint_sequence=checkpoint_sequence, first_price_source=first_price_source)
+
+
+def _load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReader,
+                                   *, run_id: str,
+                                   checkpoint_sequence: int,
+                                   first_price_source=None, _scope=None,
+                                   ) -> StrategyOneManagementState:
     """Read only a Keeper-selected snapshot at the exact cold V4 cursor."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
@@ -557,8 +567,12 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
             or not callable(getattr(client, "execute", None))
             or not callable(getattr(keeper, "read_head", None))):
         raise ValueError("Strategy 1 manager cold read lacks exact authorities")
-    prefix = (load_verified_v4_prefix(client, run_id) if first_price_source is None else
-              load_verified_v4_prefix(client, run_id, first_price_source=first_price_source))
+    if _scope is None:
+        prefix = (load_verified_v4_prefix(client, run_id) if first_price_source is None else
+                  load_verified_v4_prefix(client, run_id, first_price_source=first_price_source))
+    else:
+        from ._checkpoint_prefix_read import _scoped_prefix
+        prefix = _scoped_prefix(_scope, client, run_id, checkpoint_sequence, first_price_source)
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not prefix.batch_ids

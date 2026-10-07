@@ -168,6 +168,9 @@ def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event,
     quantity = float64_from_bits(positions[0]['quantity_f64_bits'], 'held quantity')
     if quantity <= 0 or quantity != financial.position_quantity or quantity != float(parent['quantity']):
         raise ValueError('Liquidity held quantity differs from its native broker checkpoint')
+    from ._checkpoint_prefix_read import _observe_checkpoint_financial
+    _observe_checkpoint_financial(client, prefix, context, cursor, image, lineage,
+        first_price_source=first_price_source, diagnostic=original_risk_diagnostic)
     return LiquidityFadeFinancialCheckpoint(prefix.run_id, sequence, witness.boundary_ms,
         root['snapshot_id'], root['content_hash'], financial.account_id, financial.assignment_id,
         financial.ticker, conid, quantity)
