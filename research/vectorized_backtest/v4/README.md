@@ -1,6 +1,7 @@
 # Vectorized backtest v4
 
-V4 implements all 147 V6-schema feature channels, shared 120-observed-candle
+V4 implements all 147 V6-schema feature channels plus two causal split flags,
+shared 120-observed-candle
 history, typed variable-length lifecycle rule programs and a stability objective.
 This version is independent of v2/v3. Its copied broker preserves the shared
 25% approximate liquidity, costs, cash, partial fills and stop-risk contracts.
@@ -25,7 +26,10 @@ modules are compatibility/reference mechanics, not V4 full optimization launcher
 
 ## Search and objective contract
 
-Every feature and its validity mask is selectable. Programs may use typed
+Every feature and its validity mask is represented in the bank. The premarket
+search excludes the three session-regime operands (`premarket`, `regular`,
+`after_hours`), leaving 146 searchable channels; bank IDs and history remain
+intact. Programs may use typed
 constants, feature-to-feature comparisons, arithmetic, crossings, Boolean
 composition, lag, differences, sliding mean/min/max. Each candidate has entry,
 exit, trailing-amendment and replacement rule outputs. Insertion/deletion lets
@@ -90,8 +94,10 @@ V6 producer. `bootstrap` requires explicit market manifest/ledger arguments and
 allocates V4-owned execution roots. `prepare_execution` is a SELECT-only training
 snapshot producer. It retains the price envelope and admits at a completed 1s
 price; it does not require the fixed V3 squeeze signal. The searched entry program
-decides when to trade. Final validation preparation requires the frozen-winner
-path and is not available through this training-only command yet.
+decides when to trade. Final validation preparation through `extract_features`,
+`prepare_execution` and `certify_splits` requires `--frozen-winner`, whose exact
+full-budget identity, checkpoint, generation hashes and passed audit are checked
+before market reads.
 
 V4 requires an immutable opening-as-of split certificate for every consumed
 feature bank. `certify_splits` reads the existing canonical reference authority
@@ -197,6 +203,25 @@ shared. Receipts report both loading time and the unhidden `prefetch_wait`;
 wall-clock session time includes only that wait, avoiding double-counting
 overlapped preparation. `--profile --profile-sessions 2` measures overlap on
 two complete training sessions without selection or validation access.
+
+The qualified 52b8e9c83 workstation revision profiled two full B128 sessions.
+The second session prepared inputs for 48.529 seconds with only 0.0000134 seconds
+of residual wait; graph reuse avoided another compile and its total was 392.512
+seconds. In the live campaign, the first overlapped session hid 59.497 seconds
+of preparation with 0.0000174 seconds of wait, but took 421.985 seconds overall
+because transfer and rule preparation varied by day. These are scoped timings,
+not a whole-campaign speedup estimate. The initial continuation reused the first
+receipt instead of replaying it, so its next cold load still had a 27.995-second
+wait. Financial fill counts and valid ledger entries matched exactly between
+fresh and reused full-session graphs on July 31.
+
+Display revisions may run from a separate immutable UI checkout while the
+financial worker retains its qualified source. The current read-only renderer
+uses 6e28822be; the worker uses 52b8e9c83. Profile counts follow the identity's
+actual session count. Live population P&L, pooled win rate, profit factor and
+holding times remain visible before any completed leader exists. They are
+separate from completed strategy metrics. During next-session preparation, the
+previous completed replay is labeled `Last backtest s`, with no stale zero ETA.
 
 The explicitly authorized `--continue-from` operation supports a stopped
 campaign before its first generation completes. It requires unchanged inputs,
