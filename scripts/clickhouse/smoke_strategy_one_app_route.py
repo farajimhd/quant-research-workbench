@@ -38,9 +38,23 @@ async def _await_run_with_progress(controller, *, interval_s: float = 30) -> Non
     while not task.done():
         done, _ = await asyncio.wait({task}, timeout=interval_s)
         if not done:
+            current = getattr(controller, "current_time", None)
+            requested = getattr(getattr(controller, "definition", None),
+                                "requested_start", None)
+            simulated = ((current - requested).total_seconds()
+                         if current is not None and requested is not None else None)
             print(f"App progress: run_id={controller.run_id} status={controller.status} "
                   f"elapsed_s={perf_counter() - began:.1f} "
-                  f"processed_rows={controller.processed_events}", flush=True)
+                  f"processed_broker_rows={controller.processed_events} "
+                  f"market_time={current.isoformat() if current is not None else 'unavailable'} "
+                  f"simulation_elapsed_s={simulated if simulated is not None else 'unavailable'}",
+                  flush=True)
+            stages = getattr(controller, "_stage_timings", {})
+            for name, row in sorted(stages.items(),
+                                    key=lambda item: (-item[1]['seconds'], item[0]))[:3]:
+                print(f"App completed-stage timing: {name} calls={row['calls']} "
+                      f"wall_s={row['seconds']:.3f} "
+                      f"max_call_s={row['maximum_seconds']:.3f}", flush=True)
     await task
 
 
