@@ -57,6 +57,38 @@ are independent accounts; liquidity is shared among positions within each candid
 not between strategies. Logical population may greatly exceed a physical batch.
 No per-candidate feature histories or competing GPU worker processes are created.
 
+Execution specialization keeps the original strategy population and RNG unchanged.
+It stably sorts execution by configured lot count, allocates each physical batch's
+actual maximum (1–15), and restores all metrics to original candidate order.
+Batch receipts bind the permutation and candidate identities; the final auditor
+requires complete, unique candidate coverage. A changed lot/mode/history signature
+requires a new captured runner rather than changing a graph's assumptions.
+
+Native programs skip unused legacy entry/retest/MACD computations and atomic-rule
+history. Uniform batches skip disabled replacement, structural-target, swing-stop,
+or alternative trailing branches. Rolling financial histories use the batch's
+maximum required windows; zero-weight momentum/attention skip their calculations.
+Mixed batches retain every needed branch. Certified feature windows remain 120
+observed candles and financial durations remain UTC timestamp based.
+Temporal rule operations gather only the candidate lanes requesting each
+operator/window pair, rather than calculating every distinct window for all lanes.
+The reference masked/full-batch implementation remains available for parity checks.
+
+Actual fill logging uses a masked FP64 GPU scatter behind a Torch custom operator:
+native Torch prefix ranks keep the original fill order, while a Triton kernel
+writes only real rows instead of materializing inactive zero rows. CPU/native
+Torch logging remains the reference. No account arithmetic or liquidity contract
+changes. Deliberate compiled variants have a bounded 128-entry recompilation
+limit; full-graph compilation still fails rather than falling back to eager work.
+
+`profile_execution --sessions PLAN --output UNIQUE --baseline-session RECEIPT_DIR`
+measures cold and warm specialization passes against immutable before-change
+evidence. It requires identical population/input/duration bindings, exact actual
+fill rows and financial metric agreement (rtol 1e-10, atol 1e-7), and audits cash,
+quantity, fees and holding durations independently. Prefix checks explicitly
+exclude final terminal eligibility. Reports separate replay, rule preparation,
+compilation and end-to-end improvement; slot-count ratios are not speed evidence.
+
 Run from the laptop repository or an immutable committed workstation copy:
 
 ```powershell

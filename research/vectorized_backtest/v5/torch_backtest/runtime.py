@@ -22,6 +22,10 @@ def require_runtime(path):
 def configure_caches(runtime=DEFAULT):
     runtime = require_runtime(runtime)
     configure_compiler()
+    import torch
+    # Exact lot capacities and uniform-mode branches are deliberate, bounded
+    # V5 variants. Exhaustion remains an error (fullgraph), never an eager fallback.
+    torch._dynamo.config.recompile_limit=128
     import tempfile
 
     scratch = require_runtime(runtime / "compiler-tmp")

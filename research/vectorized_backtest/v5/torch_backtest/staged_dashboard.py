@@ -53,7 +53,8 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
               ('Share-weighted hold s',number(metrics.get('mean_hold_seconds'))),
               ('Stop-risk / capital hours',f"{number(metrics.get('stop_risk_hours'))} / {number(metrics.get('capital_hours'))}")]
     elif view=='performance':
-        timing=status.get('timing',{});rows=[(key.replace('_',' ').title()+' s',number(value)) for key,value in timing.items()]
+        timing=status.get('timing') or {};rows=[('Allocated lots / stock',number(status.get('execution_lot_capacity'),',.0f'))]
+        rows.extend((key.replace('_',' ').title()+' s',number(value)) for key,value in timing.items())
         rows.extend([('GPU allocated GiB',number(status.get('gpu_gib'))),('Replay timestamps/s',number(status.get('replay_rate')))])
     else:
         rows=[('Net P&L $',number(metrics.get('total_pnl'))),('P&L excluding best day $',number(metrics.get('other_days_pnl'))),

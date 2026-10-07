@@ -30,13 +30,16 @@ def verified_panel(root,folder_name,record,population,sessions,space,objective):
         receipt=read(path)
         if receipt['day']!=session['day'] or receipt['population_sha256']!=expected or receipt.get('profile_seconds') is not None:
             raise ValueError('Session day/population/full-duration mismatch')
+        order=receipt.get('candidate_order',list(range(len(population))))
+        if sorted(order)!=list(range(len(population))):raise ValueError('Execution permutation loses/duplicates candidates')
         parts=[];left=0
         for index,batch in enumerate(receipt['batch_receipts']):
             directory=f'batch_{index:04d}';batch_path=path.parent/directory/'receipt.json'
             if batch['directory']!=directory or file_hash(batch_path)!=batch['sha256']:
                 raise ValueError('Batch order/path/hash mismatch')
-            value=read(batch_path);count=value['candidate_count'];members=population[left:left+count]
+            value=read(batch_path);count=value['candidate_count'];indices=order[left:left+count];members=[population[i] for i in indices]
             if (count<1 or value['candidate_start']!=left or len(members)!=count
+                    or value.get('candidate_indices',list(range(left,left+count)))!=indices
                     or value['population_sha256']!=fingerprint([state(v) for v in members])):
                 raise ValueError('Candidate coverage/identity mismatch')
             source_binding={key:receipt[key] for key in ('day','execution','feature_certificate','prior_certificate','identity_map_sha256','split_certificate_sha256','previous_split_certificate_sha256')}
@@ -44,7 +47,7 @@ def verified_panel(root,folder_name,record,population,sessions,space,objective):
             if file_hash(batch_path.parent/'fills.pt')!=value['ledger_sha256']:raise ValueError('Actual fill bytes changed')
             audit_fills(batch_path.parent/'fills.pt',value['metrics'],initial_cash=space.settings.initial_cash)
             parts.append(value['metrics']);left+=count
-        if left!=len(population) or merge_metrics(parts)!=receipt['metrics']:
+        if left!=len(population) or merge_metrics(parts,order)!=receipt['metrics']:
             raise ValueError('Candidate metrics do not reconcile with batch ledgers')
         results.append(receipt['metrics']);bindings.append(dict(path=str(path),sha256=file_hash(path),day=receipt['day']))
     calculated=objective_matrix(results,population,objective)

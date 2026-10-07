@@ -50,3 +50,17 @@ def test_listing_batch_constants_crosses_and_missing_evidence():
         torch.testing.assert_close(values[:, listing], expected)
         assert torch.equal(masks[:, listing], known)
     assert not masks[0, 0, 4:6].any()
+
+
+@pytest.mark.parametrize('operation',[Op.LAG,Op.DIFFERENCE,Op.MEAN,Op.MINIMUM,Op.MAXIMUM])
+@pytest.mark.parametrize('device',['cpu','cuda'])
+def test_window_groups_match_unpruned_evaluator_exactly(operation,device):
+    if device=='cuda' and not torch.cuda.is_available():pytest.skip('CUDA required')
+    generator=torch.Generator().manual_seed(20261005)
+    features=torch.randn(3,257,len(CATALOG),generator=generator).to(device)
+    valid=(torch.rand(features.shape,generator=torch.Generator(device=device).manual_seed(4),device=device)>.03)
+    windows=[1,3,10,60,30 if operation in (Op.LAG,Op.DIFFERENCE) else 120]*3
+    programs=[Program((Node(Op.FEATURE,feature=8),Node(operation,a=0,window=k),Node(Op.GREATER,a=0,b=1)),2) for k in windows]
+    actual,mask=TorchPrograms(programs,CATALOG,device=device)(features,valid)
+    expected,known=TorchPrograms(programs,CATALOG,device=device,specialize_windows=False)(features,valid)
+    assert torch.equal(actual,expected) and torch.equal(mask,known)

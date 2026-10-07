@@ -16,7 +16,7 @@ from time import perf_counter
 import torch
 
 from .grid import MAX_POSITIONS, Settings
-from .ledger_write import ledger_append
+from .ledger_write import ledger_append,masked_ledger_append
 from .remainder_update import remainder_update
 
 
@@ -52,6 +52,8 @@ class SqueezeRunner:
         maximum_fills=16384,
         graph_steps=16,
         ledger_mode="inplace",
+        slot_capacity=MAX_POSITIONS,
+        masked_ledger=False,
     ):
         self.tape = tape.validate()
         self.settings = settings.validate()
@@ -71,11 +73,16 @@ class SqueezeRunner:
         if ledger_mode not in ("unique", "atomic", "inplace"):
             raise ValueError("Unknown ledger write mode")
         self.ledger_mode = ledger_mode
-        self.shape = (self.b, self.n, MAX_POSITIONS)
+        self.masked_ledger=masked_ledger
+        if type(slot_capacity) is not int or not 1<=slot_capacity<=MAX_POSITIONS:
+            raise ValueError('Slot capacity must preserve the 1..15 lot contract')
+        if any(c.positions>slot_capacity for c in candidates):raise ValueError('Strategy exceeds allocated lot capacity')
+        self.slots=slot_capacity
+        self.shape = (self.b, self.n, self.slots)
         # Include four distinct exit-order commission histories and bounded logs.
-        estimate = self.b * self.n * 15 * 364 + self.b * maximum_fills * 9 * 8
+        estimate = self.b * self.n * self.slots * 364 + self.b * maximum_fills * 9 * 8
         if ledger_mode != "atomic":
-            estimate += self.b * self.n * 15 * 9 * 8
+            estimate += self.b * self.n * self.slots * 9 * 8
         if (
             not math.isfinite(maximum_state_gib)
             or maximum_state_gib <= 0
@@ -180,7 +187,7 @@ class SqueezeRunner:
             # Inactive slots get distinct scratch locations, avoiding thousands
             # of zero atomics contending on one real ledger row. Active prefix
             # ranks are unique, so direct overwrite preserves exact fill rows.
-            state("ledger_storage", (self.b, maximum_fills + self.n * 15, 9))
+            state("ledger_storage", (self.b, maximum_fills + self.n * self.slots, 9))
             self.ledger = self.ledger_storage[:, :maximum_fills]
         else:
             state("ledger", (self.b, maximum_fills, 9))
@@ -206,11 +213,11 @@ class SqueezeRunner:
         )
         state("previous_close", (self.n,), value=float("nan"))
         state("swing_low", (self.n,), value=float("nan"))
-        self.rank = torch.arange(1, 16, device=tape.device, dtype=torch.float64)[
+        self.rank = torch.arange(1, self.slots+1, device=tape.device, dtype=torch.float64)[
             None, None
         ]
         self.ticker_axis = torch.arange(self.n, device=tape.device)[None]
-        self.slot_axis = torch.arange(self.n * 15, device=tape.device)[None]
+        self.slot_axis = torch.arange(self.n * self.slots, device=tape.device)[None]
         self.macd_bits = torch.tensor((1, 2, 4, 8), device=tape.device)[None, None]
         self.batch_axis = torch.arange(self.b, device=tape.device)
         self.start = int(tape.provenance.get("start_second", int(tape.clocks[0])))
@@ -239,6 +246,7 @@ class SqueezeRunner:
         rows = []
         for c in candidates:
             c.validate()
+            if c.positions>self.slots:raise ValueError('Changing lot capacity requires a new runner')
             rows.append(
                 (
                     ("signal", "hold", "retest", "macd").index(c.entry),
@@ -360,7 +368,7 @@ class SqueezeRunner:
     def _log(self, qty, price, fee, now, side, reason):
         """Compact device ledger [B,E,9]; fail closed on capacity exhaustion."""
         if self.ledger_mode == "inplace":
-            ledger_append(
+            (masked_ledger_append if self.masked_ledger else ledger_append)(
                 self.ledger_storage,
                 self.fill_count,
                 self.overflow,
@@ -375,7 +383,7 @@ class SqueezeRunner:
                 self.maximum_fills,
             )
             return
-        shape = (self.b, self.n * 15)
+        shape = (self.b, self.n * self.slots)
         active = qty.reshape(shape) > 0
         positions = self.fill_count[:, None] + active.cumsum(-1) - 1
         in_bounds = positions < self.maximum_fills
@@ -383,8 +391,8 @@ class SqueezeRunner:
         rows = torch.stack(
             (
                 now.expand(shape),
-                self.slot_axis.expand(shape) // 15,
-                self.slot_axis.expand(shape) % 15,
+                self.slot_axis.expand(shape) // self.slots,
+                self.slot_axis.expand(shape) % self.slots,
                 torch.full_like(qty.reshape(shape), side),
                 qty.reshape(shape),
                 price.expand(self.shape).reshape(shape),
@@ -639,63 +647,66 @@ class SqueezeRunner:
             now - self.tape.admission <= self._value("maximum_signal_age_seconds", 2)
         )
         watching = active_signal & ~self.used & (now >= self.start_boundary)
-        crossed = above[None] & ~self.previous_above & self.previous_valid & watching
-        self.hold_since.copy_(
-            torch.where(
-                crossed, now, torch.where(above[None] & watching, self.hold_since, 0)
+        if not getattr(self,'specialize',False):
+            crossed = above[None] & ~self.previous_above & self.previous_valid & watching
+            self.hold_since.copy_(
+                torch.where(
+                    crossed, now, torch.where(above[None] & watching, self.hold_since, 0)
+                )
             )
-        )
-        hold = (
-            above[None]
-            & (self.hold_since > 0)
-            & (now - self.hold_since >= p[:, 3, None])
-        )
-        line, signal = self._row("macd_line"), self._row("macd_signal")
-        selected = (p[:, 1, None, None].bitwise_and(self.macd_bits)) != 0
-        known = torch.isfinite(line)[None] & torch.isfinite(signal)[None]
-        opened = (line > signal)[None] & known
-        # ALL requires every selected lane known/open; ANY cannot use unknowns.
-        macd = torch.where(
-            p[:, 2, None] == 1,
-            (~selected | opened).all(-1),
-            (selected & opened).any(-1),
-        )
-        macd &= above[None]
-        old_high = self._recent_high()
-        breakout = (
-            observed[None]
-            & above[None]
-            & (close[None] > old_high)
-            & (self.previous_close[None] <= old_high)
-        )
-        phase = self.retest_phase.clone()
-        invalid = ~above[None] | (
-            now - self.retest_at > self._value("retest_timeout_seconds", 2)
-        )
-        invalid |= close[None] < self.retest_level * (
-            1 - self._value("retest_tolerance_fraction", 2)
-        )
-        reset = invalid | ~watching
-        phase = torch.where(reset, 0, phase)
-        begin = (phase == 0) & breakout & watching
-        self.retest_level.copy_(torch.where(begin, old_high, self.retest_level))
-        self.retest_at.copy_(torch.where(begin, now, self.retest_at))
-        touch = (phase == 1) & observed[None] & (now > self.retest_at)
-        touch &= (
-            low[None]
-            <= self.retest_level * (1 + self._value("retest_tolerance_fraction", 2))
-        ) & (close[None] >= self.retest_level)
-        self.retest_high.copy_(torch.where(touch, high[None], self.retest_high))
-        resume = (phase == 2) & observed[None] & (close[None] > self.retest_high)
-        phase = torch.where(begin, 1, torch.where(touch, 2, phase))
-        self.retest_phase.copy_(phase)
-        gate = torch.where(
-            p[:, 0, None] == 0,
-            observed[None] & (now == self.tape.admission)[None],
-            torch.where(
-                p[:, 0, None] == 1, hold, torch.where(p[:, 0, None] == 2, resume, macd)
-            ),
-        )
+            hold = (
+                above[None]
+                & (self.hold_since > 0)
+                & (now - self.hold_since >= p[:, 3, None])
+            )
+            line, signal = self._row("macd_line"), self._row("macd_signal")
+            selected = (p[:, 1, None, None].bitwise_and(self.macd_bits)) != 0
+            known = torch.isfinite(line)[None] & torch.isfinite(signal)[None]
+            opened = (line > signal)[None] & known
+            # ALL requires every selected lane known/open; ANY cannot use unknowns.
+            macd = torch.where(
+                p[:, 2, None] == 1,
+                (~selected | opened).all(-1),
+                (selected & opened).any(-1),
+            )
+            macd &= above[None]
+            old_high = self._recent_high()
+            breakout = (
+                observed[None]
+                & above[None]
+                & (close[None] > old_high)
+                & (self.previous_close[None] <= old_high)
+            )
+            phase = self.retest_phase.clone()
+            invalid = ~above[None] | (
+                now - self.retest_at > self._value("retest_timeout_seconds", 2)
+            )
+            invalid |= close[None] < self.retest_level * (
+                1 - self._value("retest_tolerance_fraction", 2)
+            )
+            reset = invalid | ~watching
+            phase = torch.where(reset, 0, phase)
+            begin = (phase == 0) & breakout & watching
+            self.retest_level.copy_(torch.where(begin, old_high, self.retest_level))
+            self.retest_at.copy_(torch.where(begin, now, self.retest_at))
+            touch = (phase == 1) & observed[None] & (now > self.retest_at)
+            touch &= (
+                low[None]
+                <= self.retest_level * (1 + self._value("retest_tolerance_fraction", 2))
+            ) & (close[None] >= self.retest_level)
+            self.retest_high.copy_(torch.where(touch, high[None], self.retest_high))
+            resume = (phase == 2) & observed[None] & (close[None] > self.retest_high)
+            phase = torch.where(begin, 1, torch.where(touch, 2, phase))
+            self.retest_phase.copy_(phase)
+            gate = torch.where(
+                p[:, 0, None] == 0,
+                observed[None] & (now == self.tape.admission)[None],
+                torch.where(
+                    p[:, 0, None] == 1, hold, torch.where(p[:, 0, None] == 2, resume, macd)
+                ),
+            )
+        else:
+            gate=observed[None].expand(self.b,-1)
         spread = (ask - bid) / ask.clamp_min(s.price_tick)
         basic = (
             (observed & quote & (bid > 0) & (ask >= bid))[None]
@@ -720,34 +731,34 @@ class SqueezeRunner:
         self._manage_remainders(now, ask, basic & active_signal & remainder_signal
                                 & self._entry_filter(now, close) & ~terminal)
         # Shared market geometry is selected once per tick, not once per B.
-        if self.tape.structural_targets is not None:
-            # [N,15] already selected causally once per ticker/second, shared by B candidates.
-            structural = self._row("structural_targets") - s.price_tick
-        else:
-            geometry = (
-                (self.tape.level_from <= now)
-                & (now < self.tape.level_to)
-                & self.tape.level_resistance
-                & (self.tape.level_lower > ask[:, None])
+        target_mode=self.execution_key[1][1] if getattr(self,'specialize',False) else -1
+        if target_mode!=0:
+            if self.tape.structural_targets is not None:
+                # [N,15] already selected causally once per ticker/second, shared by B candidates.
+                structural = self._row("structural_targets")[:, :self.slots] - s.price_tick
+            else:
+                geometry = (
+                    (self.tape.level_from <= now)
+                    & (now < self.tape.level_to)
+                    & self.tape.level_resistance
+                    & (self.tape.level_lower > ask[:, None])
+                )
+                levels = torch.where(
+                    geometry, self.tape.level_lower - s.price_tick, float("inf")
+                )
+                structural = levels.topk(self.slots, dim=-1, largest=False, sorted=True).values
+            structural = torch.where(
+                self._row("structural_clock")[:, None], structural, float("inf")
             )
-            levels = torch.where(
-                geometry, self.tape.level_lower - s.price_tick, float("inf")
-            )
-            structural = levels.topk(15, dim=-1, largest=False, sorted=True).values
-        structural = torch.where(
-            self._row("structural_clock")[:, None], structural, float("inf")
-        )
-        target = torch.where(
-            p[:, 6, None, None] == 1,
-            structural[None],
-            ask[None, :, None]
-            * (1 + self.rank * self._value("target_step_fraction", 3)),
-        )
-        initial = torch.where(
-            p[:, 8, None] == 1,
-            self._swing_level() - s.price_tick,
-            ask[None] * (1 - self._value("initial_stop_fraction", 2)),
-        )
+        if target_mode!=1:
+            percentage=ask[None,:,None]*(1+self.rank*self._value('target_step_fraction',3))
+        if target_mode==0:target=percentage
+        elif target_mode==1:target=structural[None].expand(self.b,-1,-1)
+        else:target=torch.where(p[:,6,None,None]==1,structural[None],percentage)
+        stop_mode=self.execution_key[1][3] if getattr(self,'specialize',False) else -1
+        if stop_mode==0:initial=ask[None]*(1-self._value('initial_stop_fraction',2))
+        elif stop_mode==1:initial=self._swing_level()-s.price_tick
+        else:initial=torch.where(p[:,8,None]==1,self._swing_level()-s.price_tick,ask[None]*(1-self._value('initial_stop_fraction',2)))
         slots = self.rank <= p[:, 4, None, None]
         geometry_ok = torch.isfinite(initial) & (initial > 0) & (initial < bid[None])
         geometry_ok &= (
@@ -763,25 +774,31 @@ class SqueezeRunner:
         ).all(-1)
         self.rejected_geometry.add_((ready & ~geometry_ok).sum(-1))
         ready &= geometry_ok
-        prior_close = self._momentum_close()
-        # Comparable bounded score for incoming tickers and held positions.
-        momentum = (
-            ((close[None] / prior_close - 1) / self._value("momentum_scale", 2))
-            .nan_to_num(0)
-            .clamp(-1, 1)
-        )
+        if getattr(self,'specialize',False) and self.execution_key[3][0]:
+            momentum=close.new_zeros((self.b,self.n))
+        else:
+            prior_close = self._momentum_close()
+            # Comparable bounded score for incoming tickers and held positions.
+            momentum = (
+                ((close[None] / prior_close - 1) / self._value("momentum_scale", 2))
+                .nan_to_num(0)
+                .clamp(-1, 1)
+            )
         strength = (
             ((close[None] / self._row("vwap") - 1) / self._value("strength_scale", 2))
             .nan_to_num(0)
             .clamp(-1, 1)
         )
-        cap = self._value("attention_cap", 2)
-        attention = (
-            (notional[None] / self._attention_mean())
-            .nan_to_num(0, posinf=1e100)
-            .clamp_min(0)
-        )
-        attention = attention.clamp(max=cap) / cap
+        if getattr(self,'specialize',False) and self.execution_key[3][1]:
+            attention=close.new_zeros((self.b,self.n))
+        else:
+            cap = self._value("attention_cap", 2)
+            attention = (
+                (notional[None] / self._attention_mean())
+                .nan_to_num(0, posinf=1e100)
+                .clamp_min(0)
+            )
+            attention = attention.clamp(max=cap) / cap
         liquidity = (
             volume[None] * s.participation * bid / self.settings.initial_cash
         ).clamp(0, 1)
@@ -894,63 +911,64 @@ class SqueezeRunner:
         # A missing/failed replacement setup releases the waiting request; its
         # cash remains cash, never a forced acquisition.
         self.rotation_wait.copy_(torch.where(requested, -1, self.rotation_wait))
-        holding_up = (self.target - bid[None, :, None]).clamp_min(0)
-        holding_down = (bid[None, :, None] - self.stop).clamp_min(s.price_tick)
-        stagnation = (
-            (now - self.last_high).to(torch.float64)
-            / self._value("stagnation_seconds", 3)
-        ).clamp(0, 1)
-        held_score = (
-            common_score[..., None]
-            + self._value("reward_risk_weight", 3)
-            * holding_up
-            / (holding_up + holding_down)
-            - self._value("stagnation_weight", 3) * stagnation
-        )
-        replaceable = (
-            (self.quantity > 0) & (self.exit_kind == 0) & (self.remaining == 0)
-        )
-        replaceable &= now - self.first_fill >= s.minimum_position_hold_seconds
-        replaceable &= self.remaining.sum(-1, keepdim=True) == 0
-        weak_scores = torch.where(replaceable, held_score, float("inf")).reshape(
-            self.b, -1
-        )
-        weak = weak_scores.argmin(-1)
-        weak_score = weak_scores.gather(1, weak[:, None]).squeeze(1)
-        new_score = scores.gather(1, chosen[:, None]).squeeze(1)
-        qualified = (p[:, 9] == 1) & chosen_ready & ~can_enter & ~waiting & ~requested
-        if getattr(self, 'native_programs', False):
-            qualified &= self._program_gate('replacement').gather(1, chosen[:, None]).squeeze(1)
-        qualified &= (now >= self.cooldown_until) & torch.isfinite(weak_score)
-        qualified &= weak // 15 != chosen
-        qualified &= new_score - weak_score >= self._value("replacement_margin", 1)
-        same = (chosen == self.rotation_confirm_ticker) & (
-            weak == self.rotation_confirm_slot
-        )
-        self.rotation_since.copy_(
-            torch.where(qualified, torch.where(same, self.rotation_since, now), 0)
-        )
-        self.rotation_confirm_ticker.copy_(torch.where(qualified, chosen, -1))
-        self.rotation_confirm_slot.copy_(torch.where(qualified, weak, -1))
-        rotate = qualified & (
-            now - self.rotation_since >= self._value("replacement_confirm_seconds", 1)
-        )
-        rotate_mask = (self.slot_axis == weak[:, None]) & rotate[:, None]
-        self.exit_kind.copy_(
-            torch.where(rotate_mask.reshape(self.shape), 3, self.exit_kind)
-        )
-        self.rotation_wait.copy_(torch.where(rotate, chosen, self.rotation_wait))
-        self.rotation_exit_slot.copy_(
-            torch.where(rotate, weak, self.rotation_exit_slot)
-        )
-        self.cooldown_until.copy_(
-            torch.where(
-                rotate,
-                now + self._value("replacement_cooldown_seconds", 1),
-                self.cooldown_until,
+        if not getattr(self,'specialize',False) or self.execution_key[1][4]!=0:
+            holding_up = (self.target - bid[None, :, None]).clamp_min(0)
+            holding_down = (bid[None, :, None] - self.stop).clamp_min(s.price_tick)
+            stagnation = (
+                (now - self.last_high).to(torch.float64)
+                / self._value("stagnation_seconds", 3)
+            ).clamp(0, 1)
+            held_score = (
+                common_score[..., None]
+                + self._value("reward_risk_weight", 3)
+                * holding_up
+                / (holding_up + holding_down)
+                - self._value("stagnation_weight", 3) * stagnation
             )
-        )
-        self.rotations.add_(rotate.to(torch.int64))
+            replaceable = (
+                (self.quantity > 0) & (self.exit_kind == 0) & (self.remaining == 0)
+            )
+            replaceable &= now - self.first_fill >= s.minimum_position_hold_seconds
+            replaceable &= self.remaining.sum(-1, keepdim=True) == 0
+            weak_scores = torch.where(replaceable, held_score, float("inf")).reshape(
+                self.b, -1
+            )
+            weak = weak_scores.argmin(-1)
+            weak_score = weak_scores.gather(1, weak[:, None]).squeeze(1)
+            new_score = scores.gather(1, chosen[:, None]).squeeze(1)
+            qualified = (p[:, 9] == 1) & chosen_ready & ~can_enter & ~waiting & ~requested
+            if getattr(self, 'native_programs', False):
+                qualified &= self._program_gate('replacement').gather(1, chosen[:, None]).squeeze(1)
+            qualified &= (now >= self.cooldown_until) & torch.isfinite(weak_score)
+            qualified &= weak // self.slots != chosen
+            qualified &= new_score - weak_score >= self._value("replacement_margin", 1)
+            same = (chosen == self.rotation_confirm_ticker) & (
+                weak == self.rotation_confirm_slot
+            )
+            self.rotation_since.copy_(
+                torch.where(qualified, torch.where(same, self.rotation_since, now), 0)
+            )
+            self.rotation_confirm_ticker.copy_(torch.where(qualified, chosen, -1))
+            self.rotation_confirm_slot.copy_(torch.where(qualified, weak, -1))
+            rotate = qualified & (
+                now - self.rotation_since >= self._value("replacement_confirm_seconds", 1)
+            )
+            rotate_mask = (self.slot_axis == weak[:, None]) & rotate[:, None]
+            self.exit_kind.copy_(
+                torch.where(rotate_mask.reshape(self.shape), 3, self.exit_kind)
+            )
+            self.rotation_wait.copy_(torch.where(rotate, chosen, self.rotation_wait))
+            self.rotation_exit_slot.copy_(
+                torch.where(rotate, weak, self.rotation_exit_slot)
+            )
+            self.cooldown_until.copy_(
+                torch.where(
+                    rotate,
+                    now + self._value("replacement_cooldown_seconds", 1),
+                    self.cooldown_until,
+                )
+            )
+            self.rotations.add_(rotate.to(torch.int64))
         # Amend protection only AFTER frozen interval processing.
         live = (self.quantity > 0) & observed[None, :, None] & (now > self.first_fill)
         new_high = live & (high[None, :, None] > self.peak_price)
@@ -958,38 +976,41 @@ class SqueezeRunner:
         self.peak_price.copy_(
             torch.where(new_high, high[None, :, None], self.peak_price)
         )
-        movement = torch.where(
-            observed & torch.isfinite(self.previous_close),
-            (close - self.previous_close).abs(),
-            float("nan"),
-        )
-        self.movement_ring.copy_(
-            torch.cat((movement[None], self.movement_ring[:-1]), 0)
-        )
-        average_move = self._average_move()
-        adaptive = self.peak_price - torch.maximum(
-            average_move[..., None] * self._value("adaptive_multiplier", 3),
-            self.average * self._value("minimum_trail_fraction", 3),
-        )
-        # SearchRunner pads history to 32 slots, but activation belongs to each
-        # candidate's selected elapsed window, not that allocation capacity.
-        enough = (
-            now - self.first_fill >= self._value("adaptive_window", 3)
-        ) & torch.isfinite(adaptive)
-        steps = torch.floor(
-            (
-                (self.peak_price / self.average.clamp_min(s.price_tick) - 1)
-                / self._value("trail_up_fraction", 3)
-            ).clamp_min(0)
-            + 1e-10
-        )
-        stepped = (
-            self.initial_stop
-            + self.average * self._value("trail_stop_fraction", 3) * steps
-        )
-        proposed = torch.where(
-            p[:, 7, None, None] == 1, torch.where(enough, adaptive, self.stop), stepped
-        )
+        trailing_mode=self.execution_key[1][2] if getattr(self,'specialize',False) else -1
+        if trailing_mode!=0:
+            movement = torch.where(
+                observed & torch.isfinite(self.previous_close),
+                (close - self.previous_close).abs(),
+                float("nan"),
+            )
+            self.movement_ring.copy_(
+                torch.cat((movement[None], self.movement_ring[:-1]), 0)
+            )
+            average_move = self._average_move()
+            adaptive = self.peak_price - torch.maximum(
+                average_move[..., None] * self._value("adaptive_multiplier", 3),
+                self.average * self._value("minimum_trail_fraction", 3),
+            )
+            # SearchRunner pads history to 32 slots, but activation belongs to each
+            # candidate's selected elapsed window, not that allocation capacity.
+            enough = (
+                now - self.first_fill >= self._value("adaptive_window", 3)
+            ) & torch.isfinite(adaptive)
+        if trailing_mode!=1:
+            steps = torch.floor(
+                (
+                    (self.peak_price / self.average.clamp_min(s.price_tick) - 1)
+                    / self._value("trail_up_fraction", 3)
+                ).clamp_min(0)
+                + 1e-10
+            )
+            stepped = (
+                self.initial_stop
+                + self.average * self._value("trail_stop_fraction", 3) * steps
+            )
+        if trailing_mode==0:proposed=stepped
+        elif trailing_mode==1:proposed=torch.where(enough,adaptive,self.stop)
+        else:proposed=torch.where(p[:,7,None,None]==1,torch.where(enough,adaptive,self.stop),stepped)
         proposed = torch.minimum(proposed, bid[None, :, None] - s.price_tick)
         amend = live & quote[None, :, None] & (self.exit_kind == 0)
         if getattr(self, 'native_programs', False):
@@ -1014,30 +1035,34 @@ class SqueezeRunner:
             self.exit_kind.copy_(torch.where(discretionary & (self.exit_kind == 0), 3, self.exit_kind))
         # Source-history rings [H,N], not [B,N,H]. They advance once per second;
         # NaN gaps reset complete-window evidence instead of repeating a bar.
-        self.attention_ring.copy_(
-            torch.cat((notional[None], self.attention_ring[:-1]), 0)
-        )
-        self.price_ring.copy_(
-            torch.cat(
-                (torch.where(observed, high, float("nan"))[None], self.price_ring[:-1]),
-                0,
+        if not getattr(self,'specialize',False) or not self.execution_key[3][1]:
+            self.attention_ring.copy_(
+                torch.cat((notional[None], self.attention_ring[:-1]), 0)
             )
-        )
-        self.close_ring.copy_(
-            torch.cat(
-                (
-                    torch.where(observed, close, float("nan"))[None],
-                    self.close_ring[:-1],
-                ),
-                0,
+        if not getattr(self,'specialize',False):
+            self.price_ring.copy_(
+                torch.cat(
+                    (torch.where(observed, high, float("nan"))[None], self.price_ring[:-1]),
+                    0,
+                )
             )
-        )
-        self.low_ring.copy_(
-            torch.cat(
-                (torch.where(observed, low, float("nan"))[None], self.low_ring[:-1]), 0
+        if not getattr(self,'specialize',False) or not self.execution_key[3][0]:
+            self.close_ring.copy_(
+                torch.cat(
+                    (
+                        torch.where(observed, close, float("nan"))[None],
+                        self.close_ring[:-1],
+                    ),
+                    0,
+                )
             )
-        )
-        self._confirm_swing()
+        if not getattr(self,'specialize',False) or self.execution_key[1][3]!=0:
+            self.low_ring.copy_(
+                torch.cat(
+                    (torch.where(observed, low, float("nan"))[None], self.low_ring[:-1]), 0
+                )
+            )
+            self._confirm_swing()
         self._observe_rule_history(close, observed)
         self.previous_close.copy_(torch.where(observed, close, float("nan")))
         self.previous_above.copy_(above[None].expand(self.b, -1))

@@ -15,7 +15,7 @@ from .batched import BatchedEvaluator
 from .run_search import clean,state,fingerprint
 
 
-def main(argv=None):
+def main(argv=None,*,emit_hook=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sessions',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--populations',type=int,nargs='+',default=[4096,8192])
@@ -23,6 +23,7 @@ def main(argv=None):
     p.add_argument('--session-count',type=int,default=2)
     p.add_argument('--profile-seconds',type=int,default=256,help='Prefix replay timestamps; 19800 measures full premarket')
     p.add_argument('--seed',type=int,default=20261005)
+    p.add_argument('--reference-execution',action='store_true',help='Measure original candidate order, fixed15 slots and unpruned branches as parity/timing reference')
     p.add_argument('--device',choices=('cpu','cuda'),default='cuda');p.add_argument('--backend',choices=('eager','compiled_graph'),default='compiled_graph')
     p.add_argument('--ticker-capacity',type=int,default=2368);p.add_argument('--graph-steps',type=int,default=32)
     p.add_argument('--maximum-fills',type=int,default=65536);p.add_argument('--maximum-state-gib',type=float,default=20)
@@ -50,6 +51,7 @@ def main(argv=None):
             with (output/'events.jsonl').open('a') as f:f.write(json.dumps(message)+'\n')
         if args.device=='cuda':status['gpu_gib']=torch.cuda.memory_allocated()/1024**3
         write_json(output/'status.json',clean(status))
+        if emit_hook:emit_hook(dict(status))
     rows=[];space=StrategySpace();features=searchable_features(spec['training'],'premarket')
     timing_totals={};timing_count=0
     sessions=spec['training'][:args.session_count]

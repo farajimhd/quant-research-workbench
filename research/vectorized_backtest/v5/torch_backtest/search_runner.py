@@ -38,6 +38,11 @@ class SearchRunner(SqueezeRunner):
             momentum_lookback_seconds=12,
             attention_lookback_seconds=12,
         )
+        if getattr(self,'specialize',False):
+            adaptive,left,right,momentum,attention=self.execution_key[2]
+            settings=replace(settings,adaptive_window=adaptive,
+                             swing_left_seconds=left,swing_right_seconds=right,
+                             momentum_lookback_seconds=momentum,attention_lookback_seconds=attention)
         if len({space.group_key(row) for row in rows}) != 1:
             raise ValueError(
                 "Different history allocation shapes require separate groups"

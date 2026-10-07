@@ -34,8 +34,8 @@ def _append(
     rows = torch.stack(
         (
             now.expand(shape),
-            slot_axis.expand(shape) // 15,
-            slot_axis.expand(shape) % 15,
+            slot_axis.expand(shape) // qty.shape[2],
+            slot_axis.expand(shape) % qty.shape[2],
             torch.full_like(qty.reshape(shape), side),
             qty.reshape(shape),
             price.expand(qty.shape).reshape(shape),
@@ -69,3 +69,20 @@ except AttributeError:
         mutates_args=("ledger", "fill_count", "overflow"),
     )(_append)
     ledger_append.register_fake(_fake_ledger_append)
+
+
+def _masked_dispatch(ledger:torch.Tensor,fill_count:torch.Tensor,overflow:torch.Tensor,
+                     qty:torch.Tensor,price:torch.Tensor,fee:torch.Tensor,now:torch.Tensor,
+                     reason:torch.Tensor,clock:torch.Tensor,slot_axis:torch.Tensor,
+                     side:int,maximum_fills:int)->None:
+    if not qty.is_cuda:
+        return _append(ledger,fill_count,overflow,qty,price,fee,now,reason,clock,slot_axis,side,maximum_fills)
+    from .ledger_scatter import append_masked
+    append_masked(ledger,fill_count,overflow,qty,price,fee,now,reason,clock,slot_axis,side,maximum_fills)
+
+
+try:masked_ledger_append=torch.ops.torch_backtest_v5.masked_ledger_append.default
+except AttributeError:
+    masked_ledger_append=torch.library.custom_op('torch_backtest_v5::masked_ledger_append',
+        mutates_args=('ledger','fill_count','overflow'))(_masked_dispatch)
+    masked_ledger_append.register_fake(_fake_ledger_append)

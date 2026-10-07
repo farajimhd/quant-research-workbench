@@ -5,6 +5,20 @@ from .evolution import STAGES
 from .position_metrics import duration_summary
 
 class ProgramRunner(SearchRunner):
+    @staticmethod
+    def specialization_key(individuals,space):
+        from .genome import NAMES
+        rows=space.validate([v.policy for v in individuals])
+        modes=tuple(int(rows[0,i]) if (rows[:,i]==rows[0,i]).all() else -1 for i in (5,6,7,8,9))
+        windows=tuple(int(rows[:,space.policy_start+NAMES.index(name)].max()) for name in
+                      ('adaptive_window','swing_left_seconds','swing_right_seconds','momentum_lookback_seconds','attention_lookback_seconds'))
+        zero_weights=tuple(bool((rows[:,space.policy_start+NAMES.index(name)]==0).all()) for name in
+                           ('momentum_weight','attention_weight'))
+        return (int(rows[:,4].max()),modes,windows,zero_weights)
+
+    def _observe_rule_history(self,close,observed):
+        if not self.specialize:return super()._observe_rule_history(close,observed)
+
     def run(self,**kwargs):
         if kwargs.get('reset',True) or not hasattr(self,'_report_counts'):
             self._report_counts=torch.zeros_like(self.fill_count,device='cpu')
@@ -70,8 +84,12 @@ class ProgramRunner(SearchRunner):
             position_win_rate=wins/closed if closed else None,profit_factor=profit/loss if loss else None,
             gross_profit=profit,gross_loss=loss,scope='active session population; pooled closed positions; marked equity provisional')
 
-    def __init__(self,tape,space,individuals,gates,**kwargs):
+    def __init__(self,tape,space,individuals,gates,*,specialize=True,**kwargs):
         self.native_programs=True
+        self.specialize=specialize
+        kwargs.setdefault('masked_ledger',specialize)
+        self.execution_key=self.specialization_key(individuals,space) if specialize else None
+        if specialize:kwargs.setdefault('slot_capacity',self.execution_key[0])
         self.program_gates=gates
         shape=(len(tape.clocks),len(individuals),len(tape.tickers))
         valid=(gates.shape==shape and gates.dtype==torch.uint8 and gates.device==tape.device) if isinstance(gates,torch.Tensor) else (set(gates)==set(STAGES) and all(v.shape==shape and v.dtype==torch.bool and v.device==tape.device for v in gates.values()))
@@ -87,6 +105,8 @@ class ProgramRunner(SearchRunner):
     def _entry_filter(self,now,close):return self._program_gate('entry')
 
     def set_population(self,individuals,gates):
+        if self.specialize and self.specialization_key(individuals,self.space)!=self.execution_key:
+            raise ValueError('Changing execution specialization requires a new runner')
         self.set_genomes([v.policy for v in individuals])
         if isinstance(self.program_gates,torch.Tensor):
             if not isinstance(gates,torch.Tensor) or gates.shape!=self.program_gates.shape:raise ValueError('Packed gate allocation changed')

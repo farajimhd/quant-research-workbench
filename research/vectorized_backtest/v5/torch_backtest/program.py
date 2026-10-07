@@ -101,9 +101,10 @@ class TorchPrograms:
     Evaluate a contiguous listing chunk including at most 119 preceding rows.
     Masks propagate through NOT/OR: missing evidence is never true evidence.
     """
-    def __init__(self,programs,catalog,device='cpu',output_unit='bool'):
+    def __init__(self,programs,catalog,device='cpu',output_unit='bool',specialize_windows=True):
         for p in programs:p.validate(catalog,output_unit=output_unit)
         self.programs=programs;self.device=torch.device(device);self.width=max(len(p.nodes) for p in programs)
+        self.specialize_windows=specialize_windows
         self.rows=[]
         for i in range(self.width):
             nodes=[p.nodes[i] if i<len(p.nodes) else Node(Op.CONSTANT) for p in programs]
@@ -116,7 +117,9 @@ class TorchPrograms:
             operations=[]
             for op in sorted({Op(n.op) for n in nodes}):
                 choose=torch.tensor([n.op==op for n in nodes],device=device)[:,None]
-                windows=[(k,torch.tensor([n.op==op and n.window==k for n in nodes],device=device)[:,None]) for k in sorted({n.window for n in nodes if n.op==op})] if op in (Op.LAG,Op.MEAN,Op.MINIMUM,Op.MAXIMUM,Op.DIFFERENCE) else []
+                windows=[(k,torch.tensor([n.op==op and n.window==k for n in nodes],device=device)[:,None],
+                           torch.tensor([j for j,n in enumerate(nodes) if n.op==op and n.window==k],device=device))
+                         for k in sorted({n.window for n in nodes if n.op==op})] if op in (Op.LAG,Op.MEAN,Op.MINIMUM,Op.MAXIMUM,Op.DIFFERENCE) else []
                 constants=torch.tensor([n.value for n in nodes],dtype=torch.float32,device=device)[:,None] if op==Op.CONSTANT else None
                 operations.append((op,choose,windows,constants))
             self.dispatch.append(operations)
@@ -139,20 +142,24 @@ class TorchPrograms:
                     v=constants.to(features.dtype).reshape(broadcast).expand(shape);m=torch.ones_like(ok)
                 elif op in (Op.LAG,Op.MEAN,Op.MINIMUM,Op.MAXIMUM,Op.DIFFERENCE):
                     v=torch.zeros_like(out);m=torch.zeros_like(ok)
-                    for k,selected in windows:
+                    for k,selected,indices in windows:
                         selected=selected.reshape(broadcast)
+                        source=a.index_select(0,indices) if self.specialize_windows else a
+                        known=av.index_select(0,indices) if self.specialize_windows else av
                         if op in (Op.LAG,Op.DIFFERENCE):
-                            z=lag(a,k);mv=lag(av,k)&(axis>=k)
-                            if op==Op.DIFFERENCE:z=a-z;mv=mv&av
+                            z=lag(source,k);mv=lag(known,k)&(axis>=k)
+                            if op==Op.DIFFERENCE:z=source-z;mv=mv&known
                         else:
-                            safe=torch.where(av,a,0.)
-                            sums=F.pad(safe.cumsum(-1),(1,0));counts=F.pad(av.to(features.dtype).cumsum(-1),(1,0))
+                            safe=torch.where(known,source,0.)
+                            sums=F.pad(safe.cumsum(-1),(1,0));counts=F.pad(known.to(features.dtype).cumsum(-1),(1,0))
                             starts=(torch.arange(c,device=features.device)+1-k).clamp_min(0)
                             mv=((counts[...,1:]-counts[...,starts])==k)&(axis>=k-1)
-                            if op==Op.MEAN:z=a if k==1 else (sums[...,1:]-sums[...,starts])/k
-                            elif op==Op.MAXIMUM:z=F.max_pool1d(F.pad(safe.reshape(-1,1,c),(k-1,0),value=-float('inf')),k,1).reshape(shape)
-                            else:z=-F.max_pool1d(F.pad(-safe.reshape(-1,1,c),(k-1,0),value=-float('inf')),k,1).reshape(shape)
-                        v=torch.where(selected,z,v);m=torch.where(selected,mv,m)
+                            if op==Op.MEAN:z=source if k==1 else (sums[...,1:]-sums[...,starts])/k
+                            elif op==Op.MAXIMUM:z=F.max_pool1d(F.pad(safe.reshape(-1,1,c),(k-1,0),value=-float('inf')),k,1).reshape(source.shape)
+                            else:z=-F.max_pool1d(F.pad(-safe.reshape(-1,1,c),(k-1,0),value=-float('inf')),k,1).reshape(source.shape)
+                        if self.specialize_windows:
+                            v.index_copy_(0,indices,z);m.index_copy_(0,indices,mv)
+                        else:v=torch.where(selected,z,v);m=torch.where(selected,mv,m)
                 else:
                     m=av if op in (Op.NOT,Op.ABS) else av&dv
                     if op==Op.ADD:v=a+d

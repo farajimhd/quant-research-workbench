@@ -27,7 +27,7 @@ class FeatureResident:
         if self.device.type=='cuda':torch.cuda.current_stream().synchronize()
 
     def compile(self,individuals,tape,*,chunk_candles=4096,emit=None,packed=True,
-                listing_batch=32,workspace_gib=4.,maximum_gate_gib=32.,out=None):
+                listing_batch=32,workspace_gib=4.,maximum_gate_gib=32.,out=None,specialize_windows=True):
         started=perf_counter();b=len(individuals);t=len(tape.clocks);n=len(tape.tickers)
         if chunk_candles<1 or listing_batch<1 or workspace_gib<=0:
             raise ValueError('Positive bounded compilation resources required')
@@ -40,7 +40,7 @@ class FeatureResident:
             gates=out.zero_()
         else:
             gates=torch.zeros((t,b,n),dtype=torch.uint8,device=self.device) if packed else {stage:torch.zeros((t,b,n),dtype=torch.bool,device=self.device) for stage in STAGES}
-        programs={s:TorchPrograms([v.programs()[s] for v in individuals],CATALOG,self.device) for s in STAGES}
+        programs={s:TorchPrograms([v.programs()[s] for v in individuals],CATALOG,self.device,specialize_windows=specialize_windows) for s in STAGES}
         boundaries=tape.clocks*1_000_000
         # Length buckets limit padding. Each core chunk owns its observations;
         # preceding rows supply temporal context only and cannot emit twice.

@@ -9,11 +9,17 @@ from .run_search import clean, state, fingerprint, seal_ledger
 from .runtime import write_json, file_hash, require_runtime
 
 
-def merge_metrics(parts):
+def merge_metrics(parts,order=None):
     keys = set(parts[0])
     if any(set(part) != keys for part in parts):
         raise ValueError('Candidate batch metric schema mismatch')
-    return {key: sum((part[key] for part in parts), []) for key in keys}
+    merged={key: sum((part[key] for part in parts), []) for key in keys}
+    if order is None:return merged
+    if sorted(order)!=list(range(len(order))) or any(len(v)!=len(order) for v in merged.values()):
+        raise ValueError('Execution permutation must cover every candidate exactly once')
+    inverse=[0]*len(order)
+    for execution,candidate in enumerate(order):inverse[candidate]=execution
+    return {key:[values[i] for i in inverse] for key,values in merged.items()}
 
 
 class BatchedEvaluator:
@@ -35,11 +41,15 @@ class BatchedEvaluator:
         (host_tape, bank, prior, identities, binding), load, wait = prepared
         destination = require_runtime(destination)
         pop_hash = fingerprint([state(v) for v in population])
+        specialize=not getattr(args,'reference_execution',False)
+        order=sorted(range(len(population)),key=lambda i:(int(population[i].policy[4]),i)) if specialize else list(range(len(population)))
         receipt_path = destination/'receipt.json'
         if receipt_path.exists():
             receipt = __import__('json').loads(receipt_path.read_text())
             if receipt['population_sha256'] != pop_hash or receipt['day'] != spec['day']:
                 raise ValueError('Resumed population or day changed')
+            if receipt.get('candidate_order',list(range(len(population))))!=order:
+                raise ValueError('Resumed execution permutation changed')
             for key in ('execution', 'feature_certificate', 'prior_certificate', 'identity_map_sha256',
                         'split_certificate_sha256', 'previous_split_certificate_sha256'):
                 if receipt[key] != binding[key]:
@@ -75,23 +85,29 @@ class BatchedEvaluator:
         total_batches = (len(population)+args.batch_size-1)//args.batch_size
         for index, left in enumerate(range(0, len(population), args.batch_size)):
             batch_started = time.perf_counter()
-            members = population[left:left+args.batch_size]
+            indices=order[left:left+args.batch_size]
+            members = [population[i] for i in indices]
             folder = require_runtime(destination/f'batch_{index:04d}')
             path = folder/'receipt.json'
             member_hash = fingerprint([state(v) for v in members])
             if path.exists():
                 record = __import__('json').loads(path.read_text())
                 if (record['population_sha256'] != member_hash or record['session_binding_sha256'] != fingerprint(binding)
+                        or record.get('candidate_indices',list(range(left,left+len(members))))!=indices
                         or file_hash(folder/'fills.pt') != record['ledger_sha256']):
                     raise ValueError('Partial candidate batch identity changed')
             else:
                 emit(stage='Compile lifecycle rules', completed_batches=index, total_batches=total_batches,
                      candidate_start=left, candidate_end=left+len(members))
-                key = (len(tape.clocks), capacity, len(members), tuple(tape.level_lower.shape), tape.structural_targets is not None)
+                execution_key=ProgramRunner.specialization_key(members,self.space) if specialize else None
+                key = (len(tape.clocks), capacity, len(members), tuple(tape.level_lower.shape), tape.structural_targets is not None,execution_key)
+                emit(execution_lot_capacity=execution_key[0] if specialize else 15,
+                     execution_specialization=execution_key)
                 reuse = self.runner is not None and self.key == key
+                reuse_gates=self.runner is not None and self.runner.program_gates.shape==(len(tape.clocks),len(members),capacity)
                 gates, rule_seconds = resident.compile(members, tape, chunk_candles=args.chunk_candles,
                                                        emit=lambda event: emit(**event),maximum_gate_gib=args.maximum_gate_gib,
-                                                       out=self.runner.program_gates if reuse else None)
+                                                       out=self.runner.program_gates if reuse_gates else None,specialize_windows=specialize)
                 compiled = 0.
                 if reuse:
                     if self.runner.tape is not tape:bind_tape(self.runner.tape, tape)
@@ -101,6 +117,7 @@ class BatchedEvaluator:
                 else:
                     self.close()
                     self.runner = ProgramRunner(tape, self.space, members, gates, backend=args.backend,
+                                                specialize=specialize,
                                                 maximum_fills=args.maximum_fills, maximum_state_gib=args.maximum_state_gib,
                                                 graph_steps=args.graph_steps)
                     emit(stage='Compile financial replay')
@@ -125,7 +142,8 @@ class BatchedEvaluator:
                 ledger = self.runner.ledger[:, :int(self.runner.fill_count.max())].detach().cpu()
                 ledger_hash = seal_ledger(folder/'fills.pt', ledger, self.runner.fill_count)
                 record = dict(population_sha256=member_hash, session_binding_sha256=fingerprint(binding),
-                              candidate_start=left, candidate_count=len(members), metrics=metrics,
+                              candidate_start=left, candidate_count=len(members),candidate_indices=indices, metrics=metrics,
+                              execution_specialization=execution_key,
                               ledger_sha256=ledger_hash, timing=dict(rule_prepare=rule_seconds, compile=compiled, replay=result['replay_seconds']))
                 write_json(path, record)
             pieces.append(record['metrics'])
@@ -140,7 +158,7 @@ class BatchedEvaluator:
                 raise InterruptedError('Stopped at durable candidate-batch boundary')
         totals['end_to_end'] = time.perf_counter()-began+wait
         receipt = dict(binding, population_sha256=pop_hash, batch_size=args.batch_size,
-                       batch_receipts=batches, metrics=merge_metrics(pieces), timing=totals,
+                       batch_receipts=batches,candidate_order=order, metrics=merge_metrics(pieces,order), timing=totals,
                        profile_seconds=getattr(args,'profile_seconds',None))
         write_json(receipt_path, receipt)
         del resident, tape
