@@ -80,7 +80,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         if parent_number == strategy_number:
             raise ValueError('Fixed-lot registered parent cannot refer to itself')
         parent_proof = certify_numbered_fixed_v4_projection(parent_number)
-        if 'fixed-structural-lot-source@2' in selected_lots.release.input_contracts:
+        from src.trading_runtime.fixed_structural_lot_interval_validator_v2 import VALIDATOR_RULE
+        if VALIDATOR_RULE in selected_lots.release.rule_set_contracts:
+            from .backtest_fixed_structural_lot_certification_v3 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v3
+            additional_proof = certify_fixed_structural_lot_source_v3()
+        elif 'fixed-structural-lot-source@2' in selected_lots.release.input_contracts:
             from .backtest_fixed_structural_lot_certification_v2 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v2
             additional_proof = certify_fixed_structural_lot_source_v2()
         else:
@@ -1504,6 +1508,8 @@ def _reviewed_fixed_lot_journal_projection(source: str, name: str, expected: str
 
 def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expected: str) -> bool:
     """Pin this exact registration delta and prove whole legacy module restoration."""
+    from .backtest_fixed_structural_lot_compatibility_v3 import restore_reviewed_parent_source
+    source = restore_reviewed_parent_source(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v2 import restore_reviewed_parent_source
     source = restore_reviewed_parent_source(source, 'src/backend/backtest_strategy_one_configuration.py')
     tree = ast.parse(source)
@@ -1663,8 +1669,20 @@ _FIXED_LOT_LEGACY_AST_RECIPES = {('backend/backtest_typed_publisher.py', '_drain
 
 def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:
     """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""
+    supplied_source = source
+    from .backtest_fixed_structural_lot_compatibility_v3 import restore_reviewed_parent_source
+    source = restore_reviewed_parent_source(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v2 import restore_reviewed_parent_source
     source = restore_reviewed_parent_source(source, relative)
+    if source != supplied_source:
+        restored_tree = ast.parse(source)
+        restored_nodes = ([restored_tree] if name == '__module__' else
+            [node for node in ast.walk(restored_tree)
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+             and node.name == name])
+        if (len(restored_nodes) == 1
+                and sha256(ast.unparse(restored_nodes[0]).encode()).hexdigest() == expected):
+            return True
     recipe = _FIXED_LOT_LEGACY_AST_RECIPES.get((relative, name))
     if recipe is None or recipe["legacy_ast"] != expected:
         return False

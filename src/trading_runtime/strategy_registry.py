@@ -180,7 +180,7 @@ def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
 
 def numbered_strategy_parent(number: int) -> int:
     """Explicit immutable inheritance; Strategy 8 branches from 6, not 7."""
-    parents = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 6, 9: 8, 10: 9, 11: 10, 12: 11, 13: 12, 14: 13, 15: 14, 16: 15, 17: 14, 18: 17, 19: 18, 20: 19, 21: 20, 22: 21, 23: 22, 24: 23, 25: 24, 26: 25, 27: 26, 28: 27, 29: 28, 30: 29, 31: 30, 32: 31, 33: 32, 34: 33, 35: 34, 36: 35, 37: 36, 38: 37, 39: 38, 40: 39, 41: 40, 42: 41, 46: 42, 47: 46, 48: 42, 49: 42, 50: 42, 51: 42, 52: 50, 53: 50, 54: 50, 55: 50, 56: 50, 57: 50, 58: 50, 59: 50, 60: 50, 61: 50, 64: 42, 65: 42, 66: 42, 68: 42, 69: 68, 70: 69, 71: 70, 72: 70, 73: 72, 74: 73, 77: 42, 80: 42}
+    parents = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 6, 9: 8, 10: 9, 11: 10, 12: 11, 13: 12, 14: 13, 15: 14, 16: 15, 17: 14, 18: 17, 19: 18, 20: 19, 21: 20, 22: 21, 23: 22, 24: 23, 25: 24, 26: 25, 27: 26, 28: 27, 29: 28, 30: 29, 31: 30, 32: 31, 33: 32, 34: 33, 35: 34, 36: 35, 37: 36, 38: 37, 39: 38, 40: 39, 41: 40, 42: 41, 46: 42, 47: 46, 48: 42, 49: 42, 50: 42, 51: 42, 52: 50, 53: 50, 54: 50, 55: 50, 56: 50, 57: 50, 58: 50, 59: 50, 60: 50, 61: 50, 64: 42, 65: 42, 66: 42, 68: 42, 69: 68, 70: 69, 71: 70, 72: 70, 73: 72, 74: 73, 77: 42, 80: 42, 81: 42}
     if type(number) is not int or number not in parents:
         raise ValueError("Numbered strategy has no admitted parent")
     return parents[number]
@@ -206,7 +206,7 @@ def installed_numbered_fixed_strategy_numbers() -> tuple[int, ...]:
 
 
 def numbered_strategy(number: int) -> NumberedStrategyRelease:
-    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 66, 68, 69, 70, 71, 72, 73, 74, 77, 80):
+    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 66, 68, 69, 70, 71, 72, 73, 74, 77, 80, 81):
         initialize_numbered_fixed_strategies()
     with _LOCK:
         release = _NUMBERED_RELEASES.get(number)
@@ -978,6 +978,15 @@ def initialize_numbered_fixed_strategies() -> None:
             strategy_factory=_strategy_two_factory,
             contract_factory=strategy_eighty_contract))
         register_numbered_strategy(new_80)
+        from .strategy_eighty_one_release import release_contract as new_81_release_contract
+        from .strategy_eighty_one_contract import strategy_eighty_one_contract
+        new_81 = new_81_release_contract()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=new_81.executor_strategy_id, revision=new_81.executor_revision,
+            evaluation_interval=new_81.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_eighty_one_contract))
+        register_numbered_strategy(new_81)
         _NUMBERED_FIXED_REGISTERED = True
 
 

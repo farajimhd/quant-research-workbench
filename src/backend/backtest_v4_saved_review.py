@@ -53,6 +53,13 @@ def _require_declared_read_profile(client, context, *, sealed_configuration=None
     """Select authority from the already validated typed run context."""
     from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
     contract = resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision']))
+    from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
+    if declared_fixed_structural_lot_contract(int(context['strategy_revision'])) is not None:
+        from .backtest_fixed_structural_lot_saved_source import fixed_lot_saved_read_options
+        options = fixed_lot_saved_read_options(client, context, sealed_configuration)
+        if options and _DECLARED_READ_SCOPE.get() is not None:
+            raise _DeclaredReadProfileRequired(options)
+        return options
     if (getattr(contract, 'automatic_entry_policy', None) is not None
             or getattr(contract, 'confirmed_original_risk_policy', None) is not None):
         from src.trading_runtime.squeeze_ladder_geometry import declared_ladder_runner_options
@@ -136,7 +143,7 @@ def declared_saved_read_operation(operation):
 
 
 
-def _saved_twenty_price_source(client, run_id: str, context: dict, release):
+def _saved_twenty_price_source(client, run_id: str, context: dict, release, *, fixed_lot_session=False):
     """Rebuild native entry authority from the fenced definition and market seals.
 
     Journal entry values never supply native prices. This work runs only on a
@@ -208,6 +215,15 @@ def _saved_twenty_price_source(client, run_id: str, context: dict, release):
     fixed = certify_strategy_one_fixed_plans(
         market, prices, market_pins=pins,
         v7_pins=definition.causal_v7_plan, client_factory=reader)
+    if fixed_lot_session:
+        from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
+        if declared_fixed_structural_lot_contract(release.strategy_number) is None:
+            raise ValueError('Saved fixed-lot session requires its declared contract')
+        from .backtest_fixed_structural_lot_execution_v3 import prepare_fixed_structural_lot_session
+        return prepare_fixed_structural_lot_session(plans=fixed, number=release.strategy_number,
+            run_id=run_id, session_date=date.fromisoformat(context['session_date']),
+            market=market, candidates=fixed.candidates, entry=fixed.entry, seeds=fixed.seeds,
+            through_boundary_ms=parent['end_local_ms'] - 14_400_000, client_factory=reader)
     visible = project_candidate_plan(
         fixed.candidates, through_boundary_ms=parent["end_local_ms"] - 14_400_000)
     if not visible.prepared:
@@ -332,7 +348,10 @@ def _terminal_attestation(client, normalized: str,
         )
         ladder = (declared_ladder_policy(release)
                   if int(context['strategy_revision']) != 1 else None)
-        if ladder is not None:
+        if getattr(client, 'fixed_structural_lot_profile', None) is not None:
+            from .backtest_fixed_structural_lot_saved_source import load_fixed_lot_saved_prefix
+            prefix = load_fixed_lot_saved_prefix(client, normalized, context, release)
+        elif ladder is not None:
             sources = DeclaredLadderSourceAuthority.from_run(client, normalized)
             prefix = load_verified_v4_prefix(client, normalized, automatic_ladder_sources=sources)
         elif (int(context["strategy_revision"]) in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(int(context["strategy_revision"]), 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
