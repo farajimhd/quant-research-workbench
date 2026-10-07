@@ -189,3 +189,21 @@ durations, rather than averaging daily quantiles. Share-weighted holding time
 and current open-position age are separate statistics. Empty samples display
 as undefined. These metrics do not change fitness or financial execution.
 
+Training uses an ordered, single-worker CPU prefetch queue. While the current
+session executes on CUDA, the next training session is loaded and verified.
+Only one session is queued; CUDA transfers remain on the consumer thread.
+Session-specific split metadata is isolated while immutable bank arrays are
+shared. Receipts report both loading time and the unhidden `prefetch_wait`;
+wall-clock session time includes only that wait, avoiding double-counting
+overlapped preparation. `--profile --profile-sessions 2` measures overlap on
+two complete training sessions without selection or validation access.
+
+The explicitly authorized `--continue-from` operation supports a stopped
+campaign before its first generation completes. It requires unchanged inputs,
+financial settings, objective and search budget; reconstructs the exact initial
+population from the original seed; verifies and copies only complete session
+receipts and ledgers; and records both source identities in `continuation.json`.
+The parent directory remains immutable. This operation requires a new
+same-source workstation qualification and a new output directory. Ordinary
+checkpoint resumes continue to require exact source identity.
+

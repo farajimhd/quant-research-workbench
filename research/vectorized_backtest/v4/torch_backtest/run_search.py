@@ -52,9 +52,15 @@ def clean(value):
     if isinstance(value,(list,tuple)):return [clean(v) for v in value]
     return value
 
-def evaluate_session(spec,population,space,args,output,emit,cache=None):
-    began=time.perf_counter();tape,bank,prior,identities,receipt=load_session(spec)
-    load=time.perf_counter()-began;emit(stage='Transfer certified inputs',focus=spec['day'],timing=dict(load=load),active_session=None)
+def evaluate_session(spec,population,space,args,output,emit,cache=None,prepared=None):
+    began=time.perf_counter()
+    if prepared is None:
+        tape,bank,prior,identities,receipt=load_session(spec)
+        load=time.perf_counter()-began;prefetch_wait=load
+    else:
+        loaded,load,prefetch_wait=prepared
+        tape,bank,prior,identities,receipt=loaded
+    emit(stage='Transfer certified inputs',focus=spec['day'],timing=dict(load=load,prefetch_wait=prefetch_wait),active_session=None)
     transfer=time.perf_counter()
     from .session_pool import padded_tape,bind_tape
     capacity=getattr(args,'ticker_capacity',None) or ((len(tape.tickers)+63)//64)*64
@@ -93,7 +99,7 @@ def evaluate_session(spec,population,space,args,output,emit,cache=None):
     ledger=runner.ledger[:,:int(runner.fill_count.max().item())].detach().cpu()
     ledger_path=output/'fills.pt'
     ledger_hash=seal_ledger(ledger_path,ledger,runner.fill_count)
-    timing=dict(load=load,transfer=transfer,rule_prepare=rule_seconds,compile=compiled,replay=result['replay_seconds'],end_to_end=time.perf_counter()-began)
+    timing=dict(load=load,prefetch_wait=prefetch_wait,transfer=transfer,rule_prepare=rule_seconds,compile=compiled,replay=result['replay_seconds'],end_to_end=time.perf_counter()-began+prefetch_wait if prepared is not None else time.perf_counter()-began)
     receipt.update(metrics=metrics,timing=timing,ledger_sha256=ledger_hash,population_sha256=fingerprint([state(v) for v in population]))
     del runner,gates,tape
     if args.device=='cuda':torch.cuda.empty_cache()
@@ -128,17 +134,21 @@ def main(argv=None):
     parser.add_argument('--maximum-fills',type=int,default=65536);parser.add_argument('--graph-steps',type=int,default=32);parser.add_argument('--chunk-candles',type=int,default=4096)
     parser.add_argument('--ticker-capacity',type=int,help='Fixed inactive-padded training axis; choose from all30 certified session widths for graph reuse')
     parser.add_argument('--qualification',type=Path)
+    parser.add_argument('--continue-from',type=Path,help='Explicit qualified source revision of a stopped unfinished first generation')
+    parser.add_argument('--profile-sessions',type=int,default=1,help='One or two training sessions; two measures real prefetch overlap')
     parser.add_argument('--operand-session',choices=('all','premarket'),default='all',help='Premarket removes session-regime flags from searchable operands; banks remain intact')
     args=parser.parse_args(argv)
     if args.population<4 or args.generations<1 or args.chunk_candles<120:parser.error('Invalid bounded search budget')
+    if args.profile_sessions not in (1,2):parser.error('Profile sessions must be one or two')
     if args.ticker_capacity is not None and args.ticker_capacity<1:parser.error('Positive shared ticker capacity required')
     spec=json.loads(args.sessions.read_text(encoding='utf-8'));split=preflight(spec,profile=args.profile)
     from .search_operands import searchable_features
     features=searchable_features(spec['training'],args.operand_session)
     output=require_runtime(args.output);objective=Objective().validate();space=StrategySpace()
     identity=dict(version='v4-variable-rulesets-v1',code_hash=code_hash(),sessions=spec,split=split,objective=asdict(objective),financial_settings=asdict(space.settings),features=[asdict(f) for f in CATALOG],
-        searchable_feature_indices=list(features),policy_coordinates=list(range(4,50)),program_maximum_nodes=32,stages=list(STAGES),arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items() if k not in ('resume','execute','output','qualification')})
+        searchable_feature_indices=list(features),policy_coordinates=list(range(4,50)),program_maximum_nodes=32,stages=list(STAGES),arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items() if k not in ('resume','execute','output','qualification','continue_from','profile_sessions')})
     if not args.execute:write_json(output/'plan.json',identity);print(str(output/'plan.json'));return 0
+    if args.profile:identity['profile_sessions']=args.profile_sessions
     if args.device=='cuda' and not torch.cuda.is_available():raise RuntimeError('CUDA required; no fallback')
     if not args.profile:
         if args.qualification is None:raise ValueError('Full search requires a passed same-source workstation qualification')
@@ -157,7 +167,7 @@ def main(argv=None):
     os.write(owner,json.dumps(dict(pid=os.getpid(),started=time.time(),code_hash=code_hash())).encode());os.close(owner)
     status=dict(status='preflight',started_epoch=time.time(),mode='profile' if args.profile else 'optimization',objective=asdict(objective),
         config=dict(population=args.population,generations=0 if args.profile else args.generations,
-                    training_sessions=1 if args.profile else 30,validation_sessions=6),
+                    training_sessions=args.profile_sessions if args.profile else 30,validation_sessions=6),
         completed_generations=0,completed_sessions=0,validation_status='SEALED',worker_pid=os.getpid())
     def emit(**event):
         from datetime import datetime,timezone
@@ -177,36 +187,43 @@ def main(argv=None):
     else:population=sample(rng,space,args.population,features);start=0;winner=None;best=None;best_metrics=None
     timing_totals={};timing_count=0
     try:
+        if args.continue_from is not None and not args.resume:
+            from .continuation import import_first_generation
+            import_first_generation(require_runtime(args.continue_from),output,identity,fingerprint([state(v) for v in population]))
         for generation in range(start,1 if args.profile else args.generations):
             emit(status='profiling' if args.profile else 'training',completed_generations=generation,completed_sessions=0,stage='Load certified inputs',best_score=best,best_metrics=best_metrics)
             folder=require_runtime(output/f'generation_{generation:03d}');pop_hash=fingerprint([state(v) for v in population]);results=[];receipts=[]
-            for index,session in enumerate(spec['training'][:1] if args.profile else spec['training']):
-                destination=require_runtime(folder/f'session_{index:03d}');path=destination/'receipt.json'
-                if path.exists():
-                    receipt=json.loads(path.read_text())
-                    if receipt['population_sha256']!=pop_hash or receipt['day']!=session['day'] or file_hash(destination/'fills.pt')!=receipt['ledger_sha256']:raise ValueError('Session receipt/population/ledger mismatch')
-                    # Revalidate current immutable inputs before reusing replay.
-                    *_,fresh=load_session(session)
-                    for key in ('execution','feature_certificate','prior_certificate','identity_map_sha256','split_certificate_sha256','previous_split_certificate_sha256'):
-                        if fresh[key]!=receipt[key]:raise ValueError('Resumed session source changed')
-                else:
-                    def session_emit(**event):
-                        if event.get('stage')=='Transfer certified inputs':event['prepared_sessions']=index+1
-                        if 'focus' in event:
-                            prefix=f'B{args.population} session profile | ' if args.profile else f'Generation {generation+1}/{args.generations} | session {index+1}/30 | '
-                            event['focus']=prefix+event['focus']
-                        emit(**event)
-                    receipt=evaluate_session(session,population,space,args,destination,session_emit,runner_cache);write_json(path,receipt)
-                receipts.append(dict(path=str(path),sha256=file_hash(path)));results.append(receipt['metrics'])
-                timing_count+=1
-                for key,value in receipt['timing'].items():timing_totals[key]=timing_totals.get(key,0.)+value
-                averages={key:value/timing_count for key,value in timing_totals.items()}
-                remaining=(args.generations-generation-1)*30+30-index-1
-                emit(completed_sessions=index+1,timing=receipt['timing'],average_timing=averages,timed_sessions=timing_count,
-                     campaign_eta=None if args.profile else remaining*averages.get('end_to_end',0.))
-                if (output/'STOP').exists():
-                    write_json(checkpoint,dict(next_generation=generation,population=[state(v) for v in population],rng=rng.bit_generator.state,winner=winner,best_score=best,best_metrics=best_metrics))
-                    emit(status='interrupted',stage='Stopped at durable session boundary');return 130
+            from .session_prefetch import SessionPrefetch
+            sessions=spec['training'][:args.profile_sessions] if args.profile else spec['training']
+            with SessionPrefetch(sessions,lambda item:load_session(item,isolated_banks=True)) as prefetch:
+                for index,session in enumerate(sessions):
+                    prepared=prefetch.take(index)
+                    destination=require_runtime(folder/f'session_{index:03d}');path=destination/'receipt.json'
+                    if path.exists():
+                        receipt=json.loads(path.read_text())
+                        if receipt['population_sha256']!=pop_hash or receipt['day']!=session['day'] or file_hash(destination/'fills.pt')!=receipt['ledger_sha256']:raise ValueError('Session receipt/population/ledger mismatch')
+                        # Revalidate current immutable inputs before reusing replay.
+                        *_,fresh=prepared[0]
+                        for key in ('execution','feature_certificate','prior_certificate','identity_map_sha256','split_certificate_sha256','previous_split_certificate_sha256'):
+                            if fresh[key]!=receipt[key]:raise ValueError('Resumed session source changed')
+                    else:
+                        def session_emit(**event):
+                            if event.get('stage')=='Transfer certified inputs':event['prepared_sessions']=index+1
+                            if 'focus' in event:
+                                prefix=f'B{args.population} session profile | ' if args.profile else f'Generation {generation+1}/{args.generations} | session {index+1}/30 | '
+                                event['focus']=prefix+event['focus']
+                            emit(**event)
+                        receipt=evaluate_session(session,population,space,args,destination,session_emit,runner_cache,prepared=prepared);write_json(path,receipt)
+                    receipts.append(dict(path=str(path),sha256=file_hash(path)));results.append(receipt['metrics'])
+                    timing_count+=1
+                    for key,value in receipt['timing'].items():timing_totals[key]=timing_totals.get(key,0.)+value
+                    averages={key:value/timing_count for key,value in timing_totals.items()}
+                    remaining=(args.generations-generation-1)*30+30-index-1
+                    emit(completed_sessions=index+1,timing=receipt['timing'],average_timing=averages,timed_sessions=timing_count,
+                         campaign_eta=None if args.profile else remaining*averages.get('end_to_end',0.))
+                    if (output/'STOP').exists():
+                        write_json(checkpoint,dict(next_generation=generation,population=[state(v) for v in population],rng=rng.bit_generator.state,winner=winner,best_score=best,best_metrics=best_metrics))
+                        emit(status='interrupted',stage='Stopped at durable session boundary');return 130
             if args.profile:
                 write_json(output/'profile.json',dict(code_hash=code_hash(),population=args.population,sessions_sha256=file_hash(args.sessions),receipts=receipts,timing=receipt['timing'],status='profile_complete_not_qualification'))
                 emit(status='profile_complete',stage='Profile retained; qualification still required');return 0
@@ -222,7 +239,7 @@ def main(argv=None):
             write_json(folder/'generation.json',clean(dict(population_sha256=pop_hash,receipts=receipts,scores=scored,population=[state(v) for v in population])))
             next_population=[population[i] for i in rank[:2]]
             while len(next_population)<args.population:
-                if rng.random()<.2:next_population.extend(sample(rng,space,1))
+                if rng.random()<.2:next_population.extend(sample(rng,space,1,features))
                 else:
                     rivals=rng.choice(args.population,3,replace=False);parent=max(rivals,key=lambda i:(feasible[i],-violations[i],values[i]));next_population.append(mutate(rng,population[int(parent)],space,features))
             population=next_population

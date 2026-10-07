@@ -42,10 +42,16 @@ def load_execution(root):
         _EXECUTION_CACHE[key]=(tape,binding,stamps(paths));_HOST_BYTES+=tape.bytes
     return tape,binding
 
-def load_session(spec):
+def load_session(spec, *, isolated_banks=False):
     tape,receipt=load_execution(spec['execution_root'])
+    # Split basis is session-specific mutable metadata. A prefetched prior
+    # must not change the bank being consumed by the current GPU session.
     bank=bank_cached(spec['feature_root'],spec['day'])
     prior=bank_cached(spec['previous_feature_root']) if spec.get('previous_feature_root') else None
+    if isolated_banks:
+        from copy import copy
+        bank=copy(bank)
+        prior=copy(prior) if prior is not None else None
     if prior is not None and prior.day['day']>=spec['day']:raise ValueError('Future prior feature context')
     mapping_path=Path(spec['identity_map']);mapping=json.loads(mapping_path.read_text(encoding='utf-8'))
     if mapping['bank_certificate_sha256']!=bank.certificate_hash:raise ValueError('Identity mapping not bound to current bank')
