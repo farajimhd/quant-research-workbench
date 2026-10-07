@@ -28,9 +28,9 @@ ROOT=TableContract('trading_fixed_structural_lot_protection_v1',COMMON+(
  ('seed_input_policy','String'),('split_evidence_hash','FixedString(64)'),
  ('clock_count','UInt32'),('interval_count','UInt32'),('clock_hash','FixedString(64)'),
  ('interval_hash','FixedString(64)'),('entry_boundary_ms','UInt32'),('episode_start_ms','UInt32'),
- ('reference_ask','Decimal(38,18)'),('initial_stop','Decimal(38,18)'),
- ('original_target','Decimal(38,18)'),('target_level_id','String'),('tick','Decimal(38,18)'),
- ('boundary_ms','UInt32'),('stop','Decimal(38,18)'),('ceiling','Decimal(38,18)'),
+ ('reference_ask','Decimal(38, 18)'),('initial_stop','Decimal(38, 18)'),
+ ('original_target','Decimal(38, 18)'),('target_level_id','String'),('tick','Decimal(38, 18)'),
+ ('boundary_ms','UInt32'),('stop','Decimal(38, 18)'),('ceiling','Decimal(38, 18)'),
  ('through_sequence','UInt64'),('group_sequence','UInt64'),('observed_boundary_ms','UInt32'),
  ('accepted_count','UInt32'),('pending_count','UInt32'),('earned_groups','UInt32'),
  ('applied_groups','UInt32'),('lot_count','UInt32'),('resistance_count','UInt32'))+POLICY_COLUMNS+(
@@ -38,13 +38,13 @@ ROOT=TableContract('trading_fixed_structural_lot_protection_v1',COMMON+(
  'toYYYYMM(snapshot_month)','run_id, through_sequence, snapshot_id')
 LOT=TableContract('trading_fixed_structural_lot_protection_lot_v1',COMMON+(
  ('ordinal','UInt32'),('lot_id','String'),('weight_numerator','UInt32'),('weight_denominator','UInt32'),
- ('level_id','String'),('lower','Decimal(38,18)'),('upper','Decimal(38,18)'),
+ ('level_id','String'),('lower','Decimal(38, 18)'),('upper','Decimal(38, 18)'),
  ('confirmed_at_ms','UInt64'),('historical','UInt8'),('role','String'),('transition_from','String'),
- ('fixed_target','Decimal(38,18)'),('remaining','Decimal(38,18)'),('acquiring','UInt8')),
+ ('fixed_target','Decimal(38, 18)'),('remaining','Decimal(38, 18)'),('acquiring','UInt8')),
  'toYYYYMM(snapshot_month)','run_id, snapshot_id, ordinal')
 RESISTANCE=TableContract('trading_fixed_structural_lot_protection_resistance_v1',COMMON+(
  ('ordinal','UInt32'),('level_id','String'),('role','String'),
- ('lower','Nullable(Decimal(38,18))'),('upper','Nullable(Decimal(38,18))')),
+ ('lower','Nullable(Decimal(38, 18))'),('upper','Nullable(Decimal(38, 18))')),
  'toYYYYMM(snapshot_month)','run_id, snapshot_id, ordinal')
 TABLES=(ROOT,LOT,RESISTANCE)
 

@@ -136,3 +136,20 @@ def test_unmanaged_apply_failure_sanitized(monkeypatch,capsys):
     monkeypatch.setattr(install,'_admin_client',lambda *a:pytest.fail('connection'))
     assert install.main(['--apply','--confirm-fixed-lot-runner'])==1
     assert 'RuntimeError' in capsys.readouterr().err
+
+def test_clickhouse_canonical_decimal_metadata_preserves_exact_types_and_resume():
+    class CanonicalClient(Client):
+        def execute(self, sql):
+            result = super().execute(sql)
+            if 'FROM system.columns' in sql:
+                rows = [json.loads(line) for line in result.splitlines()]
+                for row in rows:
+                    row['type'] = row['type'].replace('Decimal(38,18)', 'Decimal(38, 18)')
+                return '\n'.join(json.dumps(row) for row in rows)
+            return result
+    writer = CanonicalClient(grants=[])
+    admin = CanonicalClient(operator=True, exists=False, missing=False)
+    assert invoke(admin, writer, install_tables=True) == [False]
+    assert not any(q.startswith('CREATE TABLE') for q in admin.statements)
+    assert writer.grants == install._desired_grants(install.desired_plan(POLICY))
+    assert writer.closed
