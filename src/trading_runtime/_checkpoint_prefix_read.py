@@ -72,10 +72,10 @@ def _retained_size(value, seen=None, depth=0):
 
 
 class _MemoPool:
-    __slots__ = ('memo', 'ledger', 'bytes')
+    __slots__ = ('memo', 'ledger', 'exit_sources', 'bytes')
 
     def __init__(self):
-        self.memo, self.ledger, self.bytes = {}, {}, 0
+        self.memo, self.ledger, self.exit_sources, self.bytes = {}, {}, {}, 0
 
 
 class _FullPrefixOperation:
@@ -115,6 +115,7 @@ def _full_prefix_operation(client, run_id, source):
         if pool is None:
             operation.pool.memo.clear()
             operation.pool.ledger.clear()
+            operation.pool.exit_sources.clear()
             operation.pool.bytes = 0
         operation.prefix = None
         operation.collector = None
@@ -230,19 +231,75 @@ def _remember_checkpoint(operation, prefix, event):
     value = (operation.digest.hex(), operation.last_commit_hash,
              event['batch_id'], None, prefix.last_sequence)
     size = _retained_size(key) + _retained_size(value) + 512
-    if (len(operation.pool.memo) + len(operation.pool.ledger) < _MEMO_ENTRY_LIMIT
+    if (len(operation.pool.memo) + len(operation.pool.ledger)
+            + len(operation.pool.exit_sources) < _MEMO_ENTRY_LIMIT
             and operation.pool.bytes + size <= _MEMO_BYTE_LIMIT):
         operation.pool.ledger[key] = value
         operation.pool.bytes += size
 
 
 def _lineage_content(lineage):
-    """Only the unchanged entry-family reducer has a nonrecursive raw path."""
+    """Mixed ancestry requires a completed source proof owned by this operation."""
     from dataclasses import replace
-    if any(item.source_intent.intent.action != 'enter_long' for item in lineage):
-        return None
+    from .arte_followthrough_failure_v4 import REASON
+    from .numbered_fixed_strategy import declared_fixed_exit_reason
+    operation = _FULL_OPERATION.get()
+    for item in lineage:
+        source = item.source_intent
+        if source.intent.action == 'enter_long':
+            continue
+        if (operation is None or get_ident() != operation.thread
+                or source.intent.action != 'exit' or source.source_batch is None):
+            return None
+        proof = operation.pool.exit_sources.get(source.source_batch.batch_id)
+        if proof is None:
+            return None
+        families = proof[1]
+        if source.intent.reason == REASON:
+            if not {'trading_followthrough_failure_v4',
+                    'trading_original_risk_diagnostic_v4'} <= set(families):
+                return None
+        elif declared_fixed_exit_reason(source.intent.reason,
+                'strategy-thirty-one-original-risk-profit-giveback-v1'):
+            if 'trading_profit_giveback_v4' not in families:
+                return None
+        else:
+            return None
     return tuple(replace(item, source_intent=replace(item.source_intent,
                  source_batch=None)) for item in lineage)
+
+
+def _observe_verified_exit_source(client, source, commit, family_rows, details):
+    """Private no-op unless the complete source batch just passed every guard.
+
+    Retain only immutable digests/inventory, never rows or producer approval.
+    Every reuse still invokes the unchanged complete source reader/sealers.
+    """
+    operation = _FULL_OPERATION.get()
+    if (operation is None or not operation.matches(client, source)
+            or commit['run_id'] != operation.run_id):
+        return
+    family_rows = tuple(sorted(family_rows, key=lambda row: row['family_name']))
+    details = tuple((name, tuple(sorted(rows)))
+                    for name, rows in sorted(details.items()))
+    families = tuple(row['family_name'] for row in family_rows)
+    if not ({'trading_profit_giveback_v4', 'trading_followthrough_failure_v4'}
+            & set(families)):
+        return
+    key = commit['batch_id']
+    value = (sha256(canonical_json((commit, family_rows, details)).encode()).hexdigest(),
+             families)
+    prior = operation.pool.exit_sources.get(key)
+    if prior is not None:
+        if prior != value:
+            raise RuntimeError('Checkpoint exit source changed within its complete operation')
+        return
+    size = _retained_size(key) + _retained_size(value) + 256
+    if (len(operation.pool.memo) + len(operation.pool.ledger)
+            + len(operation.pool.exit_sources) < _MEMO_ENTRY_LIMIT
+            and operation.pool.bytes + size <= _MEMO_BYTE_LIMIT):
+        operation.pool.exit_sources[key] = value
+        operation.pool.bytes += size
 
 
 def _observe_checkpoint_financial(client, prefix, context, cursor, image, lineage,
@@ -285,11 +342,12 @@ def _observe_checkpoint_completed(client, prefix, cursor, rows, state,
 
 
 def _fresh_checkpoint_content(client, prefix, diagnostic, first_price_source):
-    """Fresh actual raw/schema/semantic guards, no recursive source ancestry.
+    """Fresh raw/semantic guards and complete selected exit-source proofs.
 
     The initial witness comes from already-read and fully validated rows. The
-    historical hit re-reads children and re-runs the same reducers; source-batch
-    certificates remain outside memo in the enclosing diagnostic/entry sealers.
+    historical hit re-reads children and re-runs the same reducers. Mixed exit
+    sources retain their complete public source-batch and producer validation;
+    any recursive checkpoint proof follows its strictly earlier source lineage.
     Unsupported exit-family ancestry takes the entire unchanged reconstruction.
     """
     from dataclasses import replace
@@ -340,18 +398,58 @@ def _fresh_checkpoint_content(client, prefix, diagnostic, first_price_source):
         if len(values) != len(chunk):
             raise RuntimeError('Checkpoint content intent inventory is incomplete')
         for value in values:
-            if value.record_id in intents or value.intent.action != 'enter_long':
+            if value.record_id in intents:
                 raise RuntimeError('Checkpoint entry ancestry changed or is unsupported')
             intents[value.record_id] = value
     if set(intents) != set(identifiers):
         raise RuntimeError('Checkpoint content intent identities changed')
+    from .arte_followthrough_failure_v4 import REASON, load_followthrough_failure
+    from .arte_profit_giveback_reader_v4 import load_committed_profit_giveback
+    from .numbered_fixed_strategy import declared_fixed_exit_reason
+    failures, diagnostics, profits = {}, {}, {}
+    for identifier, value in tuple(intents.items()):
+        if value.intent.action == 'enter_long':
+            continue
+        # Full source-batch verification is deliberate; no cached approval or
+        # ancestry exemption is passed into its public source/sealer APIs.
+        if value.intent.action != 'exit':
+            raise RuntimeError('Checkpoint source ancestry is unsupported')
+        full = load_committed_strategy_intent_page(client, ceiling,
+            limit=1, record_ids=(identifier,), include_source_batch=True,
+            first_price_source=first_price_source)
+        if len(full) != 1 or full[0].record_id != identifier:
+            raise RuntimeError('Checkpoint exit source parent changed')
+        if value != replace(full[0], source_batch=None):
+            raise RuntimeError('Checkpoint exit source content changed')
+        intents[identifier] = full[0]
+        if value.intent.reason == REASON:
+            row, _, diagnostic_value = load_followthrough_failure(client, ceiling,
+                identifier, include_diagnostic=True)
+            if diagnostic_value is None:
+                raise RuntimeError('Checkpoint failure ancestry lacks its selected diagnostic')
+            failures[identifier], diagnostics[identifier] = row, diagnostic_value
+        elif declared_fixed_exit_reason(value.intent.reason,
+                'strategy-thirty-one-original-risk-profit-giveback-v1'):
+            profits[identifier] = load_committed_profit_giveback(client, ceiling,
+                identifier, first_price_source=first_price_source)
+        else:
+            raise RuntimeError('Checkpoint exit source family is unsupported')
     lineage = tuple(RecoveredStrategyOneOmsLineage(group, intents[group.intent_record_id],
         reconstruct_strategy_one_oms_lineage(group, intents[group.intent_record_id], history,
             admission_reservation=admissions[group.sequence],
-            admission_decision=decisions[group.sequence]), history.through_sequence,
+            admission_decision=decisions[group.sequence],
+            followthrough_row=failures.get(group.intent_record_id),
+            profit_giveback_row=profits.get(group.intent_record_id),
+            original_risk_diagnostic=diagnostics.get(group.intent_record_id)), history.through_sequence,
         _approved_strategy_one_oms_intent(group, intents[group.intent_record_id], history,
-            admissions[group.sequence], decisions[group.sequence])[0],
+            admissions[group.sequence], decisions[group.sequence],
+            followthrough_row=failures.get(group.intent_record_id),
+            profit_giveback_row=profits.get(group.intent_record_id),
+            original_risk_diagnostic=diagnostics.get(group.intent_record_id))[0],
         dict(admissions[group.sequence])) for group in groups)
+    lineage = _lineage_content(lineage)
+    if lineage is None:
+        raise RuntimeError('Checkpoint exit source lacks a completed native family proof')
     return sha256(canonical_json((cursor, manager, state,
         (context, cursor, broker, lineage))).encode()).hexdigest()
 
@@ -406,7 +504,8 @@ def _reconstruct_original_risk_checkpoint(client, prefix, failure, parent,
             if type(diagnostic) is OriginalRiskDecisionDiagnostic and content is None:
                 return result  # unsupported ancestry: no omissions, unchanged reader
             size = _retained_size(key) + _retained_size(result) + _retained_size(content) + 256
-            if (len(operation.pool.memo) + len(operation.pool.ledger) < _MEMO_ENTRY_LIMIT
+            if (len(operation.pool.memo) + len(operation.pool.ledger)
+                    + len(operation.pool.exit_sources) < _MEMO_ENTRY_LIMIT
                     and operation.pool.bytes + size <= _MEMO_BYTE_LIMIT):
                 operation.pool.memo[key] = (deepcopy(result), content)
                 operation.pool.bytes += size
