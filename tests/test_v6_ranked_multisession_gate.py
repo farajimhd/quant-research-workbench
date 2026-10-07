@@ -49,3 +49,15 @@ def test_missing_auxiliary_or_cross_session_evidence_denies_admission(tmp_path):
     write=fixture(tmp_path);r=json.loads((tmp_path/'result.json').read_text())
     r['sessions'][0]['allocation_ratio_mae']=.2;r['sessions'][0]['allocation_error_sum']=2.;write('result.json',r)
     with pytest.raises(ValueError,match='same-checkpoint'):admit_multisession(tmp_path,tmp_path)
+
+
+@pytest.mark.parametrize('width,argument,allowed', [(512,512,True),(512,128,False),(256,256,False),(True,True,False)])
+def test_capacity_is_bound_to_underfit_arguments(tmp_path,width,argument,allowed):
+    write=fixture(tmp_path);plan=json.loads((tmp_path/'manifest.json').read_text())
+    plan.update(width=width,arguments=dict(width=argument));plan.pop('hash');plan['hash']=digest(plan)
+    write('manifest.json',plan)
+    if allowed:
+        admitted,_,_=admit_multisession(tmp_path,tmp_path)
+        assert admitted['width']==512
+    else:
+        with pytest.raises(ValueError,match='model width'):admit_multisession(tmp_path,tmp_path)

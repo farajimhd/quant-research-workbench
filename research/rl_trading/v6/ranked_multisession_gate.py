@@ -13,6 +13,9 @@ def admit_multisession(root, source_dir=None):
     plan = json.loads((root/'manifest.json').read_text())
     complete = json.loads((root/'complete.json').read_text())
     result = json.loads((root/'result.json').read_text())
+    width = plan.get('width', 128)
+    if type(width) is not int or width not in (128, 512) or ('width' in plan and plan.get('arguments', {}).get('width') != width):
+        raise ValueError('Bounded model width must match admitted underfit arguments')
     if (plan.get('version') != 'rl-v6-ranked-six-session-underfit-v1' or
             plan.get('hash') != digest({k:v for k,v in plan.items() if k != 'hash'}) or
             len(plan.get('sessions', [])) != 6 or

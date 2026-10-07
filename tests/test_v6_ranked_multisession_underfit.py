@@ -13,6 +13,24 @@ from research.rl_trading.v6.training import train_session
 from test_rl_trading_v6_teacher_forecast import fixture
 
 
+def test_capacity512_actual_training_and_checkpoint_replay():
+    from research.rl_trading.v6.run_ranked_teacher_generalization import build_policy
+    from research.rl_trading.v6.market_attention import MarketAttentionConfig
+    torch.set_num_threads(2)
+    _,session,labels=fixture('cpu')
+    labels=tuple(replace(d,forecast_actions=np.zeros(len(d.forecast_close_us),np.int64)) for d in labels)
+    ranking=MarketAttentionConfig(top_r=1,market_tokens=2,heads=2)
+    policy=build_policy(ranking,torch.device('cpu'),width=512)
+    optimizer=torch.optim.AdamW(policy.parameters(),lr=.001)
+    fitted=train_session(policy,optimizer,session,labels,(),device=torch.device('cpu'),teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))
+    assert fitted.optimizer_steps>0 and np.isfinite(fitted.mean_loss)
+    restored=build_policy(ranking,torch.device('cpu'),width=512)
+    restored.load_state_dict(policy.state_dict(),strict=True)
+    def evaluate(p):
+        return asdict(train_session(p,None,session,labels,(),device=torch.device('cpu'),evaluation=True,evaluate_train=True,teacher_loss='branch-balanced-v3',regression_weights=(0.,0.)))
+    assert evaluate(policy)==evaluate(restored)
+
+
 def test_day_cache_and_unique_target_binding():
     _,s,t = fixture()
     d=t[0]; key=[d.close_us,d.episode_uid,bool(len(d.held_index))]
