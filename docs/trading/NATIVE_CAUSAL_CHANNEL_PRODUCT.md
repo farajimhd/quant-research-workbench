@@ -255,6 +255,24 @@ current speed objective and removed from repository source; its source, tests
 and rejection receipt remain in `compact_finite_json_packet_prototype_v1`
 under the runtime root. These timings exclude full source equivalence,
 journal operations and financial execution. No strategy selected the prototype.
+The real development packet contains 3,589 nodes across its complete parent,
+selected and proposal trees. Local component profiling found that node sealing
+costs much more than encoding alone. The additive, unselected
+`ExactProjectedConfigurationNodeCache` therefore reuses complete deterministic
+UUID and sealed-node projection, keyed by all common identity columns and all
+three full canonical tree texts. It uses the original encoder and scalar/hash
+checker on misses, owns immutable result rows, and declares entry/input/row/byte
+retention bounds. Over-budget valid results remain complete and uncached.
+Fifty-five focused cache tests passed, including exact original output, scalar
+types, signed zero, malformed input, original schema checks, immutable results,
+LRU/byte eviction and concurrent same-key calls. Actual saved development rows
+matched exactly; median local original encode/UUID/seal time was 95.7 ms versus
+1 microsecond for a warm complete-text lookup, retaining a conservatively
+counted 8.49 MB. The consumer must still check issued source, request, semantic
+batch and complete replay equality on every call. No existing strategy selects
+this utility. The receipt is `real-development-projected-node-reuse-v1.json`
+under the optimization runtime root. These component timings do not establish
+native full-session speed acceptance or financial benefit.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 The development-only confirmed-failure audit additionally compared six declared
 post-acquisition predicates across 126 saved Strategy57 positions, excluding
