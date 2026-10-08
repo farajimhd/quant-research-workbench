@@ -105,6 +105,33 @@ proposals, acquisitions or P&L. The saved receipt is
 its explicit policy and timing fields describe the added qualification stage.
 Cash, fills, OCA, journal and per-clock strategy state remain excluded.
 
+`backtest_native_channel_qualification.qualify_installed_native_channel_decisions`
+connects that rule to the installed SELECT-only dependency loader during bounded
+entry preparation. It rejects foreign build/day/ticker/bars-attempt identities,
+duplicate or uncovered clocks, mismatched input policies and unresolved producer
+fences. Alignment and eligibility remain columnar. The original mandatory mask
+is detached before source reads, and the result uses immutable byte-backed
+storage in the original decision order. Source coverage is required even for an
+empty decision packet. This is a preparation adapter, not candidate-population
+certification or order admission; no existing numbered strategy selects it.
+The caller must retain the complete causal parent population and native PM/AH
+financial clocks, then bind the dependency and rule in a new immutable release.
+
+A declared 128-variant diagnostic on all 133 saved Strategy57 development
+positions compared one-minute wick, return and relative-volume bounds, with an
+optional five-minute return bound. No nontrivial tested filter preserved at
+least 90% of the saved winning net. A two-percent upper-wick cap excluded
+$7,151.48 of saved winning net while excluding $4,262.78 of saved losses and
+retained only four of the ten largest winners. A nonnegative one-minute return
+condition retained eight of those ten winners and 86.89% of saved winning net.
+These are position-net attributions: replacement opportunities, released cash,
+changed exits and fills were not simulated. They do not establish candidate
+P&L. The declared policy, exact input hashes, per-position and per-session
+attributions are under `native_saved_entry_band_attribution_v1` in the runtime
+root. The result argues against transferring the big-move wick comparison
+directly into a broad late-entry veto; earlier admission and failure exits still
+need native financial comparisons.
+
 A development campaign declares 581 packets for 11,547 saved big-move and
 negative-control anchors across the 26 PM/AH sessions. Native resolutions are
 30 seconds, one minute and five minutes. Completed-anchor clocks use source
