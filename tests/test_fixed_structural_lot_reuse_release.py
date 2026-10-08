@@ -66,10 +66,10 @@ def test_resealed_semantic_changes_fail_complete_rederivation(change):
 def test_preparation_does_not_register_number_or_mutate_parent():
     parent, kwargs, _ = prepared()
     before = canonical_json(parent.payload)
+    registered = numbered_strategy(93)
     derive_fixed_structural_lot_release(parent, **kwargs)
     assert canonical_json(parent.payload) == before
-    with pytest.raises(ValueError, match='not published'):
-        numbered_strategy(93)
+    assert numbered_strategy(93) == registered == release_contract()
 
 
 def test_typed_factory_requires_paired_reuse_without_changing_parent_policies():
@@ -84,11 +84,26 @@ def test_typed_factory_requires_paired_reuse_without_changing_parent_policies():
         replace(own, validation_reuse_policy=None)
 
 
-def test_unregistered_successor_cannot_query_or_issue_native_source():
+def test_unregistered_number_cannot_query_or_issue_native_source():
     from src.backend.backtest_fixed_structural_lot_native_v14 import load_installed_configuration
     parent, _, _ = prepared()
     class NoDatabase:
         def execute(self, sql):
             raise AssertionError('Unregistered successor queried a database')
     with pytest.raises(ValueError):
-        load_installed_configuration(NoDatabase(), number=93, parent=parent)
+        load_installed_configuration(NoDatabase(), number=94, parent=parent)
+
+
+def test_registered_successor_uses_exact_declared_factory_and_parent():
+    from src.trading_runtime.strategy_registry import (
+        numbered_strategy_parent, fixed_strategy_executor,
+    )
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    from src.trading_runtime.fixed_structural_lot_reuse_contract import FixedStructuralLotReuseStrategyContract
+    release = numbered_strategy(93)
+    assert numbered_strategy_parent(93) == 42
+    registered = fixed_strategy_executor(release.executor_strategy_id,
+                                        release.executor_revision).contract_factory()
+    assert type(registered) is FixedStructuralLotReuseStrategyContract
+    assert numbered_fixed_strategy(93) == registered
+    assert registered.validation_reuse_policy == VALIDATION_REUSE_POLICY

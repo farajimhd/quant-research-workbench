@@ -230,7 +230,15 @@ def selected(monkeypatch, *, actual_loader=False, number=90, version=12):
         monkeypatch.setattr(source if name == '_load_quotes' else scope_owner, name, getattr(previous, name))
     monkeypatch.setattr(scope_owner, 'certify_v7_interval_plan', lambda *a, **kw: plans.v7_intervals)
     parent, _, _, parent_release = declarations()
-    own = cert(derive_fixed_structural_lot_release(parent, parent_release=parent_release, release=numbered_strategy(number), policy=old.policy.payload(), approved_code_commit=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(), approved_code_fingerprint=backend_source_fingerprint(), approval_reference='controlled immutable installation seam')['payload'])
+    release = numbered_strategy(number)
+    from src.trading_runtime.packet_validation_reuse_policy import RULE as REUSE_RULE
+    reuse_options = {}
+    if REUSE_RULE in release.rule_set_contracts:
+        from src.trading_runtime.strategy_registry import fixed_strategy_executor
+        contract = fixed_strategy_executor(release.executor_strategy_id,
+                                          release.executor_revision).contract_factory()
+        reuse_options['reuse_policy'] = contract.validation_reuse_policy
+    own = cert(derive_fixed_structural_lot_release(parent, parent_release=parent_release, release=release, policy=old.policy.payload(), **reuse_options, approved_code_commit=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(), approved_code_fingerprint=backend_source_fingerprint(), approval_reference='controlled immutable installation seam')['payload'])
     monkeypatch.setattr(source, 'certify_numbered_configuration', lambda *a: parent)
     if actual_loader:
         monkeypatch.setattr(native, 'certify_numbered_configuration', lambda *a: own)
@@ -1210,7 +1218,7 @@ def test_batched_helper_rejects_foreign_context_before_transport():
     with pytest.raises(ValueError,match='foreign source context'):
         _batched_detail_rows_v4(Reader(),(),'',fixed_lot_context=SimpleNamespace(source=None))
 
-@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True)])
+@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True),(93,14,True)])
 def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(monkeypatch,number,version,strip_decimal):
     quote_offset_us=25515
     from importlib import import_module
@@ -1737,6 +1745,18 @@ def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(mo
             assert rebuilt.inherited==image.inherited
             assert require_historical_checkpoint(rebuilt,source=fresh_operation.source) is rebuilt
             print('actual_selected_profit_exit_and_terminal_sequence='+str(terminal_sequence))
+            from src.trading_runtime.packet_validation_reuse_policy import RULE as REUSE_RULE
+            from src.trading_runtime.strategy_registry import numbered_strategy
+            if REUSE_RULE in numbered_strategy(number).rule_set_contracts:
+                from src.trading_runtime.declared_packet_validation_reuse import _CACHES
+                for selected_source in (actual.operation.source, fresh_operation.source):
+                    installed_json, policy, cache = _CACHES[selected_source]
+                    assert installed_json == selected_source.installed_json
+                    statistics = cache.statistics()
+                    assert statistics['hits'] > 0 and statistics['misses'] > 0
+                    assert statistics['entries'] <= policy.max_entries
+                    assert statistics['retained_key_bytes'] <= policy.max_bytes
+                    print('actual_selected_packet_reuse_statistics='+canonical_json(statistics))
 
         finally:
             if runtime.order_manager is not None:await runtime.order_manager.close()

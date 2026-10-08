@@ -1,6 +1,6 @@
 """Prepared successor source factory; registration/source proof remain mandatory.
 
-No existing release selects this module. Missing native certification fails closed.
+Installed execution requires complete source and configuration certification.
 """
 from src.trading_runtime.strategy_registry import IMMUTABLE_NUMBERED_IDENTITY_RULE as IDENTITY_RULE, BATCHED_DETAIL_SELECT_RULE as BATCHED_RULE, SELECTED_CHECKPOINT_PRODUCT_RULE as CHECKPOINT_RULE, OPERATION_CHECKPOINT_READER_RULE as READER_RULE
 from src.trading_runtime.decimal_snapshot_readback import RULE as DECIMAL_RULE

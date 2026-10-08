@@ -161,8 +161,8 @@ or reuse scope; reconstruction compares bounds against the factory's expected
 policy rather than trusting the payload to choose them. Forty-four preparation,
 inheritance and policy tests passed in 2.65 seconds
 (`reuse-release-tests-v4.log`). The synthetic certificates in these tests issue
-no runtime authority. Strategy93 is not registered or published; its native
-loader rejects it before database access. Installed admission, cold integration,
+no runtime authority. Unknown strategy numbers are rejected before database
+access. Installed admission, cold integration,
 full-session timing and financial runs remain outstanding.
 The new `declared_packet_validation_reuse` scope checks the genuinely issued
 source, exact registered release and typed factory before activating reuse.
@@ -196,8 +196,18 @@ compatibility, routing, prepared-release, runtime-hook and cache tests passed
 in 31.37 seconds (`reuse-source-seal-tests-v2.log`), including semantic
 tampering of every new source leaf, altered certifier code, changed loaded
 metadata and exact parent reconstruction. `reuse-source-seal-v14-v1.json`
-records the source inventory and certificate anchors. Strategy93 remains
-unregistered and unpublished. Installed launch, cold native integration,
+records the pre-registration source inventory and certificate anchors.
+Strategy93 is now registered in source with its exact typed executor and
+Strategy42 parent. The registry addition is included in the complete source
+seal and exact parent restoration. The actual complete numbered source
+preflight for Strategy93 passed without source/parent overrides
+(`reuse-registered93-complete-source-preflight-v1.log`); 72 source, routing,
+release and cache tests passed in 32.34 seconds
+(`reuse-registered-source-tests-v3.log`). The checkpoint fixture now includes
+the v14 path and asserts that both original and fresh recovery sources use
+the declared bounded cache. Collection passed; execution has not yet passed.
+No installed Strategy93 configuration has been published. Installed launch,
+cold native integration,
 full-session timing and financial comparisons remain outstanding; this source
 proof does not establish any financial result or validation exposure.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
