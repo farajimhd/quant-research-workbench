@@ -246,6 +246,15 @@ publication payload round-tripped through all 1,188 nodes with its original
 node hash (`exact-configuration-tree-saved-publication-check-v1.json`). No
 installed strategy uses this utility, and no native financial speed or P&L
 benefit has been established for it. Strategy93 keeps its pinned source.
+An exact finite-JSON packet-key prototype was also evaluated on the actual
+3,593-row development companion. Forty-six focused checks passed, including
+scalar types, signed zero, Unicode surrogate distinctions, alias mutation and
+bounds. Matched local cache hits were slower: 46.8 ms versus 37.5 ms, despite
+retained-key memory falling from 39.3 MB to 2.2 MB. It was rejected for the
+current speed objective and removed from repository source; its source, tests
+and rejection receipt remain in `compact_finite_json_packet_prototype_v1`
+under the runtime root. These timings exclude full source equivalence,
+journal operations and financial execution. No strategy selected the prototype.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 The development-only confirmed-failure audit additionally compared six declared
 post-acquisition predicates across 126 saved Strategy57 positions, excluding
