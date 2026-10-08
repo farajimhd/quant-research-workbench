@@ -73,6 +73,16 @@ negative reader/producer permission checks. Its immutable runtime receipt is
 on the workstation, with a laptop copy named `native-channel-installed-actual-v1.json`.
 This is not full-session, full-universe coverage or a financial strategy run.
 
+`load_declared_native_channels` is the SELECT-only dependency loader for an
+explicit typed request, feature attempt and declared producer-source hash.
+It reconstructs content hashes from installed child/coverage rows, verifies
+certified source and SSD placement, and requires that exact reconstructed
+projection token to match the completed producer fence. The caller supplies
+no feature-content witness. This does not register a native release dependency
+or certify a trading population. A future financial strategy must declare
+coverage for its causal native candidate population; the hindsight-selected
+research cohort below cannot define that population.
+
 A development campaign declares 581 packets for 11,547 saved big-move and
 negative-control anchors across the 26 PM/AH sessions. Native resolutions are
 30 seconds, one minute and five minutes. Completed-anchor clocks use source

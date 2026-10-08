@@ -201,3 +201,51 @@ def test_source_plan_boolean_and_foreign_context_cannot_issue_read_admission(uni
     assert client.writes == []
     with pytest.raises(ValueError, match='Separate'):
         campaign.publish_packet(client, packet, authority=authority, producer_client=client)
+
+
+def test_declared_loader_derives_exact_content_without_caller_witness(unit):
+    client, authority, packet, _ = unit
+    campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
+    before = list(client.writes)
+    source = issue_source_plan(packet)
+    loaded = store.load_declared_native_channels(client, packet.request,
+        packet.feature_attempt_id, producer_source_hash=source.producer_source_hash,
+        authority=authority)
+    assert issue_source_plan(loaded) == source
+    assert client.writes == before
+    with pytest.raises(ValueError, match='declared implementation'):
+        store.load_declared_native_channels(client, packet.request,
+            packet.feature_attempt_id, producer_source_hash='0' * 64,
+            authority=authority)
+
+
+def test_declared_loader_rejects_unregistered_rows_and_mutated_content(unit):
+    client, authority, packet, _ = unit
+    source = issue_source_plan(packet)
+    client.tables[FEATURE_TABLE], client.tables[COVERAGE_TABLE] = packet.rows, packet.coverage
+    with pytest.raises(InsertAuthorityUnavailable):
+        store.load_declared_native_channels(client, packet.request,
+            packet.feature_attempt_id, producer_source_hash=source.producer_source_hash,
+            authority=authority)
+    client.tables = {t: pa.Table.from_batches([], schema=s) for t, s in store.TABLE_SCHEMAS.items()}
+    campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
+    client.tables[FEATURE_TABLE] = packet.rows.slice(0, 11)
+    with pytest.raises(ValueError):
+        store.load_declared_native_channels(client, packet.request,
+            packet.feature_attempt_id, producer_source_hash=source.producer_source_hash,
+            authority=authority)
+
+
+def test_declared_loader_rejects_foreign_source_and_unknown_insert(unit):
+    client, authority, packet, _ = unit
+    source = issue_source_plan(packet)
+    with pytest.raises(ValueError, match='Typed declared'):
+        store.load_declared_native_channels(client, True, packet.feature_attempt_id,
+            producer_source_hash=source.producer_source_hash, authority=authority)
+    client.partial = FEATURE_TABLE
+    with pytest.raises(TimeoutError):
+        campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
+    with pytest.raises((ValueError, InsertAuthorityUnavailable)):
+        store.load_declared_native_channels(client, packet.request,
+            packet.feature_attempt_id, producer_source_hash=source.producer_source_hash,
+            authority=authority)

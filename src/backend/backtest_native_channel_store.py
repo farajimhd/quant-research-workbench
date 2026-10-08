@@ -7,6 +7,7 @@ from src.backend.backtest_market_data import _literal, verify_market_day_plan
 from src.market_engine.native_causal_channel_contract import (
     FEATURE_TABLE, COVERAGE_TABLE, FEATURE_SCHEMA, COVERAGE_SCHEMA, STORAGE_POLICY,
     NativeChannelSourcePlan, NativeChannelProjection, issue_source_plan,
+    NativeChannelRequest, projection_token, require_hash, require_uuid,
 )
 from src.market_engine.native_channel_insert_authority import NativeChannelInsertAuthority
 from pipelines.market_sip.events.completed_endpoint_return_producer import read_arrow
@@ -100,4 +101,36 @@ def read_installed_native_channels(client, source_plan, *, authority):
     if issue_source_plan(packet) != source_plan:
         raise ValueError('Installed native feature content/source plan differs')
     authority.assert_complete(source_plan.feature_attempt_id, source_plan.token)
+    return packet
+
+
+def load_declared_native_channels(client, request, feature_attempt_id, *,
+                                 producer_source_hash, authority):
+    """Reconstruct installed content authority for an explicit native dependency.
+
+    The strategy declaration pins the certified scope, attempt and producer
+    implementation. Content hashes come exclusively from exact installed rows,
+    their coverage and the producer completion fence. This SELECT-only loader
+    neither discovers a ticker universe nor substitutes research labels for
+    native population or financial preflight.
+    """
+    if (type(request) is not NativeChannelRequest or
+            type(authority) is not NativeChannelInsertAuthority):
+        raise ValueError('Typed declared native request and producer fence required')
+    request.__post_init__()
+    require_uuid(feature_attempt_id)
+    require_hash(producer_source_hash)
+    verify_market_day_plan(request.market, client)
+    storage_preflight(client)
+    rows, coverage = read_packet_tables(client, request, feature_attempt_id)
+    packet = NativeChannelProjection(request, feature_attempt_id, rows, coverage,
+        projection_token(request, feature_attempt_id, rows, coverage))
+    source_plan = issue_source_plan(packet)
+    if source_plan.producer_source_hash != producer_source_hash:
+        raise ValueError('Installed native producer differs from declared implementation')
+    authority.assert_complete(feature_attempt_id, source_plan.token)
+    # Issuance revalidates typed content after the completed producer is known.
+    if issue_source_plan(packet) != source_plan:
+        raise ValueError('Declared native content changed during readback')
+    authority.assert_complete(feature_attempt_id, source_plan.token)
     return packet
