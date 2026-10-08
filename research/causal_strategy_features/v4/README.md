@@ -17,3 +17,11 @@ This research module does not publish a feature product, install a strategy,
 or establish financial results or full-session speed acceptance. Split and
 fundamental availability remain separate requirements; neither is inferred.
 Generated outputs belong under the operational runtime root.
+
+`decisions.decision_channels` aligns explicitly identified feature dependencies
+to a parameterized native decision interval and maximum feature age. The join
+is backwards on completed availability, grouped by the full source identity.
+Missing/stale dependencies retain their decisions with null channels; there is
+no forward fill across a missing bucket beyond the declared freshness limit.
+Decision order is preserved. Extra columns, including research outcome labels,
+are discarded before alignment. This emits research rows, not order admission.
