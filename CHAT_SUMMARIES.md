@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-10-08 - V5 dollar objective and running campaign handoff](docs/codex/chat-summaries/2026/CHAT-20261006-UNKNOWN-v5-dollar-objective-campaign.md)
+
+TASK-0223. Supersedes stale V3-active history. V5 source3804a264d implements total-profit dollar costs, hourly elapsed inactivity, seeded retention of half the inactive candidates and full-population wrap pagination. Original74e025fe3 stopped after generation6; replacement20261008-3804a264d-staged32-dollar runs from generation1. Profiling was inherited after85 execution modules matched;33 laptop/32 workstation checks and4096-candidate scoring reconciliation passed. Thirty-training/six-sealed split and32-generation staged schedule remain. Final audit/freeze, once-only validation and delivery are unfinished. Worker/observer continue; old-chat heartbeat paused for new-chat ownership. Early source context partial; current runtime and handoff verified.
+
 ### [2026-10-06 - Atomic strategy tensors and causal GPU v3 optimization](docs/codex/chat-summaries/2026/CHAT-20260930-UNKNOWN-atomic-gpu-strategy-v3.md)
 
 TASK-0223. Preserves the Polars-to-Torch design, independent v3 atomic77-coordinate search, causal completed-interval decisions, shared25% approximate liquidity, risk/capital-time objective, shortened population study and all30-session B128/32-generation campaign. Seeded all-coordinate mutation and exact immutable resume preserve receipts/RNG. UI supervisor recovery delivered through62cac1740; initiating old failure cause unconfirmed. Latest snapshot:8generations complete, generation9 session13/30, training+$16,801.61, objective.02822, zero open. Gains are concentrated in one+$28,152.98 day; other29 lose$11,351.37. Six validation dates remain sealed. Worker and monitor continue; exact ownership, runtime paths, final-audit/evaluation gates and cleanup are documented. Early source details partial; related chats inventoried, not reviewed.
