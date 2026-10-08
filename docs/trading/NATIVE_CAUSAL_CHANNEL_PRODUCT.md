@@ -83,6 +83,17 @@ or certify a trading population. A future financial strategy must declare
 coverage for its causal native candidate population; the hindsight-selected
 research cohort below cannot define that population.
 
+`native_channel_qualification.py` supplies the generic declared
+`native-completed-channel-qualification@1` rule. Typed bands select relative
+channels, native resolutions and finite inclusive bounds; the complete input
+policy and bounds are included in the rule payload. The columnar qualifier
+intersects with the original mandatory Boolean mask, preserving decision-row
+order. Missing, stale, invalid and nonfinite channels cannot qualify; future
+or inconsistent availability is rejected. It changes no cash, reservations,
+fills or protection and performs no source reads. It must be selected and
+bound to installed feature inputs by a future immutable strategy declaration;
+adding this helper does not change any existing strategy or publish one.
+
 A development campaign declares 581 packets for 11,547 saved big-move and
 negative-control anchors across the 26 PM/AH sessions. Native resolutions are
 30 seconds, one minute and five minutes. Completed-anchor clocks use source
