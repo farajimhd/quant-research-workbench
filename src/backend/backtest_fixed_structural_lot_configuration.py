@@ -109,6 +109,9 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
     from src.trading_runtime.strategy_registry import SELECTED_CHECKPOINT_PRODUCT_RULE
     if SELECTED_CHECKPOINT_PRODUCT_RULE in numbered_strategy(number).rule_set_contracts:
         from src.trading_runtime.fixed_structural_lot_release_v11 import derive_fixed_structural_lot_release
+    from src.trading_runtime.strategy_registry import OPERATION_CHECKPOINT_READER_RULE
+    if OPERATION_CHECKPOINT_READER_RULE in numbered_strategy(number).rule_set_contracts:
+        from src.trading_runtime.fixed_structural_lot_release_v12 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')

@@ -2659,7 +2659,9 @@ class ReplayRunController:
         from src.trading_runtime.strategy_profit_giveback_arm_reference import confirm_profit_arm_reference
 
         def confirm():
-            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
+            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(
+                    manager.contract, owner=getattr(manager, '_fixed_lot_owner', None),
+                    publisher=publisher, run_id=self.run_id))) as reader:
                 from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
                 owner=getattr(manager,'_fixed_lot_owner',None)
                 source=owner.operation.source if owner is not None else None
@@ -2709,7 +2711,9 @@ class ReplayRunController:
         from src.trading_runtime.strategy_one_broker_match_snapshot import ManagedBrokerMatchHeadReader
         from src.trading_runtime.strategy_liquidity_fade_checkpoint_reference import confirm_liquidity_fade_checkpoint_sources
         def confirm():
-            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
+            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(
+                    manager.contract, owner=getattr(manager, '_fixed_lot_owner', None),
+                    publisher=publisher, run_id=self.run_id))) as reader:
                 from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
                 owner=getattr(manager,'_fixed_lot_owner',None)
                 source=owner.operation.source if owner is not None else None
@@ -2754,7 +2758,9 @@ class ReplayRunController:
         from src.trading_runtime.strategy_one_broker_match_snapshot import ManagedBrokerMatchHeadReader
         from src.trading_runtime.original_risk_checkpoint import confirm_original_risk_checkpoint_sources
         def confirm():
-            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
+            with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(
+                    manager.contract, owner=getattr(manager, '_fixed_lot_owner', None),
+                    publisher=publisher, run_id=self.run_id))) as reader:
                 from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
                 owner=getattr(manager,'_fixed_lot_owner',None)
                 source=owner.operation.source if owner is not None else None
@@ -3564,7 +3570,7 @@ class ReplayRunController:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v11 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v12 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number, run_id=self.run_id, session_date=self.definition.session_date,
@@ -10202,7 +10208,7 @@ class ReplayRunService:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v11 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v12 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number,run_id=run_id,session_date=definition.session_date,

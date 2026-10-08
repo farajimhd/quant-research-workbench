@@ -89,7 +89,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         from src.trading_runtime.strategy_registry import IMMUTABLE_NUMBERED_IDENTITY_RULE
         from src.trading_runtime.strategy_registry import BATCHED_DETAIL_SELECT_RULE
         from src.trading_runtime.strategy_registry import SELECTED_CHECKPOINT_PRODUCT_RULE
-        if SELECTED_CHECKPOINT_PRODUCT_RULE in selected_lots.release.rule_set_contracts:
+        from src.trading_runtime.strategy_registry import OPERATION_CHECKPOINT_READER_RULE
+        if OPERATION_CHECKPOINT_READER_RULE in selected_lots.release.rule_set_contracts:
+            from .backtest_fixed_structural_lot_certification_v12 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v12
+            additional_proof = certify_fixed_structural_lot_source_v12()
+        elif SELECTED_CHECKPOINT_PRODUCT_RULE in selected_lots.release.rule_set_contracts:
             from .backtest_fixed_structural_lot_certification_v11 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v11
             additional_proof = certify_fixed_structural_lot_source_v11()
         elif BATCHED_DETAIL_SELECT_RULE in selected_lots.release.rule_set_contracts:
@@ -1543,6 +1547,8 @@ def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expecte
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v12 import restore_reviewed_parent_source as restore_v12
+    source = restore_v12(source, 'src/backend/backtest_strategy_one_configuration.py')
     source = restore_v11(source, 'src/backend/backtest_strategy_one_configuration.py')
     source = restore_v10(source, 'src/backend/backtest_strategy_one_configuration.py')
     source = restore_v9(source, 'src/backend/backtest_strategy_one_configuration.py')
@@ -1658,6 +1664,8 @@ def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: 
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v12 import restore_reviewed_parent_source as restore_v12
+    source = restore_v12(source, 'src/backend/backtest_strategy_one_management.py')
     source = restore_v11(source, 'src/backend/backtest_strategy_one_management.py')
     source = restore_v10(source, 'src/backend/backtest_strategy_one_management.py')
     source = restore_v9(source, 'src/backend/backtest_strategy_one_management.py')
@@ -1697,6 +1705,8 @@ def _reviewed_fixed_lot_typed_projection(source: str, name: str, expected: str) 
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v12 import restore_reviewed_parent_source as restore_v12
+    source = restore_v12(source, 'src/backend/backtest_typed_projection.py')
     source = restore_v11(source, 'src/backend/backtest_typed_projection.py')
     source = restore_v10(source, 'src/backend/backtest_typed_projection.py')
     source = restore_v9(source, 'src/backend/backtest_typed_projection.py')
@@ -1747,6 +1757,8 @@ def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expect
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v12 import restore_reviewed_parent_source as restore_v12
+    source = restore_v12(source, relative)
     source = restore_v11(source, relative)
     source = restore_v10(source, relative)
     source = restore_v9(source, relative)

@@ -29,12 +29,38 @@ def declared_fixed_runner_options(configuration):
     return {'entry_spread_risk':True} if contract.entry_spread_risk_policy is not None else {}
 
 
-def declared_contract_runner_options(contract):
+def declared_contract_runner_options(contract, *, owner=None, publisher=None, run_id=None):
     """Confirmed checkpoints retain the manager's exact installed typed contract."""
     from .numbered_fixed_strategy import numbered_fixed_strategy
     actual=numbered_fixed_strategy(contract.strategy_number)
     if contract!=actual:
         raise ValueError('Checkpoint runner profile differs from installed contract')
+    from .strategy_registry import numbered_strategy, OPERATION_CHECKPOINT_READER_RULE
+    rule = OPERATION_CHECKPOINT_READER_RULE
+    release = numbered_strategy(actual.strategy_number)
+    rules = release.rule_set_contracts
+    if rule in rules:
+        from .fixed_structural_lot_profile import require_fixed_structural_lot_profile
+        from src.backend.backtest_fixed_structural_lot_management import NativeFixedStructuralLotManagement
+        from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+        if (rules.count(rule) != 1
+                or type(owner) is not NativeFixedStructuralLotManagement
+                or type(publisher) is not BacktestTypedJournalPublisher):
+            raise ValueError('Checkpoint reader lacks exact operation ownership')
+        operation = owner.operation
+        source = operation.source
+        profile = require_fixed_structural_lot_profile(
+            getattr(publisher.writer._client, 'fixed_structural_lot_profile', None))
+        if (profile.operation is not operation
+                or owner.publisher is not publisher
+                or getattr(publisher, '_fixed_lot_source', None) is not source
+                or source.run_id != run_id
+                or source.price_authority is not publisher._first_price_source
+                or source.installed_payload['strategy']['strategy_number'] != actual.strategy_number
+                or source.installed_payload['strategy']['numbered_release']['contract']
+                   != release.canonical_payload()):
+            raise ValueError('Checkpoint reader profile differs from exact owner/source/run')
+        return {'fixed_structural_lot_profile': profile}
     if actual.confirmed_original_risk_policy is not None:
         return {'confirmed_original_risk_policy':actual.confirmed_original_risk_policy}
     return {'entry_spread_risk':True} if actual.entry_spread_risk_policy is not None else {}
