@@ -93,6 +93,15 @@ or inconsistent availability is rejected. It changes no cash, reservations,
 fills or protection and performs no source reads. It must be selected and
 bound to installed feature inputs by a future immutable strategy declaration;
 adding this helper does not change any existing strategy or publish one.
+`parse_native_channel_qualification_policy` and `parse_event_qualification_policy`
+reconstruct complete JSON declarations for a future installed configuration.
+They require explicit lookbacks, resolutions, freshness, bounds and event
+semantics, and verify the input-policy digest. Missing parameters receive no
+defaults; altered source/clock semantics, numeric type aliases and undeclared
+fields fail. Parsing establishes rule contents only, not source certification
+or financial admission. The parser, entry qualifier, event qualifier and
+installed-input adapter suites passed 55 tests in 3.41 seconds; their log is
+`native-policy-parsing-tests-v1.log` under the development runtime root.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.

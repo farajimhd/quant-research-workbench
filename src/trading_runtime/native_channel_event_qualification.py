@@ -5,7 +5,9 @@ from dataclasses import dataclass
 
 from src.trading_runtime.native_channel_qualification import (
     NativeChannelQualificationPolicy, qualify_native_channels,
+    parse_native_channel_qualification_policy,
 )
+from src.trading_runtime.journal_contract import canonical_json
 
 RULE = 'native-after-acquisition-channel-qualification@1'
 
@@ -35,6 +37,21 @@ def event_qualification_payload(policy):
                 fresh_resolutions_ms=list(policy.fresh_resolutions_ms),
                 event_clock='actual acquisition microseconds since source midnight',
                 evidence='completed channel boundary strictly after actual acquisition')
+
+
+def parse_event_qualification_policy(value):
+    """Parse complete immutable rule contents without inventing exit authority."""
+    if type(value) is not dict or set(value) != {'rule', 'channel_rule',
+            'fresh_resolutions_ms', 'event_clock', 'evidence'}:
+        raise ValueError('Complete acquisition qualification declaration required')
+    resolutions = value['fresh_resolutions_ms']
+    if type(resolutions) is not list or not 1 <= len(resolutions) <= 32:
+        raise ValueError('Bounded JSON trigger resolutions required')
+    result = NativeChannelAcquisitionQualificationPolicy(
+        parse_native_channel_qualification_policy(value['channel_rule']), tuple(resolutions))
+    if canonical_json(value) != canonical_json(event_qualification_payload(result)):
+        raise ValueError('Acquisition evidence clock or rule semantics differ')
+    return result
 
 
 def qualify_native_channels_after_acquisition(aligned, mandatory_held,

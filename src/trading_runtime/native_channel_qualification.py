@@ -6,6 +6,7 @@ import numpy as np
 import polars as pl
 
 from src.market_engine.native_causal_channel_contract import NativeChannelPolicy, RELATIVE_FIELDS
+from src.trading_runtime.journal_contract import canonical_json
 from research.causal_strategy_features.v5.decisions import DECISION_IDENTITY, MAX_EXPANDED_DECISIONS
 
 RULE = 'native-completed-channel-qualification@1'
@@ -53,6 +54,51 @@ class NativeChannelQualificationPolicy:
         return dict(rule=RULE, input_policy=self.inputs.payload(), input_policy_digest=self.inputs.digest,
             bands=[dict(resolution_ms=b.resolution_ms, channel=b.channel,
                         lower=b.lower, upper=b.upper) for b in self.bands])
+
+
+def parse_native_channel_qualification_policy(value):
+    """Reconstruct a complete installed JSON declaration, never supply defaults.
+
+    This parses rule contents only. The configuration owner must separately
+    verify the immutable release, producer identity and installed input scope.
+    Transport lists become typed tuples; all semantic metadata and the input
+    digest must match the resulting policy exactly.
+    """
+    if type(value) is not dict or set(value) != {
+            'rule', 'input_policy', 'input_policy_digest', 'bands'}:
+        raise ValueError('Complete native qualification declaration required')
+    inputs = value['input_policy']
+    if type(inputs) is not dict:
+        raise ValueError('Complete native input policy required')
+    required = ('resolutions_ms', 'decision_interval_ms', 'freshness_by_resolution',
+                'participation_lookback_bars', 'volatility_lookback_bars')
+    if not set(required).issubset(inputs):
+        raise ValueError('Native input policy cannot omit declared parameters')
+    resolutions, freshness = inputs['resolutions_ms'], inputs['freshness_by_resolution']
+    if (type(resolutions) is not list or not 1 <= len(resolutions) <= 32 or
+            type(freshness) is not list or len(freshness) != len(resolutions) or
+            any(type(pair) is not list or len(pair) != 2 for pair in freshness)):
+        raise ValueError('Native input policy requires bounded JSON arrays')
+    policy = NativeChannelPolicy(tuple(resolutions), inputs['decision_interval_ms'],
+        tuple(tuple(pair) for pair in freshness), inputs['participation_lookback_bars'],
+        inputs['volatility_lookback_bars'])
+    # Compare every metadata field as JSON as well as typed numeric parameters.
+    # Python equality alone would accept False == 0 and 100 == 100.0.
+    if canonical_json(inputs) != canonical_json(policy.payload()):
+        raise ValueError('Native input semantics differ from declared contract')
+    bands = value['bands']
+    if type(bands) is not list or not 1 <= len(bands) <= 32:
+        raise ValueError('Bounded declared qualification bands required')
+    parsed = []
+    for band in bands:
+        if type(band) is not dict or set(band) != {'resolution_ms', 'channel', 'lower', 'upper'}:
+            raise ValueError('Exact declared qualification band required')
+        parsed.append(NativeChannelBand(band['resolution_ms'], band['channel'],
+                                       band['lower'], band['upper']))
+    result = NativeChannelQualificationPolicy(policy, tuple(parsed))
+    if canonical_json(value) != canonical_json(result.payload()):
+        raise ValueError('Native qualification rule or input digest differs')
+    return result
 
 
 def qualify_native_channels(aligned, mandatory_eligible, policy):
