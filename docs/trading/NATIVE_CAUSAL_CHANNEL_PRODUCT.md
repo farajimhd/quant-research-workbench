@@ -237,6 +237,21 @@ through the native app route. Completion, financial results and full-session
 speed acceptance remain outstanding. No validation dates have been selected
 or inspected.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
+The development-only confirmed-failure audit additionally compared six declared
+post-acquisition predicates across 126 saved Strategy57 positions, excluding
+seven August 19 positions without complete features. Two consecutive completed
+one-minute bars with strictly negative close returns, both completed strictly
+after the actual acquisition and separated by exactly one minute, flagged
+eight losing positions and two winners, including none of the ten largest
+winners. Their original saved outcomes totalled -$1,374.43589 and +$450.47;
+these are retrospective labels, not candidate exit proceeds or savings.
+Requiring relative volume and trade count below one reduced loss coverage to
+five while retaining the same two flagged winners. The retained declaration,
+hash-verified packet audit, position results and top-winner review live under
+`native_post_acquisition_confirmed_failure_audit_v1` in the optimization runtime
+root. The current acquisition qualifier exposes the latest aligned bar only;
+a causal vectorized sequence step and native Portfolio/OMS exit integration
+remain required before this predicate can become a tested strategy rule.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
 Alignment plus qualification took 3.990 seconds median with five-minute
