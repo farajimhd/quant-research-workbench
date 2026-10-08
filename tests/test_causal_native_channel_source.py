@@ -39,6 +39,8 @@ def test_pinned_bounded_arrow_read_and_real_vector_projection(monkeypatch):
     assert 'FROM arte.bars_v1' in sql and ATTEMPT in sql and "build_id='build'" in sql
     assert '*resolution_ms<=600000' in sql and 'FORMAT ArrowStream' in sql
     assert 'LIMIT 11' in sql and 'SETTINGS' not in sql
+    assert 'extremes_valid FROM (SELECT build_id,session_date,ticker,attempt_id' in sql
+    assert 'LIMIT 11) FORMAT ArrowStream' in sql
     assert packets[0].filter(pl.col('bucket_index')==5)['relative_execution_volume'][0]==1.
 
 

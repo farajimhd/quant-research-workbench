@@ -56,12 +56,15 @@ def certified_channel_packets(market, client, *, session_date, tickers,
         sql = ('SELECT build_id,toString(session_date) AS session_date,toString(ticker) AS ticker,'
                'toString(attempt_id) AS attempt_id,resolution_ms,bucket_index,'
                'open_int,high_int,low_int,close_int,execution_volume,execution_notional,'
+               'trade_count,price_valid,extremes_valid FROM (SELECT '
+               'build_id,session_date,ticker,attempt_id,resolution_ms,bucket_index,'
+               'open_int,high_int,low_int,close_int,execution_volume,execution_notional,'
                'trade_count,price_valid,extremes_valid FROM arte.bars_v1 '
                f'WHERE build_id={_literal(market.build_id)} AND session_date=toDate({_literal(session_date)}) '
                f'AND (ticker,attempt_id) IN ({pins}) AND resolution_ms IN ({resolutions}) '
                f'AND (toUInt64(bucket_index)+1)*resolution_ms<={through_day_boundary_ms} '
                'ORDER BY ticker,resolution_ms,bucket_index '
-               f'LIMIT {row_bound+1} FORMAT ArrowStream')
+               f'LIMIT {row_bound+1}) FORMAT ArrowStream')
         # Read-only principals retain their server resource policy. The extra
         # row is an overflow sentinel: read_arrow rejects it, never truncates.
         table = read_arrow(client,sql,SOURCE_SCHEMA,row_bound)
