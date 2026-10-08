@@ -29,7 +29,7 @@ def _remaining(existing, expected, keys):
     return wanted.join(actual.select(keys), on=keys, how='anti').sort(keys).to_arrow().cast(expected.schema)
 
 
-def _insert(client, table, rows, lease, verify):
+def _insert(client, producer_client, table, rows, lease, verify):
     if rows.num_rows == 0:
         return
     storage_preflight(client)
@@ -38,13 +38,15 @@ def _insert(client, table, rows, lease, verify):
         writer.write_table(rows)
     header = (f"INSERT INTO {table} ({','.join(rows.schema.names)}) "
         "SETTINGS max_threads=1,max_execution_time=45,max_memory_usage=2147483648,async_insert=0 FORMAT ArrowStream\n").encode()
-    lease.execute(client, table, header + sink.getvalue().to_pybytes(), verify)
+    lease.execute(producer_client, table, header + sink.getvalue().to_pybytes(), verify)
 
 
-def publish_packet(client, projection, *, authority):
+def publish_packet(client, projection, *, authority, producer_client):
     """No repairs, deletes or INSERT retries; unknown outcomes retain a closed gate."""
     if type(projection) is not NativeChannelProjection or type(authority) is not NativeChannelInsertAuthority:
         raise ValueError('Exact native producer packet and product ownership required')
+    if producer_client is client:
+        raise ValueError('Separate read-only and producer transports required')
     projection.__post_init__()
     verify_market_day_plan(projection.request.market, client)
     if projection.coverage['producer_source_hash'].unique().to_pylist() != [producer_implementation_hash()]:
@@ -73,9 +75,9 @@ def publish_packet(client, projection, *, authority):
             if table_hash(actual) != table_hash(projection.rows) or table_hash(cover) != table_hash(projection.coverage):
                 raise ValueError('Native feature coverage readback incomplete; dispatch unverified')
 
-        _insert(client, FEATURE_TABLE, remaining_features, lease, verify_features)
+        _insert(client, producer_client, FEATURE_TABLE, remaining_features, lease, verify_features)
         verify_features()
-        _insert(client, COVERAGE_TABLE, remaining_coverage, lease, verify_coverage)
+        _insert(client, producer_client, COVERAGE_TABLE, remaining_coverage, lease, verify_coverage)
         verify_coverage()
         lease.complete(projection.token)
         return dict(status='published' if remaining_features.num_rows or remaining_coverage.num_rows else 'skipped',

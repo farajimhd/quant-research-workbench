@@ -28,6 +28,7 @@ class PersistentClient(Client):
         self.wrong_policy = self.wrong_parts = self.wrong_columns = False
         self.writes, self.terminal_queries = [], {}
         self.partial = None
+        self.writer = ProducerTransport(self)
 
     def execute(self, sql, *, query_id=None):
         if type(sql) is bytes:
@@ -72,6 +73,15 @@ class PersistentClient(Client):
         return iter(self.tables[table].to_batches(max_chunksize=3))
 
 
+class ProducerTransport:
+    def __init__(self, client):
+        self.client = client
+
+    def execute(self, payload, *, query_id):
+        assert type(payload) is bytes
+        return self.client.execute(payload, query_id=query_id)
+
+
 @pytest.fixture
 def unit(monkeypatch):
     calls = []
@@ -87,13 +97,13 @@ def unit(monkeypatch):
 
 def test_publish_read_only_load_and_exact_repeat(unit):
     client, authority, packet, calls = unit
-    assert campaign.publish_packet(client, packet, authority=authority) == dict(
+    assert campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer) == dict(
         status='published', inserted_feature_rows=12, inserted_coverage_rows=2)
     assert [t for t, _ in client.writes] == [FEATURE_TABLE, COVERAGE_TABLE]
     loaded = store.read_installed_native_channels(client, issue_source_plan(packet), authority=authority)
     assert loaded.token == packet.token and table_hash(loaded.rows) == table_hash(packet.rows)
     assert len(calls) >= 3
-    assert campaign.publish_packet(client, packet, authority=authority)['status'] == 'skipped'
+    assert campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)['status'] == 'skipped'
     assert len(client.writes) == 2
 
 
@@ -101,15 +111,15 @@ def test_unknown_insert_blocks_until_original_terminal_proof_then_exact_missing_
     client, authority, packet, _ = unit
     client.partial = FEATURE_TABLE
     with pytest.raises(TimeoutError):
-        campaign.publish_packet(client, packet, authority=authority)
+        campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     assert client.tables[FEATURE_TABLE].num_rows == 1
-    for operation in (lambda: campaign.publish_packet(client, packet, authority=authority),
+    for operation in (lambda: campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer),
                       lambda: store.read_installed_native_channels(client, issue_source_plan(packet), authority=authority)):
         with pytest.raises(InsertAuthorityUnavailable):
             operation()
     assert len(client.writes) == 1
     authority.resolve_original_terminal(FEATURE_ATTEMPT, FixtureTerminalResolver(client))
-    result = campaign.publish_packet(client, packet, authority=authority)
+    result = campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     assert result['inserted_feature_rows'] == 11 and result['inserted_coverage_rows'] == 2
     assert store.read_installed_native_channels(client, issue_source_plan(packet), authority=authority).token == packet.token
 
@@ -119,7 +129,7 @@ def test_storage_failure_prevents_any_publication(unit, problem):
     client, authority, packet, _ = unit
     setattr(client, problem, True)
     with pytest.raises(ValueError):
-        campaign.publish_packet(client, packet, authority=authority)
+        campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     assert client.writes == []
 
 
@@ -127,15 +137,15 @@ def test_no_adoption_of_unregistered_rows_and_no_foreign_authority(unit):
     client, authority, packet, _ = unit
     client.tables[FEATURE_TABLE] = packet.rows.slice(0, 1)
     with pytest.raises(InsertAuthorityUnavailable, match='Unregistered'):
-        campaign.publish_packet(client, packet, authority=authority)
+        campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     with pytest.raises(ValueError, match='ownership'):
-        campaign.publish_packet(client, packet, authority=object())
+        campaign.publish_packet(client, packet, authority=object(), producer_client=client.writer)
     assert client.writes == []
 
 
 def test_completed_fence_does_not_hide_mutated_duplicate_or_missing_rows(unit):
     client, authority, packet, _ = unit
-    campaign.publish_packet(client, packet, authority=authority)
+    campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     client.tables[FEATURE_TABLE] = pa.concat_tables([packet.rows, packet.rows.slice(0, 1)])
     with pytest.raises(ValueError, match='row bound'):
         store.read_installed_native_channels(client, issue_source_plan(packet), authority=authority)
@@ -143,7 +153,7 @@ def test_completed_fence_does_not_hide_mutated_duplicate_or_missing_rows(unit):
     with pytest.raises(ValueError):
         store.read_installed_native_channels(client, issue_source_plan(packet), authority=authority)
     with pytest.raises(ValueError, match='preceded'):
-        campaign.publish_packet(client, packet, authority=authority)
+        campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     assert len(client.writes) == 2
 
 
@@ -170,13 +180,13 @@ def test_unknown_coverage_insert_also_blocks_and_resumes_exactly(unit):
     client, authority, packet, _ = unit
     client.partial = COVERAGE_TABLE
     with pytest.raises(TimeoutError):
-        campaign.publish_packet(client, packet, authority=authority)
+        campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     assert client.tables[FEATURE_TABLE].num_rows == 12
     assert client.tables[COVERAGE_TABLE].num_rows == 1
     with pytest.raises(InsertAuthorityUnavailable):
-        campaign.publish_packet(client, packet, authority=authority)
+        campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     authority.resolve_original_terminal(FEATURE_ATTEMPT, FixtureTerminalResolver(client))
-    result = campaign.publish_packet(client, packet, authority=authority)
+    result = campaign.publish_packet(client, packet, authority=authority, producer_client=client.writer)
     assert result['inserted_feature_rows'] == 0 and result['inserted_coverage_rows'] == 1
     assert store.read_installed_native_channels(client, issue_source_plan(packet), authority=authority).token == packet.token
 
@@ -188,3 +198,5 @@ def test_source_plan_boolean_and_foreign_context_cannot_issue_read_admission(uni
     with pytest.raises(ValueError, match='Typed native'):
         store.read_installed_native_channels(client, issue_source_plan(packet), authority=object())
     assert client.writes == []
+    with pytest.raises(ValueError, match='Separate'):
+        campaign.publish_packet(client, packet, authority=authority, producer_client=client)

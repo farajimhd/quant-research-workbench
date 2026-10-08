@@ -39,6 +39,15 @@ an explicit trusted original-terminal resolution is required before exact
 missing-row resumption. Existing unregistered rows cannot be adopted. Child
 readback and actual SSD-part checks precede coverage, and both typed tables
 must match before the producer marks its completion fence.
+The publisher requires separate read-only and producer transports. The dedicated
+`native_causal_channel_reader` has SELECT on three market-source tables, both
+feature tables and four storage catalogs. `native_causal_channel_producer` has
+INSERT on the two feature tables only. Neither modifies existing Backtest role
+grants. The operator command is `python -B scripts/clickhouse/provision_native_channel_principals.py
+--apply`, executed on the managed workstation after source synchronization; it
+installs only the new product layout and reconciles those two narrow principals.
+Private credentials stay in the workstation secret root and are never rotated
+or replaced implicitly. The command is a dry run without `--apply`.
 
 Installation remains a separate campaign operation: verify schema and
 `live_market_ssd` policy, insert immutable child rows, verify actual SSD parts,
