@@ -151,6 +151,21 @@ the second support strictly above the 85% hold gate with a configurable 15% cap,
 and submits fixed STP plus immediate native TRAIL protection. Candidate 59 is
 ready for bounded SUGP replay; strategy approval remains open.
 
+### [2026-08-25 14:05 PDT - Build SEC Synthesis and unify News and SEC intelligence presentation](docs/codex/chat-summaries/2026/CHAT-20260825-1405-sec-synthesis-news-sec-intelligence.md)
+
+- Chat/task ID: `01a03abd-f21f-7593-a4b8-172385e26a3e`
+- Related tasks: `TASK-0182`, `TASK-0200`, `TASK-0224`
+- Summary written: 2026-10-08 12:30 PDT
+
+Implemented deterministic accession-level SEC Synthesis over filing narrative
+and XBRL, explicit forecast eligibility, and manual synthesis-grounded issuer
+review. Integrated shared SEC markers, guide, ticker popovers, tables and detail
+views; repaired News/SEC reconciliation fairness, managed Windows launches,
+development websockets and ambiguous SEC review admission. Later UAT drove
+semantic SEC cards, prediction-colored markers, elevated News predictions, a
+coherent News Detail hierarchy and durable cross-surface News review refresh.
+DeepFM for SEC and a frozen statistical SEC/XBRL audit remain deferred.
+
 ### [2026-08-25 12:25 PDT - Harden QMD Live, BarGPT, managed services, and chart delivery](docs/codex/chat-summaries/2026/CHAT-20260825-1225-service-qmd-bargpt-runtime-hardening.md)
 
 - Chat/task ID: `01a03a62-807a-7c23-96c7-a16aba5b4d93`
